@@ -20,8 +20,13 @@ The four things that are most expensive to get wrong:
 4. **Before adding a component, name the volatility it absorbs.** If it's already in
    `docs/02-volatility-map.md`, extend the existing owner instead.
 
-Status: Phase 0 nearly complete. The native and WASM builds, the PWA shell, the three managers,
-five null engines, the generated boundary (contracts mirror, wire codec, facade dispatch) and the
-Pages deploy are in and green. The port mechanism is settled and proven — a project created through the core
-survives a reload (ADR 0014). The camera port is the one that does not fit that pattern, so a
-capture session currently refuses with `CameraUnavailable`. See `docs/06-roadmap.md`.
+Status: Phase 0's exit criterion is met. The native and WASM builds, the PWA shell, the three
+managers, the generated boundary (contracts mirror, wire codec, facade dispatch) and the Pages
+deploy are in and green. A phone opens the app, the core plans a real tessellation for the lens the
+page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
+coverage and acceptance are all decided in the core.
+
+Three engines are still null (`FrameQuality`, `Registration`, `Composition`), and the one call that
+does not fit the resident-port pattern is `CaptureBurst`: a burst takes time and cannot be made
+resident in advance, so it refuses with `Unsupported` until that is decided with measurements. See
+`docs/06-roadmap.md`.

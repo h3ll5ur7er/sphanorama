@@ -68,6 +68,8 @@ export function encodeImuSample(out: Writer, value: C.ImuSample): void {
   encodeVec3(out, value.acceleration);
   out.bool(value.hasMagnetometer);
   encodeVec3(out, value.magneticField);
+  out.bool(value.hasOrientation);
+  encodeQuat(out, value.orientation);
 }
 
 export function decodeImuSample(input: Reader): C.ImuSample {
@@ -77,6 +79,8 @@ export function decodeImuSample(input: Reader): C.ImuSample {
     acceleration: decodeVec3(input),
     hasMagnetometer: input.bool(),
     magneticField: decodeVec3(input),
+    hasOrientation: input.bool(),
+    orientation: decodeQuat(input),
   };
 }
 

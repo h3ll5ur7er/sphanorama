@@ -126,6 +126,13 @@ struct ImuSample {
   Vec3 acceleration;       // m/s^2
   bool hasMagnetometer = false;
   Vec3 magneticField;
+
+  // Platforms that report a fused absolute orientation rather than raw rates fill these.
+  // MotionCapability::OrientationOnly promises exactly that, and without somewhere to put it the
+  // contract described a device it had no way to carry data from — which is what the browser
+  // turns out to be: DeviceOrientation gives an orientation, not a rate.
+  bool hasOrientation = false;
+  Quat orientation;
 };
 
 struct PoseSample {

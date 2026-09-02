@@ -108,6 +108,8 @@ inline void Encode(Writer& out, const ImuSample& value) {
   Encode(out, value.acceleration);
   out.PutBool(value.hasMagnetometer);
   Encode(out, value.magneticField);
+  out.PutBool(value.hasOrientation);
+  Encode(out, value.orientation);
 }
 
 inline bool Decode(Reader& in, ImuSample& value) {
@@ -116,6 +118,8 @@ inline bool Decode(Reader& in, ImuSample& value) {
   if (!Decode(in, value.acceleration)) return false;
   value.hasMagnetometer = in.GetBool();
   if (!Decode(in, value.magneticField)) return false;
+  value.hasOrientation = in.GetBool();
+  if (!Decode(in, value.orientation)) return false;
   return in.ok();
 }
 

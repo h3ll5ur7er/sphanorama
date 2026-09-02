@@ -91,6 +91,14 @@ export interface ImuSample {
   acceleration: Vec3;
   hasMagnetometer: boolean;
   magneticField: Vec3;
+  /**
+   * Platforms that report a fused absolute orientation rather than raw rates fill these.
+   * MotionCapability::OrientationOnly promises exactly that, and without somewhere to put it the
+   * contract described a device it had no way to carry data from — which is what the browser
+   * turns out to be: DeviceOrientation gives an orientation, not a rate.
+   */
+  hasOrientation: boolean;
+  orientation: Quat;
 }
 
 export interface PoseSample {

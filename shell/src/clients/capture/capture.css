@@ -11,7 +11,12 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
 #horizon line, #horizon circle { stroke: var(--accent); stroke-width: 1.2; fill: none;
   vector-effect: non-scaling-stroke; opacity: .9; }
 #horizon-group { transition: transform 80ms linear; transform-origin: 50% 50%; }
-@media (prefers-reduced-motion: reduce) { #horizon-group { transition: none; } }
+/* The ring chases the aim, so it is animated; a jump per sensor sample would read as a fault. */
+#reticle { transition: r 120ms linear; opacity: .55; stroke-dasharray: 4 3; }
+#reticle.locked { opacity: 1; stroke-dasharray: none; stroke-width: 2; }
+@media (prefers-reduced-motion: reduce) {
+  #horizon-group, #reticle { transition: none; }
+}
 
 #panel { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 18px calc(18px + env(safe-area-inset-bottom));
   background: linear-gradient(to top, rgba(13,21,20,.94), rgba(13,21,20,.72) 70%, transparent);

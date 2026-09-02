@@ -111,9 +111,38 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
       };
     });
     expect(outcome.refusedCode).toBe('InvalidArgument');
-    // No camera port exists, so the session refuses with a reason rather than producing frames.
+    // The camera port is real now, and nothing on this page opened a camera: the plan is sized
+    // from the lens, so the session refuses rather than planning against an invented one.
     expect(outcome.startedCode).toBe('CameraUnavailable');
-    expect(outcome.startedDetail).toContain('port');
+    expect(outcome.startedDetail).toContain('camera');
+  } finally {
+    await server.close();
+  }
+});
+
+test('enabling plans a sphere for the real lens and guides toward a cell', async ({ page }) => {
+  // The whole capture chain in one go: the page opens a camera and tells the host, the core reads
+  // that lens through a synchronous port, the planner tessellates for it, and the sensor loop
+  // comes back with a target cell. Chromium's fake camera supplies the lens.
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    // Guidance only appears once onMotion has answered, so this also proves the loop runs.
+    await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+
+    const plan = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.getPlan();
+      return got.ok ? got.value : null;
+    });
+    expect(plan).not.toBeNull();
+    // A tessellation, not a placeholder: rings from pole to pole, denser around the equator.
+    expect(plan.nodes.length).toBeGreaterThan(8);
+    expect(plan.spec.horizontalFovDeg).toBeGreaterThan(0);
+    expect(new Set(plan.nodes.map((n) => n.ringIndex)).size).toBeGreaterThan(2);
   } finally {
     await server.close();
   }

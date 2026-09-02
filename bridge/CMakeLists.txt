@@ -5,6 +5,8 @@ if(EMSCRIPTEN)
   # Browser-backed ports: resource-access code that needs Emscripten, which is why it lives here
   # rather than in core/ (tools/no_browser_check.py enforces that split).
   list(APPEND SPHANORAMA_BRIDGE_SOURCES
+    resource_access/camera_access/browser_camera_access.cpp
+    resource_access/motion_sensor_access/browser_motion_sensor_access.cpp
     resource_access/project_store_access/browser_project_store_access.cpp)
 endif()
 

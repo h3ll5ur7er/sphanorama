@@ -22,11 +22,12 @@
     {
       "name": "native-asan",
       "displayName": "Native with address and UB sanitizers",
+      "description": "vptr is excluded because it needs RTTI and the core is built -fno-rtti (ADR 0012): left on it reports every GoogleTest dispatch as invalid and buries a real finding. Recovery is off so undefined behaviour fails the run instead of printing and passing.",
       "binaryDir": "${sourceDir}/build/native-asan",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize=vptr -fno-sanitize-recover=all -fno-omit-frame-pointer"
       }
     },
     {

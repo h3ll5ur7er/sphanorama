@@ -12,9 +12,13 @@
   <main id="app">
     <video id="viewfinder" playsinline muted autoplay></video>
 
-    <!-- A sensor readout, not a capture reticle. Where a reticle belongs is CoveragePlannerEngine's
-         answer (V4), and this client is not allowed to invent one. -->
+    <!-- The inner circle is the acceptance cone and the outer ring is how far off the aim is,
+         both as CoveragePlannerEngine reported them (V4). The client sizes the ring; it does not
+         decide where the cell is or how close is close enough. The ring carries a magnitude and
+         no direction because the guidance contract carries none — pointing somewhere would mean
+         inventing an answer. -->
     <svg id="horizon" viewBox="0 0 100 100" aria-hidden="true">
+      <circle id="reticle" cx="50" cy="50" r="44"></circle>
       <g id="horizon-group">
         <line x1="15" y1="50" x2="42" y2="50"></line>
         <line x1="58" y1="50" x2="85" y2="50"></line>
@@ -30,10 +34,11 @@
         <dt>camera</dt><dd id="camera-state">—</dd>
         <dt>motion</dt><dd id="motion-state">—</dd>
         <dt>orientation</dt><dd id="orientation">—</dd>
+        <dt>guidance</dt><dd id="guidance">—</dd>
         <dt>facade</dt><dd id="facade">—</dd>
       </dl>
       <button id="enable" type="button">Enable camera &amp; motion</button>
-      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade. Capture needs a camera port that is not built yet, so a session refuses with a reason rather than producing empty frames.</p>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built for your lens. Firing a burst needs a path for pixels that is not built yet, so the cells stay empty.</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>

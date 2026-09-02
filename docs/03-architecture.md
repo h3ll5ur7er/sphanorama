@@ -209,6 +209,20 @@ Two rules keep this from becoming a performance disaster:
 **two** implementations each — a TypeScript one for the browser, and a native one used by the
 Bench client — behind the identical C++ contract.
 
+### One coordinate frame, converted at the edge
+
+Every `Quat` that crosses a contract — a plan's target orientation, an `ImuSample`'s attitude, a
+`PoseSample` — is in **one frame: +Y up, −Z forward, +X right**. `FromAzimuthElevation` and
+`Direction` in the utilities bar are the definition; azimuth turns about +Y and elevation lifts
+toward it.
+
+Platforms do not agree with that and are not asked to. The browser reports intrinsic Z-X'-Y''
+Tait-Bryan angles against an east-north-up earth frame; a Generic Sensor quaternion and an Android
+rotation vector each differ again. **Converting is the adapter's job** (V10), done once in
+`shell/src/access/orientation.ts` — see ADR 0015. Nothing above resource access ever sees a second
+convention, which is what lets `CoveragePlannerEngine` compare a sensor reading to a plan cell with
+a single `AngleBetween`.
+
 ## 3.6 Use-case walkthroughs
 
 ### UC-1 · Guided burst capture of one cell

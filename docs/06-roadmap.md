@@ -23,26 +23,31 @@ sensor quality, iOS behaviour) are hit early, not at the end.
 real sensor data routed *through the WASM core*, and the whole round trip stays under budget.
 The core binary is under 8 MB and the same core compiles as the native bench.
 
-*Where this stands:* the walking skeleton is up — the PWA loads the WASM core, reports its
-capabilities, opens the camera and streams live orientation, and deploys to GitHub Pages. The
-three managers and five null engines are in, with the capture sequence from
-[UC-1](03-architecture.md) driven end to end against fakes.
+*Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
+tells the core what lens it got, and the core plans a real tessellation for it — 32 cells across 7
+rings for a typical phone. Orientation samples go through the facade to `CaptureSessionManager`,
+which asks `PoseEngine` for an attitude and `CoveragePlannerEngine` for the nearest cell, and the
+reticle on screen is that answer coming back. Nothing about coverage, acceptance or pose is decided
+in the client.
 
 The generated facade is in: the client calls managers through typed proxies, and a domain failure
-arrives as a `Status` it can branch on.
+arrives as a `Status` it can branch on. The ports are in too — the project store persists through a
+reload (ADR 0014), and the camera and motion ports read state the page established before the
+session began.
 
-What is missing before the exit criterion is met, in the order it blocks:
+What is left before Phase 1 can start in earnest, in the order it blocks:
 
-1. **The remaining resource-access ports.** The mechanism is settled and proven: the project
-   store port is in, a project created through the core survives a reload, and ADR 0014 records
-   why ports are synchronous over a resident host. The camera is the one that does not fit that
-   pattern — a burst takes time and cannot be made resident in advance — so it needs either
-   Asyncify on that call path or a client-driven redesign, decided with measurements. Until then a
-   capture session refuses with `CameraUnavailable`, honestly.
-2. **A real `CoveragePlannerEngine`**, so the reticle follows a coverage plan rather than a sensor
-   readout. The null planner deliberately plans one cell at identity.
-3. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
-   Phase 2 registration, and the size budget has 8.38 MB of headroom), the `bench/` CLI, and the
+1. **A path for pixels.** `CaptureBurst` is the one call that does not fit the resident-host
+   pattern: a burst takes time and cannot be made resident in advance, so it needs either Asyncify
+   on that call path or a redesign in which the client drives burst timing. Decided with
+   measurements, not in the abstract. Until then `BrowserCameraAccess::CaptureBurst` refuses with
+   `Unsupported` and a reason, and the cells stay empty.
+2. **`IFrameStoreAccess` with real residency**, which is what a burst would need somewhere to go.
+3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
+   and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
+   complementary fusion, and gyro bias is not handled at all.
+4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
+   Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
    synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
    actually need.
 
