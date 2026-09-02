@@ -23,9 +23,14 @@ function fakeWindow(overrides: Partial<FakeWindow> = {}): FakeWindow {
 }
 
 describe('capability detection', () => {
-  it('reports GyroAccel when the motion API exists', async () => {
+  it('reports OrientationOnly even where the motion API exists', async () => {
+    // The adapter listens to deviceorientation and nothing else, so every sample it produces
+    // carries a fused attitude and zeroed rates. Claiming GyroAccel because the constructor
+    // exists tells the core it has angular velocity: PoseEngine would pick a mode for rates that
+    // never arrive, and Stability — computed from those zeros — would report a phone being swung
+    // as perfectly still, which is exactly when a burst must not fire.
     const access = createMotionSensorAccess(fakeWindow() as never);
-    await expect(access.capabilities()).resolves.toEqual({ ok: true, value: 'GyroAccel' });
+    await expect(access.capabilities()).resolves.toEqual({ ok: true, value: 'OrientationOnly' });
   });
 
   it('reports OrientationOnly when only orientation is available', async () => {

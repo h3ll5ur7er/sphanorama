@@ -63,14 +63,30 @@ export async function createDocumentHost(
       for (const [key, value] of writes) await store.put(key, value);
     } catch (cause) {
       persistError = String(cause);
+      // Put the work back, or a single transient quota error means the resident state can never
+      // become durable again — the caller has no way to know which documents to rewrite. A newer
+      // value already queued for the same key wins: this is a retry of what failed, not a
+      // rollback of what happened since.
+      for (const project of removals) removed.add(project);
+      for (const [key, value] of writes) if (!pending.has(key)) pending.set(key, value);
     }
+  }
+
+  /**
+   * One persist at a time, always. Overlapping snapshots can finish out of order, and a slow
+   * older one landing after a newer one restores stale data; a `flush()` that awaited only the
+   * handle it happened to see would also return before the other had committed.
+   */
+  function enqueue(): Promise<void> {
+    inFlight = (inFlight ?? Promise.resolve()).then(persist, persist);
+    return inFlight;
   }
 
   function schedule(): void {
     if (timer !== null) return;
     timer = setTimeout(() => {
       timer = null;
-      inFlight = persist();
+      void enqueue();
     }, options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS);
   }
 
@@ -119,9 +135,17 @@ export async function createDocumentHost(
         clearTimeout(timer);
         timer = null;
       }
+      // Drains the queue rather than awaiting one handle: work can be added while an earlier
+      // persist runs, and a flush that returned before it committed would be a durability
+      // guarantee that is not one.
       await inFlight;
-      inFlight = null;
-      if (pending.size > 0 || removed.size > 0) await persist();
+      while (pending.size > 0 || removed.size > 0) {
+        const before = pending.size + removed.size;
+        await enqueue();
+        // A failed persist requeues what it could not write. Retrying it forever here would
+        // hang the page on a full disk; the caller reads lastPersistError() and decides.
+        if (pending.size + removed.size >= before) break;
+      }
     },
 
     lastPersistError(): string | null {

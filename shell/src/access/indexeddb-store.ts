@@ -31,6 +31,24 @@ function promisify<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+/**
+ * Waits for the transaction to *commit*, which is not the same as a request succeeding.
+ *
+ * A write request fires `onsuccess` while its transaction is still open, and the transaction can
+ * still abort afterwards — a quota check, a version change, an error in a sibling request. A
+ * `flush()` built on request success would therefore report durability it had not established,
+ * which is the one thing an explicit flush exists to promise.
+ */
+function committed(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error('indexedDB transaction aborted'));
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error('indexedDB transaction failed'));
+  });
+}
+
 export function createIndexedDbStore(): DocumentStore {
   // Opened lazily and kept: the host hydrates once at startup and writes through afterwards.
   let database: Promise<IDBDatabase> | null = null;
@@ -55,16 +73,22 @@ export function createIndexedDbStore(): DocumentStore {
     async put(key: string, value: string): Promise<void> {
       const db = await connection();
       const transaction = db.transaction(STORE, 'readwrite');
-      await promisify(transaction.objectStore(STORE).put(value, key));
+      const done = committed(transaction);
+      transaction.objectStore(STORE).put(value, key);
+      await done;
     },
 
     async remove(prefix: string): Promise<void> {
       const db = await connection();
       const transaction = db.transaction(STORE, 'readwrite');
+      const done = committed(transaction);
       const store = transaction.objectStore(STORE);
+      // The deletes are issued inside the same transaction and it commits once, so a half-removed
+      // project is not a state this can leave behind.
       for (const key of await promisify(store.getAllKeys())) {
-        if (String(key).startsWith(prefix)) await promisify(store.delete(key));
+        if (String(key).startsWith(prefix)) store.delete(key);
       }
+      await done;
     },
   };
 }

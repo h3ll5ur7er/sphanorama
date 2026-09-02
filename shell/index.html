@@ -26,15 +26,18 @@
       </g>
     </svg>
 
-    <section id="panel" aria-live="polite">
+    <section id="panel">
       <h1>Sphanorama</h1>
-      <p id="stage">starting…</p>
+      <!-- The live region is this line alone. It changes when something happens, which is what a
+           screen reader should announce. The readout below changes every animation frame, and
+           announcing that would make the app unusable with one. -->
+      <p id="stage" aria-live="polite">starting…</p>
       <dl>
         <dt>core</dt><dd id="core-caps">—</dd>
         <dt>camera</dt><dd id="camera-state">—</dd>
         <dt>motion</dt><dd id="motion-state">—</dd>
-        <dt>orientation</dt><dd id="orientation">—</dd>
-        <dt>guidance</dt><dd id="guidance">—</dd>
+        <dt>orientation</dt><dd id="orientation" aria-hidden="true">—</dd>
+        <dt>guidance</dt><dd id="guidance" aria-hidden="true">—</dd>
         <dt>facade</dt><dd id="facade">—</dd>
       </dl>
       <button id="enable" type="button">Enable camera &amp; motion</button>

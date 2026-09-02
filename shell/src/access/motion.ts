@@ -56,7 +56,14 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
   let listener: ((event: Event) => void) | null = null;
 
   function detect(): MotionCapability {
-    if (host.DeviceMotionEvent && host.DeviceOrientationEvent) return 'GyroAccel';
+    // What this adapter actually delivers, not what the platform could deliver. It subscribes to
+    // deviceorientation alone, so every sample carries a fused attitude and no rates —
+    // OrientationOnly is the honest description of that stream even on a device with a gyroscope.
+    //
+    // Claiming GyroAccel because DeviceMotionEvent exists would tell the core it has angular
+    // velocity: PoseEngine would pick a fusion mode for rates that never arrive, and Stability,
+    // computed from the zeros standing in for them, would report a phone mid-swing as perfectly
+    // still. Reporting GyroAccel is a job for the day rotationRate is adapted too.
     if (host.DeviceOrientationEvent) return 'OrientationOnly';
     return 'None';
   }

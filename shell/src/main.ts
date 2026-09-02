@@ -75,6 +75,9 @@ async function enable(core: SphanoramaCore) {
   if (started.ok) {
     motionState.textContent = capability.ok ? capability.value : 'unknown';
   } else {
+    // The core is told None, and that is a supported configuration rather than a failure: the
+    // manager puts PoseEngine into vision-only mode and no other component learns the difference
+    // (docs/03 UC-4). Declining motion on iOS is the common way to land here.
     captureHost.setMotion('None');
     motionState.textContent = 'unavailable';
     // Only overwrite the stage line if the camera did not already claim it: two failures at once
@@ -83,7 +86,9 @@ async function enable(core: SphanoramaCore) {
   }
 
   enableButton.hidden = true;
-  if (opened.ok && started.ok) await beginSession(core);
+  // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
+  // without it would turn a supported degraded mode into a dead end.
+  if (opened.ok) await beginSession(core, started.ok);
   else if (started.ok) pump(core, null);
 }
 
@@ -93,7 +98,7 @@ async function enable(core: SphanoramaCore) {
  * A project comes first because a session belongs to one — the manager writes the session's
  * documents through the project store, and a capture with nowhere to be saved is a demo.
  */
-async function beginSession(core: SphanoramaCore) {
+async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
   const created = await core.project.create(`sphere ${new Date().toISOString().slice(0, 16)}`);
   if (!created.ok) {
     stage.textContent = describeFailure(created.status);
@@ -126,7 +131,9 @@ async function beginSession(core: SphanoramaCore) {
     return;
   }
 
-  stage.textContent = `capturing — ${plan.value.nodes.length} cells planned for your lens`;
+  stage.textContent = motionRunning
+    ? `capturing — ${plan.value.nodes.length} cells planned`
+    : `capturing without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
   pump(core, plan.value);
 }
 

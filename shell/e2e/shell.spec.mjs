@@ -154,6 +154,38 @@ test('enabling plans a sphere for the real lens and guides toward a cell', async
   }
 });
 
+test('a phone with no motion sensors still captures', async ({ browser }) => {
+  // Declining motion on iOS lands here, and so does any desktop without sensors. The core treats
+  // it as a supported configuration — PoseEngine switches to vision-only (docs/03 UC-4) — so a
+  // client that refused to start a session would be inventing a restriction the core does not
+  // have.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    delete window.DeviceOrientationEvent;
+    delete window.DeviceMotionEvent;
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    await expect(page.locator('#motion-state')).toHaveText('unavailable');
+    await expect(page.locator('#stage')).toContainText(/capturing without motion/, {
+      timeout: 15000,
+    });
+    const plan = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.getPlan();
+      return got.ok ? got.value.nodes.length : 0;
+    });
+    expect(plan).toBeGreaterThan(8);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a project written through the core survives a reload', async ({ page }) => {
   // The whole point of the port, end to end: a manager in C++ writes through a synchronous
   // contract, the page persists it asynchronously behind that, and it is there next time.

@@ -15,15 +15,25 @@ const MESSAGES: Partial<Record<Status['code'], string>> = {
     'This device reports no motion sensors. Capture will fall back to visual tracking.',
   CameraUnavailable:
     'No usable camera. It may be missing, or another app may be holding it.',
-  Unsupported:
-    'The camera needs a secure origin. This page must be served over https.',
   StorageQuotaExceeded:
     'Out of storage for this site. Free some space or delete an old sphere.',
   FrameStoreExhausted:
     'Ran out of memory for frames. Try a smaller sphere, or close other tabs.',
 };
 
+/**
+ * Unsupported means "this build does not do that yet" all over the core — the burst path, the
+ * build pipeline, resume — and each of those failures arrives carrying the reason the component
+ * gave. Only the camera adapter's version of it is about a secure origin, so only that one is
+ * rewritten; mapping the code alone would replace every other explanation with an https message
+ * that has nothing to do with what failed.
+ */
+const CAMERA_ADAPTER = 'CameraAccess';
+
 export function describeFailure(status: Status): string {
+  if (status.code === 'Unsupported' && status.component === CAMERA_ADAPTER) {
+    return 'The camera needs a secure origin. This page must be served over https.';
+  }
   // Falling back to the raw detail is deliberate: an unmapped code with no words is still more
   // useful than "something went wrong", and it makes the gap visible enough to fix.
   return MESSAGES[status.code] ?? (status.detail || `${status.component} failed (${status.code}).`);

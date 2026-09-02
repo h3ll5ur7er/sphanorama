@@ -53,3 +53,25 @@ describe('formatCapabilities', () => {
     expect(text).toMatch(/no simd/i);
   });
 });
+
+describe('Unsupported is not always about the camera', () => {
+  it('explains the secure-origin case when the camera adapter raises it', () => {
+    expect(describeFailure({
+      code: 'Unsupported', component: 'CameraAccess', detail: 'no media devices',
+    })).toMatch(/https/);
+  });
+
+  it('keeps the reason any other component gave', () => {
+    // The burst path, the build pipeline and resume all report Unsupported with a reason worth
+    // reading. Mapping the code alone replaced every one of them with an https message about a
+    // camera that was not the problem.
+    const detail = 'a burst takes time and cannot be made resident in advance; see ADR 0014';
+    expect(describeFailure({
+      code: 'Unsupported', component: 'BrowserCameraAccess', detail,
+    })).toBe(detail);
+    expect(describeFailure({
+      code: 'Unsupported', component: 'PanoramaBuildManager',
+      detail: 'nothing to build until Phase 2',
+    })).toBe('nothing to build until Phase 2');
+  });
+});

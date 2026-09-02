@@ -174,3 +174,105 @@ describe('persistence', () => {
     }
   });
 });
+
+describe('durability under failure and concurrency', () => {
+  it('keeps failed writes pending so a later flush can retry them', async () => {
+    // Pending work was cleared before the write was attempted and never put back, so one
+    // transient quota error meant the resident state could never become durable again — the
+    // caller has no way to know which documents to rewrite.
+    let failing = true;
+    const written = new Map<string, string>();
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (failing) throw new Error('QuotaExceededError');
+        written.set(key, value);
+      },
+      remove: async () => {},
+    };
+
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.write(1, 'title', 'kitchen');
+    await host.flush();
+    expect(host.lastPersistError()).toContain('Quota');
+    expect(written.size).toBe(0);
+
+    failing = false;
+    await host.flush();
+    expect(written.get('1/title')).toBe('kitchen');
+  });
+
+  it('does not let a retry undo a newer value', async () => {
+    // The retry carries the value that failed. If a newer write landed in the meantime, putting
+    // the old one back must not overwrite it.
+    let failing = true;
+    const written = new Map<string, string>();
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (failing) throw new Error('nope');
+        written.set(key, value);
+      },
+      remove: async () => {},
+    };
+
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.write(1, 'title', 'old');
+    await host.flush();
+    host.write(1, 'title', 'new');
+    failing = false;
+    await host.flush();
+
+    expect(written.get('1/title')).toBe('new');
+    expect(host.read(1, 'title')).toBe('new');
+  });
+
+  it('never runs two persists at once', async () => {
+    // The timer-driven path is where they overlap: a write arriving while an earlier persist is
+    // still running schedules another one, which replaces the in-flight handle rather than
+    // queueing behind it. Two snapshots then race, and the slower older one can finish last and
+    // restore stale data over the newer one — while flush() awaits only whichever handle it
+    // happened to see.
+    let running = 0;
+    let overlapped = false;
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async () => {
+        running += 1;
+        if (running > 1) overlapped = true;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        running -= 1;
+      },
+      remove: async () => {},
+    };
+
+    const host = await createDocumentHost(store, { flushDelayMs: 1 });
+    host.write(1, 'a', '1');
+    await new Promise((resolve) => setTimeout(resolve, 5));   // the first persist is now running
+    host.write(1, 'b', '2');                                  // schedules a second one behind it
+    await new Promise((resolve) => setTimeout(resolve, 10));  // which fires mid-flight
+    await host.flush();
+    expect(overlapped).toBe(false);
+  });
+
+  it('flush waits for work queued while an earlier flush was running', async () => {
+    const written = new Map<string, string>();
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        written.set(key, value);
+      },
+      remove: async () => {},
+    };
+
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.write(1, 'a', '1');
+    const pending = host.flush();
+    host.write(1, 'b', '2');
+    await pending;
+    await host.flush();
+    expect(written.get('1/a')).toBe('1');
+    expect(written.get('1/b')).toBe('2');
+  });
+});
