@@ -5,13 +5,14 @@
   "description": "On-device photo sphere capture PWA. Tooling only at this stage: the PWA shell is not started.",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && npm run build:core && vite build",
+    "build": "npm run typecheck && npm run build:core && vite build && npm run build:sw",
     "build:core": "node tools/stage_core.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:browser": "playwright test",
     "serve": "node tools/static_server.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:sw": "node tools/build_sw.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",

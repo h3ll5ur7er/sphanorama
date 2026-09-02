@@ -247,18 +247,61 @@ test('deleting a project removes it for good', async ({ page }) => {
   }
 });
 
-test('registers a service worker so the shell works offline', async ({ page }) => {
+test('the shell really works offline, not just registers a worker', async ({ browser }) => {
+  // The previous version of this test asserted only that a registration existed, which it did —
+  // against a worker whose install handler opened an empty cache. It passed for a build that
+  // could not serve a single byte offline. What has to be proved is a navigation with the
+  // network cut.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const server = await serve();
+  let closed = false;
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    // Registration is deliberately not awaited by the app — offline support must never delay
+    // first paint — so wait for the worker to take control.
+    //
+    // The predicate is synchronous on purpose. An async one returns a Promise, and a Promise is
+    // truthy, so waitForFunction succeeds on the first poll without waiting for anything: the
+    // test this replaces used that pattern, which is half of why it passed against a worker that
+    // cached nothing.
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null,
+                               { timeout: 15000 });
+
+    // The server is shut down rather than the context put in offline mode: what a user loses is
+    // the origin, and a dead origin is the case the cache has to cover. It also keeps the
+    // service worker in the navigation path, which network emulation does not reliably do.
+    await server.close();
+    closed = true;
+    await page.reload();
+
+    // The whole app, from a cold navigation with nothing to reach: the shell, the bundle, and
+    // the WASM core — the entry most likely to be missing, since it is staged in after the
+    // build and would not appear on a hand-written precache list.
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('SIMD');
+  } finally {
+    if (!closed) await server.close();
+    await context.close();
+  }
+});
+
+test('a redeploy does not evict a cache that is still current', async ({ page }) => {
+  // The cache name is a hash of the built bytes, so an unchanged rebuild keeps its warm cache and
+  // any real change gets a new one. A fixed name — what this shipped with — meant the first build
+  // a user saw was served to them forever.
   const server = await serve();
   try {
     await page.goto(server.origin);
-    // Registration is deliberately not awaited by the app — offline support must never delay or
-    // block first paint — so the test polls rather than assuming it has already happened.
-    const registered = await page
-      .waitForFunction(async () => (await navigator.serviceWorker.getRegistration()) !== undefined,
-                       null, { timeout: 15000 })
-      .then(() => true)
-      .catch(() => false);
-    expect(registered).toBe(true);
+    const worker = await page.request.get(`${server.origin}/sw.js`);
+    const source = await worker.text();
+    expect(source).toMatch(/const CACHE = 'sphanorama-shell-[0-9a-f]{16}'/);
+    expect(source).not.toContain('__BUILD_ID__');
+    expect(source).not.toContain('__PRECACHE__');
+    // And the core is on the precache list, not just the HTML.
+    expect(source).toContain('sphanorama-core.wasm');
   } finally {
     await server.close();
   }
