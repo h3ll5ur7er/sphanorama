@@ -85,14 +85,16 @@ class CodecTest(unittest.TestCase):
 
 class MethodTableTest(unittest.TestCase):
     def setUp(self):
+        # Both markers, because they mean different things: @boundary mirrors the interface into
+        # TypeScript, @facade also generates dispatch for it. Only managers carry both.
         self.module = parse(
-            "// @boundary\n"
+            "// @boundary @facade\n"
             "class IProjectManager {\n"
             " public:\n"
             "  virtual Result<ProjectId> Create(std::string_view title) = 0;\n"
             "  virtual Status Delete(ProjectId project) = 0;\n"
             "};\n"
-            "// @boundary\n"
+            "// @boundary @facade\n"
             "class ICaptureSessionManager {\n"
             " public:\n"
             "  virtual Result<CoverageState> Coverage() const = 0;\n"
@@ -107,9 +109,26 @@ class MethodTableTest(unittest.TestCase):
     def test_ids_are_dense_and_stable_under_reparse(self):
         first = [m.wire_name for m in contract_gen.method_table(self.module)]
         second = [m.wire_name for m in contract_gen.method_table(self.module)]
+        # Asserted before the comparisons, because every one of them holds for an empty table —
+        # which is exactly how this suite went green against a generator that emitted nothing.
+        self.assertEqual(len(first), 3)
         self.assertEqual(first, second)
         self.assertEqual([m.id for m in contract_gen.method_table(self.module)],
                          list(range(len(first))))
+
+    def test_an_interface_marked_boundary_alone_gets_no_dispatch(self):
+        # The distinction the two markers exist for. An engine crosses into TypeScript as a type
+        # but is not callable from a client: dispatch for one would be a hole straight past the
+        # managers, which is the call rule the whole layering rests on.
+        module = parse(
+            "// @boundary\n"
+            "class IPoseEngine {\n"
+            " public:\n"
+            "  virtual Result<PoseSample> Integrate(std::span<const ImuSample> samples) = 0;\n"
+            "};\n")
+        self.assertEqual(contract_gen.method_table(module), [])
+        self.assertNotIn('PoseEngine.integrate', contract_gen.emit_cpp_facade(module))
+        self.assertNotIn('createPoseEngineProxy', contract_gen.emit_ts_facade(module))
 
     def test_the_method_table_is_published_for_lookup_by_name(self):
         # Same reason the probe publishes its field names: an id the client hard-codes is an id

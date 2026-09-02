@@ -192,20 +192,20 @@ contracts. Feature-shaped directories are how layer discipline erodes.
 
 - [ ] Test written first, failed for the intended reason.
 - [ ] Implementation is the smallest thing that passes it.
-- [ ] Layer check passes.
-- [ ] Contract-drift check passes. *(Not built yet — until the Phase 0 codegen lands, update
-      `contracts/ts/contracts.d.ts` by hand in the same commit as the C++ header.)*
-- [ ] No browser assumptions in the core: `python3 tools/no_browser_check.py`. Only `bridge/`
-      may reference Emscripten.
 - [ ] Affected docs updated in this commit.
 - [ ] ADR written if the change qualifies.
-- [ ] WASM size budget still holds: `python3 tools/size_budget.py --profile wasm-release
-      --build-dir build/wasm-release/bridge`.
-- [ ] Shell tests pass if you touched `shell/`: `npm test`.
-- [ ] If the change touches the boundary or the shell, the browser suite passes:
-      `npm run build && npx playwright test`.
-      It serves the artifact with and without COOP/COEP, which is what the deployment
-      target does (ADR 0011).
+- [ ] **`tools/gate.sh` is green.**
+
+Run the whole gate, not the parts you think you touched. `tools/gate.sh` mirrors
+`.github/workflows/ci.yml` step for step — layer and contract rules, the checkers' own test
+suites, native, sanitizers, both WASM builds, size budgets, shell units, and the browser suite
+against the built bundle (served with and without COOP/COEP, which is what the deployment target
+does — ADR 0011).
+
+A remembered subset is how a red build reaches the branch. The checkers' own suites
+(`tools/test_*.py`) are the easiest to skip and the ones that have actually broken: they sit still
+while you work, so nothing reminds you they exist. If a step is slow enough that you want to skip
+it, that is a reason to make it faster, not to run less of it.
 
 ## Commits
 

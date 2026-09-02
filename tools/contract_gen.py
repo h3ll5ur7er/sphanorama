@@ -492,7 +492,7 @@ def _index(module: Module) -> tuple[dict[str, Struct], dict[str, Enum], set[str]
 
 
 def method_table(module: Module) -> list[BoundaryMethod]:
-    """Every method of every @boundary interface, in declaration order, with dense ids."""
+    """Every method of every @facade interface, in declaration order, with dense ids."""
     methods: list[BoundaryMethod] = []
     for decl in module.declarations:
         if not isinstance(decl, Interface) or not decl.facade:

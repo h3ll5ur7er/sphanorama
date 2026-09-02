@@ -123,15 +123,15 @@ A change is done when all of these hold. They are cheap to check and expensive t
 
 - [ ] The test was written first and failed for the intended reason.
 - [ ] The implementation is the smallest thing that passes it.
-- [ ] The layer check passes — no violating call edge.
-- [ ] The contract-drift check passes — `python3 tools/contract_gen.py --check`. The mirror is
-      generated, never edited; change the C++ header and regenerate.
-- [ ] No browser assumptions in the core (`tools/no_browser_check.py`); only `bridge/` may
-      reference Emscripten.
 - [ ] Affected documents are updated in this commit.
 - [ ] An ADR exists if the change qualifies (§0.3).
-- [ ] The WASM size budget still holds (`tools/size_budget.py`), and if the change touches
-      the boundary, the browser suite passes.
+- [ ] `tools/gate.sh` is green.
+
+The gate is one command on purpose. It mirrors `.github/workflows/ci.yml` step for step — the
+layer and contract-drift rules, the checkers' own test suites, native and sanitizer builds, both
+WASM builds, the size budgets, the shell units and the browser suite — because a change that runs
+only the checks it expects to be affected by is a change that finds out in CI. The mirror in
+`contracts/ts` is generated, never edited: change the C++ header and regenerate.
 
 ## 0.5 Adding something new
 
