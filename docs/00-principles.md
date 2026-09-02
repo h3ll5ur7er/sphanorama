@@ -166,6 +166,12 @@ tools/                Python: codegen, layer check, size budget, no-browser chec
 docs/                 principles, architecture, ADRs
 ```
 
+An implementation lives in a directory named for the contract it implements —
+`core/src/engines/pose_engine/null_pose_engine.cpp` — so that "component" means "the thing that
+implements a contract". That is what makes the one legitimate same-layer dependency (a component
+including its own contract) distinguishable from a component reaching sideways, and it is why two
+implementations of the same interface share a directory: they are one component, not two.
+
 Where a file goes follows from its layer, not its feature. Everything about coverage planning does
 not live in a `coverage/` directory; the engine lives with engines, its test with tests, its
 contract with contracts. Feature-shaped directories are how layer discipline erodes.

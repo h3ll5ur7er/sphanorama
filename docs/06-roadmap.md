@@ -24,10 +24,15 @@ real sensor data routed *through the WASM core*, and the whole round trip stays 
 The core binary is under 8 MB and the same core compiles as the native bench.
 
 *Where this stands:* the walking skeleton is up — the PWA loads the WASM core, reports its
-capabilities, opens the camera and streams live orientation, and deploys to GitHub Pages. What is
-missing before the exit criterion is met: the generated manager facade (the boundary carries one
-hand-written call today), the null managers and engines behind it, and therefore a reticle whose
-position comes from `CoveragePlannerEngine` rather than a sensor readout.
+capabilities, opens the camera and streams live orientation, and deploys to GitHub Pages. The
+three managers and five null engines are in, with the capture sequence from
+[UC-1](03-architecture.md) driven end to end against fakes.
+
+What is missing before the exit criterion is met: the generated manager facade, so the client
+reaches the capture session rather than only the capability probe; and a real
+`CoveragePlannerEngine`, so the reticle follows a coverage plan instead of a sensor readout. The
+null planner deliberately plans one cell at identity — enough for the sequence to have a target,
+and obviously not a tessellation.
 
 ---
 

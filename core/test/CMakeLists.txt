@@ -14,6 +14,8 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(sphanorama_tests
+  managers/capture_session_manager_test.cpp
+  managers/project_manager_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp
   resource_access/camera_access_contract_test.cpp
   resource_access/codec_and_export_test.cpp
@@ -33,6 +35,7 @@ add_executable(sphanorama_tests
   utilities/event_bus_test.cpp
   utilities/logger_test.cpp
   utilities/pixel_format_test.cpp
+  utilities/quaternion_test.cpp
   utilities/result_test.cpp
 )
 target_include_directories(sphanorama_tests PRIVATE

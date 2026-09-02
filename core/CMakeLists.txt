@@ -1,4 +1,12 @@
 add_library(sphanorama_core
+  src/managers/panorama_build_manager/panorama_build_manager.cpp
+  src/managers/project_manager/project_manager.cpp
+  src/managers/capture_session_manager/capture_session_manager.cpp
+  src/engines/composition_engine/null_composition_engine.cpp
+  src/engines/coverage_planner_engine/null_coverage_planner_engine.cpp
+  src/engines/frame_quality_engine/null_frame_quality_engine.cpp
+  src/engines/pose_engine/null_pose_engine.cpp
+  src/engines/registration_engine/null_registration_engine.cpp
   src/utilities/arena.cpp
   src/utilities/clock.cpp
   src/utilities/config_store.cpp
@@ -6,6 +14,7 @@ add_library(sphanorama_core
   src/utilities/event_bus.cpp
   src/utilities/logger.cpp
   src/utilities/pixel_format.cpp
+  src/utilities/quaternion.cpp
 )
 
 target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

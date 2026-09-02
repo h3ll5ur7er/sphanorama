@@ -79,6 +79,27 @@ class LayerRuleTest(unittest.TestCase):
                         '#include "sphanorama/resource_access/project_store_access.h"\n')
         self.assertClean()
 
+    # -- an implementation may include the contract it implements ------------------------------
+    def test_an_implementation_directory_may_include_its_own_contract(self):
+        # Implementations live in a directory named for the contract they implement, so several
+        # implementations of one interface are one component. Without this the single legitimate
+        # same-layer edge — implementing your own interface — would be indistinguishable from a
+        # component reaching sideways.
+        self.repo.write("core/src/engines/pose_engine/null_pose_engine.cpp",
+                        '#include "sphanorama/engines/pose_engine.h"\n')
+        self.assertClean()
+
+    def test_two_implementations_of_one_contract_are_the_same_component(self):
+        self.repo.write("core/src/engines/pose_engine/fused_pose_engine.h")
+        self.repo.write("core/src/engines/pose_engine/null_pose_engine.cpp",
+                        '#include "engines/pose_engine/fused_pose_engine.h"\n')
+        self.assertClean()
+
+    def test_an_implementation_still_may_not_include_a_sibling_contract(self):
+        self.repo.write("core/src/engines/pose_engine/null_pose_engine.cpp",
+                        '#include "sphanorama/engines/registration_engine.h"\n')
+        self.assertViolation(substring="registration_engine")
+
     # -- engines are stateless and cannot reach upward ---------------------------------------
     def test_engine_including_a_manager_is_a_violation(self):
         self.repo.write("core/src/engines/pose_engine.cpp",
