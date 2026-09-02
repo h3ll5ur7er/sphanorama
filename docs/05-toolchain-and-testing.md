@@ -44,15 +44,21 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    what the generator *refuses* matters more than what it emits.
 3. **Native build and tests** — debug, plus a second pass under AddressSanitizer and
    UndefinedBehaviorSanitizer.
+4. **No-browser check** — `tools/no_browser_check.py` rejects any reference to Emscripten,
+   inline JavaScript or WebAssembly build macros outside `bridge/`. Deliberately blunt: the bare
+   word in a comment counts, because "on Emscripten we do X" means the core is reasoning about a
+   platform it is supposed to know nothing about.
+5. **WASM builds and size budget** — both artifacts (ADR 0011) built and measured gzipped against
+   `tools/size_budgets.toml`. A missing artifact fails rather than passes, so the budget cannot
+   look green when the build produced nothing.
+6. **Browser tests** — the shipped modules loaded in headless Chromium, served with *and* without
+   COOP/COEP, which is the only way to find out what the deployment target does with them.
 
 Not yet wired, and deliberately absent from CI rather than stubbed green:
 
-4. **No-browser check** — assert the native build of the core contains zero Emscripten or JS
-   symbols. Needs a WASM target to contrast against.
-5. **FlatBuffers schema** — generated from the same parse as the mirror, for zero-copy reads
-   across the worker boundary. Needs the boundary runtime.
-6. **Size and startup budget** — WASM size, and time-to-first-viewfinder in headless Chromium.
-   Needs emsdk.
+7. **FlatBuffers schema** — generated from the same parse as the contract mirror, for zero-copy
+   reads across the worker boundary. Needs the boundary runtime.
+8. **Time-to-first-viewfinder budget** — needs the PWA shell.
 
 ## 5.4 Test strategy
 

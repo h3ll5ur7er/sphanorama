@@ -15,3 +15,5 @@ and the alternative we rejected and why.
 | [0008](0008-contracts-are-the-include-path.md) | One interface per header; `contracts/cpp` is the include root |
 | [0009](0009-the-cpp-header-is-the-idl.md) | The C++ header is the IDL; a strict parser generates the TypeScript mirror |
 | [0010](0010-resource-access-contract-suites.md) | Resource access is verified by one shared contract suite per interface |
+| [0011](0011-single-threaded-build-for-github-pages.md) | Two WASM builds; GitHub Pages gets the single-threaded one |
+| [0012](0012-c-abi-boundary-not-embind.md) | The WASM boundary is a C ABI over the shared heap, not Embind |

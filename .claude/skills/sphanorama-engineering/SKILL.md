@@ -153,9 +153,12 @@ in a fifth place, or status updates. A document with no job should be deleted.
 ## Repo structure
 
 ```
+contracts/cpp/        the include root — headers consumed directly, never mirrored
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
-  test/               GoogleTest, mirroring src/
+  test/               GoogleTest, mirroring src/; fakes in test/support/
+bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
+                      permitted to reference Emscripten. Layer-wise a client
 bench/                native CLI client — runs the core on datasets, prints timings
 shell/                TypeScript PWA
   src/clients/{capture,review}/
@@ -177,10 +180,15 @@ contracts. Feature-shaped directories are how layer discipline erodes.
 - [ ] Layer check passes.
 - [ ] Contract-drift check passes. *(Not built yet — until the Phase 0 codegen lands, update
       `contracts/ts/contracts.d.ts` by hand in the same commit as the C++ header.)*
-- [ ] Native build compiles the core with zero Emscripten symbols.
+- [ ] No browser assumptions in the core: `python3 tools/no_browser_check.py`. Only `bridge/`
+      may reference Emscripten.
 - [ ] Affected docs updated in this commit.
 - [ ] ADR written if the change qualifies.
-- [ ] WASM size budget (< 8 MB compressed) still holds.
+- [ ] WASM size budget still holds: `python3 tools/size_budget.py --profile wasm-release
+      --build-dir build/wasm-release/bridge`.
+- [ ] If the change touches the boundary, the browser suite passes: `npx playwright test`.
+      It serves the artifact with and without COOP/COEP, which is what the deployment
+      target does (ADR 0011).
 
 ## Commits
 

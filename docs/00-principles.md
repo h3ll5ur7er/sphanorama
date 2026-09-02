@@ -123,10 +123,12 @@ A change is done when all of these hold. They are cheap to check and expensive t
 - [ ] The layer check passes — no violating call edge.
 - [ ] The contract-drift check passes — `python3 tools/contract_gen.py --check`. The mirror is
       generated, never edited; change the C++ header and regenerate.
-- [ ] The native build compiles the core with zero Emscripten symbols.
+- [ ] No browser assumptions in the core (`tools/no_browser_check.py`); only `bridge/` may
+      reference Emscripten.
 - [ ] Affected documents are updated in this commit.
 - [ ] An ADR exists if the change qualifies (§0.3).
-- [ ] The WASM size budget still holds.
+- [ ] The WASM size budget still holds (`tools/size_budget.py`), and if the change touches
+      the boundary, the browser suite passes.
 
 ## 0.5 Adding something new
 
@@ -148,17 +150,18 @@ analysis missed an axis. That is real information — record it.
 ## 0.6 Repo structure
 
 ```
-contracts/cpp/        the include root — headers are consumed directly, never mirrored
+contracts/cpp/        the include root — the interface headers, consumed directly, never mirrored
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
-  test/               GoogleTest — mirrors src/ one file per unit
+  test/               GoogleTest — mirrors src/ one file per unit; fakes in test/support/
+bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
+                      permitted to reference Emscripten. Layer-wise a client
 bench/                native CLI client: runs the core on datasets, prints timings
-shell/                TypeScript PWA
+shell/                TypeScript PWA — not started yet
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters
   src/bridge/         generated facade + worker plumbing
-tools/                Python: codegen, dataset generation, scoring, the layer check
-contracts/            IDL + interface headers — the source of truth
+tools/                Python: codegen, layer check, size budget, no-browser check, datasets
 docs/                 principles, architecture, ADRs
 ```
 

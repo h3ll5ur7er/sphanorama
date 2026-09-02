@@ -1,0 +1,13 @@
+{
+  "name": "sphanorama",
+  "private": true,
+  "type": "module",
+  "description": "On-device photo sphere capture PWA. Tooling only at this stage: the PWA shell is not started.",
+  "scripts": {
+    "test:browser": "playwright test",
+    "serve": "node tools/static_server.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

@@ -16,6 +16,7 @@ target_include_directories(sphanorama_contracts INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/contracts/cpp")
 
 add_subdirectory(core)
+add_subdirectory(bridge)
 
 if(SPHANORAMA_BUILD_TESTS)
   enable_testing()

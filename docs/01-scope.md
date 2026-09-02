@@ -26,7 +26,7 @@
 | Constraint | Consequence |
 | ---------- | ----------- |
 | iOS Safari requires a user gesture for `DeviceOrientationEvent.requestPermission()` | Sensor access is a permission-gated ResourceAccess with an explicit "unavailable" mode; capture must degrade to vision-only pose |
-| `SharedArrayBuffer` (needed for WASM threads) requires cross-origin isolation (COOP/COEP) | Deployment must set those headers, or install a service-worker shim. The core must also run single-threaded — thread count is a capability, not an assumption |
+| `SharedArrayBuffer` (needed for WASM threads) requires cross-origin isolation (COOP/COEP), and GitHub Pages cannot send response headers | **The default deployment has no threads.** Two builds ship; Pages gets the single-threaded one. A threaded build served without isolation does not degrade — it hangs on load with no error (ADR [0011](adr/0011-single-threaded-build-for-github-pages.md)) |
 | Mobile WASM heaps are bounded (often well under 1 GB) and OOM is fatal | Frames are never all resident. A tiered frame store with spill to OPFS is a first-class service, not an optimisation |
 | A 12 MP burst of 8 frames × 40 cells is ~15 GB uncompressed | Bursts stay encoded (or downscaled) until a candidate is selected. Residency policy is explicit |
 | WebGPU availability varies by browser/version | Compute backend is an abstracted resource with a CPU/SIMD fallback of equal correctness |

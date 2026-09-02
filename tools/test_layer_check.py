@@ -117,6 +117,23 @@ class LayerRuleTest(unittest.TestCase):
                         '#include "sphanorama/resource_access/camera_access.h"\n')
         self.assertViolation(substring="camera_access")
 
+    # -- the WASM bridge is a client -----------------------------------------------------------
+    def test_the_bridge_may_call_managers(self):
+        self.repo.write("bridge/facade.cpp",
+                        '#include "sphanorama/managers/project_manager.h"\n')
+        self.assertClean()
+
+    def test_the_bridge_may_not_reach_past_managers(self):
+        # The boundary is where it is most tempting to shortcut straight to an engine, and where
+        # doing so would put business logic in the one tree that cannot be tested natively.
+        self.repo.write("bridge/facade.cpp", '#include "sphanorama/engines/pose_engine.h"\n')
+        self.assertViolation(substring="pose_engine")
+
+    def test_bridge_tests_are_not_layer_checked(self):
+        self.repo.write("bridge/test/facade_test.cpp",
+                        '#include "sphanorama/engines/pose_engine.h"\n')
+        self.assertClean()
+
     # -- resource access is a leaf ------------------------------------------------------------
     def test_resource_access_reaching_sideways_is_a_violation(self):
         self.repo.write("core/src/resource_access/frame_store_access.cpp",

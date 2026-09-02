@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(sphanorama_tests
+  ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp
   resource_access/camera_access_contract_test.cpp
   resource_access/codec_and_export_test.cpp
   resource_access/frame_store_access_contract_test.cpp
@@ -34,8 +35,9 @@ add_executable(sphanorama_tests
   utilities/pixel_format_test.cpp
   utilities/result_test.cpp
 )
-target_include_directories(sphanorama_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(sphanorama_tests PRIVATE sphanorama_core GTest::gtest_main)
+target_include_directories(sphanorama_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/bridge")
+target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 
 gtest_discover_tests(sphanorama_tests)

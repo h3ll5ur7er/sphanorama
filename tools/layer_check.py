@@ -36,10 +36,14 @@ LAYER_DIRS = {
 # Source roots that are not layered by directory: everything under them is one layer.
 FLAT_ROOTS = {
     "bench": "client",
+    "bridge": "client",
     "shell/src/clients": "client",
 }
 
-SOURCE_ROOTS = ("core/src", "contracts/cpp", "bench", "shell/src")
+# Test trees are not layer-checked: a test may reach for whatever it needs to set up a scenario.
+EXCLUDED_PREFIXES = ("bridge/test",)
+
+SOURCE_ROOTS = ("core/src", "contracts/cpp", "bench", "bridge", "shell/src")
 SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc")
 
 # Which layers each layer may depend on. Same-layer edges are handled separately: they are legal
@@ -88,6 +92,9 @@ def classify(rel: Path) -> Unit | None:
     """Where does this file sit in the architecture? None means 'not layered source'."""
     parts = rel.parts
     posix = rel.as_posix()
+
+    if any(posix.startswith(prefix + "/") for prefix in EXCLUDED_PREFIXES):
+        return None
 
     for root, layer in FLAT_ROOTS.items():
         if posix.startswith(root + "/"):

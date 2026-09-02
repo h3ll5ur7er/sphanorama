@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sphanorama core harness</title>
+<!-- Loads the shipped module exactly as the PWA will, so the artifact under test is the one that
+     ships rather than a rebuild with test-friendly flags. Decoding lives in the test: this page
+     is a fixture, and the real loader arrives with shell/src/bridge. -->
+<script type="module">
+  import createSphanoramaCore from './sphanorama-core.js';
+  try {
+    const core = await createSphanoramaCore();
+    window.sphanorama = {
+      ready: true,
+      crossOriginIsolated: self.crossOriginIsolated,
+      probe(concurrency, isolated) {
+        const slots = core._sph_probe_field_count();
+        const ptr = core._malloc(slots * 4);
+        try {
+          const status = core._sph_probe_runtime(concurrency, isolated ? 1 : 0, ptr);
+          if (status !== 0) throw new Error(`probe failed with status ${status}`);
+          const base = ptr >> 2;
+          return {
+            simd: core.HEAP32[base] === 1,
+            threads: core.HEAP32[base + 1] === 1,
+            sharedMemory: core.HEAP32[base + 2] === 1,
+            hardwareConcurrency: core.HEAP32[base + 3],
+          };
+        } finally {
+          core._free(ptr);
+        }
+      },
+    };
+  } catch (error) {
+    window.sphanorama = { ready: false, error: String(error) };
+  }
+</script>
