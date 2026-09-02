@@ -116,5 +116,64 @@ TEST(Direction, IsAlwaysUnitLength) {
   }
 }
 
+TEST(Conjugate, UndoesARotation) {
+  const Quat q = FromAxisAngle(Vec3{0.3, 1.0, -0.2}, 0.8);
+  EXPECT_NEAR(AngleBetween(Multiply(q, Conjugate(q)), Quat{}), 0.0, 1e-9);
+}
+
+TEST(Rotate, LeavesAVectorAloneUnderIdentity) {
+  const Vec3 v = Rotate(Quat{}, Vec3{1, 2, 3});
+  EXPECT_NEAR(v.x, 1.0, 1e-12);
+  EXPECT_NEAR(v.y, 2.0, 1e-12);
+  EXPECT_NEAR(v.z, 3.0, 1e-12);
+}
+
+TEST(Rotate, PreservesLength) {
+  const Quat q = FromAxisAngle(Vec3{1, 2, 3}, 1.1);
+  const Vec3 v = Rotate(q, Vec3{0, 0, -1});
+  EXPECT_NEAR(std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 1.0, 1e-9);
+}
+
+TEST(Rotate, AgreesWithDirection) {
+  // Direction(q) is defined as the forward axis rotated by q; if these two ever disagree the
+  // planner and the tests that check it would be measuring different geometry.
+  const Quat q = FromAzimuthElevation(37.0, -12.0);
+  const Vec3 byRotate = Rotate(q, Vec3{0, 0, -1});
+  const Vec3 byDirection = Direction(q);
+  EXPECT_NEAR(byRotate.x, byDirection.x, 1e-12);
+  EXPECT_NEAR(byRotate.y, byDirection.y, 1e-12);
+  EXPECT_NEAR(byRotate.z, byDirection.z, 1e-12);
+}
+
+TEST(Rotate, RoundTripsThroughTheConjugate) {
+  const Quat q = FromAzimuthElevation(120.0, 40.0);
+  const Vec3 original{0.2, -0.5, 0.84};
+  const Vec3 back = Rotate(Conjugate(q), Rotate(q, original));
+  EXPECT_NEAR(back.x, original.x, 1e-9);
+  EXPECT_NEAR(back.y, original.y, 1e-9);
+  EXPECT_NEAR(back.z, original.z, 1e-9);
+}
+
+TEST(FromAzimuthElevation, PointsForwardAtTheOrigin) {
+  EXPECT_NEAR(AngleBetween(FromAzimuthElevation(0, 0), Quat{}), 0.0, 1e-12);
+}
+
+TEST(FromAzimuthElevation, ElevationLooksUpAndDown) {
+  EXPECT_NEAR(Direction(FromAzimuthElevation(0, 90)).y, 1.0, 1e-6);
+  EXPECT_NEAR(Direction(FromAzimuthElevation(0, -90)).y, -1.0, 1e-6);
+}
+
+TEST(FromAzimuthElevation, AzimuthSweepsTheHorizon) {
+  for (double azimuth = 0; azimuth < 360.0; azimuth += 45.0) {
+    EXPECT_NEAR(Direction(FromAzimuthElevation(azimuth, 0)).y, 0.0, 1e-9)
+        << "at azimuth " << azimuth;
+  }
+}
+
+TEST(FromAzimuthElevation, IsPeriodicInAzimuth) {
+  EXPECT_NEAR(AngleBetween(FromAzimuthElevation(10, 20), FromAzimuthElevation(370, 20)),
+              0.0, 1e-9);
+}
+
 }  // namespace
 }  // namespace sphanorama

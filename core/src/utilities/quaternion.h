@@ -21,6 +21,18 @@ Quat FromAxisAngle(const Vec3& axis, double radians);
 // orientation, because they are.
 double AngleBetween(const Quat& a, const Quat& b);
 
+Quat Multiply(const Quat& a, const Quat& b);
+
+// The inverse rotation, for a unit quaternion.
+Quat Conjugate(const Quat& q);
+
+// A vector rotated by an orientation.
+Vec3 Rotate(const Quat& q, const Vec3& v);
+
+// Orientation looking at a point on the sphere. Azimuth turns about +Y from the forward axis;
+// elevation lifts toward +Y. This is the convention the coverage plan is expressed in.
+Quat FromAzimuthElevation(double azimuthDeg, double elevationDeg);
+
 // The direction the device is looking: -Z rotated by the orientation, matching the convention
 // the browser's DeviceOrientation reports against.
 Vec3 Direction(const Quat& q);

@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(sphanorama_tests
+  engines/coverage_planner_engine_test.cpp
   codec_test.cpp
   wire_test.cpp
   managers/capture_session_manager_test.cpp

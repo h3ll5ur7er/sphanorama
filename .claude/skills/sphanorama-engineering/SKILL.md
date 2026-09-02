@@ -110,8 +110,9 @@ This is the sentence that kills TDD in numerical code, and it is usually false. 
 the output, but you know the **invariant**. Reach for these:
 
 - A quaternion round-tripped through a rotation matrix comes back unchanged.
-- Every direction on the sphere lies inside at least one acceptance cone — the plan is complete by
-  construction.
+- Every direction on the sphere lies inside at least one cell's **field of view** — the plan is
+  complete by construction. Not the acceptance cone: that is how close you must aim, not what
+  the frame captures.
 - Registering a frame against itself yields identity rotation, all points inliers.
 - Blending a single frame yields that frame.
 - Exposure compensation across equally-exposed frames is a no-op.

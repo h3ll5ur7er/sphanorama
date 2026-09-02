@@ -35,6 +35,43 @@ double AngleBetween(const Quat& a, const Quat& b) {
   return 2.0 * std::acos(dot);
 }
 
+Quat Multiply(const Quat& a, const Quat& b) {
+  return Quat{
+      a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+      a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  };
+}
+
+Quat Conjugate(const Quat& q) {
+  const Quat n = Normalize(q);
+  return Quat{n.w, -n.x, -n.y, -n.z};
+}
+
+Vec3 Rotate(const Quat& q, const Vec3& v) {
+  // v + 2w(u x v) + 2(u x (u x v)), with u the vector part — the standard form, which avoids
+  // building a matrix for a single vector.
+  const Quat n = Normalize(q);
+  const Vec3 u{n.x, n.y, n.z};
+  const Vec3 uv{u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+  const Vec3 uuv{u.y * uv.z - u.z * uv.y, u.z * uv.x - u.x * uv.z, u.x * uv.y - u.y * uv.x};
+  return Vec3{
+      v.x + 2.0 * (n.w * uv.x + uuv.x),
+      v.y + 2.0 * (n.w * uv.y + uuv.y),
+      v.z + 2.0 * (n.w * uv.z + uuv.z),
+  };
+}
+
+Quat FromAzimuthElevation(double azimuthDeg, double elevationDeg) {
+  constexpr double kDegToRad = 0.017453292519943295;
+  // Yaw first, then pitch in the yawed frame: azimuth sweeps the horizon and elevation lifts out
+  // of it, which is how a capture plan is read and how a user turns.
+  const Quat yaw = FromAxisAngle(Vec3{0, 1, 0}, azimuthDeg * kDegToRad);
+  const Quat pitch = FromAxisAngle(Vec3{1, 0, 0}, elevationDeg * kDegToRad);
+  return Normalize(Multiply(yaw, pitch));
+}
+
 Vec3 Direction(const Quat& q) {
   const Quat n = Normalize(q);
   // -Z rotated by n, expanded rather than going through a matrix.

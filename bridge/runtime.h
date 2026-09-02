@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engines/composition_engine/null_composition_engine.h"
-#include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
+#include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
 #include "engines/registration_engine/null_registration_engine.h"
@@ -38,7 +38,7 @@ class Runtime {
  private:
   Runtime() = default;
 
-  NullCoveragePlannerEngine planner_;
+  RingsCoveragePlannerEngine planner_;
   NullPoseEngine pose_;
   NullFrameQualityEngine quality_;
   // Registration and composition are constructed but not yet handed to a manager: the build

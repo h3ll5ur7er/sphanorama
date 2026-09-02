@@ -1,0 +1,322 @@
+// The coverage planner (V4).
+//
+// The expected output of a tessellation is not knowable in advance, but its invariants are, and
+// they are the ones a sphere silently fails on (docs/00 §0.2). The load-bearing one is
+// completeness: every direction on the sphere has to fall inside some cell's field of view, or
+// the capture ends with a hole nothing reported.
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <set>
+#include <vector>
+
+#include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
+#include "utilities/quaternion.h"
+
+namespace sphanorama {
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kRadToDeg = 180.0 / kPi;
+
+CapturePlanSpec Spec(double h = 66.0, double v = 50.0, double overlap = 0.30) {
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = h;
+  spec.verticalFovDeg = v;
+  spec.overlapTarget = overlap;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  return spec;
+}
+
+CapturePlan Plan(const CapturePlanSpec& spec) {
+  RingsCoveragePlannerEngine planner;
+  auto plan = planner.Plan(spec, Intrinsics{});
+  EXPECT_TRUE(plan.ok()) << plan.status.detail;
+  return plan.value;
+}
+
+/** Points spread evenly over the sphere — a Fibonacci lattice, so no axis is favoured. */
+std::vector<Vec3> SphereSamples(int count) {
+  std::vector<Vec3> points;
+  points.reserve(static_cast<size_t>(count));
+  const double golden = kPi * (3.0 - std::sqrt(5.0));
+  for (int i = 0; i < count; ++i) {
+    const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / count;
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    const double theta = golden * i;
+    points.push_back(Vec3{std::cos(theta) * radius, y, std::sin(theta) * radius});
+  }
+  return points;
+}
+
+/** True when `direction` falls inside the rectangular field of view centred on `cell`. */
+bool InsideFieldOfView(const Quat& cell, const Vec3& direction, double hFovDeg, double vFovDeg) {
+  // Bring the direction into the cell's own frame, where forward is -Z.
+  const Vec3 local = Rotate(Conjugate(cell), direction);
+  const double yaw = std::atan2(local.x, -local.z) * kRadToDeg;
+  const double pitch = std::asin(std::clamp(local.y, -1.0, 1.0)) * kRadToDeg;
+  return std::abs(yaw) <= hFovDeg * 0.5 + 1e-9 && std::abs(pitch) <= vFovDeg * 0.5 + 1e-9;
+}
+
+bool CoveredByAnyCell(const CapturePlan& plan, const Vec3& direction) {
+  for (const auto& node : plan.nodes) {
+    if (InsideFieldOfView(node.targetOrientation, direction, plan.spec.horizontalFovDeg,
+                          plan.spec.verticalFovDeg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ------------------------------------------------------------------------------ completeness
+
+TEST(CoveragePlanner, EveryDirectionOnTheSphereIsInsideSomeCell) {
+  // The invariant the whole plan exists for. A gap here is a hole in the finished sphere that
+  // nothing would report until someone looked at the seam.
+  const CapturePlan plan = Plan(Spec());
+  int uncovered = 0;
+  for (const Vec3& direction : SphereSamples(4000)) {
+    if (!CoveredByAnyCell(plan, direction)) ++uncovered;
+  }
+  EXPECT_EQ(uncovered, 0) << "of 4000 sampled directions, with " << plan.nodes.size() << " cells";
+}
+
+TEST(CoveragePlanner, StaysCompleteForANarrowLens) {
+  // A long lens is where a spacing bug hides: more cells, each covering less.
+  const CapturePlan plan = Plan(Spec(35.0, 26.0));
+  for (const Vec3& direction : SphereSamples(4000)) {
+    ASSERT_TRUE(CoveredByAnyCell(plan, direction));
+  }
+}
+
+TEST(CoveragePlanner, StaysCompleteForAWideLens) {
+  const CapturePlan plan = Plan(Spec(100.0, 80.0));
+  for (const Vec3& direction : SphereSamples(4000)) {
+    ASSERT_TRUE(CoveredByAnyCell(plan, direction));
+  }
+}
+
+TEST(CoveragePlanner, CoversBothPoles) {
+  // Straight up and straight down are the directions a ring layout most easily leaves out.
+  const CapturePlan plan = Plan(Spec());
+  EXPECT_TRUE(CoveredByAnyCell(plan, Vec3{0, 1, 0}));
+  EXPECT_TRUE(CoveredByAnyCell(plan, Vec3{0, -1, 0}));
+}
+
+// ----------------------------------------------------------------------------------- overlap
+
+TEST(CoveragePlanner, NeighbouringCellsOverlap) {
+  // Registration needs shared features between adjacent frames; cells that merely abut give it
+  // nothing to match on.
+  const CapturePlan plan = Plan(Spec());
+  for (const auto& node : plan.nodes) {
+    double nearest = 360.0;
+    for (const auto& other : plan.nodes) {
+      if (other.id.value == node.id.value) continue;
+      nearest = std::min(nearest,
+                         AngleBetween(node.targetOrientation, other.targetOrientation) * kRadToDeg);
+    }
+    EXPECT_LT(nearest, plan.spec.horizontalFovDeg)
+        << "a cell whose nearest neighbour is a whole field of view away shares no features";
+  }
+}
+
+// -------------------------------------------------------------------------------- cell counts
+
+TEST(CoveragePlanner, AWiderLensNeedsFewerCells) {
+  EXPECT_LT(Plan(Spec(100.0, 80.0)).nodes.size(), Plan(Spec(50.0, 40.0)).nodes.size());
+}
+
+TEST(CoveragePlanner, MoreOverlapNeedsMoreCells) {
+  EXPECT_GT(Plan(Spec(66.0, 50.0, 0.50)).nodes.size(), Plan(Spec(66.0, 50.0, 0.20)).nodes.size());
+}
+
+TEST(CoveragePlanner, ATypicalPhoneLensGivesAWorkableNumberOfCells) {
+  // Not a precise expectation — a bound. Ten cells would not cover a sphere; three hundred is a
+  // capture nobody finishes.
+  const size_t cells = Plan(Spec()).nodes.size();
+  EXPECT_GE(cells, 20u);
+  EXPECT_LE(cells, 150u);
+}
+
+TEST(CoveragePlanner, RingsAreNarrowerNearThePoles) {
+  // Azimuth spacing has to widen as the rings shrink, or the poles get hundreds of cells nobody
+  // needs to shoot.
+  const CapturePlan plan = Plan(Spec());
+  std::map<int32_t, int> perRing;
+  for (const auto& node : plan.nodes) ++perRing[node.ringIndex];
+  ASSERT_GE(perRing.size(), 3u);
+
+  const int equatorial = std::max_element(
+      perRing.begin(), perRing.end(),
+      [](const auto& a, const auto& b) { return a.second < b.second; })->second;
+  EXPECT_GT(equatorial, perRing.begin()->second);
+  EXPECT_GT(equatorial, perRing.rbegin()->second);
+}
+
+// ------------------------------------------------------------------------------ plan identity
+
+TEST(CoveragePlanner, CellIdsAreUnique) {
+  const CapturePlan plan = Plan(Spec());
+  std::set<uint64_t> ids;
+  for (const auto& node : plan.nodes) ids.insert(node.id.value);
+  EXPECT_EQ(ids.size(), plan.nodes.size());
+}
+
+TEST(CoveragePlanner, NoTwoCellsPointAtTheSameDirection) {
+  const CapturePlan plan = Plan(Spec());
+  for (size_t i = 0; i < plan.nodes.size(); ++i) {
+    for (size_t j = i + 1; j < plan.nodes.size(); ++j) {
+      EXPECT_GT(AngleBetween(plan.nodes[i].targetOrientation, plan.nodes[j].targetOrientation),
+                1e-6) << "cells " << i << " and " << j;
+    }
+  }
+}
+
+TEST(CoveragePlanner, PlanningTwiceGivesTheSamePlan) {
+  // A build is keyed on the plan; an unstable one would invalidate cached stages for nothing.
+  const CapturePlan a = Plan(Spec());
+  const CapturePlan b = Plan(Spec());
+  ASSERT_EQ(a.nodes.size(), b.nodes.size());
+  for (size_t i = 0; i < a.nodes.size(); ++i) {
+    EXPECT_EQ(a.nodes[i].id.value, b.nodes[i].id.value);
+    EXPECT_NEAR(AngleBetween(a.nodes[i].targetOrientation, b.nodes[i].targetOrientation), 0.0,
+                1e-12);
+  }
+}
+
+TEST(CoveragePlanner, EveryCellCarriesTheAcceptanceConeItWasAskedFor) {
+  for (const auto& node : Plan(Spec()).nodes) EXPECT_DOUBLE_EQ(node.acceptanceConeDeg, 5.0);
+}
+
+// -------------------------------------------------------------------------------- validation
+
+TEST(CoveragePlanner, RefusesALensItWasNotToldAbout) {
+  RingsCoveragePlannerEngine planner;
+  CapturePlanSpec spec = Spec();
+  spec.horizontalFovDeg = 0.0;
+  EXPECT_EQ(planner.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+}
+
+TEST(CoveragePlanner, RefusesNonsenseOverlap) {
+  RingsCoveragePlannerEngine planner;
+  CapturePlanSpec spec = Spec();
+  spec.overlapTarget = 1.0;   // a step of zero degrees: infinitely many cells
+  EXPECT_EQ(planner.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+  spec.overlapTarget = -0.5;
+  EXPECT_EQ(planner.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+}
+
+TEST(CoveragePlanner, RefusesAnAcceptanceConeOfZero) {
+  RingsCoveragePlannerEngine planner;
+  CapturePlanSpec spec = Spec();
+  spec.acceptanceConeDeg = 0.0;
+  EXPECT_EQ(planner.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+}
+
+// ----------------------------------------------------------------------------------- locate
+
+TEST(CoveragePlanner, LocateFindsTheCellTheUserIsAimingAt) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  for (const auto& node : plan.nodes) {
+    auto guidance = planner.Locate(node.targetOrientation, plan);
+    ASSERT_TRUE(guidance.ok());
+    EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
+    EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-9);
+    EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
+  }
+}
+
+TEST(CoveragePlanner, LocateAsksTheUserToKeepLookingWhenTheyAreOff) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const Quat aim = Multiply(plan.nodes.front().targetOrientation, FromAzimuthElevation(20.0, 0.0));
+  auto guidance = planner.Locate(aim, plan);
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
+  EXPECT_GT(guidance.value.angularErrorDeg, plan.spec.acceptanceConeDeg);
+}
+
+TEST(CoveragePlanner, NoDirectionIsFurtherFromACellThanAFieldOfView) {
+  // Guidance has to have something to point at wherever the user happens to be looking.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  for (const Vec3& direction : SphereSamples(500)) {
+    const double azimuth = std::atan2(direction.x, -direction.z) * kRadToDeg;
+    const double elevation = std::asin(std::clamp(direction.y, -1.0, 1.0)) * kRadToDeg;
+    auto guidance = planner.Locate(FromAzimuthElevation(azimuth, elevation), plan);
+    ASSERT_TRUE(guidance.ok());
+    EXPECT_LT(guidance.value.angularErrorDeg, plan.spec.horizontalFovDeg);
+  }
+}
+
+TEST(CoveragePlanner, LocateRefusesAnEmptyPlan) {
+  RingsCoveragePlannerEngine planner;
+  EXPECT_EQ(planner.Locate(Quat{}, CapturePlan{}).status.code, StatusCode::FailedPrecondition);
+}
+
+// --------------------------------------------------------------------------------- evaluate
+
+TEST(CoveragePlanner, EveryCellIsAHoleBeforeAnythingIsShot) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  auto state = planner.Evaluate(plan, {});
+  ASSERT_TRUE(state.ok());
+  EXPECT_EQ(state.value.nodesSatisfied, 0);
+  EXPECT_EQ(state.value.holes.size(), plan.nodes.size());
+  EXPECT_DOUBLE_EQ(state.value.coveredSolidAngleFraction, 0.0);
+}
+
+TEST(CoveragePlanner, ShootingACellSatisfiesItAndOnlyIt) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  Candidate candidate;
+  candidate.node = plan.nodes.front().id;
+  const std::vector<Candidate> candidates{candidate};
+
+  auto state = planner.Evaluate(plan, candidates);
+  ASSERT_TRUE(state.ok());
+  EXPECT_EQ(state.value.nodesSatisfied, 1);
+  EXPECT_EQ(state.value.holes.size(), plan.nodes.size() - 1);
+}
+
+TEST(CoveragePlanner, RetakesAreSuggestedForHolesAndGhostsAlike) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+
+  CoverageState state;
+  state.holes.push_back(plan.nodes[1].id);
+  GhostReport ghosts;
+  GhostRegion region;
+  region.node = plan.nodes[2].id;
+  ghosts.regions.push_back(region);
+
+  auto suggestions = planner.SuggestRetakes(plan, state, ghosts);
+  ASSERT_TRUE(suggestions.ok());
+  ASSERT_EQ(suggestions.value.size(), 2u);
+  EXPECT_EQ(suggestions.value[0].value, plan.nodes[1].id.value);
+  EXPECT_EQ(suggestions.value[1].value, plan.nodes[2].id.value);
+}
+
+TEST(CoveragePlanner, ACellThatIsBothAHoleAndGhostedIsSuggestedOnce) {
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+
+  CoverageState state;
+  state.holes.push_back(plan.nodes[1].id);
+  GhostReport ghosts;
+  GhostRegion region;
+  region.node = plan.nodes[1].id;
+  ghosts.regions.push_back(region);
+
+  auto suggestions = planner.SuggestRetakes(plan, state, ghosts);
+  ASSERT_TRUE(suggestions.ok());
+  EXPECT_EQ(suggestions.value.size(), 1u);
+}
+
+}  // namespace
+}  // namespace sphanorama
