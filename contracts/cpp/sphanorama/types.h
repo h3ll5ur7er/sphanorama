@@ -1,0 +1,240 @@
+// Shared value types. Generated into TypeScript and FlatBuffers by tools/codegen (Phase 0).
+// Pure data: no behaviour, no ownership of pixels, safe to cross the WASM boundary.
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace sphanorama {
+
+// ---------------------------------------------------------------- identifiers
+// Strong typedefs; a NodeId must never be passable where a FrameId is expected.
+template <typename Tag>
+struct Id {
+  uint64_t value = 0;
+  friend bool operator==(Id a, Id b) { return a.value == b.value; }
+  friend bool operator<(Id a, Id b) { return a.value < b.value; }
+  bool valid() const { return value != 0; }
+};
+struct SessionTag {};
+struct ProjectTag {};
+struct NodeTag {};
+struct FrameTag {};
+struct CandidateTag {};
+struct BuildTag {};
+struct BufferTag {};
+
+using SessionId   = Id<SessionTag>;
+using ProjectId   = Id<ProjectTag>;
+using NodeId      = Id<NodeTag>;
+using FrameId     = Id<FrameTag>;
+using CandidateId = Id<CandidateTag>;
+using BuildId     = Id<BuildTag>;
+using BufferId    = Id<BufferTag>;
+
+// ---------------------------------------------------------------- error model
+// No exceptions cross a layer boundary; every fallible call returns Result<T>.
+enum class StatusCode : uint16_t {
+  Ok = 0,
+  InvalidArgument,
+  NotFound,
+  FailedPrecondition,
+  Cancelled,
+  Unsupported,
+  SensorPermissionDenied,
+  SensorUnavailable,
+  CameraUnavailable,
+  FrameStoreExhausted,
+  StorageQuotaExceeded,
+  ComputeUnavailable,
+  RegistrationFailed,
+  InsufficientCoverage,
+  CodecFailure,
+  Internal,
+};
+
+struct Status {
+  StatusCode code = StatusCode::Ok;
+  const char* component = "";   // static string: which service reported it
+  std::string detail;           // human-readable, never parsed
+  bool ok() const { return code == StatusCode::Ok; }
+  static Status Ok() { return {}; }
+};
+
+template <typename T>
+struct Result {
+  Status status;
+  T value{};
+  bool ok() const { return status.ok(); }
+};
+
+// ---------------------------------------------------------------- geometry
+struct Vec3 { double x = 0, y = 0, z = 0; };
+struct Quat { double w = 1, x = 0, y = 0, z = 0; };   // unit, device -> world
+
+// Estimated during a build, never configured by hand: phone lenses are unknown.
+struct Intrinsics {
+  double fx = 0, fy = 0, cx = 0, cy = 0;
+  double k1 = 0, k2 = 0, k3 = 0, p1 = 0, p2 = 0;   // Brown-Conrady
+  int32_t width = 0, height = 0;
+  double rollingShutterLineTimeNs = 0;             // 0 == global shutter / unknown
+  bool estimated = false;
+};
+
+// ---------------------------------------------------------------- sensing
+struct ImuSample {
+  int64_t timestampNs = 0;
+  Vec3 angularVelocity;    // rad/s
+  Vec3 acceleration;       // m/s^2
+  bool hasMagnetometer = false;
+  Vec3 magneticField;
+};
+
+struct PoseSample {
+  int64_t timestampNs = 0;
+  Quat orientation;
+  Vec3 angularVelocity;
+  double confidence = 0.0;   // [0,1]
+  bool visuallyCorrected = false;
+};
+
+enum class MotionCapability : uint8_t { None, OrientationOnly, GyroAccel, GyroAccelMag };
+
+// ---------------------------------------------------------------- pixels
+enum class PixelFormat : uint8_t { Unknown, RGBA8, BGRA8, NV12, I420, Gray8, EncodedJpeg };
+enum class Residency  : uint8_t { HeapPinned, HeapEncoded, GpuTexture, Spilled };
+
+// A handle, not a buffer. Pixel bytes never cross the boundary as a value.
+struct FrameRef {
+  FrameId id;
+  BufferId buffer;
+  PixelFormat format = PixelFormat::Unknown;
+  Residency residency = Residency::Spilled;
+  int32_t width = 0, height = 0, stride = 0;
+  int64_t timestampNs = 0;
+  uint64_t contentHash = 0;   // build-graph fingerprinting
+};
+
+// ---------------------------------------------------------------- capture plan
+enum class TessellationStrategy : uint8_t { Rings, Geodesic, Adaptive };
+
+struct CapturePlanSpec {
+  TessellationStrategy strategy = TessellationStrategy::Rings;
+  double horizontalFovDeg = 0;      // 0 => probe the camera
+  double verticalFovDeg = 0;
+  double overlapTarget = 0.30;      // fraction
+  double acceptanceConeDeg = 4.0;
+  bool coverPoles = true;
+  MotionCapability motion = MotionCapability::GyroAccel;
+};
+
+struct CoverageNode {
+  NodeId id;
+  Quat targetOrientation;
+  double acceptanceConeDeg = 0;
+  int32_t ringIndex = 0;
+};
+
+struct CapturePlan {
+  std::vector<CoverageNode> nodes;
+  CapturePlanSpec spec;
+};
+
+enum class NodeState : uint8_t { Pending, Capturing, Captured, Satisfied, Flagged, Retaking };
+
+// ---------------------------------------------------------------- candidates
+struct QualityScore {
+  double sharpness = 0;        // higher is better
+  double motionBlur = 0;       // estimated px of smear, lower is better
+  double exposureAgreement = 0;
+  double alignmentResidual = 0;   // px, vs the cell's other candidates
+  double moverPenalty = 0;        // from intra-cell disagreement
+  double aggregate = 0;           // the single number selection sorts on
+};
+
+struct Candidate {
+  CandidateId id;
+  NodeId node;
+  FrameRef frame;
+  PoseSample pose;
+  QualityScore quality;
+};
+
+struct BurstSpec {
+  int32_t frameCount = 5;
+  int32_t intervalMs = 80;
+  bool lockExposure = true;
+  bool lockWhiteBalance = true;
+  bool lockFocus = true;
+};
+
+// ---------------------------------------------------------------- guidance
+enum class GuidanceAction : uint8_t { Seek, HoldStill, Firing, CellDone, SphereDone, TooFast };
+
+struct CaptureGuidance {
+  NodeId targetNode;
+  double angularErrorDeg = 0;
+  double rollErrorDeg = 0;
+  double stability = 0;          // [0,1]
+  GuidanceAction action = GuidanceAction::Seek;
+};
+
+struct CoverageState {
+  int32_t nodesTotal = 0;
+  int32_t nodesSatisfied = 0;
+  double coveredSolidAngleFraction = 0;
+  std::vector<NodeId> holes;
+  std::vector<NodeId> underOverlapped;
+};
+
+// ---------------------------------------------------------------- build
+enum class Projection : uint8_t { Equirectangular, Cubemap };
+enum class QualityTier : uint8_t { Preview, Standard, Maximum };
+
+struct BuildSpec {
+  QualityTier tier = QualityTier::Standard;
+  Projection projection = Projection::Equirectangular;
+  int32_t outputWidth = 8192;
+  bool ghostAware = true;
+};
+
+enum class BuildStage : uint8_t {
+  Queued, Features, PairwiseMatching, GlobalSolve, ExposureCompensation,
+  GhostDetection, SeamFinding, Blending, Projecting, Complete, Failed
+};
+
+struct BuildProgress {
+  BuildId id;
+  BuildStage stage = BuildStage::Queued;
+  double fraction = 0;
+  int32_t tilesReady = 0, tilesTotal = 0;
+  Status failure;
+};
+
+struct GhostRegion {
+  NodeId node;
+  double centerAzimuthDeg = 0, centerElevationDeg = 0, radiusDeg = 0;
+  double confidence = 0;
+};
+
+struct GhostReport { std::vector<GhostRegion> regions; };
+
+// ---------------------------------------------------------------- export
+struct EncodeSpec {
+  enum class Format : uint8_t { Jpeg, Avif, Png } format = Format::Jpeg;
+  int32_t quality = 92;
+  bool attachGPanoXmp = false;
+  int32_t fullPanoWidth = 0, fullPanoHeight = 0;   // for the GPano metadata block
+};
+
+struct PanoramaRef {
+  BuildId build;
+  Projection projection = Projection::Equirectangular;
+  int32_t width = 0, height = 0, tileSize = 0;
+  std::vector<FrameRef> tiles;
+  FrameRef preview;
+};
+
+}  // namespace sphanorama
