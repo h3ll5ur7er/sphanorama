@@ -65,8 +65,12 @@ an ADR, not a comment.
 `core/`. One interface per header, which is what makes the layer check able to tell a manager
 implementing its own contract from a manager calling another one (ADR 0008).
 
-`contracts/ts/contracts.d.ts` mirrors the subset that crosses the WASM boundary. It is
-hand-maintained until the Phase 0 codegen lands; update it in the same commit as the header.
+`contracts/ts/contracts.d.ts` is **generated** from those headers by `tools/contract_gen.py`
+(ADR 0009) and must never be edited: change the C++ and regenerate. The parser accepts only a
+small subset and raises on anything else, so a header that grows an unmirrorable construct fails
+the build rather than drifting silently. Mark an interface `// @boundary` to have it mirrored —
+engines and utilities never cross into JavaScript, and nor do the three resource accesses that
+move bytes through the shared heap.
 
 - **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is the
   only route to bytes, and only inside the core.

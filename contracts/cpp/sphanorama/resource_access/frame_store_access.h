@@ -6,6 +6,10 @@ namespace sphanorama {
 
 // V11 — where pixel bytes live. The only component that knows how much memory exists, and the
 // reason a 15 GB sphere of bursts fits on a phone.
+//
+// Not marked @boundary: this contract moves bytes through the shared heap rather than
+// through marshalled values, so its TypeScript adapter is written against the shared-heap
+// protocol rather than mirroring this signature. See ADR 0009.
 class IFrameStoreAccess {
  public:
   virtual ~IFrameStoreAccess() = default;

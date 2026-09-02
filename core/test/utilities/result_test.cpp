@@ -21,7 +21,7 @@ TEST(Result, ErrCarriesTheCodeComponentAndDetail) {
   auto r = Fails();
   EXPECT_FALSE(r.ok());
   EXPECT_EQ(r.status.code, StatusCode::NotFound);
-  EXPECT_STREQ(r.status.component, "test");
+  EXPECT_EQ(r.status.component, "test");
   EXPECT_EQ(r.status.detail, "no such thing");
 }
 

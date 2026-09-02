@@ -6,6 +6,7 @@
 namespace sphanorama {
 
 // V15 — how a result leaves the device.
+// @boundary
 class IExportAccess {
  public:
   virtual ~IExportAccess() = default;

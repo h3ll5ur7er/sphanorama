@@ -106,19 +106,22 @@ candidate set must survive into the build rather than being collapsed at capture
 
 ## 4.6 Contracts and codegen
 
-One source of truth per contract:
+One source of truth: **the C++ contract headers are the IDL**
+(ADR [0009](adr/0009-the-cpp-header-is-the-idl.md)). `tools/contract_gen.py` parses them and emits
+`contracts/ts/contracts.d.ts`; CI regenerates and fails on any diff, so the mirror cannot drift.
 
-- **Value types** (`FrameRef`, `PoseSample`, `Candidate`, `CoverageState`, …) are declared once in
-  an IDL and generated into C++ structs and TypeScript interfaces. Wire encoding across the worker
-  boundary is FlatBuffers so that reads are zero-copy on both sides.
-- **Interfaces** are hand-written C++ abstract classes (they are the architecture, they should be
-  read as prose) with a generated TypeScript mirror for the two directions that cross the boundary:
-  the manager facade (TS calls C++) and the resource-access ports (C++ calls TS).
-- The generator is a small Python tool. A CI check regenerates and fails on any diff, so the
-  mirror can never drift from the header.
+The parser accepts only a small declared subset and raises on anything outside it. That strictness
+is the mechanism rather than a limitation — a lenient parser would silently drop what it did not
+understand, and the mirror would drift exactly where nobody was looking.
 
-The current hand-written contracts live in [`contracts/`](../contracts/); Phase 1 moves the value
-types behind the generator and keeps the interface headers as they are.
+Only interfaces marked `// @boundary` are mirrored. Engines and the utilities bar never cross into
+JavaScript. Three resource accesses are also excluded — motion sensor, frame store and compute
+device — because their signatures move bytes through the shared heap rather than through marshalled
+values; their TypeScript adapters are written against the shared-heap protocol instead, and
+mirroring the C++ signature would describe a call that does not exist.
+
+Wire encoding for the marshalled calls will be FlatBuffers, generated from the same parse, so reads
+are zero-copy on both sides. Not yet built: the boundary currently has no runtime.
 
 ## 4.7 Error model
 

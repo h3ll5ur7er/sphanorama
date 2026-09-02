@@ -6,6 +6,10 @@ namespace sphanorama {
 
 // V10 — where motion data comes from. Reporting MotionCapability::None is a normal outcome, not
 // an error: iOS requires a user gesture and the user may decline.
+//
+// Not marked @boundary: this contract moves bytes through the shared heap rather than
+// through marshalled values, so its TypeScript adapter is written against the shared-heap
+// protocol rather than mirroring this signature. See ADR 0009.
 class IMotionSensorAccess {
  public:
   virtual ~IMotionSensorAccess() = default;

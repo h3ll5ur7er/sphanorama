@@ -59,7 +59,7 @@ enum class StatusCode : uint16_t {
 
 struct Status {
   StatusCode code = StatusCode::Ok;
-  const char* component = "";   // static string: which service reported it
+  std::string_view component;   // static string: which service reported it
   std::string detail;           // human-readable, never parsed
   bool ok() const { return code == StatusCode::Ok; }
   static Status Ok() { return {}; }
@@ -258,8 +258,10 @@ struct GhostRegion {
 struct GhostReport { std::vector<GhostRegion> regions; };
 
 // ---------------------------------------------------------------- export
+enum class EncodeFormat : uint8_t { Jpeg, Avif, Png };
+
 struct EncodeSpec {
-  enum class Format : uint8_t { Jpeg, Avif, Png } format = Format::Jpeg;
+  EncodeFormat format = EncodeFormat::Jpeg;
   int32_t quality = 92;
   bool attachGPanoXmp = false;
   int32_t fullPanoWidth = 0, fullPanoHeight = 0;   // for the GPano metadata block

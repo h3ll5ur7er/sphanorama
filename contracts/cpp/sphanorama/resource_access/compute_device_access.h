@@ -8,6 +8,10 @@ namespace sphanorama {
 //
 // Both backends must produce numerically equivalent results; a differential test enforces it,
 // because the CPU path is the correctness reference for the GPU one.
+//
+// Not marked @boundary: this contract moves bytes through the shared heap rather than
+// through marshalled values, so its TypeScript adapter is written against the shared-heap
+// protocol rather than mirroring this signature. See ADR 0009.
 class IComputeDeviceAccess {
  public:
   virtual ~IComputeDeviceAccess() = default;

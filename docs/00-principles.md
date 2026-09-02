@@ -121,9 +121,8 @@ A change is done when all of these hold. They are cheap to check and expensive t
 - [ ] The test was written first and failed for the intended reason.
 - [ ] The implementation is the smallest thing that passes it.
 - [ ] The layer check passes — no violating call edge.
-- [ ] The contract-drift check passes — the TypeScript mirror matches the C++ headers.
-      *(Not yet implemented: the mirror is still hand-maintained until the Phase 0 codegen
-      lands. Until then, update `contracts/ts/contracts.d.ts` by hand in the same commit.)*
+- [ ] The contract-drift check passes — `python3 tools/contract_gen.py --check`. The mirror is
+      generated, never edited; change the C++ header and regenerate.
 - [ ] The native build compiles the core with zero Emscripten symbols.
 - [ ] Affected documents are updated in this commit.
 - [ ] An ADR exists if the change qualifies (§0.3).

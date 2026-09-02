@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  architecture:
-    name: architecture rules
+  contracts:
+    name: architecture and contract rules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,10 @@ jobs:
         run: python3 tools/test_layer_check.py
       - name: layer rules
         run: python3 tools/layer_check.py
+      - name: contract generator tests
+        run: python3 tools/test_contract_gen.py
+      - name: contract mirror is not stale
+        run: python3 tools/contract_gen.py --check
 
   native:
     name: native build and tests
@@ -49,7 +53,7 @@ jobs:
         run: ctest --test-dir build/native-asan --output-on-failure
 
 # Not yet wired, and deliberately absent rather than stubbed green:
-#   - contract drift (needs the Phase 0 IDL codegen)
 #   - no-browser native build assertion (needs the WASM target to contrast against)
+#   - FlatBuffers schema generation (needs the boundary runtime)
 #   - WASM size budget (needs emsdk)
 # See docs/06-roadmap.md Phase 0.

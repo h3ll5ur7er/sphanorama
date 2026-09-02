@@ -13,3 +13,4 @@ and the alternative we rejected and why.
 | [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary |
 | [0007](0007-tests-and-docs-are-gated.md) | Tests and documentation are gated in CI, not left to discipline |
 | [0008](0008-contracts-are-the-include-path.md) | One interface per header; `contracts/cpp` is the include root |
+| [0009](0009-the-cpp-header-is-the-idl.md) | The C++ header is the IDL; a strict parser generates the TypeScript mirror |
