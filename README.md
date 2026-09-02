@@ -22,6 +22,7 @@ worth fixing:
 
 | Doc | What it answers |
 | --- | --- |
+| [docs/00-principles.md](docs/00-principles.md) | How we build: TDD, docs as deliverables, definition of done, where a new thing goes |
 | [docs/01-scope.md](docs/01-scope.md) | What we are building, what we are explicitly not building, target devices |
 | [docs/02-volatility-map.md](docs/02-volatility-map.md) | The volatility analysis that drives the decomposition |
 | [docs/03-architecture.md](docs/03-architecture.md) | The service map, layers, call rules, use-case walkthroughs |
@@ -30,6 +31,8 @@ worth fixing:
 | [docs/06-roadmap.md](docs/06-roadmap.md) | Phased delivery plan with exit criteria |
 | [docs/adr/](docs/adr/) | Decision records for the choices that are expensive to reverse |
 | [contracts/](contracts/) | The interface contracts themselves (C++ headers + mirrored TS types) |
+
+The same principles are packaged as a project skill at [`.claude/skills/sphanorama-engineering/`](.claude/skills/sphanorama-engineering/SKILL.md), so Claude Code sessions working in this repo pick them up automatically.
 
 ## Shape at a glance
 

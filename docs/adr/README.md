@@ -11,3 +11,4 @@ and the alternative we rejected and why.
 | [0004](0004-build-as-incremental-graph.md) | A build is a fingerprinted DAG, not a pipeline run |
 | [0005](0005-opencv-piecemeal-not-stitching-module.md) | Use OpenCV algorithms piecemeal; do not use its `stitching` module |
 | [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary |
+| [0007](0007-tests-and-docs-are-gated.md) | Tests and documentation are gated in CI, not left to discipline |

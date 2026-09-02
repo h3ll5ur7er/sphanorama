@@ -14,6 +14,9 @@ sensor quality, iOS behaviour) are hit early, not at the end.
 - The generated boundary: IDL → C++ facade + TS proxy + FlatBuffers types.
 - Null implementations of all three managers and all five engines; real `ICameraAccess` and
   `IMotionSensorAccess` adapters.
+- The test machinery the rest of the plan depends on: GoogleTest harness, the fake
+  `ICameraAccess`/`IMotionSensorAccess` pair backed by a frame folder and a recorded IMU log,
+  and the synthetic-dataset generator in `tools/`.
 - CI: layer check, contract-drift check, no-browser native build, size budget.
 
 **Exit:** a phone opens the PWA, sees a live viewfinder with a reticle whose position is driven by

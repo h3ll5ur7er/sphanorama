@@ -1,5 +1,9 @@
 # 5. Toolchain, languages and validation
 
+The *why* behind the practices here — tests first, docs as deliverables, enforced layer
+rules — is in [`00-principles.md`](00-principles.md). This document covers the machinery that
+makes them checkable.
+
 ## 5.1 Language allocation
 
 | Language | Used for | Rationale |
@@ -41,6 +45,12 @@ The call rules in §3.3 are only real if they fail a build:
 
 ## 5.4 Test strategy
 
+Tests are written before the code they cover ([`00-principles.md` §0.2](00-principles.md)),
+so this table is as much a description of how work starts as of what CI runs. The two rows
+that carry the most weight are *engine accuracy* — because correctness here is invisible to the
+eye — and *manager behaviour*, which is only cheap because resource access is a contract rather
+than a browser call.
+
 | Level | What | How |
 | ----- | ---- | --- |
 | Engine unit | Pure functions with fixed inputs | GoogleTest, native. Golden outputs checked in as small fixtures |
@@ -68,19 +78,6 @@ That gives:
 Real captures from real phones are collected alongside it as a smaller, harder corpus — synthetic
 data proves correctness, real data finds the assumptions.
 
-## 5.6 Repository layout (target)
+## 5.6 Repository layout
 
-```
-core/                 C++: managers, engines, resource-access contracts, native adapters
-  include/sphanorama/ public contracts (mirrors contracts/cpp during Phase 1)
-  src/{managers,engines,resource_access,utilities}/
-  test/               GoogleTest
-bench/                native CLI client
-shell/                TypeScript PWA: clients + browser resource-access adapters
-  src/clients/{capture,review}/
-  src/access/         camera, sensors, store, codec, export adapters
-  src/bridge/         generated facade + worker plumbing
-tools/                Python: codegen, dataset generation, scoring, layer check
-contracts/            IDL + hand-written interface headers (source of truth)
-docs/                 this
-```
+See [`00-principles.md` §0.6](00-principles.md). Placement follows layer, not feature.
