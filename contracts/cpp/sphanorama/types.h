@@ -1,4 +1,8 @@
-// Shared value types. Generated into TypeScript and FlatBuffers by tools/codegen (Phase 0).
+// Shared value types, and the IDL they are generated from (ADR 0009).
+//
+// tools/contract_gen.py parses this header into the TypeScript mirror and both halves of the
+// wire codec — a generated binary format, not FlatBuffers and not JSON (ADR 0013). Editing any
+// of those outputs by hand is a drift check away from a red build.
 // Pure data: no behaviour, no ownership of pixels, safe to cross the WASM boundary.
 #pragma once
 

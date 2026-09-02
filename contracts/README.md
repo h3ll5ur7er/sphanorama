@@ -41,8 +41,10 @@ and dispatching one would generate a call into a runtime that has no such thing.
 
 ## Rules
 
-1. **C++ is the source of truth.** `ts/contracts.d.ts` is hand-mirrored today; from Phase 0's
-   codegen it is generated and CI fails on drift. Until then, update it in the same commit.
+1. **C++ is the source of truth.** `ts/contracts.d.ts` is **generated** by
+   `tools/contract_gen.py`, along with both halves of the wire codec and the facade dispatch —
+   never edit it. Change the C++ header, run the generator, and commit the output with it;
+   `contract_gen.py --check` fails CI on drift.
 2. **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is
    the only way to reach bytes, and only inside the core.
 3. **No exceptions.** Everything fallible returns `Result<T>`; a bare `return status;` propagates

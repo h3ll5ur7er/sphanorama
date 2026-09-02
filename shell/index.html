@@ -41,7 +41,7 @@
         <dt>facade</dt><dd id="facade">—</dd>
       </dl>
       <button id="enable" type="button">Enable camera &amp; motion</button>
-      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built for your lens. Firing a burst needs a path for pixels that is not built yet, so the cells stay empty.</p>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. Firing a burst needs a path for pixels that is not built yet, so the cells stay empty.</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>

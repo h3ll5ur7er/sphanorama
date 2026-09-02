@@ -107,8 +107,9 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
 
   const begun = await core.captureSession.begin(created.value as ProjectId, {
     strategy: 'Rings',
-    // Zero means "probe the camera": the manager reads the real lens through the camera port,
-    // and a number invented here would silently override it.
+    // Zero means "probe the camera": the manager asks the camera port rather than being told,
+    // and a number invented here would silently override it. What the port reports is a real
+    // resolution and an assumed angle — see deriveFieldOfView in access/capture-host.ts.
     horizontalFovDeg: 0,
     verticalFovDeg: 0,
     overlapTarget: 0.3,

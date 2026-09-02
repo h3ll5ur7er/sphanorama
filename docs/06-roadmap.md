@@ -9,23 +9,45 @@ sensor quality, iOS behaviour) are hit early, not at the end.
 ## Phase 0 — Skeleton and toolchain
 *Goal: a build that proves the boundary works, containing no algorithms at all.*
 
-- Repo layout, CMake presets, pinned emsdk, trimmed OpenCV WASM build, Vite PWA shell.
+What this phase set out to deliver, and what it actually delivered where the two differ — the
+differences are decisions, each with an ADR:
+
+- Repo layout, CMake presets, pinned emsdk, Vite PWA shell. *The trimmed OpenCV WASM build was
+  deferred: nothing needs it until Phase 2 registration, and carrying it would have meant tuning a
+  build for code that does not exist.*
 - Utilities bar: `Result<T>`, status codes, logger, clock, config, arena.
-- The generated boundary: IDL → C++ facade + TS proxy + FlatBuffers types.
-- Null implementations of all three managers and all five engines; real `ICameraAccess` and
-  `IMotionSensorAccess` adapters.
-- The test machinery the rest of the plan depends on: GoogleTest harness, the fake
-  `ICameraAccess`/`IMotionSensorAccess` pair backed by a frame folder and a recorded IMU log,
-  and the synthetic-dataset generator in `tools/`.
-- CI: layer check, contract-drift check, no-browser native build, size budget.
+- The generated boundary: the C++ header **is** the IDL (ADR 0009), generating the TypeScript
+  mirror, both halves of a **binary wire codec** (ADR 0013 — not FlatBuffers, which would have
+  meant a second schema language and toolchain) and the facade dispatch, over a **C ABI** rather
+  than Embind (ADR 0012).
+- All three managers, and engines that turned out to need real implementations sooner than
+  planned: `CoveragePlannerEngine` tessellates for real, and `OrientationPoseEngine` folds the
+  browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
+  criterion. `FrameQuality`, `Registration` and `Composition` are still null.
+- Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
+  (ADR 0014). *`CaptureBurst` refuses: it is the one call that cannot be made resident in
+  advance, and deciding it needs measurements.*
+- The test machinery the rest of the plan depends on: GoogleTest harness and the resource-access
+  fakes behind shared contract suites (ADR 0010). *The synthetic-dataset generator and the frame
+  folder / recorded IMU log the fakes would replay are deferred to Phase 1, which is the first
+  thing that needs them.*
+- CI: layer check, contract-drift check, no-browser native build, size budget — plus a test suite
+  for each checker, since a checker that passes everything reads as a green light.
 
 **Exit:** a phone opens the PWA, sees a live viewfinder with a reticle whose position is driven by
 real sensor data routed *through the WASM core*, and the whole round trip stays under budget.
 The core binary is under 8 MB and the same core compiles as the native bench.
 
 *Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
-tells the core what lens it got, and the core plans a real tessellation for it — 32 cells across 7
-rings for a typical phone. Orientation samples go through the facade to `CaptureSessionManager`,
+tells the core what it got, and the core plans a real tessellation for it — 32 cells across 7
+rings for a typical phone.
+
+One caveat worth stating plainly, because "planned for your lens" overstates it: the browser does
+not report field of view at all. The plan is sized from the camera's **real resolution and aspect
+ratio** and an **assumed 66° horizontal angle** (`deriveFieldOfView` in
+`shell/src/access/capture-host.ts`). Phase 2's bundle adjustment estimates focal length from the
+captured frames, which is the only way to actually know; until then a wrong assumption shows up as
+cells that overlap more or less than intended rather than as a failure. Orientation samples go through the facade to `CaptureSessionManager`,
 which asks `PoseEngine` for an attitude and `CoveragePlannerEngine` for the nearest cell, and the
 reticle on screen is that answer coming back. Nothing about coverage, acceptance or pose is decided
 in the client.

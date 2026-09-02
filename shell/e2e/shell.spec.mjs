@@ -126,10 +126,11 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
   }
 });
 
-test('enabling plans a sphere for the real lens and guides toward a cell', async ({ page }) => {
+test('enabling plans a sphere sized from the camera and guides toward a cell', async ({ page }) => {
   // The whole capture chain in one go: the page opens a camera and tells the host, the core reads
-  // that lens through a synchronous port, the planner tessellates for it, and the sensor loop
-  // comes back with a target cell. Chromium's fake camera supplies the lens.
+  // it through a synchronous port, the planner tessellates for it, and the sensor loop comes back
+  // with a target cell. Chromium's fake camera supplies the resolution; the field of view is the
+  // documented assumption in capture-host.ts, not a measurement.
   const server = await serve();
   try {
     await page.goto(server.origin);

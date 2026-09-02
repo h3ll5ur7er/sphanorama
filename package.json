@@ -2,7 +2,7 @@
   "name": "sphanorama",
   "private": true,
   "type": "module",
-  "description": "On-device photo sphere capture PWA. Tooling only at this stage: the PWA shell is not started.",
+  "description": "On-device photo sphere capture PWA: a C++20/WebAssembly core behind a generated boundary, with a thin TypeScript shell.",
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && npm run build:core && vite build && npm run build:sw",

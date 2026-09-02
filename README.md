@@ -4,10 +4,14 @@ An on-device photo sphere capture and stitching PWA. Open it in a phone browser,
 reticles around you, and get a full equirectangular panorama — with burst capture per reticle,
 per-region retakes to kill parallax ghosts, and **no pixel ever leaving the device**.
 
-This repository currently contains **architecture only**. No implementation has been written yet;
-the first milestone is deliberately the architecture itself, following the
+Phase 0 is complete: the native and WASM builds, the generated boundary, the three managers, a real
+coverage planner and pose engine, and the Pages deploy are in and green. A phone opens the app and
+the reticle it sees is a coverage plan the core built and guidance the core returned. Capture is
+not wired to pixels yet — see [docs/06-roadmap.md](docs/06-roadmap.md) for what is missing and why.
+
+The architecture came first on purpose, following the
 [iDesign Method](https://www.idesign.net) (decomposition by volatility, layered service map,
-contracts defined before code).
+contracts defined before code), and the layer rules are enforced in CI rather than trusted.
 
 ## Why
 
@@ -37,8 +41,8 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
 ## Shape at a glance
 
 - **Core** — C++20 compiled to WebAssembly (SIMD + threads) via Emscripten, using OpenCV for
-  features, geometry and blending. Holds all Managers, Engines and ResourceAccess *contracts*.
+  features, geometry and blending from Phase 2 on. Holds all Managers, Engines and ResourceAccess *contracts*.
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
-- **Tooling** — Python for contract codegen, synthetic dataset generation, and offline
-  ground-truth comparison.
+- **Tooling** — Python for contract codegen and the architecture checks CI runs; synthetic dataset
+  generation and offline ground-truth comparison arrive with Phase 1's accuracy harness.
