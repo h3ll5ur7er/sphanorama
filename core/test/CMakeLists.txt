@@ -1,0 +1,28 @@
+include(FetchContent)
+
+# Pinned. A floating dependency turns an unrelated upstream change into a red build on a day
+# nobody touched this repo.
+FetchContent_Declare(googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        v1.15.2
+  GIT_SHALLOW    TRUE
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+include(GoogleTest)
+
+add_executable(sphanorama_tests
+  utilities/arena_test.cpp
+  utilities/clock_test.cpp
+  utilities/config_store_test.cpp
+  utilities/diagnostics_test.cpp
+  utilities/event_bus_test.cpp
+  utilities/logger_test.cpp
+  utilities/result_test.cpp
+)
+target_link_libraries(sphanorama_tests PRIVATE sphanorama_core GTest::gtest_main)
+target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
+
+gtest_discover_tests(sphanorama_tests)

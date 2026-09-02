@@ -3,26 +3,44 @@
 The interfaces *are* the architecture. They are written before implementations and reviewed as
 prose; a change here is an architectural change, not a refactor.
 
-| File | Layer | Volatility absorbed |
-| ---- | ----- | ------------------- |
-| `cpp/sphanorama/types.h` | shared | — (pure data, generated to TS/FlatBuffers in Phase 0) |
-| `cpp/sphanorama/managers.h` | Managers | V1 capture sequence · V2 build sequence · V3 project lifecycle |
-| `cpp/sphanorama/engines.h` | Engines | V4 coverage · V5 pose · V6 selection · V7 registration · V8 composition |
-| `cpp/sphanorama/resource_access.h` | ResourceAccess | V9–V15 camera, sensors, frame store, project store, codecs, compute, export |
-| `cpp/sphanorama/utilities.h` | Utilities bar | logging, clock, config, arena, diagnostics, event bus |
-| `ts/contracts.d.ts` | boundary mirror | the subset that crosses the WASM/JS boundary |
+`contracts/cpp` is the **include root** — the build puts it on the include path and the core
+consumes these headers directly. They are never copied into `core/include`, because two copies of
+an interface is exactly the drift problem the contract check exists to prevent (ADR 0008).
+
+## Layout
+
+One interface per header. That is not tidiness: the layer check works at header granularity, and
+under an aggregate `managers.h` a manager *calling* another manager is indistinguishable from a
+manager *implementing* its own interface.
+
+```
+cpp/sphanorama/
+  types.h                    every value type, plus Status / Result<T> and SPH_TRY
+  utilities/                 logger · clock · config_store · arena · diagnostics · event_bus
+  engines/                   coverage_planner · pose · frame_quality · registration · composition
+  managers/                  capture_session · panorama_build · project
+  resource_access/           camera · motion_sensor · frame_store · project_store ·
+                             image_codec · compute_device · export
+ts/contracts.d.ts            the subset that crosses the WASM boundary
+```
+
+`types.h` holds **only** data and the interface headers hold **only** interfaces. Data has no
+layer — `GlobalSolution` is produced by the registration engine and consumed by the composition
+engine — so putting shared value types anywhere else would force an engine-to-engine dependency
+that the layer rules forbid, for no reason other than where a struct was written down.
 
 ## Rules
 
-1. **C++ is the source of truth.** `ts/contracts.d.ts` is currently hand-mirrored; from Phase 0 it
-   is generated, and CI fails on drift.
-2. **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess.Pin` is the
-   only way to reach bytes, and only inside the core.
-3. **No exceptions.** Everything fallible returns `Result<T>`.
+1. **C++ is the source of truth.** `ts/contracts.d.ts` is hand-mirrored today; from Phase 0's
+   codegen it is generated and CI fails on drift. Until then, update it in the same commit.
+2. **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is
+   the only way to reach bytes, and only inside the core.
+3. **No exceptions.** Everything fallible returns `Result<T>`; a bare `return status;` propagates
+   a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates.
 4. **Managers are the client's only surface.** If a client needs an engine, either the client is
-   doing business logic, or a manager is missing a method.
+   doing business logic, or a manager method is missing.
 5. **Resource access is implemented twice** — TypeScript for the browser, native for the bench and
    tests — behind one contract. Anything that cannot be implemented natively is not a resource
-   access, it is a browser detail that leaked.
+   access; it is a browser detail that leaked.
 
 Read [`../docs/03-architecture.md`](../docs/03-architecture.md) before changing anything here.

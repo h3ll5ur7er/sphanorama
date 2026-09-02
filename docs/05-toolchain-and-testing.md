@@ -32,16 +32,24 @@ removing one.
 
 ## 5.3 Architecture enforcement in CI
 
-The call rules in §3.3 are only real if they fail a build:
+The call rules in §3.3 are only real if they fail a build. What runs today:
 
-1. **Layer check** — a Python script builds the include/call graph of the core and rejects any
-   edge that violates the matrix (client→engine, manager→manager, engine→manager, engine→any
-   resource access other than compute/frame-store).
-2. **Contract drift check** — regenerate the TS mirror and FlatBuffers schema; fail on diff.
-3. **No-browser check** — the native bench build must compile the entire core with zero Emscripten
-   or JS symbols. If it does not, browser assumptions have leaked into business logic.
-4. **Size and startup budget** — wasm size, and time-to-first-viewfinder measured in headless
-   Chromium.
+1. **Layer check** — `tools/layer_check.py` walks the include graph of `core/` and `contracts/`
+   and rejects any edge the matrix forbids: client→engine, manager→manager, engine→manager,
+   engine→any resource access other than compute and frame store, and reaching sideways into a
+   sibling component's private headers. It has its own test suite, run first: a checker that
+   passes everything is worse than no checker, because it reads as a green light.
+2. **Native build and tests** — debug, plus a second pass under AddressSanitizer and
+   UndefinedBehaviorSanitizer.
+
+Not yet wired, and deliberately absent from CI rather than stubbed green:
+
+3. **Contract drift** — regenerate the TypeScript mirror and the FlatBuffers schema, fail on diff.
+   Needs the Phase 0 codegen; until then `contracts/ts/contracts.d.ts` is hand-maintained.
+4. **No-browser check** — assert the native build of the core contains zero Emscripten or JS
+   symbols. Needs a WASM target to contrast against.
+5. **Size and startup budget** — WASM size, and time-to-first-viewfinder in headless Chromium.
+   Needs emsdk.
 
 ## 5.4 Test strategy
 

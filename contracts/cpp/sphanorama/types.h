@@ -3,6 +3,8 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,8 +69,42 @@ template <typename T>
 struct Result {
   Status status;
   T value{};
+
+  Result() = default;
+  // Implicit on purpose: `return someFailedStatus;` from a Result-returning function is the
+  // single most common line in error handling here, and spelling it out adds nothing.
+  Result(Status s) : status(std::move(s)) {}
+  Result(Status s, T v) : status(std::move(s)), value(std::move(v)) {}
+
   bool ok() const { return status.ok(); }
 };
+
+
+// Constructing results. `Ok(v)` and `Err<T>(...)` keep call sites readable; SPH_TRY unwraps a
+// Result or propagates its Status, which is what makes a chain of fallible calls tolerable
+// without exceptions.
+template <typename T>
+inline Result<T> Ok(T value) { return Result<T>{Status::Ok(), std::move(value)}; }
+
+template <typename T>
+inline Result<T> Err(StatusCode code, const char* component, std::string detail = {}) {
+  return Result<T>{Status{code, component, std::move(detail)}};
+}
+
+inline Status Fail(StatusCode code, const char* component, std::string detail = {}) {
+  return Status{code, component, std::move(detail)};
+}
+
+#define SPH_CONCAT_INNER(a, b) a##b
+#define SPH_CONCAT(a, b) SPH_CONCAT_INNER(a, b)
+
+// Usage: SPH_TRY(auto plan, planner.Plan(spec, lens));
+// Works in any function returning Status or Result<U>.
+#define SPH_TRY(decl, expr)                                             \
+  auto SPH_CONCAT(sph_try_, __LINE__) = (expr);                         \
+  if (!SPH_CONCAT(sph_try_, __LINE__).ok())                             \
+    return SPH_CONCAT(sph_try_, __LINE__).status;                       \
+  decl = std::move(SPH_CONCAT(sph_try_, __LINE__).value)
 
 // ---------------------------------------------------------------- geometry
 struct Vec3 { double x = 0, y = 0, z = 0; };
@@ -235,6 +271,110 @@ struct PanoramaRef {
   int32_t width = 0, height = 0, tileSize = 0;
   std::vector<FrameRef> tiles;
   FrameRef preview;
+};
+
+// --------------------------------------------------- engine value types
+// Data has no layer: these cross engine contracts freely, which is exactly why they
+// live here rather than in any one engine's header.
+enum class PoseMode : uint8_t { Fused, GyroOnly, VisionOnly };
+
+struct SelectionPolicy {
+  double weightSharpness = 1.0;
+  double weightMotionBlur = 1.0;
+  double weightExposure = 0.5;
+  double weightAlignment = 0.75;
+  double weightMover = 1.5;
+  bool preferPoseAccuracy = true;
+};
+
+struct NodeContext {
+  Quat targetOrientation;
+  std::span<const Candidate> siblings;      // the rest of this cell's burst
+  std::span<const Candidate> neighbours;    // selected candidates of adjacent cells
+};
+
+struct FeatureSet {
+  FrameId frame;
+  int32_t count = 0;
+  BufferId descriptors;      // opaque, lives in the frame store
+  BufferId keypoints;
+};
+
+struct PairwiseResult {
+  FrameId a, b;
+  Quat relativeRotation;
+  int32_t inliers = 0;
+  double medianResidualPx = 0;
+  bool accepted = false;
+};
+
+struct GlobalSolution {
+  std::vector<FrameId> frames;
+  std::vector<Quat> rotations;      // parallel to frames
+  Intrinsics intrinsics;            // shared across frames, refined here
+  double medianResidualPx = 0;
+  int32_t droppedFrames = 0;
+};
+
+struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };
+struct SeamMap { BufferId labelBuffer; int32_t width = 0, height = 0; };
+
+// ------------------------------------------------- platform value types
+struct CameraCapabilities {
+  int32_t maxWidth = 0, maxHeight = 0;
+  double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 when the platform will not say
+  bool supportsExposureLock = false;
+  bool supportsFocusLock = false;
+  bool supportsTorch = false;
+  double maxBurstFps = 0;
+};
+
+struct CameraOpenSpec {
+  int32_t preferredWidth = 0, preferredHeight = 0;
+  bool preferRearCamera = true;
+};
+
+struct FrameStoreBudget {
+  int64_t heapCeilingBytes = 0;    // measured at startup, not assumed
+  int64_t heapUsedBytes = 0;
+  int64_t spilledBytes = 0;
+};
+
+struct ComputeCapabilities {
+  bool webgpu = false;
+  bool simd = false;
+  int32_t threads = 0;         // 0 == single-threaded; a supported mode, not a failure
+  int64_t gpuMaxBufferBytes = 0;
+};
+
+enum class Kernel : uint16_t {
+  WarpEquirect, GaussianPyramid, LaplacianPyramid, MultibandBlend,
+  Downsample, AbsDiffMask, GainMap
+};
+
+struct KernelArgs {
+  std::vector<FrameRef> inputs;
+  std::vector<FrameRef> outputs;
+  std::vector<double> scalars;
+};
+
+// The one place that knows whether work runs on the GPU, on threads, or serially.
+// Both backends must produce numerically equivalent results; a differential test enforces it.
+// -------------------------------------------------- manager value types
+enum class FrameVerdict : uint8_t { Accepted, RejectedQuality, RejectedPose, BurstComplete };
+
+struct ProjectSummary {
+  ProjectId id;
+  std::string title;
+  int64_t createdAtMs = 0;
+  int32_t nodesTotal = 0, nodesSatisfied = 0;
+  bool hasBuild = false;
+};
+
+struct ExportSpec {
+  EncodeSpec encode;
+  std::string filename;
+  bool share = false;   // share sheet if available, otherwise download
 };
 
 }  // namespace sphanorama

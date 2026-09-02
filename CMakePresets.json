@@ -1,0 +1,46 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "native-debug",
+      "displayName": "Native debug — the default for TDD",
+      "binaryDir": "${sourceDir}/build/native-debug",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "native-release",
+      "displayName": "Native release — what the bench measures",
+      "binaryDir": "${sourceDir}/build/native-release",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "native-asan",
+      "displayName": "Native with address and UB sanitizers",
+      "binaryDir": "${sourceDir}/build/native-asan",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native-debug", "configurePreset": "native-debug" },
+    { "name": "native-release", "configurePreset": "native-release" },
+    { "name": "native-asan", "configurePreset": "native-asan" }
+  ],
+  "testPresets": [
+    {
+      "name": "native-debug",
+      "configurePreset": "native-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "native-asan",
+      "configurePreset": "native-asan",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

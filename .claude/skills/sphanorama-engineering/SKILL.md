@@ -60,8 +60,13 @@ an ADR, not a comment.
 
 ## Contracts
 
-`contracts/cpp/sphanorama/` is the source of truth; `contracts/ts/contracts.d.ts` mirrors the
-subset that crosses the WASM boundary and is generated from it (CI fails on drift).
+`contracts/cpp/sphanorama/` is the source of truth and is the include root — the build adds
+`contracts/cpp` to the include path, so headers are consumed directly and never mirrored into
+`core/`. One interface per header, which is what makes the layer check able to tell a manager
+implementing its own contract from a manager calling another one (ADR 0008).
+
+`contracts/ts/contracts.d.ts` mirrors the subset that crosses the WASM boundary. It is
+hand-maintained until the Phase 0 codegen lands; update it in the same commit as the header.
 
 - **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is the
   only route to bytes, and only inside the core.
@@ -144,8 +149,7 @@ in a fifth place, or status updates. A document with no job should be deleted.
 ## Repo structure
 
 ```
-core/                 C++: managers, engines, resource-access contracts, native adapters
-  include/sphanorama/ public contracts
+core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest, mirroring src/
 bench/                native CLI client — runs the core on datasets, prints timings
@@ -167,7 +171,8 @@ contracts. Feature-shaped directories are how layer discipline erodes.
 - [ ] Test written first, failed for the intended reason.
 - [ ] Implementation is the smallest thing that passes it.
 - [ ] Layer check passes.
-- [ ] Contract-drift check passes.
+- [ ] Contract-drift check passes. *(Not built yet — until the Phase 0 codegen lands, update
+      `contracts/ts/contracts.d.ts` by hand in the same commit as the C++ header.)*
 - [ ] Native build compiles the core with zero Emscripten symbols.
 - [ ] Affected docs updated in this commit.
 - [ ] ADR written if the change qualifies.

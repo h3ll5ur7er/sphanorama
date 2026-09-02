@@ -20,5 +20,7 @@ The four things that are most expensive to get wrong:
 4. **Before adding a component, name the volatility it absorbs.** If it's already in
    `docs/02-volatility-map.md`, extend the existing owner instead.
 
-Status: architecture and contracts only — no implementation yet. Phase 0 in `docs/06-roadmap.md`
-is the next build step.
+Status: Phase 0 in progress. The native build, the utilities bar and the layer check are in and
+green (`cmake --preset native-debug && ctest --test-dir build/native-debug`); the WASM toolchain,
+the generated boundary and the null managers and engines are not started. See
+`docs/06-roadmap.md`.

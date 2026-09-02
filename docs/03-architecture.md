@@ -132,8 +132,11 @@ platform quirk lives, and it is the layer whose implementations are written in T
 7. Nothing calls upward. Results flow back as return values; asynchronous progress flows back as
    utility-bar events.
 
-These rules are checked mechanically: a CI step parses the include graph of the C++ core and fails
-the build on a violating edge (see [05](05-toolchain-and-testing.md)).
+These rules are checked mechanically: `tools/layer_check.py` parses the include graph and fails
+the build on a violating edge (see [05](05-toolchain-and-testing.md)). This is why contracts are
+one interface per header — under an aggregate header, a manager *calling* another manager is
+indistinguishable from a manager *implementing* its own interface, and rule 3 would be
+unenforceable (ADR [0008](adr/0008-contracts-are-the-include-path.md)).
 
 ## 3.4 The three managers
 

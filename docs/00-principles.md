@@ -122,6 +122,8 @@ A change is done when all of these hold. They are cheap to check and expensive t
 - [ ] The implementation is the smallest thing that passes it.
 - [ ] The layer check passes — no violating call edge.
 - [ ] The contract-drift check passes — the TypeScript mirror matches the C++ headers.
+      *(Not yet implemented: the mirror is still hand-maintained until the Phase 0 codegen
+      lands. Until then, update `contracts/ts/contracts.d.ts` by hand in the same commit.)*
 - [ ] The native build compiles the core with zero Emscripten symbols.
 - [ ] Affected documents are updated in this commit.
 - [ ] An ADR exists if the change qualifies (§0.3).
@@ -147,8 +149,8 @@ analysis missed an axis. That is real information — record it.
 ## 0.6 Repo structure
 
 ```
-core/                 C++: managers, engines, resource-access contracts, native adapters
-  include/sphanorama/ public contracts
+contracts/cpp/        the include root — headers are consumed directly, never mirrored
+core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest — mirrors src/ one file per unit
 bench/                native CLI client: runs the core on datasets, prints timings
