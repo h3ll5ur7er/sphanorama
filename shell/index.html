@@ -30,9 +30,10 @@
         <dt>camera</dt><dd id="camera-state">—</dd>
         <dt>motion</dt><dd id="motion-state">—</dd>
         <dt>orientation</dt><dd id="orientation">—</dd>
+        <dt>facade</dt><dd id="facade">—</dd>
       </dl>
       <button id="enable" type="button">Enable camera &amp; motion</button>
-      <p id="note">Phase 0 walking skeleton: sensors and camera routed through the WASM core. No capture yet.</p>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade. Capture needs a camera port that is not built yet, so a session refuses with a reason rather than producing empty frames.</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>

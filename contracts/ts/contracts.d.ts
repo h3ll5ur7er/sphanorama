@@ -39,7 +39,7 @@ export type StatusCode = 'Ok' | 'InvalidArgument' | 'NotFound' | 'FailedPrecondi
 
 export interface Status {
   code: StatusCode;
-  /** static string: which service reported it */
+  /** which service reported it */
   component: string;
   /** human-readable, never parsed */
   detail: string;

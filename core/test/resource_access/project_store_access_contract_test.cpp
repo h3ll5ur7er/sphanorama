@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "sphanorama/resource_access/project_store_access.h"
+#include "resource_access/project_store_access/memory_project_store_access.h"
 #include "support/fake_project_store_access.h"
 
 namespace sphanorama {
@@ -19,7 +20,16 @@ class ProjectStoreAccessContract : public ::testing::Test {
   std::unique_ptr<IProjectStoreAccess> store = Factory::Create();
 };
 
-using Implementations = ::testing::Types<FakeProjectStoreAccessFactory>;
+struct MemoryProjectStoreAccessFactory {
+  static std::unique_ptr<IProjectStoreAccess> Create() {
+    return std::make_unique<MemoryProjectStoreAccess>();
+  }
+};
+
+// Two implementations now, which is the point of a shared suite: the property that matters is
+// that they agree, and adding one is a line here rather than a second test file (ADR 0010).
+using Implementations = ::testing::Types<FakeProjectStoreAccessFactory,
+                                         MemoryProjectStoreAccessFactory>;
 TYPED_TEST_SUITE(ProjectStoreAccessContract, Implementations);
 
 TYPED_TEST(ProjectStoreAccessContract, ADocumentComesBackAsItWasWritten) {

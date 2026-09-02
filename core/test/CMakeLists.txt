@@ -19,6 +19,7 @@ add_executable(sphanorama_tests
   managers/capture_session_manager_test.cpp
   managers/project_manager_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp
+  ${CMAKE_SOURCE_DIR}/bridge/test/facade_test.cpp
   resource_access/camera_access_contract_test.cpp
   resource_access/codec_and_export_test.cpp
   resource_access/frame_store_access_contract_test.cpp

@@ -83,6 +83,63 @@ class CodecTest(unittest.TestCase):
         self.assertIn('static_cast<int32_t>(value.state)', cpp)
 
 
+class MethodTableTest(unittest.TestCase):
+    def setUp(self):
+        self.module = parse(
+            "// @boundary\n"
+            "class IProjectManager {\n"
+            " public:\n"
+            "  virtual Result<ProjectId> Create(std::string_view title) = 0;\n"
+            "  virtual Status Delete(ProjectId project) = 0;\n"
+            "};\n"
+            "// @boundary\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Coverage() const = 0;\n"
+            "};\n")
+
+    def test_every_boundary_method_gets_an_id(self):
+        names = [m.wire_name for m in contract_gen.method_table(self.module)]
+        self.assertIn('ProjectManager.create', names)
+        self.assertIn('ProjectManager.delete', names)
+        self.assertIn('CaptureSessionManager.coverage', names)
+
+    def test_ids_are_dense_and_stable_under_reparse(self):
+        first = [m.wire_name for m in contract_gen.method_table(self.module)]
+        second = [m.wire_name for m in contract_gen.method_table(self.module)]
+        self.assertEqual(first, second)
+        self.assertEqual([m.id for m in contract_gen.method_table(self.module)],
+                         list(range(len(first))))
+
+    def test_the_method_table_is_published_for_lookup_by_name(self):
+        # Same reason the probe publishes its field names: an id the client hard-codes is an id
+        # that silently shifts the day a method is inserted above it.
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        self.assertIn('sph_facade_method_name', cpp)
+        self.assertIn('"ProjectManager.create"', cpp)
+
+    def test_the_dispatcher_covers_every_method(self):
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        for wire in ('ProjectManager.create', 'ProjectManager.delete',
+                     'CaptureSessionManager.coverage'):
+            self.assertIn(wire, cpp)
+
+    def test_the_dispatcher_rejects_an_unknown_method_id(self):
+        # The id space is shared with a client that may be a stale cached bundle.
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        self.assertIn('default:', cpp)
+
+    def test_the_typescript_proxy_exposes_each_interface(self):
+        ts = contract_gen.emit_ts_facade(self.module)
+        self.assertIn('createProjectManagerProxy', ts)
+        self.assertIn('createCaptureSessionManagerProxy', ts)
+        self.assertIn('async create(', ts)
+
+    def test_the_proxy_calls_methods_by_name_not_by_id(self):
+        ts = contract_gen.emit_ts_facade(self.module)
+        self.assertIn("'ProjectManager.create'", ts)
+
+
 class GeneratedFilesTest(unittest.TestCase):
     def test_the_committed_generated_files_are_up_to_date(self):
         # The drift check, as a unit test so it fails locally before CI does.

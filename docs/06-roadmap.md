@@ -28,11 +28,20 @@ capabilities, opens the camera and streams live orientation, and deploys to GitH
 three managers and five null engines are in, with the capture sequence from
 [UC-1](03-architecture.md) driven end to end against fakes.
 
-What is missing before the exit criterion is met: the generated manager facade, so the client
-reaches the capture session rather than only the capability probe; and a real
-`CoveragePlannerEngine`, so the reticle follows a coverage plan instead of a sensor readout. The
-null planner deliberately plans one cell at identity — enough for the sequence to have a target,
-and obviously not a tessellation.
+The generated facade is in: the client calls managers through typed proxies, and a domain failure
+arrives as a `Status` it can branch on.
+
+What is missing before the exit criterion is met, in the order it blocks:
+
+1. **Resource-access ports.** The camera, motion sensor, frame store and export live in the
+   browser and reach the core through ports that do not exist. Until they do, a capture session
+   refuses with `CameraUnavailable` — honestly, but it refuses. This is the last structural piece.
+2. **A real `CoveragePlannerEngine`**, so the reticle follows a coverage plan rather than a sensor
+   readout. The null planner deliberately plans one cell at identity.
+3. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
+   Phase 2 registration, and the size budget has 8.38 MB of headroom), the `bench/` CLI, and the
+   synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
+   actually need.
 
 ---
 

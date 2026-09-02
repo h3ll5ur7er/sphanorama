@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 BOUNDARY_MARKER = "@boundary"
+FACADE_MARKER = "@facade"
 
 # The scalar subset. Anything else is a hard error rather than a guess.
 SCALARS = {
@@ -93,6 +94,9 @@ class Interface:
     name: str
     methods: list[Method]
     doc: list[str] = field(default_factory=list)
+    # True when the client calls into this interface. Resource accesses are mirrored but not
+    # dispatched: the browser implements them, so the call goes the other way.
+    facade: bool = False
 
 
 @dataclass
@@ -158,7 +162,8 @@ SKIPPABLE = re.compile(
 
 
 def _collect_doc(pending: list[str]) -> list[str]:
-    doc = [line for line in pending if BOUNDARY_MARKER not in line]
+    doc = [line for line in pending
+           if BOUNDARY_MARKER not in line and FACADE_MARKER not in line]
     return [d for d in doc if d.strip()]
 
 
@@ -219,8 +224,9 @@ def parse(text: str) -> Module:
             is_boundary = any(BOUNDARY_MARKER in d for d in pending)
             if is_boundary:
                 name = m.group(1)
-                module.declarations.append(
-                    Interface(name, _parse_methods(body, name), _collect_doc(pending)))
+                module.declarations.append(Interface(
+                    name, _parse_methods(body, name), _collect_doc(pending),
+                    facade=any(FACADE_MARKER in d for d in pending)))
             pending = []
             continue
 
@@ -332,6 +338,11 @@ def _parse_fields(body: str, name: str) -> list[Field]:
             if split is None:
                 raise ContractSyntaxError(f"struct {name}: cannot parse field {decl!r}")
             cpp_type, declarators = split
+
+            if re.search(r"\bstd::string_view\b", cpp_type):
+                raise ContractSyntaxError(
+                    f"struct {name}: std::string_view cannot be a data member — decoding one "
+                    f"would leave it pointing at a temporary. Use std::string.")
 
             for declarator in declarators.split(","):
                 piece = declarator.split("=")[0].strip()
@@ -484,7 +495,7 @@ def method_table(module: Module) -> list[BoundaryMethod]:
     """Every method of every @boundary interface, in declaration order, with dense ids."""
     methods: list[BoundaryMethod] = []
     for decl in module.declarations:
-        if not isinstance(decl, Interface):
+        if not isinstance(decl, Interface) or not decl.facade:
             continue
         facing = decl.name[1:] if decl.name.startswith("I") else decl.name
         for method in decl.methods:
@@ -596,6 +607,8 @@ def generate_all(root: Path) -> dict[str, str]:
         "contracts/ts/contracts.d.ts": emit_typescript(module),
         "contracts/cpp/sphanorama/codec.h": emit_cpp_codec(module),
         "shell/src/bridge/codec.generated.ts": emit_ts_codec(module),
+        "bridge/facade.generated.cpp": emit_cpp_facade(module),
+        "shell/src/bridge/facade.generated.ts": emit_ts_facade(module),
     }
 
 
@@ -731,7 +744,7 @@ def wire_kind_from_ts(ts: str) -> str:
     return f"named:{ts}"
 
 
-def _cpp_put(kind: str, expr: str, enums: set[str], ids: set[str]) -> str:
+def _cpp_put(kind: str, expr: str, enums: set[str], ids: set[str], qualifier: str = "") -> str:
     if kind == "bool":
         return f"out.PutBool({expr});"
     if kind == "i32":
@@ -748,16 +761,17 @@ def _cpp_put(kind: str, expr: str, enums: set[str], ids: set[str]) -> str:
         inner = kind[5:]
         return (f"out.PutCount({expr}.size());\n"
                 f"  for (const auto& item : {expr}) "
-                f"{{ {_cpp_put(f'named:{inner}', 'item', enums, ids)} }}")
+                f"{{ {_cpp_put(f'named:{inner}', 'item', enums, ids, qualifier)} }}")
     name = kind[6:]
     if name in enums:
         return f"out.PutI32(static_cast<int32_t>({expr}));"
     if name in ids:
         return f"out.PutF64(static_cast<double>({expr}.value));"
-    return f"Encode(out, {expr});"
+    return f"{qualifier}Encode(out, {expr});"
 
 
-def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str]) -> str:
+def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str], qualifier: str = "",
+             on_fail: str = "return false;") -> str:
     if kind == "bool":
         return f"{target} = in.GetBool();"
     if kind == "i32":
@@ -773,17 +787,17 @@ def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str]) -> str:
     if kind.startswith("list:"):
         inner = kind[5:]
         return (f"{{ const size_t count = in.GetCount(1);\n"
-                f"    if (!in.ok()) return false;\n"
+                f"    if (!in.ok()) {on_fail}\n"
                 f"    {target}.clear();\n"
                 f"    {target}.resize(count);\n"
                 f"    for (auto& item : {target}) "
-                f"{{ {_cpp_get(f'named:{inner}', 'item', enums, ids)} }} }}")
+                f"{{ {_cpp_get(f'named:{inner}', 'item', enums, ids, qualifier, on_fail)} }} }}")
     name = kind[6:]
     if name in enums:
         return f"{target} = static_cast<{name}>(in.GetI32());"
     if name in ids:
         return f"{target}.value = static_cast<uint64_t>(in.GetF64());"
-    return f"if (!Decode(in, {target})) return false;"
+    return f"if (!{qualifier}Decode(in, {target})) {on_fail}"
 
 
 def emit_cpp_codec(module: Module) -> str:
@@ -824,54 +838,57 @@ def emit_cpp_codec(module: Module) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)) + "\n"
 
 
-def _ts_put(kind: str, expr: str, enums: dict[str, Enum], ids: set[str]) -> str:
+def _ts_put(kind: str, expr: str, enums: dict[str, Enum], ids: set[str],
+            writer: str = "out", qualifier: str = "") -> str:
     if kind == "bool":
-        return f"out.bool({expr});"
+        return f"{writer}.bool({expr});"
     if kind in ("i32",):
-        return f"out.i32({expr});"
+        return f"{writer}.i32({expr});"
     if kind == "f64":
-        return f"out.f64({expr});"
+        return f"{writer}.f64({expr});"
     if kind == "u64":
-        return f"out.u64({expr});"
+        return f"{writer}.u64({expr});"
     if kind == "string":
-        return f"out.string({expr});"
+        return f"{writer}.string({expr});"
     if kind == "bytes":
-        return f"out.bytes({expr});"
+        return f"{writer}.bytes({expr});"
     if kind.startswith("list:"):
         inner = kind[5:]
-        return (f"out.count({expr}.length);\n"
-                f"  for (const item of {expr}) {{ {_ts_put(f'named:{inner}', 'item', enums, ids)} }}")
+        return (f"{writer}.count({expr}.length);\n"
+                f"  for (const item of {expr}) "
+                f"{{ {_ts_put(f'named:{inner}', 'item', enums, ids, writer, qualifier)} }}")
     name = kind[6:]
     if name in enums:
-        return f"out.i32({name}Values.indexOf({expr}));"
+        return f"{writer}.i32({qualifier}{name}Values.indexOf({expr}));"
     if name in ids:
-        return f"out.f64({expr});"
-    return f"encode{name}(out, {expr});"
+        return f"{writer}.f64({expr});"
+    return f"{qualifier}encode{name}({writer}, {expr});"
 
 
-def _ts_get(kind: str, enums: dict[str, Enum], ids: set[str]) -> str:
+def _ts_get(kind: str, enums: dict[str, Enum], ids: set[str],
+            reader: str = "input", qualifier: str = "") -> str:
     if kind == "bool":
-        return "input.bool()"
+        return f"{reader}.bool()"
     if kind == "i32":
-        return "input.i32()"
+        return f"{reader}.i32()"
     if kind == "f64":
-        return "input.f64()"
+        return f"{reader}.f64()"
     if kind == "u64":
-        return "input.u64()"
+        return f"{reader}.u64()"
     if kind == "string":
-        return "input.string()"
+        return f"{reader}.string()"
     if kind == "bytes":
-        return "input.bytes()"
+        return f"{reader}.bytes()"
     if kind.startswith("list:"):
         inner = kind[5:]
-        return (f"Array.from({{ length: input.count() }}, () => "
-                f"{_ts_get(f'named:{inner}', enums, ids)})")
+        return (f"Array.from({{ length: {reader}.count() }}, () => "
+                f"{_ts_get(f'named:{inner}', enums, ids, reader, qualifier)})")
     name = kind[6:]
     if name in enums:
-        return f"{name}Values[input.i32()]"
+        return f"{qualifier}{name}Values[{reader}.i32()]"
     if name in ids:
-        return f"input.f64() as C.{name}"
-    return f"decode{name}(input)"
+        return f"{reader}.f64() as C.{name}"
+    return f"{qualifier}decode{name}({reader})"
 
 
 def emit_ts_codec(module: Module) -> str:
@@ -909,6 +926,224 @@ def emit_ts_codec(module: Module) -> str:
         out.append("")
 
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).rstrip() + "\n"
+
+# ------------------------------------------------------------------------- facade dispatch
+
+CPP_FACADE_PREAMBLE = """// GENERATED FILE — DO NOT EDIT. Produced by tools/contract_gen.py.
+//
+// Dispatch for every @boundary method: decode the arguments, call the manager the runtime holds,
+// encode the Result. Generated because a hand-written switch over a growing method list is a
+// place to forget a case, and a forgotten case is a call that exists on one side only.
+//
+// Method ids are dense and published by name (sph_facade_method_name), so the client resolves
+// names rather than hard-coding ids that shift the day a method is inserted above them.
+#include "facade.h"
+
+#include <span>
+#include <string>
+#include <vector>
+
+#include "sphanorama/codec.h"
+#include "runtime.h"
+
+namespace {
+
+using sphanorama::wire::Reader;
+using sphanorama::wire::Writer;
+
+// The single result buffer the C ABI hands back. One call is in flight at a time by
+// construction: the core runs on its own worker and the facade is synchronous.
+std::vector<uint8_t> g_result;
+
+void PutStatus(Writer& out, const sphanorama::Status& status) {
+  out.PutI32(static_cast<int32_t>(status.code));
+  out.PutString(status.component);
+  out.PutString(status.detail);
+}
+"""
+
+TS_FACADE_PREAMBLE = """/**
+ * GENERATED FILE — DO NOT EDIT. Produced by tools/contract_gen.py.
+ *
+ * Typed proxies over the facade. Each method encodes its arguments with the generated codec,
+ * calls across the boundary by *name*, and decodes a Result — so a client never sees a method id
+ * and cannot be broken by one shifting.
+ */
+import type * as C from '../../../contracts/ts/contracts';
+import { Reader, Writer } from './wire';
+import type { FacadeCall } from './facade';
+import { decodeStatus } from './facade';
+import * as codec from './codec.generated';
+"""
+
+
+def _cpp_result_encode(kind: str, enums: set[str], ids: set[str]) -> str:
+    if kind == "void":
+        return ""
+    return _cpp_put(kind, "result.value", enums, ids, qualifier="codec::")
+
+
+def emit_cpp_facade(module: Module) -> str:
+    _structs, enum_map, id_set = _index(module)
+    enums = set(enum_map)
+    methods = method_table(module)
+
+    out = [CPP_FACADE_PREAMBLE]
+    out.append("const char* const kMethodNames[] = {")
+    for method in methods:
+        out.append(f'    "{method.wire_name}",')
+    out.append("};")
+    out.append("")
+    out.append("constexpr int32_t kMethodCount = "
+               f"{len(methods)};")
+    out.append("")
+    out.append("}  // namespace")
+    out.append("")
+    out.append("extern \"C\" {")
+    out.append("")
+    out.append("SPH_EXPORT int32_t sph_facade_method_count() { return kMethodCount; }")
+    out.append("")
+    out.append("SPH_EXPORT const char* sph_facade_method_name(int32_t id) {")
+    out.append("  if (id < 0 || id >= kMethodCount) return nullptr;")
+    out.append("  return kMethodNames[id];")
+    out.append("}")
+    out.append("")
+    out.append("SPH_EXPORT const uint8_t* sph_facade_result() { return g_result.data(); }")
+    out.append("")
+    out.append("SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,")
+    out.append("                                   int32_t argsLen) {")
+    out.append("  using namespace sphanorama;")
+    out.append("  Reader in(args, argsLen < 0 ? 0u : static_cast<size_t>(argsLen));")
+    out.append("  Writer out;")
+    out.append("  auto& runtime = bridge::Runtime::Instance();")
+    out.append("  (void)runtime;")
+    out.append("")
+    out.append("  switch (methodId) {")
+
+    for method in methods:
+        accessor = _runtime_accessor(method.interface)
+        out.append(f"    case {method.id}: {{  // {method.wire_name}")
+        arg_names = []
+        for name, ts in method.params:
+            kind = wire_kind_from_ts(ts)
+            decl, expr = _cpp_param_decl(name, ts, kind, enums, id_set)
+            out.extend("      " + line for line in decl)
+            arg_names.append(expr)
+        if method.params:
+            out.append("      if (!in.ok()) {")
+            out.append("        PutStatus(out, Fail(StatusCode::InvalidArgument, \"facade\",")
+            out.append("                            \"malformed arguments\"));")
+            out.append("        break;")
+            out.append("      }")
+        call = f"runtime.{accessor}().{method.method}({', '.join(arg_names)})"
+        ret_kind = wire_kind_from_ts(method.returns)
+        if ret_kind == "void":
+            out.append(f"      const Status status = {call};")
+            out.append("      PutStatus(out, status);")
+        else:
+            out.append(f"      auto result = {call};")
+            out.append("      PutStatus(out, result.status);")
+            out.append("      if (result.ok()) {")
+            out.append(f"        {_cpp_result_encode(ret_kind, enums, id_set)}")
+            out.append("      }")
+        out.append("      break;")
+        out.append("    }")
+
+    out.append("    default:")
+    out.append("      // A client bundle can be older than the core it loaded; an unknown id is a")
+    out.append("      // version mismatch to report, not a crash.")
+    out.append("      PutStatus(out, Fail(StatusCode::NotFound, \"facade\", \"unknown method id\"));")
+    out.append("      break;")
+    out.append("  }")
+    out.append("")
+    out.append("  g_result = out.bytes();")
+    out.append("  return static_cast<int32_t>(g_result.size());")
+    out.append("}")
+    out.append("")
+    out.append("}  // extern \"C\"")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)) + "\n"
+
+
+def _runtime_accessor(interface: str) -> str:
+    return lower_camel(interface).replace("Manager", "")
+
+
+def _cpp_param_decl(name: str, ts: str, kind: str, enums: set[str],
+                    ids: set[str]) -> tuple[list[str], str]:
+    """Lines declaring a decoded parameter, and the expression to pass to the manager."""
+    if kind.startswith("list:"):
+        inner = kind[5:]
+        decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="break;")
+        return ([f"std::vector<{inner}> {name};", decode], f"std::span<const {inner}>({name})")
+
+    decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="break;")
+    return ([f"{_cpp_type_for(ts, enums, ids)} {name}{{}};", decode], name)
+
+
+def _cpp_type_for(ts: str, enums: set[str], ids: set[str]) -> str:
+    if ts == "number":
+        return "double"
+    if ts == "bigint":
+        return "uint64_t"
+    if ts == "boolean":
+        return "bool"
+    if ts == "string":
+        return "std::string"
+    if ts == "Uint8Array":
+        return "std::vector<uint8_t>"
+    return ts
+
+
+def _ts_param_type(ts: str) -> str:
+    """Primitives are themselves; anything named comes from the generated contracts module."""
+    if ts in ("number", "boolean", "string", "bigint", "Uint8Array", "void"):
+        return ts
+    if ts.endswith("[]"):
+        return f"C.{ts[:-2]}[]"
+    return f"C.{ts}"
+
+
+def emit_ts_facade(module: Module) -> str:
+    _structs, enum_map, id_set = _index(module)
+    methods = method_table(module)
+
+    by_interface: dict[str, list[BoundaryMethod]] = {}
+    for method in methods:
+        by_interface.setdefault(method.interface, []).append(method)
+
+    out = [TS_FACADE_PREAMBLE]
+    for interface, group in by_interface.items():
+        out.append(f"export function create{interface}Proxy(call: FacadeCall) {{")
+        out.append("  return {")
+        for method in group:
+            params = ", ".join(f"{n}: {_ts_param_type(t)}" for n, t in method.params)
+            ret = method.returns
+            out.append(f"    async {lower_camel(method.method)}({params}): "
+                       f"Promise<C.{ret[7:-1]}> {{" if False else
+                       f"    async {lower_camel(method.method)}({params}) {{")
+            out.append("      const args = new Writer();")
+            for name, ts in method.params:
+                kind = wire_kind_from_ts(ts)
+                out.append(f"      {_ts_put(kind, name, enum_map, id_set, 'args', 'codec.')}")
+            out.append(f"      const raw = await call('{method.wire_name}', args.finish());")
+            out.append("      const input = new Reader(raw);")
+            out.append("      const status = decodeStatus(input);")
+            ret_kind = wire_kind_from_ts(method.returns)
+            if ret_kind == "void":
+                out.append("      return status.code === 'Ok'")
+                out.append("        ? ({ ok: true, value: undefined } as const)")
+                out.append("        : ({ ok: false, status } as const);")
+            else:
+                out.append("      if (status.code !== 'Ok') return { ok: false, status } as const;")
+                out.append("      return { ok: true, value: "
+                           f"{_ts_get(ret_kind, enum_map, id_set, 'input', 'codec.')} }} as const;")
+            out.append("    },")
+        out.append("  };")
+        out.append("}")
+        out.append("")
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).rstrip() + "\n"
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))

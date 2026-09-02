@@ -59,7 +59,7 @@ enum class StatusCode : uint16_t {
 
 struct Status {
   StatusCode code = StatusCode::Ok;
-  std::string_view component;   // static string: which service reported it
+  std::string component;        // which service reported it
   std::string detail;           // human-readable, never parsed
   bool ok() const { return code == StatusCode::Ok; }
   static Status Ok() { return {}; }

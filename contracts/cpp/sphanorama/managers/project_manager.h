@@ -5,7 +5,7 @@
 namespace sphanorama {
 
 // V3 — project lifecycle and export. The only manager that touches IExportAccess.
-// @boundary
+// @boundary @facade
 class IProjectManager {
  public:
   virtual ~IProjectManager() = default;

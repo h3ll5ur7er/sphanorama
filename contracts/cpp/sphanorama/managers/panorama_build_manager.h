@@ -5,7 +5,7 @@
 namespace sphanorama {
 
 // V2 — how a panorama is built, including incremental rebuild.
-// @boundary
+// @boundary @facade
 class IPanoramaBuildManager {
  public:
   virtual ~IPanoramaBuildManager() = default;

@@ -19,6 +19,7 @@ const coreCaps = el('core-caps');
 const cameraState = el('camera-state');
 const motionState = el('motion-state');
 const orientationOut = el('orientation');
+const facadeOut = el('facade');
 const enableButton = el<HTMLButtonElement>('enable');
 
 const camera = createCameraAccess(navigator.mediaDevices);
@@ -83,6 +84,20 @@ function pump() {
   requestAnimationFrame(step);
 }
 
+/**
+ * Exercises the boundary with a real call rather than reporting that it exists.
+ *
+ * ProjectManager.list is the honest choice: it needs no resource-access port, so what it proves
+ * is the marshalling round trip — encode, dispatch, decode a Result — and nothing about a
+ * capture pipeline that is not built.
+ */
+async function reportFacade(core: SphanoramaCore) {
+  const listed = await core.project.list();
+  facadeOut.textContent = listed.ok
+    ? `${core.methods().length} methods · ${listed.value.length} projects`
+    : `call failed: ${listed.status.code}`;
+}
+
 async function main() {
   try {
     const core = await instantiateCore();
@@ -90,6 +105,10 @@ async function main() {
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
     }));
+    // Exposed for the end-to-end suite to drive the boundary directly. The client itself
+    // never reads this; it holds `core` in scope.
+    (window as unknown as { sphanoramaCore: SphanoramaCore }).sphanoramaCore = core;
+    await reportFacade(core);
     stage.textContent = 'core ready — enable the camera to continue';
     enableButton.addEventListener('click', () => { void enable(); });
   } catch (cause) {

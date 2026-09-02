@@ -56,10 +56,6 @@ void Encode(Writer& out, const EncodeSpec& value);
 bool Decode(Reader& in, EncodeSpec& value);
 void Encode(Writer& out, const PanoramaRef& value);
 bool Decode(Reader& in, PanoramaRef& value);
-void Encode(Writer& out, const CameraCapabilities& value);
-bool Decode(Reader& in, CameraCapabilities& value);
-void Encode(Writer& out, const CameraOpenSpec& value);
-bool Decode(Reader& in, CameraOpenSpec& value);
 void Encode(Writer& out, const ProjectSummary& value);
 bool Decode(Reader& in, ProjectSummary& value);
 void Encode(Writer& out, const ExportSpec& value);
@@ -417,42 +413,6 @@ inline bool Decode(Reader& in, PanoramaRef& value) {
     value.tiles.resize(count);
     for (auto& item : value.tiles) { if (!Decode(in, item)) return false; } }
   if (!Decode(in, value.preview)) return false;
-  return in.ok();
-}
-
-inline void Encode(Writer& out, const CameraCapabilities& value) {
-  out.PutF64(static_cast<double>(value.maxWidth));
-  out.PutF64(static_cast<double>(value.maxHeight));
-  out.PutF64(static_cast<double>(value.horizontalFovDeg));
-  out.PutF64(static_cast<double>(value.verticalFovDeg));
-  out.PutBool(value.supportsExposureLock);
-  out.PutBool(value.supportsFocusLock);
-  out.PutBool(value.supportsTorch);
-  out.PutF64(static_cast<double>(value.maxBurstFps));
-}
-
-inline bool Decode(Reader& in, CameraCapabilities& value) {
-  value.maxWidth = static_cast<decltype(value.maxWidth)>(in.GetF64());
-  value.maxHeight = static_cast<decltype(value.maxHeight)>(in.GetF64());
-  value.horizontalFovDeg = static_cast<decltype(value.horizontalFovDeg)>(in.GetF64());
-  value.verticalFovDeg = static_cast<decltype(value.verticalFovDeg)>(in.GetF64());
-  value.supportsExposureLock = in.GetBool();
-  value.supportsFocusLock = in.GetBool();
-  value.supportsTorch = in.GetBool();
-  value.maxBurstFps = static_cast<decltype(value.maxBurstFps)>(in.GetF64());
-  return in.ok();
-}
-
-inline void Encode(Writer& out, const CameraOpenSpec& value) {
-  out.PutF64(static_cast<double>(value.preferredWidth));
-  out.PutF64(static_cast<double>(value.preferredHeight));
-  out.PutBool(value.preferRearCamera);
-}
-
-inline bool Decode(Reader& in, CameraOpenSpec& value) {
-  value.preferredWidth = static_cast<decltype(value.preferredWidth)>(in.GetF64());
-  value.preferredHeight = static_cast<decltype(value.preferredHeight)>(in.GetF64());
-  value.preferRearCamera = in.GetBool();
   return in.ok();
 }
 

@@ -68,9 +68,14 @@ implementing its own contract from a manager calling another one (ADR 0008).
 `contracts/ts/contracts.d.ts` is **generated** from those headers by `tools/contract_gen.py`
 (ADR 0009) and must never be edited: change the C++ and regenerate. The parser accepts only a
 small subset and raises on anything else, so a header that grows an unmirrorable construct fails
-the build rather than drifting silently. Mark an interface `// @boundary` to have it mirrored —
-engines and utilities never cross into JavaScript, and nor do the three resource accesses that
-move bytes through the shared heap.
+the build rather than drifting silently. Two markers, because the boundary has two directions: `// @boundary` mirrors an interface into
+TypeScript, and `// @facade` additionally generates dispatch for it. Only managers carry
+`@facade` — the browser *implements* the resource accesses, so those calls go the other way.
+Engines and utilities never cross at all, and nor do the three resource accesses that move bytes
+through the shared heap.
+
+A `std::string_view` cannot be a data member of a contract type: it encodes fine and cannot be
+decoded, since there is nothing owning the bytes. The generator refuses it.
 
 - **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is the
   only route to bytes, and only inside the core.

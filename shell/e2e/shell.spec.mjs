@@ -73,6 +73,52 @@ test('a declined camera explains itself instead of failing silently', async ({ b
   }
 });
 
+test('calls a manager through the generated facade', async ({ page }) => {
+  // The round trip end to end in a real browser: encode arguments, dispatch across the C ABI,
+  // decode a Result. The unit tests cover each half against a fake; this is the only place both
+  // halves and the real WASM build meet.
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    // ProjectManager.list needs no resource-access port, so what it proves is the marshalling,
+    // not a pipeline that is not built.
+    await expect(page.locator('#facade')).toContainText(/\d+ methods · \d+ projects/,
+                                                        { timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
+test('a manager failure crosses the boundary as a status, not a crash', async ({ page }) => {
+  // A domain failure has to arrive as something the client can branch on. If it came back as a
+  // trap the page would go blank with nothing to explain it.
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const outcome = await page.evaluate(async () => {
+      const core = window.sphanoramaCore;
+      const refused = await core.project.create('');          // an untitled project is refused
+      const started = await core.captureSession.begin(1, {
+        strategy: 'Rings', horizontalFovDeg: 0, verticalFovDeg: 0, overlapTarget: 0.3,
+        acceptanceConeDeg: 4, coverPoles: true, motion: 'None',
+      });
+      return {
+        refusedCode: refused.ok ? null : refused.status.code,
+        startedCode: started.ok ? null : started.status.code,
+        startedDetail: started.ok ? null : started.status.detail,
+      };
+    });
+    expect(outcome.refusedCode).toBe('InvalidArgument');
+    // No camera port exists, so the session refuses with a reason rather than producing frames.
+    expect(outcome.startedCode).toBe('CameraUnavailable');
+    expect(outcome.startedDetail).toContain('port');
+  } finally {
+    await server.close();
+  }
+});
+
 test('registers a service worker so the shell works offline', async ({ page }) => {
   const server = await serve();
   try {

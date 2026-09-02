@@ -42,10 +42,15 @@ strings and byte payloads length-prefixed.
 - A golden payload — one hex constant asserted by both the C++ and the TypeScript suite — pins the
   two halves to each other rather than each to its own emitter. A disagreement fails a test
   instead of producing nonsense in a browser.
-- Writing the emitters found a real defect in the mirror generator: `Status` was mapped to
-  `Result<void>` unconditionally, which is right for a method return and wrong for a field, so
-  `BuildProgress::failure` had silently lost its type. Returns and fields are now mapped
-  separately.
+- Writing the emitters found two real defects. The mirror generator mapped `Status` to
+  `Result<void>` unconditionally — right for a method return, wrong for a field — so
+  `BuildProgress::failure` had silently lost its type; returns and fields are now mapped
+  separately. And `Status::component` was a `std::string_view`, which encodes fine and *cannot be
+  decoded*: the generated `Decode` assigned it a temporary, leaving a dangling view on every
+  status that crossed the boundary. It is a `std::string` now, and the generator refuses a
+  `string_view` data member outright so the shape cannot recur.
+- The dangling view was caught by Clang through the Emscripten build, not by GCC and not by a
+  test. Keeping both compilers in CI is what found it.
 - Cost: a hand-rolled format with no schema evolution story. Acceptable while both sides ship
   together in one artefact; the moment a persisted document uses this encoding, versioning has to
   be designed rather than assumed.

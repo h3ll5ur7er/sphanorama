@@ -6,10 +6,6 @@ constexpr const char* kComponent = "PanoramaBuildManager";
 constexpr const char* kNotYet = "the build pipeline lands in Phase 2";
 }  // namespace
 
-PanoramaBuildManager::PanoramaBuildManager(IRegistrationEngine& registration,
-                                           ICompositionEngine& composition)
-    : registration_(registration), composition_(composition) {}
-
 Result<BuildId> PanoramaBuildManager::Start(SessionId, const BuildSpec&) {
   return Err<BuildId>(StatusCode::Unsupported, kComponent, kNotYet);
 }

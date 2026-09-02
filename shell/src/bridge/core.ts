@@ -1,13 +1,19 @@
 /**
  * Typed loader for the WASM core.
  *
- * The boundary is a C ABI over the shared heap (ADR 0012), and the module publishes its own field
- * layout, so nothing here re-declares it. That is the whole reason this file can be short: it
- * marshals, it does not decide anything.
+ * The boundary is a C ABI over the shared heap (ADR 0012), and the module publishes both its
+ * probe layout and its method table, so nothing here re-declares either. That is why this file
+ * can be short: it marshals and wires, it decides nothing.
  */
+import { createFacadeCall, type FacadeModule } from './facade';
+import {
+  createCaptureSessionManagerProxy,
+  createPanoramaBuildManagerProxy,
+  createProjectManagerProxy,
+} from './facade.generated';
 
 /** The subset of the Emscripten module this loader touches. */
-export interface EmscriptenModule {
+export interface EmscriptenModule extends FacadeModule {
   HEAP32: Int32Array;
   UTF8ToString(pointer: number): string;
   _sph_probe_field_count(): number;
@@ -35,6 +41,13 @@ export interface HostState {
 
 export interface SphanoramaCore {
   capabilities(host: HostState): RuntimeCapabilities;
+
+  /** Method names the core published, in id order. Useful for diagnostics and version checks. */
+  methods(): string[];
+
+  project: ReturnType<typeof createProjectManagerProxy>;
+  captureSession: ReturnType<typeof createCaptureSessionManagerProxy>;
+  panoramaBuild: ReturnType<typeof createPanoramaBuildManagerProxy>;
 }
 
 export type ModuleFactory = () => Promise<EmscriptenModule>;
@@ -51,7 +64,18 @@ export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> 
   const fields = Array.from({ length: fieldCount }, (_unused, index) =>
     module.UTF8ToString(module._sph_probe_field_name(index)));
 
+  // One call path, shared by every proxy: names resolved once here, ids never seen by a client.
+  const call = createFacadeCall(module);
+  const methodNames = Array.from(
+    { length: module._sph_facade_method_count() },
+    (_unused, id) => module.UTF8ToString(module._sph_facade_method_name(id)));
+
   return {
+    methods: () => methodNames,
+    project: createProjectManagerProxy(call),
+    captureSession: createCaptureSessionManagerProxy(call),
+    panoramaBuild: createPanoramaBuildManagerProxy(call),
+
     capabilities(host: HostState): RuntimeCapabilities {
       const pointer = module._malloc(fieldCount * 4);
       try {

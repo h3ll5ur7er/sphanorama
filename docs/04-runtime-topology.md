@@ -126,9 +126,19 @@ and `shell/src/bridge/codec.generated.ts` — over hand-written primitives in `w
 TypeScript suite pins the two halves to each other, so a disagreement about field order fails a
 test rather than decoding into plausible nonsense.
 
+Dispatch on top of the codec is generated too: `bridge/facade.generated.cpp` decodes arguments,
+calls the manager the composition root holds, and encodes the `Result`; `shell/src/bridge/facade.generated.ts`
+gives the client a typed proxy per manager. Method ids are dense and **published by name**, so a
+client resolves names at startup rather than hard-coding ids that shift the day a method is
+inserted above them.
+
+Two markers, because the boundary has two directions. `@boundary` mirrors an interface into
+TypeScript; `@facade` additionally dispatches it, and only managers carry it. Resource accesses are
+mirrored but never dispatched — the browser *implements* those, so the call goes the other way,
+through ports that are not built yet.
+
 FlatBuffers remains the right answer for zero-copy over large payloads and nothing here forecloses
-it; pixels never cross this way in any case. Not yet built: the method dispatch on top of the
-codec, so the client still reaches only the capability probe.
+it; pixels never cross this way in any case.
 
 ## 4.7 Error model
 

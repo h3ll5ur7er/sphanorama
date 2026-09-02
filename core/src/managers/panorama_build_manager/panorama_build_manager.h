@@ -1,7 +1,5 @@
 #pragma once
 
-#include "sphanorama/engines/composition_engine.h"
-#include "sphanorama/engines/registration_engine.h"
 #include "sphanorama/managers/panorama_build_manager.h"
 
 namespace sphanorama {
@@ -12,9 +10,12 @@ namespace sphanorama {
 //
 // It exists now rather than later so the facade exposes the real interface, and so the shape of
 // the incremental rebuild (ADR 0004) is fixed before anything depends on it.
+//
+// It takes no engines yet on purpose: it has no build to run them over, and a constructor
+// holding references nothing uses is a dependency claimed rather than needed. They arrive with
+// Start.
 class PanoramaBuildManager final : public IPanoramaBuildManager {
  public:
-  PanoramaBuildManager(IRegistrationEngine& registration, ICompositionEngine& composition);
 
   Result<BuildId> Start(SessionId session, const BuildSpec& spec) override;
   Result<BuildProgress> Poll(BuildId build) override;
@@ -22,10 +23,6 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Result<GhostReport> Ghosts(BuildId build) override;
   Status Invalidate(BuildId build, std::span<const NodeId> dirty) override;
   Status Cancel(BuildId build) override;
-
- private:
-  IRegistrationEngine& registration_;
-  ICompositionEngine& composition_;
 };
 
 }  // namespace sphanorama

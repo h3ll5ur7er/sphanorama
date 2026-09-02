@@ -21,6 +21,13 @@ function fakeModule(options: {
 
   return {
     HEAP32: heap,
+    // The facade half of the module. This suite is about the probe; the call path has its own
+    // tests in facade.test.ts, so an empty method table is the honest stand-in here.
+    HEAPU8: new Uint8Array(heap.buffer),
+    _sph_facade_method_count: () => 0,
+    _sph_facade_method_name: () => 0,
+    _sph_facade_call: () => 0,
+    _sph_facade_result: () => 0,
     UTF8ToString: (pointer: number) => fields[pointer - 1000] ?? '',
     _sph_probe_field_count: () => fields.length,
     _sph_probe_field_name: (index: number) => 1000 + index,

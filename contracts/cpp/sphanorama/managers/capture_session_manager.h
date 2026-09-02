@@ -9,7 +9,7 @@ namespace sphanorama {
 //
 // It decides *when* to ask each engine, never *how*: it does not decide what "best" means (V6),
 // where a reticle sits (V4), or how bytes are stored (V11).
-// @boundary
+// @boundary @facade
 class ICaptureSessionManager {
  public:
   virtual ~ICaptureSessionManager() = default;

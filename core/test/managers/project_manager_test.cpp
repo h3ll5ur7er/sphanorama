@@ -14,7 +14,7 @@ namespace {
 class Projects : public ::testing::Test {
  protected:
   void SetUp() override {
-    manager = std::make_unique<ProjectManager>(store, exporter);
+    manager = std::make_unique<ProjectManager>(store);
   }
   FakeProjectStoreAccess store;
   FakeExportAccess exporter;

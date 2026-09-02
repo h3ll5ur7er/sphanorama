@@ -2,12 +2,7 @@
 
 #include "capabilities.h"
 
-#if defined(__EMSCRIPTEN__)
-#include <emscripten/emscripten.h>
-#define SPH_EXPORT EMSCRIPTEN_KEEPALIVE
-#else
-#define SPH_EXPORT
-#endif
+#include "export.h"
 
 namespace {
 

@@ -4,16 +4,18 @@
 #include <string>
 
 #include "sphanorama/managers/project_manager.h"
-#include "sphanorama/resource_access/export_access.h"
 #include "sphanorama/resource_access/project_store_access.h"
 
 namespace sphanorama {
 
-// Project lifecycle and export. The only manager that touches IExportAccess, because export is
-// the one place bytes leave the device and that should be reachable from exactly one place.
+// Project lifecycle and export.
+//
+// Export is the one place bytes leave the device, so when it is implemented this will be the only
+// manager holding IExportAccess. It does not hold one yet: Export refuses before it would reach
+// for it, and a constructor taking a dependency nothing uses is a claim rather than a need.
 class ProjectManager final : public IProjectManager {
  public:
-  ProjectManager(IProjectStoreAccess& store, IExportAccess& exporter);
+  explicit ProjectManager(IProjectStoreAccess& store);
 
   Result<std::vector<ProjectSummary>> List() override;
   Result<ProjectId> Create(std::string_view title) override;
@@ -26,7 +28,6 @@ class ProjectManager final : public IProjectManager {
   bool Exists(ProjectId project);
 
   IProjectStoreAccess& store_;
-  IExportAccess& exporter_;
   uint64_t next_project_ = 1;
 };
 

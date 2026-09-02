@@ -6,8 +6,7 @@ constexpr const char* kComponent = "ProjectManager";
 constexpr const char* kTitleKey = "title";
 }  // namespace
 
-ProjectManager::ProjectManager(IProjectStoreAccess& store, IExportAccess& exporter)
-    : store_(store), exporter_(exporter) {}
+ProjectManager::ProjectManager(IProjectStoreAccess& store) : store_(store) {}
 
 bool ProjectManager::Exists(ProjectId project) {
   return store_.ReadDocument(project, kTitleKey).ok();

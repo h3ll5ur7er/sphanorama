@@ -373,44 +373,6 @@ export function decodePanoramaRef(input: Reader): C.PanoramaRef {
   };
 }
 
-export function encodeCameraCapabilities(out: Writer, value: C.CameraCapabilities): void {
-  out.f64(value.maxWidth);
-  out.f64(value.maxHeight);
-  out.f64(value.horizontalFovDeg);
-  out.f64(value.verticalFovDeg);
-  out.bool(value.supportsExposureLock);
-  out.bool(value.supportsFocusLock);
-  out.bool(value.supportsTorch);
-  out.f64(value.maxBurstFps);
-}
-
-export function decodeCameraCapabilities(input: Reader): C.CameraCapabilities {
-  return {
-    maxWidth: input.f64(),
-    maxHeight: input.f64(),
-    horizontalFovDeg: input.f64(),
-    verticalFovDeg: input.f64(),
-    supportsExposureLock: input.bool(),
-    supportsFocusLock: input.bool(),
-    supportsTorch: input.bool(),
-    maxBurstFps: input.f64(),
-  };
-}
-
-export function encodeCameraOpenSpec(out: Writer, value: C.CameraOpenSpec): void {
-  out.f64(value.preferredWidth);
-  out.f64(value.preferredHeight);
-  out.bool(value.preferRearCamera);
-}
-
-export function decodeCameraOpenSpec(input: Reader): C.CameraOpenSpec {
-  return {
-    preferredWidth: input.f64(),
-    preferredHeight: input.f64(),
-    preferRearCamera: input.bool(),
-  };
-}
-
 export function encodeProjectSummary(out: Writer, value: C.ProjectSummary): void {
   out.f64(value.id);
   out.string(value.title);

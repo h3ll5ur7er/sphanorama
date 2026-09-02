@@ -29,6 +29,16 @@ layer — `GlobalSolution` is produced by the registration engine and consumed b
 engine — so putting shared value types anywhere else would force an engine-to-engine dependency
 that the layer rules forbid, for no reason other than where a struct was written down.
 
+## Markers
+
+The boundary has two directions, so an interface carries up to two markers:
+
+- `// @boundary` — mirror this interface into TypeScript.
+- `// @facade` — *also* generate dispatch for it, because the client calls into it.
+
+Only managers carry `@facade`. Resource accesses are mirrored because the browser implements them,
+and dispatching one would generate a call into a runtime that has no such thing.
+
 ## Rules
 
 1. **C++ is the source of truth.** `ts/contracts.d.ts` is hand-mirrored today; from Phase 0's
