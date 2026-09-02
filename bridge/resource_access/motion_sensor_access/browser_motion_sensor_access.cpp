@@ -2,6 +2,9 @@
 
 #include <emscripten/emscripten.h>
 
+#include <algorithm>
+#include <vector>
+
 namespace sphanorama::bridge {
 namespace {
 
@@ -14,6 +17,21 @@ EM_JS(int32_t, host_motion_capability, (), {
   const order = ['None', 'OrientationOnly', 'GyroAccel', 'GyroAccelMag'];
   const index = order.indexOf(Module.sphHost.motionCapability());
   return index < 0 ? 0 : index;
+});
+
+// The layout capture-host.ts writes. Both sides are pinned by a test; changing one without the
+// other decodes into plausible nonsense rather than failing, which is why the order is spelled
+// out in both places rather than being implied by a struct.
+constexpr size_t kDoublesPerSample = 16;
+
+EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples), {
+  const host = Module.sphHost;
+  if (!host || !host.motionDrain) return 0;
+  const flat = host.motionDrain(maxSamples);
+  // HEAPF64 is read fresh: Emscripten replaces the view when memory grows, and a cached one
+  // would be detached.
+  Module.HEAPF64.set(flat, out >> 3);
+  return flat.length / 16;
 });
 
 }  // namespace
@@ -33,9 +51,29 @@ Status BrowserMotionSensorAccess::Start(int32_t requestedHz) {
              : Status::Ok();
 }
 
-Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample>) {
-  return Err<int32_t>(StatusCode::Unsupported, kComponent,
-                      "the browser pushes samples through OnMotion; it does not pull");
+Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
+  if (out.empty()) return Ok(0);
+
+  // One call per drain, not one per field: the host returns a flat run of doubles and this writes
+  // them straight into the caller's span. Sixteen EM_JS calls per sample at 60Hz would cost more
+  // in boundary crossings than the samples are worth.
+  std::vector<double> flat(out.size() * kDoublesPerSample);
+  const int32_t count = host_motion_drain(flat.data(), static_cast<int32_t>(out.size()));
+  if (count <= 0) return Ok(0);
+
+  const auto taken = std::min(static_cast<size_t>(count), out.size());
+  for (size_t i = 0; i < taken; ++i) {
+    const double* f = flat.data() + i * kDoublesPerSample;
+    ImuSample& sample = out[i];
+    sample.timestampNs = static_cast<int64_t>(f[0]);
+    sample.angularVelocity = Vec3{f[1], f[2], f[3]};
+    sample.acceleration = Vec3{f[4], f[5], f[6]};
+    sample.hasMagnetometer = f[7] != 0.0;
+    sample.magneticField = Vec3{f[8], f[9], f[10]};
+    sample.hasOrientation = f[11] != 0.0;
+    sample.orientation = Quat{f[12], f[13], f[14], f[15]};
+  }
+  return Ok(static_cast<int32_t>(taken));
 }
 
 Status BrowserMotionSensorAccess::Stop() { return Status::Ok(); }

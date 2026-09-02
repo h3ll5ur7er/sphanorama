@@ -33,7 +33,7 @@ if(EMSCRIPTEN)
     -sEXPORTED_FUNCTIONS=_sph_probe_runtime,_sph_probe_field_count,_sph_probe_field_name,_sph_facade_call,_sph_facade_method_count,_sph_facade_method_name,_sph_facade_result,_malloc,_free
     # stringToUTF8/lengthBytesUTF8 are used by the ports' EM_JS bodies to hand a string
     # back to C++; without them the port fails the first time a document exists.
-    -sEXPORTED_RUNTIME_METHODS=HEAP32,HEAPU8,UTF8ToString,stringToUTF8,lengthBytesUTF8
+    -sEXPORTED_RUNTIME_METHODS=HEAP32,HEAPU8,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8
   )
   set_target_properties(sphanorama_module PROPERTIES OUTPUT_NAME "sphanorama-core" SUFFIX ".js")
 endif()

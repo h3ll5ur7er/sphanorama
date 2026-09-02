@@ -74,6 +74,40 @@ TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   EXPECT_FALSE(camera->IsOpen());
 }
 
+TEST_F(CaptureSession, OnMotionPullsFromTheSensorWhenTheClientHasNothingToPush) {
+  // Two ways in exist because two kinds of client exist: one that already holds samples (the
+  // browser drains them in JavaScript) and one that does not (the bench replays a log through
+  // the port). A manager that only accepted pushed samples would make IMotionSensorAccess::Drain
+  // dead code on every platform, which is how a port stops being substitutable for its contract.
+  Begin();
+  sensor->EnqueueSpin(4, 10'000'000, 0.5);
+
+  auto guidance = manager->OnMotion({});
+  ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+  // The samples were consumed, not left for the next call to read again.
+  ImuSample scratch[8];
+  auto remaining = sensor->Drain(std::span<ImuSample>(scratch, 8));
+  ASSERT_TRUE(remaining.ok());
+  EXPECT_EQ(remaining.value, 0);
+}
+
+TEST_F(CaptureSession, PushedSamplesAreNotTakenTwice) {
+  // A client that pushes must not also get the port drained underneath it, or every sample would
+  // be integrated once from each path and the pose would advance at double rate.
+  Begin();
+  sensor->EnqueueSpin(4, 10'000'000, 0.5);
+
+  ImuSample pushed;
+  pushed.timestampNs = 1'000'000;
+  pushed.hasOrientation = true;
+  ASSERT_TRUE(manager->OnMotion(std::span<const ImuSample>(&pushed, 1)).ok());
+
+  ImuSample scratch[8];
+  auto remaining = sensor->Drain(std::span<ImuSample>(scratch, 8));
+  ASSERT_TRUE(remaining.ok());
+  EXPECT_EQ(remaining.value, 4);
+}
+
 TEST_F(CaptureSession, CandidatesForACellOutsideThePlanIsRefused) {
   // CaptureCell and RequestRetake both answer NotFound here. Returning an empty success instead
   // makes a typo'd cell indistinguishable from a real one nobody has captured yet.

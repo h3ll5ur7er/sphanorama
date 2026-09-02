@@ -5,7 +5,9 @@
 // browser does not report and the coverage plan cannot be built without.
 import { describe, expect, it } from 'vitest';
 
-import { createCaptureHost, deriveFieldOfView } from './capture-host';
+import {
+  MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, createCaptureHost, deriveFieldOfView,
+} from './capture-host';
 
 describe('deriveFieldOfView', () => {
   it('keeps the horizontal estimate it was given', () => {
@@ -85,5 +87,52 @@ describe('capture host', () => {
     expect(host.motionCapability()).toBe('OrientationOnly');
     host.setMotion('None');
     expect(host.motionCapability()).toBe('None');
+  });
+});
+
+describe('the motion buffer the core drains', () => {
+  const sample = (timestampNs: number) => ({
+    timestampNs,
+    angularVelocity: { x: 1, y: 2, z: 3 },
+    acceleration: { x: 4, y: 5, z: 6 },
+    hasMagnetometer: false,
+    magneticField: { x: 0, y: 0, z: 0 },
+    hasOrientation: true,
+    orientation: { w: 1, x: 0, y: 0, z: 0 },
+  });
+
+  it('hands back every field in the order the core reads them', () => {
+    // The order is the wire format for this port. It is flat doubles rather than the generated
+    // codec because the codec exists for the facade, and a second marshalling path inside a
+    // resource access is exactly what the port pattern is meant to avoid.
+    const host = createCaptureHost();
+    host.pushMotion([sample(7)]);
+    expect(host.motionDrain(4)).toEqual([
+      7, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0,
+    ]);
+  });
+
+  it('drains what it hands over, so the core never integrates a sample twice', () => {
+    const host = createCaptureHost();
+    host.pushMotion([sample(1), sample(2)]);
+    expect(host.motionDrain(8)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+    expect(host.motionDrain(8)).toEqual([]);
+  });
+
+  it('respects the batch the core asked for and keeps the rest', () => {
+    const host = createCaptureHost();
+    host.pushMotion([sample(1), sample(2), sample(3)]);
+    expect(host.motionDrain(2)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+    expect(host.motionDrain(8)).toHaveLength(1 * MOTION_SAMPLE_DOUBLES);
+  });
+
+  it('drops the oldest rather than growing without bound', () => {
+    // A capture loop that stalls must not be able to kill the tab, and a stale orientation is
+    // worthless anyway — the newest samples are the ones worth keeping.
+    const host = createCaptureHost();
+    host.pushMotion(Array.from({ length: MOTION_BUFFER_LIMIT + 10 }, (_u, i) => sample(i)));
+    const drained = host.motionDrain(MOTION_BUFFER_LIMIT + 10);
+    expect(drained).toHaveLength(MOTION_BUFFER_LIMIT * MOTION_SAMPLE_DOUBLES);
+    expect(drained[0]).toBe(10);   // the first ten were dropped, not the last ten
   });
 });

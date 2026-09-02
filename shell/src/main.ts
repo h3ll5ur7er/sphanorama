@@ -157,6 +157,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
     const drained = await motion.drain(32);
     const samples = drained.ok ? drained.value : [];
 
+    // Handed to the host rather than through the facade: the core drains this buffer itself via
+    // IMotionSensorAccess (ADR 0014), so the samples cross once as flat doubles instead of being
+    // encoded a second time by the wire codec.
+    if (samples.length > 0) captureHost.pushMotion(samples.map(toImuSample));
+
     if (samples.length > 0) {
       const latest = samples[samples.length - 1];
       const { alpha, beta, gamma } = latest.orientation;
@@ -172,7 +177,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
     // under a loaded CI machine is enough to starve the rest of the suite.
     if (plan !== null && (samples.length > 0 || !guidedOnce)) {
       guidedOnce = true;
-      const guided = await core.captureSession.onMotion(samples.map(toImuSample));
+      // Nothing passed: the manager drains the port, which is where the page just put them.
+      const guided = await core.captureSession.onMotion([]);
       if (guided.ok) {
         const guidance = guided.value;
         const cone = cones.get(guidance.targetNode as number) ?? 0;

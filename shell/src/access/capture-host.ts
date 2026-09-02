@@ -6,6 +6,8 @@
  * ever asked to begin a session (ADR 0014).
  */
 
+import type { ImuSample } from '../../../contracts/ts/contracts';
+
 export interface CameraCapabilities {
   maxWidth: number;
   maxHeight: number;
@@ -13,6 +15,23 @@ export interface CameraCapabilities {
   verticalFovDeg: number;
   supportsTorch: boolean;
 }
+
+/**
+ * How many doubles one ImuSample occupies on the way to the core, and in what order.
+ *
+ * Flat doubles rather than the generated codec: the codec exists for the facade, and reaching for
+ * it inside a resource-access port would put a second marshalling path in the layer whose whole
+ * job is to keep platform shapes out of the core. The C++ side reads the same order, and the two
+ * are pinned together by a test on each side.
+ */
+export const MOTION_SAMPLE_DOUBLES = 16;
+
+/**
+ * The most samples kept while the core is not draining. A capture loop that stalls must not be
+ * able to kill the tab, and an orientation from several seconds ago is worthless anyway — so the
+ * oldest go first.
+ */
+export const MOTION_BUFFER_LIMIT = 512;
 
 export interface CaptureHost {
   cameraOpen(): boolean;
@@ -22,6 +41,11 @@ export interface CaptureHost {
 
   motionCapability(): string;
   setMotion(capability: string): void;
+
+  /** Called by the page as orientation events arrive; nothing here awaits anything. */
+  pushMotion(samples: ImuSample[]): void;
+  /** Called synchronously from C++, through IMotionSensorAccess::Drain. */
+  motionDrain(maxSamples: number): number[];
 }
 
 /**
@@ -48,9 +72,22 @@ export function deriveFieldOfView(width: number, height: number, horizontalFovDe
   return { horizontalFovDeg, verticalFovDeg };
 }
 
+function flatten(sample: ImuSample, into: number[]): void {
+  into.push(
+    sample.timestampNs,
+    sample.angularVelocity.x, sample.angularVelocity.y, sample.angularVelocity.z,
+    sample.acceleration.x, sample.acceleration.y, sample.acceleration.z,
+    sample.hasMagnetometer ? 1 : 0,
+    sample.magneticField.x, sample.magneticField.y, sample.magneticField.z,
+    sample.hasOrientation ? 1 : 0,
+    sample.orientation.w, sample.orientation.x, sample.orientation.y, sample.orientation.z,
+  );
+}
+
 export function createCaptureHost(): CaptureHost {
   let camera: CameraCapabilities | null = null;
   let motion = 'None';
+  let buffered: ImuSample[] = [];
 
   return {
     cameraOpen: () => camera !== null,
@@ -76,6 +113,20 @@ export function createCaptureHost(): CaptureHost {
     motionCapability: () => motion,
     setMotion(capability: string) {
       motion = capability;
+    },
+
+    pushMotion(samples: ImuSample[]) {
+      buffered.push(...samples);
+      if (buffered.length > MOTION_BUFFER_LIMIT) {
+        buffered = buffered.slice(buffered.length - MOTION_BUFFER_LIMIT);
+      }
+    },
+
+    motionDrain(maxSamples: number): number[] {
+      const taken = buffered.splice(0, Math.max(0, maxSamples));
+      const flat: number[] = [];
+      for (const sample of taken) flatten(sample, flat);
+      return flat;
     },
   };
 }

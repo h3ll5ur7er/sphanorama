@@ -41,8 +41,11 @@ Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
   capabilities.horizontalFovDeg = host_camera_metric(2);
   capabilities.verticalFovDeg = host_camera_metric(3);
   capabilities.supportsTorch = host_camera_metric(4) != 0.0;
-  capabilities.supportsExposureLock = true;
-  capabilities.supportsFocusLock = true;
+  // False until SetLocks below actually applies them. A burst compares candidates on sharpness,
+  // which only means anything if they share an exposure — a caller told the locks are supported
+  // would believe a burst was locked when nothing had been locked at all.
+  capabilities.supportsExposureLock = false;
+  capabilities.supportsFocusLock = false;
   return Ok(capabilities);
 }
 
@@ -65,11 +68,19 @@ Result<std::vector<FrameRef>> BrowserCameraAccess::CaptureBurst(const BurstSpec&
       "a burst takes time and cannot be made resident in advance; see ADR 0014");
 }
 
-Status BrowserCameraAccess::SetLocks(bool, bool, bool) {
-  // Accepted and not yet applied: the locks matter when a burst fires, and no burst can.
-  return host_camera_open() != 0
-             ? Status::Ok()
-             : Fail(StatusCode::CameraUnavailable, kComponent, "no camera open");
+Status BrowserCameraAccess::SetLocks(bool exposure, bool whiteBalance, bool focus) {
+  if (host_camera_open() == 0) {
+    return Fail(StatusCode::CameraUnavailable, kComponent, "no camera open");
+  }
+  // Refused rather than accepted-and-ignored. Applying these needs applyConstraints on the live
+  // track, which is not wired up; a silent Ok would tell CaptureSessionManager the burst it is
+  // about to fire has a fixed exposure when it does not, and the cell would blend with banding
+  // nobody could trace back to here.
+  if (exposure || whiteBalance || focus) {
+    return Fail(StatusCode::Unsupported, kComponent,
+                "the page does not apply camera locks yet; capabilities report them as absent");
+  }
+  return Status::Ok();
 }
 
 Status BrowserCameraAccess::Close() { return Status::Ok(); }

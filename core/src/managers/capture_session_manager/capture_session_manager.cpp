@@ -1,10 +1,15 @@
 #include "managers/capture_session_manager/capture_session_manager.h"
 
 #include <algorithm>
+#include <array>
 
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+
+// One frame's worth at sensor rate, with room to spare. Anything older than the last few
+// frames is not worth integrating: the pose it would produce is already stale.
+constexpr size_t kDrainBatch = 64;
 }
 
 CaptureSessionManager::CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
@@ -94,17 +99,35 @@ Result<CapturePlan> CaptureSessionManager::GetPlan() const {
 Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSample> samples) {
   if (auto status = RequireSession(); !status.ok()) return status;
 
+  // A client that already holds samples passes them; one that does not lets the manager pull.
+  // Both exist for real: the browser drains its own event buffer in JavaScript, while the bench
+  // replays a recorded log through the port. Accepting only pushed samples would leave
+  // IMotionSensorAccess::Drain unimplementable on the browser and unused everywhere else, which
+  // is a contract with a limb nothing can reach.
+  //
+  // Never both in one call — draining underneath a client that pushed would integrate every
+  // sample twice and advance the pose at double rate.
+  std::array<ImuSample, kDrainBatch> pulled{};
+  std::span<const ImuSample> batch = samples;
+  if (samples.empty()) {
+    if (auto drained = sensor_.Drain(std::span<ImuSample>(pulled)); drained.ok()) {
+      batch = std::span<const ImuSample>(pulled.data(), static_cast<size_t>(drained.value));
+    }
+    // A port that cannot be pulled is not a failure. It means the client is the push kind, and
+    // this call is the empty-batch case below.
+  }
+
   // An empty batch is the common case, not an error: the capture loop calls this every frame
   // whether or not the sensor produced anything since the last one.
-  if (!samples.empty()) {
-    SPH_TRY(auto advanced, pose_.Integrate(pose_state_, samples));
+  if (!batch.empty()) {
+    SPH_TRY(auto advanced, pose_.Integrate(pose_state_, batch));
     pose_state_ = advanced;
   }
 
   SPH_TRY(auto guidance, planner_.Locate(pose_state_.pose.orientation, plan_));
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
-  if (auto stability = pose_.Stability(samples); stability.ok()) {
+  if (auto stability = pose_.Stability(batch); stability.ok()) {
     guidance.stability = stability.value;
   }
   return Ok(guidance);

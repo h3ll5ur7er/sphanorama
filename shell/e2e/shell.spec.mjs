@@ -155,6 +155,36 @@ test('enabling plans a sphere sized from the camera and guides toward a cell', a
   }
 });
 
+test('an orientation event moves the pose through the sensor port', async ({ page }) => {
+  // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
+  // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and
+  // PoseEngine folds it in. A silently empty drain would leave guidance sitting on whatever cell
+  // the identity orientation happens to be nearest, which is why the assertion is that the target
+  // cell *changes* rather than that guidance merely exists.
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+
+    const before = await page.locator('#guidance').textContent();
+
+    // Straight up. Whatever cell the phone starts on, it is not the zenith.
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 180, gamma: 0,
+      }));
+    });
+
+    await expect(page.locator('#guidance')).not.toHaveText(before, { timeout: 15000 });
+    // And the orientation readout followed the same samples.
+    await expect(page.locator('#orientation')).toContainText(/β 180/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('a phone with no motion sensors still captures', async ({ browser }) => {
   // Declining motion on iOS lands here, and so does any desktop without sensors. The core treats
   // it as a supported configuration — PoseEngine switches to vision-only (docs/03 UC-4) — so a
