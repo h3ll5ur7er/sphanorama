@@ -23,6 +23,12 @@ sensor quality, iOS behaviour) are hit early, not at the end.
 real sensor data routed *through the WASM core*, and the whole round trip stays under budget.
 The core binary is under 8 MB and the same core compiles as the native bench.
 
+*Where this stands:* the walking skeleton is up — the PWA loads the WASM core, reports its
+capabilities, opens the camera and streams live orientation, and deploys to GitHub Pages. What is
+missing before the exit criterion is met: the generated manager facade (the boundary carries one
+hand-written call today), the null managers and engines behind it, and therefore a reticle whose
+position comes from `CoveragePlannerEngine` rather than a sensor readout.
+
 ---
 
 ## Phase 1 — Guided capture with bursts

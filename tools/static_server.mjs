@@ -29,7 +29,10 @@ export async function startServer({ roots, crossOriginIsolated = false, port = 0
   const server = createServer(async (request, response) => {
     const urlPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     // normalize() collapses ".." before it is joined to a root, so a request cannot climb out.
-    const relative = normalize(urlPath).replace(/^(\.\.[/\\])+/, '').replace(/^\//, '');
+    let relative = normalize(urlPath).replace(/^(\.\.[/\\])+/, '').replace(/^\//, '');
+    // Directory requests get index.html, the way any static host serves a single-page app.
+    // Without this the app under test is a 404 page, and assertions fail for the wrong reason.
+    if (relative === '' || relative.endsWith('/')) relative += 'index.html';
 
     for (const root of resolved) {
       const candidate = join(root, relative);

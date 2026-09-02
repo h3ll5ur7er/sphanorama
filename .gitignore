@@ -20,3 +20,7 @@ captures/
 # playwright
 test-results/
 playwright-report/
+
+# staged build artifacts
+shell/public/core/
+dist/

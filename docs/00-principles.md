@@ -157,10 +157,11 @@ core/                 C++: managers, engines, resource-access implementations, n
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. Layer-wise a client
 bench/                native CLI client: runs the core on datasets, prints timings
-shell/                TypeScript PWA — not started yet
+shell/                TypeScript PWA
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters
-  src/bridge/         generated facade + worker plumbing
+  src/bridge/         core loader; the generated facade lands here
+  e2e/                Playwright, against the built bundle in dist/
 tools/                Python: codegen, layer check, size budget, no-browser check, datasets
 docs/                 principles, architecture, ADRs
 ```

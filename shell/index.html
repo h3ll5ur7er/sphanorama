@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1514">
+  <title>Sphanorama</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="./src/clients/capture/capture.css">
+</head>
+<body>
+  <main id="app">
+    <video id="viewfinder" playsinline muted autoplay></video>
+
+    <!-- A sensor readout, not a capture reticle. Where a reticle belongs is CoveragePlannerEngine's
+         answer (V4), and this client is not allowed to invent one. -->
+    <svg id="horizon" viewBox="0 0 100 100" aria-hidden="true">
+      <g id="horizon-group">
+        <line x1="15" y1="50" x2="42" y2="50"></line>
+        <line x1="58" y1="50" x2="85" y2="50"></line>
+        <circle cx="50" cy="50" r="7"></circle>
+      </g>
+    </svg>
+
+    <section id="panel" aria-live="polite">
+      <h1>Sphanorama</h1>
+      <p id="stage">starting…</p>
+      <dl>
+        <dt>core</dt><dd id="core-caps">—</dd>
+        <dt>camera</dt><dd id="camera-state">—</dd>
+        <dt>motion</dt><dd id="motion-state">—</dd>
+        <dt>orientation</dt><dd id="orientation">—</dd>
+      </dl>
+      <button id="enable" type="button">Enable camera &amp; motion</button>
+      <p id="note">Phase 0 walking skeleton: sensors and camera routed through the WASM core. No capture yet.</p>
+    </section>
+  </main>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>

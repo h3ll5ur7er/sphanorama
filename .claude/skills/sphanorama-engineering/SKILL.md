@@ -186,7 +186,9 @@ contracts. Feature-shaped directories are how layer discipline erodes.
 - [ ] ADR written if the change qualifies.
 - [ ] WASM size budget still holds: `python3 tools/size_budget.py --profile wasm-release
       --build-dir build/wasm-release/bridge`.
-- [ ] If the change touches the boundary, the browser suite passes: `npx playwright test`.
+- [ ] Shell tests pass if you touched `shell/`: `npm test`.
+- [ ] If the change touches the boundary or the shell, the browser suite passes:
+      `npm run build && npx playwright test`.
       It serves the artifact with and without COOP/COEP, which is what the deployment
       target does (ADR 0011).
 

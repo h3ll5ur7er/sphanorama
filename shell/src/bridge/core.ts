@@ -1,0 +1,84 @@
+/**
+ * Typed loader for the WASM core.
+ *
+ * The boundary is a C ABI over the shared heap (ADR 0012), and the module publishes its own field
+ * layout, so nothing here re-declares it. That is the whole reason this file can be short: it
+ * marshals, it does not decide anything.
+ */
+
+/** The subset of the Emscripten module this loader touches. */
+export interface EmscriptenModule {
+  HEAP32: Int32Array;
+  UTF8ToString(pointer: number): string;
+  _sph_probe_field_count(): number;
+  _sph_probe_field_name(index: number): number;
+  _sph_probe_runtime(concurrency: number, crossOriginIsolated: number, out: number): number;
+  _malloc(bytes: number): number;
+  _free(pointer: number): void;
+}
+
+export interface RuntimeCapabilities {
+  simd: boolean;
+  threads: boolean;
+  sharedMemory: boolean;
+  hardwareConcurrency: number;
+}
+
+/**
+ * State only the host knows. The core answers from the build it is in and cannot see whether the
+ * page was served cross-origin isolated, so the caller supplies it (ADR 0011).
+ */
+export interface HostState {
+  hardwareConcurrency: number;
+  crossOriginIsolated: boolean;
+}
+
+export interface SphanoramaCore {
+  capabilities(host: HostState): RuntimeCapabilities;
+}
+
+export type ModuleFactory = () => Promise<EmscriptenModule>;
+
+export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> {
+  const module = await factory();
+
+  const fieldCount = module._sph_probe_field_count();
+  if (fieldCount <= 0) {
+    throw new Error(
+      'core published no probe fields — the export table was probably stripped at link time',
+    );
+  }
+  const fields = Array.from({ length: fieldCount }, (_unused, index) =>
+    module.UTF8ToString(module._sph_probe_field_name(index)));
+
+  return {
+    capabilities(host: HostState): RuntimeCapabilities {
+      const pointer = module._malloc(fieldCount * 4);
+      try {
+        const status = module._sph_probe_runtime(
+          host.hardwareConcurrency,
+          host.crossOriginIsolated ? 1 : 0,
+          pointer,
+        );
+        if (status !== 0) throw new Error(`core probe failed with status ${status}`);
+
+        const base = pointer >> 2;
+        const raw: Record<string, number> = {};
+        fields.forEach((name, index) => {
+          raw[name] = module.HEAP32[base + index];
+        });
+
+        return {
+          simd: raw.simd === 1,
+          threads: raw.threads === 1,
+          sharedMemory: raw.sharedMemory === 1,
+          hardwareConcurrency: raw.hardwareConcurrency ?? 0,
+        };
+      } finally {
+        // Runs on the failure path too: the probe is called at startup and whenever capabilities
+        // change, so a leak here would be unbounded.
+        module._free(pointer);
+      }
+    },
+  };
+}

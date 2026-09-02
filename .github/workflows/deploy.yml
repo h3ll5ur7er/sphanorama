@@ -1,0 +1,70 @@
+name: deploy
+
+# Deploys the built PWA to GitHub Pages. Only from the default branch: a feature branch
+# publishing over the live site is a surprise nobody wants.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never two deploys at once, and never cancel one midway: a half-published site is worse than a
+# stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+          actions-cache-folder: emsdk-cache
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The single-threaded build, because GitHub Pages cannot serve COOP/COEP and the threaded
+      # one does not degrade without it — it hangs on load (ADR 0011).
+      - name: build core
+        run: cmake --preset wasm-release && cmake --build build/wasm-release
+      - name: size budget
+        run: python3 tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
+
+      - name: install shell deps
+        run: npm ci
+      - name: build shell
+        env:
+          # Pages serves the project site from /<repo>/, so the bundle needs that prefix.
+          SPHANORAMA_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      # The same end-to-end suite CI runs, against the bundle about to be published — so a broken
+      # deploy fails here rather than on someone's phone.
+      - name: verify the bundle
+        run: npx playwright install --with-deps chromium && npx playwright test shell/e2e
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
