@@ -148,6 +148,36 @@ describe('decodeStatus', () => {
     expect(status.detail).toBe('a project needs a title');
   });
 
+  it('refuses a truncated status rather than reading it as success', () => {
+    // Every read past the end of a failed Reader returns zero, and zero is the index of Ok. A
+    // core that trapped mid-call, or a result buffer that got clipped, would otherwise arrive as
+    // a successful call with default-valued everything — the worst possible way to fail.
+    const w = new Writer();
+    w.i32(0);
+    // no component, no detail: the payload stops here
+    const status = decodeStatus(new Reader(w.finish()));
+    expect(status.code).toBe('Internal');
+    expect(status.detail).toMatch(/malformed/i);
+  });
+
+  it('refuses an empty response', () => {
+    const status = decodeStatus(new Reader(new Uint8Array()));
+    expect(status.code).toBe('Internal');
+    expect(status.detail).toMatch(/malformed/i);
+  });
+
+  it('reads its code names from the generated table, not a copy of it', async () => {
+    // A second hand-maintained list of the enum is the drift the generated boundary exists to
+    // stop: adding a status in the C++ header would type-check here and silently shift the
+    // meaning of every code after it.
+    const codec = await import('./codec.generated');
+    const w = new Writer();
+    w.i32(codec.StatusCodeValues.indexOf('FrameStoreExhausted'));
+    w.string('FrameStore');
+    w.string('out of room');
+    expect(decodeStatus(new Reader(w.finish())).code).toBe('FrameStoreExhausted');
+  });
+
   it('does not invent a code for an index it does not know', () => {
     // A core newer than this bundle can return a status code this build has never heard of.
     const w = new Writer();

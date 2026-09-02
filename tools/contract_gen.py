@@ -972,7 +972,7 @@ TS_FACADE_PREAMBLE = """/**
 import type * as C from '../../../contracts/ts/contracts';
 import { Reader, Writer } from './wire';
 import type { FacadeCall } from './facade';
-import { decodeStatus } from './facade';
+import { decodeStatus, malformedResponse } from './facade';
 import * as codec from './codec.generated';
 """
 
@@ -1135,8 +1135,15 @@ def emit_ts_facade(module: Module) -> str:
                 out.append("        : ({ ok: false, status } as const);")
             else:
                 out.append("      if (status.code !== 'Ok') return { ok: false, status } as const;")
-                out.append("      return { ok: true, value: "
-                           f"{_ts_get(ret_kind, enum_map, id_set, 'input', 'codec.')} }} as const;")
+                # Decoded into a temporary and checked before it is handed over: a failed Reader
+                # returns zeros forever rather than throwing, so a response carrying nothing but
+                # a valid Ok status would otherwise become a successful empty result.
+                out.append("      const value = "
+                           f"{_ts_get(ret_kind, enum_map, id_set, 'input', 'codec.')};")
+                out.append("      if (!input.ok) return { ok: false, status: malformedResponse(")
+                out.append(f"        'malformed response: {method.wire_name} returned a "
+                           "value that did not decode') } as const;")
+                out.append("      return { ok: true, value } as const;")
             out.append("    },")
         out.append("  };")
         out.append("}")

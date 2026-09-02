@@ -7,6 +7,7 @@
  */
 import { Reader } from './wire';
 import type { Status, StatusCode } from '../../../contracts/ts/contracts';
+import { StatusCodeValues } from './codec.generated';
 
 /** The subset of the Emscripten module the facade touches. */
 export interface FacadeModule {
@@ -24,25 +25,24 @@ export interface FacadeModule {
 
 export type FacadeCall = (name: string, args: Uint8Array) => Promise<Uint8Array>;
 
-/**
- * Mirrors StatusCode in contracts/cpp/sphanorama/types.h. Generated code encodes the enum by
- * index, so this array is the decode side of that; a code past the end means the core is newer
- * than this bundle.
- */
-const STATUS_CODES: StatusCode[] = [
-  'Ok', 'InvalidArgument', 'NotFound', 'FailedPrecondition', 'Cancelled', 'Unsupported',
-  'SensorPermissionDenied', 'SensorUnavailable', 'CameraUnavailable', 'FrameStoreExhausted',
-  'StorageQuotaExceeded', 'ComputeUnavailable', 'RegistrationFailed', 'InsufficientCoverage',
-  'CodecFailure', 'Internal',
-];
+/** A response that did not decode. Shaped like any other failure so a client branches on it. */
+export function malformedResponse(detail: string): Status {
+  return { code: 'Internal', component: 'facade', detail };
+}
 
 export function decodeStatus(input: Reader): Status {
   const index = input.i32();
   const component = input.string();
   const detail = input.string();
+  // Checked before the fields are trusted. A failed Reader returns zero for every read past the
+  // end, and zero is the index of Ok — so a clipped or empty result buffer would otherwise
+  // arrive as a successful call with default-valued everything.
+  if (!input.ok) {
+    return malformedResponse('malformed response: the status did not decode');
+  }
   // An unknown index is not guessed at: reporting Internal with the original detail keeps the
   // core's explanation rather than replacing it with a wrong name.
-  const code = STATUS_CODES[index] ?? 'Internal';
+  const code: StatusCode = StatusCodeValues[index] ?? 'Internal';
   return { code, component, detail };
 }
 

@@ -8,7 +8,7 @@
 import type * as C from '../../../contracts/ts/contracts';
 import { Reader, Writer } from './wire';
 import type { FacadeCall } from './facade';
-import { decodeStatus } from './facade';
+import { decodeStatus, malformedResponse } from './facade';
 import * as codec from './codec.generated';
 
 export function createCaptureSessionManagerProxy(call: FacadeCall) {
@@ -21,7 +21,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: input.f64() as C.SessionId } as const;
+      const value = input.f64() as C.SessionId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.begin returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async getPlan() {
       const args = new Writer();
@@ -29,7 +32,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodeCapturePlan(input) } as const;
+      const value = codec.decodeCapturePlan(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.getPlan returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async onMotion(samples: C.ImuSample[]) {
       const args = new Writer();
@@ -39,7 +45,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodeCaptureGuidance(input) } as const;
+      const value = codec.decodeCaptureGuidance(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.onMotion returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async captureCell(node: C.NodeId, burst: C.BurstSpec) {
       const args = new Writer();
@@ -49,7 +58,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: Array.from({ length: input.count() }, () => codec.decodeCandidate(input)) } as const;
+      const value = Array.from({ length: input.count() }, () => codec.decodeCandidate(input));
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.captureCell returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async offerFrame(node: C.NodeId, frame: C.FrameRef, pose: C.PoseSample) {
       const args = new Writer();
@@ -60,7 +72,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.FrameVerdictValues[input.i32()] } as const;
+      const value = codec.FrameVerdictValues[input.i32()];
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.offerFrame returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async coverage() {
       const args = new Writer();
@@ -68,7 +83,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodeCoverageState(input) } as const;
+      const value = codec.decodeCoverageState(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.coverage returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async candidates(node: C.NodeId) {
       const args = new Writer();
@@ -77,7 +95,10 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: Array.from({ length: input.count() }, () => codec.decodeCandidate(input)) } as const;
+      const value = Array.from({ length: input.count() }, () => codec.decodeCandidate(input));
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.candidates returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async requestRetake(node: C.NodeId, replace: boolean) {
       const args = new Writer();
@@ -112,7 +133,10 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: input.f64() as C.BuildId } as const;
+      const value = input.f64() as C.BuildId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.start returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async poll(build: C.BuildId) {
       const args = new Writer();
@@ -121,7 +145,10 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodeBuildProgress(input) } as const;
+      const value = codec.decodeBuildProgress(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.poll returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async panorama(build: C.BuildId) {
       const args = new Writer();
@@ -130,7 +157,10 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodePanoramaRef(input) } as const;
+      const value = codec.decodePanoramaRef(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.panorama returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async ghosts(build: C.BuildId) {
       const args = new Writer();
@@ -139,7 +169,10 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: codec.decodeGhostReport(input) } as const;
+      const value = codec.decodeGhostReport(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.ghosts returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async invalidate(build: C.BuildId, dirty: C.NodeId[]) {
       const args = new Writer();
@@ -174,7 +207,10 @@ export function createProjectManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: Array.from({ length: input.count() }, () => codec.decodeProjectSummary(input)) } as const;
+      const value = Array.from({ length: input.count() }, () => codec.decodeProjectSummary(input));
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: ProjectManager.list returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async create(title: string) {
       const args = new Writer();
@@ -183,7 +219,10 @@ export function createProjectManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: input.f64() as C.ProjectId } as const;
+      const value = input.f64() as C.ProjectId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: ProjectManager.create returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async resume(project: C.ProjectId) {
       const args = new Writer();
@@ -192,7 +231,10 @@ export function createProjectManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      return { ok: true, value: input.f64() as C.SessionId } as const;
+      const value = input.f64() as C.SessionId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: ProjectManager.resume returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
     },
     async delete(project: C.ProjectId) {
       const args = new Writer();

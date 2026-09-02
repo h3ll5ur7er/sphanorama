@@ -154,6 +154,24 @@ class MethodTableTest(unittest.TestCase):
         self.assertIn('createCaptureSessionManagerProxy', ts)
         self.assertIn('async create(', ts)
 
+    def test_a_proxy_checks_that_the_value_actually_decoded(self):
+        # A failed Reader returns zeros rather than throwing, so a response carrying a valid Ok
+        # status and nothing else decodes into a successful empty result. Every proxy that
+        # returns a value has to look at the reader before handing that value over.
+        ts = contract_gen.emit_ts_facade(self.module)
+        create = ts[ts.index('async create('):ts.index('async delete(')]
+        self.assertIn('if (!input.ok)', create)
+        self.assertIn('malformedResponse', create)
+        # And the check comes after the decode, not before it: checking first would pass on
+        # exactly the truncated payload it is meant to catch.
+        self.assertLess(create.index('const value ='), create.index('if (!input.ok)'))
+
+    def test_a_void_proxy_needs_no_value_check(self):
+        # Nothing was decoded past the status, so there is nothing to have failed.
+        ts = contract_gen.emit_ts_facade(self.module)
+        delete = ts[ts.index('async delete('):]
+        self.assertNotIn('malformedResponse', delete.split('},')[0])
+
     def test_the_proxy_calls_methods_by_name_not_by_id(self):
         ts = contract_gen.emit_ts_facade(self.module)
         self.assertIn("'ProjectManager.create'", ts)
