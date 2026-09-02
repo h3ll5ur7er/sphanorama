@@ -95,7 +95,7 @@ Write the test first. It fails for the intended reason, then you make it pass, t
 | ----- | ---------------- | --- |
 | Engine | Native GoogleTest with explicit inputs and an asserted output or invariant | Pure functions by contract — no excuse available |
 | Manager | Sequence test against **fake** resource accesses (a folder of frames, a recorded IMU log) | This is what the contracts are for. A manager that is hard to test has a leaked dependency |
-| ResourceAccess | One shared contract-test suite run against both the browser and native implementations | The property that matters is that they agree |
+| ResourceAccess | Add a case to the shared contract suite in `core/test/resource_access/`, then a fake in `core/test/support/` | The property that matters is that every implementation agrees; adding one is a line in the suite's type list (ADR 0010) |
 | Boundary | Round-trip per value type: C++ → wire → TS → wire → C++ | Generated, so cheap, and catches drift immediately |
 | Client | Tests over decisions — which reticle, what guidance, what state — never pixels | Visual output is reviewed by eye; the logic behind it is not |
 

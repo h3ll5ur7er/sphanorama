@@ -14,3 +14,4 @@ and the alternative we rejected and why.
 | [0007](0007-tests-and-docs-are-gated.md) | Tests and documentation are gated in CI, not left to discipline |
 | [0008](0008-contracts-are-the-include-path.md) | One interface per header; `contracts/cpp` is the include root |
 | [0009](0009-the-cpp-header-is-the-idl.md) | The C++ header is the IDL; a strict parser generates the TypeScript mirror |
+| [0010](0010-resource-access-contract-suites.md) | Resource access is verified by one shared contract suite per interface |

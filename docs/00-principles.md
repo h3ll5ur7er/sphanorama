@@ -34,7 +34,7 @@ here?"* to be answered before there is an implementation to rationalise around.
 | ----- | ------------------------ | -------------- |
 | **Engines** | A native GoogleTest with explicit inputs and an asserted output or invariant | They are pure functions by contract. There is no excuse available |
 | **Managers** | A sequence test driving the real manager against **fake** resource accesses — a folder of frames and a recorded IMU log | This is what the resource-access contracts are *for*. If a manager is hard to test, a dependency has leaked past the contract |
-| **ResourceAccess** | A shared contract-test suite, run against both the browser and the native implementation | The interesting property is that the two implementations agree, not that the browser works |
+| **ResourceAccess** | A case in the shared contract suite (`core/test/resource_access/`), plus a fake in `core/test/support/` | The interesting property is that every implementation agrees, not that the browser works (ADR 0010) |
 | **Boundary** | A round-trip test per value type: C++ → wire → TS → wire → C++ | Generated code, so these are cheap and catch drift immediately |
 | **Clients** | Tests over the logic (which reticle, what guidance, what state), never the pixels | Visual output is reviewed by eye; the decisions behind it are not |
 

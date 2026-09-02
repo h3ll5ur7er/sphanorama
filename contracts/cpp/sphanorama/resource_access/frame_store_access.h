@@ -22,6 +22,10 @@ class IFrameStoreAccess {
   virtual Result<std::span<uint8_t>> Pin(const FrameRef&) = 0;
   virtual Status Release(const FrameRef&) = 0;
 
+  // Residency is store state rather than frame identity, so it is queried, never carried on
+  // the handle: a FrameRef copied before a spill would otherwise lie about where its bytes are.
+  virtual Result<Residency> ResidencyOf(const FrameRef& frame) = 0;
+
   virtual Status Demote(const FrameRef&, Residency target) = 0;
   virtual Status Forget(const FrameRef&) = 0;
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;

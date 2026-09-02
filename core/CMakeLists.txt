@@ -5,6 +5,7 @@ add_library(sphanorama_core
   src/utilities/diagnostics.cpp
   src/utilities/event_bus.cpp
   src/utilities/logger.cpp
+  src/utilities/pixel_format.cpp
 )
 
 target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

@@ -14,14 +14,27 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(sphanorama_tests
+  resource_access/camera_access_contract_test.cpp
+  resource_access/codec_and_export_test.cpp
+  resource_access/frame_store_access_contract_test.cpp
+  resource_access/motion_sensor_access_contract_test.cpp
+  resource_access/project_store_access_contract_test.cpp
+  support/fake_camera_access.cpp
+  support/fake_export_access.cpp
+  support/fake_frame_store_access.cpp
+  support/fake_image_codec_access.cpp
+  support/fake_motion_sensor_access.cpp
+  support/fake_project_store_access.cpp
   utilities/arena_test.cpp
   utilities/clock_test.cpp
   utilities/config_store_test.cpp
   utilities/diagnostics_test.cpp
   utilities/event_bus_test.cpp
   utilities/logger_test.cpp
+  utilities/pixel_format_test.cpp
   utilities/result_test.cpp
 )
+target_include_directories(sphanorama_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 

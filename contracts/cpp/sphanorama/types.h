@@ -143,11 +143,14 @@ enum class PixelFormat : uint8_t { Unknown, RGBA8, BGRA8, NV12, I420, Gray8, Enc
 enum class Residency  : uint8_t { HeapPinned, HeapEncoded, GpuTexture, Spilled };
 
 // A handle, not a buffer. Pixel bytes never cross the boundary as a value.
+//
+// Deliberately carries no residency field: residency is store state, not frame identity. A copy
+// of this handle taken before a spill would otherwise claim the bytes are still in the heap.
+// Ask IFrameStoreAccess::ResidencyOf instead.
 struct FrameRef {
   FrameId id;
   BufferId buffer;
   PixelFormat format = PixelFormat::Unknown;
-  Residency residency = Residency::Spilled;
   int32_t width = 0, height = 0, stride = 0;
   int64_t timestampNs = 0;
   uint64_t contentHash = 0;   // build-graph fingerprinting

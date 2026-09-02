@@ -109,12 +109,16 @@ export type PixelFormat = 'Unknown' | 'RGBA8' | 'BGRA8' | 'NV12' | 'I420' | 'Gra
 
 export type Residency = 'HeapPinned' | 'HeapEncoded' | 'GpuTexture' | 'Spilled';
 
-/** A handle, not a buffer. Pixel bytes never cross the boundary as a value. */
+/**
+ * A handle, not a buffer. Pixel bytes never cross the boundary as a value.
+ * Deliberately carries no residency field: residency is store state, not frame identity. A copy
+ * of this handle taken before a spill would otherwise claim the bytes are still in the heap.
+ * Ask IFrameStoreAccess::ResidencyOf instead.
+ */
 export interface FrameRef {
   id: FrameId;
   buffer: BufferId;
   format: PixelFormat;
-  residency: Residency;
   width: number;
   height: number;
   stride: number;
