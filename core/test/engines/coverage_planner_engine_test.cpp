@@ -31,6 +31,13 @@ CapturePlanSpec Spec(double h = 66.0, double v = 50.0, double overlap = 0.30) {
   return spec;
 }
 
+// The elevation a cell aims at, in degrees. The plan stores orientations, not angles, and
+// reading one back is how a test says "near the pole" without trusting the planner's own maths.
+double ElevationOf(const Quat& orientation) {
+  const Vec3 direction = Direction(orientation);
+  return std::asin(std::clamp(direction.y, -1.0, 1.0)) * kRadToDeg;
+}
+
 CapturePlan Plan(const CapturePlanSpec& spec) {
   RingsCoveragePlannerEngine planner;
   auto plan = planner.Plan(spec, Intrinsics{});
@@ -316,6 +323,46 @@ TEST(CoveragePlanner, ACellThatIsBothAHoleAndGhostedIsSuggestedOnce) {
   auto suggestions = planner.SuggestRetakes(plan, state, ghosts);
   ASSERT_TRUE(suggestions.ok());
   EXPECT_EQ(suggestions.value.size(), 1u);
+}
+
+
+TEST(RingsCoveragePlanner, CoverPolesFalseLeavesTheCapsOut) {
+  // The spec option exists because a sphere shot indoors is mostly ceiling and floor nobody
+  // wants, and asking for a band should not silently return a full sphere: the plan would echo
+  // coverPoles=false while handing back the cells it says it left out.
+  RingsCoveragePlannerEngine engine;
+  CapturePlanSpec spec = Spec();
+  spec.coverPoles = false;
+
+  auto banded = engine.Plan(spec, Intrinsics{});
+  ASSERT_TRUE(banded.ok()) << banded.status.detail;
+
+  spec.coverPoles = true;
+  auto full = engine.Plan(spec, Intrinsics{});
+  ASSERT_TRUE(full.ok());
+
+  EXPECT_LT(banded.value.nodes.size(), full.value.nodes.size());
+  for (const auto& node : banded.value.nodes) {
+    // Nothing within a lens-height of either pole.
+    const double elevation = ElevationOf(node.targetOrientation);
+    EXPECT_LT(std::abs(elevation), 90.0 - spec.verticalFovDeg / 2.0)
+        << "a cell at " << elevation << " degrees is a pole cap";
+  }
+}
+
+TEST(RingsCoveragePlanner, ABandStillClosesAroundTheHorizon) {
+  // Dropping the caps must not thin the ring the user actually starts on.
+  RingsCoveragePlannerEngine engine;
+  CapturePlanSpec spec = Spec();
+  spec.coverPoles = false;
+
+  auto plan = engine.Plan(spec, Intrinsics{});
+  ASSERT_TRUE(plan.ok());
+  int onHorizon = 0;
+  for (const auto& node : plan.value.nodes) {
+    if (std::abs(ElevationOf(node.targetOrientation)) < 1e-6) ++onHorizon;
+  }
+  EXPECT_GE(onHorizon, 8);
 }
 
 }  // namespace

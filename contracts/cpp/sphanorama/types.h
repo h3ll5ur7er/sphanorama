@@ -290,6 +290,26 @@ struct PanoramaRef {
 // live here rather than in any one engine's header.
 enum class PoseMode : uint8_t { Fused, GyroOnly, VisionOnly };
 
+// Everything a pose estimate carries from one batch of samples to the next.
+//
+// It exists so that IPoseEngine can be a pure function of it. An engine that kept this in members
+// would be a stateful engine, which rule 4 in docs/03 §3.3 forbids for a reason worth more than
+// the convenience: an estimate you cannot construct is an estimate you cannot replay against a
+// recorded log, and replay is how a fusion filter is judged (ADR 0016).
+//
+// CaptureSessionManager owns one per session, which is where session state belongs.
+struct PoseState {
+  PoseMode mode = PoseMode::Fused;
+  MotionCapability capability = MotionCapability::None;
+  PoseSample pose;
+  // Whether any sample has been folded in at all. Distinguishes "identity because nothing has
+  // been seen" from "identity because the device is level and facing north".
+  bool observed = false;
+  // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
+  // is derived from this, so it has to survive between calls.
+  bool absolute = false;
+};
+
 struct SelectionPolicy {
   double weightSharpness = 1.0;
   double weightMotionBlur = 1.0;

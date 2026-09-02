@@ -33,6 +33,18 @@ TEST(FrameByteSize, HandlesPlanarFormatsAtTheirRealSize) {
   EXPECT_EQ(FrameByteSize(4, 4, PixelFormat::I420), 24);
 }
 
+TEST(FrameByteSize, RoundsEachChromaDimensionUpIndependently) {
+  // 1.5 bytes per pixel is only true for even dimensions. NV12 stores one interleaved chroma
+  // sample per 2x2 luma block, and a 3x3 image has a 2x2 chroma plane, not a 1.5x1.5 one — so the
+  // shortcut allocates 13 bytes for a frame that needs 17 and the last chroma row is written
+  // past the end.
+  EXPECT_EQ(FrameByteSize(3, 3, PixelFormat::NV12), 9 + 2 * 2 * 2);
+  EXPECT_EQ(FrameByteSize(3, 3, PixelFormat::I420), 9 + 2 * 2 * 2);
+  EXPECT_EQ(FrameByteSize(1, 1, PixelFormat::NV12), 1 + 1 * 1 * 2);
+  // An odd width with an even height rounds only the dimension that needs it.
+  EXPECT_EQ(FrameByteSize(5, 4, PixelFormat::NV12), 20 + 3 * 2 * 2);
+}
+
 TEST(FrameByteSize, RejectsNonsenseDimensions) {
   EXPECT_EQ(FrameByteSize(0, 8, PixelFormat::RGBA8), 0);
   EXPECT_EQ(FrameByteSize(-4, 8, PixelFormat::RGBA8), 0);

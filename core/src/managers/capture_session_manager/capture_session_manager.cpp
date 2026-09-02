@@ -43,6 +43,14 @@ void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
 }
 
 Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CapturePlanSpec& spec) {
+  // Checked first, and before the camera: End writes this session's document through the project
+  // store, and the store creates storage on demand — so beginning against an id nobody created
+  // leaves a titleless project behind in the user's list. Asking for camera permission for a
+  // session that cannot start would also be the wrong order to fail in.
+  if (!projects_.ReadDocument(project, "title").ok()) {
+    return Err<SessionId>(StatusCode::NotFound, kComponent, "no such project");
+  }
+
   // The lens decides the tessellation, so the camera is opened before the plan is made rather
   // than when the first burst fires.
   auto opened = camera_.Open(CameraOpenSpec{});
@@ -65,7 +73,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   // vision-only and no other component learns the difference (docs/03 UC-4).
   const PoseMode mode =
       resolved.motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
-  if (auto reset = pose_.Reset(mode, resolved.motion); !reset.ok()) return reset;
+  SPH_TRY(auto initialPose, pose_.Initial(mode, resolved.motion));
   (void)sensor_.Start(60);
   (void)camera_.StartPreview();
 
@@ -73,7 +81,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   project_ = project;
   session_ = SessionId{next_session_++};
   candidates_.clear();
-  latest_pose_ = PoseSample{};
+  pose_state_ = initialPose;
   active_ = true;
   return Ok(session_);
 }
@@ -89,11 +97,11 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   // An empty batch is the common case, not an error: the capture loop calls this every frame
   // whether or not the sensor produced anything since the last one.
   if (!samples.empty()) {
-    SPH_TRY(auto pose, pose_.Integrate(samples));
-    latest_pose_ = pose;
+    SPH_TRY(auto advanced, pose_.Integrate(pose_state_, samples));
+    pose_state_ = advanced;
   }
 
-  SPH_TRY(auto guidance, planner_.Locate(latest_pose_.orientation, plan_));
+  SPH_TRY(auto guidance, planner_.Locate(pose_state_.pose.orientation, plan_));
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(samples); stability.ok()) {
@@ -127,11 +135,11 @@ Result<std::vector<Candidate>> CaptureSessionManager::CaptureCell(NodeId node,
     candidate.id = CandidateId{next_candidate_++};
     candidate.node = node;
     candidate.frame = frame;
-    candidate.pose = latest_pose_;
+    candidate.pose = pose_state_.pose;
 
     NodeContext context;
     context.siblings = cell;
-    if (auto scored = quality_.Score(frame, latest_pose_, context); scored.ok()) {
+    if (auto scored = quality_.Score(frame, pose_state_.pose, context); scored.ok()) {
       candidate.quality = scored.value;
     }
     cell.push_back(candidate);
@@ -175,6 +183,12 @@ Result<CoverageState> CaptureSessionManager::Coverage() const {
 
 Result<std::vector<Candidate>> CaptureSessionManager::Candidates(NodeId node) const {
   if (auto status = RequireSession(); !status.ok()) return status;
+  // NotFound rather than an empty success, matching CaptureCell and RequestRetake: a cell that
+  // is not in the plan and a cell nobody has captured yet are different answers.
+  if (!HasNode(node)) {
+    return Err<std::vector<Candidate>>(StatusCode::NotFound, kComponent,
+                                       "no such cell in the plan");
+  }
   const auto it = candidates_.find(node.value);
   return Ok(it == candidates_.end() ? std::vector<Candidate>{} : it->second);
 }

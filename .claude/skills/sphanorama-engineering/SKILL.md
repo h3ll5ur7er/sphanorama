@@ -218,7 +218,7 @@ test to fix later; work in progress is not a commit.
 | Symptom | What it usually means |
 | ------- | --------------------- |
 | Adding a fourth manager | A use-case variation of an existing one. Check the volatility map |
-| An engine holding state between calls | It is a manager, or the state belongs in the caller |
+| An engine holding state between calls | It is a manager, or the state belongs in the caller. If the contract leaves the state nowhere else to live, the contract is the defect — name the state as a value the caller threads back in (ADR 0016) |
 | A client importing an engine | The client is doing business logic, or a manager method is missing |
 | Reaching for `cv::Stitcher` | See ADR 0005. It cannot do partial rebuilds, sensor priors, or mover-aware seams — the features that justify this project |
 | A pixel buffer in an interface | Use `FrameRef`; pin inside the core |

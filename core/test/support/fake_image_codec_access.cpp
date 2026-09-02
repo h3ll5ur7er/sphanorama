@@ -33,8 +33,15 @@ Result<FrameRef> FakeImageCodecAccess::Decode(std::span<const uint8_t> bytes) {
     return Err<FrameRef>(StatusCode::CodecFailure, kComponent, "not a recognised payload");
   }
   const auto payload = bytes.subspan(sizeof(kMagic));
+  if (payload.empty()) return Err<FrameRef>(StatusCode::CodecFailure, kComponent, "empty payload");
+  // Checked before the division, not after: floor()ing the pixel count and then copying the whole
+  // payload into it writes past the end of the allocation for any length that is not a whole
+  // number of RGBA pixels.
+  if (payload.size() % 4 != 0) {
+    return Err<FrameRef>(StatusCode::CodecFailure, kComponent,
+                         "payload is not a whole number of RGBA pixels");
+  }
   const auto pixels = static_cast<int32_t>(payload.size() / 4);
-  if (pixels <= 0) return Err<FrameRef>(StatusCode::CodecFailure, kComponent, "empty payload");
 
   auto frame = store_->Allocate(pixels, 1, PixelFormat::RGBA8);
   if (!frame.ok()) return frame;

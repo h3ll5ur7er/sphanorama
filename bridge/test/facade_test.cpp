@@ -138,11 +138,18 @@ TEST(Facade, TheDetailExplainsWhyRatherThanRepeatingTheCode) {
   EXPECT_FALSE(ReadStatus(in).detail.empty());
 }
 
-TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACameraPort) {
-  // The camera lives in JavaScript and its port is not built. The session refuses with a reason
-  // rather than producing empty frames, which is the whole argument for null over stub.
+TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACamera) {
+  // The camera lives in JavaScript and nothing on this side opened one. The session refuses with
+  // a reason rather than producing empty frames, which is the whole argument for null over stub.
+  wire::Writer titled;
+  titled.PutString("a project to capture into");
+  Response created = Call("ProjectManager.create", titled.bytes());
+  wire::Reader out = created.reader();
+  ASSERT_EQ(ReadStatus(out).code, StatusCode::Ok);
+  const double project = out.GetF64();
+
   wire::Writer args;
-  args.PutF64(1.0);                   // project id
+  args.PutF64(project);
   CapturePlanSpec spec;
   spec.acceptanceConeDeg = 4.0;
   codec::Encode(args, spec);
@@ -151,7 +158,19 @@ TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACameraPort) {
   wire::Reader in = response.reader();
   const Status status = ReadStatus(in);
   EXPECT_EQ(status.code, StatusCode::CameraUnavailable);
-  EXPECT_NE(status.detail.find("port"), std::string::npos);
+}
+
+TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {
+  // Checked before the camera, so this is the answer even though no camera is open either.
+  wire::Writer args;
+  args.PutF64(4040.0);
+  CapturePlanSpec spec;
+  spec.acceptanceConeDeg = 4.0;
+  codec::Encode(args, spec);
+
+  Response response = Call("CaptureSessionManager.begin", args.bytes());
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
 TEST(Facade, ABuildCannotBeStartedYetAndSaysSo) {

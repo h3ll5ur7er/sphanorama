@@ -81,6 +81,26 @@ TEST_F(Projects, ExportingABuildThatDoesNotExistIsRefused) {
   EXPECT_TRUE(exporter.artifacts().empty());
 }
 
+TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
+  // The manager is rebuilt on every page load; the store is not. A counter that restarts at 1
+  // hands the next project an id that is already taken, and WriteDocument then overwrites a real
+  // project's title instead of creating a new one — silent data loss, one reload later.
+  auto first = manager->Create("kitchen");
+  auto second = manager->Create("garden");
+  ASSERT_TRUE(first.ok());
+  ASSERT_TRUE(second.ok());
+
+  ProjectManager reloaded(store);
+  auto third = reloaded.Create("balcony");
+  ASSERT_TRUE(third.ok());
+  EXPECT_NE(third.value.value, first.value.value);
+  EXPECT_NE(third.value.value, second.value.value);
+
+  auto listed = reloaded.List();
+  ASSERT_TRUE(listed.ok());
+  EXPECT_EQ(listed.value.size(), 3u);
+}
+
 TEST_F(Projects, ResumingAnUnknownProjectIsRefused) {
   EXPECT_EQ(manager->Resume(ProjectId{404}).status.code, StatusCode::NotFound);
 }

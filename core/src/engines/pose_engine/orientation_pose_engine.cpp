@@ -15,48 +15,51 @@ constexpr const char* kComponent = "OrientationPoseEngine";
 // key's worth of tuning once real captures exist.
 constexpr double kUnusableRateRadPerSec = 2.0;
 
+double Magnitude(const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+
 }  // namespace
 
-Status OrientationPoseEngine::Reset(PoseMode mode, MotionCapability capability) {
-  mode_ = mode;
-  capability_ = capability;
-  orientation_ = Quat{};
-  lastTimestampNs_ = 0;
-  observed_ = false;
-  absolute_ = false;
-  return Status::Ok();
+Result<PoseState> OrientationPoseEngine::Initial(PoseMode mode, MotionCapability capability) {
+  PoseState state;
+  state.mode = mode;
+  state.capability = capability;
+  return Ok(state);
 }
 
-Result<PoseSample> OrientationPoseEngine::Integrate(std::span<const ImuSample> samples) {
+Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
+                                                   std::span<const ImuSample> samples) {
+  PoseState state = prior;
+
   for (const ImuSample& sample : samples) {
     if (sample.hasOrientation) {
       // Ground truth. It also clears whatever drift integration accumulated, which is the whole
       // reason to prefer it rather than blending the two.
-      orientation_ = Normalize(sample.orientation);
-      absolute_ = true;
-    } else if (observed_ && sample.timestampNs > lastTimestampNs_) {
-      const double seconds = static_cast<double>(sample.timestampNs - lastTimestampNs_) * 1e-9;
+      state.pose.orientation = Normalize(sample.orientation);
+      state.absolute = true;
+    } else if (state.observed && sample.timestampNs > state.pose.timestampNs) {
+      const double seconds =
+          static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9;
       const Vec3& rate = sample.angularVelocity;
-      const double magnitude =
-          std::sqrt(rate.x * rate.x + rate.y * rate.y + rate.z * rate.z);
+      const double magnitude = Magnitude(rate);
       if (magnitude > 1e-9) {
         // Small-angle step about the instantaneous axis. Good enough at sensor rates and
         // honestly drifty over a whole capture, which is why an absolute reading overrides it.
-        orientation_ = Normalize(Multiply(orientation_, FromAxisAngle(rate, magnitude * seconds)));
+        state.pose.orientation = Normalize(
+            Multiply(state.pose.orientation, FromAxisAngle(rate, magnitude * seconds)));
+        // Dead reckoning from here on. Leaving the flag set would keep reporting an integrated
+        // pose with the confidence of a measured one, and the drift would be invisible.
+        state.absolute = false;
       }
     }
-    lastTimestampNs_ = sample.timestampNs;
-    observed_ = true;
+    state.pose.timestampNs = sample.timestampNs;
+    state.observed = true;
   }
 
-  PoseSample pose;
-  pose.timestampNs = lastTimestampNs_;
-  pose.orientation = orientation_;
-  if (!samples.empty()) pose.angularVelocity = samples.back().angularVelocity;
+  if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;
   // Zero until something has actually been observed: a caller reading confidence 0 knows the
   // orientation is a default rather than an estimate.
-  pose.confidence = !observed_ ? 0.0 : (absolute_ ? 1.0 : 0.5);
-  return Ok(pose);
+  state.pose.confidence = !state.observed ? 0.0 : (state.absolute ? 1.0 : 0.5);
+  return Ok(state);
 }
 
 Result<PoseSample> OrientationPoseEngine::Correct(const FrameRef&, const FrameRef&,
@@ -75,8 +78,7 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
 
   double peak = 0.0;
   for (const ImuSample& sample : samples) {
-    const Vec3& rate = sample.angularVelocity;
-    peak = std::max(peak, std::sqrt(rate.x * rate.x + rate.y * rate.y + rate.z * rate.z));
+    peak = std::max(peak, Magnitude(sample.angularVelocity));
   }
   return Ok(std::clamp(1.0 - peak / kUnusableRateRadPerSec, 0.0, 1.0));
 }

@@ -11,25 +11,21 @@ namespace sphanorama {
 // to a value that arrived correct. Where only rates are available they are integrated, which
 // drifts, and an absolute reading resets that drift the moment one arrives.
 //
+// Stateless, like every engine: the carried-over estimate arrives as a PoseState and leaves as a
+// new one, so the same batch of samples always folds into the same answer and a recorded session
+// can be replayed through it (ADR 0016).
+//
 // Visual correction is Phase 2: there is no honest minimal version of tracking features between
 // frames, and a Correct() that quietly returned its input as "corrected" would make a drifting
 // session look like a converging one.
 class OrientationPoseEngine final : public IPoseEngine {
  public:
-  Status Reset(PoseMode mode, MotionCapability capability) override;
-  Result<PoseSample> Integrate(std::span<const ImuSample> samples) override;
+  Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override;
+  Result<PoseState> Integrate(const PoseState& prior,
+                              std::span<const ImuSample> samples) override;
   Result<PoseSample> Correct(const FrameRef& current, const FrameRef& reference,
                              const PoseSample& prior) override;
   Result<double> Stability(std::span<const ImuSample> samples) override;
-
- private:
-  PoseMode mode_ = PoseMode::Fused;
-  MotionCapability capability_ = MotionCapability::None;
-
-  Quat orientation_{};
-  int64_t lastTimestampNs_ = 0;
-  bool observed_ = false;
-  bool absolute_ = false;
 };
 
 }  // namespace sphanorama

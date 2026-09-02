@@ -280,6 +280,30 @@ export interface PanoramaRef {
  */
 export type PoseMode = 'Fused' | 'GyroOnly' | 'VisionOnly';
 
+/**
+ * Everything a pose estimate carries from one batch of samples to the next.
+ * It exists so that IPoseEngine can be a pure function of it. An engine that kept this in members
+ * would be a stateful engine, which rule 4 in docs/03 §3.3 forbids for a reason worth more than
+ * the convenience: an estimate you cannot construct is an estimate you cannot replay against a
+ * recorded log, and replay is how a fusion filter is judged (ADR 0016).
+ * CaptureSessionManager owns one per session, which is where session state belongs.
+ */
+export interface PoseState {
+  mode: PoseMode;
+  capability: MotionCapability;
+  pose: PoseSample;
+  /**
+   * Whether any sample has been folded in at all. Distinguishes "identity because nothing has
+   * been seen" from "identity because the device is level and facing north".
+   */
+  observed: boolean;
+  /**
+   * Whether the pose came from an absolute reading rather than from integrating rates. Confidence
+   * is derived from this, so it has to survive between calls.
+   */
+  absolute: boolean;
+}
+
 export interface SelectionPolicy {
   weightSharpness: number;
   weightMotionBlur: number;

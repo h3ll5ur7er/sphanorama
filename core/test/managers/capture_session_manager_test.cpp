@@ -29,6 +29,9 @@ class CaptureSession : public ::testing::Test {
     camera = std::make_unique<FakeCameraAccess>(store);
     sensor = std::make_unique<FakeMotionSensorAccess>();
     projects = std::make_unique<FakeProjectStoreAccess>();
+    // A session belongs to a project that already exists. Creating one here rather than letting
+    // Begin conjure it is the point of the test below.
+    (void)projects->WriteDocument(kProject, "title", "test project");
 
     manager = std::make_unique<CaptureSessionManager>(
         planner, pose, quality, *camera, *sensor, *store, *projects);
@@ -57,6 +60,26 @@ class CaptureSession : public ::testing::Test {
   std::unique_ptr<FakeProjectStoreAccess> projects;
   std::unique_ptr<CaptureSessionManager> manager;
 };
+
+TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
+  // End writes a session document through the project store, and the store creates storage on
+  // demand — so a session begun against an arbitrary id leaves a project behind with no title,
+  // which then shows up in the user's list as a blank row nobody made.
+  FakeProjectStoreAccess empty;
+  CaptureSessionManager orphan(planner, pose, quality, *camera, *sensor, *store, empty);
+  auto begun = orphan.Begin(ProjectId{404}, Spec());
+  EXPECT_EQ(begun.status.code, StatusCode::NotFound);
+  // Refused before the camera is touched: a permission prompt for a session that cannot start is
+  // the worst possible order to do these in.
+  EXPECT_FALSE(camera->IsOpen());
+}
+
+TEST_F(CaptureSession, CandidatesForACellOutsideThePlanIsRefused) {
+  // CaptureCell and RequestRetake both answer NotFound here. Returning an empty success instead
+  // makes a typo'd cell indistinguishable from a real one nobody has captured yet.
+  Begin();
+  EXPECT_EQ(manager->Candidates(NodeId{9999}).status.code, StatusCode::NotFound);
+}
 
 TEST_F(CaptureSession, BeginProducesASessionAndAPlan) {
   const SessionId session = Begin();

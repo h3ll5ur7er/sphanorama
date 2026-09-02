@@ -79,6 +79,28 @@ TYPED_TEST(FrameStoreAccessContract, PinFaultsASpilledFrameBackIn) {
   EXPECT_EQ(this->FirstByte(frame), 0x5C);
 }
 
+TYPED_TEST(FrameStoreAccessContract, FaultingInIsRefusedWhenTheHeapHasNoRoomLeft) {
+  // Spilling frees budget, and something else takes it. Promoting on Pin without re-checking the
+  // ceiling is how a store that models mobile memory pressure quietly stops modelling it: the
+  // manager tests keep passing while the phone is over its budget.
+  const FrameRef spilled = this->Allocate();
+  ASSERT_TRUE(this->store->Demote(spilled, Residency::Spilled).ok());
+
+  auto budget = this->store->Budget();
+  ASSERT_TRUE(budget.ok());
+  std::vector<FrameRef> hogs;
+  while (true) {
+    auto more = this->store->Allocate(4, 4, PixelFormat::RGBA8);
+    if (!more.ok()) break;
+    hogs.push_back(more.value);
+  }
+
+  EXPECT_EQ(this->store->Pin(spilled).status.code, StatusCode::FrameStoreExhausted);
+  auto after = this->store->Budget();
+  ASSERT_TRUE(after.ok());
+  EXPECT_LE(after.value.heapUsedBytes, after.value.heapCeilingBytes);
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());

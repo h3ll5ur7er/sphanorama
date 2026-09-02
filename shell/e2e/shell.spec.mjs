@@ -100,14 +100,18 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
     const outcome = await page.evaluate(async () => {
       const core = window.sphanoramaCore;
       const refused = await core.project.create('');          // an untitled project is refused
-      const started = await core.captureSession.begin(1, {
+      const project = await core.project.create('a project to capture into');
+      const spec = {
         strategy: 'Rings', horizontalFovDeg: 0, verticalFovDeg: 0, overlapTarget: 0.3,
         acceptanceConeDeg: 4, coverPoles: true, motion: 'None',
-      });
+      };
+      const started = await core.captureSession.begin(project.value, spec);
+      const orphaned = await core.captureSession.begin(4040, spec);
       return {
         refusedCode: refused.ok ? null : refused.status.code,
         startedCode: started.ok ? null : started.status.code,
         startedDetail: started.ok ? null : started.status.detail,
+        orphanedCode: orphaned.ok ? null : orphaned.status.code,
       };
     });
     expect(outcome.refusedCode).toBe('InvalidArgument');
@@ -115,6 +119,8 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
     // from the lens, so the session refuses rather than planning against an invented one.
     expect(outcome.startedCode).toBe('CameraUnavailable');
     expect(outcome.startedDetail).toContain('camera');
+    // And a session for a project nobody created never gets as far as the camera.
+    expect(outcome.orphanedCode).toBe('NotFound');
   } finally {
     await server.close();
   }

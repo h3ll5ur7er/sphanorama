@@ -55,7 +55,9 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   ProjectId project_;
   SessionId session_;
   CapturePlan plan_;
-  PoseSample latest_pose_;
+  // The session's pose state. It lives here rather than inside PoseEngine because a
+  // manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4, ADR 0016).
+  PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
 
   uint64_t next_session_ = 1;

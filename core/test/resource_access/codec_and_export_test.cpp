@@ -74,6 +74,22 @@ TEST(FakeCodec, RemembersWhetherGPanoMetadataWasRequested) {
   EXPECT_EQ(codec.LastFormat(), EncodeFormat::Avif);
 }
 
+TEST(FakeCodec, RefusesAPayloadThatIsNotAWholeNumberOfPixels) {
+  // The magic matches, so the length is the only thing standing between the copy and the end of
+  // the buffer: floor(size/4) pixels are allocated and size bytes are written into them. ASan
+  // catches it the moment a test tries, which is exactly what a fake is for.
+  auto store = std::make_shared<FakeFrameStoreAccess>();
+  FakeImageCodecAccess codec(store);
+  auto frame = store->Allocate(4, 1, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  auto encoded = codec.Encode(frame.value, EncodeSpec{});
+  ASSERT_TRUE(encoded.ok());
+
+  std::vector<uint8_t> ragged = encoded.value;
+  ragged.push_back(0xFF);   // one byte more than a whole pixel
+  EXPECT_EQ(codec.Decode(ragged).status.code, StatusCode::CodecFailure);
+}
+
 TEST(FakeCodec, RefusesBytesItDidNotProduce) {
   FakeImageCodecAccess codec;
   const std::vector<uint8_t> junk{0, 1, 2, 3, 4};

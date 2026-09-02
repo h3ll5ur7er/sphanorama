@@ -107,6 +107,12 @@ per use-case family, and they do not call each other synchronously (§3.3).
 inputs explicitly and returns a value. This is what makes them testable against golden data and
 comparable against a Python reference implementation.
 
+Where an engine accumulates over time, the accumulated state is a **named contract value the
+manager owns** and passes back in: `IPoseEngine.Integrate(const PoseState& prior, samples)` returns
+the next `PoseState`, and `CaptureSessionManager` holds it. A contract shaped so that the state has
+nowhere to live but engine members is a contract defect, not an exception to this rule — see
+ADR [0016](adr/0016-pose-state-is-a-value-the-manager-owns.md), which is the fix for one.
+
 **ResourceAccess** turns a resource's raw API into atomic business verbs. `ICameraAccess` exposes
 `CaptureBurst(BurstSpec)`, not `getUserMedia`. This layer is where every browser API and every
 platform quirk lives, and it is the layer whose implementations are written in TypeScript

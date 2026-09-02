@@ -72,6 +72,15 @@ Result<std::span<uint8_t>> FakeFrameStoreAccess::Pin(const FrameRef& frame) {
   if (entry == nullptr) {
     return Err<std::span<uint8_t>>(StatusCode::NotFound, kComponent, "no such frame");
   }
+  if (entry->residency == Residency::Spilled) {
+    // Spilling gave the budget back and something else may have taken it. Promoting without
+    // re-checking is how a store that exists to model memory pressure stops modelling it.
+    const auto size = static_cast<int64_t>(entry->bytes.size());
+    if (Budget().value.heapUsedBytes + size > ceiling_) {
+      return Err<std::span<uint8_t>>(StatusCode::FrameStoreExhausted, kComponent,
+                                     "faulting this frame in would exceed the heap ceiling");
+    }
+  }
   ++pin_count_;
   ++entry->pins;
   entry->residency = Residency::HeapPinned;   // faulting in from spill is a no-op in memory

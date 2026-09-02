@@ -30,6 +30,7 @@ class FakeCameraAccess final : public ICameraAccess {
 
   // Test affordances.
   int BurstCount() const { return burst_count_; }
+  bool IsOpen() const { return open_; }
   bool ExposureLocked() const { return exposure_locked_; }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
 

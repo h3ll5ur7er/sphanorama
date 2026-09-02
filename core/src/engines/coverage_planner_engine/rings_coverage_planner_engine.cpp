@@ -49,8 +49,15 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
   plan.spec = spec;
   uint64_t nextId = 1;
 
+  // Without the caps the plan covers a band around the horizon instead of a sphere. The limit is
+  // the highest elevation a cell can aim at and still have its whole field of view below the
+  // pole — dropping every ring above that, rather than just the two pole cells, is what makes
+  // "no caps" mean a band rather than a sphere with two holes in it.
+  const double elevationLimit = spec.coverPoles ? 90.0 : 90.0 - spec.verticalFovDeg / 2.0;
+
   for (int ring = 0; ring < ringCount; ++ring) {
     const double elevation = -90.0 + elevationStep * ring;
+    if (std::abs(elevation) > elevationLimit) continue;
 
     // A ring's circumference shrinks by cos(elevation), so the azimuth step widens to keep the
     // on-sphere spacing constant. Without this the poles collect hundreds of redundant cells.
