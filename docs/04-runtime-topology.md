@@ -120,8 +120,15 @@ device — because their signatures move bytes through the shared heap rather th
 values; their TypeScript adapters are written against the shared-heap protocol instead, and
 mirroring the C++ signature would describe a call that does not exist.
 
-Wire encoding for the marshalled calls will be FlatBuffers, generated from the same parse, so reads
-are zero-copy on both sides. Not yet built: the boundary currently has no runtime.
+Wire encoding is a **binary codec generated from that same parse** — `contracts/cpp/sphanorama/codec.h`
+and `shell/src/bridge/codec.generated.ts` — over hand-written primitives in `wire.h` / `wire.ts`
+(ADR [0013](adr/0013-generated-binary-codec.md)). A golden payload asserted by both the C++ and the
+TypeScript suite pins the two halves to each other, so a disagreement about field order fails a
+test rather than decoding into plausible nonsense.
+
+FlatBuffers remains the right answer for zero-copy over large payloads and nothing here forecloses
+it; pixels never cross this way in any case. Not yet built: the method dispatch on top of the
+codec, so the client still reaches only the capability probe.
 
 ## 4.7 Error model
 

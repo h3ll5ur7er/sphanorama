@@ -14,6 +14,8 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 add_executable(sphanorama_tests
+  codec_test.cpp
+  wire_test.cpp
   managers/capture_session_manager_test.cpp
   managers/project_manager_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp

@@ -21,7 +21,11 @@ jobs:
         run: python3 tools/layer_check.py
       - name: contract generator tests
         run: python3 tools/test_contract_gen.py
-      - name: contract mirror is not stale
+      - name: codec generator tests
+        run: python3 tools/test_codec_gen.py
+      # Covers the TypeScript mirror and both halves of the wire codec: a header change that was
+      # not regenerated is a red build rather than a boundary that disagrees with itself.
+      - name: generated files are not stale
         run: python3 tools/contract_gen.py --check
       - name: size budget checker tests
         run: python3 tools/test_size_budget.py

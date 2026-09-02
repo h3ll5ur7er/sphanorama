@@ -17,3 +17,4 @@ and the alternative we rejected and why.
 | [0010](0010-resource-access-contract-suites.md) | Resource access is verified by one shared contract suite per interface |
 | [0011](0011-single-threaded-build-for-github-pages.md) | Two WASM builds; GitHub Pages gets the single-threaded one |
 | [0012](0012-c-abi-boundary-not-embind.md) | The WASM boundary is a C ABI over the shared heap, not Embind |
+| [0013](0013-generated-binary-codec.md) | The boundary marshals a generated binary codec, not JSON or FlatBuffers |

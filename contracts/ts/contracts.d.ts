@@ -227,7 +227,7 @@ export interface BuildProgress {
   fraction: number;
   tilesReady: number;
   tilesTotal: number;
-  failure: Result<void>;
+  failure: Status;
 }
 
 export interface GhostRegion {
