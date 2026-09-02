@@ -150,6 +150,47 @@ class LayerRuleTest(unittest.TestCase):
         self.repo.write("bridge/facade.cpp", '#include "sphanorama/engines/pose_engine.h"\n')
         self.assertViolation(substring="pose_engine")
 
+    def test_includes_resolve_through_the_bridge_root_too(self):
+        # bridge/ is on the include path for the same reason core/src is, so a port including its
+        # own header has to resolve there rather than being reported as a missing file.
+        self.repo.write("bridge/resource_access/project_store_access/browser_store.h")
+        self.repo.write("bridge/resource_access/project_store_access/browser_store.cpp",
+                        '#include "resource_access/project_store_access/browser_store.h"\n')
+        self.assertClean()
+
+    def test_the_composition_root_may_name_every_concrete_type(self):
+        # Wiring is not a business dependency. A composition root exists precisely to know which
+        # implementation each contract gets, and every layer rule is about who may *call* whom.
+        # The exemption is one named file, not a directory, so it cannot quietly widen.
+        self.repo.write("core/src/engines/pose_engine/null_pose_engine.h")
+        self.repo.write("bridge/runtime.h",
+                        '#include "engines/pose_engine/null_pose_engine.h"\n')
+        self.assertClean()
+
+    def test_the_exemption_does_not_extend_to_the_rest_of_the_bridge(self):
+        self.repo.write("core/src/engines/pose_engine/null_pose_engine.h")
+        self.repo.write("bridge/facade.generated.cpp",
+                        '#include "engines/pose_engine/null_pose_engine.h"\n')
+        self.assertViolation(substring="null_pose_engine")
+
+    def test_the_bridge_may_hold_layered_subtrees(self):
+        # Browser-backed resource accesses are resource-access *layer* code that needs Emscripten,
+        # and only bridge/ may reference Emscripten. So bridge/ carries layer subdirectories: a
+        # port under bridge/resource_access/ is judged as resource access, not as a client.
+        self.repo.write("bridge/resource_access/project_store_access/browser_store.cpp",
+                        '#include "sphanorama/resource_access/project_store_access.h"\n')
+        self.assertClean()
+
+    def test_a_port_may_not_reach_sideways_any_more_than_a_native_one(self):
+        self.repo.write("bridge/resource_access/project_store_access/browser_store.cpp",
+                        '#include "sphanorama/resource_access/camera_access.h"\n')
+        self.assertViolation(substring="camera_access")
+
+    def test_a_port_may_not_call_a_manager(self):
+        self.repo.write("bridge/resource_access/project_store_access/browser_store.cpp",
+                        '#include "sphanorama/managers/project_manager.h"\n')
+        self.assertViolation(substring="project_manager")
+
     def test_bridge_tests_are_not_layer_checked(self):
         self.repo.write("bridge/test/facade_test.cpp",
                         '#include "sphanorama/engines/pose_engine.h"\n')

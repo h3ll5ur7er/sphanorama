@@ -23,7 +23,7 @@ CONTRACT_PACKAGE = "sphanorama"
 # include path the build actually uses. Root-relative resolution is what makes an edge like an
 # engine including "managers/capture_session_manager.h" visible: without it the include simply
 # would not resolve, and the check would report the wrong problem.
-INCLUDE_ROOTS = (CONTRACT_ROOT, Path("core/src"))
+INCLUDE_ROOTS = (CONTRACT_ROOT, Path("core/src"), Path("bridge"))
 
 # Directory name under contracts/cpp/sphanorama/ and core/src/ -> layer.
 LAYER_DIRS = {
@@ -42,6 +42,12 @@ FLAT_ROOTS = {
 
 # Test trees are not layer-checked: a test may reach for whatever it needs to set up a scenario.
 EXCLUDED_PREFIXES = ("bridge/test",)
+
+# The composition root is exempt, and only it. Deciding which implementation each contract gets
+# means naming every concrete type, which is not a business dependency — every layer rule here is
+# about who may *call* whom. Listed as exact paths rather than a directory so the exemption
+# cannot quietly widen to the code around it. See ADR 0014.
+COMPOSITION_ROOTS = ("bridge/runtime.h", "bridge/runtime.cpp")
 
 SOURCE_ROOTS = ("core/src", "contracts/cpp", "bench", "bridge", "shell/src")
 SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc")
@@ -95,6 +101,17 @@ def classify(rel: Path) -> Unit | None:
 
     if any(posix.startswith(prefix + "/") for prefix in EXCLUDED_PREFIXES):
         return None
+    if posix in COMPOSITION_ROOTS:
+        return None
+
+    # bridge/ is a client at its root, but it also carries layered subtrees: a browser-backed
+    # resource access is resource-access code that happens to need Emscripten, and bridge/ is the
+    # only tree allowed to reference Emscripten. Judging it as a client would let a port call a
+    # manager, which is exactly what the layer rules forbid.
+    if parts[:1] == ("bridge",) and len(parts) > 2 and parts[1] in LAYER_DIRS:
+        layer = LAYER_DIRS[parts[1]]
+        tail = parts[2:]
+        return Unit(layer, Path(tail[0]).stem if len(tail) == 1 else tail[0])
 
     for root, layer in FLAT_ROOTS.items():
         if posix.startswith(root + "/"):

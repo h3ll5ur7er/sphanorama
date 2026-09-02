@@ -33,9 +33,12 @@ arrives as a `Status` it can branch on.
 
 What is missing before the exit criterion is met, in the order it blocks:
 
-1. **Resource-access ports.** The camera, motion sensor, frame store and export live in the
-   browser and reach the core through ports that do not exist. Until they do, a capture session
-   refuses with `CameraUnavailable` — honestly, but it refuses. This is the last structural piece.
+1. **The remaining resource-access ports.** The mechanism is settled and proven: the project
+   store port is in, a project created through the core survives a reload, and ADR 0014 records
+   why ports are synchronous over a resident host. The camera is the one that does not fit that
+   pattern — a burst takes time and cannot be made resident in advance — so it needs either
+   Asyncify on that call path or a client-driven redesign, decided with measurements. Until then a
+   capture session refuses with `CameraUnavailable`, honestly.
 2. **A real `CoveragePlannerEngine`**, so the reticle follows a coverage plan rather than a sensor
    readout. The null planner deliberately plans one cell at identity.
 3. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until

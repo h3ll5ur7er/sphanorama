@@ -22,5 +22,6 @@ The four things that are most expensive to get wrong:
 
 Status: Phase 0 nearly complete. The native and WASM builds, the PWA shell, the three managers,
 five null engines, the generated boundary (contracts mirror, wire codec, facade dispatch) and the
-Pages deploy are in and green. The remaining structural piece is the resource-access ports, so a
+Pages deploy are in and green. The port mechanism is settled and proven — a project created through the core
+survives a reload (ADR 0014). The camera port is the one that does not fit that pattern, so a
 capture session currently refuses with `CameraUnavailable`. See `docs/06-roadmap.md`.

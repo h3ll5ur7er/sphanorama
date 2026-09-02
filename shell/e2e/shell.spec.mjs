@@ -119,6 +119,67 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
   }
 });
 
+test('a project written through the core survives a reload', async ({ page }) => {
+  // The whole point of the port, end to end: a manager in C++ writes through a synchronous
+  // contract, the page persists it asynchronously behind that, and it is there next time.
+  // Everything below the facade is exercised here — dispatch, codec, port, host, IndexedDB.
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const created = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.create('kitchen sphere');
+      // Durability is eventual by design (ADR 0014), so the test asks for it rather than
+      // racing the flush timer.
+      await window.sphanoramaHost.flush();
+      return result.ok ? result.value : null;
+    });
+    expect(created).not.toBeNull();
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const after = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      return listed.ok ? listed.value : null;
+    });
+    expect(after).not.toBeNull();
+    expect(after.map((p) => p.title)).toContain('kitchen sphere');
+    expect(after.map((p) => p.id)).toContain(created);
+  } finally {
+    await server.close();
+  }
+});
+
+test('deleting a project removes it for good', async ({ page }) => {
+  const server = await serve();
+  try {
+    await page.goto(server.origin);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const remaining = await page.evaluate(async () => {
+      const core = window.sphanoramaCore;
+      const created = await core.project.create('to be deleted');
+      await core.project.delete(created.value);
+      await window.sphanoramaHost.flush();
+      const listed = await core.project.list();
+      return listed.value.map((p) => p.title);
+    });
+    expect(remaining).not.toContain('to be deleted');
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const afterReload = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      return listed.value.map((p) => p.title);
+    });
+    expect(afterReload).not.toContain('to be deleted');
+  } finally {
+    await server.close();
+  }
+});
+
 test('registers a service worker so the shell works offline', async ({ page }) => {
   const server = await serve();
   try {

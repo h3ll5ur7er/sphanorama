@@ -8,6 +8,8 @@
 import { loadCore, type RuntimeCapabilities, type SphanoramaCore } from './bridge/core';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
+import { createDocumentHost, type DocumentHost } from './access/document-host';
+import { createIndexedDbStore } from './access/indexeddb-store';
 import { describeFailure, formatCapabilities } from './clients/capture/status';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
@@ -25,11 +27,13 @@ const enableButton = el<HTMLButtonElement>('enable');
 const camera = createCameraAccess(navigator.mediaDevices);
 const motion = createMotionSensorAccess(window);
 
-async function instantiateCore(): Promise<SphanoramaCore> {
+async function instantiateCore(host: DocumentHost): Promise<SphanoramaCore> {
   // Loaded at runtime rather than bundled: the module is an artifact of the C++ build, and the
   // two builds (ADR 0011) are selected by which one the deploy copied in.
   const factory = (await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}core/sphanorama-core.js`)).default;
-  return loadCore(async () => factory());
+  // The host is installed on the module before the core runs, so its documents are already
+  // resident when the first synchronous read arrives from C++ (ADR 0014).
+  return loadCore(async () => factory({ sphHost: host }));
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities) {
@@ -99,15 +103,26 @@ async function reportFacade(core: SphanoramaCore) {
 }
 
 async function main() {
+  const host = await createDocumentHost(createIndexedDbStore());
+
+  // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the
+  // last event that reliably fires; visibilitychange covers the cases where it does not.
+  const flush = () => { void host.flush(); };
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+
   try {
-    const core = await instantiateCore();
+    const core = await instantiateCore(host);
     renderCapabilities(core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
     }));
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself
     // never reads this; it holds `core` in scope.
-    (window as unknown as { sphanoramaCore: SphanoramaCore }).sphanoramaCore = core;
+    Object.assign(window as unknown as Record<string, unknown>,
+                  { sphanoramaCore: core, sphanoramaHost: host });
     await reportFacade(core);
     stage.textContent = 'core ready — enable the camera to continue';
     enableButton.addEventListener('click', () => { void enable(); });

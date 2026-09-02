@@ -11,7 +11,11 @@
 #include "resource_access/camera_access/null_camera_access.h"
 #include "resource_access/frame_store_access/null_frame_store_access.h"
 #include "resource_access/motion_sensor_access/null_motion_sensor_access.h"
+#if defined(__EMSCRIPTEN__)
+#include "resource_access/project_store_access/browser_project_store_access.h"
+#else
 #include "resource_access/project_store_access/memory_project_store_access.h"
+#endif
 
 namespace sphanorama::bridge {
 
@@ -49,9 +53,14 @@ class Runtime {
   NullMotionSensorAccess motion_;
   NullFrameStoreAccess frames_;
 
-  // In memory for now, so a project created in this page vanishes with it. The persisting
-  // adapter is a browser port, not a different manager.
+  // The one contract with a real implementation on both platforms: a browser port backed by the
+  // page's document host, and an in-memory store natively. Both are held to the same contract
+  // suite (ADR 0010), which is what makes swapping them here safe.
+#if defined(__EMSCRIPTEN__)
+  BrowserProjectStoreAccess projects_;
+#else
   MemoryProjectStoreAccess projects_;
+#endif
 
   CaptureSessionManager capture_session_{planner_, pose_, quality_, camera_, motion_, frames_,
                                          projects_};

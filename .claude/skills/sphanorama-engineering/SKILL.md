@@ -163,7 +163,10 @@ core/                 C++: managers, engines, resource-access implementations, n
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest, mirroring src/; fakes in test/support/
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
-                      permitted to reference Emscripten. Layer-wise a client
+                      permitted to reference Emscripten. A client at its root; its
+                      resource_access/ subtree holds browser-backed ports and is judged as
+                      resource access. runtime.* is the composition root, exempt from the
+                      layer rules by name (ADR 0014)
 bench/                native CLI client — runs the core on datasets, prints timings
 shell/                TypeScript PWA
   src/clients/{capture,review}/
