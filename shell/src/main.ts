@@ -150,6 +150,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
   let nodesSatisfied = 0;
   const nodesTotal = plan?.nodes.length ?? 0;
+  let guidedOnce = false;
 
   const step = async () => {
     const drained = await motion.drain(32);
@@ -163,9 +164,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
       horizonGroup.setAttribute('transform', `rotate(${-gamma.toFixed(1)} 50 50)`);
     }
 
-    if (plan !== null) {
-      // Called every frame including with an empty batch: the contract says so, and it is what
-      // keeps the reticle answering while the phone is held still.
+    // Only when there is something new to fold in, plus once at the start so the reticle has a
+    // position before the first sample arrives. An empty batch cannot change the pose, so it
+    // cannot change the guidance — and a facade round trip per frame for an answer that cannot
+    // have moved is a WASM call at 60Hz for nothing, which on a phone is heat and battery, and
+    // under a loaded CI machine is enough to starve the rest of the suite.
+    if (plan !== null && (samples.length > 0 || !guidedOnce)) {
+      guidedOnce = true;
       const guided = await core.captureSession.onMotion(samples.map(toImuSample));
       if (guided.ok) {
         const guidance = guided.value;
