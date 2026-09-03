@@ -446,7 +446,8 @@ export interface CaptureSessionManager {
    * Arms a burst at the given cell. It does not fire one: the frames arrive over the following
    * ticks, and the candidates are readable through Candidates(node) once guidance says CellDone.
    * `burst.intervalMs` is a floor rather than a cadence — at most one frame is taken per tick, so
-   * a spec asking for less than a tick apart gets a tick apart. Locks are applied here and held
+   * a spec asking for less than a tick apart gets a tick apart, and a spec asking for less than
+   * the camera's own `maxBurstFps` period gets that instead. Locks are applied here and held
    * until the burst completes or is abandoned.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;

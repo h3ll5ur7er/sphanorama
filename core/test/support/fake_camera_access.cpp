@@ -66,6 +66,11 @@ Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
 }
 
 Status FakeCameraAccess::Close() {
+  if (fail_close_) {
+    // Left open on purpose. A close that failed did not half-close, and a camera still open is
+    // a camera whose locks are still whatever they were.
+    return Fail(StatusCode::CameraUnavailable, kComponent, "the device would not release");
+  }
   open_ = false;
   previewing_ = false;
   return Status::Ok();

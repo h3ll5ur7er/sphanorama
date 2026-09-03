@@ -221,5 +221,48 @@ TYPED_TEST(FrameStoreAccessContract, RejectsNonsenseDimensions) {
             StatusCode::InvalidArgument);
 }
 
+TYPED_TEST(FrameStoreAccessContract, RefusesToDemoteToATierADemotionCannotProduce) {
+  // A store that accepted any Residency would have ResidencyOf reporting a state that was never
+  // established. Pinned is the one that bites: it claimed a mapping nothing had made, and the
+  // Release that followed then failed against a pin count of zero.
+  const FrameRef frame = this->Allocate();
+  EXPECT_EQ(this->store->Demote(frame, Residency::HeapPinned).code, StatusCode::InvalidArgument);
+  EXPECT_EQ(this->store->Demote(frame, Residency::GpuTexture).code, StatusCode::Unsupported);
+
+  // Refused *and* unchanged: a rejected demotion that had already moved the frame would be worse
+  // than one that succeeded.
+  auto residency = this->store->ResidencyOf(frame);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_EQ(residency.value, Residency::HeapEncoded);
+  EXPECT_TRUE(this->store->Pin(frame).ok()) << "the refused demotion left the frame unusable";
+  EXPECT_TRUE(this->store->Release(frame).ok());
+}
+
+// Not part of the typed suite because it needs a ceiling large enough for the size check to pass
+// so the *stride* check is the one that answers, and the suite's store is deliberately small so
+// its exhaustion cases stay reachable. Nothing is allocated: the refusal comes first.
+TEST(MemoryFrameStoreAllocation, RefusesAFrameWhoseRowCannotBeDescribed) {
+  // FrameByteSize guards its own arithmetic in int64, and the stride line next to it did not:
+  // `width * BytesPerPixel(format)` is int32 * int32, so a width past INT32_MAX/4 overflowed
+  // after passing every check above it. Signed overflow is undefined behaviour rather than a
+  // wrong number the caller could sanity-check.
+  // A ceiling of a terabyte, so the 2.4 GB this asks for clears the exhaustion check and the
+  // stride check is the only one left that can answer. That is what makes the code below a
+  // discriminator: without the range check the allocation reaches the vector, and with the
+  // ceiling small it would have been refused for the wrong reason and proved nothing.
+  //
+  // The other side of the boundary is deliberately not tested: any width whose row *just* fits an
+  // int32 stride is a two-gigabyte allocation, and a test is not the place to find out whether
+  // the machine has it.
+  MemoryFrameStoreAccess store(1LL << 40);
+  auto refused = store.Allocate(600'000'000, 1, PixelFormat::RGBA8);
+  EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument) << refused.status.detail;
+
+  // Nothing was allocated on the way to refusing.
+  auto budget = store.Budget();
+  ASSERT_TRUE(budget.ok());
+  EXPECT_EQ(budget.value.heapUsedBytes, 0);
+}
+
 }  // namespace
 }  // namespace sphanorama

@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
@@ -731,6 +733,137 @@ TEST_F(CaptureSession, AnUnlockThatFailsIsReportedRatherThanSwallowed) {
   // And the burst is finished rather than stuck, so the next arm can try the locks again.
   camera->FailUnlock(false);
   EXPECT_TRUE(manager->ArmBurst(node, burst).ok());
+}
+
+TEST_F(CaptureSession, ATickThatFailsWhileTheUnlockAlsoFailsReportsBothRatherThanOne) {
+  // Two failures at once, one Status to say them in. The cause keeps the code because it is what
+  // the caller has to act on; the unlock rides along in the detail. Returning the cause alone is
+  // what this used to do — and the client stops ticking once a call fails, so the lock would
+  // outlive the session with nothing anywhere holding the knowledge that it had been taken.
+  UnintegrablePoseEngine unintegrable;
+  CaptureSessionManager manager(planner, unintegrable, quality, *camera, *sensor, *store,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager.ArmBurst(node, burst).ok());
+  camera->FailUnlock(true);
+
+  // A non-empty batch, or Integrate is never reached and the tick cannot fail there.
+  std::vector<ImuSample> samples(2);
+  const Status failed = manager.OnMotion(samples).status;
+  EXPECT_EQ(failed.code, StatusCode::ComputeUnavailable) << "the cause was replaced, not kept";
+  EXPECT_NE(failed.detail.find("still locked"), std::string::npos)
+      << "the unlock failure was discarded: " << failed.detail;
+}
+
+TEST_F(CaptureSession, ARetakeThatCannotGiveTheLocksBackSaysSoAndChangesNothing) {
+  // A retake that answered Ok while the camera stayed pinned to the abandoned burst's exposure
+  // would send the user off to re-aim at a viewfinder that cannot respond. Reported before the
+  // candidate set is touched, so a caller that sees this and asks again gets the retake it wanted.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.lockExposure = true;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+  ASSERT_EQ(manager->Candidates(node).value.size(), 2u);
+
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  camera->FailUnlock(true);
+  EXPECT_EQ(manager->RequestRetake(node, true).code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(manager->Candidates(node).value.size(), 2u)
+      << "the evidence was discarded by a retake that reported failure";
+
+  // And the second attempt does what was asked, because the burst itself is already gone.
+  camera->FailUnlock(false);
+  EXPECT_TRUE(manager->RequestRetake(node, true).ok());
+  EXPECT_TRUE(manager->Candidates(node).value.empty());
+}
+
+TEST_F(CaptureSession, EndingMidBurstIsCleanWhenTheCameraClosesDespiteARefusedUnlock) {
+  // Close stops the track, and a stopped track has no locks: the unlock failure is moot rather
+  // than hidden. Reporting it here would tell the caller a session that ended cleanly did not,
+  // and there is nothing they could do about it either way.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  camera->FailUnlock(true);
+
+  EXPECT_TRUE(manager->End().ok());
+  EXPECT_FALSE(camera->IsOpen());
+}
+
+TEST_F(CaptureSession, EndingMidBurstReportsTheRefusedUnlockWhenTheCameraStaysOpenToo) {
+  // The other half of the same rule. A close that failed leaves a camera that is both open and
+  // still locked, and that is worth saying even though the session itself ended.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  camera->FailUnlock(true);
+  camera->FailClose(true);
+
+  const Status ended = manager->End();
+  EXPECT_EQ(ended.code, StatusCode::CameraUnavailable);
+  EXPECT_NE(ended.detail.find("still locked"), std::string::npos)
+      << "only one of the two failures was reported: " << ended.detail;
+
+  // The session ended regardless: every field was cleared before that status was returned, so a
+  // failure here is a report and not a half-ended session nothing can get out of.
+  camera->FailClose(false);
+  EXPECT_TRUE(manager->Begin(kProject, Spec()).ok());
+}
+
+TEST_F(CaptureSession, ABurstTakesNoFramesFasterThanTheCameraCanMakeThem) {
+  // PeekPreviewFrame borrows the *latest* frame, so ticking faster than the camera produces them
+  // does not capture faster — it captures the same frame twice. The fake reports 30 fps, so a
+  // zero-interval burst in a 60 Hz loop would fill with duplicates and selection would rank one
+  // exposure against copies of itself: worse than a slow burst, because it looks like a fast one.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 0;  // "as fast as you can", which is the camera's business to answer
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1);
+  // Four ticks inside the camera's 33.3 ms period, at about the rate the capture loop runs.
+  for (int i = 0; i < 4; ++i) {
+    clock.AdvanceMs(8);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+  }
+  EXPECT_EQ(camera->FramesTaken(), 1) << "the camera's own rate was ignored";
+
+  clock.AdvanceMs(8);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2);
+}
+
+TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
+  // maxBurstFps is 0 when the platform will not report one, and 0 has to mean "no floor here"
+  // rather than a guess. A default invented in the manager would slow every burst on the browsers
+  // that decline to answer, which is most of them.
+  CameraCapabilities silent = camera->Capabilities();
+  silent.maxBurstFps = 0;
+  camera->SetCapabilities(silent);
+  Begin();
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 0;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // Two ticks with the clock standing still. The tick rate is the only floor left.
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2);
 }
 
 TEST_F(CaptureSession, CapturingAnUnknownCellIsRefused) {

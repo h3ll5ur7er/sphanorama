@@ -1,5 +1,7 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 
+#include <limits>
+
 #include "utilities/pixel_format.h"
 
 namespace sphanorama {
@@ -70,13 +72,29 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
                          "allocation would exceed the heap ceiling");
   }
 
+  // In int64 and range-checked, because the obvious form is int32 * int32: FrameByteSize is
+  // careful to guard its own arithmetic and this line threw that away, so a width near INT32_MAX
+  // passed the size check and then overflowed here. Signed overflow is undefined behaviour, not
+  // a wrong number the caller could sanity-check.
+  //
+  // A planar format's stride is its luma row, and BytesPerPixel reports 0 for those — it is
+  // documented as being for interleaved stride arithmetic. Taking it literally would hand back a
+  // stride of zero for a frame that allocated perfectly well.
+  const int32_t perPixel = BytesPerPixel(format);
+  const int64_t stride = perPixel > 0 ? static_cast<int64_t>(width) * perPixel
+                                      : static_cast<int64_t>(width);
+  if (stride > std::numeric_limits<int32_t>::max()) {
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                         "a row of this frame does not fit a representable stride");
+  }
+
   FrameRef frame;
   frame.id = FrameId{next_id_};
   frame.buffer = BufferId{next_id_};
   frame.format = format;
   frame.width = width;
   frame.height = height;
-  frame.stride = width * BytesPerPixel(format);
+  frame.stride = static_cast<int32_t>(stride);
   ++next_id_;
 
   Entry entry;
@@ -128,6 +146,16 @@ Result<Residency> MemoryFrameStoreAccess::ResidencyOf(const FrameRef& frame) {
 Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   Entry* entry = Find(frame);
   if (entry == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such frame");
+  // Not every residency is something a demotion can produce, and accepting them all made
+  // ResidencyOf report states that were not true. Pinned is the clearest: it meant the store
+  // claimed a mapping nothing had established, and the Release that followed failed.
+  if (target == Residency::HeapPinned) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "pinning is what Pin is for; a demotion cannot produce it");
+  }
+  if (target == Residency::GpuTexture) {
+    return Fail(StatusCode::Unsupported, kComponent, "this store has no GPU tier");
+  }
   if (entry->pins > 0) {
     return Fail(StatusCode::FailedPrecondition, kComponent, "cannot demote a pinned frame");
   }

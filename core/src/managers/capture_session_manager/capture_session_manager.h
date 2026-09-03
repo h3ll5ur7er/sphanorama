@@ -44,6 +44,9 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
 
+  // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
+  // spec asked for and what the camera says it can deliver.
+  int64_t BurstIntervalNs() const;
   // Takes at most one frame for the armed burst. Reports whether the burst finished on this tick,
   // so OnMotion can say CellDone exactly once.
   Result<bool> AdvanceBurst();
@@ -78,6 +81,10 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4, ADR 0016).
   PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
+
+  // What the camera said it can deliver when it was opened, in frames per second; 0 when the
+  // platform will not say. It is a floor on the burst interval and nothing else reads it.
+  double max_burst_fps_ = 0;
 
   // The burst in flight, if any. It is session state and it lives here for the same reason the
   // pose does: a manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4).

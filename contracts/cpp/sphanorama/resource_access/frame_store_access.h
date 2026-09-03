@@ -26,6 +26,10 @@ class IFrameStoreAccess {
   // the handle: a FrameRef copied before a spill would otherwise lie about where its bytes are.
   virtual Result<Residency> ResidencyOf(const FrameRef& frame) = 0;
 
+  // Moves a frame to a cheaper tier. Only tiers a demotion can actually produce are accepted:
+  // `HeapPinned` is what Pin establishes and not something a store may assert on its own, and a
+  // store with no GPU tier refuses `GpuTexture` rather than pretending. Taking any value would
+  // have ResidencyOf reporting a state that was never true.
   virtual Status Demote(const FrameRef&, Residency target) = 0;
   virtual Status Forget(const FrameRef&) = 0;
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;
