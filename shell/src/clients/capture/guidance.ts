@@ -25,6 +25,21 @@ export function reticleRadius(angularErrorDeg: number, acceptanceConeDeg: number
   return RETICLE_LOCKED_RADIUS + (RETICLE_MAX_RADIUS - RETICLE_LOCKED_RADIUS) * travel;
 }
 
+/**
+ * The nearest representative of `target` to `previous`, so a wrapping angle moves continuously.
+ *
+ * `rollErrorDeg` comes back in (-180, 180], and a phone rolled across that seam changes it by 358
+ * degrees while moving two. Fed straight to the SVG it spins the horizon a full turn the wrong
+ * way, inside a transition built for the small steps either side of the seam. Accumulating
+ * instead means the number the client draws grows past a revolution and never jumps.
+ */
+export function unwrapDegrees(previous: number, target: number): number {
+  // The positive remainder, because the accumulated angle is unbounded and JavaScript's % keeps
+  // the sign of its left operand — after a few turns the plain form picks the long way round.
+  const delta = ((((target - previous + 180) % 360) + 360) % 360) - 180;
+  return previous + delta;
+}
+
 export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageState): string {
   const progress = `${coverage.nodesSatisfied}/${coverage.nodesTotal} done`;
   const cell = `cell ${guidance.targetNode}`;

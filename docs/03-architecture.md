@@ -222,12 +222,18 @@ Every `Quat` that crosses a contract — a plan's target orientation, an `ImuSam
 `Direction` in the utilities bar are the definition; azimuth turns about +Y and elevation lifts
 toward it.
 
-Platforms do not agree with that and are not asked to. The browser reports intrinsic Z-X'-Y''
-Tait-Bryan angles against an east-north-up earth frame; a Generic Sensor quaternion and an Android
-rotation vector each differ again. **Converting is the adapter's job** (V10), done once in
-`shell/src/access/orientation.ts` — see ADR 0015. Nothing above resource access ever sees a second
-convention, which is what lets `CoveragePlannerEngine` compare a sensor reading to a plan cell with
-a single `AngleBetween`.
+Platforms do not agree with that and are not asked to. `DeviceOrientationEvent` reports intrinsic
+Z-X'-Y'' Tait-Bryan angles against an east-north-up earth frame; `AbsoluteOrientationSensor`
+reports the same rotation as a quaternion, and an Android rotation vector differs again.
+**Converting is the adapter's job** (V10), done once in `shell/src/access/orientation.ts` — see
+ADR 0015. Nothing above resource access ever sees a second convention, which is what lets
+`CoveragePlannerEngine` compare a sensor reading to a plan cell with a single `AngleBetween`.
+
+The frame is the **viewfinder's**, not the chassis'. Every platform reading describes the case the
+user is holding, and the browser re-orients the page inside it; the adapter folds
+`screen.orientation.angle` in so that +X means "the right edge of the picture" (ADR 0017). Roll is
+measured from that axis, so getting it wrong is a level horizon drawn on end in landscape and
+nothing else — which is why it survived a phase.
 
 ## 3.6 Use-case walkthroughs
 

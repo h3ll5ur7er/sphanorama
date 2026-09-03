@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CaptureGuidance, CoverageState, NodeId } from '../../../../contracts/ts/contracts';
 import {
-  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, describeGuidance, reticleRadius,
+  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, describeGuidance, reticleRadius, unwrapDegrees,
 } from './guidance';
 
 const guidance = (over: Partial<CaptureGuidance> = {}): CaptureGuidance => ({
@@ -68,5 +68,33 @@ describe('describeGuidance', () => {
       guidance({ action: 'SphereDone' }), coverage({ nodesSatisfied: 32 }));
     expect(text).toContain('sphere complete');
     expect(text).not.toContain('cell');
+  });
+});
+
+describe('unwrapDegrees', () => {
+  it('leaves an angle alone when it has not wrapped', () => {
+    expect(unwrapDegrees(0, 30)).toBe(30);
+    expect(unwrapDegrees(30, -30)).toBe(-30);
+  });
+
+  it('takes the short way round the seam instead of the long way back', () => {
+    // rollErrorDeg comes back in (-180, 180], so rolling the phone past the seam is a 358-degree
+    // step in the number and two degrees of movement in the hand. Handed to the SVG as-is, the
+    // horizon spins a full turn the wrong way inside the 80ms transition — which is a marker
+    // travelling across the screen, the same complaint the rotation centre caused.
+    expect(unwrapDegrees(179, -179)).toBe(181);
+    expect(unwrapDegrees(-179, 179)).toBe(-181);
+  });
+
+  it('keeps counting past a full turn rather than snapping back', () => {
+    // Continuity is the whole point: an angle that resets to zero every revolution would flick
+    // the horizon once per turn, which is exactly what this exists to prevent.
+    let shown = 0;
+    for (const step of [90, 180, -90, 0, 90, 180, -90, 0]) shown = unwrapDegrees(shown, step);
+    expect(shown).toBe(720);
+  });
+
+  it('is stable when nothing moved', () => {
+    expect(unwrapDegrees(540, 180)).toBe(540);
   });
 });

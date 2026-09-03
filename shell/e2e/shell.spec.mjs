@@ -172,6 +172,13 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+    // AbsoluteOrientationSensor exists in this browser and refuses to start — there is no
+    // gyroscope behind it — so the adapter hands over to the event. Waiting for that rather than
+    // assuming it is what makes the dispatch below land somewhere, and it exercises the fallback
+    // on a real engine rather than only against a fake.
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
 
     const before = await page.locator('#guidance').textContent();
 
@@ -183,8 +190,9 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
     });
 
     await expect(page.locator('#guidance')).not.toHaveText(before, { timeout: 15000 });
-    // And the orientation readout followed the same samples.
-    await expect(page.locator('#orientation')).toContainText(/β 180/);
+    // And the orientation readout followed the same samples, in the frame the plan is written in
+    // rather than the triple the browser reported.
+    await expect(page.locator('#orientation')).toContainText('el 90°');
   } finally {
     await server.close();
   }
@@ -233,6 +241,9 @@ test('a phone with no motion sensors still captures', async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
+    // Both APIs, because the adapter now has two sources and a device with neither is the case
+    // being described. Leaving the sensor behind would test a phone that still has one.
+    delete window.AbsoluteOrientationSensor;
     delete window.DeviceOrientationEvent;
     delete window.DeviceMotionEvent;
   });

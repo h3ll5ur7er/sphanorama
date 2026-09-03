@@ -1,14 +1,20 @@
 /**
- * DeviceOrientation, translated into the frame the core plans in.
+ * Platform attitude readings, translated into the frame the core plans in.
  *
- * Two conventions meet here and neither is negotiable. The browser reports intrinsic Z-X'-Y''
- * Tait-Bryan angles against an east-north-up earth frame, with the device's -Z axis pointing out
- * of its back — where the camera looks. The core plans in a Y-up frame whose -Z is forward, which
- * is what `FromAzimuthElevation` and `Direction` are written against.
+ * Three conventions meet here and none is negotiable. `DeviceOrientationEvent` reports intrinsic
+ * Z-X'-Y'' Tait-Bryan angles against an east-north-up earth frame; `AbsoluteOrientationSensor`
+ * reports the same rotation as a quaternion in `[x, y, z, w]` order; and the core plans in a Y-up
+ * frame whose -Z is forward, which is what `FromAzimuthElevation` and `Direction` are written
+ * against.
  *
- * Doing this conversion in the browser adapter is deliberate: the Euler convention is a property
- * of the platform (V2), and a second platform reporting a rotation matrix or a game-rotation
- * vector should not be able to reach any layer above this one.
+ * Both platform readings describe the *chassis*, and the app is not aimed with the chassis — it is
+ * aimed with the viewfinder, which the browser re-orients under the user when the phone is turned.
+ * `screen.orientation.angle` is the difference, and applying it here is what makes the core's +X
+ * axis mean "the right edge of the picture" (ADR 0017).
+ *
+ * Doing all of this in the browser adapter is deliberate: which angles a platform reports is V10,
+ * so a second platform reporting a rotation matrix or a replayed log changes this file and nothing
+ * above it.
  */
 import type { ImuSample, Quat } from '../../../contracts/ts/contracts';
 import type { OrientationSample } from './motion';
@@ -28,11 +34,28 @@ function multiply(a: Quat, b: Quat): Quat {
 }
 
 /**
- * The device's attitude as the core understands it: apply it to -Z and you get the direction the
- * camera is looking, in the same frame the coverage plan's target orientations live in.
+ * The chassis attitude as the viewfinder's, in the core's frame.
+ *
+ * The screen turns under the device by `-angle` about the axis out of the display, and that axis
+ * is the one the camera looks along — so this changes the horizon and provably cannot change the
+ * aim, which is the property the tests pin down. Post-multiplied because the screen's rotation is
+ * expressed in the device's own frame, not the earth's.
+ */
+function toCoreFrame(device: Quat, screenAngleDeg: number): Quat {
+  const half = (screenAngleDeg * DEG_TO_RAD) / 2;
+  const screen: Quat = { w: Math.cos(half), x: 0, y: 0, z: -Math.sin(half) };
+  return multiply(EARTH_TO_CORE, multiply(device, screen));
+}
+
+/**
+ * A DeviceOrientation triple as the viewfinder's attitude: apply it to -Z and you get the
+ * direction the camera is looking, in the same frame the plan's target orientations live in.
+ *
+ * The screen angle is a required argument rather than an optional one because forgetting it is
+ * not a visible mistake — the reticle still tracks, and only the horizon is a quarter turn out.
  */
 export function quaternionFromDeviceOrientation(
-  alphaDeg: number, betaDeg: number, gammaDeg: number,
+  alphaDeg: number, betaDeg: number, gammaDeg: number, screenAngleDeg: number,
 ): Quat {
   const z = (alphaDeg * DEG_TO_RAD) / 2;
   const x = (betaDeg * DEG_TO_RAD) / 2;
@@ -51,18 +74,33 @@ export function quaternionFromDeviceOrientation(
     z: cX * cY * sZ + sX * sY * cZ,
   };
 
-  return multiply(EARTH_TO_CORE, device);
+  return toCoreFrame(device, screenAngleDeg);
 }
 
 /**
- * An orientation event as the contract's IMU sample.
+ * The same thing from a Generic Sensor reading, which arrives already composed.
  *
- * The browser gives a fused attitude and no rates at all, which is exactly what
- * MotionCapability::OrientationOnly describes. The zeroed rate fields are not measurements and
- * `hasOrientation` is what tells PoseEngine which half of the sample is real.
+ * `OrientationSensor.quaternion` is `[x, y, z, w]` — the opposite end first from how a quaternion
+ * is usually written — and is read against the device reference frame, so it is the same rotation
+ * the Euler triple describes and goes through the same conversion.
+ */
+export function quaternionFromSensorReading(
+  reading: ArrayLike<number>, screenAngleDeg: number,
+): Quat {
+  const device: Quat = {
+    w: reading[3], x: reading[0], y: reading[1], z: reading[2],
+  };
+  return toCoreFrame(device, screenAngleDeg);
+}
+
+/**
+ * A motion sample as the contract's IMU sample.
+ *
+ * The platform gives a fused attitude and no rates at all, which is exactly what
+ * `MotionCapability::OrientationOnly` describes. The zeroed rate fields are not measurements and
+ * `hasOrientation` is what tells PoseEngine which half of the sample is real (ADR 0015).
  */
 export function toImuSample(sample: OrientationSample): ImuSample {
-  const { alpha, beta, gamma } = sample.orientation;
   const zero = { x: 0, y: 0, z: 0 };
   return {
     timestampNs: sample.timestampNs,
@@ -71,6 +109,6 @@ export function toImuSample(sample: OrientationSample): ImuSample {
     hasMagnetometer: false,
     magneticField: zero,
     hasOrientation: true,
-    orientation: quaternionFromDeviceOrientation(alpha, beta, gamma),
+    orientation: sample.orientation,
   };
 }
