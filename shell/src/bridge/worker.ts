@@ -26,6 +26,8 @@ const captureHost = createCaptureHost({
   // The stream lives on the page; all this side can do is ask. Posted rather than awaited,
   // because the C++ call that reached here is synchronous and has nowhere to wait (ADR 0019).
   onCloseCamera: () => scope.postMessage({ kind: 'closeCamera' }),
+  // Same shape, same reason: applyConstraints needs the track, and the track is on the page.
+  onReleaseCameraLocks: () => scope.postMessage({ kind: 'releaseLocks' }),
 });
 
 let runtime: CoreRuntime | null = null;
@@ -113,6 +115,10 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
 
         case 'imu':
           captureHost.pushMotion(message.doubles);
+          return;
+
+        case 'locks':
+          captureHost.setCameraLocks(message.held);
           return;
 
         case 'frame':

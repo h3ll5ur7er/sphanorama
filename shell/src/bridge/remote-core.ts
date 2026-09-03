@@ -12,7 +12,7 @@
 import { coreFrom, type CoreRuntime, type HostState, type RuntimeCapabilities, type SphanoramaCore }
   from './core';
 import type { GrabbedFrame } from '../access/preview-frame';
-import type { CameraOpening, FromWorker, ToWorker } from './protocol';
+import type { CameraOpening, FromWorker, LockReport, ToWorker } from './protocol';
 
 /**
  * A request minus the number that pairs it with its answer, so callers describe what they want
@@ -48,9 +48,18 @@ export interface RemoteCore extends CoreRuntime {
    * every push here takes (ADR 0014).
    */
   pushFrame(frame: GrabbedFrame): void;
+  /**
+   * Tells the worker which locks the camera actually settled on (ADR 0022).
+   *
+   * Sent before a burst is armed, because that is when the core reads it. A push like the others:
+   * there is nothing to wait for, the core looks when it next needs to know.
+   */
+  setLocks(held: LockReport): void;
   flush(): Promise<string | null>;
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
+  /** Fires when the core wants the locks back: only the page can apply constraints to a track. */
+  onReleaseLocks(handler: () => void): void;
   /**
    * Whether the worker got a spill tier. False means the frame store has nowhere to put a frame
    * it cannot hold, so a capture is capped at what fits in RAM — degraded, not broken, and worth
@@ -67,6 +76,7 @@ export interface RemoteCoreHandle {
 export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<RemoteCoreHandle> {
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
+  let releaseLocks: () => void = () => {};
   let seq = 0;
   // Set once the worker has failed, and never cleared: a worker that could not load its script is
   // not going to load it later, and a call made after that has to fail immediately rather than
@@ -103,6 +113,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     const message = event.data;
     if (message.kind === 'closeCamera') {
       closeCamera();
+      return;
+    }
+    if (message.kind === 'releaseLocks') {
+      releaseLocks();
       return;
     }
     const waiting = pending.get(message.seq);
@@ -177,12 +191,16 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     pushMotion: (doubles) => worker.postMessage({ kind: 'imu', doubles }, [doubles.buffer]),
     pushFrame: ({ width, height, bytes }) =>
       worker.postMessage({ kind: 'frame', width, height, bytes }, [bytes.buffer]),
+    setLocks: (held) => worker.postMessage({ kind: 'locks', held }),
     async flush(): Promise<string | null> {
       const answer = await ask({ kind: 'flush' });
       return answer.kind === 'flushed' ? answer.persistError : null;
     },
     onCloseCamera(handler: () => void) {
       closeCamera = handler;
+    },
+    onReleaseLocks(handler: () => void) {
+      releaseLocks = handler;
     },
     canSpill: () => booted.spill,
   };

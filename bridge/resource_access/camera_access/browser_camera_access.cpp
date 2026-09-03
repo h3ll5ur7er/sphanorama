@@ -2,6 +2,8 @@
 
 #include <emscripten/emscripten.h>
 
+#include <string>
+
 namespace sphanorama::bridge {
 namespace {
 
@@ -21,8 +23,31 @@ EM_JS(double, host_camera_metric, (int32_t which), {
     case 2: return caps.horizontalFovDeg;
     case 3: return caps.verticalFovDeg;
     case 4: return caps.supportsTorch ? 1 : 0;
+    case 5: return caps.supportsExposureLock ? 1 : 0;
+    case 6: return caps.supportsWhiteBalanceLock ? 1 : 0;
+    case 7: return caps.supportsFocusLock ? 1 : 0;
     default: return 0;
   }
+});
+
+// Which locks the page confirmed are actually held, read back off the track (ADR 0022).
+EM_JS(int32_t, host_camera_lock, (int32_t which), {
+  const locks = Module.sphHost.cameraLocks();
+  switch (which) {
+    case 0: return locks.exposure ? 1 : 0;
+    case 1: return locks.whiteBalance ? 1 : 0;
+    case 2: return locks.focus ? 1 : 0;
+    default: return 0;
+  }
+});
+
+// Asks the page to put the locks back. Posted and not awaited, the same trade every write-only
+// port call takes (ADR 0019) — and safe here in a way that *taking* a lock is not: a burst that
+// starts before its lock is applied compares candidates on brightness, while a lock released a
+// few milliseconds after the burst ended affects nothing.
+EM_JS(void, host_camera_release_locks, (), {
+  const host = Module.sphHost;
+  if (host && host.releaseCameraLocks) host.releaseCameraLocks();
 });
 
 EM_JS(void, host_camera_close, (), {
@@ -70,11 +95,11 @@ Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
   capabilities.horizontalFovDeg = host_camera_metric(2);
   capabilities.verticalFovDeg = host_camera_metric(3);
   capabilities.supportsTorch = host_camera_metric(4) != 0.0;
-  // False until SetLocks below actually applies them. A burst compares candidates on sharpness,
-  // which only means anything if they share an exposure — a caller told the locks are supported
-  // would believe a burst was locked when nothing had been locked at all.
-  capabilities.supportsExposureLock = false;
-  capabilities.supportsFocusLock = false;
+  // What the *track* says it can do, not what this port hopes. A camera with no manual exposure
+  // mode — most desktop webcams — reports false here, the client asks for no exposure lock, and
+  // the burst still fires: honest and degraded beats a burst that believes it is locked.
+  capabilities.supportsExposureLock = host_camera_metric(5) != 0.0;
+  capabilities.supportsFocusLock = host_camera_metric(7) != 0.0;
   return Ok(capabilities);
 }
 
@@ -139,15 +164,41 @@ Result<FrameRef> BrowserCameraAccess::PeekPreviewFrame() {
 
 Status BrowserCameraAccess::SetLocks(bool exposure, bool whiteBalance, bool focus) {
   if (host_camera_open() == 0) {
-    return Fail(StatusCode::CameraUnavailable, kComponent, "no camera open");
+    // FailedPrecondition rather than CameraUnavailable, which is what it used to say: the
+    // contract suite holds every other implementation to this answer for locking before opening,
+    // and a port that disagrees with the suite it is not run against is a port that will surprise
+    // the first caller to switch between them.
+    return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
   }
-  // Refused rather than accepted-and-ignored. Applying these needs applyConstraints on the live
-  // track, which is not wired up; a silent Ok would tell CaptureSessionManager the burst it is
-  // about to fire has a fixed exposure when it does not, and the cell would blend with banding
-  // nobody could trace back to here.
-  if (exposure || whiteBalance || focus) {
-    return Fail(StatusCode::Unsupported, kComponent,
-                "the page does not apply camera locks yet; capabilities report them as absent");
+
+  // Releasing is a write, and a write is posted (ADR 0019). Nothing is waiting on it: the burst
+  // that held the lock is already over, and a lock released a few milliseconds late costs
+  // nothing. Answering Ok here is not a claim about the future — it is a claim that the request
+  // has been made, which is all a release needs.
+  if (!exposure && !whiteBalance && !focus) {
+    host_camera_release_locks();
+    return Status::Ok();
+  }
+
+  // Taking one is the opposite, and this asymmetry is the decision in ADR 0022. A burst's first
+  // frame arrives on the very next tick, so a lock still being applied when it lands would have
+  // the manager comparing candidates on brightness rather than sharpness — and believing
+  // otherwise. So this does not ask; it reads what the page already confirmed is held, and the
+  // client is what makes sure that happened before it armed anything.
+  const bool haveExposure = host_camera_lock(0) != 0;
+  const bool haveWhiteBalance = host_camera_lock(1) != 0;
+  const bool haveFocus = host_camera_lock(2) != 0;
+
+  if ((exposure && !haveExposure) || (whiteBalance && !haveWhiteBalance) ||
+      (focus && !haveFocus)) {
+    // Named rather than a bare refusal: which lock is missing decides whether the caller should
+    // drop that one and fire anyway or give up, and it is the difference between a camera that
+    // cannot do it and a client that forgot to ask.
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                std::string("the page has not confirmed these locks: ") +
+                    (exposure && !haveExposure ? "exposure " : "") +
+                    (whiteBalance && !haveWhiteBalance ? "whiteBalance " : "") +
+                    (focus && !haveFocus ? "focus" : ""));
   }
   return Status::Ok();
 }

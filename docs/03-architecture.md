@@ -271,8 +271,10 @@ sequenceDiagram
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
   M-->>U: Guidance{node, error, "hold still"}
+  Note over U: the client applies and confirms the locks first (ADR 0022)
   U->>M: ArmBurst(node, burst)
   M->>C: SetLocks(exposure, white balance, focus)
+  C-->>M: Ok, or FailedPrecondition naming the locks not held
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)
     M->>C: PeekPreviewFrame()

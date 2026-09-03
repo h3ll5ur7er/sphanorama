@@ -18,6 +18,16 @@ export interface CameraOpening {
   maxWidth: number;
   maxHeight: number;
   supportsTorch: boolean;
+  supportsExposureLock: boolean;
+  supportsWhiteBalanceLock: boolean;
+  supportsFocusLock: boolean;
+}
+
+/** Which locks the page confirmed are held, read back off the track rather than assumed. */
+export interface LockReport {
+  exposure: boolean;
+  whiteBalance: boolean;
+  focus: boolean;
 }
 
 export type ToWorker =
@@ -43,7 +53,15 @@ export type ToWorker =
    * side is what sizes the copy into the frame store from them. Megabytes per message, which is
    * why it is a transfer and why the page only sends one when a burst can use it.
    */
-  | { kind: 'frame'; width: number; height: number; bytes: Uint8Array };
+  | { kind: 'frame'; width: number; height: number; bytes: Uint8Array }
+  /**
+   * What the camera's locks actually settled on (ADR 0022).
+   *
+   * A push rather than a reply, because the core reads it as resident state: `SetLocks` is
+   * synchronous and has nothing to wait with, so the page applies and confirms *before* arming
+   * and this is what the port reads back.
+   */
+  | { kind: 'locks'; held: LockReport };
 
 export type FromWorker =
   // `spill` says whether the worker got an OPFS handle. It is not a capability the core reads —
@@ -61,4 +79,6 @@ export type FromWorker =
    */
   | { kind: 'failed'; seq: number; detail: string }
   /** `ICameraAccess::Close` reached the host. Only the page can stop a MediaStream. */
-  | { kind: 'closeCamera' };
+  | { kind: 'closeCamera' }
+  /** The core wants the camera's locks back. Only the page can apply constraints to a track. */
+  | { kind: 'releaseLocks' };
