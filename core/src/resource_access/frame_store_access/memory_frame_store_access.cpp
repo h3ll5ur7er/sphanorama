@@ -1,6 +1,7 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 
 #include <limits>
+#include <utility>
 
 #include "utilities/pixel_format.h"
 
@@ -26,8 +27,8 @@ bool IsHeapTier(Residency residency) { return residency != Residency::Spilled; }
 
 }  // namespace
 
-MemoryFrameStoreAccess::MemoryFrameStoreAccess(int64_t heapCeilingBytes)
-    : ceiling_(heapCeilingBytes) {}
+MemoryFrameStoreAccess::MemoryFrameStoreAccess(int64_t heapCeilingBytes, ISpillSink* spill)
+    : spill_(spill), ceiling_(heapCeilingBytes) {}
 
 MemoryFrameStoreAccess::Entry* MemoryFrameStoreAccess::Find(const FrameRef& frame) {
   const auto it = entries_.find(frame.id.value);
@@ -39,13 +40,12 @@ void MemoryFrameStoreAccess::Reclassify(Entry& entry, Residency target) {
     entry.residency = target;
     return;
   }
-  const auto size = static_cast<int64_t>(entry.bytes.size());
   if (IsHeapTier(target)) {
-    spilled_ -= size;
-    heap_used_ += size;
+    spilled_ -= entry.size;
+    heap_used_ += entry.size;
   } else {
-    heap_used_ -= size;
-    spilled_ += size;
+    heap_used_ -= entry.size;
+    spilled_ += entry.size;
   }
   entry.residency = target;
 }
@@ -98,6 +98,7 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
   ++next_id_;
 
   Entry entry;
+  entry.size = size;
   entry.bytes.assign(static_cast<size_t>(size), 0);
   entry.residency = Residency::HeapEncoded;
   entries_.emplace(frame.id.value, std::move(entry));
@@ -105,21 +106,37 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
   return Ok(frame);
 }
 
+Status MemoryFrameStoreAccess::FaultIn(Entry& entry, uint64_t id) {
+  if (entry.residency != Residency::Spilled) return Status::Ok();
+
+  // Spilling gave the budget back and something else may have taken it since. Reading without
+  // re-checking the ceiling is how a store that exists to model memory pressure quietly stops
+  // modelling it: the manager tests keep passing while the device is over its budget. Checked
+  // before the read, not after, because the bytes are in hand by then and the damage is done.
+  if (heap_used_ + entry.size > ceiling_) {
+    return Fail(StatusCode::FrameStoreExhausted, kComponent,
+                "faulting this frame in would exceed the heap ceiling");
+  }
+  if (spill_ == nullptr) return Status::Ok();   // never left; the vector is still here
+
+  // Read into a buffer of its own and moved in only once it is whole, rather than filled in
+  // place. A read that failed halfway would otherwise leave the entry holding a frame-sized
+  // allocation full of nothing while still classified as spilled — memory the store does not
+  // charge itself for, on a device that spilled precisely because it had none. Rolling that back
+  // by hand is a line nothing can observe and everything depends on; not creating the state is
+  // better than remembering to undo it.
+  std::vector<uint8_t> bytes(static_cast<size_t>(entry.size));
+  if (auto read = spill_->Read(id, std::span<uint8_t>(bytes)); !read.ok()) return read;
+  entry.bytes = std::move(bytes);
+  return Status::Ok();
+}
+
 Result<std::span<uint8_t>> MemoryFrameStoreAccess::Pin(const FrameRef& frame) {
   Entry* entry = Find(frame);
   if (entry == nullptr) {
     return Err<std::span<uint8_t>>(StatusCode::NotFound, kComponent, "no such frame");
   }
-  if (entry->residency == Residency::Spilled) {
-    // Spilling gave the budget back and something else may have taken it since. Promoting without
-    // re-checking the ceiling is how a store that exists to model memory pressure quietly stops
-    // modelling it: the manager tests keep passing while the device is over its budget.
-    const auto size = static_cast<int64_t>(entry->bytes.size());
-    if (heap_used_ + size > ceiling_) {
-      return Err<std::span<uint8_t>>(StatusCode::FrameStoreExhausted, kComponent,
-                                     "faulting this frame in would exceed the heap ceiling");
-    }
-  }
+  if (auto faulted = FaultIn(*entry, frame.id.value); !faulted.ok()) return faulted;
   Reclassify(*entry, Residency::HeapPinned);
   ++entry->pins;
   return Ok(std::span<uint8_t>(entry->bytes));
@@ -159,6 +176,25 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   if (entry->pins > 0) {
     return Fail(StatusCode::FailedPrecondition, kComponent, "cannot demote a pinned frame");
   }
+
+  if (target == Residency::Spilled && entry->residency != Residency::Spilled &&
+      spill_ != nullptr) {
+    // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
+    // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
+    // failure would lose a captured cell to a full disk.
+    if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
+        !written.ok()) {
+      return written;
+    }
+    entry->spilledHash = HashBytes(entry->bytes);
+    std::vector<uint8_t>().swap(entry->bytes);
+  } else if (target != Residency::Spilled && entry->residency == Residency::Spilled) {
+    // Demote is named for the direction it usually goes, and the contract lets a caller name any
+    // producible tier — including a heap one. Reclassifying without the bytes would leave a frame
+    // that reports itself resident and pins to nothing.
+    if (auto faulted = FaultIn(*entry, frame.id.value); !faulted.ok()) return faulted;
+  }
+
   Reclassify(*entry, target);
   return Status::Ok();
 }
@@ -174,11 +210,17 @@ Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
   }
   // Taken off whichever total was holding it. Going through Reclassify first would work and
   // would read as a spill that is really a deletion.
-  const auto size = static_cast<int64_t>(entry->bytes.size());
+  if (entry->residency == Residency::Spilled && spill_ != nullptr) {
+    // Nothing else ever will. The store is the only thing that knows this frame is down there,
+    // and a sphere's worth of abandoned bursts would fill the device's quota with bytes no code
+    // path can name. A refusal is reported rather than swallowed, and the entry stays, so the
+    // budget keeps accounting for what the sink still holds.
+    if (auto dropped = spill_->Drop(frame.id.value); !dropped.ok()) return dropped;
+  }
   if (IsHeapTier(entry->residency)) {
-    heap_used_ -= size;
+    heap_used_ -= entry->size;
   } else {
-    spilled_ -= size;
+    spilled_ -= entry->size;
   }
   entries_.erase(frame.id.value);
   return Status::Ok();
@@ -187,6 +229,10 @@ Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
 Result<uint64_t> MemoryFrameStoreAccess::ContentHash(const FrameRef& frame) {
   Entry* entry = Find(frame);
   if (entry == nullptr) return Err<uint64_t>(StatusCode::NotFound, kComponent, "no such frame");
+  // A frame in the sink still has a content hash, and the build graph's fingerprints depend on
+  // it: hashing the empty vector left behind would make every spilled frame identical to every
+  // other, so an incremental rebuild would reuse one cell's work for another's.
+  if (entry->residency == Residency::Spilled && spill_ != nullptr) return Ok(entry->spilledHash);
   return Ok(HashBytes(entry->bytes));
 }
 

@@ -34,11 +34,22 @@ tiers:
 | GPU texture | Tiles being warped/blended right now | Evicted at stage boundaries |
 | WASM heap (pinned) | The frame under analysis; selected candidates during a build | Bounded by a byte budget derived from a probe at startup |
 | WASM heap (encoded) | Non-selected burst candidates, JPEG at capture quality | The default resting place for a burst |
-| OPFS spill | Everything that exceeds the budget; the whole session across a reload | Content-addressed by frame hash |
+| OPFS spill | Everything that exceeds the budget; the whole session across a reload | Keyed by the store's frame identity |
+
+Only the first three are the store's own business. **Where a spilled frame's bytes actually go is
+behind `ISpillSink`** — a seam inside the frame-store component rather than a port beside it, so
+the tiering, the ceiling and the fault-in exist once and the destination is a constructor argument
+(ADR 0020). Natively there is no sink and the spill tier is a classification: the budget moves and
+the bytes stay, which is honest on a desktop and a lie on a phone. The browser's sink is one OPFS
+sync access handle opened at worker startup (ADR 0019), which is why the row says frame identity
+rather than content hash — one handle means the sink owns offsets inside a single file, and
+content-addressing would need refcounting to make `Drop` safe for two frames that happen to match.
 
 The budget probe matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash,
-not an exception. The store allocates against a measured ceiling with a safety margin and spills
-before it is reached. **Never** hold a whole burst of full-resolution frames for the whole sphere —
+not an exception. The store allocates against a stated ceiling with a safety margin and spills
+before it is reached. *Stated, not yet probed* — `FrameStoreBudget::heapCeilingBytes` is
+documented as measured at startup and the composition root currently supplies a constant; the
+probe is outstanding and named in the roadmap. **Never** hold a whole burst of full-resolution frames for the whole sphere —
 that is tens of gigabytes.
 
 Output panoramas are tiled (typically 512² tiles over an equirectangular grid) so blending, preview
