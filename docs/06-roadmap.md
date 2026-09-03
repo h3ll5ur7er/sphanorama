@@ -75,6 +75,21 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    desktop and a lie on a phone, so the WASM build stays on the null store. Two things are left,
    and neither is a detail: **the browser store over OPFS**, and **the ceiling probe** — the
    contract says that number is measured at startup and it is currently assumed.
+
+   The browser store has a constraint worth knowing before it is designed, because it decides
+   where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
+   asks for bytes and reads them — and OPFS is asynchronous except through
+   `createSyncAccessHandle`, which is **worker-only**. Measured in Chromium: on the main thread,
+   where the core runs today, that method is not even present; in a worker it is, the handle
+   opens once in 0.6 ms, and reads and writes are then synchronous and roughly twice as fast as
+   the main-thread async path (8 MB: 30 ms write / 14 ms read, against 44 ms / 15 ms). Opening
+   once and holding it is precisely the resident-host shape ADR 0014 already uses for the project
+   store, so a worker would make spill an ordinary synchronous port with no Asyncify and no
+   contract change — and would also keep a 30 ms spill off the frame the capture loop is drawing.
+   What it costs is the camera: the ports read a host that lives in the page, and getting camera
+   frames into a worker means `MediaStreamTrackProcessor`, which Safari does not have. That
+   trade — a worker for the frame store against a page for the camera — is the decision, and it
+   is not taken here.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.
