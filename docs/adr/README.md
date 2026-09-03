@@ -24,3 +24,4 @@ and the alternative we rejected and why.
 | [0017](0017-the-motion-port-reports-the-viewfinders-attitude.md) | The motion port reports the viewfinder's attitude as a quaternion, screen rotation included |
 | [0018](0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md) | A burst is paced by the manager across client ticks over a resident preview frame, not Asyncify |
 | [0019](0019-the-core-runs-in-a-worker.md) | The core moves to the worker 04 §4.1 always specified; the resident host moves with it |
+| [0020](0020-the-spill-destination-is-a-seam-inside-the-frame-store.md) | Where a spilled frame goes is a seam inside the frame store, not a resource-access port beside it |

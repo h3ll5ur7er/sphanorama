@@ -10,11 +10,11 @@
 #include "managers/project_manager/project_manager.h"
 #include "resource_access/camera_access/null_camera_access.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
-#include "resource_access/frame_store_access/null_frame_store_access.h"
 #include "resource_access/motion_sensor_access/null_motion_sensor_access.h"
 #include "utilities/clock.h"
 #if defined(__EMSCRIPTEN__)
 #include "resource_access/camera_access/browser_camera_access.h"
+#include "resource_access/frame_store_access/opfs_spill_sink.h"
 #include "resource_access/motion_sensor_access/browser_motion_sensor_access.h"
 #include "resource_access/project_store_access/browser_project_store_access.h"
 #else
@@ -50,9 +50,9 @@ class Runtime {
   NullRegistrationEngine registration_;
   NullCompositionEngine composition_;
 
-  // Camera and motion reach the core through ports over state the page established. Their
-  // lifecycle and capability calls are resident and synchronous; a burst is not, and refuses
-  // until that is decided with measurements (ADR 0014).
+  // Camera and motion reach the core through ports over state the page established (ADR 0014).
+  // Every call on them is resident and synchronous, the burst included: it is paced by the
+  // manager over the preview frame the page keeps, so nothing here has to wait (ADR 0018).
 #if defined(__EMSCRIPTEN__)
   BrowserCameraAccess camera_;
   BrowserMotionSensorAccess motion_;
@@ -61,18 +61,31 @@ class Runtime {
   NullMotionSensorAccess motion_;
 #endif
 
-  // Frames live in memory natively, where the bench runs and where a spill tier that is still
-  // RAM is an honest description of the host. The browser keeps the null store: a phone is the
-  // one place the difference matters, and telling it that spilling freed memory when it did not
-  // is worse than telling it there is nowhere to put a frame. Its own store, over OPFS, is what
-  // that branch is waiting for.
+  // One frame store on both platforms, differing by where a spilled frame's bytes go (ADR 0020).
+  // Natively there is no sink, so there is no spill tier and the store refuses to demote into
+  // one: with 512 MB to spend and a desktop underneath, a ceiling refusal is the honest answer.
+  // In the browser the sink is an OPFS sync access handle the worker opened at startup, so a
+  // spill actually frees memory — which is the whole reason the core is in a worker at all
+  // (ADR 0019).
   //
-  // The ceiling is stated rather than measured. `FrameStoreBudget::heapCeilingBytes` is
-  // documented as "measured at startup, not assumed", and this is the assumption that stands in
-  // until the probe exists — generous enough that the bench does not spill on a desktop, and far
-  // enough below a real sphere of bursts that the spill path is still reached.
+  // The sink is handed over only if the worker installed a host. A browser without one — no
+  // origin private file system, or a handle that would not open — gets a store with nowhere to
+  // spill rather than a store that lies about having spilled, and a sphere capped at what fits in
+  // RAM is degraded rather than broken.
+  //
+  // **The ceiling is stated rather than measured**, on both platforms.
+  // `FrameStoreBudget::heapCeilingBytes` is documented as "measured at startup, not assumed", and
+  // this is the assumption standing in until the probe exists. Native is generous enough that the
+  // bench does not spill on a desktop and low enough that the spill path is still reached. The
+  // browser's is deliberately far smaller: a WASM heap that grows past what a phone will give it
+  // is not an allocation failure the store can report, it is the operating system killing the
+  // tab, and the ceiling exists to stop short of that. It is clamped by whatever the module was
+  // actually linked to allow, which is a real limit even though it is not the device's.
 #if defined(__EMSCRIPTEN__)
-  NullFrameStoreAccess frames_;
+  static int64_t BrowserHeapCeilingBytes();
+  OpfsSpillSink spill_;
+  MemoryFrameStoreAccess frames_{BrowserHeapCeilingBytes(),
+                                 OpfsSpillSink::Available() ? &spill_ : nullptr};
 #else
   static constexpr int64_t kNativeHeapCeilingBytes = 512ll << 20;
   MemoryFrameStoreAccess frames_{kNativeHeapCeilingBytes};

@@ -69,12 +69,19 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    contract, `CaptureCell` became `ArmBurst`, and `OnMotion` takes one frame per tick.
 2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
    and, since a paced burst takes one frame per tick, an allocation per tick rather than a
-   burst-sized batch. `MemoryFrameStoreAccess` is the first real implementation and the one the
-   native build and the bench use: a stated ceiling it refuses to overrun, residency tiers, and a
-   fault-in on `Pin` that re-checks the ceiling. Its spill tier is still RAM, which is honest on a
-   desktop and a lie on a phone, so the WASM build stays on the null store. Two things are left,
-   and neither is a detail: **the browser store over OPFS**, and **the ceiling probe** — the
-   contract says that number is measured at startup and it is currently assumed.
+   burst-sized batch. `MemoryFrameStoreAccess` is the implementation both platforms use: a stated
+   ceiling it refuses to overrun, residency tiers, and a fault-in on `Pin` that re-checks it.
+   Where a spilled frame's bytes go is a seam inside it (ADR 0020) — an OPFS sync access handle in
+   the browser, opened once by the worker and held for the session, and nothing natively, where a
+   store with no sink refuses to spill rather than relabelling a frame it has not moved. So the
+   WASM build is off the null store and *can* spill.
+
+   Two things are left and neither is a detail. **Nothing decides when to spill**: `Allocate`
+   refuses at the ceiling instead of evicting, and no production caller demotes, so the tier is a
+   finished mechanism with no policy above it. And **the ceiling is stated rather than probed** —
+   the contract says that number is measured at startup, and both platforms name a constant: 512
+   MB natively, and in the browser 128 MB clamped by what the module was linked to allow, which is
+   a real limit but the build's rather than the device's.
 
    The browser store has a constraint worth knowing before it is designed, because it decides
    where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
@@ -102,11 +109,26 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    looking at, where it currently costs about two dropped ones. Numbers are Chromium on a loaded
    machine; a phone will differ, and there are two orders of magnitude of headroom for it to.
 
-   Decided in ADR [0018](adr/0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md)'s
-   successor, [0019](adr/0019-the-core-runs-in-a-worker.md): the core moves into the worker
-   [04 §4.1](04-runtime-topology.md) always specified and Phase 0 shortcut, and the resident host
-   moves with it. So the browser frame store is not the next thing to build — the worker is, and
-   the store lands in it.
+   Decided in ADR [0019](adr/0019-the-core-runs-in-a-worker.md), and **done**: the core runs in
+   the worker [04 §4.1](04-runtime-topology.md) always specified and Phase 0 shortcut, with the
+   document host across with it and the motion and camera-capability halves fed from the page. The
+   sink followed — the handle opens at worker startup, `Demote` writes through it and `Pin` faults
+   back in — and it turned out not to need a store of its own at all (ADR 0020).
+
+   **Pixels do not cross yet**, and that is now the next thing rather than a footnote. The
+   protocol carries capabilities and IMU batches; it has no message for a frame, and
+   `BrowserCameraAccess::PeekPreviewFrame` still refuses with `Unsupported`. So a burst armed in
+   the browser abandons on its first tick — invisible today only because nothing arms one from the
+   client. Building it is one transferable message, a buffer the worker keeps resident, and an
+   allocation through the frame store; the shape is settled in ADR 0019 and the ~66 µs transfer
+   measurement is that path already timed.
+
+   One thing the numbers above do not settle, and it is the load-bearing one: **every measurement
+   here is Chromium's**, and the end-to-end suite proves the handle opens in headless Chromium and
+   nothing more. Whether iOS Safari's sync access handles behave the same has to be checked on a
+   device. If they do not, the sink simply does not install and the store refuses to spill at all
+   — a sphere capped at what fits in RAM, which the capture client says out loud rather than
+   discovering partway through.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.

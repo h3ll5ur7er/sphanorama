@@ -30,6 +30,8 @@ Three engines are still null (`FrameQuality`, `Registration`, `Composition`). Th
 fit the resident-port pattern, `ICameraAccess::CaptureBurst`, is gone: a burst takes time, so it is
 now paced by `CaptureSessionManager` across the ticks the client already makes, over the preview
 frame the page keeps resident (ADR 0018). `ArmBurst` arms one; `PeekPreviewFrame` is the whole pixel
-path. ADR 0019 decides the next move — the core into a worker, with the camera and motion adapters
-left in the page pushing across — and that one is written down but not yet landed. See
-`docs/06-roadmap.md`.
+path — except that it does not reach the browser yet: `BrowserCameraAccess::PeekPreviewFrame` still
+refuses, so an armed burst there abandons on its first tick, and nothing arms one from the client.
+The core itself runs in a dedicated module worker, with the camera and motion adapters left in the
+page pushing capabilities and IMU batches across; the frame is the message that is designed and
+not built (ADR 0019). See `docs/06-roadmap.md`.

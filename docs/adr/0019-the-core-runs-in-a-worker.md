@@ -52,9 +52,16 @@ Where each port lands follows from what the platform allows, not from taste:
 - **The project store moves wholesale.** IndexedDB is available in workers, so the document host
   goes across unchanged and ADR 0014 applies to it exactly as written.
 - **The camera and motion adapters stay in the page** for now, and push. `getUserMedia` and a
-  `<video>` element are page things, and `deviceorientation` is a window event. The page grabs the
-  latest frame and transfers the buffer; the worker holds it and `PeekPreviewFrame` reads it. The
-  page posts IMU batches; `Drain` reads them.
+  `<video>` element are page things, and `deviceorientation` is a window event. The page posts IMU
+  batches and the camera's capabilities; `Drain` and `Open` read them.
+
+  **Pixels are the part that is decided and not yet built.** The shape is the same one: the page
+  grabs the latest frame, transfers the buffer, the worker holds it and `PeekPreviewFrame` reads
+  it — and the transfer measurement below is that path timed. What exists today is the protocol
+  without a message for it and `BrowserCameraAccess::PeekPreviewFrame` still refusing with
+  `Unsupported`, so an armed burst in the browser abandons on its first tick. Nothing arms one
+  from the client yet, which is why this is an unfinished path rather than a broken feature —
+  but it is the last thing between here and a burst that captures.
 - **Spill is a new port over an OPFS sync access handle**, opened during worker startup and held
   for the session.
 
@@ -102,6 +109,18 @@ not isolated.
   does.
 - Nothing crosses a contract differently. `ICameraAccess`, `IMotionSensorAccess`,
   `IFrameStoreAccess` and every manager interface are untouched, and nothing regenerates.
+- **The spill tier is reachable but nothing reaches for it.** `Demote` writes through the sink and
+  `Pin` faults back in — against `FakeSpillSink`, in the native suite. What a real browser proves
+  is narrower and worth stating exactly, because the temptation is to round it up: the end-to-end
+  suite asserts that `openSpillFile()` succeeded, so a real `createSyncAccessHandle` opened. The
+  page-side allocator is tested against a fake `SpillFile`. **Nothing exercises the allocator over
+  a real handle**, so whether `write`/`read` at an offset behave there as the fake does is
+  assumed. Closing that needs either a test-only entry point in the shipped bundle or a device —
+  and since the same gap is the iOS risk below, a device is the honest way to close it.
+  Meanwhile no production caller demotes anything. `Allocate` refuses at the ceiling instead of evicting to make room, so
+  a session that fills the heap is told no rather than spilling. Deciding *when* a frame should
+  leave the heap is the store's own policy question and it is unanswered; until it is, the sink is
+  a finished mechanism waiting for one.
 - **The iOS risk is real and unverified.** Nothing here needs an API Safari lacks, and every
   measurement above is Chromium's. Whether iOS Safari's sync access handles behave the same has to
   be checked on a device before this is load-bearing. If they do not, the fallback is a store that

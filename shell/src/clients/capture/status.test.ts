@@ -35,22 +35,33 @@ describe('formatCapabilities', () => {
     // diagnosed from a screenshot instead of a debugging session.
     const text = formatCapabilities({
       simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    });
+    }, true);
     expect(text).toMatch(/single-threaded/i);
   });
 
   it('reports the thread count when there is one', () => {
     const text = formatCapabilities({
       simd: true, threads: true, sharedMemory: true, hardwareConcurrency: 8,
-    });
+    }, true);
     expect(text).toMatch(/8/);
   });
 
   it('calls out missing SIMD, which is a build mistake rather than a device limit', () => {
     const text = formatCapabilities({
       simd: false, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    });
+    }, true);
     expect(text).toMatch(/no simd/i);
+  });
+
+  it('says when there is nowhere to spill, and stays quiet when there is', () => {
+    // A capture with no spill tier is capped at what fits in RAM (ADR 0020). It will look like an
+    // arbitrary refusal partway through a sphere unless the reason is on screen before it
+    // happens — and it is a fact about the browser, so a bug report can carry it.
+    const capabilities = {
+      simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
+    };
+    expect(formatCapabilities(capabilities, false)).toMatch(/no spill/i);
+    expect(formatCapabilities(capabilities, true)).not.toMatch(/spill/i);
   });
 });
 

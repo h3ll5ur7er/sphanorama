@@ -1,9 +1,16 @@
 /**
- * The page half of the camera and motion ports.
+ * The resident half of the camera and motion ports, in the context the core runs in.
  *
- * The core reads these synchronously, so everything here is state the page established earlier —
- * it opened the camera and asked for motion permission, both asynchronously, before the core was
- * ever asked to begin a session (ADR 0014).
+ * The core reads these synchronously, so everything here is state established earlier — the page
+ * opened the camera and asked for motion permission, both asynchronously, before the core was
+ * ever asked to begin a session (ADR 0014). Since the core moved into a worker (ADR 0019) that
+ * earlier work happens on the other side of a `postMessage`, and this host is what the page keeps
+ * fed. Nothing about the shape changed: it is still state that is already there by the time C++
+ * asks for it.
+ *
+ * Two things could not come across. A `MediaStream` cannot be stopped from here, so closing is a
+ * callback the composition root fills in; and samples arrive as flat doubles rather than
+ * `ImuSample` objects, because that is what transfers to a worker without a copy.
  */
 
 import type { ImuSample } from '../../../contracts/ts/contracts';
@@ -42,21 +49,20 @@ export interface CaptureHost {
   motionCapability(): string;
   setMotion(capability: string): void;
 
-  /** Called by the page as orientation events arrive; nothing here awaits anything. */
-  pushMotion(samples: ImuSample[]): void;
+  /** Flat doubles, as `flattenImuSamples` produces them. Nothing here awaits anything. */
+  pushMotion(doubles: ArrayLike<number>): void;
   /** Called synchronously from C++, through IMotionSensorAccess::Drain. */
   motionDrain(maxSamples: number): number[];
   /** Called from C++ on Stop: samples from a finished session must not seed the next one. */
   resetMotion(): void;
 
   /**
-   * Stops the camera for real. Called synchronously from ICameraAccess::Close, so it must not
-   * await anything — stopping a MediaStreamTrack is synchronous, which is what makes this
-   * possible at all.
+   * Called synchronously from ICameraAccess::Close. It forgets the capabilities itself and asks
+   * whoever holds the stream to stop it — which is the page, since a MediaStream cannot cross to
+   * a worker. Asking is all it can do, and that is the same trade every write-only port call
+   * takes (ADR 0019).
    */
   closeCamera(): void;
-  /** Where the page hands over the stream it opened, so the host can stop it later. */
-  setCameraStream(stream: MediaStream | null): void;
 }
 
 /**
@@ -83,23 +89,55 @@ export function deriveFieldOfView(width: number, height: number, horizontalFovDe
   return { horizontalFovDeg, verticalFovDeg };
 }
 
-function flatten(sample: ImuSample, into: number[]): void {
-  into.push(
-    sample.timestampNs,
-    sample.angularVelocity.x, sample.angularVelocity.y, sample.angularVelocity.z,
-    sample.acceleration.x, sample.acceleration.y, sample.acceleration.z,
-    sample.hasMagnetometer ? 1 : 0,
-    sample.magneticField.x, sample.magneticField.y, sample.magneticField.z,
-    sample.hasOrientation ? 1 : 0,
-    sample.orientation.w, sample.orientation.x, sample.orientation.y, sample.orientation.z,
-  );
+/**
+ * Samples as the flat doubles the core reads, in one buffer that transfers without a copy.
+ *
+ * Done on the page's side of the boundary because that is where the samples are, and a
+ * Float64Array handed over by transfer costs the same at any length — turning each sample into an
+ * object graph and structured-cloning the array would pay per sample instead.
+ */
+export function flattenImuSamples(samples: ImuSample[]): Float64Array {
+  const flat = new Float64Array(samples.length * MOTION_SAMPLE_DOUBLES);
+  samples.forEach((sample, index) => {
+    flat.set([
+      sample.timestampNs,
+      sample.angularVelocity.x, sample.angularVelocity.y, sample.angularVelocity.z,
+      sample.acceleration.x, sample.acceleration.y, sample.acceleration.z,
+      sample.hasMagnetometer ? 1 : 0,
+      sample.magneticField.x, sample.magneticField.y, sample.magneticField.z,
+      sample.hasOrientation ? 1 : 0,
+      sample.orientation.w, sample.orientation.x, sample.orientation.y, sample.orientation.z,
+    ], index * MOTION_SAMPLE_DOUBLES);
+  });
+  return flat;
 }
 
-export function createCaptureHost(): CaptureHost {
+/**
+ * Stops a camera stream, every track of it.
+ *
+ * Video alone is not enough: any live track keeps the camera indicator lit, and a user who ended
+ * a capture reasonably reads that as the app still watching them. It lives here beside the port
+ * whose Close asks for it, and runs on the page, which is the only side that can hold a stream.
+ */
+export function stopCameraStream(stream: MediaStream | null): void {
+  stream?.getTracks().forEach((track) => track.stop());
+}
+
+export interface CaptureHostOptions {
+  /**
+   * Stops the camera the page opened. Absent means nobody is holding a stream — which is the
+   * native and test case, and is not a failure.
+   */
+  onCloseCamera?: () => void;
+}
+
+export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost {
   let camera: CameraCapabilities | null = null;
   let motion = 'None';
-  let buffered: ImuSample[] = [];
-  let stream: MediaStream | null = null;
+  // Doubles rather than samples, so a push is a copy of numbers into a numbers array and the
+  // drain that C++ makes is a slice. The limit is still counted in samples, because that is the
+  // unit the reason for it is expressed in.
+  let buffered: number[] = [];
 
   return {
     cameraOpen: () => camera !== null,
@@ -122,16 +160,9 @@ export function createCaptureHost(): CaptureHost {
       camera = null;
     },
 
-    setCameraStream(opened: MediaStream | null) {
-      stream = opened;
-    },
-
     closeCamera() {
-      // Every track, not just video: a stream left running keeps the camera indicator lit, which
-      // users reasonably read as the app still watching them after they ended a capture.
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
       camera = null;
+      options.onCloseCamera?.();
     },
 
     motionCapability: () => motion,
@@ -139,18 +170,14 @@ export function createCaptureHost(): CaptureHost {
       motion = capability;
     },
 
-    pushMotion(samples: ImuSample[]) {
-      buffered.push(...samples);
-      if (buffered.length > MOTION_BUFFER_LIMIT) {
-        buffered = buffered.slice(buffered.length - MOTION_BUFFER_LIMIT);
-      }
+    pushMotion(doubles: ArrayLike<number>) {
+      for (let i = 0; i < doubles.length; i++) buffered.push(doubles[i]);
+      const ceiling = MOTION_BUFFER_LIMIT * MOTION_SAMPLE_DOUBLES;
+      if (buffered.length > ceiling) buffered = buffered.slice(buffered.length - ceiling);
     },
 
     motionDrain(maxSamples: number): number[] {
-      const taken = buffered.splice(0, Math.max(0, maxSamples));
-      const flat: number[] = [];
-      for (const sample of taken) flatten(sample, flat);
-      return flat;
+      return buffered.splice(0, Math.max(0, maxSamples) * MOTION_SAMPLE_DOUBLES);
     },
 
     resetMotion() {

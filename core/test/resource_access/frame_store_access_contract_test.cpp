@@ -9,7 +9,7 @@
 #include <memory>
 
 #include "sphanorama/resource_access/frame_store_access.h"
-#include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/frame_store_factory.h"
 
 namespace sphanorama {
 namespace {
@@ -17,7 +17,10 @@ namespace {
 template <typename Factory>
 class FrameStoreAccessContract : public ::testing::Test {
  protected:
-  std::unique_ptr<IFrameStoreAccess> store = Factory::Create();
+  // Declared before the store, so it outlives it: the store holds a pointer, not ownership, and
+  // member destruction runs in reverse.
+  typename Factory::Sink sink;
+  std::unique_ptr<IFrameStoreAccess> store = Factory::Create(&sink);
 
   FrameRef Allocate(int32_t w = 4, int32_t h = 4) {
     auto r = store->Allocate(w, h, PixelFormat::RGBA8);
