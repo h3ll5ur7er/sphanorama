@@ -101,6 +101,23 @@ TYPED_TEST(FrameStoreAccessContract, FaultingInIsRefusedWhenTheHeapHasNoRoomLeft
   EXPECT_LE(after.value.heapUsedBytes, after.value.heapCeilingBytes);
 }
 
+TYPED_TEST(FrameStoreAccessContract, ForgettingAPinnedFrameIsRefused) {
+  // Pin hands out a span and promises it stays valid until Release. Forget erasing the entry
+  // underneath that promise is a use-after-free for whoever is still holding the span — and the
+  // manager's rollback paths call Forget on frames it may not have released yet, so this is a
+  // lifetime rule every implementation has to keep, not a detail of one.
+  const FrameRef frame = this->Allocate();
+  auto pinned = this->store->Pin(frame);
+  ASSERT_TRUE(pinned.ok());
+
+  EXPECT_EQ(this->store->Forget(frame).code, StatusCode::FailedPrecondition);
+  // Still there, and still the same bytes: a refused Forget must not half-destroy anything.
+  EXPECT_TRUE(this->store->ResidencyOf(frame).ok());
+
+  ASSERT_TRUE(this->store->Release(frame).ok());
+  EXPECT_TRUE(this->store->Forget(frame).ok());
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());

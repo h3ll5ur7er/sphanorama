@@ -80,21 +80,34 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   auto capability = sensor_.Capabilities();
   resolved.motion = capability.ok() ? capability.value : MotionCapability::None;
 
-  SPH_TRY(auto plan, planner_.Plan(resolved, lens));
+  // Everything from here can fail with the camera already open, because the lens has to be read
+  // before the plan can be made. Returning without closing it leaves the indicator lit for a
+  // session that never started — which the user reads, correctly, as the app watching them.
+  // Rejecting an unsupported strategy or a nonsense field of view is what makes this reachable.
+  auto plan = planner_.Plan(resolved, lens);
+  if (!plan.ok()) {
+    (void)camera_.Close();
+    return plan.status;
+  }
 
   // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
   // vision-only and no other component learns the difference (docs/03 UC-4).
   const PoseMode mode =
       resolved.motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
-  SPH_TRY(auto initialPose, pose_.Initial(mode, resolved.motion));
+  auto initialPose = pose_.Initial(mode, resolved.motion);
+  if (!initialPose.ok()) {
+    (void)camera_.Close();
+    return initialPose.status;
+  }
+
   (void)sensor_.Start(60);
   (void)camera_.StartPreview();
 
-  plan_ = std::move(plan);
+  plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{next_session_++};
   candidates_.clear();
-  pose_state_ = initialPose;
+  pose_state_ = initialPose.value;
   active_ = true;
   return Ok(session_);
 }
@@ -190,9 +203,15 @@ Result<std::vector<Candidate>> CaptureSessionManager::CaptureCell(NodeId node,
     captured.push_back(candidate);
   }
 
-  // Ranking is asked for even though nothing consumes it yet: it is what decides which candidate
-  // feeds the build, and leaving the call out would hide a broken selection until Phase 2.
-  (void)quality_.Rank(cell, SelectionPolicy{});
+  // Ranking is what turns a burst into a choice, so a set nobody could rank is not a captured
+  // cell — and discarding the failure would leave the cell holding candidates the selection
+  // engine had already failed on, with CaptureCell reporting success. Same rollback as a scoring
+  // failure: these frames belong to this call.
+  if (auto ranked = quality_.Rank(cell, SelectionPolicy{}); !ranked.ok()) {
+    for (const auto& taken : frames) (void)frames_.Forget(taken);
+    cell.resize(before);
+    return ranked.status;
+  }
   return Ok(std::move(captured));
 }
 

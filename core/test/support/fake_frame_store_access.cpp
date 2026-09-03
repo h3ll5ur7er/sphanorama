@@ -115,9 +115,15 @@ Status FakeFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
 }
 
 Status FakeFrameStoreAccess::Forget(const FrameRef& frame) {
-  if (entries_.erase(frame.id.value) == 0) {
-    return Fail(StatusCode::NotFound, kComponent, "no such frame");
+  Entry* entry = Find(frame);
+  if (entry == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such frame");
+  if (entry->pins > 0) {
+    // Pin promises its span stays valid until Release. Erasing the entry under that promise is a
+    // use-after-free for whoever still holds the span, and the manager's rollback paths call
+    // Forget on frames they may not have released.
+    return Fail(StatusCode::FailedPrecondition, kComponent, "frame is still pinned");
   }
+  entries_.erase(frame.id.value);
   return Status::Ok();
 }
 

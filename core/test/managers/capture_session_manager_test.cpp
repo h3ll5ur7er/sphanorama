@@ -196,6 +196,69 @@ class RefusingFrameQualityEngine final : public IFrameQualityEngine {
   }
 };
 
+// Scores fine, cannot rank. Ranking is what turns a burst into a choice, so a set nobody could
+// rank is not a captured cell.
+class UnrankableFrameQualityEngine final : public IFrameQualityEngine {
+ public:
+  Result<QualityScore> Score(const FrameRef&, const PoseSample&, const NodeContext&) override {
+    return Ok(QualityScore{});
+  }
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate>,
+                                        const SelectionPolicy&) override {
+    return Err<std::vector<CandidateId>>(StatusCode::ComputeUnavailable, "test", "cannot rank");
+  }
+};
+
+TEST_F(CaptureSession, ABurstThatCannotBeRankedIsRolledBackToo) {
+  // The scoring path rolls back; ranking was still discarded with a (void) cast, so a cell could
+  // end up holding candidates the selection engine had failed on while CaptureCell reported
+  // success. Picking the best of a burst is the point; an unrankable burst is not a capture.
+  UnrankableFrameQualityEngine unrankable;
+  CaptureSessionManager manager(planner, pose, unrankable, *camera, *sensor, *store, *projects);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  const int64_t before = store->Budget().value.heapUsedBytes;
+  BurstSpec burst;
+  burst.frameCount = 3;
+  EXPECT_EQ(manager.CaptureCell(node, burst).status.code, StatusCode::ComputeUnavailable);
+  EXPECT_TRUE(manager.Candidates(node).value.empty());
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
+}
+
+// Refuses to plan, so the manager's cleanup after a planning failure can be tested. The null
+// planner always succeeds, which is why nothing reached this path.
+class RefusingCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics&) override {
+    return Err<CapturePlan>(StatusCode::Unsupported, "test", "cannot plan");
+  }
+  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&) override {
+    return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
+  }
+  Result<CoverageState> Evaluate(const CapturePlan&, std::span<const Candidate>) override {
+    return Err<CoverageState>(StatusCode::Unsupported, "test", "cannot evaluate");
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan&, const CoverageState&,
+                                             const GhostReport&) override {
+    return Err<std::vector<NodeId>>(StatusCode::Unsupported, "test", "cannot suggest");
+  }
+};
+
+TEST_F(CaptureSession, AFailedPlanClosesTheCameraItOpened) {
+  // The lens has to be read before the plan can be made, so a planning failure happens with the
+  // camera already open — and returning without closing leaves the indicator lit for a session
+  // that never started. Rejecting an unsupported strategy and a nonsense field of view, both
+  // added recently, are exactly what make this reachable.
+  RefusingCoveragePlannerEngine refusing;
+  CaptureSessionManager manager(refusing, pose, quality, *camera, *sensor, *store, *projects);
+
+  EXPECT_EQ(manager.Begin(kProject, Spec()).status.code, StatusCode::Unsupported);
+  EXPECT_FALSE(camera->IsOpen());
+  // And it is left genuinely idle, not half-begun.
+  EXPECT_EQ(manager.GetPlan().status.code, StatusCode::FailedPrecondition);
+}
+
 TEST_F(CaptureSession, AFailedScoreDoesNotBecomeACandidateWithAZeroScore) {
   // A zero QualityScore is what a genuinely terrible frame gets. Using it for "the scorer broke"
   // makes the two indistinguishable — and the cell then counts toward coverage, so the sphere
