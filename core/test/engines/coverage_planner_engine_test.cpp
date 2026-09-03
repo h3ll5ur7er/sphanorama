@@ -13,6 +13,7 @@
 #include <set>
 #include <vector>
 
+#include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "utilities/quaternion.h"
 
@@ -454,6 +455,33 @@ TEST(CoveragePlanner, PicksTheCellTheCameraActuallyPointsAt) {
     EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
     EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-6);
   }
+}
+
+
+TEST(NullCoveragePlanner, AlsoSeparatesRollFromAim) {
+  // The null engine is what the manager tests run against, so guidance semantics that differ
+  // between it and the real one make those tests assert something the shipped path does not do.
+  // It recreates the "reticle never closes when the phone is rolled" failure otherwise.
+  NullCoveragePlannerEngine engine;
+  CapturePlan plan;
+  CoverageNode node;
+  node.id = NodeId{1};
+  node.targetOrientation = FromAzimuthElevation(25.0, -10.0);
+  node.acceptanceConeDeg = 5.0;
+  plan.nodes.push_back(node);
+
+  auto straight = engine.Locate(node.targetOrientation, plan);
+  ASSERT_TRUE(straight.ok());
+  EXPECT_NEAR(straight.value.angularErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(straight.value.rollErrorDeg, 0.0, 1e-9);
+
+  const Vec3 axis = Direction(node.targetOrientation);
+  const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), node.targetOrientation);
+  auto tilted = engine.Locate(rolled, plan);
+  ASSERT_TRUE(tilted.ok());
+  EXPECT_NEAR(tilted.value.angularErrorDeg, 0.0, 1e-6);
+  EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);
+  EXPECT_EQ(tilted.value.action, GuidanceAction::HoldStill);
 }
 
 }  // namespace

@@ -33,12 +33,20 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
     return Err<CaptureGuidance>(StatusCode::FailedPrecondition, kComponent, "plan has no cells");
   }
 
-  // Nearest cell by angular distance. Trivial with one cell, but it is the shape a real
-  // tessellation needs, so the manager's sequence does not change when V4 lands.
+  // Nearest cell by the direction the camera looks, and roll reported separately — the same
+  // semantics as the real planner, deliberately. This engine is what the manager tests run
+  // against, so a guidance rule that differs here makes those tests assert something the shipped
+  // path does not do; comparing whole attitudes would fold roll into the aim and recreate the
+  // reticle that never closes when the phone is held at an angle.
+  //
+  // Trivial with one cell, but it is the shape a real tessellation needs, so the manager's
+  // sequence does not change when V4 lands.
+  const Vec3 looking = Direction(current);
+
   const CoverageNode* nearest = &plan.nodes.front();
-  double best = AngleBetween(current, nearest->targetOrientation);
+  double best = AngleBetweenDirections(looking, Direction(nearest->targetOrientation));
   for (const auto& node : plan.nodes) {
-    const double angle = AngleBetween(current, node.targetOrientation);
+    const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
     if (angle < best) {
       best = angle;
       nearest = &node;
@@ -48,6 +56,7 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
   CaptureGuidance guidance;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg = best * kRadToDeg;
+  guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
   guidance.action = guidance.angularErrorDeg <= nearest->acceptanceConeDeg
                         ? GuidanceAction::HoldStill
                         : GuidanceAction::Seek;
