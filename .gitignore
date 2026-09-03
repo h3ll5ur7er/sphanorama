@@ -1,0 +1,26 @@
+# build
+build/
+dist/
+node_modules/
+.emscripten_cache/
+*.wasm
+*.o
+*.a
+
+# tooling
+__pycache__/
+.venv/
+.cache/
+.DS_Store
+
+# datasets and captures (large, regenerate with tools/)
+datasets/
+captures/
+
+# playwright
+test-results/
+playwright-report/
+
+# staged build artifacts
+shell/public/core/
+dist/

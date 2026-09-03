@@ -1,0 +1,24 @@
+{
+  "name": "sphanorama",
+  "private": true,
+  "type": "module",
+  "description": "On-device photo sphere capture PWA: a C++20/WebAssembly core behind a generated boundary, with a thin TypeScript shell.",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && npm run build:core && vite build && npm run build:sw",
+    "build:core": "node tools/stage_core.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "serve": "node tools/static_server.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:sw": "node tools/build_sw.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  }
+}

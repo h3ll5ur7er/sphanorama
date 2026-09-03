@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  contracts:
+    name: architecture and contract rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      # The checker has its own suite: a broken checker that passes everything is worse than no
+      # checker, because it reads as a green light.
+      - name: layer checker tests
+        run: python3 tools/test_layer_check.py
+      - name: layer rules
+        run: python3 tools/layer_check.py
+      - name: contract generator tests
+        run: python3 tools/test_contract_gen.py
+      - name: codec generator tests
+        run: python3 tools/test_codec_gen.py
+      # Covers the TypeScript mirror and both halves of the wire codec: a header change that was
+      # not regenerated is a red build rather than a boundary that disagrees with itself.
+      - name: generated files are not stale
+        run: python3 tools/contract_gen.py --check
+      - name: size budget checker tests
+        run: python3 tools/test_size_budget.py
+      - name: no-browser checker tests
+        run: python3 tools/test_no_browser_check.py
+      - name: no browser assumptions in the core
+        run: python3 tools/no_browser_check.py
+
+  native:
+    name: native build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: configure
+        run: cmake --preset native-debug
+      - name: build
+        run: cmake --build build/native-debug
+      - name: test
+        run: ctest --test-dir build/native-debug --output-on-failure
+
+  sanitizers:
+    name: address and undefined behaviour
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: configure
+        run: cmake --preset native-asan
+      - name: build
+        run: cmake --build build/native-asan
+      - name: test
+        run: ctest --test-dir build/native-asan --output-on-failure
+
+  wasm:
+    name: wasm builds, size budget and browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          # Pinned to match tools/setup_emsdk.sh. A toolchain that moves under us turns an
+          # unrelated upstream release into a red build on a day nobody touched this repo.
+          version: 6.0.9
+          actions-cache-folder: emsdk-cache
+
+      # Both artifacts are supported configurations, not a build and a fallback (ADR 0011).
+      - name: build single-threaded core
+        run: cmake --preset wasm-release && cmake --build build/wasm-release
+      - name: build threaded core
+        run: cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded
+
+      - name: size budget
+        run: |
+          python3 tools/size_budget.py --profile wasm-release \
+            --build-dir build/wasm-release/bridge
+          python3 tools/size_budget.py --profile wasm-release-threaded \
+            --build-dir build/wasm-release-threaded/bridge
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: install deps
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: shell unit tests
+        run: npm test
+      - name: build the shell
+        run: npm run build
+      # Serves each artifact with and without COOP/COEP, which is the only way to find out what
+      # the deployment target actually does with it — and runs the shell end to end against the
+      # built bundle rather than a dev server.
+      - name: browser tests
+        run: npx playwright test
+
+# Not yet wired, and deliberately absent rather than stubbed green:
+#   - FlatBuffers schema generation (needs the boundary runtime)
+#   - time-to-first-viewfinder budget (needs the PWA shell)
+# See docs/06-roadmap.md Phase 0.

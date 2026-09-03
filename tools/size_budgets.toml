@@ -1,0 +1,16 @@
+# Compressed-size budgets for the shipped WASM artifacts, in bytes.
+#
+# Measured gzipped, because that is what crosses a mobile network. The wasm budget is the 8 MB
+# from docs/01: this is a page someone opens on a phone, possibly on cellular data, and a core
+# that takes a minute to arrive is a core nobody waits for.
+#
+# The threaded build carries the pthread runtime and a second copy of some machinery, so it gets
+# its own budget rather than being squeezed into the single-threaded one.
+
+[wasm-release]
+"sphanorama-core.wasm" = 8388608
+"sphanorama-core.js" = 262144
+
+[wasm-release-threaded]
+"sphanorama-core.wasm" = 10485760
+"sphanorama-core.js" = 393216
