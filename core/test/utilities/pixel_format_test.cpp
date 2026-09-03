@@ -45,6 +45,21 @@ TEST(FrameByteSize, RoundsEachChromaDimensionUpIndependently) {
   EXPECT_EQ(FrameByteSize(5, 4, PixelFormat::NV12), 20 + 3 * 2 * 2);
 }
 
+TEST(FrameByteSize, RefusesASizeThatCannotBeRepresented) {
+  // width*height fits in int64, but multiplying by four does not: the product wraps to something
+  // small or negative, and a store that trusted it would allocate a buffer far shorter than the
+  // frame written into it. Signed overflow is undefined behaviour, so this is not merely a wrong
+  // number — it is a build the optimiser is entitled to reason about however it likes.
+  constexpr int32_t kHuge = 2147483647;
+  EXPECT_EQ(FrameByteSize(kHuge, kHuge, PixelFormat::RGBA8), 0);
+  // Twelve bits per pixel still fits at these dimensions, so the planar path is not refused —
+  // this is a representability boundary, not a blanket ban on large numbers.
+  EXPECT_GT(FrameByteSize(kHuge, kHuge, PixelFormat::NV12), 0);
+  EXPECT_GT(FrameByteSize(kHuge, 1, PixelFormat::RGBA8), 0);
+  // Two bytes per pixel is the widest that still fits a full square frame.
+  EXPECT_EQ(FrameByteSize(kHuge, kHuge, PixelFormat::Gray8), int64_t{kHuge} * kHuge);
+}
+
 TEST(FrameByteSize, RejectsNonsenseDimensions) {
   EXPECT_EQ(FrameByteSize(0, 8, PixelFormat::RGBA8), 0);
   EXPECT_EQ(FrameByteSize(-4, 8, PixelFormat::RGBA8), 0);

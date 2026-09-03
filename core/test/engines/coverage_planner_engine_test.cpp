@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <vector>
@@ -363,6 +364,36 @@ TEST(RingsCoveragePlanner, ABandStillClosesAroundTheHorizon) {
     if (std::abs(ElevationOf(node.targetOrientation)) < 1e-6) ++onHorizon;
   }
   EXPECT_GE(onHorizon, 8);
+}
+
+
+TEST(RingsCoveragePlanner, RefusesAFieldOfViewThatIsNotAFiniteAngle) {
+  // The spec arrives from JavaScript across the facade, where every number is a double and NaN
+  // and Infinity are ordinary values. Both survive the "> 0" check and reach ceil(90 / step),
+  // whose conversion to int is undefined behaviour for anything outside int's range.
+  RingsCoveragePlannerEngine engine;
+  for (const double bad : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+    CapturePlanSpec spec = Spec();
+    spec.verticalFovDeg = bad;
+    EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+    spec = Spec();
+    spec.horizontalFovDeg = bad;
+    EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+  }
+}
+
+TEST(RingsCoveragePlanner, RefusesALensSoNarrowThePlanCouldNotBeHeld) {
+  // A vanishingly small field of view is arithmetically valid and produces a ring count that
+  // overflows int on the way to a plan nobody could capture. Refusing is the only useful answer.
+  RingsCoveragePlannerEngine engine;
+  CapturePlanSpec spec = Spec();
+  spec.verticalFovDeg = 1e-300;
+  EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+
+  spec = Spec();
+  spec.horizontalFovDeg = 1e-300;
+  EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
 }
 
 }  // namespace

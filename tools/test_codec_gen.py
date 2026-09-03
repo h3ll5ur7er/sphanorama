@@ -88,6 +88,7 @@ class MethodTableTest(unittest.TestCase):
         # Both markers, because they mean different things: @boundary mirrors the interface into
         # TypeScript, @facade also generates dispatch for it. Only managers carry both.
         self.module = parse(
+            "using ProjectId = Id<ProjectTag>;\n"
             "// @boundary @facade\n"
             "class IProjectManager {\n"
             " public:\n"
@@ -171,6 +172,29 @@ class MethodTableTest(unittest.TestCase):
         ts = contract_gen.emit_ts_facade(self.module)
         delete = ts[ts.index('async delete('):]
         self.assertNotIn('malformedResponse', delete.split('},')[0])
+
+    def test_a_decode_failure_reaches_the_status_path_rather_than_leaving_the_case(self):
+        # `break` inside a switch case exits the case, so a decode failure written that way skips
+        # the block that encodes InvalidArgument and hands the client an empty buffer instead of
+        # the status the facade ABI promises. Nothing may break out of a case before that block.
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        for case in cpp.split("case ")[1:]:
+            # Only the parameter decoding: everything before the status check, or before the
+            # manager call for a method that takes no arguments. The `break` inside the status
+            # check is the correct one; any break earlier than it is the bug.
+            decoding = case
+            for boundary in ("if (!in.ok())", "auto result =", "const Status status ="):
+                decoding = decoding.split(boundary)[0]
+            self.assertNotIn("break;", decoding,
+                             f"a parameter decode leaves the case early:\n{decoding}")
+
+    def test_ids_are_decoded_through_a_checked_conversion(self):
+        # An id crosses as a double because JavaScript has no other number. NaN, a negative, or
+        # 1e300 are all values a client can send, and casting any of them to uint64_t is
+        # undefined behaviour — before any manager gets the chance to reject the id.
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        self.assertNotIn("static_cast<uint64_t>(in.GetF64())", cpp)
+        self.assertIn("GetId(", cpp)
 
     def test_the_proxy_calls_methods_by_name_not_by_id(self):
         ts = contract_gen.emit_ts_facade(self.module)

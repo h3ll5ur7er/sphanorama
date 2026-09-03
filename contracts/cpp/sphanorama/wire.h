@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -91,6 +93,20 @@ class Reader {
 
   // A count is checked against the bytes remaining before anything is reserved: a hostile or
   // corrupt length prefix would otherwise turn one bad byte into a multi-gigabyte allocation.
+  // An identifier, checked. Ids cross as doubles because JavaScript has no other number type,
+  // and a client can therefore send NaN, a negative, a fraction, or 1e300 — all values whose
+  // conversion to uint64_t is undefined behaviour, reached before any manager can reject the id.
+  // A value that is not a whole non-negative number fails the reader instead.
+  uint64_t GetId() {
+    const double raw = GetF64();
+    if (failed_) return 0;
+    if (!(raw >= 0.0) || raw > 18446744073709549568.0 || raw != std::trunc(raw)) {
+      failed_ = true;
+      return 0;
+    }
+    return static_cast<uint64_t>(raw);
+  }
+
   size_t GetCount(size_t minimumBytesPerElement) {
     const int32_t count = GetI32();
     if (failed_ || count < 0) {

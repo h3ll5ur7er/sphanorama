@@ -80,9 +80,9 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
   switch (methodId) {
     case 0: {  // CaptureSessionManager.begin
       ProjectId project{};
-      project.value = static_cast<uint64_t>(in.GetF64());
+      project.value = in.GetId();
       CapturePlanSpec spec{};
-      if (!codec::Decode(in, spec)) break;
+      (void)codec::Decode(in, spec);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -106,10 +106,9 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     case 2: {  // CaptureSessionManager.onMotion
       std::vector<ImuSample> samples;
       { const size_t count = in.GetCount(1);
-    if (!in.ok()) break;
     samples.clear();
     samples.resize(count);
-    for (auto& item : samples) { if (!codec::Decode(in, item)) break; } }
+    for (auto& item : samples) { (void)codec::Decode(in, item); } }
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -124,9 +123,9 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 3: {  // CaptureSessionManager.captureCell
       NodeId node{};
-      node.value = static_cast<uint64_t>(in.GetF64());
+      node.value = in.GetId();
       BurstSpec burst{};
-      if (!codec::Decode(in, burst)) break;
+      (void)codec::Decode(in, burst);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -142,11 +141,11 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 4: {  // CaptureSessionManager.offerFrame
       NodeId node{};
-      node.value = static_cast<uint64_t>(in.GetF64());
+      node.value = in.GetId();
       FrameRef frame{};
-      if (!codec::Decode(in, frame)) break;
+      (void)codec::Decode(in, frame);
       PoseSample pose{};
-      if (!codec::Decode(in, pose)) break;
+      (void)codec::Decode(in, pose);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -169,7 +168,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 6: {  // CaptureSessionManager.candidates
       NodeId node{};
-      node.value = static_cast<uint64_t>(in.GetF64());
+      node.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -185,7 +184,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 7: {  // CaptureSessionManager.requestRetake
       NodeId node{};
-      node.value = static_cast<uint64_t>(in.GetF64());
+      node.value = in.GetId();
       bool replace{};
       replace = in.GetBool();
       if (!in.ok()) {
@@ -204,9 +203,9 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 9: {  // PanoramaBuildManager.start
       SessionId session{};
-      session.value = static_cast<uint64_t>(in.GetF64());
+      session.value = in.GetId();
       BuildSpec spec{};
-      if (!codec::Decode(in, spec)) break;
+      (void)codec::Decode(in, spec);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -221,7 +220,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 10: {  // PanoramaBuildManager.poll
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -236,7 +235,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 11: {  // PanoramaBuildManager.panorama
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -251,7 +250,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 12: {  // PanoramaBuildManager.ghosts
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -266,13 +265,12 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 13: {  // PanoramaBuildManager.invalidate
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       std::vector<NodeId> dirty;
       { const size_t count = in.GetCount(1);
-    if (!in.ok()) break;
     dirty.clear();
     dirty.resize(count);
-    for (auto& item : dirty) { item.value = static_cast<uint64_t>(in.GetF64()); } }
+    for (auto& item : dirty) { item.value = in.GetId(); } }
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -284,7 +282,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 14: {  // PanoramaBuildManager.cancel
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -320,7 +318,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 17: {  // ProjectManager.resume
       ProjectId project{};
-      project.value = static_cast<uint64_t>(in.GetF64());
+      project.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -335,7 +333,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 18: {  // ProjectManager.delete
       ProjectId project{};
-      project.value = static_cast<uint64_t>(in.GetF64());
+      project.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -347,11 +345,11 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 19: {  // ProjectManager.setSelection
       ProjectId project{};
-      project.value = static_cast<uint64_t>(in.GetF64());
+      project.value = in.GetId();
       NodeId node{};
-      node.value = static_cast<uint64_t>(in.GetF64());
+      node.value = in.GetId();
       CandidateId candidate{};
-      candidate.value = static_cast<uint64_t>(in.GetF64());
+      candidate.value = in.GetId();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
@@ -363,11 +361,11 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 20: {  // ProjectManager.export
       ProjectId project{};
-      project.value = static_cast<uint64_t>(in.GetF64());
+      project.value = in.GetId();
       BuildId build{};
-      build.value = static_cast<uint64_t>(in.GetF64());
+      build.value = in.GetId();
       ExportSpec spec{};
-      if (!codec::Decode(in, spec)) break;
+      (void)codec::Decode(in, spec);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));

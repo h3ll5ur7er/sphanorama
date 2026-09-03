@@ -20,9 +20,21 @@ constexpr double kPolarCosineFloor = 0.08;
 
 Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
                                                      const Intrinsics&) {
+  // Finiteness first. The spec crosses the facade as doubles, where NaN and Infinity are ordinary
+  // values a client can send, and both slip past a ">= 0" test — then reach the conversions
+  // below, where a float outside int's range is undefined behaviour rather than a large number.
+  if (!std::isfinite(spec.horizontalFovDeg) || !std::isfinite(spec.verticalFovDeg) ||
+      !std::isfinite(spec.overlapTarget) || !std::isfinite(spec.acceptanceConeDeg)) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "the plan spec contains a value that is not a finite number");
+  }
   if (spec.horizontalFovDeg <= 0.0 || spec.verticalFovDeg <= 0.0) {
     return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
                             "the lens field of view is unknown; nothing can be tessellated");
+  }
+  if (spec.horizontalFovDeg > 180.0 || spec.verticalFovDeg > 180.0) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "a field of view wider than 180 degrees is not a lens");
   }
   if (spec.overlapTarget < 0.0 || spec.overlapTarget >= 1.0) {
     // An overlap of 1 is a step of zero degrees: infinitely many cells.
@@ -37,6 +49,18 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
   const double advance = 1.0 - spec.overlapTarget;
   const double verticalStep = spec.verticalFovDeg * advance;
   const double horizontalStep = spec.horizontalFovDeg * advance;
+
+  // A lens narrow enough to need more cells than this is not a capture anyone completes — at one
+  // second a cell it is over a day of holding a phone still. The bound exists so the counts below
+  // stay inside int, since converting an out-of-range double to int is undefined behaviour and
+  // arrives here as a plan rather than as a diagnosable failure.
+  constexpr double kMaxCells = 100000.0;
+  const double approximateRings = 180.0 / verticalStep + 1.0;
+  const double approximateCells = approximateRings * (360.0 / horizontalStep + 1.0);
+  if (!std::isfinite(approximateCells) || approximateCells > kMaxCells) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "this lens and overlap would need more cells than a session can hold");
+  }
 
   // Rings are laid symmetrically about the horizon and reach the poles, so that a sphere is
   // covered rather than a band. An odd count keeps one ring exactly on the horizon, which is

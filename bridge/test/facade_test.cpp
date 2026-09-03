@@ -5,6 +5,8 @@
 // build compiles.
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include <set>
 #include <string>
 #include <vector>
@@ -158,6 +160,43 @@ TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACamera) {
   wire::Reader in = response.reader();
   const Status status = ReadStatus(in);
   EXPECT_EQ(status.code, StatusCode::CameraUnavailable);
+}
+
+TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {
+  // The client may be a stale bundle, a corrupted transfer, or something hostile. Whatever the
+  // cause, the ABI promises a status — and a decode that left the switch case early handed back
+  // an empty buffer instead, which the client can only report as "malformed response".
+  wire::Writer args;
+  args.PutF64(1.0);          // node id
+  args.PutF64(5.0);          // frameCount, then the BurstSpec simply stops
+  Response response = Call("CaptureSessionManager.captureCell", args.bytes());
+  ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all";
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
+TEST(Facade, ATruncatedListArgumentIsReportedAsAStatus) {
+  wire::Writer args;
+  args.PutCount(4);          // four samples promised, none supplied
+  Response response = Call("CaptureSessionManager.onMotion", args.bytes());
+  ASSERT_FALSE(response.bytes.empty());
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
+TEST(Facade, AnIdThatIsNotAWholeNumberIsRefused) {
+  // Ids cross as doubles because JavaScript has no other number type, so NaN, a negative and
+  // 1e300 are all things a client can send. Converting any of them to uint64_t is undefined
+  // behaviour, and it happens before a manager ever sees the id.
+  for (const double bad : {std::numeric_limits<double>::quiet_NaN(),
+                           -1.0, 0.5, 1e300}) {
+    wire::Writer args;
+    args.PutF64(bad);
+    Response response = Call("ProjectManager.delete", args.bytes());
+    ASSERT_FALSE(response.bytes.empty());
+    wire::Reader in = response.reader();
+    EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument) << "for " << bad;
+  }
 }
 
 TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {

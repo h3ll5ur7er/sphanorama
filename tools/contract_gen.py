@@ -786,8 +786,11 @@ def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str], qualifier: 
         return f"{target} = in.GetBytes();"
     if kind.startswith("list:"):
         inner = kind[5:]
+        # GetCount fails the reader and returns 0 for a negative or oversized count, so resize is
+        # safe without an early exit and the failure is still visible to the caller's check.
+        guard = f"    if (!in.ok()) {on_fail}\n" if on_fail else ""
         return (f"{{ const size_t count = in.GetCount(1);\n"
-                f"    if (!in.ok()) {on_fail}\n"
+                f"{guard}"
                 f"    {target}.clear();\n"
                 f"    {target}.resize(count);\n"
                 f"    for (auto& item : {target}) "
@@ -796,7 +799,14 @@ def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str], qualifier: 
     if name in enums:
         return f"{target} = static_cast<{name}>(in.GetI32());"
     if name in ids:
-        return f"{target}.value = static_cast<uint64_t>(in.GetF64());"
+        # Checked, not cast: the wire value is a double a client controls, and converting a NaN,
+        # a negative or an out-of-range one to uint64_t is undefined behaviour.
+        return f"{target}.value = in.GetId();"
+    # With no early exit the reader carries the failure to the caller's single check. That is what
+    # the facade needs: `break` there would leave the switch case before the block that encodes
+    # the status, handing the client an empty buffer instead of InvalidArgument.
+    if not on_fail:
+        return f"(void){qualifier}Decode(in, {target});"
     return f"if (!{qualifier}Decode(in, {target})) {on_fail}"
 
 
@@ -1073,10 +1083,10 @@ def _cpp_param_decl(name: str, ts: str, kind: str, enums: set[str],
     """Lines declaring a decoded parameter, and the expression to pass to the manager."""
     if kind.startswith("list:"):
         inner = kind[5:]
-        decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="break;")
+        decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="")
         return ([f"std::vector<{inner}> {name};", decode], f"std::span<const {inner}>({name})")
 
-    decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="break;")
+    decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="")
     return ([f"{_cpp_type_for(ts, enums, ids)} {name}{{}};", decode], name)
 
 

@@ -152,8 +152,8 @@ inline void Encode(Writer& out, const FrameRef& value) {
 }
 
 inline bool Decode(Reader& in, FrameRef& value) {
-  value.id.value = static_cast<uint64_t>(in.GetF64());
-  value.buffer.value = static_cast<uint64_t>(in.GetF64());
+  value.id.value = in.GetId();
+  value.buffer.value = in.GetId();
   value.format = static_cast<PixelFormat>(in.GetI32());
   value.width = static_cast<decltype(value.width)>(in.GetF64());
   value.height = static_cast<decltype(value.height)>(in.GetF64());
@@ -192,7 +192,7 @@ inline void Encode(Writer& out, const CoverageNode& value) {
 }
 
 inline bool Decode(Reader& in, CoverageNode& value) {
-  value.id.value = static_cast<uint64_t>(in.GetF64());
+  value.id.value = in.GetId();
   if (!Decode(in, value.targetOrientation)) return false;
   value.acceptanceConeDeg = static_cast<decltype(value.acceptanceConeDeg)>(in.GetF64());
   value.ringIndex = static_cast<decltype(value.ringIndex)>(in.GetF64());
@@ -243,8 +243,8 @@ inline void Encode(Writer& out, const Candidate& value) {
 }
 
 inline bool Decode(Reader& in, Candidate& value) {
-  value.id.value = static_cast<uint64_t>(in.GetF64());
-  value.node.value = static_cast<uint64_t>(in.GetF64());
+  value.id.value = in.GetId();
+  value.node.value = in.GetId();
   if (!Decode(in, value.frame)) return false;
   if (!Decode(in, value.pose)) return false;
   if (!Decode(in, value.quality)) return false;
@@ -277,7 +277,7 @@ inline void Encode(Writer& out, const CaptureGuidance& value) {
 }
 
 inline bool Decode(Reader& in, CaptureGuidance& value) {
-  value.targetNode.value = static_cast<uint64_t>(in.GetF64());
+  value.targetNode.value = in.GetId();
   value.angularErrorDeg = static_cast<decltype(value.angularErrorDeg)>(in.GetF64());
   value.rollErrorDeg = static_cast<decltype(value.rollErrorDeg)>(in.GetF64());
   value.stability = static_cast<decltype(value.stability)>(in.GetF64());
@@ -303,12 +303,12 @@ inline bool Decode(Reader& in, CoverageState& value) {
     if (!in.ok()) return false;
     value.holes.clear();
     value.holes.resize(count);
-    for (auto& item : value.holes) { item.value = static_cast<uint64_t>(in.GetF64()); } }
+    for (auto& item : value.holes) { item.value = in.GetId(); } }
   { const size_t count = in.GetCount(1);
     if (!in.ok()) return false;
     value.underOverlapped.clear();
     value.underOverlapped.resize(count);
-    for (auto& item : value.underOverlapped) { item.value = static_cast<uint64_t>(in.GetF64()); } }
+    for (auto& item : value.underOverlapped) { item.value = in.GetId(); } }
   return in.ok();
 }
 
@@ -337,7 +337,7 @@ inline void Encode(Writer& out, const BuildProgress& value) {
 }
 
 inline bool Decode(Reader& in, BuildProgress& value) {
-  value.id.value = static_cast<uint64_t>(in.GetF64());
+  value.id.value = in.GetId();
   value.stage = static_cast<BuildStage>(in.GetI32());
   value.fraction = static_cast<decltype(value.fraction)>(in.GetF64());
   value.tilesReady = static_cast<decltype(value.tilesReady)>(in.GetF64());
@@ -355,7 +355,7 @@ inline void Encode(Writer& out, const GhostRegion& value) {
 }
 
 inline bool Decode(Reader& in, GhostRegion& value) {
-  value.node.value = static_cast<uint64_t>(in.GetF64());
+  value.node.value = in.GetId();
   value.centerAzimuthDeg = static_cast<decltype(value.centerAzimuthDeg)>(in.GetF64());
   value.centerElevationDeg = static_cast<decltype(value.centerElevationDeg)>(in.GetF64());
   value.radiusDeg = static_cast<decltype(value.radiusDeg)>(in.GetF64());
@@ -406,7 +406,7 @@ inline void Encode(Writer& out, const PanoramaRef& value) {
 }
 
 inline bool Decode(Reader& in, PanoramaRef& value) {
-  value.build.value = static_cast<uint64_t>(in.GetF64());
+  value.build.value = in.GetId();
   value.projection = static_cast<Projection>(in.GetI32());
   value.width = static_cast<decltype(value.width)>(in.GetF64());
   value.height = static_cast<decltype(value.height)>(in.GetF64());
@@ -430,7 +430,7 @@ inline void Encode(Writer& out, const ProjectSummary& value) {
 }
 
 inline bool Decode(Reader& in, ProjectSummary& value) {
-  value.id.value = static_cast<uint64_t>(in.GetF64());
+  value.id.value = in.GetId();
   value.title = in.GetString();
   value.createdAtMs = static_cast<decltype(value.createdAtMs)>(in.GetF64());
   value.nodesTotal = static_cast<decltype(value.nodesTotal)>(in.GetF64());
