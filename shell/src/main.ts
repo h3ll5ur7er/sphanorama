@@ -7,7 +7,7 @@
  */
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
-import type { CapturePlan, ProjectId } from '../../contracts/ts/contracts';
+import type { CapturePlan, NodeId, ProjectId } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
 import { flattenImuSamples, stopCameraStream } from './access/capture-host';
@@ -55,9 +55,15 @@ let remote: RemoteCore;
  * see it (ADR 0018): the burst's first frame arrives on the next tick, and the loop is what has
  * to have a frame waiting by then.
  */
-let captureCell: ((node: number) => Promise<boolean>) | null = null;
-/** The cell guidance last pointed at — what the capture button captures. */
-let targetNode = 0;
+let captureCell: ((node: NodeId) => Promise<boolean>) | null = null;
+/**
+ * The cell guidance last pointed at — what the capture button captures.
+ *
+ * Null until guidance has named one, rather than a placeholder id: there is no cell zero to fall
+ * back on, and arming against a number nothing chose would fail with NotFound for a reason the
+ * user could do nothing about.
+ */
+let targetNode: NodeId | null = null;
 
 /**
  * Keeps the motion readout showing what is actually feeding the core.
@@ -214,16 +220,27 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * for and did not have a caller to do: a burst advances on a tick and nothing else, so arming
    * somewhere the loop cannot see it leaves the first frame waiting for a tick that may not come.
    */
-  const armAt = async (node: number) => {
-    const armedNow = await core.captureSession.armBurst(node as never, {
-      frameCount: 5, intervalMs: 80,
-      // Every lock off, which is a concession rather than a choice. `BrowserCameraAccess::SetLocks`
-      // refuses anything else because the page does not call applyConstraints yet, and ArmBurst
-      // reports that refusal instead of firing — so asking for the locks here would mean no burst
-      // at all. The cost is real: candidates within a burst may differ in exposure, and comparing
-      // them on sharpness is what a burst is for (ADR 0021).
-      lockExposure: false, lockWhiteBalance: false, lockFocus: false,
-    });
+  const armAt = async (node: NodeId) => {
+    // Every failure ends up as `false` plus a line on screen, thrown ones included. The callers
+    // are a click handler and the end-to-end hook, neither of which awaits — so an exception
+    // escaping here would be an unhandled rejection rather than anything a user could see, and
+    // the worker dying is exactly when that would happen.
+    let armedNow;
+    try {
+      armedNow = await core.captureSession.armBurst(node, {
+        frameCount: 5, intervalMs: 80,
+        // Every lock off, a concession rather than a choice. `BrowserCameraAccess::SetLocks`
+        // refuses anything else because the page does not call applyConstraints yet, and
+        // ArmBurst reports that refusal instead of firing — so asking for the locks here would
+        // mean no burst at all. The cost is real: candidates within a burst may differ in
+        // exposure, and comparing them on sharpness is what a burst is for (ADR 0021).
+        lockExposure: false, lockWhiteBalance: false, lockFocus: false,
+      });
+    } catch (cause) {
+      guidanceOut.textContent =
+        `arming failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      return false;
+    }
     if (armedNow.ok) {
       armed = true;
       return true;
@@ -287,12 +304,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // `firing` is the live answer and this flag would only keep the loop grabbing frames
         // after the burst had finished.
         if (guidance.action !== 'Seek') armed = false;
-        targetNode = guidance.targetNode as number;
+        targetNode = guidance.targetNode;
         // Enabled from the first answer rather than when the loop starts: before guidance has
-        // named a cell there is no target to capture, and arming against the placeholder would
-        // fail with NotFound for a reason the user could do nothing about.
+        // named a cell there is no target to capture at all.
         captureButton.disabled = captureCell === null;
-        const cone = cones.get(targetNode) ?? 0;
+        const cone = cones.get(targetNode as number) ?? 0;
         const radius = reticleRadius(guidance.angularErrorDeg, cone);
         reticle.setAttribute('r', radius.toFixed(1));
         reticle.classList.toggle('locked', radius === RETICLE_LOCKED_RADIUS);
@@ -366,12 +382,15 @@ async function main() {
       sphanoramaHost: { flush: () => remote.flush() },
       // The end-to-end suite drives capture through the same path the button does, rather than
       // reaching into the core: arming outside the loop is the mistake this hook exists to avoid.
-      sphanoramaCapture: () => captureCell?.(targetNode) ?? Promise.resolve(false),
+      sphanoramaCapture: () =>
+        (targetNode === null ? undefined : captureCell?.(targetNode)) ?? Promise.resolve(false),
     });
     await reportFacade(core);
     stage.textContent = 'core ready — enable the camera to continue';
     enableButton.addEventListener('click', () => { void enable(core); });
-    captureButton.addEventListener('click', () => { void captureCell?.(targetNode); });
+    captureButton.addEventListener('click', () => {
+      if (targetNode !== null) void captureCell?.(targetNode);
+    });
   } catch (cause) {
     // Three things can fail now rather than one — the worker starts, the module loads inside it,
     // the document store opens — so the detail is what says which, and it is worth showing.
