@@ -10,6 +10,14 @@
 | Core pthread pool | Emscripten pthreads for engine parallelism (feature extraction, blending) | Sized from `navigator.hardwareConcurrency`; **may be zero** |
 | GPU queue | WebGPU compute for warping/blending when available | Optional, capability-detected |
 
+The **capture worker is the target, not the starting point**. It needs
+`MediaStreamTrackProcessor` to get a track's frames into a worker at all, which Safari does not
+have, so the camera and motion adapters begin in the main thread and push: the page grabs the
+latest frame and transfers the buffer, and posts IMU batches, both of which the core worker holds
+resident to read synchronously (ADR 0019). One new context rather than two, and it works
+everywhere. Splitting acquisition out is a Chromium-only improvement to make later, and it changes
+nothing above the adapters.
+
 Cross-origin isolation (`COOP: same-origin`, `COEP: require-corp`) is required for
 `SharedArrayBuffer` and therefore for the pthread pool. The app must run correctly without it:
 `IComputeDeviceAccess.Capabilities()` reports `threads: 0`, engines take their serial path, and

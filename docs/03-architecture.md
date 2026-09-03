@@ -201,16 +201,24 @@ flowchart LR
   UI -- "typed RPC (postMessage)" --> FA
   FA --> CORE
   CORE --> PORT
-  PORT -- "Embind / JSPI callbacks" --> AD
-  AD -- "pixels via SharedArrayBuffer, zero-copy" --> CORE
+  PORT -- "synchronous reads of resident state" --> AD
+  AD -- "pixels into the heap, by transfer" --> CORE
 ```
+
+Two edges in that diagram were drawn before the boundary existed and have since been decided
+differently. Ports are **not** Embind or JSPI callbacks: they are synchronous reads and writes of
+state the JavaScript side keeps resident, over a C ABI (ADR [0012](adr/0012-c-abi-boundary-not-embind.md),
+ADR [0014](adr/0014-synchronous-ports-over-a-resident-host.md)). And pixels reach the heap by
+**transfer** rather than through a `SharedArrayBuffer` view, because a shared view needs
+cross-origin isolation and the deployment target cannot serve the headers for it (ADR
+[0011](adr/0011-single-threaded-build-for-github-pages.md)); the shared-view path returns if the
+app is ever served isolated.
 
 Two rules keep this from becoming a performance disaster:
 
-- **Control crosses the boundary; pixels do not.** Frame bytes are written once into a
-  WASM-visible `SharedArrayBuffer` ring by the capture worker (`VideoFrame.copyTo` straight into a
-  heap view) and thereafter referred to by handle. No pixel array is ever serialised through
-  `postMessage`.
+- **Control crosses the boundary; pixels do not.** Frame bytes are written once into the WASM heap
+  — transferred in as an `ArrayBuffer`, or copied straight into a heap view where a shared one is
+  available — and thereafter referred to by handle. No pixel array is ever serialised by value.
 - **The boundary is generated, not hand-written.** One IDL produces the C++ facade, the TS client
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.

@@ -101,6 +101,12 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    spend 71 µs of a 16,667 µs frame — 0.4% — to move a 30 ms spill off the frame the user is
    looking at, where it currently costs about two dropped ones. Numbers are Chromium on a loaded
    machine; a phone will differ, and there are two orders of magnitude of headroom for it to.
+
+   Decided in ADR [0018](adr/0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md)'s
+   successor, [0019](adr/0019-the-core-runs-in-a-worker.md): the core moves into the worker
+   [04 §4.1](04-runtime-topology.md) always specified and Phase 0 shortcut, and the resident host
+   moves with it. So the browser frame store is not the next thing to build — the worker is, and
+   the store lands in it.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.
