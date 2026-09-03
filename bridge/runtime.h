@@ -2,7 +2,7 @@
 
 #include "engines/composition_engine/null_composition_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
-#include "engines/frame_quality_engine/null_frame_quality_engine.h"
+#include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
 #include "engines/pose_engine/orientation_pose_engine.h"
 #include "engines/registration_engine/null_registration_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
@@ -44,7 +44,6 @@ class Runtime {
 
   RingsCoveragePlannerEngine planner_;
   OrientationPoseEngine pose_;
-  NullFrameQualityEngine quality_;
   // Registration and composition are constructed but not yet handed to a manager: the build
   // pipeline has nothing to run them over until Phase 2.
   NullRegistrationEngine registration_;
@@ -97,6 +96,12 @@ class Runtime {
   NullCameraAccess camera_;
   NullMotionSensorAccess motion_;
 #endif
+
+  // Declared after the store because it reads pixels through it — one of the two resource
+  // accesses an engine may touch (docs/03 §3.3 rule 5). Until now this was the null engine,
+  // which gave every frame a default score and ranked by insertion order: a burst was five
+  // frames and a coin flip.
+  SharpnessFrameQualityEngine quality_{frames_};
 
   // The one contract with a real implementation on both platforms: a browser port backed by the
   // page's document host, and an in-memory store natively. Both are held to the same contract

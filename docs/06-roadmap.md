@@ -23,7 +23,8 @@ differences are decisions, each with an ADR:
 - All three managers, and engines that turned out to need real implementations sooner than
   planned: `CoveragePlannerEngine` tessellates for real, and `OrientationPoseEngine` folds the
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
-  criterion. `FrameQuality`, `Registration` and `Composition` are still null.
+  criterion. `FrameQuality` followed once a burst had real frames to judge; `Registration` and
+  `Composition` are still null.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
   (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
   advance. The measurements were taken and it left the contract — a burst is paced by the manager
@@ -152,8 +153,16 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   and hole evaluation.
 - `PoseEngine`: complementary/Madgwick fusion, gyro bias handling, stability gating.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
-- `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale), exposure agreement,
-  motion-blur proxy from angular velocity.
+- `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
+  agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the bench now
+  use, and `Rank` normalises sharpness across the candidate set before weighting it, so every
+  weight in `SelectionPolicy` changes an answer rather than only the sharpness one. The
+  motion-blur proxy is **not**: turning an angular rate into pixels of smear needs the exposure
+  time and the focal length in pixels, and the engine is handed neither. It reports zero and the
+  header says so, because a number invented from what it does have would rank frames by a
+  fiction. Both inputs exist elsewhere — the camera port could report exposure time, and Phase 2's
+  bundle adjustment produces a real focal length — so this waits on one of them rather than on
+  an idea.
 - `IFrameStoreAccess` with the tiered residency and OPFS spill; memory-budget probe.
 - Review Client v1: the sphere coverage map, per-cell candidate strip, manual selection.
 
