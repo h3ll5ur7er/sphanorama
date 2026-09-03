@@ -9,7 +9,9 @@ import { loadCore, type RuntimeCapabilities, type SphanoramaCore } from './bridg
 import type { CapturePlan, ProjectId } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
-import { createCaptureHost, type CaptureHost } from './access/capture-host';
+import {
+  createCaptureHost, flattenImuSamples, stopCameraStream, type CaptureHost,
+} from './access/capture-host';
 import { createDocumentHost, type DocumentHost } from './access/document-host';
 import { createIndexedDbStore } from './access/indexeddb-store';
 import { toImuSample } from './access/orientation';
@@ -36,8 +38,17 @@ const enableButton = el<HTMLButtonElement>('enable');
 const camera = createCameraAccess(navigator.mediaDevices);
 const motion = createMotionSensorAccess(window);
 
-/** The page half of the camera and motion ports, read synchronously from C++ (ADR 0014). */
-const captureHost = createCaptureHost();
+// The stream the page opened. It stays on this side because a MediaStream cannot cross to the
+// worker the core runs in, so the host asks and the page stops (ADR 0019).
+let cameraStream: MediaStream | null = null;
+
+/** The resident half of the camera and motion ports, read synchronously from C++ (ADR 0014). */
+const captureHost = createCaptureHost({
+  onCloseCamera: () => {
+    stopCameraStream(cameraStream);
+    cameraStream = null;
+  },
+});
 
 /**
  * Keeps the motion readout showing what is actually feeding the core.
@@ -78,9 +89,9 @@ async function enable(core: SphanoramaCore) {
     // Told to the host before the core is asked to begin: the plan is sized from the lens, and
     // the core reads the lens through a synchronous port that cannot wait for getUserMedia.
     captureHost.setCamera(opened.value);
-    // Handed over so the core can stop it: Close is a synchronous port call, and the host is the
-    // only thing on this side holding the tracks.
-    captureHost.setCameraStream(camera.stream());
+    // Held here so the core can ask for it to be stopped: Close is a synchronous port call and
+    // cannot reach a MediaStream itself.
+    cameraStream = camera.stream();
     cameraState.textContent = `${opened.value.maxWidth}×${opened.value.maxHeight}`;
     viewfinder.srcObject = camera.stream();
   } else {
@@ -183,7 +194,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // Handed to the host rather than through the facade: the core drains this buffer itself via
     // IMotionSensorAccess (ADR 0014), so the samples cross once as flat doubles instead of being
     // encoded a second time by the wire codec.
-    if (samples.length > 0) captureHost.pushMotion(samples.map(toImuSample));
+    if (samples.length > 0) captureHost.pushMotion(flattenImuSamples(samples.map(toImuSample)));
 
     if (samples.length > 0) {
       // The attitude, not whatever triple the platform happened to report: the two sources behind

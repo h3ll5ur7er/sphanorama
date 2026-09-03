@@ -1,12 +1,13 @@
-// The page half of the camera and motion ports.
+// The resident half of the camera and motion ports, in the context the core runs in.
 //
 // The core reads these synchronously, so everything here is state the page has already
-// established (ADR 0014). The one piece of real arithmetic is the field of view, which the
-// browser does not report and the coverage plan cannot be built without.
+// established (ADR 0014) and pushed across (ADR 0019). The one piece of real arithmetic is the
+// field of view, which the browser does not report and the coverage plan cannot be built without.
 import { describe, expect, it } from 'vitest';
 
 import {
   MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, createCaptureHost, deriveFieldOfView,
+  flattenImuSamples, stopCameraStream,
 } from './capture-host';
 
 describe('deriveFieldOfView', () => {
@@ -106,7 +107,7 @@ describe('the motion buffer the core drains', () => {
     // codec because the codec exists for the facade, and a second marshalling path inside a
     // resource access is exactly what the port pattern is meant to avoid.
     const host = createCaptureHost();
-    host.pushMotion([sample(7)]);
+    host.pushMotion(flattenImuSamples([sample(7)]));
     expect(host.motionDrain(4)).toEqual([
       7, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0,
     ]);
@@ -114,14 +115,14 @@ describe('the motion buffer the core drains', () => {
 
   it('drains what it hands over, so the core never integrates a sample twice', () => {
     const host = createCaptureHost();
-    host.pushMotion([sample(1), sample(2)]);
+    host.pushMotion(flattenImuSamples([sample(1), sample(2)]));
     expect(host.motionDrain(8)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
     expect(host.motionDrain(8)).toEqual([]);
   });
 
   it('respects the batch the core asked for and keeps the rest', () => {
     const host = createCaptureHost();
-    host.pushMotion([sample(1), sample(2), sample(3)]);
+    host.pushMotion(flattenImuSamples([sample(1), sample(2), sample(3)]));
     expect(host.motionDrain(2)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
     expect(host.motionDrain(8)).toHaveLength(1 * MOTION_SAMPLE_DOUBLES);
   });
@@ -130,7 +131,8 @@ describe('the motion buffer the core drains', () => {
     // A capture loop that stalls must not be able to kill the tab, and a stale orientation is
     // worthless anyway — the newest samples are the ones worth keeping.
     const host = createCaptureHost();
-    host.pushMotion(Array.from({ length: MOTION_BUFFER_LIMIT + 10 }, (_u, i) => sample(i)));
+    host.pushMotion(flattenImuSamples(
+      Array.from({ length: MOTION_BUFFER_LIMIT + 10 }, (_u, i) => sample(i))));
     const drained = host.motionDrain(MOTION_BUFFER_LIMIT + 10);
     expect(drained).toHaveLength(MOTION_BUFFER_LIMIT * MOTION_SAMPLE_DOUBLES);
     expect(drained[0]).toBe(10);   // the first ten were dropped, not the last ten
@@ -145,18 +147,24 @@ describe('closing and resetting', () => {
     const track = (kind: string) => ({ kind, stop: () => stopped.push(kind) });
     const stream = { getTracks: () => [track('video'), track('audio')] } as unknown as MediaStream;
 
-    const host = createCaptureHost();
+    stopCameraStream(stream);
+    expect(stopped).toEqual(['video', 'audio']);
+  });
+
+  it('asks whoever holds the stream to stop it, and forgets the camera either way', () => {
+    // The host cannot stop a MediaStream from the worker it runs in, so Close is a request. The
+    // capabilities go regardless, or the core could plan a capture against a camera that is gone.
+    let asked = 0;
+    const host = createCaptureHost({ onCloseCamera: () => { asked += 1; } });
     host.setCamera({ maxWidth: 640, maxHeight: 480, supportsTorch: false });
-    host.setCameraStream(stream);
     expect(host.cameraOpen()).toBe(true);
 
     host.closeCamera();
-    expect(stopped).toEqual(['video', 'audio']);
-    // And the capabilities go with it, or the core could plan against a camera that is gone.
+    expect(asked).toBe(1);
     expect(host.cameraOpen()).toBe(false);
   });
 
-  it('survives a close with no stream to close', () => {
+  it('survives a close with nobody holding a stream', () => {
     const host = createCaptureHost();
     expect(() => host.closeCamera()).not.toThrow();
   });
@@ -165,11 +173,11 @@ describe('closing and resetting', () => {
     // Samples from a finished session describe a pose nobody asked for; handing them to the next
     // one would start it looking the wrong way.
     const host = createCaptureHost();
-    host.pushMotion([{
+    host.pushMotion(flattenImuSamples([{
       timestampNs: 1, angularVelocity: { x: 0, y: 0, z: 0 }, acceleration: { x: 0, y: 0, z: 0 },
       hasMagnetometer: false, magneticField: { x: 0, y: 0, z: 0 },
       hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 },
-    }]);
+    }]));
     host.resetMotion();
     expect(host.motionDrain(8)).toEqual([]);
   });
