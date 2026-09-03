@@ -113,8 +113,12 @@ class Reader {
       failed_ = true;
       return 0;
     }
-    const size_t needed = static_cast<size_t>(count) * (minimumBytesPerElement ? minimumBytesPerElement : 1u);
-    if (needed > size_ - at_) {
+    // Divided, never multiplied. `count * minimum` overflows — and does it most easily where it
+    // is hardest to notice: size_t is 32 bits on wasm32, so a 114-byte element and a count of
+    // 37675152 multiply to 2^32 + 32, wrap to 32, and let a 40-byte payload ask for a vector of
+    // 37 million. Dividing the space that exists cannot overflow at any width.
+    const size_t minimum = minimumBytesPerElement ? minimumBytesPerElement : 1u;
+    if (static_cast<size_t>(count) > (size_ - at_) / minimum) {
       failed_ = true;
       return 0;
     }

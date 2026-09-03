@@ -78,6 +78,14 @@ export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> 
 
     capabilities(host: HostState): RuntimeCapabilities {
       const pointer = module._malloc(fieldCount * 4);
+      // Checked before the try, exactly as the facade call path does. Zero means the allocation
+      // failed, and it is also a valid heap offset — so using it writes the capability fields
+      // over the start of linear memory, and the _free(0) in the finally then swallows the
+      // original failure. This is the second of the two malloc sites in this bundle; fixing one
+      // and not the other is how a class of bug survives being fixed.
+      if (pointer === 0) {
+        throw new Error(`core could not allocate ${fieldCount * 4} bytes for its probe`);
+      }
       try {
         const status = module._sph_probe_runtime(
           host.hardwareConcurrency,

@@ -117,3 +117,20 @@ describe('loadCore', () => {
       .rejects.toThrow(/wasm fetch failed/);
   });
 });
+
+describe('an allocation the core cannot satisfy', () => {
+  it('reports a failed probe allocation instead of writing to heap offset zero', async () => {
+    // The same defect the facade call path had. Zero is a valid heap offset, so nothing traps:
+    // the capability fields land on the start of linear memory and _free(0) hides the cause.
+    const module = fakeModule();
+    module._malloc = () => 0;
+    const freed: number[] = [];
+    module._free = (pointer: number) => { freed.push(pointer); };
+
+    const core = await loadCore(async () => module);
+    expect(() => core.capabilities({ hardwareConcurrency: 4, crossOriginIsolated: false }))
+      .toThrow(/allocate/i);
+    // Nothing was freed that was never allocated.
+    expect(freed).toEqual([]);
+  });
+});

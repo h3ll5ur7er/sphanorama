@@ -2,7 +2,6 @@
 
 #include <emscripten/emscripten.h>
 
-#include <cstdlib>
 #include <vector>
 
 namespace sphanorama::bridge {
@@ -25,16 +24,29 @@ EM_JS(double, host_project_id_at, (int32_t index), {
   return Module.sphHost.projectIds()[index];
 });
 
-// Returns null when the document does not exist, which the caller reports as NotFound rather
-// than as an empty document — an empty string would let a resume start from a blank plan.
-EM_JS(char*, host_read_document, (double project, const char* key), {
-  if (!Module.sphHost) return 0;
+// Read in two steps, so nothing here allocates on the JavaScript side.
+//
+// The single-call version malloc'd a buffer and wrote the document through the pointer without
+// checking it. With memory growth enabled an exhausted heap returns 0, which is a valid heap
+// offset: the document landed on the start of linear memory, and returning that 0 reported the
+// failure as NotFound — an out-of-memory read indistinguishable from a document that was never
+// written, which is exactly the confusion that makes a resume start from a blank plan.
+//
+// Asking for the size first lets C++ own the allocation. It is two Map lookups instead of one,
+// both synchronous, with no chance for the value to change in between.
+
+// -1 when the document does not exist, so absence stays distinct from an empty document.
+EM_JS(int32_t, host_document_size, (double project, const char* key), {
+  if (!Module.sphHost) return -1;
   const value = Module.sphHost.read(project, UTF8ToString(key));
-  if (value === undefined || value === null) return 0;
-  const size = lengthBytesUTF8(value) + 1;
-  const pointer = _malloc(size);
-  stringToUTF8(value, pointer, size);
-  return pointer;
+  if (value === undefined || value === null) return -1;
+  return lengthBytesUTF8(value);
+});
+
+EM_JS(void, host_document_read, (double project, const char* key, char* out, int32_t size), {
+  const value = Module.sphHost.read(project, UTF8ToString(key));
+  if (value === undefined || value === null) return;
+  stringToUTF8(value, out, size + 1);   // stringToUTF8 wants room for its NUL
 });
 
 EM_JS(int32_t, host_write_document, (double project, const char* key, const char* value), {
@@ -46,12 +58,6 @@ EM_JS(int32_t, host_write_document, (double project, const char* key, const char
 EM_JS(int32_t, host_delete_project, (double project), {
   return Module.sphHost && Module.sphHost.remove(project) ? 1 : 0;
 });
-
-std::string TakeOwnership(char* raw) {
-  std::string out(raw);
-  std::free(raw);
-  return out;
-}
 
 }  // namespace
 
@@ -68,11 +74,17 @@ Result<std::vector<ProjectId>> BrowserProjectStoreAccess::ListProjects() {
 Result<std::string> BrowserProjectStoreAccess::ReadDocument(ProjectId project,
                                                             std::string_view key) {
   const std::string owned_key(key);
-  char* raw = host_read_document(static_cast<double>(project.value), owned_key.c_str());
-  if (raw == nullptr) {
+  const int32_t size = host_document_size(static_cast<double>(project.value), owned_key.c_str());
+  if (size < 0) {
     return Err<std::string>(StatusCode::NotFound, kComponent, "no such document");
   }
-  return Ok(TakeOwnership(raw));
+  if (size == 0) return Ok(std::string{});
+
+  // One byte of slack for the NUL stringToUTF8 always writes; the string itself keeps its size.
+  std::string out(static_cast<size_t>(size) + 1, '\0');
+  host_document_read(static_cast<double>(project.value), owned_key.c_str(), out.data(), size);
+  out.resize(static_cast<size_t>(size));
+  return Ok(std::move(out));
 }
 
 Status BrowserProjectStoreAccess::WriteDocument(ProjectId project, std::string_view key,

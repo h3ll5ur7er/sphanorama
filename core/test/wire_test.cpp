@@ -117,5 +117,49 @@ TEST(Wire, CountsAreCheckedAgainstBytesRemaining) {
   EXPECT_FALSE(r.ok());
 }
 
+
+TEST(Wire, CountIsCheckedWithoutMultiplyingSoItCannotWrap) {
+  // The bound was `count * minimumBytesPerElement > remaining`, and that product overflows.
+  // It matters most where it is hardest to see: size_t is 32 bits on wasm32, so with a 114-byte
+  // ImuSample a count of 37675152 multiplies to 2^32 + 32 and wraps to 32 — a 40-byte payload
+  // then passes the check and the vector is resized to 37 million samples.
+  //
+  // A native test cannot wrap at 114 bytes, so this passes a minimum large enough to overflow
+  // 64 bits too. Same defect, same fix, and it fails here without it.
+  Writer w;
+  w.PutCount(1000000);
+  w.PutI32(0);
+
+  const auto bytes = w.bytes();
+  Reader r(bytes.data(), bytes.size());
+  EXPECT_EQ(r.GetCount(size_t{1} << 60), 0u);
+  EXPECT_FALSE(r.ok());
+}
+
+TEST(Wire, CountStillAcceptsWhatThePayloadCanActuallyHold) {
+  // The bound has to stay exact, not merely safe: two 8-byte elements in sixteen bytes is fine.
+  Writer w;
+  w.PutCount(2);
+  w.PutF64(1.0);
+  w.PutF64(2.0);
+
+  const auto bytes = w.bytes();
+  Reader r(bytes.data(), bytes.size());
+  EXPECT_EQ(r.GetCount(8), 2u);
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(Wire, CountIsRefusedWhenOneMoreByteWouldBeNeeded) {
+  Writer w;
+  w.PutCount(3);
+  w.PutF64(1.0);
+  w.PutF64(2.0);
+
+  const auto bytes = w.bytes();
+  Reader r(bytes.data(), bytes.size());
+  EXPECT_EQ(r.GetCount(8), 0u);
+  EXPECT_FALSE(r.ok());
+}
+
 }  // namespace
-}  // namespace sphanorama::wire
+}  // namespace sphanorama
