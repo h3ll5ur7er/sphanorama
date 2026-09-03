@@ -54,6 +54,20 @@ class Writer {
   std::vector<uint8_t> bytes_;
 };
 
+// Whether a double can become a uint64_t identifier without undefined behaviour.
+//
+// Every id that reaches C++ from JavaScript is a double, because JavaScript has no other number
+// type — and it arrives through more than one door: the facade decodes ids off the wire, and the
+// project-store port reads them from whatever keys IndexedDB happens to hold, which may predate
+// this build. NaN, a negative, a fraction and 1e300 are all values either door can present, and
+// converting any of them is undefined before a manager ever sees the id.
+//
+// The upper bound is the largest double below 2^64, which is the last value the conversion is
+// defined for.
+inline bool IsRepresentableId(double raw) {
+  return raw >= 0.0 && raw <= 18446744073709549568.0 && raw == std::trunc(raw);
+}
+
 class Reader {
  public:
   Reader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
@@ -93,14 +107,12 @@ class Reader {
 
   // A count is checked against the bytes remaining before anything is reserved: a hostile or
   // corrupt length prefix would otherwise turn one bad byte into a multi-gigabyte allocation.
-  // An identifier, checked. Ids cross as doubles because JavaScript has no other number type,
-  // and a client can therefore send NaN, a negative, a fraction, or 1e300 — all values whose
-  // conversion to uint64_t is undefined behaviour, reached before any manager can reject the id.
-  // A value that is not a whole non-negative number fails the reader instead.
+  // An identifier, checked. See IsRepresentableId: a value that is not a whole non-negative
+  // number in range fails the reader rather than being cast.
   uint64_t GetId() {
     const double raw = GetF64();
     if (failed_) return 0;
-    if (!(raw >= 0.0) || raw > 18446744073709549568.0 || raw != std::trunc(raw)) {
+    if (!IsRepresentableId(raw)) {
       failed_ = true;
       return 0;
     }

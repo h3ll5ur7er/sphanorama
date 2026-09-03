@@ -1,5 +1,7 @@
 #include "utilities/clock.h"
 
+#include <limits>
+
 #include <chrono>
 
 namespace sphanorama {
@@ -26,6 +28,13 @@ void ManualClock::AdvanceNs(int64_t ns) {
   if (ns > 0) elapsed_ns_ += ns;
 }
 
-void ManualClock::AdvanceMs(int64_t ms) { AdvanceNs(ms * 1'000'000); }
+void ManualClock::AdvanceMs(int64_t ms) {
+  // Checked before multiplying. AdvanceNs guards its input, but the conversion happens on the way
+  // in, so a large millisecond value overflows on the way to being rejected — and signed overflow
+  // is undefined, not merely a wrong number the guard could then catch.
+  constexpr int64_t kLargest = std::numeric_limits<int64_t>::max() / 1'000'000;
+  if (ms <= 0 || ms > kLargest) return;
+  AdvanceNs(ms * 1'000'000);
+}
 
 }  // namespace sphanorama

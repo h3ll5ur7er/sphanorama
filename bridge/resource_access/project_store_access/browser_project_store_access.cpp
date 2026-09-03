@@ -1,5 +1,7 @@
 #include "resource_access/project_store_access/browser_project_store_access.h"
 
+#include "sphanorama/wire.h"
+
 #include <emscripten/emscripten.h>
 
 #include <vector>
@@ -66,7 +68,16 @@ Result<std::vector<ProjectId>> BrowserProjectStoreAccess::ListProjects() {
   std::vector<ProjectId> ids;
   ids.reserve(static_cast<size_t>(count < 0 ? 0 : count));
   for (int32_t i = 0; i < count; ++i) {
-    ids.push_back(ProjectId{static_cast<uint64_t>(host_project_id_at(i))});
+    // Ids come back as doubles from whatever keys IndexedDB holds — which may have been written
+    // by an older build, or edited, or corrupted. Casting one that is negative, fractional or out
+    // of range is undefined behaviour, reached while merely listing what exists.
+    const double raw = host_project_id_at(i);
+    if (!wire::IsRepresentableId(raw)) {
+      return Err<std::vector<ProjectId>>(
+          StatusCode::Internal, kComponent,
+          "stored project list contains a key that is not a valid identifier");
+    }
+    ids.push_back(ProjectId{static_cast<uint64_t>(raw)});
   }
   return Ok(std::move(ids));
 }

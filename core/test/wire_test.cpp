@@ -2,6 +2,8 @@
 // message — and the reader has to survive a payload that is truncated, hostile, or both.
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "sphanorama/wire.h"
 
 namespace sphanorama::wire {
@@ -159,6 +161,23 @@ TEST(Wire, CountIsRefusedWhenOneMoreByteWouldBeNeeded) {
   Reader r(bytes.data(), bytes.size());
   EXPECT_EQ(r.GetCount(8), 0u);
   EXPECT_FALSE(r.ok());
+}
+
+
+TEST(Wire, AnIdIsOnlyValidWhenItIsAWholeNonNegativeNumberInRange) {
+  // Every id that arrives from JavaScript is a double, whatever door it came through: the facade
+  // decodes them, and so does the project-store port when it lists what IndexedDB holds. The
+  // predicate is shared so both doors agree on what a valid id is.
+  EXPECT_TRUE(IsRepresentableId(0.0));
+  EXPECT_TRUE(IsRepresentableId(1.0));
+  EXPECT_TRUE(IsRepresentableId(9007199254740992.0));   // 2^53, still exact as a double
+
+  EXPECT_FALSE(IsRepresentableId(std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(IsRepresentableId(std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(IsRepresentableId(-std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(IsRepresentableId(-1.0));
+  EXPECT_FALSE(IsRepresentableId(0.5));
+  EXPECT_FALSE(IsRepresentableId(1e300));
 }
 
 }  // namespace

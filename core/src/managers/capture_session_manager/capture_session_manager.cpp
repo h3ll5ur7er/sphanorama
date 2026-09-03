@@ -158,6 +158,7 @@ Result<std::vector<Candidate>> CaptureSessionManager::CaptureCell(NodeId node,
   SPH_TRY(auto frames, camera_.CaptureBurst(burst));
 
   std::vector<Candidate>& cell = candidates_[node.value];
+  const size_t before = cell.size();
   std::vector<Candidate> captured;
   captured.reserve(frames.size());
 
@@ -170,9 +171,21 @@ Result<std::vector<Candidate>> CaptureSessionManager::CaptureCell(NodeId node,
 
     NodeContext context;
     context.siblings = cell;
-    if (auto scored = quality_.Score(frame, pose_state_.pose, context); scored.ok()) {
-      candidate.quality = scored.value;
+    auto scored = quality_.Score(frame, pose_state_.pose, context);
+    if (!scored.ok()) {
+      // A default QualityScore is what a genuinely terrible frame gets, so using it for "the
+      // scorer failed" makes the two indistinguishable — and the cell would then count toward
+      // coverage, reporting a sphere complete that nothing ever judged. Selection would pick a
+      // best frame from a set of placeholders.
+      //
+      // The whole burst goes back: these frames were allocated by this call, so this call owns
+      // them, and returning without releasing leaves them pinned with nothing holding the
+      // handles. A sphere of leaked bursts is the memory ceiling this design is arranged around.
+      for (const auto& taken : frames) (void)frames_.Forget(taken);
+      cell.resize(before);
+      return scored.status;
     }
+    candidate.quality = scored.value;
     cell.push_back(candidate);
     captured.push_back(candidate);
   }
@@ -199,9 +212,13 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
 
   NodeContext context;
   context.siblings = cell;
-  if (auto scored = quality_.Score(frame, pose, context); scored.ok()) {
-    candidate.quality = scored.value;
+  auto scored = quality_.Score(frame, pose, context);
+  if (!scored.ok()) {
+    // Same reasoning as CaptureCell, minus the release: this frame came from the caller, who
+    // still owns it. Forgetting someone else's handle would be the worse bug.
+    return scored.status;
   }
+  candidate.quality = scored.value;
   cell.push_back(candidate);
   return Ok(FrameVerdict::Accepted);
 }

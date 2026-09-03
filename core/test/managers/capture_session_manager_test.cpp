@@ -183,6 +183,72 @@ TEST_F(CaptureSession, OnMotionWithNoSamplesIsNotAnError) {
   EXPECT_TRUE(manager->OnMotion({}).ok());
 }
 
+// A quality engine that refuses, so the manager's handling of that refusal can be tested. The
+// null one succeeds with a default score, which is why nothing caught this.
+class RefusingFrameQualityEngine final : public IFrameQualityEngine {
+ public:
+  Result<QualityScore> Score(const FrameRef&, const PoseSample&, const NodeContext&) override {
+    return Err<QualityScore>(StatusCode::ComputeUnavailable, "test", "cannot score");
+  }
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate>,
+                                        const SelectionPolicy&) override {
+    return Err<std::vector<CandidateId>>(StatusCode::ComputeUnavailable, "test", "cannot rank");
+  }
+};
+
+TEST_F(CaptureSession, AFailedScoreDoesNotBecomeACandidateWithAZeroScore) {
+  // A zero QualityScore is what a genuinely terrible frame gets. Using it for "the scorer broke"
+  // makes the two indistinguishable — and the cell then counts toward coverage, so the sphere
+  // reports a cell complete that nothing ever judged. Selection would later pick a "best" frame
+  // from a set where every score is a placeholder.
+  RefusingFrameQualityEngine refusing;
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  auto captured = manager.CaptureCell(node, burst);
+  EXPECT_EQ(captured.status.code, StatusCode::ComputeUnavailable);
+
+  // Nothing half-added: the cell is as it was.
+  auto candidates = manager.Candidates(node);
+  ASSERT_TRUE(candidates.ok());
+  EXPECT_TRUE(candidates.value.empty());
+}
+
+TEST_F(CaptureSession, AFailedBurstReleasesTheFramesItAlreadyTook) {
+  // The frames were allocated by this call, so this call owns them. Returning without releasing
+  // leaves a burst pinned in the store with nothing holding the handles — and a full sphere of
+  // those is the memory ceiling this whole design is arranged around.
+  RefusingFrameQualityEngine refusing;
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  const int64_t before = store->Budget().value.heapUsedBytes;
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_FALSE(manager.CaptureCell(node, burst).ok());
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
+}
+
+TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccepted) {
+  // Same reasoning, except the frame belongs to the caller — so it is reported, not forgotten.
+  RefusingFrameQualityEngine refusing;
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  auto verdict = manager.OfferFrame(node, frame.value, PoseSample{});
+  EXPECT_EQ(verdict.status.code, StatusCode::ComputeUnavailable);
+  EXPECT_TRUE(manager.Candidates(node).value.empty());
+  // Not forgotten: the caller passed it in and still owns it.
+  EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
+}
+
 TEST_F(CaptureSession, CaptureCellFillsTheCellWithABurst) {
   Begin();
   BurstSpec burst;
