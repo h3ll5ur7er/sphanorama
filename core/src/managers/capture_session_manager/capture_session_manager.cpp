@@ -10,6 +10,20 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // One frame's worth at sensor rate, with room to spare. Anything older than the last few
 // frames is not worth integrating: the pose it would produce is already stale.
 constexpr size_t kDrainBatch = 64;
+
+// Two failures and one Status to say them in.
+//
+// The cause is what the caller has to act on, so its code is the one that survives; the unlock
+// failure is folded into the detail rather than replacing it. Neither is discarded, which is the
+// point: a tick that failed *and* left the camera pinned to a burst's exposure is a viewfinder
+// the user cannot fix by pointing somewhere else, and reporting only one of the two facts leaves
+// nothing holding the other.
+Status Also(Status cause, const Status& unlock) {
+  if (unlock.ok()) return cause;
+  if (!cause.detail.empty()) cause.detail += "; ";
+  cause.detail += "and the camera is still locked: " + unlock.detail;
+  return cause;
+}
 }
 
 CaptureSessionManager::CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
@@ -76,6 +90,10 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   CapturePlanSpec resolved = spec;
   if (resolved.horizontalFovDeg <= 0.0) resolved.horizontalFovDeg = opened.value.horizontalFovDeg;
   if (resolved.verticalFovDeg <= 0.0) resolved.verticalFovDeg = opened.value.verticalFovDeg;
+
+  // Kept, not read once and dropped: it is the floor on how fast a burst can honestly take
+  // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
+  max_burst_fps_ = opened.value.maxBurstFps;
 
   auto capability = sensor_.Capabilities();
   resolved.motion = capability.ok() ? capability.value : MotionCapability::None;
@@ -207,8 +225,26 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   pending_.clear();
   // Far enough in the past that the first frame is taken on the next tick rather than after one
   // interval: the burst starts when it is armed.
-  last_frame_ns_ = clock_.MonotonicNs() - static_cast<int64_t>(burst.intervalMs) * 1000000;
+  last_frame_ns_ = clock_.MonotonicNs() - BurstIntervalNs();
   return Status::Ok();
+}
+
+int64_t CaptureSessionManager::BurstIntervalNs() const {
+  int64_t interval = static_cast<int64_t>(burst_spec_.intervalMs) * 1000000;
+
+  // The camera's own rate is a second floor under the spec's, and it is the one that bites. A
+  // burst asking for 0 ms between frames on a 30 fps camera would take a frame on every tick of a
+  // 60 Hz loop — and PeekPreviewFrame borrows the *latest* frame, so half of those ticks would
+  // hand back the one already taken. The burst would fill with duplicates and selection would
+  // rank a single exposure against copies of itself, which is worse than a slower burst because
+  // it looks like a fast one.
+  //
+  // Zero means the platform will not say, in which case the tick rate is the only floor there is.
+  if (max_burst_fps_ > 0) {
+    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
+    if (byCamera > interval) interval = byCamera;
+  }
+  return interval;
 }
 
 Status CaptureSessionManager::Disarm(bool rollBack) {
@@ -227,13 +263,16 @@ Status CaptureSessionManager::Disarm(bool rollBack) {
 }
 
 Status CaptureSessionManager::Abandon(const Status& cause) {
-  if (firing_) (void)Disarm(true);
-  return cause;
+  // Disarm is a no-op when nothing is armed, so this needs no guard — and its failure is folded
+  // in rather than dropped. A pose failure that coincides with an unlock rejection used to return
+  // the pose failure alone, and the client stops ticking on a failed call: the lock would then
+  // outlive the session with nobody informed it was ever taken.
+  return Also(cause, Disarm(true));
 }
 
 Result<bool> CaptureSessionManager::AdvanceBurst() {
   const int64_t now = clock_.MonotonicNs();
-  const int64_t due = last_frame_ns_ + static_cast<int64_t>(burst_spec_.intervalMs) * 1000000;
+  const int64_t due = last_frame_ns_ + BurstIntervalNs();
   if (now < due) return Ok(false);   // still inside the interval; the burst keeps waiting
 
   auto frame = camera_.PeekPreviewFrame();
@@ -353,7 +392,13 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
   // A retake of the cell being fired at aborts that burst first: its frames were taken for the
   // set the caller is about to change, and its rollback mark points into a vector Discard is
   // about to empty.
-  if (firing_ && burst_node_.value == node.value) (void)Disarm(true);
+  if (firing_ && burst_node_.value == node.value) {
+    // Reported, and before the candidate set is touched. A retake that answered Ok while the
+    // camera stayed pinned to the abandoned burst's exposure would send the caller off to re-aim
+    // at a viewfinder that cannot respond. The burst itself is gone either way, so a caller that
+    // sees this failure and asks again gets the retake it wanted on the second attempt.
+    if (auto disarmed = Disarm(true); !disarmed.ok()) return disarmed;
+  }
 
   if (replace) {
     if (auto it = candidates_.find(node.value); it != candidates_.end()) Discard(it->second);
@@ -367,7 +412,11 @@ Status CaptureSessionManager::End() {
   // A burst still in flight never became a ranked set, so its frames are not evidence: keeping
   // them would let a half-burst count toward coverage on the next resume. It also puts the
   // camera's locks back before the camera is closed.
-  (void)Disarm(true);
+  //
+  // Held rather than returned here: the rest of this must happen whatever the unlock did, or a
+  // session that failed halfway through ending would leave the sensor running and the camera
+  // open, with `active_` still true and no way to end it.
+  const Status disarmed = Disarm(true);
 
   // Metadata is persisted; pixels stay in the frame store under their own handles, which is what
   // makes resuming a metadata read rather than a restore (docs/04 §4.3).
@@ -377,11 +426,20 @@ Status CaptureSessionManager::End() {
 
   (void)sensor_.Stop();
   (void)camera_.StopPreview();
-  (void)camera_.Close();
+  const Status closed = camera_.Close();
 
   active_ = false;
+  max_burst_fps_ = 0;
   candidates_.clear();
   plan_ = CapturePlan{};
+
+  // The session is over regardless — every field above is cleared before this returns, so there
+  // is nothing here for a caller to retry. What is left worth reporting is the camera, and only
+  // while it is still open: a close that succeeded stopped the track and took the burst's locks
+  // with it, which makes a failed unlock moot rather than hidden. A close that *failed* leaves a
+  // camera that is both open and possibly still locked, and that is worth saying even though the
+  // session ended cleanly.
+  if (!closed.ok()) return Also(closed, disarmed);
   return Status::Ok();
 }
 

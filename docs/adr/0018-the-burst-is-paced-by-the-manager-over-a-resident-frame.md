@@ -87,13 +87,27 @@ exception to it.
   tick, so at 60 Hz nothing below ~16.7 ms can be honoured. The default burst — five frames at
   80 ms — is ~400 ms and sits comfortably above that, but a spec asking for 5 ms between frames
   will silently get 16.7. Reporting that honestly is better than a call that blocks and lies.
+- **The camera's own rate is a second floor, and it is the one that bites.** `PeekPreviewFrame`
+  borrows the *latest* frame, so ticking faster than the camera produces frames does not capture
+  faster — it captures the same frame twice. On a 30 fps camera in a 60 Hz loop, a burst asking
+  for 0 ms would fill with duplicates and selection would rank one exposure against copies of
+  itself, which is worse than a slow burst because it looks like a fast one. So the manager keeps
+  `CameraCapabilities::maxBurstFps` from `Open` and takes the larger of the two periods.
+  `maxBurstFps` is 0 when the platform will not say, and then the tick rate is the only floor
+  there is.
 - **The exposure lock now spans ticks.** `SetLocks` is applied when the burst is armed and must be
   released when it completes *or is abandoned* — a session that ends mid-burst, a retake that
   re-arms, a cell that fails scoring, and every early return from a tick, since the burst is
   advanced at the end of one and a pose or planner failure returns before it. A burst that leaves
   the camera locked is a viewfinder the user cannot fix by pointing somewhere else, and the
   release is fallible, so its failure is reported rather than discarded: the cell is captured all
-  the same, and the caller is told the camera is still locked instead of finding out later.
+  the same, and the caller is told the camera is still locked instead of finding out later. On the
+  paths where the release coincides with another failure the two are combined rather than one of
+  them winning — the cause keeps the status code, and the unlock's detail rides along, because
+  a caller told only "the pose engine failed" has no reason to think the exposure is still pinned.
+  `End` is the exception, and deliberately: it closes the camera immediately afterwards, and a
+  close that succeeded took the locks with it, so a failed unlock there is moot rather than
+  hidden — it is reported only if the close also failed.
 - **A burst's frames are not in the cell until the whole burst ranks.** They are held apart and
   appended on commit, which is a semantic worth stating: `Candidates` and `Coverage` do not see a
   burst in flight. `Evaluate` counts a cell satisfied as soon as one candidate exists for it, so a

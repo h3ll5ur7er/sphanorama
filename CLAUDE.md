@@ -26,7 +26,10 @@ deploy are in and green. A phone opens the app, the core plans a real tessellati
 page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
 coverage and acceptance are all decided in the core.
 
-Three engines are still null (`FrameQuality`, `Registration`, `Composition`), and the one call that
-does not fit the resident-port pattern is `CaptureBurst`: a burst takes time and cannot be made
-resident in advance, so it refuses with `Unsupported` until that is decided with measurements. See
+Three engines are still null (`FrameQuality`, `Registration`, `Composition`). The call that did not
+fit the resident-port pattern, `ICameraAccess::CaptureBurst`, is gone: a burst takes time, so it is
+now paced by `CaptureSessionManager` across the ticks the client already makes, over the preview
+frame the page keeps resident (ADR 0018). `ArmBurst` arms one; `PeekPreviewFrame` is the whole pixel
+path. ADR 0019 decides the next move — the core into a worker, with the camera and motion adapters
+left in the page pushing across — and that one is written down but not yet landed. See
 `docs/06-roadmap.md`.
