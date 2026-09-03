@@ -66,8 +66,18 @@ Starting with the page pushing means one new context instead of two, and it work
 we ship to. 04 §4.1 is updated to say so rather than being left describing an end state as though
 it were the plan.
 
-Calls that only write — `StartPreview`, `SetLocks`, `Close` — are posted and return `Ok` without
-waiting, the same trade ADR 0014 already took for a document write and for the same reason.
+Calls that only write — `StartPreview` and `Close` — are posted and return `Ok` without waiting,
+the same trade ADR 0014 already took for a document write and for the same reason.
+
+**`SetLocks` is not one of them**, and it is worth being explicit about why, because it looks like
+one. A lock is applied with `MediaStreamTrack.applyConstraints()`, which is asynchronous and can
+reject. `ArmBurst` calls `SetLocks` and the burst's first frame arrives on the very next tick, so
+a posted lock could easily be applied *after* the frame it was supposed to govern — and a
+rejection would vanish, leaving the manager certain the burst has a fixed exposure while
+selection compares brightness rather than sharpness. Either the page applies the locks and the
+result becomes resident state the core reads like any other, or the call needs an acknowledgement
+before arming can proceed. That is unresolved, and nothing is broken by it today only because
+`BrowserCameraAccess::SetLocks` still refuses outright rather than pretending.
 
 None of this is threads in the WASM sense. A worker is not `SharedArrayBuffer` and needs no
 cross-origin isolation, so ADR 0011 stands untouched and Pages still serves the single-threaded
