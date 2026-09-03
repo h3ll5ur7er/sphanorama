@@ -12,11 +12,15 @@
 
 The **capture worker is the target, not the starting point**. It needs
 `MediaStreamTrackProcessor` to get a track's frames into a worker at all, which Safari does not
-have, so the camera and motion adapters begin in the main thread and push: the page grabs the
-latest frame and transfers the buffer, and posts IMU batches, both of which the core worker holds
-resident to read synchronously (ADR 0019). One new context rather than two, and it works
-everywhere. Splitting acquisition out is a Chromium-only improvement to make later, and it changes
-nothing above the adapters.
+have, so the camera and motion adapters begin in the main thread and push: the page posts IMU
+batches and the camera's capabilities, and will transfer the latest frame's buffer, all of which
+the core worker holds resident to read synchronously (ADR 0019). One new context rather than two,
+and it works everywhere. Splitting acquisition out is a Chromium-only improvement to make later,
+and it changes nothing above the adapters.
+
+*Will*, for the frame: the pixel half is designed and measured and not yet built —
+`BrowserCameraAccess::PeekPreviewFrame` still refuses, so a burst armed in the browser abandons on
+its first tick. Nothing arms one from the client yet.
 
 Cross-origin isolation (`COOP: same-origin`, `COEP: require-corp`) is required for
 `SharedArrayBuffer` and therefore for the pthread pool. The app must run correctly without it:
@@ -34,16 +38,28 @@ tiers:
 | GPU texture | Tiles being warped/blended right now | Evicted at stage boundaries |
 | WASM heap (pinned) | The frame under analysis; selected candidates during a build | Bounded by a byte budget derived from a probe at startup |
 | WASM heap (encoded) | Non-selected burst candidates, JPEG at capture quality | The default resting place for a burst |
-| OPFS spill | Everything that exceeds the budget; the whole session across a reload | Keyed by the store's frame identity |
+| OPFS spill | Everything that exceeds the budget, for the life of the session | Keyed by the store's frame identity |
 
 Only the first three are the store's own business. **Where a spilled frame's bytes actually go is
 behind `ISpillSink`** — a seam inside the frame-store component rather than a port beside it, so
 the tiering, the ceiling and the fault-in exist once and the destination is a constructor argument
-(ADR 0020). Natively there is no sink and the spill tier is a classification: the budget moves and
-the bytes stay, which is honest on a desktop and a lie on a phone. The browser's sink is one OPFS
-sync access handle opened at worker startup (ADR 0019), which is why the row says frame identity
-rather than content hash — one handle means the sink owns offsets inside a single file, and
-content-addressing would need refcounting to make `Drop` safe for two frames that happen to match.
+(ADR 0020). The browser's sink is one OPFS sync access handle opened at worker startup (ADR 0019),
+which is why the row says frame identity rather than content hash — one handle means the sink owns
+offsets inside a single file, and content-addressing would need refcounting to make `Drop` safe
+for two frames that happen to match.
+
+**The spill does not survive a reload**, and the row above used to say it did. The handle is
+truncated when the worker opens it, because a frame's identity is a counter that restarts with the
+store: the offsets in yesterday's file mean nothing to today's `FrameId`, so keeping the bytes
+would keep them unreachable. Resuming a session's *pixels* across a reload needs the store's
+identities to be persistent, which is a design question the project store's session record has not
+been asked yet.
+
+A store with **no sink has no spill tier at all** and refuses to demote to one. That is the native
+build's situation, and it is a ceiling refusal on a desktop rather than a dead tab on a phone. It
+used to relabel instead — the budget moved and the bytes stayed — which frees room the machine
+does not have; a store whose reason to exist is modelling memory pressure cannot be the thing that
+misreports it.
 
 The budget probe matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash,
 not an exception. The store allocates against a stated ceiling with a safety margin and spills

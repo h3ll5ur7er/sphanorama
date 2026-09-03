@@ -10,12 +10,12 @@ That line is right about the mechanism and wrong about the shape, and the differ
 because "port" in this codebase means a contract in `contracts/cpp/sphanorama/resource_access/`
 with an entry in the volatility map and an owner of its own.
 
-`MemoryFrameStoreAccess` had reached the point where the gap was visible. Its spill tier is a
-classification: `Demote` moves a number from the heap total to the spilled total and keeps the
-vector, so a frame that spills frees budget without freeing memory. Everything around that is
+`MemoryFrameStoreAccess` had reached the point where the gap was visible. Its spill tier was a
+classification: `Demote` moved a number from the heap total to the spilled total and kept the
+vector, so a frame that spilled freed budget without freeing memory. Everything around that was
 real — the ceiling, the fault-in on `Pin`, the refusal when faulting in would overrun — and every
-caller that has to cope with a frame not being resident is exercised by it. Only the destination
-is missing.
+caller that has to cope with a frame not being resident was exercised by it. Only the destination
+was missing.
 
 So the question was where the destination belongs. Three shapes were available:
 
@@ -66,6 +66,16 @@ Three behaviours are worth naming because they are the failure modes a phone act
   layer checker reads as the same component as the store and therefore a legal edge.
 - The sink is injected by the composition root, which is where the choice of implementation
   already lives (ADR 0014). Nothing above it learns that a spill destination exists.
+- **With no sink there is no spill tier, and demoting to one is refused.** The classification
+  behaviour described above was left in at first as the sinkless fallback, and that was wrong:
+  a store that moves a frame between budget totals without moving a byte has freed room the
+  machine does not have, and the next allocation takes it. Harmless on a desktop and fatal on a
+  phone — but the store cannot tell which it is on, and a component whose reason to exist is
+  modelling memory pressure is the last place to put a number that lies about it. So the rule is
+  uniform: somewhere to put the bytes, or no spilling. The native build has no sink and therefore
+  no spill tier, which is a ceiling refusal on a machine with 512 MB to spend.
+- The contract suite runs against a store *with* a sink, since half the contract is about a frame
+  that is not resident and a sinkless store can no longer get one there.
 - A refused `Drop` is reported and the entry stays, so the budget keeps accounting for bytes the
   sink still holds. That makes a sink which persistently refuses able to prevent a `Forget`, which
   is the right trade for now — silently leaking quota is the alternative — but it is a real edge

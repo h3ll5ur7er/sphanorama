@@ -30,6 +30,10 @@ Status FakeSpillSink::Read(uint64_t frame, std::span<uint8_t> bytes) {
 }
 
 Status FakeSpillSink::Drop(uint64_t frame) {
+  // Refused before the erase, deliberately: a real handle that cannot free a slot still holds the
+  // bytes, and the store's own answer to that is to keep the entry so the budget keeps accounting
+  // for them. A fake that dropped the frame anyway would let that be true only here.
+  if (fail_drops_) return Fail(StatusCode::Internal, kComponent, "the handle would not free this");
   ++drops_;
   held_.erase(frame);
   return Status::Ok();

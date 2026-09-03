@@ -1,9 +1,10 @@
 // What a spill does when there is somewhere to spill *to*.
 //
-// The contract suite next door covers the store's behaviour with no sink, where "spilled" is a
-// budget classification and the bytes never move. That is honest on a desktop and a lie on a
-// phone, which is the whole reason this seam exists — so these tests are about the bytes actually
-// leaving and coming back, and about what the store does when the place they went says no.
+// The contract suite next door runs against a store that has one, because every implementation of
+// IFrameStoreAccess has to agree about what a spilled frame does. These tests are the sink's own:
+// the bytes actually leaving and coming back, what the store does when the place they went says
+// no, and — at the bottom — what a store with no sink at all answers, which is that it will not
+// pretend to have spilled.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -41,6 +42,12 @@ class FrameStoreSpill : public ::testing::Test {
     auto budget = store.Budget();
     EXPECT_TRUE(budget.ok());
     return budget.value.heapUsedBytes;
+  }
+
+  int64_t Spilled() {
+    auto budget = store.Budget();
+    EXPECT_TRUE(budget.ok());
+    return budget.value.spilledBytes;
   }
 };
 
@@ -218,6 +225,55 @@ TEST_F(FrameStoreSpill, FaultingInStillRespectsTheCeiling) {
   auto residency = tight.ResidencyOf(spilled.value);
   ASSERT_TRUE(residency.ok());
   EXPECT_EQ(residency.value, Residency::Spilled);
+}
+
+TEST_F(FrameStoreSpill, AForgetTheSinkRefusesLeavesTheFrameAccountedFor) {
+  // The store is the only thing that knows this frame is in the file, so a Forget that erased the
+  // entry after a failed Drop would strand the bytes with nothing left able to name them — and
+  // would free budget for room the device does not have. The entry stays, the budget keeps
+  // counting it, and the caller is told.
+  const FrameRef frame = Allocate();
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  const int64_t spilledBefore = Spilled();
+
+  sink.FailDrops(true);
+  EXPECT_FALSE(store.Forget(frame).ok());
+
+  EXPECT_EQ(Spilled(), spilledBefore) << "the budget stopped accounting for bytes still in the file";
+  auto residency = store.ResidencyOf(frame);
+  ASSERT_TRUE(residency.ok()) << "the entry was erased despite the refusal";
+  EXPECT_EQ(residency.value, Residency::Spilled);
+
+  // And it is still forgettable once the sink recovers, which is what makes the refusal a
+  // deferral rather than a leak of its own.
+  sink.FailDrops(false);
+  EXPECT_TRUE(store.Forget(frame).ok());
+  EXPECT_FALSE(sink.Holds(frame.id.value));
+}
+
+TEST(FrameStoreWithoutASink, RefusesToSpillRatherThanRelabelling) {
+  // A store with nowhere to put a frame has no spill tier, and the honest answer is a refusal.
+  // Relabelling is what it used to do: the frame moved from the heap total to the spilled total
+  // and kept its vector, so the store freed budget without freeing a byte — and the next
+  // allocation took room that was never released. On a phone the thing that notices is the
+  // operating system, and there is no status code for that.
+  MemoryFrameStoreAccess store{kFrameBytes * 2};
+  auto frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+
+  const auto before = store.Budget();
+  ASSERT_TRUE(before.ok());
+  EXPECT_EQ(store.Demote(frame.value, Residency::Spilled).code, StatusCode::Unsupported);
+
+  const auto after = store.Budget();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.heapUsedBytes, before.value.heapUsedBytes)
+      << "the refusal still moved the budget, which is the bug it exists to prevent";
+  EXPECT_EQ(after.value.spilledBytes, 0);
+
+  auto residency = store.ResidencyOf(frame.value);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_NE(residency.value, Residency::Spilled);
 }
 
 }  // namespace

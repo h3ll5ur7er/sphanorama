@@ -12,14 +12,24 @@ import type { FromWorker, ToWorker } from './protocol';
 /** A worker that records what it was sent and replies only when the test says so. */
 function fakeWorker() {
   const sent: { message: ToWorker; transfer?: Transferable[] }[] = [];
-  let listener: ((event: MessageEvent<FromWorker>) => void) | null = null;
+  // Kept per type rather than in one slot. A single variable was enough while `message` was the
+  // only event listened for, and would now silently drop it: the error handlers register after it
+  // and the last one would win, so the tests that matter would pass against a page that never
+  // heard a reply.
+  const listeners = new Map<string, (event: never) => void>();
+  let terminated = false;
 
   const worker: WorkerLike = {
     postMessage(message, transfer) { sent.push({ message, transfer }); },
-    addEventListener(_type, handler) { listener = handler; },
-  };
+    addEventListener(type: string, handler: (event: never) => void) { listeners.set(type, handler); },
+    terminate() { terminated = true; },
+  } as WorkerLike;
 
-  const reply = (message: FromWorker) => listener?.({ data: message } as MessageEvent<FromWorker>);
+  const reply = (message: FromWorker) =>
+    (listeners.get('message') as ((e: MessageEvent<FromWorker>) => void) | undefined)?.(
+      { data: message } as MessageEvent<FromWorker>);
+  const raise = (type: 'error' | 'messageerror', event?: unknown) =>
+    (listeners.get(type) as ((e: unknown) => void) | undefined)?.(event);
   const seqOf = (kind: ToWorker['kind']) => {
     const found = sent.find((entry) => entry.message.kind === kind);
     return found && 'seq' in found.message ? found.message.seq : -1;
@@ -31,7 +41,7 @@ function fakeWorker() {
     reply({ kind: 'booted', seq: seqOf('boot'), methods, spill: true });
     return connecting;
   };
-  return { worker, sent, reply, seqOf, boot };
+  return { worker, sent, reply, raise, seqOf, boot, wasTerminated: () => terminated };
 }
 
 describe('connecting', () => {
@@ -133,5 +143,60 @@ describe('what the worker asks back', () => {
 
     w.reply({ kind: 'flushed', seq, persistError: 'quota exceeded' });
     await expect(flushing).resolves.toBe('quota exceeded');
+  });
+});
+
+describe('a worker that stops answering', () => {
+  it('fails the calls in flight instead of leaving them pending for ever', async () => {
+    // The failure this exists for is the quietest one: a worker script that 404s or throws at the
+    // top level never replies, and `main()` awaits the boot — so the page sat on its loading
+    // screen with nothing shown, because the code that writes the failure UI is downstream of the
+    // await that never returned.
+    const w = fakeWorker();
+    const core = await w.boot();
+    const inFlight = core.remote.flush();
+
+    w.raise('error', { message: 'Failed to fetch worker.js' });
+
+    await expect(inFlight).rejects.toThrow(/Failed to fetch worker\.js/);
+  });
+
+  it('fails a call made after the failure rather than queueing it', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    w.raise('error', { message: 'boom' });
+
+    await expect(core.remote.flush()).rejects.toThrow(/boom/);
+  });
+
+  it('gives up the thread, so a page reporting the failure is not still holding one', async () => {
+    const w = fakeWorker();
+    await w.boot();
+    w.raise('error', { message: 'boom' });
+
+    expect(w.wasTerminated()).toBe(true);
+  });
+
+  it('treats an undeserialisable message as the same kind of death', async () => {
+    // `messageerror` means a reply arrived and could not be read. It carries no sequence number,
+    // so there is no call to fail in particular — and the one that was waiting for it never hears
+    // anything otherwise.
+    const w = fakeWorker();
+    const core = await w.boot();
+    const inFlight = core.remote.flush();
+
+    w.raise('messageerror');
+
+    await expect(inFlight).rejects.toThrow(/deserialise/);
+  });
+
+  it('fails a boot the worker never answers, once it is known to be dead', async () => {
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    await Promise.resolve();
+
+    w.raise('error', { message: 'the script would not load' });
+
+    await expect(connecting).rejects.toThrow(/the script would not load/);
   });
 });

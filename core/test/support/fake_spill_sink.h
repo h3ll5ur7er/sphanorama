@@ -26,6 +26,7 @@ class FakeSpillSink final : public ISpillSink {
   int Drops() const { return drops_; }
   void FailWrites(bool fail) { fail_writes_ = fail; }
   void FailReads(bool fail) { fail_reads_ = fail; }
+  void FailDrops(bool fail) { fail_drops_ = fail; }
 
  private:
   std::map<uint64_t, std::vector<uint8_t>> held_;
@@ -33,6 +34,7 @@ class FakeSpillSink final : public ISpillSink {
   int drops_ = 0;
   bool fail_writes_ = false;
   bool fail_reads_ = false;
+  bool fail_drops_ = false;
 };
 
 }  // namespace sphanorama

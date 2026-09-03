@@ -18,11 +18,11 @@ namespace sphanorama {
 // on a phone. Two implementations would have meant two copies of the arithmetic that decides
 // whether a sphere fits, held equal by a contract suite instead of by construction.
 //
-// **With no sink the spill tier is a classification.** Demoting moves a frame out of the heap
-// budget and into the spilled one and keeps the vector: the arithmetic and the fault-in path are
-// real and every caller that must cope with a frame not being resident is exercised, but the
-// bytes never leave the process, so spilling frees budget without freeing memory. That is honest
-// for the bench and the native suite and a lie on a phone, which is what the sink is for.
+// **With no sink there is no spill tier at all**, and demoting to one is refused. It used to
+// relabel — the frame moved between the two budget totals and kept its vector — and that is a
+// store freeing budget without freeing memory, which is the one lie a component that exists to
+// model memory pressure cannot afford to tell. Whether a frame can leave the heap is decided by
+// whether there is somewhere for it to go, on every platform, and nothing else.
 //
 // Modelling the ceiling is the point. Every interesting bug in a frame store is about running out
 // of room, and a store with unlimited memory would let manager tests pass while a phone dies.
@@ -30,7 +30,7 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
  public:
   // No default ceiling. How much memory there is to spend is a property of the host, so the
   // composition root states it. The sink is optional and non-owning: a host with nowhere to put a
-  // spilled frame passes nothing and gets the classification-only tier described above.
+  // spilled frame passes nothing, and its store refuses to spill rather than pretending to.
   explicit MemoryFrameStoreAccess(int64_t heapCeilingBytes, ISpillSink* spill = nullptr);
 
   Result<FrameStoreBudget> Budget() override;
@@ -79,14 +79,6 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
   int64_t heap_used_ = 0;
   int64_t spilled_ = 0;
   uint64_t next_id_ = 1;
-};
-
-struct MemoryFrameStoreAccessFactory {
-  static std::unique_ptr<IFrameStoreAccess> Create() {
-    // Small on purpose: the suite's exhaustion cases have to be reachable in a test, and a
-    // ceiling nothing can hit is a ceiling nothing tests.
-    return std::make_unique<MemoryFrameStoreAccess>(1 << 20);
-  }
 };
 
 }  // namespace sphanorama

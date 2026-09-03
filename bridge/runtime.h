@@ -62,10 +62,11 @@ class Runtime {
 #endif
 
   // One frame store on both platforms, differing by where a spilled frame's bytes go (ADR 0020).
-  // Natively there is no sink and the spill tier is a classification: the budget moves and the
-  // bytes stay, which is honest on a desktop where the bench runs. In the browser the sink is an
-  // OPFS sync access handle the worker opened at startup, so a spill actually frees memory —
-  // which is the whole reason the core is in a worker at all (ADR 0019).
+  // Natively there is no sink, so there is no spill tier and the store refuses to demote into
+  // one: with 512 MB to spend and a desktop underneath, a ceiling refusal is the honest answer.
+  // In the browser the sink is an OPFS sync access handle the worker opened at startup, so a
+  // spill actually frees memory — which is the whole reason the core is in a worker at all
+  // (ADR 0019).
   //
   // The sink is handed over only if the worker installed a host. A browser without one — no
   // origin private file system, or a handle that would not open — gets a store with nowhere to

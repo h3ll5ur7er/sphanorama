@@ -24,6 +24,13 @@ type Unsequenced<T> = T extends { seq: number } ? Omit<T, 'seq'> : never;
 export interface WorkerLike {
   postMessage(message: ToWorker, transfer?: Transferable[]): void;
   addEventListener(type: 'message', listener: (event: MessageEvent<FromWorker>) => void): void;
+  /**
+   * The two ways a worker stops answering without saying so: `error` for a script that would not
+   * load or threw at the top level, `messageerror` for a message that arrived and could not be
+   * deserialised. Neither carries a sequence number, so neither can be paired with the call that
+   * is waiting — every pending call has to be failed at once.
+   */
+  addEventListener(type: 'error' | 'messageerror', listener: (event: unknown) => void): void;
   terminate?(): void;
 }
 
@@ -52,6 +59,36 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let seq = 0;
+  // Set once the worker has failed, and never cleared: a worker that could not load its script is
+  // not going to load it later, and a call made after that has to fail immediately rather than
+  // join a queue nothing will ever drain.
+  let dead: Error | null = null;
+
+  /**
+   * Fails every call in flight and every call after it.
+   *
+   * Without this the promises simply stay pending. `main()` awaits the boot, so a worker whose
+   * script 404s or throws at the top level left the page on its loading screen for ever — the one
+   * failure mode where the user gets no message at all, because the code that writes the failure
+   * UI is downstream of the await that never returns.
+   */
+  const die = (reason: string): void => {
+    if (dead) return;
+    dead = new Error(reason);
+    for (const waiting of pending.values()) waiting.reject(dead);
+    pending.clear();
+    // Nothing is coming from it and nothing more will be sent to it. Releasing it here means a
+    // page that reports the failure is not also holding a thread that failed to start.
+    worker.terminate?.();
+  };
+
+  worker.addEventListener('error', (event: unknown) => {
+    const message = (event as { message?: string } | null)?.message;
+    die(`the core worker failed to start: ${message ?? 'no detail'}`);
+  });
+  worker.addEventListener('messageerror', () => {
+    die('the core worker sent a message this page could not deserialise');
+  });
 
   worker.addEventListener('message', (event: MessageEvent<FromWorker>) => {
     const message = event.data;
@@ -70,6 +107,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
 
   const ask = (message: Unsequenced<ToWorker>, transfer?: Transferable[]) =>
     new Promise<FromWorker>((resolve, reject) => {
+      if (dead) {
+        reject(dead);
+        return;
+      }
       const id = ++seq;
       pending.set(id, { resolve, reject });
       worker.postMessage({ ...message, seq: id } as ToWorker, transfer);

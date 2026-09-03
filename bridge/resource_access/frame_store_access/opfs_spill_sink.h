@@ -17,8 +17,8 @@ namespace sphanorama::bridge {
 // A host that is not installed — a browser with no origin private file system, or one whose
 // handle failed to open — leaves every call failing with `Unsupported`. That is not the way a
 // frame store copes with having nowhere to spill: the composition root simply does not hand it a
-// sink in that case, and the store falls back to the classification-only tier. These failures
-// exist for the narrower case where the host was there and went away.
+// sink in that case, and a store with no sink refuses to spill at all. These failures exist for
+// the narrower case where the host was there and went away.
 class OpfsSpillSink final : public ISpillSink {
  public:
   Status Write(uint64_t frame, std::span<const uint8_t> bytes) override;

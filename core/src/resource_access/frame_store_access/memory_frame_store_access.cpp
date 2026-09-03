@@ -107,6 +107,8 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
 }
 
 Status MemoryFrameStoreAccess::FaultIn(Entry& entry, uint64_t id) {
+  // Nothing to bring back unless the frame left, and it cannot have left without a sink to leave
+  // to — Demote refuses that — so `spill_` is non-null for the rest of this.
   if (entry.residency != Residency::Spilled) return Status::Ok();
 
   // Spilling gave the budget back and something else may have taken it since. Reading without
@@ -117,8 +119,6 @@ Status MemoryFrameStoreAccess::FaultIn(Entry& entry, uint64_t id) {
     return Fail(StatusCode::FrameStoreExhausted, kComponent,
                 "faulting this frame in would exceed the heap ceiling");
   }
-  if (spill_ == nullptr) return Status::Ok();   // never left; the vector is still here
-
   // Read into a buffer of its own and moved in only once it is whole, rather than filled in
   // place. A read that failed halfway would otherwise leave the entry holding a frame-sized
   // allocation full of nothing while still classified as spilled — memory the store does not
@@ -176,9 +176,21 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   if (entry->pins > 0) {
     return Fail(StatusCode::FailedPrecondition, kComponent, "cannot demote a pinned frame");
   }
+  // No sink means no spill tier, and saying so is the only honest answer. It used to relabel:
+  // the entry moved from the heap total to the spilled total and kept its vector, so the store
+  // freed budget without freeing a byte and then let the next allocation take the room it had
+  // just pretended to release. On a phone the thing that notices is the operating system.
+  //
+  // Uniform rather than per-platform, because the store cannot know which platform it is and
+  // does not need to: a store holding a sink has somewhere to put the bytes, and a store without
+  // one does not. Natively there is no sink, so the native build has no spill tier either —
+  // which is true, and is a ceiling refusal on a desktop rather than a dead tab on a phone.
+  if (target == Residency::Spilled && spill_ == nullptr) {
+    return Fail(StatusCode::Unsupported, kComponent,
+                "this store has no spill sink, so a frame has nowhere to spill to");
+  }
 
-  if (target == Residency::Spilled && entry->residency != Residency::Spilled &&
-      spill_ != nullptr) {
+  if (target == Residency::Spilled && entry->residency != Residency::Spilled) {
     // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
     // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
     // failure would lose a captured cell to a full disk.
@@ -237,7 +249,7 @@ Result<uint64_t> MemoryFrameStoreAccess::ContentHash(const FrameRef& frame) {
   // A frame in the sink still has a content hash, and the build graph's fingerprints depend on
   // it: hashing the empty vector left behind would make every spilled frame identical to every
   // other, so an incremental rebuild would reuse one cell's work for another's.
-  if (entry->residency == Residency::Spilled && spill_ != nullptr) return Ok(entry->spilledHash);
+  if (entry->residency == Residency::Spilled) return Ok(entry->spilledHash);
   return Ok(HashBytes(entry->bytes));
 }
 
