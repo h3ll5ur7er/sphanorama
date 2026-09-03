@@ -159,3 +159,42 @@ describe('sample delivery', () => {
     if (!result.ok) expect(result.status.code).toBe('FailedPrecondition');
   });
 });
+
+describe('events the platform could not fill in', () => {
+  function listenerOf(host: ReturnType<typeof fakeWindow>) {
+    return host.addEventListener.mock.calls[0][1] as (event: Event) => void;
+  }
+
+  it('drops an event whose angles the platform could not supply', async () => {
+    // DeviceOrientationEvent's angles are nullable, and a browser that cannot produce an attitude
+    // sends nulls rather than not firing. Coercing those to zero and marking the sample
+    // hasOrientation hands PoseEngine a fabricated attitude — level, facing north — with the
+    // confidence of a real measurement.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    listenerOf(host)({ timeStamp: 1, alpha: null, beta: null, gamma: null } as unknown as Event);
+
+    const drained = await access.drain(8);
+    expect(drained.ok && drained.value).toEqual([]);
+  });
+
+  it('drops an event that is missing only one angle', async () => {
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    listenerOf(host)({ timeStamp: 1, alpha: 10, beta: null, gamma: 30 } as unknown as Event);
+    const drained = await access.drain(8);
+    expect(drained.ok && drained.value).toEqual([]);
+  });
+
+  it('keeps an event whose angles are all present, including zeros', async () => {
+    // Zero is a real angle. Only null means "not available".
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    listenerOf(host)({ timeStamp: 1, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+    const drained = await access.drain(8);
+    expect(drained.ok && drained.value).toHaveLength(1);
+  });
+});

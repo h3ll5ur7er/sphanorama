@@ -101,13 +101,22 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
 
       listener = (rawEvent: Event) => {
         const event = rawEvent as DeviceOrientationEvent;
+        const { alpha, beta, gamma } = event;
+        // The angles are nullable, and a browser that cannot produce an attitude fires the event
+        // with nulls rather than not firing at all. Coercing those to zero would hand the core a
+        // fabricated attitude — level, facing north — carrying the confidence of a measurement
+        // (ADR 0015), which is worse than no sample: a missing sample is a dropout the pose
+        // engine already handles, and a wrong one aims the reticle at the wrong cell.
+        //
+        // Zero is a real angle; only null means unavailable, so this tests for null and not for
+        // falsiness.
+        if (alpha === null || beta === null || gamma === null ||
+            alpha === undefined || beta === undefined || gamma === undefined) {
+          return;
+        }
         buffered.push({
           timestampNs: Math.round((event.timeStamp ?? 0) * 1e6),
-          orientation: {
-            alpha: event.alpha ?? 0,
-            beta: event.beta ?? 0,
-            gamma: event.gamma ?? 0,
-          },
+          orientation: { alpha, beta, gamma },
         });
         if (buffered.length > MAX_BUFFERED_SAMPLES) {
           buffered = buffered.slice(-MAX_BUFFERED_SAMPLES);

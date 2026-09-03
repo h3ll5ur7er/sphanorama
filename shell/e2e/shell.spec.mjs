@@ -14,14 +14,19 @@ const dist = resolve(repoRoot, 'dist');
 
 test.skip(!existsSync(dist), 'run: npm run build');
 
+// The same base the bundle was built with, so the suite exercises the mount the deploy will
+// actually use: Pages serves a project site from /<repo>/, and a bundle built for that prefix
+//404s every asset when served at /. Verifying a deploy against the wrong mount verifies nothing.
+const basePath = process.env.SPHANORAMA_BASE ?? '/';
+
 async function serve() {
-  return startServer({ roots: [dist] });
+  return startServer({ roots: [dist], basePath });
 }
 
 test('loads the core and reports its capabilities', async ({ page }) => {
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     // The default deployment has no threads (ADR 0011). Showing it makes a slow build
     // diagnosable from a screenshot.
@@ -35,7 +40,7 @@ test('loads the core and reports its capabilities', async ({ page }) => {
 test('enabling starts the camera and the viewfinder gets a stream', async ({ page }) => {
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
 
@@ -62,7 +67,7 @@ test('a declined camera explains itself instead of failing silently', async ({ b
   });
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText(/permission/i, { timeout: 15000 });
@@ -79,7 +84,7 @@ test('calls a manager through the generated facade', async ({ page }) => {
   // halves and the real WASM build meet.
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     // ProjectManager.list needs no resource-access port, so what it proves is the marshalling,
     // not a pipeline that is not built.
@@ -95,7 +100,7 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
   // trap the page would go blank with nothing to explain it.
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     const outcome = await page.evaluate(async () => {
       const core = window.sphanoramaCore;
@@ -133,7 +138,7 @@ test('enabling plans a sphere sized from the camera and guides toward a cell', a
   // documented assumption in capture-host.ts, not a measurement.
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
 
@@ -163,7 +168,7 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
   // cell *changes* rather than that guidance merely exists.
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
@@ -198,7 +203,7 @@ test('a phone with no motion sensors still captures', async ({ browser }) => {
   });
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
 
@@ -223,7 +228,7 @@ test('a project written through the core survives a reload', async ({ page }) =>
   // Everything below the facade is exercised here — dispatch, codec, port, host, IndexedDB.
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
 
     const created = await page.evaluate(async () => {
@@ -253,7 +258,7 @@ test('a project written through the core survives a reload', async ({ page }) =>
 test('deleting a project removes it for good', async ({ page }) => {
   const server = await serve();
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
 
     const remaining = await page.evaluate(async () => {
@@ -288,7 +293,7 @@ test('the shell really works offline, not just registers a worker', async ({ bro
   const server = await serve();
   let closed = false;
   try {
-    await page.goto(server.origin);
+    await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
 
     // Registration is deliberately not awaited by the app — offline support must never delay
@@ -325,8 +330,8 @@ test('a redeploy does not evict a cache that is still current', async ({ page })
   // a user saw was served to them forever.
   const server = await serve();
   try {
-    await page.goto(server.origin);
-    const worker = await page.request.get(`${server.origin}/sw.js`);
+    await page.goto(server.appUrl);
+    const worker = await page.request.get(new URL('sw.js', server.appUrl).href);
     const source = await worker.text();
     expect(source).toMatch(/const CACHE = 'sphanorama-shell-[0-9a-f]{16}'/);
     expect(source).not.toContain('__BUILD_ID__');

@@ -50,8 +50,12 @@ jobs:
         run: npm run build
 
       # The same end-to-end suite CI runs, against the bundle about to be published — so a broken
-      # deploy fails here rather than on someone's phone.
+      # deploy fails here rather than on someone's phone. SPHANORAMA_BASE is passed again on
+      # purpose: it is what mounts the test server at the same prefix Pages will, and without it
+      # every asset URL in the bundle 404s and the verification proves nothing.
       - name: verify the bundle
+        env:
+          SPHANORAMA_BASE: /${{ github.event.repository.name }}/
         run: npx playwright install --with-deps chromium && npx playwright test shell/e2e
 
       - uses: actions/configure-pages@v5

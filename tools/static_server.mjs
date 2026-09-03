@@ -19,15 +19,31 @@ const CONTENT_TYPES = {
 };
 
 /**
- * @param {{roots: string[], crossOriginIsolated?: boolean, port?: number}} options
+ * @param {{roots: string[], crossOriginIsolated?: boolean, port?: number, basePath?: string}} options
  * Roots are searched in order, so a test fixture can sit alongside a build directory without
  * either being copied into the other.
+ *
+ * `basePath` mounts everything under a prefix, because that is what GitHub Pages does to a
+ * project site: the bundle is built with a `/<repo>/` base and its asset URLs carry that prefix.
+ * Serving it at `/` instead means every asset 404s, so a deploy verified that way is not verified.
  */
-export async function startServer({ roots, crossOriginIsolated = false, port = 0 }) {
+export async function startServer({ roots, crossOriginIsolated = false, port = 0,
+                                    basePath = '/' }) {
   const resolved = roots.map((root) => resolve(root));
+  const mount = `/${basePath.replace(/^\/+|\/+$/g, '')}`.replace(/\/$/, '');
 
   const server = createServer(async (request, response) => {
-    const urlPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    let urlPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    if (mount !== '' && mount !== '/') {
+      // Outside the mount is a 404 the same way it would be on Pages, so a bundle built for the
+      // wrong base fails here rather than silently working in the test and not in production.
+      if (urlPath !== mount && !urlPath.startsWith(`${mount}/`)) {
+        response.writeHead(404, { 'Content-Type': 'text/plain' });
+        response.end(`not found: ${urlPath} (this site is mounted at ${mount}/)`);
+        return;
+      }
+      urlPath = urlPath.slice(mount.length) || '/';
+    }
     // normalize() collapses ".." before it is joined to a root, so a request cannot climb out.
     let relative = normalize(urlPath).replace(/^(\.\.[/\\])+/, '').replace(/^\//, '');
     // Directory requests get index.html, the way any static host serves a single-page app.
@@ -59,8 +75,11 @@ export async function startServer({ roots, crossOriginIsolated = false, port = 0
 
   await new Promise((done) => server.listen(port, '127.0.0.1', done));
   const actualPort = server.address().port;
+  const origin = `http://127.0.0.1:${actualPort}`;
   return {
-    origin: `http://127.0.0.1:${actualPort}`,
+    origin,
+    /** Where the app actually lives, which is the origin only when nothing is mounted. */
+    appUrl: `${origin}${mount}/`,
     async close() {
       await new Promise((done) => server.close(done));
     },
