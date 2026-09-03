@@ -231,7 +231,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
         });
       } else {
-        // Nothing is known to be in flight any more, and a stuck true would tick forever.
+        // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
+        // before it returns — so a failure means the burst really is gone and the camera's locks
+        // are back. It was not always: clearing this while the manager left the burst armed is
+        // what turned a stranded lock into a permanently stranded one.
         firing = false;
         guidanceOut.textContent = `guidance failed: ${guided.status.code}`;
       }
