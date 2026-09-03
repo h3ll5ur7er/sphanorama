@@ -508,6 +508,16 @@ export interface CameraAccess {
   /**
    * The latest frame, in the frame store; only a handle comes back. This is the whole pixel path:
    * pose correction, guidance and every frame of every burst arrive through here.
+   * **Each call allocates a frame and hands it over.** Not a borrow: the caller owns what comes
+   * back and is the one that must Forget it. CaptureSessionManager keeps peeked frames as a
+   * burst's candidates and forgets them when the burst rolls back, so a port that returned the
+   * same handle twice — or one it later reclaimed — would have the manager scoring a frame whose
+   * bytes had been overwritten, then forgetting a frame twice. Repeated peeks therefore return
+   * distinct frames, which the contract suite asserts of every implementation.
+   * It follows that an implementation reaches IFrameStoreAccess, since a FrameRef is a handle
+   * into it and there is nowhere else for one to come from. That is a port depending on a port,
+   * which the layer rules otherwise forbid; ADR 0021 records why the frame store is the
+   * exception rather than each camera being one.
    */
   peekPreviewFrame(): Promise<Result<FrameRef>>;
   setLocks(exposure: boolean, whiteBalance: boolean, focus: boolean): Promise<Result<void>>;

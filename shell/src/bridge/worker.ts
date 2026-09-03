@@ -114,6 +114,14 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
         case 'imu':
           captureHost.pushMotion(message.doubles);
           return;
+
+        case 'frame':
+          // Arrived by transfer, so these bytes are this side's now and nothing copies them
+          // again until C++ asks (ADR 0021).
+          captureHost.setPreviewFrame({
+            width: message.width, height: message.height, bytes: message.bytes,
+          });
+          return;
       }
     } catch (cause) {
       // Only requests have somewhere to report to. A push that threw would be a bug here rather

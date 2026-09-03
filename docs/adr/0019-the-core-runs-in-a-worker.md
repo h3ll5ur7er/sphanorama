@@ -55,13 +55,12 @@ Where each port lands follows from what the platform allows, not from taste:
   `<video>` element are page things, and `deviceorientation` is a window event. The page posts IMU
   batches and the camera's capabilities; `Drain` and `Open` read them.
 
-  **Pixels are the part that is decided and not yet built.** The shape is the same one: the page
-  grabs the latest frame, transfers the buffer, the worker holds it and `PeekPreviewFrame` reads
-  it — and the transfer measurement below is that path timed. What exists today is the protocol
-  without a message for it and `BrowserCameraAccess::PeekPreviewFrame` still refusing with
-  `Unsupported`, so an armed burst in the browser abandons on its first tick. Nothing arms one
-  from the client yet, which is why this is an unfinished path rather than a broken feature —
-  but it is the last thing between here and a burst that captures.
+  **Pixels take the same shape**: the page grabs the latest frame, transfers the buffer, the
+  worker holds it and `PeekPreviewFrame` reads it — and the transfer measurement below is that
+  path timed. It was unbuilt when this ADR was written, and describing it here in the present
+  tense while `BrowserCameraAccess::PeekPreviewFrame` still refused is a mistake worth leaving
+  visible rather than editing away. [ADR 0021](0021-the-pixel-path-crosses-by-transfer-and-lands-in-the-frame-store.md)
+  built it.
 - **Spill is a new port over an OPFS sync access handle**, opened during worker startup and held
   for the session.
 

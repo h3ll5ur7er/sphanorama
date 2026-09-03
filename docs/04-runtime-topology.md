@@ -13,14 +13,16 @@
 The **capture worker is the target, not the starting point**. It needs
 `MediaStreamTrackProcessor` to get a track's frames into a worker at all, which Safari does not
 have, so the camera and motion adapters begin in the main thread and push: the page posts IMU
-batches and the camera's capabilities, and will transfer the latest frame's buffer, all of which
-the core worker holds resident to read synchronously (ADR 0019). One new context rather than two,
-and it works everywhere. Splitting acquisition out is a Chromium-only improvement to make later,
-and it changes nothing above the adapters.
+batches and the camera's capabilities, and transfers the latest frame's buffer, all of which the
+core worker holds resident to read synchronously (ADR 0019, ADR 0021). One new context rather than
+two, and it works everywhere. Splitting acquisition out is a Chromium-only improvement to make
+later, and it changes nothing above the adapters.
 
-*Will*, for the frame: the pixel half is designed and measured and not yet built —
-`BrowserCameraAccess::PeekPreviewFrame` still refuses, so a burst armed in the browser abandons on
-its first tick. Nothing arms one from the client yet.
+The frame is drawn from the `<video>` into a canvas and read back as RGBA8, capped at 1280 on its
+long edge — a memory budget rather than a quality setting, since nothing in this path compresses
+anything and a five-frame burst at full phone resolution would be 240 MB. The page grabs one only
+while a burst can use it, which makes the ordering load-bearing: the frame must be resident before
+the tick that consumes it, because the core reads it synchronously and has nothing to wait with.
 
 Cross-origin isolation (`COOP: same-origin`, `COEP: require-corp`) is required for
 `SharedArrayBuffer` and therefore for the pthread pool. The app must run correctly without it:

@@ -11,6 +11,7 @@
  */
 import { coreFrom, type CoreRuntime, type HostState, type RuntimeCapabilities, type SphanoramaCore }
   from './core';
+import type { GrabbedFrame } from '../access/preview-frame';
 import type { CameraOpening, FromWorker, ToWorker } from './protocol';
 
 /**
@@ -39,6 +40,14 @@ export interface RemoteCore extends CoreRuntime {
   setCamera(opened: CameraOpening | null): void;
   setMotion(capability: string): void;
   pushMotion(doubles: Float64Array): void;
+  /**
+   * Hands the latest grabbed frame to the worker, by transfer (ADR 0021).
+   *
+   * The buffer is detached here afterwards, which is why the grabber allocates a fresh one each
+   * time. Nothing waits: the core reads it from resident state on its next peek, the same trade
+   * every push here takes (ADR 0014).
+   */
+  pushFrame(frame: GrabbedFrame): void;
   flush(): Promise<string | null>;
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
@@ -166,6 +175,8 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     // Transferred, so a batch costs the same whatever its length. The buffer is not read again
     // on this side, which is what makes handing over ownership safe rather than clever.
     pushMotion: (doubles) => worker.postMessage({ kind: 'imu', doubles }, [doubles.buffer]),
+    pushFrame: ({ width, height, bytes }) =>
+      worker.postMessage({ kind: 'frame', width, height, bytes }, [bytes.buffer]),
     async flush(): Promise<string | null> {
       const answer = await ask({ kind: 'flush' });
       return answer.kind === 'flushed' ? answer.persistError : null;

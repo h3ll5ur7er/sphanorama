@@ -196,11 +196,24 @@ class LayerRuleTest(unittest.TestCase):
                         '#include "sphanorama/engines/pose_engine.h"\n')
         self.assertClean()
 
-    # -- resource access is a leaf ------------------------------------------------------------
+    # -- resource access is a leaf, with one exception -----------------------------------------
     def test_resource_access_reaching_sideways_is_a_violation(self):
         self.repo.write("core/src/resource_access/frame_store_access.cpp",
                         '#include "sphanorama/resource_access/project_store_access.h"\n')
         self.assertViolation(substring="project_store_access")
+
+    def test_a_port_that_produces_pixels_may_use_the_frame_store(self):
+        # ICameraAccess::PeekPreviewFrame returns a FrameRef, which is a handle into the store —
+        # so every implementation of it has to reach the store. Not a browser quirk: the fake
+        # does the same. See ADR 0021.
+        self.repo.write("core/src/resource_access/camera_access.cpp",
+                        '#include "sphanorama/resource_access/frame_store_access.h"\n')
+        self.assertClean()
+
+    def test_the_frame_store_exception_does_not_open_the_layer_generally(self):
+        self.repo.write("core/src/resource_access/camera_access.cpp",
+                        '#include "sphanorama/resource_access/motion_sensor_access.h"\n')
+        self.assertViolation(substring="motion_sensor_access")
 
     def test_utilities_may_not_reach_business_logic(self):
         self.repo.write("core/src/utilities/logger.cpp",

@@ -68,6 +68,15 @@ ALLOWED = {
 # signature would invert the dependency for no gain.
 ENGINE_RESOURCE_EXCEPTIONS = {"compute_device_access", "frame_store_access"}
 
+# The same argument one layer down (ADR 0021). A port that produces pixels has to put them
+# somewhere, and `ICameraAccess::PeekPreviewFrame` returns a `FrameRef` — a handle into the frame
+# store — so reaching it is not an implementation's choice but the contract's requirement, for
+# every implementation including the fake. Where bytes live is V11's, universally.
+#
+# Narrow on purpose: the frame store is the only permitted target, so a port still may not reach
+# any other port. It is the pixel bar in the same sense that utilities is the utility bar.
+RESOURCE_ACCESS_EXCEPTIONS = {"frame_store_access"}
+
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 
 
@@ -194,6 +203,8 @@ def judge(source: Unit, target: Unit, rel: Path, line: int, include: str) -> Vio
             return None
         if source.layer == "utilities":
             return None   # the utilities bar is a bar, not a sequence; internal reuse is fine
+        if source.layer == "resource_access" and target.component in RESOURCE_ACCESS_EXCEPTIONS:
+            return None
         return Violation(rel.as_posix(), line, include, source, target,
                          f"{source.layer} '{source.component}' may not depend on "
                          f"'{target.component}' in the same layer")
