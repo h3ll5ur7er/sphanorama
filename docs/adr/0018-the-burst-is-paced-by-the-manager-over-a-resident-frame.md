@@ -73,8 +73,16 @@ exception to it.
 - No component learns that a burst takes time. Pacing across ticks is sequencing, and sequencing
   is what a manager is for — the alternative was making every manager a state machine over
   asynchrony, which is the outcome ADR 0014 exists to prevent.
-- The client's job does not grow. It already calls `onMotion` every animation frame; the only
-  change is that the answer coming back can now say `Firing`.
+- The client's job does not grow, but it does gain an obligation. It already calls `onMotion` on
+  the animation frame — except that it skips the call when no sample arrived, because an empty
+  batch cannot move the pose. A burst advances on that tick and on nothing else, so while one is
+  firing the skip is no longer an optimisation: it stalls the burst, holding the exposure lock,
+  on exactly the devices where samples are intermittent or absent. The pump therefore ticks while
+  the last guidance said `Firing`. **The hole that leaves is the first tick after arming**, which
+  no guidance has reported yet — whatever calls `ArmBurst` has to make sure a tick follows it.
+  That is a sharp edge, and the way to blunt it is to route arming through the same loop rather
+  than trusting each caller; nothing arms a burst from the client yet, so it is recorded here
+  rather than solved on speculation.
 - **`BurstSpec::intervalMs` becomes a floor, not a cadence.** Frames are taken at most one per
   tick, so at 60 Hz nothing below ~16.7 ms can be honoured. The default burst — five frames at
   80 ms — is ~400 ms and sits comfortably above that, but a spec asking for 5 ms between frames

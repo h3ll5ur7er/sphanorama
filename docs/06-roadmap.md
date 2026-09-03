@@ -65,8 +65,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    resident, and `CaptureBurst` leaves the contract (ADR 0018). Asyncify turned out to be cheap —
    +3.2 kB gzipped and +30 ns on a facade call — and was rejected anyway, because the generated
    facade makes its instrumentation all-or-nothing and the one-suspend-at-a-time rule it imposes
-   is enforced by crashing the renderer. What is left is the reshape itself: `CaptureCell` arms a
-   burst instead of returning one.
+   is enforced by crashing the renderer. The reshape landed with it: `CaptureBurst` is out of the
+   contract, `CaptureCell` became `ArmBurst`, and `OnMotion` takes one frame per tick.
 2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
    and, since a paced burst takes one frame per tick, an allocation per tick rather than a
    burst-sized batch. `MemoryFrameStoreAccess` is the first real implementation and the one the

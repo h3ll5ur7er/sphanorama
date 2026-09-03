@@ -179,6 +179,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   let nodesSatisfied = 0;
   const nodesTotal = plan?.nodes.length ?? 0;
   let guidedOnce = false;
+  // Whether the last answer said a burst was still filling. A burst advances on this tick and
+  // nothing else (ADR 0018), so it has to keep running even when the sensor has gone quiet.
+  let firing = false;
   // Accumulated rather than taken fresh each frame, so rolling past the ±180 seam turns the
   // horizon by the two degrees the hand moved and not by the 358 the number jumped.
   let horizonDeg = 0;
@@ -208,12 +211,19 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // cannot change the guidance — and a facade round trip per frame for an answer that cannot
     // have moved is a WASM call at 60Hz for nothing, which on a phone is heat and battery, and
     // under a loaded CI machine is enough to starve the rest of the suite.
-    if (plan !== null && (samples.length > 0 || !guidedOnce)) {
+    //
+    // A burst in flight is the exception, and it is not an optimisation question. The burst
+    // advances one frame per tick and on nothing else (ADR 0018), so skipping ticks while it is
+    // firing does not merely freeze the reticle: the burst stalls, and it stalls holding the
+    // camera's exposure lock. A sensor that has gone quiet — denied, absent, or just between
+    // events — is exactly when that happens.
+    if (plan !== null && (samples.length > 0 || !guidedOnce || firing)) {
       guidedOnce = true;
       // Nothing passed: the manager drains the port, which is where the page just put them.
       const guided = await core.captureSession.onMotion([]);
       if (guided.ok) {
         const guidance = guided.value;
+        firing = guidance.action === 'Firing';
         const cone = cones.get(guidance.targetNode as number) ?? 0;
         const radius = reticleRadius(guidance.angularErrorDeg, cone);
         reticle.setAttribute('r', radius.toFixed(1));
@@ -228,6 +238,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
         });
       } else {
+        // Nothing is known to be in flight any more, and a stuck true would tick forever.
+        firing = false;
         guidanceOut.textContent = `guidance failed: ${guided.status.code}`;
       }
     }
