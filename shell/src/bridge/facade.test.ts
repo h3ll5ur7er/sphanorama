@@ -131,6 +131,34 @@ describe('createFacadeCall', () => {
   });
 });
 
+describe('an allocation the core cannot satisfy', () => {
+  it('reports a failed malloc instead of writing to heap offset zero', async () => {
+    // With memory growth on, _malloc returns 0 when it cannot satisfy a request — which on a
+    // phone mid-capture, with a sphere of frames already pinned, is a real outcome rather than a
+    // theoretical one. Treating that 0 as an address writes the arguments over the start of the
+    // heap and then calls into C++ with a null pointer: memory corruption surfacing as whatever
+    // fails next, instead of as the allocation failure it is.
+    const module = fakeModule();
+    module._malloc = () => 0;
+
+    const call = createFacadeCall(module);
+    await expect(call('ProjectManager.list', new Uint8Array([1, 2, 3])))
+      .rejects.toThrow(/allocate/i);
+    // Nothing crossed the boundary, and nothing was freed that was never allocated.
+    expect(module.calls).toHaveLength(0);
+    expect(module.freed).toHaveLength(0);
+  });
+
+  it('still frees the buffer when the call itself fails', async () => {
+    const module = fakeModule();
+    module._sph_facade_call = () => { throw new Error('trapped'); };
+
+    const call = createFacadeCall(module);
+    await expect(call('ProjectManager.list', new Uint8Array())).rejects.toThrow('trapped');
+    expect(module.freed).toHaveLength(1);
+  });
+});
+
 describe('decodeStatus', () => {
   it('reads a success status', () => {
     const status = decodeStatus(new Reader(okStatus()));

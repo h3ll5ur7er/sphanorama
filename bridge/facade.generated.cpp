@@ -105,7 +105,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 2: {  // CaptureSessionManager.onMotion
       std::vector<ImuSample> samples;
-      { const size_t count = in.GetCount(1);
+      { const size_t count = in.GetCount(114);
     samples.clear();
     samples.resize(count);
     for (auto& item : samples) { (void)codec::Decode(in, item); } }
@@ -267,7 +267,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       BuildId build{};
       build.value = in.GetId();
       std::vector<NodeId> dirty;
-      { const size_t count = in.GetCount(1);
+      { const size_t count = in.GetCount(8);
     dirty.clear();
     dirty.resize(count);
     for (auto& item : dirty) { item.value = in.GetId(); } }

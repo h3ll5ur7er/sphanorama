@@ -175,6 +175,22 @@ TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
 }
 
+TEST(Facade, AListCountIsRefusedWhenThePayloadCouldNotPossiblyHoldThatMany) {
+  // The count is what the vector is sized from, so bounding it at one byte per element let a
+  // small message ask for a very large allocation: 100 kB of filler claiming 100000 ImuSamples
+  // is over 11 MB of vector on a phone, from a payload that cannot contain a single valid one.
+  constexpr int32_t kClaimed = 100000;
+  wire::Writer args;
+  args.PutCount(kClaimed);
+  std::vector<uint8_t> payload = args.bytes();
+  payload.resize(payload.size() + kClaimed, 0);   // one byte per element promised
+
+  Response response = Call("CaptureSessionManager.onMotion", payload);
+  ASSERT_FALSE(response.bytes.empty());
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
 TEST(Facade, ATruncatedListArgumentIsReportedAsAStatus) {
   wire::Writer args;
   args.PutCount(4);          // four samples promised, none supplied

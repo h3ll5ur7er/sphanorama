@@ -83,6 +83,51 @@ class CodecTest(unittest.TestCase):
         self.assertIn('static_cast<int32_t>(value.state)', cpp)
 
 
+class MinimumWireSizeTest(unittest.TestCase):
+    """What bounds a decoded element count against the bytes actually present."""
+
+    def setUp(self):
+        self.module = parse(
+            "using NodeId = Id<NodeTag>;\n"
+            "enum class NodeState : uint8_t { Pending, Satisfied };\n"
+            "struct Vec3 { double x = 0; double y = 0; double z = 0; };\n"
+            "struct Sample {\n"
+            "  int64_t timestampNs = 0;\n"
+            "  Vec3 rate;\n"
+            "  bool flagged = false;\n"
+            "  NodeId node;\n"
+            "  NodeState state = NodeState::Pending;\n"
+            "  std::string label;\n"
+            "};\n")
+        self.structs, enums, self.ids = contract_gen._index(self.module)
+        self.enums = set(enums)
+
+    def size(self, kind):
+        return contract_gen.min_wire_size(kind, self.structs, self.enums, self.ids)
+
+    def test_scalars_are_their_encoded_width(self):
+        self.assertEqual(self.size("bool"), 1)
+        self.assertEqual(self.size("i32"), 4)
+        self.assertEqual(self.size("f64"), 8)
+
+    def test_variable_length_kinds_are_their_length_prefix(self):
+        # An empty string, byte run or list is four bytes of count and nothing else.
+        self.assertEqual(self.size("string"), 4)
+        self.assertEqual(self.size("bytes"), 4)
+        self.assertEqual(self.size("list:Vec3"), 4)
+
+    def test_a_struct_is_the_sum_of_its_fields(self):
+        self.assertEqual(self.size("named:Vec3"), 24)
+        # 8 timestamp + 24 rate + 1 flag + 8 id + 4 enum + 4 empty string
+        self.assertEqual(self.size("named:Sample"), 49)
+
+    def test_a_self_referential_struct_is_refused_rather_than_recursed(self):
+        module = parse("struct Loop { Loop inner; };\n")
+        structs, enums, ids = contract_gen._index(module)
+        with self.assertRaises(contract_gen.ContractSyntaxError):
+            contract_gen.min_wire_size("named:Loop", structs, set(enums), ids)
+
+
 class MethodTableTest(unittest.TestCase):
     def setUp(self):
         # Both markers, because they mean different things: @boundary mirrors the interface into
@@ -195,6 +240,22 @@ class MethodTableTest(unittest.TestCase):
         cpp = contract_gen.emit_cpp_facade(self.module)
         self.assertNotIn("static_cast<uint64_t>(in.GetF64())", cpp)
         self.assertIn("GetId(", cpp)
+
+    def test_a_list_count_is_bounded_by_its_element_size_not_by_one_byte(self):
+        # GetCount(1) lets a payload claim one element per byte present. Sized from that claim,
+        # a small malformed message becomes a very large allocation: a hundred kilobytes of
+        # nothing can ask for a hundred thousand structs. The bound has to be what an element
+        # actually costs on the wire.
+        module = parse(
+            "struct Vec3 { double x = 0; double y = 0; double z = 0; };\n"
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Status Feed(std::span<const Vec3> points) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_facade(module)
+        self.assertIn("in.GetCount(24)", cpp)
+        self.assertNotIn("in.GetCount(1)", cpp)
 
     def test_the_proxy_calls_methods_by_name_not_by_id(self):
         ts = contract_gen.emit_ts_facade(self.module)

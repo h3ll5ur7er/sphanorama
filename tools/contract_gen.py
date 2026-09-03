@@ -491,6 +491,43 @@ def _index(module: Module) -> tuple[dict[str, Struct], dict[str, Enum], set[str]
     return structs, enums, ids
 
 
+# Smallest number of bytes a value of each wire kind can occupy. Strings, byte runs and lists
+# carry a 4-byte length prefix, so their minimum is that prefix with nothing after it.
+_MIN_WIRE_BYTES = {"bool": 1, "i32": 4, "f64": 8, "u64": 8, "string": 4, "bytes": 4}
+
+
+def min_wire_size(kind: str, structs: dict[str, Struct], enums: set[str], ids: set[str],
+                  seen: tuple[str, ...] = ()) -> int:
+    """The fewest bytes a single encoded value of this kind can occupy.
+
+    This is what bounds a decoded element count against the bytes actually present. Without it a
+    count is only checked against one byte per element, and a payload can claim far more elements
+    than it could possibly contain — the vector is sized from the claim, so a small malformed
+    message turns into a very large allocation on a phone.
+    """
+    if kind in _MIN_WIRE_BYTES:
+        return _MIN_WIRE_BYTES[kind]
+    if kind.startswith("list:"):
+        return 4                       # the count prefix; an empty list is the minimum
+    name = kind[6:] if kind.startswith("named:") else kind
+    if name in enums:
+        return 4                       # encoded as its index
+    if name in ids:
+        return 8                       # encoded as a double
+    if name in structs:
+        # A struct that contained itself could not be encoded at all, but the generator should say
+        # so rather than recursing until the stack runs out.
+        if name in seen:
+            raise ContractSyntaxError(f"{name} contains itself; that cannot be encoded")
+        # Field types are already mapped into the mirror's vocabulary by the parser, so this is
+        # wire_kind_from_ts and not wire_kind — the C++ mapper reads "number" as an unknown name
+        # and quietly returns the one-byte fallback, which is the bound this exists to replace.
+        return sum(min_wire_size(wire_kind_from_ts(field.type), structs, enums, ids, seen + (name,))
+                   for field in structs[name].fields)
+    # A type the mirror does not know: assume nothing, and bound it by the smallest field there is.
+    return 1
+
+
 def method_table(module: Module) -> list[BoundaryMethod]:
     """Every method of every @facade interface, in declaration order, with dense ids."""
     methods: list[BoundaryMethod] = []
@@ -771,7 +808,7 @@ def _cpp_put(kind: str, expr: str, enums: set[str], ids: set[str], qualifier: st
 
 
 def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str], qualifier: str = "",
-             on_fail: str = "return false;") -> str:
+             on_fail: str = "return false;", structs: dict[str, Struct] | None = None) -> str:
     if kind == "bool":
         return f"{target} = in.GetBool();"
     if kind == "i32":
@@ -789,12 +826,16 @@ def _cpp_get(kind: str, target: str, enums: set[str], ids: set[str], qualifier: 
         # GetCount fails the reader and returns 0 for a negative or oversized count, so resize is
         # safe without an early exit and the failure is still visible to the caller's check.
         guard = f"    if (!in.ok()) {on_fail}\n" if on_fail else ""
-        return (f"{{ const size_t count = in.GetCount(1);\n"
+        # The element's real minimum size, not one byte. The count is what the vector is sized
+        # from, so bounding it by a byte lets a small payload claim orders of magnitude more
+        # elements than it could contain and turn into a very large allocation on a phone.
+        smallest = min_wire_size(f"named:{inner}", structs or {}, enums, ids)
+        return (f"{{ const size_t count = in.GetCount({smallest});\n"
                 f"{guard}"
                 f"    {target}.clear();\n"
                 f"    {target}.resize(count);\n"
                 f"    for (auto& item : {target}) "
-                f"{{ {_cpp_get(f'named:{inner}', 'item', enums, ids, qualifier, on_fail)} }} }}")
+                f"{{ {_cpp_get(f'named:{inner}', 'item', enums, ids, qualifier, on_fail, structs)} }} }}")
     name = kind[6:]
     if name in enums:
         return f"{target} = static_cast<{name}>(in.GetI32());"
@@ -839,7 +880,7 @@ def emit_cpp_codec(module: Module) -> str:
             out.append("  (void)in; (void)value;")
         for field in struct.fields:
             kind = _field_wire_kind(struct, field)
-            out.append(f"  {_cpp_get(kind, f'value.{field.name}', enums, id_set)}")
+            out.append(f"  {_cpp_get(kind, f'value.{field.name}', enums, id_set, structs=structs)}")
         out.append("  return in.ok();")
         out.append("}")
         out.append("")
@@ -994,7 +1035,7 @@ def _cpp_result_encode(kind: str, enums: set[str], ids: set[str]) -> str:
 
 
 def emit_cpp_facade(module: Module) -> str:
-    _structs, enum_map, id_set = _index(module)
+    structs, enum_map, id_set = _index(module)
     enums = set(enum_map)
     methods = method_table(module)
 
@@ -1036,7 +1077,7 @@ def emit_cpp_facade(module: Module) -> str:
         arg_names = []
         for name, ts in method.params:
             kind = wire_kind_from_ts(ts)
-            decl, expr = _cpp_param_decl(name, ts, kind, enums, id_set)
+            decl, expr = _cpp_param_decl(name, ts, kind, enums, id_set, structs)
             out.extend("      " + line for line in decl)
             arg_names.append(expr)
         if method.params:
@@ -1078,15 +1119,15 @@ def _runtime_accessor(interface: str) -> str:
     return lower_camel(interface).replace("Manager", "")
 
 
-def _cpp_param_decl(name: str, ts: str, kind: str, enums: set[str],
-                    ids: set[str]) -> tuple[list[str], str]:
+def _cpp_param_decl(name: str, ts: str, kind: str, enums: set[str], ids: set[str],
+                    structs: dict[str, Struct]) -> tuple[list[str], str]:
     """Lines declaring a decoded parameter, and the expression to pass to the manager."""
     if kind.startswith("list:"):
         inner = kind[5:]
-        decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="")
+        decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="", structs=structs)
         return ([f"std::vector<{inner}> {name};", decode], f"std::span<const {inner}>({name})")
 
-    decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="")
+    decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="", structs=structs)
     return ([f"{_cpp_type_for(ts, enums, ids)} {name}{{}};", decode], name)
 
 

@@ -206,7 +206,7 @@ inline void Encode(Writer& out, const CapturePlan& value) {
 }
 
 inline bool Decode(Reader& in, CapturePlan& value) {
-  { const size_t count = in.GetCount(1);
+  { const size_t count = in.GetCount(56);
     if (!in.ok()) return false;
     value.nodes.clear();
     value.nodes.resize(count);
@@ -299,12 +299,12 @@ inline bool Decode(Reader& in, CoverageState& value) {
   value.nodesTotal = static_cast<decltype(value.nodesTotal)>(in.GetF64());
   value.nodesSatisfied = static_cast<decltype(value.nodesSatisfied)>(in.GetF64());
   value.coveredSolidAngleFraction = static_cast<decltype(value.coveredSolidAngleFraction)>(in.GetF64());
-  { const size_t count = in.GetCount(1);
+  { const size_t count = in.GetCount(8);
     if (!in.ok()) return false;
     value.holes.clear();
     value.holes.resize(count);
     for (auto& item : value.holes) { item.value = in.GetId(); } }
-  { const size_t count = in.GetCount(1);
+  { const size_t count = in.GetCount(8);
     if (!in.ok()) return false;
     value.underOverlapped.clear();
     value.underOverlapped.resize(count);
@@ -369,7 +369,7 @@ inline void Encode(Writer& out, const GhostReport& value) {
 }
 
 inline bool Decode(Reader& in, GhostReport& value) {
-  { const size_t count = in.GetCount(1);
+  { const size_t count = in.GetCount(40);
     if (!in.ok()) return false;
     value.regions.clear();
     value.regions.resize(count);
@@ -411,7 +411,7 @@ inline bool Decode(Reader& in, PanoramaRef& value) {
   value.width = static_cast<decltype(value.width)>(in.GetF64());
   value.height = static_cast<decltype(value.height)>(in.GetF64());
   value.tileSize = static_cast<decltype(value.tileSize)>(in.GetF64());
-  { const size_t count = in.GetCount(1);
+  { const size_t count = in.GetCount(60);
     if (!in.ok()) return false;
     value.tiles.clear();
     value.tiles.resize(count);

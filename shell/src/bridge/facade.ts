@@ -61,6 +61,13 @@ export function createFacadeCall(module: FacadeModule): FacadeCall {
 
     // malloc(0) is allowed to return null, so give a zero-argument call one byte to point at.
     const pointer = module._malloc(Math.max(args.length, 1));
+    // Null means the allocation failed, which with memory growth enabled is a real outcome on a
+    // phone that already has a sphere of frames pinned. Zero is also a valid heap offset, so
+    // using it writes the arguments over the start of the heap and calls into C++ with a null
+    // pointer — corruption that surfaces as whatever fails next rather than as this.
+    if (pointer === 0) {
+      throw new Error(`core could not allocate ${args.length} bytes for '${name}'`);
+    }
     try {
       // HEAPU8 is read fresh: Emscripten replaces the view when memory grows, and a cached one
       // would be detached.
