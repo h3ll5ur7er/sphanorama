@@ -88,8 +88,19 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    contract change — and would also keep a 30 ms spill off the frame the capture loop is drawing.
    What it costs is the camera: the ports read a host that lives in the page, and getting camera
    frames into a worker means `MediaStreamTrackProcessor`, which Safari does not have. That
-   trade — a worker for the frame store against a page for the camera — is the decision, and it
-   is not taken here.
+   trade looked at first like a worker for the frame store against a page for the camera. It is
+   not: `MediaStreamTrackProcessor` is one way to get pixels into a worker and not the only one,
+   and the page can grab a frame and hand the buffer over by transfer, which is zero-copy and
+   needs nothing Safari lacks. The camera can stay in the page.
+
+   What a worker actually costs is the round trip. Measured in Chromium, with the core booted in
+   a module worker and both paths timed in one page: a bare `postMessage` round trip is ~63 µs
+   and a facade call through one ~71 µs, against ~0.4 µs for the direct call the client makes
+   today. Transferring a frame-sized buffer costs the same ~66 µs at 1 MB and at 8 MB, which is
+   the zero-copy result and the sanity check on the number. So one tick of the capture loop would
+   spend 71 µs of a 16,667 µs frame — 0.4% — to move a 30 ms spill off the frame the user is
+   looking at, where it currently costs about two dropped ones. Numbers are Chromium on a loaded
+   machine; a phone will differ, and there are two orders of magnitude of headroom for it to.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.
