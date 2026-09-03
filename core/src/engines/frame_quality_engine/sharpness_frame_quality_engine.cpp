@@ -20,21 +20,25 @@ constexpr const char* kComponent = "SharpnessFrameQualityEngine";
 constexpr int32_t kMeasureEdge = 256;
 
 /** Luma at (x, y) for the formats a camera port can currently produce. */
-double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int32_t stride, int32_t x,
-              int32_t y) {
+double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int64_t stride, int64_t x,
+              int64_t y) {
   // int64 arithmetic, then one conversion to the span's index type. A 4K frame's last row is
   // past 2^31 bytes in at four bytes a pixel, so the multiply has to be wide even though the
   // result always fits a size_t on the platforms this runs on.
-  const int64_t row = static_cast<int64_t>(y) * stride;
+  const int64_t row = y * stride;
   switch (format) {
     case PixelFormat::RGBA8:
     case PixelFormat::BGRA8: {
-      const size_t at = static_cast<size_t>(row + static_cast<int64_t>(x) * 4);
-      // Rec. 601 luma. Which of the two channel orders it is does not matter: the coefficients
-      // for red and blue differ, so a BGRA frame read as RGBA gets a slightly different weighting
-      // of the same picture — and every frame in a burst gets the same one, which is all a
-      // *comparison* needs.
-      return 0.299 * bytes[at] + 0.587 * bytes[at + 1] + 0.114 * bytes[at + 2];
+      const size_t at = static_cast<size_t>(row + x * 4);
+      // Rec. 601 luma, in the frame's own channel order. Red and blue carry very different
+      // weights — 0.299 against 0.114 — so reading BGRA as RGBA makes a blue frame look two and a
+      // half times brighter than it is. Within one burst every frame comes from one camera in one
+      // format, so it would not change a ranking today; it would the moment OfferFrame put an
+      // imported frame in the same cell as a burst.
+      const bool bgra = format == PixelFormat::BGRA8;
+      const double red = bytes[at + (bgra ? 2 : 0)];
+      const double blue = bytes[at + (bgra ? 0 : 2)];
+      return 0.299 * red + 0.587 * bytes[at + 1] + 0.114 * blue;
     }
     case PixelFormat::Gray8:
     case PixelFormat::NV12:
@@ -84,15 +88,21 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
     ~Unpin() { (void)frames.Release(frame); }
   } unpin{frames_, frame};
 
-  const int32_t stride = frame.stride > 0 ? frame.stride
-                                          : frame.width * std::max(BytesPerPixel(frame.format), 1);
+  // In int64 and narrowed once, because the obvious form is int32 * int32: a width near the top
+  // of the range times four bytes a pixel overflows, and signed overflow is undefined behaviour
+  // rather than a wrong number something downstream could sanity-check. The frame store had this
+  // exact bug in its own stride arithmetic and it is worth being consistent about.
+  const int64_t derived =
+      static_cast<int64_t>(frame.width) * std::max(BytesPerPixel(frame.format), 1);
+  const int64_t stride = frame.stride > 0 ? frame.stride : derived;
+
   // Box-averaged into a grid no larger than kMeasureEdge on its long side. Integer block sizes
   // rather than interpolation: this is a noise filter that happens to shrink the image, and a
   // resampler would be a second thing to get wrong.
-  const int32_t block = std::max(1, (std::max(frame.width, frame.height) + kMeasureEdge - 1) /
-                                        kMeasureEdge);
-  const int32_t cols = frame.width / block;
-  const int32_t rows = frame.height / block;
+  const int64_t longest = std::max(frame.width, frame.height);
+  const int64_t block = std::max<int64_t>(1, (longest + kMeasureEdge - 1) / kMeasureEdge);
+  const int64_t cols = frame.width / block;
+  const int64_t rows = frame.height / block;
   if (cols < 3 || rows < 3) {
     // A Laplacian needs a neighbour on every side. A frame this small is not a photograph, and
     // reporting a sharpness for it would be reporting the value of an empty sum.
@@ -103,11 +113,11 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   const size_t width = static_cast<size_t>(cols);
   std::vector<double> small(width * static_cast<size_t>(rows), 0.0);
   double total = 0.0;
-  for (int32_t row = 0; row < rows; ++row) {
-    for (int32_t col = 0; col < cols; ++col) {
+  for (int64_t row = 0; row < rows; ++row) {
+    for (int64_t col = 0; col < cols; ++col) {
       double sum = 0.0;
-      for (int32_t dy = 0; dy < block; ++dy) {
-        for (int32_t dx = 0; dx < block; ++dx) {
+      for (int64_t dy = 0; dy < block; ++dy) {
+        for (int64_t dx = 0; dx < block; ++dx) {
           sum += LumaAt(pinned.value, frame.format, stride, col * block + dx, row * block + dy);
         }
       }
@@ -124,8 +134,8 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   double sum = 0.0;
   double sumSquares = 0.0;
   int64_t count = 0;
-  for (int32_t row = 1; row + 1 < rows; ++row) {
-    for (int32_t col = 1; col + 1 < cols; ++col) {
+  for (int64_t row = 1; row + 1 < rows; ++row) {
+    for (int64_t col = 1; col + 1 < cols; ++col) {
       const size_t at = static_cast<size_t>(row) * width + static_cast<size_t>(col);
       const double response = small[at - width] + small[at + width] + small[at - 1] +
                               small[at + 1] - 4.0 * small[at];
@@ -180,10 +190,18 @@ Result<QualityScore> SharpnessFrameQualityEngine::Score(const FrameRef& frame, c
   }
   score.exposureAgreement = agreement;
 
-  // The same weighting Rank applies with a default policy, so a score read on its own means the
-  // same thing as one read in a set. Rank recomputes it, because only Rank can see the set the
-  // normalisation needs.
-  score.aggregate = score.sharpness + 0.5 * score.exposureAgreement;
+  // A per-frame summary, and **not** the number Rank sorts on. Rank normalises sharpness across
+  // the candidate set before weighting it, and the set is the only place that range can be known —
+  // so a value computed here from one frame cannot be on the same scale as one computed there.
+  // The contract calls this "the single number selection sorts on", which was written before that
+  // tension was visible; Rank takes the policy and Score does not, so Rank has to be the
+  // authority and this is a readout beside it.
+  //
+  // The weights come from a default-constructed policy rather than being written out again, so
+  // there is one place a default lives and this cannot drift away from it.
+  const SelectionPolicy defaults;
+  score.aggregate = defaults.weightSharpness * score.sharpness +
+                    defaults.weightExposure * score.exposureAgreement;
   return Ok(score);
 }
 

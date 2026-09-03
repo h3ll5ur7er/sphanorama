@@ -195,6 +195,46 @@ TEST_F(FrameQuality, AFrameThatDriftedInBrightnessDisagreesWithItsBurst) {
   EXPECT_LT(drifted.value.exposureAgreement, agreeing.value.exposureAgreement);
 }
 
+TEST_F(FrameQuality, ABgraFrameIsReadInItsOwnChannelOrder) {
+  // The same picture in the two byte orders has the same luma, so the two frames must agree on
+  // exposure. Reading BGRA as if it were RGBA swaps the red and blue coefficients — 0.299 against
+  // 0.114 — so a blue frame read the wrong way looks two and a half times brighter than it is.
+  //
+  // Within one burst every frame comes from one camera in one format, so this could not change a
+  // ranking today. It could as soon as OfferFrame puts an externally sourced frame in the same
+  // cell as a burst — a file import, a replayed dataset — and then two frames of the same scene
+  // would disagree on exposure because of how their bytes were laid out.
+  const int32_t width = 32;
+  const int32_t height = 32;
+  const auto paint = [&](PixelFormat format, uint8_t r, uint8_t g, uint8_t b) {
+    auto allocated = store.Allocate(width, height, format);
+    EXPECT_TRUE(allocated.ok());
+    auto pinned = store.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok());
+    for (size_t at = 0; at + 3 < pinned.value.size(); at += 4) {
+      // Byte order, not colour order: BGRA puts blue first, so the same visual colour is written
+      // with its components swapped.
+      pinned.value[at] = format == PixelFormat::BGRA8 ? b : r;
+      pinned.value[at + 1] = g;
+      pinned.value[at + 2] = format == PixelFormat::BGRA8 ? r : b;
+      pinned.value[at + 3] = 255;
+    }
+    EXPECT_TRUE(store.Release(allocated.value).ok());
+    return allocated.value;
+  };
+
+  const FrameRef asRgba = paint(PixelFormat::RGBA8, 0, 0, 255);
+  const FrameRef asBgra = paint(PixelFormat::BGRA8, 0, 0, 255);
+  std::vector<Candidate> siblings{CandidateOf(1, asRgba, 0.0)};
+  NodeContext context;
+  context.siblings = siblings;
+
+  auto scored = engine.Score(asBgra, PoseSample{}, context);
+  ASSERT_TRUE(scored.ok()) << scored.status.detail;
+  EXPECT_GT(scored.value.exposureAgreement, 0.999)
+      << "the same blue in two byte orders was read as two different brightnesses";
+}
+
 // ------------------------------------------------------------------ ranking
 
 TEST_F(FrameQuality, RanksTheSharpestFirst) {
