@@ -76,7 +76,9 @@ Calls that only write — `StartPreview` and `Close` — are posted and return `
 the same trade ADR 0014 already took for a document write and for the same reason.
 
 **`SetLocks` is not one of them**, and it is worth being explicit about why, because it looks like
-one. A lock is applied with `MediaStreamTrack.applyConstraints()`, which is asynchronous and can
+one. (Settled since, in [ADR 0022](0022-a-lock-is-confirmed-before-a-burst-and-released-after-it.md):
+the page applies and confirms, taking a lock reads that confirmed state, and only releasing one is
+posted.) A lock is applied with `MediaStreamTrack.applyConstraints()`, which is asynchronous and can
 reject. `ArmBurst` calls `SetLocks` and the burst's first frame arrives on the very next tick, so
 a posted lock could easily be applied *after* the frame it was supposed to govern — and a
 rejection would vanish, leaving the manager certain the burst has a fixed exposure while

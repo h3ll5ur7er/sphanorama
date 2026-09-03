@@ -115,3 +115,146 @@ describe('lifecycle', () => {
     await expect(camera.close()).resolves.toEqual({ ok: true, value: undefined });
   });
 });
+
+/**
+ * A track that records the constraints it was asked for and reports back whatever modes the test
+ * says it settled on — which is the distinction that matters, since asking is not applying.
+ */
+function fakeTrack(options: {
+  capabilities?: Record<string, unknown>;
+  /** What getSettings() reports after applyConstraints resolves. Defaults to what was asked. */
+  settleAs?: Record<string, string>;
+  rejectWith?: string;
+} = {}) {
+  const applied: unknown[] = [];
+  let settings: Record<string, unknown> = { width: 1920, height: 1080 };
+  const track = {
+    applied,
+    getSettings: () => settings,
+    getCapabilities: () => options.capabilities ?? {
+      exposureMode: ['continuous', 'manual'],
+      whiteBalanceMode: ['continuous', 'manual'],
+      focusMode: ['continuous', 'manual'],
+    },
+    async applyConstraints(constraints: unknown) {
+      applied.push(constraints);
+      if (options.rejectWith) {
+        const error = new Error('constraint refused');
+        error.name = options.rejectWith;
+        throw error;
+      }
+      const asked = (constraints as { advanced?: Record<string, string>[] }).advanced?.[0] ?? {};
+      settings = { ...settings, ...(options.settleAs ?? asked) };
+    },
+    stop: vi.fn(),
+  };
+  return track;
+}
+
+function mediaWith(track: ReturnType<typeof fakeTrack>) {
+  return {
+    getUserMedia: vi.fn(async () => ({
+      getVideoTracks: () => [track],
+      getTracks: () => [track],
+    })),
+  };
+}
+
+describe('reporting which locks the camera has', () => {
+  it('reports a lock as supported only when the track offers a manual mode', async () => {
+    const camera = createCameraAccess(mediaWith(fakeTrack()) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect(opened.value.supportsExposureLock).toBe(true);
+      expect(opened.value.supportsFocusLock).toBe(true);
+      expect(opened.value.supportsWhiteBalanceLock).toBe(true);
+    }
+  });
+
+  it('reports a lock as unsupported when the track only ever does it automatically', async () => {
+    // A desktop webcam, typically. Claiming the lock here is how a burst ends up compared on
+    // brightness while every count-based check still passes.
+    const track = fakeTrack({ capabilities: { exposureMode: ['continuous'] } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect(opened.value.supportsExposureLock).toBe(false);
+      expect(opened.value.supportsFocusLock).toBe(false);
+    }
+  });
+
+  it('reports no locks when the track will not say what it can do', async () => {
+    const track = fakeTrack({ capabilities: {} });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+
+    if (opened.ok) expect(opened.value.supportsExposureLock).toBe(false);
+  });
+});
+
+describe('applying the locks', () => {
+  it('asks the track for manual modes and confirms they took', async () => {
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value).toEqual({ exposure: true, whiteBalance: true, focus: true });
+    expect(track.applied).toHaveLength(1);
+  });
+
+  it('reports a lock as not held when the track quietly stayed automatic', async () => {
+    // applyConstraints resolving is not the same as the constraint being honoured, and this is
+    // the case that makes the difference matter: a burst told its exposure is fixed, comparing
+    // candidates on sharpness, while the camera keeps metering between frames.
+    const track = fakeTrack({ settleAs: { exposureMode: 'continuous', focusMode: 'manual' } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: true });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) {
+      expect(locked.value.exposure).toBe(false);
+      expect(locked.value.focus).toBe(true);
+    }
+  });
+
+  it('reports nothing locked when the track refuses the constraints outright', async () => {
+    const track = fakeTrack({ rejectWith: 'OverconstrainedError' });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) {
+      expect(locked.value).toEqual({ exposure: false, whiteBalance: false, focus: false });
+    }
+  });
+
+  it('releases by asking for continuous again', async () => {
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+
+    const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+
+    expect(released.ok).toBe(true);
+    if (released.ok) expect(released.value.exposure).toBe(false);
+    expect(track.applied).toHaveLength(2);
+  });
+
+  it('refuses when no camera is open, rather than reporting locks it cannot have', async () => {
+    const camera = createCameraAccess(mediaWith(fakeTrack()) as never);
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(locked.ok).toBe(false);
+  });
+});

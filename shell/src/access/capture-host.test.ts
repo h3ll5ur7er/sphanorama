@@ -59,7 +59,11 @@ describe('capture host', () => {
 
   it('reports what the page opened', () => {
     const host = createCaptureHost();
-    host.setCamera({ maxWidth: 1920, maxHeight: 1080, supportsTorch: true });
+    host.setCamera({
+      maxWidth: 1920, maxHeight: 1080, supportsTorch: true,
+      supportsExposureLock: false, supportsWhiteBalanceLock: false,
+      supportsFocusLock: false,
+    });
     expect(host.cameraOpen()).toBe(true);
     const caps = host.cameraCapabilities();
     expect(caps.maxWidth).toBe(1920);
@@ -70,7 +74,11 @@ describe('capture host', () => {
   it('forgets the camera when the page closes it', () => {
     // A stale capability set would let the core plan a capture against a camera that is gone.
     const host = createCaptureHost();
-    host.setCamera({ maxWidth: 1920, maxHeight: 1080, supportsTorch: false });
+    host.setCamera({
+      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      supportsExposureLock: false, supportsWhiteBalanceLock: false,
+      supportsFocusLock: false,
+    });
     host.clearCamera();
     expect(host.cameraOpen()).toBe(false);
   });
@@ -156,7 +164,11 @@ describe('closing and resetting', () => {
     // capabilities go regardless, or the core could plan a capture against a camera that is gone.
     let asked = 0;
     const host = createCaptureHost({ onCloseCamera: () => { asked += 1; } });
-    host.setCamera({ maxWidth: 640, maxHeight: 480, supportsTorch: false });
+    host.setCamera({
+      maxWidth: 640, maxHeight: 480, supportsTorch: false,
+      supportsExposureLock: false, supportsWhiteBalanceLock: false,
+      supportsFocusLock: false,
+    });
     expect(host.cameraOpen()).toBe(true);
 
     host.closeCamera();
@@ -242,5 +254,71 @@ describe('the resident preview frame', () => {
     host.setPreviewFrame({ width: 4, height: 3, bytes: new Uint8Array(4 * 3 * 4 - 1) });
 
     expect(host.previewFrame()).toBeNull();
+  });
+});
+
+describe('which locks the camera is holding', () => {
+  it('reports nothing locked before anything has been applied', () => {
+    const host = createCaptureHost();
+    expect(host.cameraLocks()).toEqual({ exposure: false, whiteBalance: false, focus: false });
+  });
+
+  it('reports what the page confirmed, not what it asked for', () => {
+    // The distinction this whole path exists for: applyConstraints resolving is not the mode
+    // changing, so what crosses is the state read back off the track (ADR 0022).
+    const host = createCaptureHost();
+    host.setCameraLocks({ exposure: true, whiteBalance: false, focus: true });
+
+    expect(host.cameraLocks()).toEqual({ exposure: true, whiteBalance: false, focus: true });
+  });
+
+  it('forgets the locks when the camera closes', () => {
+    // A lock belongs to a track. Reporting one held after the stream is gone would let the next
+    // session arm a burst believing an exposure was fixed by a camera that no longer exists.
+    const host = createCaptureHost();
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    host.closeCamera();
+
+    expect(host.cameraLocks().exposure).toBe(false);
+  });
+
+  it('forgets the locks when the camera is cleared', () => {
+    const host = createCaptureHost();
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    host.clearCamera();
+
+    expect(host.cameraLocks().focus).toBe(false);
+  });
+
+  it('asks the page to release the locks, since only it holds the track', () => {
+    // The mirror of closeCamera: the core can ask, and the page is the only side that can act.
+    // Posted rather than awaited, because the burst that held the lock is already over.
+    const released: number[] = [];
+    const host = createCaptureHost({ onReleaseCameraLocks: () => released.push(1) });
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+
+    host.releaseCameraLocks();
+
+    expect(released).toHaveLength(1);
+    // Cleared here too, not only when the page gets round to it: the core asked, and a port that
+    // kept reporting the lock held would let the next burst arm on a stale confirmation.
+    expect(host.cameraLocks().exposure).toBe(false);
+  });
+
+  it('carries the lock capabilities the page reported', () => {
+    const host = createCaptureHost();
+    host.setCamera({
+      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      supportsExposureLock: true, supportsWhiteBalanceLock: false, supportsFocusLock: true,
+    });
+
+    const capabilities = host.cameraCapabilities();
+    expect(capabilities.supportsExposureLock).toBe(true);
+    expect(capabilities.supportsFocusLock).toBe(true);
+  });
+
+  it('claims no lock support for a camera it does not have', () => {
+    const host = createCaptureHost();
+    expect(host.cameraCapabilities().supportsExposureLock).toBe(false);
   });
 });

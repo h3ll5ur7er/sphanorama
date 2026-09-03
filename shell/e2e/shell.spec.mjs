@@ -128,6 +128,65 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
   }
 });
 
+test('a burst locks the camera when the camera can be locked', async ({ browser }) => {
+  // Chromium's fake device has no manual exposure mode, so the plain capture test exercises the
+  // degraded path — locks unsupported, burst fires anyway. This is the other half (ADR 0022): a
+  // track that *does* offer manual modes, so the locks are asked for, confirmed by reading the
+  // settings back, and the burst arms holding them.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // A camera that can lock, and honours the request. Patched on the prototype so it applies to
+    // whatever track getUserMedia hands back.
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    MediaStreamTrack.prototype.applyConstraints = async function (constraints) {
+      settled = { ...(constraints?.advanced?.[0] ?? {}) };
+    };
+    window.__locksApplied = () => settled;
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // Arming took the locks. If the client had asked for them without confirming, or the core
+    // had refused them, the burst above would not have completed at all.
+    expect(await page.evaluate(() => window.__locksApplied())).toMatchObject({
+      exposureMode: 'continuous',   // released again once the burst committed
+    });
+
+    // And the cell captured with them, which is the point: five candidates a selection engine
+    // can compare on sharpness because they share an exposure.
+    const count = await page.evaluate(async () => {
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      for (const node of plan.value.nodes) {
+        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+        if (got.ok && got.value.length > 0) return got.value.length;
+      }
+      return 0;
+    });
+    expect(count).toBe(5);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('calls a manager through the generated facade', async ({ page }) => {
   // The round trip end to end in a real browser: encode arguments, dispatch across the C ABI,
   // decode a Result. The unit tests cover each half against a fake; this is the only place both
