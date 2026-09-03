@@ -89,8 +89,18 @@ exception to it.
   will silently get 16.7. Reporting that honestly is better than a call that blocks and lies.
 - **The exposure lock now spans ticks.** `SetLocks` is applied when the burst is armed and must be
   released when it completes *or is abandoned* — a session that ends mid-burst, a retake that
-  re-arms, a cell that fails scoring. A burst that leaves the camera locked is a viewfinder the
-  user cannot fix by pointing somewhere else.
+  re-arms, a cell that fails scoring, and every early return from a tick, since the burst is
+  advanced at the end of one and a pose or planner failure returns before it. A burst that leaves
+  the camera locked is a viewfinder the user cannot fix by pointing somewhere else, and the
+  release is fallible, so its failure is reported rather than discarded: the cell is captured all
+  the same, and the caller is told the camera is still locked instead of finding out later.
+- **A burst's frames are not in the cell until the whole burst ranks.** They are held apart and
+  appended on commit, which is a semantic worth stating: `Candidates` and `Coverage` do not see a
+  burst in flight. `Evaluate` counts a cell satisfied as soon as one candidate exists for it, so a
+  cell that filled in public would report itself complete on the first frame of a burst that could
+  still roll back — and a sphere could read as finished while holding a cell nothing ever ranked.
+  It also makes the rollback exact: `OfferFrame` appends to the same cell, and an index into it
+  was never an ownership boundary.
 - `PeekPreviewFrame` moves onto the hot path, so an allocation per tick is the pattern
   `IFrameStoreAccess` has to be designed around rather than a burst-sized batch.
 - `CaptureCell`'s signature changes, so the TypeScript mirror, both codec halves and the facade

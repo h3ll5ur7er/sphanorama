@@ -56,6 +56,11 @@ Result<FrameRef> FakeCameraAccess::PeekPreviewFrame() {
 
 Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
   if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
+  if (fail_unlock_ && !exposure) {
+    // Refused *and* left locked, which is the case worth modelling: a port that failed to unlock
+    // has not half-unlocked, and a caller told the burst finished would have no reason to look.
+    return Fail(StatusCode::CameraUnavailable, kComponent, "the track refused to drop its locks");
+  }
   exposure_locked_ = exposure;
   return Status::Ok();
 }

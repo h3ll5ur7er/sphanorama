@@ -33,6 +33,8 @@ class FakeCameraAccess final : public ICameraAccess {
   bool IsOpen() const { return open_; }
   bool ExposureLocked() const { return exposure_locked_; }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
+  /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
+  void FailUnlock(bool fail) { fail_unlock_ = fail; }
 
  private:
   std::shared_ptr<IFrameStoreAccess> store_;
@@ -40,6 +42,7 @@ class FakeCameraAccess final : public ICameraAccess {
   bool open_ = false;
   bool previewing_ = false;
   bool exposure_locked_ = false;
+  bool fail_unlock_ = false;
   int frames_taken_ = 0;
   uint8_t next_fill_ = 1;
 };

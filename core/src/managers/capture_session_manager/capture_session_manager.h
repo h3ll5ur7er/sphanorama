@@ -44,13 +44,22 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
 
-  // Takes at most one frame for the armed burst and folds it into the cell. Reports whether the
-  // burst finished on this tick, so OnMotion can say CellDone exactly once.
+  // Takes at most one frame for the armed burst. Reports whether the burst finished on this tick,
+  // so OnMotion can say CellDone exactly once.
   Result<bool> AdvanceBurst();
   // Puts the camera back and forgets a burst in progress. Every path out of a burst goes through
   // here — completion, failure, retake, end of session — because a burst that leaves the exposure
   // locked is a viewfinder the user cannot fix by pointing somewhere else.
-  void Disarm(bool rollBack);
+  //
+  // Returns whether the unlock itself succeeded. The port is fallible, and a caller that
+  // discarded this would report a captured cell while the camera stayed locked, with nothing left
+  // holding the knowledge that it is.
+  Status Disarm(bool rollBack);
+  // Abandons an armed burst and hands back the status that caused it. Every early return from a
+  // tick goes through here: a burst is only advanced at the end of OnMotion, so a pose or planner
+  // failure before that would otherwise leave it armed and locked with the client — which stops
+  // ticking once a call fails — never able to reach the cleanup.
+  Status Abandon(const Status& cause);
 
   ICoveragePlannerEngine& planner_;
   IPoseEngine& pose_;
@@ -75,10 +84,14 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   bool firing_ = false;
   NodeId burst_node_;
   BurstSpec burst_spec_;
-  int32_t burst_taken_ = 0;
-  // Where the cell's candidates ended before this burst started, so an abandoned burst can be
-  // rolled back to it without touching evidence an earlier burst left there.
-  size_t burst_mark_ = 0;
+  // The frames this burst has taken, held apart from the cell until the whole burst ranks.
+  //
+  // They were in the cell, marked by an index, and that was wrong twice over. Coverage() counts a
+  // cell satisfied as soon as any candidate exists for it, so the first frame of a burst reported
+  // the cell complete while the burst could still roll back. And an index is not an ownership
+  // boundary: OfferFrame appends to the same vector, so a frame the caller still owned could land
+  // past the mark and be forgotten by a rollback that had no business touching it.
+  std::vector<Candidate> pending_;
   int64_t last_frame_ns_ = 0;
 
   uint64_t next_session_ = 1;
