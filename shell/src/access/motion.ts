@@ -130,7 +130,16 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     }
   }
 
+  /**
+   * Tears the sensor down and gives up the claim on it in the same breath.
+   *
+   * Both parts, because a stopped sensor still named as the live source is worse than either on
+   * its own: `drain` would go on succeeding against a buffer nothing fills, and the readout would
+   * name a sensor that has been stopped. Whatever takes over — the fallback below, or nothing at
+   * all when the platform has no orientation event to fall back to — says so itself.
+   */
   function stopSensor() {
+    live = 'none';
     if (!sensor) return;
     try { sensor.stop(); } catch { /* already dead; nothing here can act on it */ }
     sensor = null;
@@ -175,7 +184,6 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       return true;
     } catch {
       stopSensor();
-      live = 'none';
       return false;
     }
   }

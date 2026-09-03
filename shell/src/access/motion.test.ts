@@ -318,6 +318,27 @@ describe('choosing a source', () => {
     expect(host.addEventListener).toHaveBeenCalledWith('deviceorientation', expect.any(Function));
   });
 
+  it('reports nothing live when the sensor dies and there is no event to fall back to', async () => {
+    // A device with the Generic Sensor API and no DeviceOrientationEvent — and a sensor that
+    // errors. The fallback has nowhere to go, and a source left reading
+    // AbsoluteOrientationSensor would have drain succeeding forever on a buffer nothing fills:
+    // the capture loop reads no samples, the readout names a sensor that has been stopped, and
+    // there is nothing on screen to say the phone stopped tracking.
+    const { sensor, ctor } = fakeSensor();
+    const host = fakeWindow({ AbsoluteOrientationSensor: ctor, DeviceOrientationEvent: undefined });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    expect(access.source()).toBe('AbsoluteOrientationSensor');
+
+    sensor.emitError();
+    await Promise.resolve();
+
+    expect(access.source()).toBe('none');
+    const drained = await access.drain(8);
+    expect(drained.ok).toBe(false);
+    if (!drained.ok) expect(drained.status.code).toBe('FailedPrecondition');
+  });
+
   it('uses the orientation event where there is no sensor at all', async () => {
     // iOS: no Generic Sensor API, and the event behind a permission gate.
     const access = createMotionSensorAccess(fakeWindow() as never);
