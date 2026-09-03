@@ -22,3 +22,4 @@ and the alternative we rejected and why.
 | [0015](0015-absolute-orientation-in-the-imu-sample.md) | `ImuSample` carries an optional absolute orientation; the browser adapter fills it and converts the frame |
 | [0016](0016-pose-state-is-a-value-the-manager-owns.md) | Pose state is a contract value the manager owns; `IPoseEngine` is a pure function of it |
 | [0017](0017-the-motion-port-reports-the-viewfinders-attitude.md) | The motion port reports the viewfinder's attitude as a quaternion, screen rotation included |
+| [0018](0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md) | A burst is paced by the manager across client ticks over a resident preview frame, not Asyncify |

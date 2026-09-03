@@ -59,12 +59,16 @@ session began.
 
 What is left before Phase 1 can start in earnest, in the order it blocks:
 
-1. **A path for pixels.** `CaptureBurst` is the one call that does not fit the resident-host
-   pattern: a burst takes time and cannot be made resident in advance, so it needs either Asyncify
-   on that call path or a redesign in which the client drives burst timing. Decided with
-   measurements, not in the abstract. Until then `BrowserCameraAccess::CaptureBurst` refuses with
-   `Unsupported` and a reason, and the cells stay empty.
-2. **`IFrameStoreAccess` with real residency**, which is what a burst would need somewhere to go.
+1. **A path for pixels.** Decided, with the measurements ADR 0014 asked for: the burst is paced by
+   the manager across the ticks the client already makes, over a preview frame the page keeps
+   resident, and `CaptureBurst` leaves the contract (ADR 0018). Asyncify turned out to be cheap —
+   +3.2 kB gzipped and +30 ns on a facade call — and was rejected anyway, because the generated
+   facade makes its instrumentation all-or-nothing and the one-suspend-at-a-time rule it imposes
+   is enforced by crashing the renderer. What is left is the reshape itself: `CaptureCell` arms a
+   burst instead of returning one.
+2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
+   and, since a paced burst takes one frame per tick, an allocation per tick rather than a
+   burst-sized batch.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.
