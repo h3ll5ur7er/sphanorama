@@ -122,13 +122,18 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    time, closing the hole ADR 0018 named, and an end-to-end test drives a real burst in a real
    browser and checks it produced five candidates with distinct frames.
 
-   Two debts came with it, both temporary and both written down rather than left to be found. A
+   **The locks followed** (ADR 0022), which was the thing standing between a burst that captures
+   and a burst worth selecting from. The page applies them with `applyConstraints` and reads the
+   mode back to confirm — resolving is not applying — and pushes what the camera actually settled
+   on; `SetLocks` reads that state and refuses a lock the page has not confirmed, so a burst
+   cannot arm believing it holds one it does not. Releasing goes back the other way, posted, since
+   nothing waits on a lock given up after the burst is over. A camera with no manual mode still
+   captures and says which lock it could not take.
+
+   One debt remains from the pixel path and it is written down rather than left to be found: a
    grabbed frame is **capped at 1280 on its long edge**, because RGBA is four bytes a pixel and
-   nothing compresses anything yet — the frame that gets stitched should be the full-resolution
-   one, and that means encoding to JPEG before it crosses. And **`SetLocks` still refuses**, so
-   bursts are armed with every lock off: candidates may differ in exposure, which makes comparing
-   them on sharpness mean less than it should. That is now the thing standing between a burst that
-   captures and a burst worth selecting from.
+   nothing compresses anything yet. The frame that gets stitched should be the full-resolution
+   one, and that means encoding to JPEG before it crosses.
 
    One thing the numbers above do not settle, and it is the load-bearing one: **every measurement
    here is Chromium's**, and the end-to-end suite proves the handle opens in headless Chromium and

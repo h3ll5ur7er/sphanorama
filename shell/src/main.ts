@@ -64,6 +64,15 @@ let captureCell: ((node: NodeId) => Promise<boolean>) | null = null;
  * user could do nothing about.
  */
 let targetNode: NodeId | null = null;
+/**
+ * Which locks this camera says it can take, from `getCapabilities` at open time.
+ *
+ * Kept because arming asks for exactly these and no more: a lock the track has no manual mode
+ * for is one `applyConstraints` will not give, and asking anyway costs the burst (ADR 0022).
+ */
+let lensLocks = {
+  supportsExposureLock: false, supportsWhiteBalanceLock: false, supportsFocusLock: false,
+};
 
 /**
  * Keeps the motion readout showing what is actually feeding the core.
@@ -108,6 +117,7 @@ async function enable(core: SphanoramaCore) {
     // reads the lens through a synchronous port that cannot wait for getUserMedia — nor for a
     // message still in flight.
     remote.setCamera(opened.value);
+    lensLocks = opened.value;
     // Held here so the core can ask for it to be stopped: Close is a synchronous port call and
     // cannot reach a MediaStream itself.
     cameraStream = camera.stream();
@@ -115,6 +125,9 @@ async function enable(core: SphanoramaCore) {
     viewfinder.srcObject = camera.stream();
   } else {
     remote.setCamera(null);
+    lensLocks = {
+      supportsExposureLock: false, supportsWhiteBalanceLock: false, supportsFocusLock: false,
+    };
     cameraState.textContent = 'unavailable';
     stage.textContent = describeFailure(opened.status);
   }
@@ -221,20 +234,42 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * somewhere the loop cannot see it leaves the first frame waiting for a tick that may not come.
    */
   const armAt = async (node: NodeId) => {
-    // Every failure ends up as `false` plus a line on screen, thrown ones included. The callers
+    // Applied and confirmed *before* arming, which is the whole ordering requirement (ADR 0022):
+    // the burst's first frame arrives on the very next tick, and the core reads the lock state
+    // through a synchronous port that cannot wait for applyConstraints.
+    //
+    // Only what this camera says it can do. A desktop webcam has no manual exposure mode, so
+    // asking for one would fail arming outright — the honest answer there is a burst with the
+    // locks it can have, and a line saying which it could not.
+    const wanted = {
+      exposure: lensLocks.supportsExposureLock,
+      whiteBalance: lensLocks.supportsWhiteBalanceLock,
+      focus: lensLocks.supportsFocusLock,
+    };
+
+    // Every failure ends up as `false` plus a line on screen, thrown ones included, and the try
+    // starts here rather than at the arming call because both awaits are inside it. The callers
     // are a click handler and the end-to-end hook, neither of which awaits — so an exception
-    // escaping here would be an unhandled rejection rather than anything a user could see, and
-    // the worker dying is exactly when that would happen.
+    // escaping is an unhandled rejection rather than anything a user could see, and a dead
+    // worker or a track that vanished mid-gesture is exactly when that happens.
+    let held: Awaited<ReturnType<typeof camera.setLocks>>;
     let armedNow;
     try {
+      held = await camera.setLocks(wanted);
+      // A camera that cannot lock still captures. What must not happen is the *core* believing a
+      // lock is held when it is not, and pushing the confirmed state is what prevents that.
+      remote.setLocks(
+        held.ok ? held.value : { exposure: false, whiteBalance: false, focus: false });
+
       armedNow = await core.captureSession.armBurst(node, {
         frameCount: 5, intervalMs: 80,
-        // Every lock off, a concession rather than a choice. `BrowserCameraAccess::SetLocks`
-        // refuses anything else because the page does not call applyConstraints yet, and
-        // ArmBurst reports that refusal instead of firing — so asking for the locks here would
-        // mean no burst at all. The cost is real: candidates within a burst may differ in
-        // exposure, and comparing them on sharpness is what a burst is for (ADR 0021).
-        lockExposure: false, lockWhiteBalance: false, lockFocus: false,
+        // Exactly what came back held, so the manager's own SetLocks matches the state the page
+        // confirmed. Asking for a lock this camera did not take would fail arming; claiming one
+        // it did not take would be worse — the burst would compare candidates on sharpness while
+        // the exposure moved under it (ADR 0022).
+        lockExposure: held.ok && held.value.exposure,
+        lockWhiteBalance: held.ok && held.value.whiteBalance,
+        lockFocus: held.ok && held.value.focus,
       });
     } catch (cause) {
       guidanceOut.textContent =
@@ -243,6 +278,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     }
     if (armedNow.ok) {
       armed = true;
+      // Said out loud when the camera could not give a lock that was asked for. It is a real
+      // quality cost — candidates that differ in exposure are compared on the wrong thing — and
+      // it belongs on screen rather than in a comment nobody reads.
+      const missing = (['exposure', 'whiteBalance', 'focus'] as const)
+        .filter((lock) => wanted[lock] && !(held.ok && held.value[lock]));
+      if (missing.length > 0) {
+        guidanceOut.textContent = `capturing without ${missing.join(', ')} lock`;
+      }
       return true;
     }
     guidanceOut.textContent = `arming failed: ${armedNow.status.code}`;
@@ -361,6 +404,12 @@ async function main() {
     remote.onCloseCamera(() => {
       stopCameraStream(cameraStream);
       cameraStream = null;
+    });
+
+    // The core is done with the burst and wants the camera metering again. Only this side holds
+    // the track, and nothing waits for it: the burst is already over (ADR 0022).
+    remote.onReleaseLocks(() => {
+      void camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
     });
 
     // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the

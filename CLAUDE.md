@@ -37,5 +37,6 @@ frame the page keeps resident (ADR 0018). `ArmBurst` arms one; `PeekPreviewFrame
 path, and it reaches the browser: the page draws the viewfinder into a canvas and transfers the
 buffer to the worker the core runs in, where `PeekPreviewFrame` copies it into the frame store
 (ADR 0019, ADR 0021). A burst armed from the capture loop captures real pixels, which an
-end-to-end test drives in a real browser. `SetLocks` still refuses, so those frames are not
-exposure-locked yet. See `docs/06-roadmap.md`.
+end-to-end test drives in a real browser. Its frames share an exposure where the camera can hold
+one: the page applies the locks and confirms them by reading the mode back before arming, and
+`SetLocks` refuses a lock it has not been told is held (ADR 0022). See `docs/06-roadmap.md`.
