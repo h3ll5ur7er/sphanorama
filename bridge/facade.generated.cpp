@@ -34,7 +34,7 @@ const char* const kMethodNames[] = {
     "CaptureSessionManager.begin",
     "CaptureSessionManager.getPlan",
     "CaptureSessionManager.onMotion",
-    "CaptureSessionManager.captureCell",
+    "CaptureSessionManager.armBurst",
     "CaptureSessionManager.offerFrame",
     "CaptureSessionManager.coverage",
     "CaptureSessionManager.candidates",
@@ -121,7 +121,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 3: {  // CaptureSessionManager.captureCell
+    case 3: {  // CaptureSessionManager.armBurst
       NodeId node{};
       node.value = in.GetId();
       BurstSpec burst{};
@@ -131,12 +131,8 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
                             "malformed arguments"));
         break;
       }
-      auto result = runtime.captureSession().CaptureCell(node, burst);
-      PutStatus(out, result.status);
-      if (result.ok()) {
-        out.PutCount(result.value.size());
-  for (const auto& item : result.value) { codec::Encode(out, item); }
-      }
+      const Status status = runtime.captureSession().ArmBurst(node, burst);
+      PutStatus(out, status);
       break;
     }
     case 4: {  // CaptureSessionManager.offerFrame

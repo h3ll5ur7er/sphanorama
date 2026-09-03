@@ -25,8 +25,9 @@ differences are decisions, each with an ADR:
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
   criterion. `FrameQuality`, `Registration` and `Composition` are still null.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
-  (ADR 0014). *`CaptureBurst` refuses: it is the one call that cannot be made resident in
-  advance, and deciding it needs measurements.*
+  (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
+  advance. The measurements were taken and it left the contract — a burst is paced by the manager
+  over `PeekPreviewFrame` now (ADR 0018).*
 - The test machinery the rest of the plan depends on: GoogleTest harness and the resource-access
   fakes behind shared contract suites (ADR 0010). *The synthetic-dataset generator and the frame
   folder / recorded IMU log the fakes would replay are deferred to Phase 1, which is the first

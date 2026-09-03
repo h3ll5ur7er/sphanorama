@@ -11,6 +11,7 @@
 #include "resource_access/camera_access/null_camera_access.h"
 #include "resource_access/frame_store_access/null_frame_store_access.h"
 #include "resource_access/motion_sensor_access/null_motion_sensor_access.h"
+#include "utilities/clock.h"
 #if defined(__EMSCRIPTEN__)
 #include "resource_access/camera_access/browser_camera_access.h"
 #include "resource_access/motion_sensor_access/browser_motion_sensor_access.h"
@@ -71,8 +72,12 @@ class Runtime {
   MemoryProjectStoreAccess projects_;
 #endif
 
+  // The wall clock the burst interval is paced against (ADR 0018). Injected rather than called
+  // directly so a replayed dataset can drive the same manager from recorded timestamps.
+  SystemClock clock_;
+
   CaptureSessionManager capture_session_{planner_, pose_, quality_, camera_, motion_, frames_,
-                                         projects_};
+                                         projects_, clock_};
   PanoramaBuildManager panorama_build_;
   ProjectManager project_{projects_};
 };

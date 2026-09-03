@@ -12,8 +12,9 @@ namespace sphanorama {
 // A camera that hands out synthetic frames through a real frame store, so that a capture-session
 // test exercises the same allocate/pin/spill path the phone will.
 //
-// Each burst frame is filled with a distinct value, which is what lets a selection test assert
-// that the frame it picked is the frame that reaches the build.
+// Every frame is filled with a distinct value, which is what lets a selection test assert that
+// the frame it picked is the frame that reaches the build. Since ADR 0018 a burst is just
+// several peeks, so the fill lives in PeekPreviewFrame and one counter covers both.
 class FakeCameraAccess final : public ICameraAccess {
  public:
   explicit FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store = nullptr);
@@ -22,14 +23,13 @@ class FakeCameraAccess final : public ICameraAccess {
   Status StartPreview() override;
   Status StopPreview() override;
   Result<FrameRef> PeekPreviewFrame() override;
-  Result<std::vector<FrameRef>> CaptureBurst(const BurstSpec& burst) override;
   Status SetLocks(bool exposure, bool whiteBalance, bool focus) override;
   Status Close() override;
 
   std::shared_ptr<IFrameStoreAccess> store() const { return store_; }
 
   // Test affordances.
-  int BurstCount() const { return burst_count_; }
+  int FramesTaken() const { return frames_taken_; }
   bool IsOpen() const { return open_; }
   bool ExposureLocked() const { return exposure_locked_; }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
@@ -40,7 +40,7 @@ class FakeCameraAccess final : public ICameraAccess {
   bool open_ = false;
   bool previewing_ = false;
   bool exposure_locked_ = false;
-  int burst_count_ = 0;
+  int frames_taken_ = 0;
   uint8_t next_fill_ = 1;
 };
 

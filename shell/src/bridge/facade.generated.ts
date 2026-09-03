@@ -50,18 +50,16 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
         'malformed response: CaptureSessionManager.onMotion returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
-    async captureCell(node: C.NodeId, burst: C.BurstSpec) {
+    async armBurst(node: C.NodeId, burst: C.BurstSpec) {
       const args = new Writer();
       args.f64(node);
       codec.encodeBurstSpec(args, burst);
-      const raw = await call('CaptureSessionManager.captureCell', args.finish());
+      const raw = await call('CaptureSessionManager.armBurst', args.finish());
       const input = new Reader(raw);
       const status = decodeStatus(input);
-      if (status.code !== 'Ok') return { ok: false, status } as const;
-      const value = Array.from({ length: input.count() }, () => codec.decodeCandidate(input));
-      if (!input.ok) return { ok: false, status: malformedResponse(
-        'malformed response: CaptureSessionManager.captureCell returned a value that did not decode') } as const;
-      return { ok: true, value } as const;
+      return status.code === 'Ok'
+        ? ({ ok: true, value: undefined } as const)
+        : ({ ok: false, status } as const);
     },
     async offerFrame(node: C.NodeId, frame: C.FrameRef, pose: C.PoseSample) {
       const args = new Writer();

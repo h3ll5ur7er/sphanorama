@@ -434,10 +434,22 @@ export interface ExportSpec {
 export interface CaptureSessionManager {
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
-  /** Called at sensor rate from the capture loop. Cheap by contract. */
+  /**
+   * The session's tick, called at sensor rate from the capture loop. Cheap by contract.
+   * It also advances an armed burst by at most one frame, because this is the only call the
+   * client makes often enough to pace one: a burst takes time, and time is something a
+   * synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
+   * full and `CellDone` on the tick that fills it.
+   */
   onMotion(samples: ImuSample[]): Promise<Result<CaptureGuidance>>;
-  /** Fires a burst at the given cell and folds the results into its candidate set. */
-  captureCell(node: NodeId, burst: BurstSpec): Promise<Result<Candidate[]>>;
+  /**
+   * Arms a burst at the given cell. It does not fire one: the frames arrive over the following
+   * ticks, and the candidates are readable through Candidates(node) once guidance says CellDone.
+   * `burst.intervalMs` is a floor rather than a cadence — at most one frame is taken per tick, so
+   * a spec asking for less than a tick apart gets a tick apart. Locks are applied here and held
+   * until the burst completes or is abandoned.
+   */
+  armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
   coverage(): Promise<Result<CoverageState>>;
@@ -480,17 +492,23 @@ export interface ProjectManager {
 }
 
 /**
- * V9 — where camera frames come from. Exposes business verbs (CaptureBurst), not getUserMedia,
- * so that a folder of frames can stand in for a phone camera in manager tests.
+ * V9 — where camera frames come from. Exposes a lens and a latest frame, not getUserMedia, so
+ * that a folder of frames can stand in for a phone camera in manager tests.
+ * Every call here is a read or a write of state the device already holds, which is what lets the
+ * port stay synchronous over a resident host (ADR 0014). There is deliberately no burst verb: a
+ * burst takes time, and the one call that took time is the one that could not be implemented.
+ * CaptureSessionManager paces a burst over PeekPreviewFrame instead, one frame per tick of the
+ * loop the client is already running (ADR 0018).
  */
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
   startPreview(): Promise<Result<void>>;
   stopPreview(): Promise<Result<void>>;
-  /** Latest preview frame, for pose correction and guidance. Borrowed: valid until the next call. */
+  /**
+   * The latest frame, in the frame store; only a handle comes back. This is the whole pixel path:
+   * pose correction, guidance and every frame of every burst arrive through here.
+   */
   peekPreviewFrame(): Promise<Result<FrameRef>>;
-  /** Frames land in the frame store; only handles come back. */
-  captureBurst(burst: BurstSpec): Promise<Result<FrameRef[]>>;
   setLocks(exposure: boolean, whiteBalance: boolean, focus: boolean): Promise<Result<void>>;
   close(): Promise<Result<void>>;
 }

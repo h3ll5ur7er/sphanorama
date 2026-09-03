@@ -67,11 +67,6 @@ Result<FrameRef> BrowserCameraAccess::PeekPreviewFrame() {
                        "frames need the tiered frame store, which lands in Phase 1");
 }
 
-Result<std::vector<FrameRef>> BrowserCameraAccess::CaptureBurst(const BurstSpec&) {
-  return Err<std::vector<FrameRef>>(
-      StatusCode::Unsupported, kComponent,
-      "a burst takes time and cannot be made resident in advance; see ADR 0014");
-}
 
 Status BrowserCameraAccess::SetLocks(bool exposure, bool whiteBalance, bool focus) {
   if (host_camera_open() == 0) {

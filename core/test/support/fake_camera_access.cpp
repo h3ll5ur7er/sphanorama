@@ -40,36 +40,19 @@ Result<FrameRef> FakeCameraAccess::PeekPreviewFrame() {
   if (!previewing_) {
     return Err<FrameRef>(StatusCode::FailedPrecondition, kComponent, "preview is not running");
   }
-  return store_->Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  auto allocated = store_->Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  if (!allocated.ok()) return allocated;
+
+  // Distinct content per frame, so a selection test can tell which one survived.
+  auto pinned = store_->Pin(allocated.value);
+  if (!pinned.ok()) return pinned.status;
+  std::fill(pinned.value.begin(), pinned.value.end(), next_fill_++);
+  if (auto released = store_->Release(allocated.value); !released.ok()) return released;
+
+  ++frames_taken_;
+  return allocated;
 }
 
-Result<std::vector<FrameRef>> FakeCameraAccess::CaptureBurst(const BurstSpec& burst) {
-  if (!open_) {
-    return Err<std::vector<FrameRef>>(StatusCode::FailedPrecondition, kComponent,
-                                      "camera is not open");
-  }
-  if (burst.frameCount <= 0) {
-    return Err<std::vector<FrameRef>>(StatusCode::InvalidArgument, kComponent,
-                                      "a burst needs at least one frame");
-  }
-
-  std::vector<FrameRef> frames;
-  frames.reserve(static_cast<size_t>(burst.frameCount));
-  for (int32_t i = 0; i < burst.frameCount; ++i) {
-    auto allocated = store_->Allocate(kWidth, kHeight, PixelFormat::RGBA8);
-    if (!allocated.ok()) return allocated.status;
-
-    // Distinct content per frame, so a selection test can tell which one survived.
-    auto pinned = store_->Pin(allocated.value);
-    if (!pinned.ok()) return pinned.status;
-    std::fill(pinned.value.begin(), pinned.value.end(), next_fill_++);
-    if (auto released = store_->Release(allocated.value); !released.ok()) return released;
-
-    frames.push_back(allocated.value);
-  }
-  ++burst_count_;
-  return Ok(std::move(frames));
-}
 
 Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
   if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");

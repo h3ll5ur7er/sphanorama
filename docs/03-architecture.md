@@ -114,7 +114,11 @@ nowhere to live but engine members is a contract defect, not an exception to thi
 ADR [0016](adr/0016-pose-state-is-a-value-the-manager-owns.md), which is the fix for one.
 
 **ResourceAccess** turns a resource's raw API into atomic business verbs. `ICameraAccess` exposes
-`CaptureBurst(BurstSpec)`, not `getUserMedia`. This layer is where every browser API and every
+`PeekPreviewFrame()` and a lens, not `getUserMedia`. *Atomic* is the operative word: it had a
+`CaptureBurst(BurstSpec)` too, and that was the one verb that could not be implemented, because a
+burst takes time and a synchronous port has none to give. Sequencing several atomic calls into
+something that takes time is a manager's job — see ADR
+[0018](adr/0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md). This layer is where every browser API and every
 platform quirk lives, and it is the layer whose implementations are written in TypeScript
 (§3.5).
 
@@ -256,20 +260,28 @@ sequenceDiagram
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
   M-->>U: Guidance{node, error, "hold still"}
-  U->>M: CaptureCell(node, burst)
-  M->>C: CaptureBurst(BurstSpec{n, interval, locks})
-  C-->>M: FrameRef[]
-  loop each frame
+  U->>M: ArmBurst(node, burst)
+  M->>C: SetLocks(exposure, white balance, focus)
+  loop one frame per tick, no faster than burst.intervalMs
+    U->>M: OnMotion(imu batch)
+    M->>C: PeekPreviewFrame()
+    C-->>M: FrameRef
     M->>Q: Score(frame, pose, nodeContext)
     Q-->>M: QualityScore
+    M-->>U: Guidance{node, "firing"}
   end
   M->>Q: SelectBest(candidates, policy)
   Q-->>M: ranking
+  M->>C: SetLocks(released)
   M->>F: Pin(selected) / Demote(rest, encoded)
   M->>V: Evaluate(plan, candidates)
   V-->>M: CoverageState{satisfied, holes}
-  M-->>U: CellComplete + updated coverage
+  M-->>U: Guidance{node, "cell done"} + updated coverage
 ```
+
+The burst rides on the tick the client was already making, because that is the only call made
+often enough to pace one and a synchronous port cannot wait (ADR 0018). Arming is not firing: the
+frames arrive over the ticks that follow, and the exposure lock is held across all of them.
 
 Note what the manager does *not* do: it does not decide what "best" means (V6), nor where a
 reticle sits (V4), nor how bytes are stored (V11). It decides *when* to ask each of them.

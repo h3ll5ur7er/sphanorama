@@ -16,9 +16,6 @@ Status NullCameraAccess::StopPreview() { return Status::Ok(); }
 Result<FrameRef> NullCameraAccess::PeekPreviewFrame() {
   return Err<FrameRef>(StatusCode::CameraUnavailable, kComponent, kReason);
 }
-Result<std::vector<FrameRef>> NullCameraAccess::CaptureBurst(const BurstSpec&) {
-  return Err<std::vector<FrameRef>>(StatusCode::CameraUnavailable, kComponent, kReason);
-}
 Status NullCameraAccess::SetLocks(bool, bool, bool) {
   return Fail(StatusCode::CameraUnavailable, kComponent, kReason);
 }
