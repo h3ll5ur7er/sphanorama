@@ -10,7 +10,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
 #horizon { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #horizon line, #horizon circle { stroke: var(--accent); stroke-width: 1.2; fill: none;
   vector-effect: non-scaling-stroke; opacity: .9; }
-#horizon-group { transition: transform 80ms linear; transform-origin: 50% 50%; }
+/* The rotation centre is carried by the transform attribute the client writes,
+   `rotate(deg 50 50)`, and an SVG element's transform-origin defaults to 0 0. Naming one
+   here applies the centre a second time: the two compose into a rotation about (100,100),
+   the far corner of the viewBox, and the horizon sails across the viewfinder on an arc
+   instead of rolling in place. Stated rather than omitted because 50% 50% is the initial
+   value everywhere else in CSS, so the trap is invisible. */
+#horizon-group { transition: transform 80ms linear; transform-origin: 0 0; }
 /* The ring chases the aim, so it is animated; a jump per sensor sample would read as a fault. */
 #reticle { transition: r 120ms linear; opacity: .55; stroke-dasharray: 4 3; }
 #reticle.locked { opacity: 1; stroke-dasharray: none; stroke-width: 2; }

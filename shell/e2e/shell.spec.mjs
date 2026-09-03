@@ -190,6 +190,41 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
   }
 });
 
+test('the horizon rolls in place instead of swinging across the screen', async ({ page }) => {
+  // A geometry contract between index.html and capture.css, and one that only a browser can
+  // check: the client writes `rotate(deg 50 50)`, so the hub of the horizon group sits on the
+  // centre of the reticle at every roll. Getting this wrong does not look like a rotation bug --
+  // the marker sails across the viewfinder on an arc -- and nothing below the DOM can see it.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const hubs = await page.evaluate(async () => {
+      const group = document.getElementById('horizon-group');
+      const hub = group.querySelector('circle');
+      const settle = () => new Promise((done) => setTimeout(done, 200));
+      const centres = [];
+      // Past the transition each time: read straight after the write and the answer is where the
+      // hub still is, not where it is going, and the test would pass on any transform at all.
+      for (const deg of [0, -45, 45, 135, -170]) {
+        group.setAttribute('transform', `rotate(${deg} 50 50)`);
+        await settle();
+        const box = hub.getBoundingClientRect();
+        centres.push([box.x + box.width / 2, box.y + box.height / 2]);
+      }
+      return centres;
+    });
+
+    const [origin] = hubs;
+    for (const [x, y] of hubs) {
+      expect(Math.hypot(x - origin[0], y - origin[1])).toBeLessThan(1);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test('a phone with no motion sensors still captures', async ({ browser }) => {
   // Declining motion on iOS lands here, and so does any desktop without sensors. The core treats
   // it as a supported configuration — PoseEngine switches to vision-only (docs/03 UC-4) — so a
