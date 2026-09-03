@@ -64,11 +64,22 @@ does not have; a store whose reason to exist is modelling memory pressure cannot
 misreports it.
 
 The budget probe matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash,
-not an exception. The store allocates against a stated ceiling with a safety margin and spills
-before it is reached. *Stated, not yet probed* — `FrameStoreBudget::heapCeilingBytes` is
-documented as measured at startup and the composition root currently supplies a constant; the
-probe is outstanding and named in the roadmap. **Never** hold a whole burst of full-resolution frames for the whole sphere —
-that is tens of gigabytes.
+not an exception. The store allocates against a ceiling with a safety margin and spills before it
+is reached.
+
+In the browser that ceiling is **read from the device**: a sixteenth of `navigator.deviceMemory`,
+clamped by three quarters of what the module was linked to allow, floored where one burst stops
+fitting. `bridge/heap_budget.h` carries the arithmetic and the reasoning. Two limits belong here
+rather than in a surprise later. Safari and Firefox decline to report `deviceMemory` — it
+fingerprints the device — so every iPhone takes a stated fallback and this scales with the machine
+only on Chromium. And it reads the device rather than confirming what the tab will be allowed to
+keep, which nothing in the platform answers: the obvious probe, allocating until it fails, is
+ruled out because WASM heap growth is one-way (the test would permanently reserve what it tested)
+and because approaching the allocator's refusal is approaching the tab death this exists to avoid.
+
+Natively the ceiling is still a constant, deliberately: the bench runs on a desktop where the
+failure mode does not exist. **Never** hold a whole burst of full-resolution frames for the whole
+sphere — that is tens of gigabytes.
 
 Output panoramas are tiled (typically 512² tiles over an equirectangular grid) so blending, preview
 and export all work on bounded working sets, and so a retake re-blends a handful of tiles rather

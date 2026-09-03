@@ -77,12 +77,20 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    store with no sink refuses to spill rather than relabelling a frame it has not moved. So the
    WASM build is off the null store and *can* spill.
 
-   Two things are left and neither is a detail. **Nothing decides when to spill**: `Allocate`
-   refuses at the ceiling instead of evicting, and no production caller demotes, so the tier is a
-   finished mechanism with no policy above it. And **the ceiling is stated rather than probed** —
-   the contract says that number is measured at startup, and both platforms name a constant: 512
-   MB natively, and in the browser 128 MB clamped by what the module was linked to allow, which is
-   a real limit but the build's rather than the device's.
+   **The browser's ceiling is read from the device now**: a sixteenth of `navigator.deviceMemory`,
+   clamped by three quarters of what the module was linked to allow and floored where one burst
+   stops fitting. So a 1 GB phone and an 8 GB desktop no longer get the same number, which is what
+   "measured at startup, not assumed" was asking for. Two limits are worth knowing rather than
+   discovering: Safari and Firefox do not report `deviceMemory` at all, so every iPhone takes the
+   stated fallback and the improvement is Chromium's; and this reads the device rather than
+   confirming what the tab will actually be allowed to keep. Nothing in the platform answers that,
+   and the obvious probe — allocate and see — is ruled out twice over, because WASM heap growth is
+   one-way and because pushing to the allocator's refusal is walking up to the cliff the ceiling
+   exists to stay away from.
+
+   **What is left is the policy: nothing decides when to spill.** `Allocate` refuses at the
+   ceiling instead of evicting, and no production caller demotes, so the tier is a finished
+   mechanism with a real number under it and nothing above it.
 
    The browser store has a constraint worth knowing before it is designed, because it decides
    where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
