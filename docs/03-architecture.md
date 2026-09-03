@@ -138,7 +138,10 @@ platform quirk lives, and it is the layer whose implementations are written in T
    platform, not of the algorithm, and threading them through every signature as parameters would
    invert the dependency for no gain. All other resources reach an engine as function arguments.
 6. ResourceAccess calls resources only. No business rules, no policy, no cross-resource
-   orchestration.
+   orchestration — with the same exception as rule 5, and for the same reason: a port may call
+   `IFrameStoreAccess`. `ICameraAccess::PeekPreviewFrame` returns a `FrameRef`, so a port that
+   produces pixels has to put them somewhere, and where bytes live is V11's business universally
+   rather than each port's (ADR 0021). No other port-to-port edge is legal.
 7. Nothing calls upward. Results flow back as return values; asynchronous progress flows back as
    utility-bar events.
 

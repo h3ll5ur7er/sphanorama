@@ -182,3 +182,65 @@ describe('closing and resetting', () => {
     expect(host.motionDrain(8)).toEqual([]);
   });
 });
+
+describe('the resident preview frame', () => {
+  const frame = (width: number, height: number, fill = 1) => ({
+    width, height, bytes: new Uint8Array(width * height * 4).fill(fill),
+  });
+
+  it('reports no frame until one has been pushed', () => {
+    // The core asks through a synchronous port, so "not yet" has to be an answer rather than a
+    // wait. A burst that peeks before the first frame arrives is told, and abandons.
+    const host = createCaptureHost();
+    expect(host.previewFrame()).toBeNull();
+  });
+
+  it('holds the latest frame for the core to read', () => {
+    const host = createCaptureHost();
+    host.setPreviewFrame(frame(4, 3, 0xAB));
+
+    const held = host.previewFrame();
+    expect(held).not.toBeNull();
+    expect(held!.width).toBe(4);
+    expect(held!.height).toBe(3);
+    expect(held!.bytes[0]).toBe(0xAB);
+  });
+
+  it('replaces the previous frame rather than queueing', () => {
+    // Latest, not next: a queue would hand a burst frames from before the phone was aimed, and
+    // the manager paces itself on the clock rather than on how many arrived.
+    const host = createCaptureHost();
+    host.setPreviewFrame(frame(4, 3, 1));
+    host.setPreviewFrame(frame(8, 6, 2));
+
+    expect(host.previewFrame()!.width).toBe(8);
+    expect(host.previewFrame()!.bytes[0]).toBe(2);
+  });
+
+  it('forgets the frame when the camera closes', () => {
+    // A frame from a camera that is gone would let a burst armed afterwards capture the last
+    // thing the old stream saw, which is a picture of somewhere the phone no longer points.
+    const host = createCaptureHost();
+    host.setPreviewFrame(frame(4, 3));
+    host.closeCamera();
+
+    expect(host.previewFrame()).toBeNull();
+  });
+
+  it('forgets the frame when the camera is cleared', () => {
+    const host = createCaptureHost();
+    host.setPreviewFrame(frame(4, 3));
+    host.clearCamera();
+
+    expect(host.previewFrame()).toBeNull();
+  });
+
+  it('refuses a frame whose bytes do not match its dimensions', () => {
+    // The length is what the core sizes its copy from. A short buffer would have it read past
+    // the end of the transferred memory, which is the one failure here that is not a bad picture.
+    const host = createCaptureHost();
+    host.setPreviewFrame({ width: 4, height: 3, bytes: new Uint8Array(4 * 3 * 4 - 1) });
+
+    expect(host.previewFrame()).toBeNull();
+  });
+});

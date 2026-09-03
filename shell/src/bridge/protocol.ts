@@ -3,9 +3,9 @@
  *
  * One file, imported by both sides, because this is the crossing that is *not* generated. The
  * facade's is: a method id and a byte array in, a byte array out, knowing nothing about names, so
- * it cannot drift. This one carries the host — camera capabilities and IMU batches today, and a
- * transferred preview frame once that is built (ADR 0019) — and a hand written protocol is
- * exactly what ADR 0009 built a generator to avoid for the other boundary.
+ * it cannot drift. This one carries the host — camera capabilities, IMU batches and the latest
+ * preview frame — and a hand written protocol is exactly what ADR 0009 built a generator to avoid
+ * for the other boundary.
  * Keeping it in one file that both sides import is the cheap half of that discipline; if it grows
  * past a handful of messages it wants the expensive half too.
  *
@@ -35,7 +35,15 @@ export type ToWorker =
   | { kind: 'camera'; opened: CameraOpening | null }
   | { kind: 'motion'; capability: string }
   /** Flat doubles, `MOTION_SAMPLE_DOUBLES` per sample, transferred rather than copied. */
-  | { kind: 'imu'; doubles: Float64Array };
+  | { kind: 'imu'; doubles: Float64Array }
+  /**
+   * The latest frame the page grabbed: RGBA8, tightly packed, transferred (ADR 0021).
+   *
+   * The dimensions travel with it because the bytes alone do not say the shape, and the worker
+   * side is what sizes the copy into the frame store from them. Megabytes per message, which is
+   * why it is a transfer and why the page only sends one when a burst can use it.
+   */
+  | { kind: 'frame'; width: number; height: number; bytes: Uint8Array };
 
 export type FromWorker =
   // `spill` says whether the worker got an OPFS handle. It is not a capability the core reads —

@@ -50,17 +50,10 @@ class Runtime {
   NullRegistrationEngine registration_;
   NullCompositionEngine composition_;
 
-  // Camera and motion reach the core through ports over state the page established (ADR 0014).
-  // Every call on them is resident and synchronous, the burst included: it is paced by the
-  // manager over the preview frame the page keeps, so nothing here has to wait (ADR 0018).
-#if defined(__EMSCRIPTEN__)
-  BrowserCameraAccess camera_;
-  BrowserMotionSensorAccess motion_;
-#else
-  NullCameraAccess camera_;
-  NullMotionSensorAccess motion_;
-#endif
-
+  // Declared before the camera, which holds a reference to it: members are constructed in
+  // declaration order, and a camera handed a store that had not been built yet would be reading
+  // a ceiling of whatever was on the stack.
+  //
   // One frame store on both platforms, differing by where a spilled frame's bytes go (ADR 0020).
   // Natively there is no sink, so there is no spill tier and the store refuses to demote into
   // one: with 512 MB to spend and a desktop underneath, a ceiling refusal is the honest answer.
@@ -89,6 +82,20 @@ class Runtime {
 #else
   static constexpr int64_t kNativeHeapCeilingBytes = 512ll << 20;
   MemoryFrameStoreAccess frames_{kNativeHeapCeilingBytes};
+#endif
+
+  // Camera and motion reach the core through ports over state the page established (ADR 0014).
+  // Every call on them is resident and synchronous, the burst included: it is paced by the
+  // manager over the preview frame the page keeps, so nothing here has to wait (ADR 0018).
+  //
+  // The camera takes the frame store because a peeked frame *is* an allocation in it — that is
+  // what a FrameRef means, for every implementation of the contract (ADR 0021).
+#if defined(__EMSCRIPTEN__)
+  BrowserCameraAccess camera_{frames_};
+  BrowserMotionSensorAccess motion_;
+#else
+  NullCameraAccess camera_;
+  NullMotionSensorAccess motion_;
 #endif
 
   // The one contract with a real implementation on both platforms: a browser port backed by the

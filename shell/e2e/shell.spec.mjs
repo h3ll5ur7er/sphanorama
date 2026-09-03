@@ -84,6 +84,50 @@ test('a declined camera explains itself instead of failing silently', async ({ b
   }
 });
 
+test('a burst captures real pixels from the viewfinder', async ({ page }) => {
+  // The whole pixel path in one assertion (ADR 0021): Chromium's fake camera produces frames, the
+  // page draws one into a canvas and transfers the buffer, the worker holds it, and
+  // BrowserCameraAccess copies it into the frame store on each peek. Every piece of that is
+  // covered against a fake somewhere else; this is the only place they meet, and it is the only
+  // check that would notice the port going back to refusing.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+
+    // Through the client's own hook rather than the core directly: arming outside the capture
+    // loop is the mistake ADR 0018 warned about, so the test must not be able to make it either.
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    const armed = await page.evaluate(() => window.sphanoramaCapture());
+    expect(armed).toBe(true);
+
+    // Five frames at 80 ms, so the burst needs about half a second of ticks to fill.
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    const candidates = await page.evaluate(async () => {
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      for (const node of plan.value.nodes) {
+        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+        if (got.ok && got.value.length > 0) return got.value;
+      }
+      return [];
+    });
+
+    expect(candidates.length).toBe(5);
+    // The frames are real: a grabbed frame carries the viewfinder's shape, and a burst that
+    // allocated nothing would still have produced five candidates pointing at empty handles.
+    expect(candidates[0].frame.width).toBeGreaterThan(0);
+    expect(candidates[0].frame.height).toBeGreaterThan(0);
+    // Distinct allocations, which is what the camera contract requires of repeated peeks and
+    // what makes selecting a best frame from a burst mean anything.
+    expect(new Set(candidates.map((c) => c.frame.id)).size).toBe(5);
+  } finally {
+    await server.close();
+  }
+});
+
 test('calls a manager through the generated facade', async ({ page }) => {
   // The round trip end to end in a real browser: encode arguments, dispatch across the C ABI,
   // decode a Result. The unit tests cover each half against a fake; this is the only place both

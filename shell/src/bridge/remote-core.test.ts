@@ -201,6 +201,32 @@ describe('a worker that stops answering', () => {
   });
 });
 
+describe('pushing a frame', () => {
+  it('hands the pixels over by transfer rather than copying them', async () => {
+    // A grabbed frame is megabytes. Structured-cloning one per burst frame would cost more than
+    // the copy into the frame store that this exists to make possible.
+    const w = fakeWorker();
+    const core = await w.boot();
+    const bytes = new Uint8Array(4 * 3 * 4);
+
+    core.remote.pushFrame({ width: 4, height: 3, bytes });
+
+    const sent = w.sent.find((entry) => entry.message.kind === 'frame');
+    expect(sent).toBeDefined();
+    expect(sent!.transfer).toEqual([bytes.buffer]);
+  });
+
+  it('carries the dimensions, because the bytes alone do not say the shape', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+
+    core.remote.pushFrame({ width: 4, height: 3, bytes: new Uint8Array(4 * 3 * 4) });
+
+    const sent = w.sent.find((entry) => entry.message.kind === 'frame')!.message;
+    expect(sent).toMatchObject({ kind: 'frame', width: 4, height: 3 });
+  });
+});
+
 describe('a boot that fails', () => {
   it('terminates the worker, so its exclusive OPFS handle does not outlive the attempt', async () => {
     // The failure that makes this matter is a boot that gets far enough to open the spill handle

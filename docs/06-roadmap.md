@@ -115,13 +115,19 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    sink followed — the handle opens at worker startup, `Demote` writes through it and `Pin` faults
    back in — and it turned out not to need a store of its own at all (ADR 0020).
 
-   **Pixels do not cross yet**, and that is now the next thing rather than a footnote. The
-   protocol carries capabilities and IMU batches; it has no message for a frame, and
-   `BrowserCameraAccess::PeekPreviewFrame` still refuses with `Unsupported`. So a burst armed in
-   the browser abandons on its first tick — invisible today only because nothing arms one from the
-   client. Building it is one transferable message, a buffer the worker keeps resident, and an
-   allocation through the frame store; the shape is settled in ADR 0019 and the ~66 µs transfer
-   measurement is that path already timed.
+   **Pixels cross now** (ADR 0021), which was the next thing and is done: the page draws the
+   viewfinder into a canvas, transfers the buffer, the worker holds it, and `PeekPreviewFrame`
+   allocates a frame in the store and copies it in. Arming moved into the capture loop at the same
+   time, closing the hole ADR 0018 named, and an end-to-end test drives a real burst in a real
+   browser and checks it produced five candidates with distinct frames.
+
+   Two debts came with it, both temporary and both written down rather than left to be found. A
+   grabbed frame is **capped at 1280 on its long edge**, because RGBA is four bytes a pixel and
+   nothing compresses anything yet — the frame that gets stitched should be the full-resolution
+   one, and that means encoding to JPEG before it crosses. And **`SetLocks` still refuses**, so
+   bursts are armed with every lock off: candidates may differ in exposure, which makes comparing
+   them on sharpness mean less than it should. That is now the thing standing between a burst that
+   captures and a burst worth selecting from.
 
    One thing the numbers above do not settle, and it is the load-bearing one: **every measurement
    here is Chromium's**, and the end-to-end suite proves the handle opens in headless Chromium and

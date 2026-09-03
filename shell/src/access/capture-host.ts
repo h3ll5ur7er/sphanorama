@@ -13,6 +13,7 @@
  * `ImuSample` objects, because that is what transfers to a worker without a copy.
  */
 
+import type { GrabbedFrame } from './preview-frame';
 import type { ImuSample } from '../../../contracts/ts/contracts';
 
 export interface CameraCapabilities {
@@ -45,6 +46,17 @@ export interface CaptureHost {
   cameraCapabilities(): CameraCapabilities;
   setCamera(camera: { maxWidth: number; maxHeight: number; supportsTorch: boolean }): void;
   clearCamera(): void;
+
+  /**
+   * The latest frame the page grabbed, or null when there is not one (ADR 0021).
+   *
+   * Read synchronously from C++ through `ICameraAccess::PeekPreviewFrame`, which copies it into
+   * the frame store. Null is an answer rather than a wait — the port is synchronous and has
+   * nothing to wait with — so a burst that peeks before the first frame arrives is told so.
+   */
+  previewFrame(): GrabbedFrame | null;
+  /** Replaces whatever was there. Latest, not next: see the note on the field. */
+  setPreviewFrame(frame: GrabbedFrame): void;
 
   motionCapability(): string;
   setMotion(capability: string): void;
@@ -133,6 +145,9 @@ export interface CaptureHostOptions {
 
 export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost {
   let camera: CameraCapabilities | null = null;
+  // The latest grabbed frame, replaced rather than queued. A queue would hand a burst frames
+  // from before the phone was aimed; the manager decides *when* to take one, from the clock.
+  let preview: GrabbedFrame | null = null;
   let motion = 'None';
   // Doubles rather than samples, so a push is a copy of numbers into a numbers array and the
   // drain that C++ makes is a slice. The limit is still counted in samples, because that is the
@@ -156,13 +171,26 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
     },
 
     clearCamera() {
-      // A stale capability set would let the core plan a capture against a camera that is gone.
+      // A stale capability set would let the core plan a capture against a camera that is gone,
+      // and a stale frame would let a burst capture the last thing the old stream saw — a
+      // picture of somewhere the phone is no longer pointing.
       camera = null;
+      preview = null;
     },
 
     closeCamera() {
       camera = null;
+      preview = null;
       options.onCloseCamera?.();
+    },
+
+    previewFrame: () => preview,
+
+    setPreviewFrame(frame: GrabbedFrame) {
+      // The core sizes its copy from width and height, so a buffer that does not match them
+      // would have it read past the end of memory the page transferred over. Every other failure
+      // in this path is a bad picture; this one is not.
+      preview = frame.bytes.length === frame.width * frame.height * 4 ? frame : null;
     },
 
     motionCapability: () => motion,
