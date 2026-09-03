@@ -28,7 +28,7 @@ function fakeWorker() {
   const boot = async (methods: string[] = ['ProjectManager.list']) => {
     const connecting = connectCore(worker, 'https://example.test/core.js');
     await Promise.resolve();
-    reply({ kind: 'booted', seq: seqOf('boot'), methods });
+    reply({ kind: 'booted', seq: seqOf('boot'), methods, spill: true });
     return connecting;
   };
   return { worker, sent, reply, seqOf, boot };

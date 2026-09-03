@@ -32,6 +32,12 @@ test('loads the core and reports its capabilities', async ({ page }) => {
     // diagnosable from a screenshot.
     await expect(page.locator('#core-caps')).toContainText('single-threaded');
     await expect(page.locator('#core-caps')).toContainText('SIMD');
+    // The spill tier is announced only when it is *missing* (ADR 0020), so its absence from this
+    // line is the assertion: it says the worker opened an OPFS sync access handle for real. That
+    // is the platform risk ADR 0019 took — the handle is worker-only, and the whole reason the
+    // core moved off the main thread — so a browser that stopped supporting it must fail here
+    // rather than at the moment a capture runs out of memory.
+    await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
   } finally {
     await server.close();
   }

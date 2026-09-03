@@ -68,8 +68,8 @@ async function startCore() {
   return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`);
 }
 
-function renderCapabilities(capabilities: RuntimeCapabilities) {
-  coreCaps.textContent = formatCapabilities(capabilities);
+function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
+  coreCaps.textContent = formatCapabilities(capabilities, canSpill);
 }
 
 /**
@@ -289,7 +289,7 @@ async function main() {
     renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
-    }));
+    }), remote.canSpill());
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>,

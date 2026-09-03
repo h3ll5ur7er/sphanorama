@@ -187,6 +187,7 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
       return written;
     }
     entry->spilledHash = HashBytes(entry->bytes);
+    entry->inSink = true;
     std::vector<uint8_t>().swap(entry->bytes);
   } else if (target != Residency::Spilled && entry->residency == Residency::Spilled) {
     // Demote is named for the direction it usually goes, and the contract lets a caller name any
@@ -210,11 +211,15 @@ Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
   }
   // Taken off whichever total was holding it. Going through Reclassify first would work and
   // would read as a spill that is really a deletion.
-  if (entry->residency == Residency::Spilled && spill_ != nullptr) {
+  if (entry->inSink) {
     // Nothing else ever will. The store is the only thing that knows this frame is down there,
     // and a sphere's worth of abandoned bursts would fill the device's quota with bytes no code
-    // path can name. A refusal is reported rather than swallowed, and the entry stays, so the
-    // budget keeps accounting for what the sink still holds.
+    // path can name. Asked of the copy rather than the residency, because selection spills a
+    // burst's candidates, faults each one in to look at it and discards most of them — every one
+    // of those is resident at the moment it is forgotten and has a slot in the file regardless.
+    //
+    // A refusal is reported rather than swallowed, and the entry stays, so the budget keeps
+    // accounting for what the sink still holds.
     if (auto dropped = spill_->Drop(frame.id.value); !dropped.ok()) return dropped;
   }
   if (IsHeapTier(entry->residency)) {

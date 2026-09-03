@@ -69,12 +69,15 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    contract, `CaptureCell` became `ArmBurst`, and `OnMotion` takes one frame per tick.
 2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
    and, since a paced burst takes one frame per tick, an allocation per tick rather than a
-   burst-sized batch. `MemoryFrameStoreAccess` is the first real implementation and the one the
-   native build and the bench use: a stated ceiling it refuses to overrun, residency tiers, and a
-   fault-in on `Pin` that re-checks the ceiling. Its spill tier is still RAM, which is honest on a
-   desktop and a lie on a phone, so the WASM build stays on the null store. Two things are left,
-   and neither is a detail: **the browser store over OPFS**, and **the ceiling probe** — the
-   contract says that number is measured at startup and it is currently assumed.
+   burst-sized batch. `MemoryFrameStoreAccess` is the implementation both platforms use: a stated
+   ceiling it refuses to overrun, residency tiers, and a fault-in on `Pin` that re-checks it.
+   Where a spilled frame's bytes go is a seam inside it (ADR 0020) — nothing natively, where the
+   spill tier is a classification and the bytes stay put, and an OPFS sync access handle in the
+   browser, opened once by the worker and held for the session. So the WASM build is off the null
+   store and spilling for real. **The ceiling probe is what is left**, and it is not a detail: the
+   contract says that number is measured at startup, and both platforms currently state one — 512
+   MB natively, and in the browser 128 MB clamped by what the module was linked to allow, which is
+   a real limit but the build's rather than the device's.
 
    The browser store has a constraint worth knowing before it is designed, because it decides
    where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
@@ -104,10 +107,17 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
    Decided in ADR [0019](adr/0019-the-core-runs-in-a-worker.md), and **done**: the core runs in
    the worker [04 §4.1](04-runtime-topology.md) always specified and Phase 0 shortcut, with the
-   document host across with it and the camera and motion halves fed from the page. What is left
-   for the browser store is the OPFS sink itself — the handle opened at worker startup, `Demote`
-   writing through it, `Pin` faulting back in — plus the ceiling probe, which is the other thing
-   still assumed.
+   document host across with it and the camera and motion halves fed from the page. The sink
+   followed — the handle opens at worker startup, `Demote` writes through it and `Pin` faults back
+   in — and it turned out not to need a store of its own at all (ADR 0020). What is left is the
+   ceiling probe.
+
+   One thing the numbers above do not settle, and it is the load-bearing one: **every measurement
+   here is Chromium's**, and the end-to-end suite proves the handle opens in headless Chromium and
+   nothing more. Whether iOS Safari's sync access handles behave the same has to be checked on a
+   device. If they do not, the sink simply does not install and the store falls back to the
+   classification-only tier — a sphere capped at what fits in RAM, which the capture client says
+   out loud rather than discovering partway through.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.

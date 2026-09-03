@@ -39,12 +39,16 @@ export function describeFailure(status: Status): string {
   return MESSAGES[status.code] ?? (status.detail || `${status.component} failed (${status.code}).`);
 }
 
-export function formatCapabilities(capabilities: RuntimeCapabilities): string {
+export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean): string {
   const parts: string[] = [];
   parts.push(capabilities.threads
     ? `${capabilities.hardwareConcurrency} threads`
     : 'single-threaded');
   parts.push(capabilities.simd ? 'SIMD' : 'no SIMD');
   if (!capabilities.sharedMemory) parts.push('no shared memory');
+  // Only when it is missing. A capture with nowhere to spill is capped at what fits in RAM and
+  // will refuse partway through a sphere (ADR 0020); saying so beforehand is the difference
+  // between a known limit and an inexplicable failure. Naming the ordinary case would be noise.
+  if (!canSpill) parts.push('no spill tier');
   return parts.join(' · ');
 }

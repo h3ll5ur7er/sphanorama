@@ -35,6 +35,12 @@ export interface RemoteCore extends CoreRuntime {
   flush(): Promise<string | null>;
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
+  /**
+   * Whether the worker got a spill tier. False means the frame store has nowhere to put a frame
+   * it cannot hold, so a capture is capped at what fits in RAM — degraded, not broken, and worth
+   * saying out loud rather than surfacing later as a refusal nobody can explain (ADR 0020).
+   */
+  canSpill(): boolean;
 }
 
 export interface RemoteCoreHandle {
@@ -109,6 +115,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     onCloseCamera(handler: () => void) {
       closeCamera = handler;
     },
+    canSpill: () => booted.spill,
   };
 
   return { core: coreFrom(runtime), remote };

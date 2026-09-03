@@ -37,7 +37,11 @@ export type ToWorker =
   | { kind: 'imu'; doubles: Float64Array };
 
 export type FromWorker =
-  | { kind: 'booted'; seq: number; methods: string[] }
+  // `spill` says whether the worker got an OPFS handle. It is not a capability the core reads —
+  // the composition root inside the module decides that from the same fact — but a page that
+  // cannot spill will hit a ceiling early, and the client has to be able to say so rather than
+  // present it as a mysterious refusal (ADR 0020).
+  | { kind: 'booted'; seq: number; methods: string[]; spill: boolean }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }
   | { kind: 'flushed'; seq: number; persistError: string | null }

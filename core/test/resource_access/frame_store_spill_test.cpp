@@ -131,6 +131,23 @@ TEST_F(FrameStoreSpill, ForgettingASpilledFrameDropsItFromTheSink) {
   EXPECT_FALSE(sink.Holds(frame.id.value));
 }
 
+TEST_F(FrameStoreSpill, AFrameThatCameBackFromTheSinkIsStillDroppedWhenItIsForgotten) {
+  // Residency says where the bytes are *now*, and the sink's copy outlives a fault-in: the read
+  // does not take it away, and dropping it there would make a successful Pin depend on a cleanup
+  // that has nothing to do with it. So the store has to remember that a copy is down there.
+  // Without that, every candidate that was spilled, examined and then discarded — which is what
+  // selection does to a burst — would leave its bytes in the file until the session ended.
+  const FrameRef frame = Allocate();
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  ASSERT_TRUE(store.Pin(frame).ok());
+  ASSERT_TRUE(store.Release(frame).ok());
+  ASSERT_TRUE(sink.Holds(frame.id.value)) << "the fault-in was not meant to take the copy away";
+
+  ASSERT_TRUE(store.Forget(frame).ok());
+  EXPECT_EQ(sink.Drops(), 1);
+  EXPECT_FALSE(sink.Holds(frame.id.value));
+}
+
 TEST_F(FrameStoreSpill, TheSinkIsNotAskedAboutAFrameThatNeverLeftTheHeap) {
   // Cheap to get wrong and invisible when it is: a Drop per forgotten frame would turn every
   // discarded burst into a round trip to the file system for bytes that were never written.

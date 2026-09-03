@@ -52,6 +52,11 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
     // Taken as the bytes left for the sink and read back by ContentHash while they are gone. It
     // cannot go stale: a spilled frame cannot be pinned, so nothing can write to it.
     uint64_t spilledHash = 0;
+    // Whether the sink is holding a copy, which is not the same question as whether the frame is
+    // spilled. A fault-in reads the bytes back and leaves the copy where it is — taking it away
+    // would make a successful Pin depend on a cleanup that has nothing to do with it — so a frame
+    // can be resident and still have something down there with its name on it.
+    bool inSink = false;
     Residency residency = Residency::HeapEncoded;
     int pins = 0;
   };
