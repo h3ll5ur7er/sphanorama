@@ -172,6 +172,13 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+    // AbsoluteOrientationSensor exists in this browser and refuses to start — there is no
+    // gyroscope behind it — so the adapter hands over to the event. Waiting for that rather than
+    // assuming it is what makes the dispatch below land somewhere, and it exercises the fallback
+    // on a real engine rather than only against a fake.
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
 
     const before = await page.locator('#guidance').textContent();
 
@@ -183,8 +190,44 @@ test('an orientation event moves the pose through the sensor port', async ({ pag
     });
 
     await expect(page.locator('#guidance')).not.toHaveText(before, { timeout: 15000 });
-    // And the orientation readout followed the same samples.
-    await expect(page.locator('#orientation')).toContainText(/β 180/);
+    // And the orientation readout followed the same samples, in the frame the plan is written in
+    // rather than the triple the browser reported.
+    await expect(page.locator('#orientation')).toContainText('el 90°');
+  } finally {
+    await server.close();
+  }
+});
+
+test('the horizon rolls in place instead of swinging across the screen', async ({ page }) => {
+  // A geometry contract between index.html and capture.css, and one that only a browser can
+  // check: the client writes `rotate(deg 50 50)`, so the hub of the horizon group sits on the
+  // centre of the reticle at every roll. Getting this wrong does not look like a rotation bug --
+  // the marker sails across the viewfinder on an arc -- and nothing below the DOM can see it.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const hubs = await page.evaluate(async () => {
+      const group = document.getElementById('horizon-group');
+      const hub = group.querySelector('circle');
+      const settle = () => new Promise((done) => setTimeout(done, 200));
+      const centres = [];
+      // Past the transition each time: read straight after the write and the answer is where the
+      // hub still is, not where it is going, and the test would pass on any transform at all.
+      for (const deg of [0, -45, 45, 135, -170]) {
+        group.setAttribute('transform', `rotate(${deg} 50 50)`);
+        await settle();
+        const box = hub.getBoundingClientRect();
+        centres.push([box.x + box.width / 2, box.y + box.height / 2]);
+      }
+      return centres;
+    });
+
+    const [origin] = hubs;
+    for (const [x, y] of hubs) {
+      expect(Math.hypot(x - origin[0], y - origin[1])).toBeLessThan(1);
+    }
   } finally {
     await server.close();
   }
@@ -198,6 +241,9 @@ test('a phone with no motion sensors still captures', async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
+    // Both APIs, because the adapter now has two sources and a device with neither is the case
+    // being described. Leaving the sensor behind would test a phone that still has one.
+    delete window.AbsoluteOrientationSensor;
     delete window.DeviceOrientationEvent;
     delete window.DeviceMotionEvent;
   });

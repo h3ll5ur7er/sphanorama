@@ -14,7 +14,10 @@ import { createDocumentHost, type DocumentHost } from './access/document-host';
 import { createIndexedDbStore } from './access/indexeddb-store';
 import { toImuSample } from './access/orientation';
 import { describeFailure, formatCapabilities } from './clients/capture/status';
-import { describeGuidance, reticleRadius, RETICLE_LOCKED_RADIUS } from './clients/capture/guidance';
+import {
+  describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
+} from './clients/capture/guidance';
+import { describeAttitude } from './clients/capture/attitude';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -35,6 +38,20 @@ const motion = createMotionSensorAccess(window);
 
 /** The page half of the camera and motion ports, read synchronously from C++ (ADR 0014). */
 const captureHost = createCaptureHost();
+
+/**
+ * Keeps the motion readout showing what is actually feeding the core.
+ *
+ * The capability is the core's vocabulary and the source is the browser's. Both matter, and only
+ * together do they explain a phone whose horizon looks wrong: a quaternion sensor that could not
+ * start hands over to the Euler event asynchronously, and the two behave differently in exactly
+ * the pose this app spends its time in (ADR 0017).
+ */
+let motionCapabilityShown = 'unknown';
+function reportMotionSource(capability?: string) {
+  if (capability !== undefined) motionCapabilityShown = capability;
+  motionState.textContent = `${motionCapabilityShown} · ${motion.source()}`;
+}
 
 async function instantiateCore(host: DocumentHost & CaptureHost): Promise<SphanoramaCore> {
   // Loaded at runtime rather than bundled: the module is an artifact of the C++ build, and the
@@ -76,7 +93,7 @@ async function enable(core: SphanoramaCore) {
   if (capability.ok) captureHost.setMotion(capability.value);
   const started = await motion.start(60);
   if (started.ok) {
-    motionState.textContent = capability.ok ? capability.value : 'unknown';
+    reportMotionSource(capability.ok ? capability.value : 'unknown');
   } else {
     // The core is told None, and that is a supported configuration rather than a failure: the
     // manager puts PoseEngine into vision-only mode and no other component learns the difference
@@ -92,7 +109,7 @@ async function enable(core: SphanoramaCore) {
   // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
   // without it would turn a supported degraded mode into a dead end.
   if (opened.ok) await beginSession(core, started.ok);
-  else if (started.ok) pump(core, null);
+  else if (started.ok) pump(core, null, true);
 }
 
 /**
@@ -124,21 +141,21 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
   });
   if (!begun.ok) {
     stage.textContent = describeFailure(begun.status);
-    pump(core, null);
+    pump(core, null, motionRunning);
     return;
   }
 
   const plan = await core.captureSession.getPlan();
   if (!plan.ok) {
     stage.textContent = describeFailure(plan.status);
-    pump(core, null);
+    pump(core, null, motionRunning);
     return;
   }
 
   stage.textContent = motionRunning
     ? `capturing — ${plan.value.nodes.length} cells planned`
     : `capturing without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
-  pump(core, plan.value);
+  pump(core, plan.value, motionRunning);
 }
 
 /**
@@ -148,13 +165,16 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
  * no session the loop still runs, so the sensor readout stays live and the reason capture did
  * not start remains on screen.
  */
-function pump(core: SphanoramaCore, plan: CapturePlan | null) {
+function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boolean) {
   const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
   let nodesSatisfied = 0;
   const nodesTotal = plan?.nodes.length ?? 0;
   let guidedOnce = false;
+  // Accumulated rather than taken fresh each frame, so rolling past the ±180 seam turns the
+  // horizon by the two degrees the hand moved and not by the 358 the number jumped.
+  let horizonDeg = 0;
 
   const step = async () => {
     const drained = await motion.drain(32);
@@ -166,11 +186,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
     if (samples.length > 0) captureHost.pushMotion(samples.map(toImuSample));
 
     if (samples.length > 0) {
-      const latest = samples[samples.length - 1];
-      const { alpha, beta, gamma } = latest.orientation;
-      orientationOut.textContent =
-        `α ${alpha.toFixed(0)}° β ${beta.toFixed(0)}° γ ${gamma.toFixed(0)}°`;
+      // The attitude, not whatever triple the platform happened to report: the two sources behind
+      // the port speak different languages, and azimuth/elevation/roll is the one the plan is
+      // written in (ADR 0017).
+      orientationOut.textContent = describeAttitude(samples[samples.length - 1].orientation);
     }
+    // Re-read rather than latched at start: the source can change mid-session, and with motion
+    // off this line is carrying the reason why, which must not be overwritten with a description
+    // of nothing.
+    if (motionRunning) reportMotionSource();
 
     // Only when there is something new to fold in, plus once at the start so the reticle has a
     // position before the first sample arrives. An empty batch cannot change the pose, so it
@@ -191,8 +215,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
         // gamma from the sensor. Deriving it here would be the client deciding how level is
         // level enough, which is the planner's call (V4) and used to be wrong anyway: roll was
         // folded into the angular error until the engine started reporting it separately.
-        horizonGroup.setAttribute('transform',
-                                  `rotate(${(-guidance.rollErrorDeg).toFixed(1)} 50 50)`);
+        horizonDeg = unwrapDegrees(horizonDeg, -guidance.rollErrorDeg);
+        horizonGroup.setAttribute('transform', `rotate(${horizonDeg.toFixed(1)} 50 50)`);
         guidanceOut.textContent = describeGuidance(guidance, {
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
         });
