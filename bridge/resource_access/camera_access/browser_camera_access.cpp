@@ -25,6 +25,11 @@ EM_JS(double, host_camera_metric, (int32_t which), {
   }
 });
 
+EM_JS(void, host_camera_close, (), {
+  const host = Module.sphHost;
+  if (host && host.closeCamera) host.closeCamera();
+});
+
 }  // namespace
 
 Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
@@ -83,6 +88,13 @@ Status BrowserCameraAccess::SetLocks(bool exposure, bool whiteBalance, bool focu
   return Status::Ok();
 }
 
-Status BrowserCameraAccess::Close() { return Status::Ok(); }
+Status BrowserCameraAccess::Close() {
+  // Reporting success while the camera kept running let CaptureSessionManager::End return Ok
+  // with the indicator still lit — which a user reads, correctly, as the app still watching them.
+  // Stopping a MediaStreamTrack is synchronous, so this fits the resident-port pattern (ADR 0014)
+  // without needing anything to be awaited.
+  host_camera_close();
+  return Status::Ok();
+}
 
 }  // namespace sphanorama::bridge

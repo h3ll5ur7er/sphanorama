@@ -23,6 +23,13 @@ class BrowserMotionSensorAccess final : public IMotionSensorAccess {
   // refusing the one call the contract is built around.
   Result<int32_t> Drain(std::span<ImuSample> out) override;
   Status Stop() override;
+
+ private:
+  // The contract's precondition, which this port has to enforce itself: Drain is refused before
+  // Start and after Stop. The page's listener is what fills the buffer, but the *session* is what
+  // this flag tracks, and a manager relying on the refusal would otherwise get an empty success
+  // from the browser and a FailedPrecondition from every other implementation.
+  bool running_ = false;
 };
 
 }  // namespace sphanorama::bridge

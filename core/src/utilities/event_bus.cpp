@@ -34,7 +34,14 @@ void EventBus::Publish(const Event& event) {
     const auto it = std::find_if(subscriptions_.begin(), subscriptions_.end(),
                                  [token](const Subscription& s) { return s.token == token; });
     // Re-check liveness on every iteration: an earlier handler may have cancelled this one.
-    if (it != subscriptions_.end() && it->alive && it->handler) it->handler(event);
+    if (it == subscriptions_.end() || !it->alive || !it->handler) continue;
+
+    // Copied out of the vector before it is called, because the call may grow the vector: a
+    // handler that subscribes triggers a reallocation that moves and destroys the very callable
+    // running, and a small lambda's captures live inside that storage. Invoking through the
+    // iterator is a use-after-free the moment the handler reads one of its own captures.
+    const std::function<void(const Event&)> handler = it->handler;
+    handler(event);
   }
   --dispatch_depth_;
 

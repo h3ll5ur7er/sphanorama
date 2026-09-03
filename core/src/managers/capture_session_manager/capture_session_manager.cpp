@@ -48,6 +48,14 @@ void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
 }
 
 Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CapturePlanSpec& spec) {
+  if (active_) {
+    // Replacing a live session silently dropped its candidate map, leaving every frame in it
+    // pinned in the store with nothing holding the handles — a full sphere of bursts leaked on a
+    // double-tap. Ending a session is how you end one; there is no second way.
+    return Err<SessionId>(StatusCode::FailedPrecondition, kComponent,
+                          "a session is already in progress; end it first");
+  }
+
   // Checked first, and before the camera: End writes this session's document through the project
   // store, and the store creates storage on demand — so beginning against an id nobody created
   // leaves a titleless project behind in the user's list. Asking for camera permission for a

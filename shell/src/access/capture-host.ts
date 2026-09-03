@@ -46,6 +46,17 @@ export interface CaptureHost {
   pushMotion(samples: ImuSample[]): void;
   /** Called synchronously from C++, through IMotionSensorAccess::Drain. */
   motionDrain(maxSamples: number): number[];
+  /** Called from C++ on Stop: samples from a finished session must not seed the next one. */
+  resetMotion(): void;
+
+  /**
+   * Stops the camera for real. Called synchronously from ICameraAccess::Close, so it must not
+   * await anything — stopping a MediaStreamTrack is synchronous, which is what makes this
+   * possible at all.
+   */
+  closeCamera(): void;
+  /** Where the page hands over the stream it opened, so the host can stop it later. */
+  setCameraStream(stream: MediaStream | null): void;
 }
 
 /**
@@ -88,6 +99,7 @@ export function createCaptureHost(): CaptureHost {
   let camera: CameraCapabilities | null = null;
   let motion = 'None';
   let buffered: ImuSample[] = [];
+  let stream: MediaStream | null = null;
 
   return {
     cameraOpen: () => camera !== null,
@@ -110,6 +122,18 @@ export function createCaptureHost(): CaptureHost {
       camera = null;
     },
 
+    setCameraStream(opened: MediaStream | null) {
+      stream = opened;
+    },
+
+    closeCamera() {
+      // Every track, not just video: a stream left running keeps the camera indicator lit, which
+      // users reasonably read as the app still watching them after they ended a capture.
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      camera = null;
+    },
+
     motionCapability: () => motion,
     setMotion(capability: string) {
       motion = capability;
@@ -127,6 +151,10 @@ export function createCaptureHost(): CaptureHost {
       const flat: number[] = [];
       for (const sample of taken) flatten(sample, flat);
       return flat;
+    },
+
+    resetMotion() {
+      buffered = [];
     },
   };
 }

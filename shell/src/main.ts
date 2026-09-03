@@ -61,6 +61,9 @@ async function enable(core: SphanoramaCore) {
     // Told to the host before the core is asked to begin: the plan is sized from the lens, and
     // the core reads the lens through a synchronous port that cannot wait for getUserMedia.
     captureHost.setCamera(opened.value);
+    // Handed over so the core can stop it: Close is a synchronous port call, and the host is the
+    // only thing on this side holding the tracks.
+    captureHost.setCameraStream(camera.stream());
     cameraState.textContent = `${opened.value.maxWidth}×${opened.value.maxHeight}`;
     viewfinder.srcObject = camera.stream();
   } else {

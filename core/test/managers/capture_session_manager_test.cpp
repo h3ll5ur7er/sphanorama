@@ -108,6 +108,29 @@ TEST_F(CaptureSession, PushedSamplesAreNotTakenTwice) {
   EXPECT_EQ(remaining.value, 4);
 }
 
+TEST_F(CaptureSession, ASecondBeginWithoutAnEndIsRefused) {
+  // Silently replacing the session dropped the candidate map on the floor: those frames stayed
+  // pinned in the store with nothing left holding their handles, so a full sphere of bursts
+  // leaked on a double-tap of the enable button. It also restarted the camera and sensor
+  // underneath a session the caller still believed in.
+  const SessionId first = Begin();
+  auto again = manager->Begin(kProject, Spec());
+  EXPECT_EQ(again.status.code, StatusCode::FailedPrecondition);
+
+  // And the first session is untouched, not half-replaced.
+  auto plan = manager->GetPlan();
+  ASSERT_TRUE(plan.ok());
+  EXPECT_FALSE(plan.value.nodes.empty());
+  ASSERT_TRUE(manager->End().ok());
+  EXPECT_GT(first.value, 0u);
+}
+
+TEST_F(CaptureSession, BeginningAgainAfterEndIsFine) {
+  Begin();
+  ASSERT_TRUE(manager->End().ok());
+  EXPECT_TRUE(manager->Begin(kProject, Spec()).ok());
+}
+
 TEST_F(CaptureSession, CandidatesForACellOutsideThePlanIsRefused) {
   // CaptureCell and RequestRetake both answer NotFound here. Returning an empty success instead
   // makes a typo'd cell indistinguishable from a real one nobody has captured yet.

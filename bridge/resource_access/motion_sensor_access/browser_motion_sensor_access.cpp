@@ -34,6 +34,11 @@ EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples), {
   return flat.length / 16;
 });
 
+EM_JS(void, host_motion_reset, (), {
+  const host = Module.sphHost;
+  if (host && host.resetMotion) host.resetMotion();
+});
+
 }  // namespace
 
 Result<MotionCapability> BrowserMotionSensorAccess::Capabilities() {
@@ -44,14 +49,19 @@ Status BrowserMotionSensorAccess::Start(int32_t requestedHz) {
   if (requestedHz <= 0) {
     return Fail(StatusCode::InvalidArgument, kComponent, "sample rate must be positive");
   }
-  // The page started the sensor before it began a session; there is nothing to start here.
-  return host_motion_capability() == 0
-             ? Fail(StatusCode::SensorUnavailable, kComponent,
-                    "the page reports no motion sensors")
-             : Status::Ok();
+  // The page started the sensor before it began a session; there is nothing to start here except
+  // to record that a session is now entitled to drain.
+  if (host_motion_capability() == 0) {
+    return Fail(StatusCode::SensorUnavailable, kComponent, "the page reports no motion sensors");
+  }
+  running_ = true;
+  return Status::Ok();
 }
 
 Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
+  if (!running_) {
+    return Err<int32_t>(StatusCode::FailedPrecondition, kComponent, "sensor is not running");
+  }
   if (out.empty()) return Ok(0);
 
   // One call per drain, not one per field: the host returns a flat run of doubles and this writes
@@ -76,6 +86,12 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
   return Ok(static_cast<int32_t>(taken));
 }
 
-Status BrowserMotionSensorAccess::Stop() { return Status::Ok(); }
+Status BrowserMotionSensorAccess::Stop() {
+  running_ = false;
+  // The page's buffer is dropped too: samples from before a stop describe a pose nobody asked
+  // for, and handing them to the next session would start it looking the wrong way.
+  host_motion_reset();
+  return Status::Ok();
+}
 
 }  // namespace sphanorama::bridge

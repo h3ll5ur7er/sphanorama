@@ -136,3 +136,41 @@ describe('the motion buffer the core drains', () => {
     expect(drained[0]).toBe(10);   // the first ten were dropped, not the last ten
   });
 });
+
+describe('closing and resetting', () => {
+  it('stops every track when the core closes the camera', () => {
+    // Video alone is not enough: any live track keeps the indicator lit, and a user who ended a
+    // capture reasonably reads that as the app still watching them.
+    const stopped: string[] = [];
+    const track = (kind: string) => ({ kind, stop: () => stopped.push(kind) });
+    const stream = { getTracks: () => [track('video'), track('audio')] } as unknown as MediaStream;
+
+    const host = createCaptureHost();
+    host.setCamera({ maxWidth: 640, maxHeight: 480, supportsTorch: false });
+    host.setCameraStream(stream);
+    expect(host.cameraOpen()).toBe(true);
+
+    host.closeCamera();
+    expect(stopped).toEqual(['video', 'audio']);
+    // And the capabilities go with it, or the core could plan against a camera that is gone.
+    expect(host.cameraOpen()).toBe(false);
+  });
+
+  it('survives a close with no stream to close', () => {
+    const host = createCaptureHost();
+    expect(() => host.closeCamera()).not.toThrow();
+  });
+
+  it('drops buffered samples when the sensor stops', () => {
+    // Samples from a finished session describe a pose nobody asked for; handing them to the next
+    // one would start it looking the wrong way.
+    const host = createCaptureHost();
+    host.pushMotion([{
+      timestampNs: 1, angularVelocity: { x: 0, y: 0, z: 0 }, acceleration: { x: 0, y: 0, z: 0 },
+      hasMagnetometer: false, magneticField: { x: 0, y: 0, z: 0 },
+      hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 },
+    }]);
+    host.resetMotion();
+    expect(host.motionDrain(8)).toEqual([]);
+  });
+});
