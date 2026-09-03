@@ -76,9 +76,45 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
                        "no samples to judge stability from");
   }
 
+  // Measured rates when a platform supplies them, differences between attitudes when it does not.
+  //
+  // The distinction is not academic. The browser reports an attitude and no rates at all, so
+  // every sample it produces carries a zeroed angularVelocity standing in for "not measured" —
+  // and reading those zeros as a measurement reported a phone mid-swing as perfectly still.
+  // Stability is what gates firing a burst, so that is the one direction this must not be wrong
+  // in. `hasOrientation` is what tells the two kinds of sample apart (ADR 0015).
   double peak = 0.0;
+  bool measured = false;
+
   for (const ImuSample& sample : samples) {
-    peak = std::max(peak, Magnitude(sample.angularVelocity));
+    if (!sample.hasOrientation) {
+      peak = std::max(peak, Magnitude(sample.angularVelocity));
+      measured = true;
+    }
+  }
+
+  // Differentiating filtered attitudes is noisier than a gyroscope in exactly the band that
+  // matters, so it is the fallback rather than the default.
+  if (!measured) {
+    const ImuSample* previous = nullptr;
+    for (const ImuSample& sample : samples) {
+      if (!sample.hasOrientation) continue;
+      if (previous != nullptr && sample.timestampNs > previous->timestampNs) {
+        const double seconds =
+            static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
+        const double radians = AngleBetween(previous->orientation, sample.orientation);
+        peak = std::max(peak, radians / seconds);
+        measured = true;
+      }
+      previous = &sample;
+    }
+  }
+
+  if (!measured) {
+    // One attitude says where the phone is, not whether it is moving. Answering "perfectly still"
+    // from it would let a burst fire mid-swing on the first frame after a dropout.
+    return Err<double>(StatusCode::FailedPrecondition, kComponent,
+                       "a single sample cannot show whether the device is moving");
   }
   return Ok(std::clamp(1.0 - peak / kUnusableRateRadPerSec, 0.0, 1.0));
 }

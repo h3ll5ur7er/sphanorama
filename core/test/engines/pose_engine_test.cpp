@@ -236,5 +236,62 @@ TEST(PoseEngine, VisualCorrectionIsNotAttemptedYet) {
   EXPECT_NEAR(AngleBetween(corrected.value.orientation, prior.orientation), 0.0, 1e-12);
 }
 
+
+TEST(PoseEngine, ASwingingPhoneIsUnstableEvenWithNoRatesToReadIt) {
+  // The browser reports an attitude and no rates at all, so every sample's angularVelocity is a
+  // zero standing in for "not measured". Reading those zeros as a measurement made Stability
+  // report 1.0 for a phone being whipped around — and stability is what gates firing a burst, so
+  // the one reading that must never be wrong was wrong in exactly the direction that hurts.
+  OrientationPoseEngine engine;
+  const std::vector<ImuSample> swung{
+      Oriented(0, 0.0, 0.0),
+      Oriented(100'000'000, 30.0, 0.0),    // 30 degrees in a tenth of a second
+      Oriented(200'000'000, 60.0, 0.0),
+  };
+  auto stability = engine.Stability(swung);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_LT(stability.value, 0.2);
+}
+
+TEST(PoseEngine, APhoneHeldStillIsStableFromOrientationsAlone) {
+  OrientationPoseEngine engine;
+  const std::vector<ImuSample> held{
+      Oriented(0, 42.0, 10.0),
+      Oriented(100'000'000, 42.0, 10.0),
+      Oriented(200'000'000, 42.0, 10.0),
+  };
+  auto stability = engine.Stability(held);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_NEAR(stability.value, 1.0, 1e-6);
+}
+
+TEST(PoseEngine, OneOrientationIsNotEnoughToJudgeMotion) {
+  // A single attitude says where the phone is, not whether it is moving. Reporting "perfectly
+  // still" from it would let a burst fire mid-swing on the very first frame after a dropout.
+  OrientationPoseEngine engine;
+  const std::vector<ImuSample> single{Oriented(0, 0.0, 0.0)};
+  EXPECT_FALSE(engine.Stability(single).ok());
+}
+
+TEST(PoseEngine, StillPrefersMeasuredRatesWhenAPlatformSuppliesThem) {
+  // A device that reports real rates should be judged on them rather than on differences between
+  // filtered attitudes, which are noisier in exactly the band that matters.
+  OrientationPoseEngine engine;
+  const std::vector<ImuSample> spun{Spinning(0, 3.0), Spinning(100'000'000, 3.0)};
+  auto stability = engine.Stability(spun);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_LT(stability.value, 0.2);
+}
+
+TEST(PoseEngine, IgnoresATimestampThatDidNotAdvance) {
+  // Two samples with the same timestamp give an infinite rate if divided naively.
+  OrientationPoseEngine engine;
+  const std::vector<ImuSample> stuck{Oriented(1'000, 0.0, 0.0), Oriented(1'000, 90.0, 0.0)};
+  auto stability = engine.Stability(stuck);
+  if (stability.ok()) {
+    EXPECT_TRUE(std::isfinite(stability.value));
+  }
+}
+
 }  // namespace
 }  // namespace sphanorama
