@@ -41,7 +41,7 @@ TEST(FakeExport, RejectsAnEmptyFilename) {
 }
 
 TEST(FakeCodec, RoundTripsPixelsThroughEncodeAndDecode) {
-  auto store = std::make_shared<FakeFrameStoreAccess>();
+  auto store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeImageCodecAccess codec(store);
 
   auto frame = store->Allocate(4, 1, PixelFormat::RGBA8);
@@ -61,7 +61,7 @@ TEST(FakeCodec, RoundTripsPixelsThroughEncodeAndDecode) {
 TEST(FakeCodec, RemembersWhetherGPanoMetadataWasRequested) {
   // Without the GPano block an export is a wide photo, not a sphere — the difference between
   // the product working and not, and invisible in the pixels.
-  auto store = std::make_shared<FakeFrameStoreAccess>();
+  auto store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeImageCodecAccess codec(store);
   auto frame = store->Allocate(4, 1, PixelFormat::RGBA8);
   ASSERT_TRUE(frame.ok());
@@ -78,7 +78,7 @@ TEST(FakeCodec, RefusesAPayloadThatIsNotAWholeNumberOfPixels) {
   // The magic matches, so the length is the only thing standing between the copy and the end of
   // the buffer: floor(size/4) pixels are allocated and size bytes are written into them. ASan
   // catches it the moment a test tries, which is exactly what a fake is for.
-  auto store = std::make_shared<FakeFrameStoreAccess>();
+  auto store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeImageCodecAccess codec(store);
   auto frame = store->Allocate(4, 1, PixelFormat::RGBA8);
   ASSERT_TRUE(frame.ok());

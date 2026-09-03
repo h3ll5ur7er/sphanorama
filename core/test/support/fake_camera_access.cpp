@@ -10,7 +10,7 @@ constexpr int32_t kHeight = 24;
 }  // namespace
 
 FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
-    : store_(store ? std::move(store) : std::make_shared<FakeFrameStoreAccess>(1 << 22)) {
+    : store_(store ? std::move(store) : std::make_shared<MemoryFrameStoreAccess>(1 << 22)) {
   capabilities_.maxWidth = kWidth;
   capabilities_.maxHeight = kHeight;
   capabilities_.horizontalFovDeg = 66.0;

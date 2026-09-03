@@ -1,15 +1,15 @@
 // The frame-store contract, as a suite that runs against every implementation.
 //
-// Only the fake is listed today. When the OPFS-backed browser store and the native bench store
-// arrive they join the type list below, and the property that matters — that all implementations
-// agree — is checked by construction rather than by reading two files side by side.
+// Only the in-memory store is listed today. When the OPFS-backed browser store arrives it joins
+// the type list below, and the property that matters — that all implementations agree — is
+// checked by construction rather than by reading two files side by side.
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
 
 #include "sphanorama/resource_access/frame_store_access.h"
-#include "support/fake_frame_store_access.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 
 namespace sphanorama {
 namespace {
@@ -41,7 +41,7 @@ class FrameStoreAccessContract : public ::testing::Test {
   }
 };
 
-using Implementations = ::testing::Types<FakeFrameStoreAccessFactory>;
+using Implementations = ::testing::Types<MemoryFrameStoreAccessFactory>;
 TYPED_TEST_SUITE(FrameStoreAccessContract, Implementations);
 
 TYPED_TEST(FrameStoreAccessContract, AllocateReturnsAFrameMatchingTheRequest) {

@@ -14,7 +14,7 @@
 #include "engines/pose_engine/null_pose_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
 #include "support/fake_camera_access.h"
-#include "support/fake_frame_store_access.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_motion_sensor_access.h"
 #include "support/fake_project_store_access.h"
 #include "utilities/clock.h"
@@ -43,7 +43,7 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
 class CaptureSession : public ::testing::Test {
  protected:
   void SetUp() override {
-    store = std::make_shared<FakeFrameStoreAccess>(1 << 22);
+    store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
     camera = std::make_unique<FakeCameraAccess>(store);
     sensor = std::make_unique<FakeMotionSensorAccess>();
     projects = std::make_unique<FakeProjectStoreAccess>();
@@ -76,7 +76,7 @@ class CaptureSession : public ::testing::Test {
   NullCoveragePlannerEngine planner;
   NullPoseEngine pose;
   NullFrameQualityEngine quality;
-  std::shared_ptr<FakeFrameStoreAccess> store;
+  std::shared_ptr<MemoryFrameStoreAccess> store;
   std::unique_ptr<FakeCameraAccess> camera;
   std::unique_ptr<FakeMotionSensorAccess> sensor;
   std::unique_ptr<FakeProjectStoreAccess> projects;

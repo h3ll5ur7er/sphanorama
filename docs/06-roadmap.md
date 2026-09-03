@@ -69,7 +69,12 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    burst instead of returning one.
 2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
    and, since a paced burst takes one frame per tick, an allocation per tick rather than a
-   burst-sized batch.
+   burst-sized batch. `MemoryFrameStoreAccess` is the first real implementation and the one the
+   native build and the bench use: a stated ceiling it refuses to overrun, residency tiers, and a
+   fault-in on `Pin` that re-checks the ceiling. Its spill tier is still RAM, which is honest on a
+   desktop and a lie on a phone, so the WASM build stays on the null store. Two things are left,
+   and neither is a detail: **the browser store over OPFS**, and **the ceiling probe** — the
+   contract says that number is measured at startup and it is currently assumed.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.
