@@ -25,8 +25,9 @@ differences are decisions, each with an ADR:
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
   criterion. `FrameQuality`, `Registration` and `Composition` are still null.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
-  (ADR 0014). *`CaptureBurst` refuses: it is the one call that cannot be made resident in
-  advance, and deciding it needs measurements.*
+  (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
+  advance. The measurements were taken and it left the contract — a burst is paced by the manager
+  over `PeekPreviewFrame` now (ADR 0018).*
 - The test machinery the rest of the plan depends on: GoogleTest harness and the resource-access
   fakes behind shared contract suites (ADR 0010). *The synthetic-dataset generator and the frame
   folder / recorded IMU log the fakes would replay are deferred to Phase 1, which is the first
@@ -59,12 +60,53 @@ session began.
 
 What is left before Phase 1 can start in earnest, in the order it blocks:
 
-1. **A path for pixels.** `CaptureBurst` is the one call that does not fit the resident-host
-   pattern: a burst takes time and cannot be made resident in advance, so it needs either Asyncify
-   on that call path or a redesign in which the client drives burst timing. Decided with
-   measurements, not in the abstract. Until then `BrowserCameraAccess::CaptureBurst` refuses with
-   `Unsupported` and a reason, and the cells stay empty.
-2. **`IFrameStoreAccess` with real residency**, which is what a burst would need somewhere to go.
+1. **A path for pixels.** Decided, with the measurements ADR 0014 asked for: the burst is paced by
+   the manager across the ticks the client already makes, over a preview frame the page keeps
+   resident, and `CaptureBurst` leaves the contract (ADR 0018). Asyncify turned out to be cheap —
+   +3.2 kB gzipped and +30 ns on a facade call — and was rejected anyway, because the generated
+   facade makes its instrumentation all-or-nothing and the one-suspend-at-a-time rule it imposes
+   is enforced by crashing the renderer. The reshape landed with it: `CaptureBurst` is out of the
+   contract, `CaptureCell` became `ArmBurst`, and `OnMotion` takes one frame per tick.
+2. **`IFrameStoreAccess` with real residency**, which is what those frames need somewhere to go —
+   and, since a paced burst takes one frame per tick, an allocation per tick rather than a
+   burst-sized batch. `MemoryFrameStoreAccess` is the first real implementation and the one the
+   native build and the bench use: a stated ceiling it refuses to overrun, residency tiers, and a
+   fault-in on `Pin` that re-checks the ceiling. Its spill tier is still RAM, which is honest on a
+   desktop and a lie on a phone, so the WASM build stays on the null store. Two things are left,
+   and neither is a detail: **the browser store over OPFS**, and **the ceiling probe** — the
+   contract says that number is measured at startup and it is currently assumed.
+
+   The browser store has a constraint worth knowing before it is designed, because it decides
+   where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
+   asks for bytes and reads them — and OPFS is asynchronous except through
+   `createSyncAccessHandle`, which is **worker-only**. Measured in Chromium: on the main thread,
+   where the core runs today, that method is not even present; in a worker it is, the handle
+   opens once in 0.6 ms, and reads and writes are then synchronous and roughly twice as fast as
+   the main-thread async path (8 MB: 30 ms write / 14 ms read, against 44 ms / 15 ms). Opening
+   once and holding it is precisely the resident-host shape ADR 0014 already uses for the project
+   store, so a worker would make spill an ordinary synchronous port with no Asyncify and no
+   contract change — and would also keep a 30 ms spill off the frame the capture loop is drawing.
+   What it costs is the camera: the ports read a host that lives in the page, and getting camera
+   frames into a worker means `MediaStreamTrackProcessor`, which Safari does not have. That
+   trade looked at first like a worker for the frame store against a page for the camera. It is
+   not: `MediaStreamTrackProcessor` is one way to get pixels into a worker and not the only one,
+   and the page can grab a frame and hand the buffer over by transfer, which is zero-copy and
+   needs nothing Safari lacks. The camera can stay in the page.
+
+   What a worker actually costs is the round trip. Measured in Chromium, with the core booted in
+   a module worker and both paths timed in one page: a bare `postMessage` round trip is ~63 µs
+   and a facade call through one ~71 µs, against ~0.4 µs for the direct call the client makes
+   today. Transferring a frame-sized buffer costs the same ~66 µs at 1 MB and at 8 MB, which is
+   the zero-copy result and the sanity check on the number. So one tick of the capture loop would
+   spend 71 µs of a 16,667 µs frame — 0.4% — to move a 30 ms spill off the frame the user is
+   looking at, where it currently costs about two dropped ones. Numbers are Chromium on a loaded
+   machine; a phone will differ, and there are two orders of magnitude of headroom for it to.
+
+   Decided in ADR [0018](adr/0018-the-burst-is-paced-by-the-manager-over-a-resident-frame.md)'s
+   successor, [0019](adr/0019-the-core-runs-in-a-worker.md): the core moves into the worker
+   [04 §4.1](04-runtime-topology.md) always specified and Phase 0 shortcut, and the resident host
+   moves with it. So the browser frame store is not the next thing to build — the worker is, and
+   the store lands in it.
 3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
    and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
    complementary fusion, and gyro bias is not handled at all.

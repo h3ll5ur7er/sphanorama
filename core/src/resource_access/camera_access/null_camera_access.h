@@ -13,7 +13,6 @@ class NullCameraAccess final : public ICameraAccess {
   Status StartPreview() override;
   Status StopPreview() override;
   Result<FrameRef> PeekPreviewFrame() override;
-  Result<std::vector<FrameRef>> CaptureBurst(const BurstSpec& burst) override;
   Status SetLocks(bool exposure, bool whiteBalance, bool focus) override;
   Status Close() override;
 };

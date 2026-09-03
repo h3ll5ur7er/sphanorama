@@ -5,7 +5,7 @@
 
 #include "sphanorama/resource_access/frame_store_access.h"
 #include "sphanorama/resource_access/image_codec_access.h"
-#include "support/fake_frame_store_access.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 
 namespace sphanorama {
 

@@ -11,7 +11,7 @@ constexpr uint8_t kMagic[4] = {'S', 'P', 'H', '0'};
 }  // namespace
 
 FakeImageCodecAccess::FakeImageCodecAccess(std::shared_ptr<IFrameStoreAccess> store)
-    : store_(store ? std::move(store) : std::make_shared<FakeFrameStoreAccess>(1 << 22)) {}
+    : store_(store ? std::move(store) : std::make_shared<MemoryFrameStoreAccess>(1 << 22)) {}
 
 Result<std::vector<uint8_t>> FakeImageCodecAccess::Encode(const FrameRef& frame,
                                                           const EncodeSpec& spec) {

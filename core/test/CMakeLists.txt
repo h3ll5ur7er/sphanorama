@@ -29,7 +29,6 @@ add_executable(sphanorama_tests
   resource_access/project_store_access_contract_test.cpp
   support/fake_camera_access.cpp
   support/fake_export_access.cpp
-  support/fake_frame_store_access.cpp
   support/fake_image_codec_access.cpp
   support/fake_motion_sensor_access.cpp
   support/fake_project_store_access.cpp

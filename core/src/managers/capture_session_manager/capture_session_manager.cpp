@@ -10,15 +10,29 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // One frame's worth at sensor rate, with room to spare. Anything older than the last few
 // frames is not worth integrating: the pose it would produce is already stale.
 constexpr size_t kDrainBatch = 64;
+
+// Two failures and one Status to say them in.
+//
+// The cause is what the caller has to act on, so its code is the one that survives; the unlock
+// failure is folded into the detail rather than replacing it. Neither is discarded, which is the
+// point: a tick that failed *and* left the camera pinned to a burst's exposure is a viewfinder
+// the user cannot fix by pointing somewhere else, and reporting only one of the two facts leaves
+// nothing holding the other.
+Status Also(Status cause, const Status& unlock) {
+  if (unlock.ok()) return cause;
+  if (!cause.detail.empty()) cause.detail += "; ";
+  cause.detail += "and the camera is still locked: " + unlock.detail;
+  return cause;
+}
 }
 
 CaptureSessionManager::CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
                                              IFrameQualityEngine& quality, ICameraAccess& camera,
                                              IMotionSensorAccess& sensor,
                                              IFrameStoreAccess& frames,
-                                             IProjectStoreAccess& projects)
+                                             IProjectStoreAccess& projects, IClock& clock)
     : planner_(planner), pose_(pose), quality_(quality), camera_(camera), sensor_(sensor),
-      frames_(frames), projects_(projects) {}
+      frames_(frames), projects_(projects), clock_(clock) {}
 
 Status CaptureSessionManager::RequireSession() const {
   return active_ ? Status::Ok()
@@ -76,6 +90,10 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   CapturePlanSpec resolved = spec;
   if (resolved.horizontalFovDeg <= 0.0) resolved.horizontalFovDeg = opened.value.horizontalFovDeg;
   if (resolved.verticalFovDeg <= 0.0) resolved.verticalFovDeg = opened.value.verticalFovDeg;
+
+  // Kept, not read once and dropped: it is the floor on how fast a burst can honestly take
+  // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
+  max_burst_fps_ = opened.value.maxBurstFps;
 
   auto capability = sensor_.Capabilities();
   resolved.motion = capability.ok() ? capability.value : MotionCapability::None;
@@ -140,79 +158,184 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
 
   // An empty batch is the common case, not an error: the capture loop calls this every frame
   // whether or not the sensor produced anything since the last one.
+  //
+  // Note what every failure below goes through. A burst is advanced at the end of this call, so a
+  // pose or planner failure returns before it — and SPH_TRY here would leave the burst armed with
+  // the exposure locked. The client stops ticking once a call fails, so nothing would ever reach
+  // the cleanup: the lock would outlive the session.
   if (!batch.empty()) {
-    SPH_TRY(auto advanced, pose_.Integrate(pose_state_, batch));
-    pose_state_ = advanced;
+    auto advanced = pose_.Integrate(pose_state_, batch);
+    if (!advanced.ok()) return Abandon(advanced.status);
+    pose_state_ = advanced.value;
   }
 
-  SPH_TRY(auto guidance, planner_.Locate(pose_state_.pose.orientation, plan_));
+  auto located = planner_.Locate(pose_state_.pose.orientation, plan_);
+  if (!located.ok()) return Abandon(located.status);
+  CaptureGuidance guidance = located.value;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(batch); stability.ok()) {
     guidance.stability = stability.value;
   }
+
+  // The burst rides on this tick because it is the only call the client makes often enough to
+  // pace one (ADR 0018). It is folded in after the pose so the frame is scored against the
+  // attitude this batch produced, not the previous one.
+  if (firing_) {
+    // The armed cell, not the nearest one: a burst that retargeted itself mid-flight because the
+    // user drifted would end up with candidates from two cells in one set.
+    guidance.targetNode = burst_node_;
+    // AdvanceBurst abandons the burst itself on the way out, so this needs no guard of its own.
+    SPH_TRY(const bool completed, AdvanceBurst());
+    guidance.action = completed ? GuidanceAction::CellDone : GuidanceAction::Firing;
+  }
   return Ok(guidance);
 }
 
-Result<std::vector<Candidate>> CaptureSessionManager::CaptureCell(NodeId node,
-                                                                  const BurstSpec& burst) {
+Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   if (auto status = RequireSession(); !status.ok()) return status;
-  if (!HasNode(node)) {
-    return Err<std::vector<Candidate>>(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  if (!HasNode(node)) return Fail(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  if (burst.frameCount <= 0) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "a burst needs at least one frame");
+  }
+  if (burst.intervalMs < 0) {
+    // Checked before the locks are taken, and checked at all because the arithmetic below turns a
+    // negative interval into a frame that is always overdue — so instead of failing it would
+    // quietly capture on every tick, at whatever rate the client happens to run.
+    return Fail(StatusCode::InvalidArgument, kComponent, "a burst interval cannot be negative");
+  }
+  if (firing_) {
+    // Refused rather than replacing: the burst in flight holds the exposure lock and frames it
+    // has not committed, and a second arm would strand both. One burst at a time is also all a
+    // single camera can honestly serve.
+    return Fail(StatusCode::FailedPrecondition, kComponent, "a burst is already in flight");
   }
 
   // Every frame in a burst must share an exposure, or selection compares brightness rather than
-  // sharpness and the blend bands across the cell.
+  // sharpness and the blend bands across the cell. The lock is taken here and held across the
+  // ticks that follow, which is why Disarm exists.
   if (auto locked = camera_.SetLocks(burst.lockExposure, burst.lockWhiteBalance, burst.lockFocus);
       !locked.ok()) {
     return locked;
   }
 
-  SPH_TRY(auto frames, camera_.CaptureBurst(burst));
+  firing_ = true;
+  burst_node_ = node;
+  burst_spec_ = burst;
+  pending_.clear();
+  // Far enough in the past that the first frame is taken on the next tick rather than after one
+  // interval: the burst starts when it is armed.
+  last_frame_ns_ = clock_.MonotonicNs() - BurstIntervalNs();
+  return Status::Ok();
+}
 
-  std::vector<Candidate>& cell = candidates_[node.value];
-  const size_t before = cell.size();
-  std::vector<Candidate> captured;
-  captured.reserve(frames.size());
+int64_t CaptureSessionManager::BurstIntervalNs() const {
+  int64_t interval = static_cast<int64_t>(burst_spec_.intervalMs) * 1000000;
 
-  for (const auto& frame : frames) {
-    Candidate candidate;
-    candidate.id = CandidateId{next_candidate_++};
-    candidate.node = node;
-    candidate.frame = frame;
-    candidate.pose = pose_state_.pose;
-
-    NodeContext context;
-    context.siblings = cell;
-    auto scored = quality_.Score(frame, pose_state_.pose, context);
-    if (!scored.ok()) {
-      // A default QualityScore is what a genuinely terrible frame gets, so using it for "the
-      // scorer failed" makes the two indistinguishable — and the cell would then count toward
-      // coverage, reporting a sphere complete that nothing ever judged. Selection would pick a
-      // best frame from a set of placeholders.
-      //
-      // The whole burst goes back: these frames were allocated by this call, so this call owns
-      // them, and returning without releasing leaves them pinned with nothing holding the
-      // handles. A sphere of leaked bursts is the memory ceiling this design is arranged around.
-      for (const auto& taken : frames) (void)frames_.Forget(taken);
-      cell.resize(before);
-      return scored.status;
-    }
-    candidate.quality = scored.value;
-    cell.push_back(candidate);
-    captured.push_back(candidate);
+  // The camera's own rate is a second floor under the spec's, and it is the one that bites. A
+  // burst asking for 0 ms between frames on a 30 fps camera would take a frame on every tick of a
+  // 60 Hz loop — and PeekPreviewFrame borrows the *latest* frame, so half of those ticks would
+  // hand back the one already taken. The burst would fill with duplicates and selection would
+  // rank a single exposure against copies of itself, which is worse than a slower burst because
+  // it looks like a fast one.
+  //
+  // Zero means the platform will not say, in which case the tick rate is the only floor there is.
+  if (max_burst_fps_ > 0) {
+    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
+    if (byCamera > interval) interval = byCamera;
   }
+  return interval;
+}
+
+Status CaptureSessionManager::Disarm(bool rollBack) {
+  if (!firing_) return Status::Ok();
+  if (rollBack) {
+    // Only this burst's frames, and they were never in the cell — which is what makes this
+    // exact rather than an index into a vector somebody else can also append to.
+    for (const auto& candidate : pending_) (void)frames_.Forget(candidate.frame);
+  }
+  pending_.clear();
+  firing_ = false;
+  // Attempted unconditionally and reported rather than discarded. A burst that ends leaving the
+  // exposure pinned to whatever the cell needed is a viewfinder the user cannot fix by pointing
+  // somewhere else, and a caller told the cell was captured would have no reason to look.
+  return camera_.SetLocks(false, false, false);
+}
+
+Status CaptureSessionManager::Abandon(const Status& cause) {
+  // Disarm is a no-op when nothing is armed, so this needs no guard — and its failure is folded
+  // in rather than dropped. A pose failure that coincides with an unlock rejection used to return
+  // the pose failure alone, and the client stops ticking on a failed call: the lock would then
+  // outlive the session with nobody informed it was ever taken.
+  return Also(cause, Disarm(true));
+}
+
+Result<bool> CaptureSessionManager::AdvanceBurst() {
+  const int64_t now = clock_.MonotonicNs();
+  const int64_t due = last_frame_ns_ + BurstIntervalNs();
+  if (now < due) return Ok(false);   // still inside the interval; the burst keeps waiting
+
+  auto frame = camera_.PeekPreviewFrame();
+  if (!frame.ok()) {
+    // Not a dropped tick. Preview is running by the time a burst is armed, so a camera that
+    // cannot produce a frame has failed — and retrying every tick forever would hold the exposure
+    // lock while doing it.
+    return Abandon(frame.status);
+  }
+  last_frame_ns_ = now;
+
+  Candidate candidate;
+  candidate.id = CandidateId{next_candidate_++};
+  candidate.node = burst_node_;
+  candidate.frame = frame.value;
+  candidate.pose = pose_state_.pose;
+
+  // Scored against the cell as it stands plus what this burst has already taken: siblings are
+  // what an inter-candidate comparison needs, and the frames in flight are siblings whether or
+  // not they have been committed yet.
+  // One vector so the span has something to point at. It copies the cell per frame, which is a
+  // burst's worth of candidates and not a sphere's — and the alternative is scoring a frame
+  // against siblings that leave out the rest of its own burst.
+  std::vector<Candidate> siblings = candidates_[burst_node_.value];
+  siblings.insert(siblings.end(), pending_.begin(), pending_.end());
+  NodeContext context;
+  context.siblings = siblings;
+  auto scored = quality_.Score(frame.value, pose_state_.pose, context);
+  if (!scored.ok()) {
+    // A default QualityScore is what a genuinely terrible frame gets, so using it for "the scorer
+    // failed" makes the two indistinguishable — and the cell would then count toward coverage,
+    // reporting a sphere complete that nothing ever judged. Selection would pick a best frame
+    // from a set of placeholders. The frames this burst took go back with it.
+    (void)frames_.Forget(frame.value);
+    return Abandon(scored.status);
+  }
+  candidate.quality = scored.value;
+  pending_.push_back(candidate);
+
+  if (static_cast<int32_t>(pending_.size()) < burst_spec_.frameCount) return Ok(false);
+
+  // The burst is full, so it becomes evidence: appended to the cell and ranked as one set. Until
+  // this line the frames are not in the cell at all, which is what keeps Coverage from reporting
+  // a cell satisfied by a burst that could still roll back.
+  std::vector<Candidate>& cell = candidates_[burst_node_.value];
+  const size_t before = cell.size();
+  cell.insert(cell.end(), pending_.begin(), pending_.end());
 
   // Ranking is what turns a burst into a choice, so a set nobody could rank is not a captured
   // cell — and discarding the failure would leave the cell holding candidates the selection
-  // engine had already failed on, with CaptureCell reporting success. Same rollback as a scoring
-  // failure: these frames belong to this call.
+  // engine had already failed on, with the burst reporting success.
   if (auto ranked = quality_.Rank(cell, SelectionPolicy{}); !ranked.ok()) {
-    for (const auto& taken : frames) (void)frames_.Forget(taken);
+    // Back to exactly what was there before this line, which may include a frame offered while
+    // the burst was in flight. Disarm forgets the pending frames; it must not touch that one.
     cell.resize(before);
-    return ranked.status;
+    return Abandon(ranked.status);
   }
-  return Ok(std::move(captured));
+
+  // Committed, so the rollback is off the table: Disarm keeps the frames and only unlocks. If the
+  // unlock fails the cell is still captured and the caller is told anyway, because a camera left
+  // locked is not something to discover later.
+  if (auto unlocked = Disarm(false); !unlocked.ok()) return unlocked;
+  return Ok(true);
 }
 
 Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameRef& frame,
@@ -266,6 +389,17 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
 
   // Keeping evidence is the default: a blurred cell is worth adding to, and only a cell whose
   // frames are actively wrong — a mover walked through it — is worth discarding.
+  // A retake of the cell being fired at aborts that burst first: its frames were taken for the
+  // set the caller is about to change, and its rollback mark points into a vector Discard is
+  // about to empty.
+  if (firing_ && burst_node_.value == node.value) {
+    // Reported, and before the candidate set is touched. A retake that answered Ok while the
+    // camera stayed pinned to the abandoned burst's exposure would send the caller off to re-aim
+    // at a viewfinder that cannot respond. The burst itself is gone either way, so a caller that
+    // sees this failure and asks again gets the retake it wanted on the second attempt.
+    if (auto disarmed = Disarm(true); !disarmed.ok()) return disarmed;
+  }
+
   if (replace) {
     if (auto it = candidates_.find(node.value); it != candidates_.end()) Discard(it->second);
   }
@@ -275,6 +409,15 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
 Status CaptureSessionManager::End() {
   if (auto status = RequireSession(); !status.ok()) return status;
 
+  // A burst still in flight never became a ranked set, so its frames are not evidence: keeping
+  // them would let a half-burst count toward coverage on the next resume. It also puts the
+  // camera's locks back before the camera is closed.
+  //
+  // Held rather than returned here: the rest of this must happen whatever the unlock did, or a
+  // session that failed halfway through ending would leave the sensor running and the camera
+  // open, with `active_` still true and no way to end it.
+  const Status disarmed = Disarm(true);
+
   // Metadata is persisted; pixels stay in the frame store under their own handles, which is what
   // makes resuming a metadata read rather than a restore (docs/04 §4.3).
   const std::vector<Candidate> all = AllCandidates();
@@ -283,11 +426,20 @@ Status CaptureSessionManager::End() {
 
   (void)sensor_.Stop();
   (void)camera_.StopPreview();
-  (void)camera_.Close();
+  const Status closed = camera_.Close();
 
   active_ = false;
+  max_burst_fps_ = 0;
   candidates_.clear();
   plan_ = CapturePlan{};
+
+  // The session is over regardless — every field above is cleared before this returns, so there
+  // is nothing here for a caller to retry. What is left worth reporting is the camera, and only
+  // while it is still open: a close that succeeded stopped the track and took the burst's locks
+  // with it, which makes a failed unlock moot rather than hidden. A close that *failed* leaves a
+  // camera that is both open and possibly still locked, and that is worth saying even though the
+  // session ended cleanly.
+  if (!closed.ok()) return Also(closed, disarmed);
   return Status::Ok();
 }
 

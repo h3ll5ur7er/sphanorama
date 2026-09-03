@@ -1,6 +1,7 @@
 add_library(sphanorama_core
   src/resource_access/camera_access/null_camera_access.cpp
   src/resource_access/export_access/null_export_access.cpp
+  src/resource_access/frame_store_access/memory_frame_store_access.cpp
   src/resource_access/frame_store_access/null_frame_store_access.cpp
   src/resource_access/motion_sensor_access/null_motion_sensor_access.cpp
   src/resource_access/project_store_access/memory_project_store_access.cpp

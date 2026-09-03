@@ -9,8 +9,10 @@
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "managers/project_manager/project_manager.h"
 #include "resource_access/camera_access/null_camera_access.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "resource_access/frame_store_access/null_frame_store_access.h"
 #include "resource_access/motion_sensor_access/null_motion_sensor_access.h"
+#include "utilities/clock.h"
 #if defined(__EMSCRIPTEN__)
 #include "resource_access/camera_access/browser_camera_access.h"
 #include "resource_access/motion_sensor_access/browser_motion_sensor_access.h"
@@ -59,8 +61,22 @@ class Runtime {
   NullMotionSensorAccess motion_;
 #endif
 
-  // The tiered frame store lands in Phase 1; until then nothing can hold a frame.
+  // Frames live in memory natively, where the bench runs and where a spill tier that is still
+  // RAM is an honest description of the host. The browser keeps the null store: a phone is the
+  // one place the difference matters, and telling it that spilling freed memory when it did not
+  // is worse than telling it there is nowhere to put a frame. Its own store, over OPFS, is what
+  // that branch is waiting for.
+  //
+  // The ceiling is stated rather than measured. `FrameStoreBudget::heapCeilingBytes` is
+  // documented as "measured at startup, not assumed", and this is the assumption that stands in
+  // until the probe exists — generous enough that the bench does not spill on a desktop, and far
+  // enough below a real sphere of bursts that the spill path is still reached.
+#if defined(__EMSCRIPTEN__)
   NullFrameStoreAccess frames_;
+#else
+  static constexpr int64_t kNativeHeapCeilingBytes = 512ll << 20;
+  MemoryFrameStoreAccess frames_{kNativeHeapCeilingBytes};
+#endif
 
   // The one contract with a real implementation on both platforms: a browser port backed by the
   // page's document host, and an in-memory store natively. Both are held to the same contract
@@ -71,8 +87,12 @@ class Runtime {
   MemoryProjectStoreAccess projects_;
 #endif
 
+  // The wall clock the burst interval is paced against (ADR 0018). Injected rather than called
+  // directly so a replayed dataset can drive the same manager from recorded timestamps.
+  SystemClock clock_;
+
   CaptureSessionManager capture_session_{planner_, pose_, quality_, camera_, motion_, frames_,
-                                         projects_};
+                                         projects_, clock_};
   PanoramaBuildManager panorama_build_;
   ProjectManager project_{projects_};
 };

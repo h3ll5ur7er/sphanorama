@@ -169,7 +169,7 @@ TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {
   wire::Writer args;
   args.PutF64(1.0);          // node id
   args.PutF64(5.0);          // frameCount, then the BurstSpec simply stops
-  Response response = Call("CaptureSessionManager.captureCell", args.bytes());
+  Response response = Call("CaptureSessionManager.armBurst", args.bytes());
   ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all";
   wire::Reader in = response.reader();
   EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);

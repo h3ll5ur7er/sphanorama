@@ -7,25 +7,45 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
+#include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
 #include "support/fake_camera_access.h"
-#include "support/fake_frame_store_access.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_motion_sensor_access.h"
 #include "support/fake_project_store_access.h"
+#include "utilities/clock.h"
 
 namespace sphanorama {
 namespace {
 
 constexpr ProjectId kProject{1};
 
+// What the capture loop does: arm a cell, then keep ticking. A burst takes one frame per tick and
+// no faster than its interval (ADR 0018), so the clock has to move for it to finish — and a helper
+// that ticked forever would turn a burst that never completes into a hung test rather than a
+// failing one.
+Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId node,
+                   const BurstSpec& burst) {
+  if (auto armed = manager.ArmBurst(node, burst); !armed.ok()) return armed;
+  for (int32_t tick = 0; tick < burst.frameCount * 4 + 8; ++tick) {
+    auto guidance = manager.OnMotion({});
+    if (!guidance.ok()) return guidance.status;
+    if (guidance.value.action == GuidanceAction::CellDone) return Status::Ok();
+    clock.AdvanceMs(burst.intervalMs);
+  }
+  return Fail(StatusCode::Internal, "test", "the burst never finished");
+}
+
 class CaptureSession : public ::testing::Test {
  protected:
   void SetUp() override {
-    store = std::make_shared<FakeFrameStoreAccess>(1 << 22);
+    store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
     camera = std::make_unique<FakeCameraAccess>(store);
     sensor = std::make_unique<FakeMotionSensorAccess>();
     projects = std::make_unique<FakeProjectStoreAccess>();
@@ -34,7 +54,11 @@ class CaptureSession : public ::testing::Test {
     (void)projects->WriteDocument(kProject, "title", "test project");
 
     manager = std::make_unique<CaptureSessionManager>(
-        planner, pose, quality, *camera, *sensor, *store, *projects);
+        planner, pose, quality, *camera, *sensor, *store, *projects, clock);
+  }
+
+  Status FireBurst(NodeId node, const BurstSpec& burst) {
+    return FireBurstOn(*manager, clock, node, burst);
   }
 
   CapturePlanSpec Spec() {
@@ -54,10 +78,11 @@ class CaptureSession : public ::testing::Test {
   NullCoveragePlannerEngine planner;
   NullPoseEngine pose;
   NullFrameQualityEngine quality;
-  std::shared_ptr<FakeFrameStoreAccess> store;
+  std::shared_ptr<MemoryFrameStoreAccess> store;
   std::unique_ptr<FakeCameraAccess> camera;
   std::unique_ptr<FakeMotionSensorAccess> sensor;
   std::unique_ptr<FakeProjectStoreAccess> projects;
+  ManualClock clock;
   std::unique_ptr<CaptureSessionManager> manager;
 };
 
@@ -66,7 +91,7 @@ TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   // demand — so a session begun against an arbitrary id leaves a project behind with no title,
   // which then shows up in the user's list as a blank row nobody made.
   FakeProjectStoreAccess empty;
-  CaptureSessionManager orphan(planner, pose, quality, *camera, *sensor, *store, empty);
+  CaptureSessionManager orphan(planner, pose, quality, *camera, *sensor, *store, empty, clock);
   auto begun = orphan.Begin(ProjectId{404}, Spec());
   EXPECT_EQ(begun.status.code, StatusCode::NotFound);
   // Refused before the camera is touched: a permission prompt for a session that cannot start is
@@ -132,7 +157,7 @@ TEST_F(CaptureSession, BeginningAgainAfterEndIsFine) {
 }
 
 TEST_F(CaptureSession, CandidatesForACellOutsideThePlanIsRefused) {
-  // CaptureCell and RequestRetake both answer NotFound here. Returning an empty success instead
+  // ArmBurst and RequestRetake both answer NotFound here. Returning an empty success instead
   // makes a typo'd cell indistinguishable from a real one nobody has captured yet.
   Begin();
   EXPECT_EQ(manager->Candidates(NodeId{9999}).status.code, StatusCode::NotFound);
@@ -149,8 +174,9 @@ TEST_F(CaptureSession, BeginProducesASessionAndAPlan) {
 TEST_F(CaptureSession, BeginOpensTheCameraSoAPreviewCanStart) {
   Begin();
   // Opening is the manager's job, not the client's: the client calls a use case, and everything
-  // that use case needs to happen is sequenced here.
-  EXPECT_TRUE(camera->CaptureBurst(BurstSpec{}).ok());
+  // that use case needs to happen is sequenced here. Preview too — a burst is peeks now, and a
+  // peek before StartPreview is a FailedPrecondition.
+  EXPECT_TRUE(camera->PeekPreviewFrame().ok());
 }
 
 TEST_F(CaptureSession, RejectsANonsensePlanSpecRatherThanStartingASession) {
@@ -163,8 +189,7 @@ TEST_F(CaptureSession, WorkBeforeBeginIsRefused) {
   EXPECT_EQ(manager->GetPlan().status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(manager->OnMotion({}).status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(manager->Coverage().status.code, StatusCode::FailedPrecondition);
-  EXPECT_EQ(manager->CaptureCell(NodeId{1}, BurstSpec{}).status.code,
-            StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->ArmBurst(NodeId{1}, BurstSpec{}).code, StatusCode::FailedPrecondition);
 }
 
 TEST_F(CaptureSession, OnMotionReturnsGuidanceForACell) {
@@ -182,6 +207,53 @@ TEST_F(CaptureSession, OnMotionWithNoSamplesIsNotAnError) {
   Begin();
   EXPECT_TRUE(manager->OnMotion({}).ok());
 }
+
+// Hands back a starting state and then refuses to integrate, so a tick can fail on the pose
+// rather than on the planner. Both are early returns from OnMotion and they are separate lines;
+// testing one and assuming the other is how the second stays broken.
+class UnintegrablePoseEngine final : public IPoseEngine {
+ public:
+  Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
+    return inner_.Initial(mode, capability);
+  }
+  Result<PoseState> Integrate(const PoseState&, std::span<const ImuSample>) override {
+    return Err<PoseState>(StatusCode::ComputeUnavailable, "test", "cannot integrate");
+  }
+  Result<PoseSample> Correct(const FrameRef& current, const FrameRef& reference,
+                             const PoseSample& prior) override {
+    return inner_.Correct(current, reference, prior);
+  }
+  Result<double> Stability(std::span<const ImuSample> samples) override {
+    return inner_.Stability(samples);
+  }
+
+ private:
+  NullPoseEngine inner_;
+};
+
+// Plans fine and then refuses to locate, which is what makes an OnMotion that fails *before* the
+// burst is advanced reachable. The refusing planner above cannot: it fails Plan too, so no session
+// ever begins and no burst is ever armed.
+class UnlocatablePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    return inner_.Plan(spec, lens);
+  }
+  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&) override {
+    return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+
+ private:
+  NullCoveragePlannerEngine inner_;
+};
 
 // A quality engine that refuses, so the manager's handling of that refusal can be tested. The
 // null one succeeds with a default score, which is why nothing caught this.
@@ -211,17 +283,17 @@ class UnrankableFrameQualityEngine final : public IFrameQualityEngine {
 
 TEST_F(CaptureSession, ABurstThatCannotBeRankedIsRolledBackToo) {
   // The scoring path rolls back; ranking was still discarded with a (void) cast, so a cell could
-  // end up holding candidates the selection engine had failed on while CaptureCell reported
+  // end up holding candidates the selection engine had failed on while the burst reported
   // success. Picking the best of a burst is the point; an unrankable burst is not a capture.
   UnrankableFrameQualityEngine unrankable;
-  CaptureSessionManager manager(planner, pose, unrankable, *camera, *sensor, *store, *projects);
+  CaptureSessionManager manager(planner, pose, unrankable, *camera, *sensor, *store, *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
   const int64_t before = store->Budget().value.heapUsedBytes;
   BurstSpec burst;
   burst.frameCount = 3;
-  EXPECT_EQ(manager.CaptureCell(node, burst).status.code, StatusCode::ComputeUnavailable);
+  EXPECT_EQ(FireBurstOn(manager, clock, node, burst).code, StatusCode::ComputeUnavailable);
   EXPECT_TRUE(manager.Candidates(node).value.empty());
   EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
 }
@@ -251,7 +323,7 @@ TEST_F(CaptureSession, AFailedPlanClosesTheCameraItOpened) {
   // that never started. Rejecting an unsupported strategy and a nonsense field of view, both
   // added recently, are exactly what make this reachable.
   RefusingCoveragePlannerEngine refusing;
-  CaptureSessionManager manager(refusing, pose, quality, *camera, *sensor, *store, *projects);
+  CaptureSessionManager manager(refusing, pose, quality, *camera, *sensor, *store, *projects, clock);
 
   EXPECT_EQ(manager.Begin(kProject, Spec()).status.code, StatusCode::Unsupported);
   EXPECT_FALSE(camera->IsOpen());
@@ -265,14 +337,13 @@ TEST_F(CaptureSession, AFailedScoreDoesNotBecomeACandidateWithAZeroScore) {
   // reports a cell complete that nothing ever judged. Selection would later pick a "best" frame
   // from a set where every score is a placeholder.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
   BurstSpec burst;
   burst.frameCount = 3;
-  auto captured = manager.CaptureCell(node, burst);
-  EXPECT_EQ(captured.status.code, StatusCode::ComputeUnavailable);
+  EXPECT_EQ(FireBurstOn(manager, clock, node, burst).code, StatusCode::ComputeUnavailable);
 
   // Nothing half-added: the cell is as it was.
   auto candidates = manager.Candidates(node);
@@ -285,21 +356,21 @@ TEST_F(CaptureSession, AFailedBurstReleasesTheFramesItAlreadyTook) {
   // leaves a burst pinned in the store with nothing holding the handles — and a full sphere of
   // those is the memory ceiling this whole design is arranged around.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
   const int64_t before = store->Budget().value.heapUsedBytes;
   BurstSpec burst;
   burst.frameCount = 3;
-  ASSERT_FALSE(manager.CaptureCell(node, burst).ok());
+  ASSERT_FALSE(FireBurstOn(manager, clock, node, burst).ok());
   EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
 }
 
 TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccepted) {
   // Same reasoning, except the frame belongs to the caller — so it is reported, not forgotten.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects);
+  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -312,13 +383,37 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
 }
 
-TEST_F(CaptureSession, CaptureCellFillsTheCellWithABurst) {
+TEST_F(CaptureSession, AnArmedBurstFillsTheCellOverTheTicksThatFollow) {
   Begin();
   BurstSpec burst;
   burst.frameCount = 4;
-  auto candidates = manager->CaptureCell(FirstNode(), burst);
-  ASSERT_TRUE(candidates.ok()) << candidates.status.detail;
-  EXPECT_EQ(candidates.value.size(), 4u);
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  // Arming fires nothing. The frames arrive on the ticks the capture loop was making anyway,
+  // which is the whole of ADR 0018.
+  EXPECT_TRUE(manager->Candidates(node).value.empty());
+  EXPECT_EQ(camera->FramesTaken(), 0);
+
+  // Ticked by hand rather than through FireBurst, so the guidance the client would render on the
+  // way is asserted too: Firing until the burst is full, CellDone exactly on the tick that
+  // fills it, and never CellDone twice.
+  for (int32_t taken = 1; taken <= burst.frameCount; ++taken) {
+    auto guidance = manager->OnMotion({});
+    ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+    EXPECT_EQ(guidance.value.action,
+              taken == burst.frameCount ? GuidanceAction::CellDone : GuidanceAction::Firing)
+        << "on frame " << taken;
+    // The frame was taken from the camera, and the cell has not seen it. A burst becomes evidence
+    // when the whole of it ranks, not as it goes: Coverage counts a cell satisfied as soon as one
+    // candidate exists for it, so a cell filling in public would report itself complete on the
+    // first frame of a burst that could still roll back.
+    EXPECT_EQ(camera->FramesTaken(), taken);
+    if (taken < burst.frameCount) {
+      EXPECT_TRUE(manager->Candidates(node).value.empty()) << "committed early, on frame " << taken;
+    }
+    clock.AdvanceMs(burst.intervalMs);
+  }
+  EXPECT_EQ(manager->Candidates(node).value.size(), 4u);
 }
 
 TEST_F(CaptureSession, EveryCandidateCarriesItsCellAndAScore) {
@@ -326,7 +421,8 @@ TEST_F(CaptureSession, EveryCandidateCarriesItsCellAndAScore) {
   BurstSpec burst;
   burst.frameCount = 3;
   const NodeId node = FirstNode();
-  auto candidates = manager->CaptureCell(node, burst);
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+  auto candidates = manager->Candidates(node);
   ASSERT_TRUE(candidates.ok());
   for (const auto& candidate : candidates.value) {
     EXPECT_EQ(candidate.node.value, node.value);
@@ -335,20 +431,444 @@ TEST_F(CaptureSession, EveryCandidateCarriesItsCellAndAScore) {
   }
 }
 
-TEST_F(CaptureSession, LocksExposureBeforeFiringABurst) {
+TEST_F(CaptureSession, LocksExposureWhileABurstIsInFlightAndReleasesItAfter) {
   // Every frame in a burst must share an exposure, or selecting between them compares brightness
-  // rather than sharpness — and the blend would band across the cell.
+  // rather than sharpness — and the blend would band across the cell. Since the burst now spans
+  // ticks the lock does too (ADR 0018), which makes releasing it the other half of the same
+  // requirement: a burst that ends leaving the exposure pinned is a viewfinder the user cannot
+  // fix by pointing somewhere else.
   Begin();
   BurstSpec burst;
   burst.frameCount = 2;
   burst.lockExposure = true;
-  ASSERT_TRUE(manager->CaptureCell(FirstNode(), burst).ok());
-  EXPECT_TRUE(camera->ExposureLocked());
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_TRUE(camera->ExposureLocked()) << "held across the ticks the burst spans";
+
+  clock.AdvanceMs(burst.intervalMs);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_FALSE(camera->ExposureLocked()) << "and given back when the burst completes";
+}
+
+TEST_F(CaptureSession, RefusesASecondBurstWhileOneIsStillInFlight) {
+  // Two at once is not something a single camera can honestly serve, and the second arm would
+  // strand the first one's exposure lock and its rollback mark.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  EXPECT_EQ(manager->ArmBurst(node, burst).code, StatusCode::FailedPrecondition);
+
+  // The refusal left the burst already in flight alone rather than disarming it on the way out:
+  // it still fills on the ticks that follow.
+  for (int32_t i = 0; i < burst.frameCount; ++i) {
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+    clock.AdvanceMs(burst.intervalMs);
+  }
+  EXPECT_EQ(manager->Candidates(node).value.size(), 3u);
+}
+
+TEST_F(CaptureSession, RefusesABurstOfNoFrames) {
+  // This used to be the camera's rule, back when a burst was one call into it. The camera has no
+  // burst verb any more (ADR 0018), so the check belongs to whoever still counts frames.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 0;
+  EXPECT_EQ(manager->ArmBurst(FirstNode(), burst).code, StatusCode::InvalidArgument);
+}
+
+TEST_F(CaptureSession, TakesNoMoreThanOneFramePerInterval) {
+  // intervalMs is a floor rather than a cadence (ADR 0018), and a burst that ignored it would
+  // take every frame on consecutive ticks — five frames 16ms apart, which is one motion-blurred
+  // frame photographed five times rather than five chances at a sharp one.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 80;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+
+  // Counted at the camera rather than in the cell: an in-flight burst is deliberately invisible
+  // through Candidates until it ranks, and what this test is about is how often the port is read.
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1);
+  // Four more ticks inside the same interval. The capture loop runs at animation rate, so this
+  // is what actually happens between one burst frame and the next.
+  for (int i = 0; i < 4; ++i) {
+    clock.AdvanceMs(10);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+  }
+  EXPECT_EQ(camera->FramesTaken(), 1) << "the interval was not honoured";
+
+  clock.AdvanceMs(burst.intervalMs);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2);
+}
+
+TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
+  // A burst that retargeted itself because the user drifted off the cell mid-flight would end up
+  // with candidates from two cells in one set, which is a ghost nobody could explain later.
+  //
+  // This one needs the real tessellation. The null planner makes a one-cell plan, where "the cell
+  // being fired at" and "the nearest cell" are the same answer and the assertion cannot fail —
+  // which it did not, until a deliberate sabotage of the line under test failed to turn it red.
+  RingsCoveragePlannerEngine rings;
+  CaptureSessionManager real(rings, pose, quality, *camera, *sensor, *store, *projects, clock);
+  CapturePlanSpec spec = Spec();
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  ASSERT_TRUE(real.Begin(kProject, spec).ok());
+  const std::vector<CoverageNode> nodes = real.GetPlan().value.nodes;
+  ASSERT_GT(nodes.size(), 8u);
+
+  auto aimed = real.OnMotion({});
+  ASSERT_TRUE(aimed.ok()) << aimed.status.detail;
+  const NodeId nearest = aimed.value.targetNode;
+
+  NodeId elsewhere = nearest;
+  for (const auto& node : nodes) {
+    if (node.id.value != nearest.value) { elsewhere = node.id; break; }
+  }
+  ASSERT_NE(elsewhere.value, nearest.value);
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(real.ArmBurst(elsewhere, burst).ok());
+  auto firing = real.OnMotion({});
+  ASSERT_TRUE(firing.ok()) << firing.status.detail;
+  EXPECT_EQ(firing.value.targetNode.value, elsewhere.value);
+  EXPECT_EQ(firing.value.action, GuidanceAction::Firing);
+}
+
+TEST_F(CaptureSession, ACameraThatStopsProducingFramesAbandonsTheBurstRatherThanHoldingTheLock) {
+  // Preview is running by the time a burst is armed, so a peek that fails has failed for real.
+  // Retrying it every tick forever would hold the exposure locked while doing it.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 4;
+  burst.lockExposure = true;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1);
+
+  ASSERT_TRUE(camera->StopPreview().ok());
+  clock.AdvanceMs(burst.intervalMs);
+  EXPECT_EQ(manager->OnMotion({}).status.code, StatusCode::FailedPrecondition);
+
+  EXPECT_FALSE(camera->ExposureLocked());
+  EXPECT_TRUE(manager->Candidates(node).value.empty()) << "the half-burst was rolled back";
+  // And the session is usable again rather than stuck firing.
+  ASSERT_TRUE(camera->StartPreview().ok());
+  EXPECT_TRUE(manager->ArmBurst(node, burst).ok());
+}
+
+TEST_F(CaptureSession, ARetakeOfTheCellBeingFiredAtAbandonsThatBurst) {
+  // The burst was taken for the set the caller is about to change, and its rollback mark points
+  // into a vector a replacing retake is about to empty.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 4;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  const int64_t held = store->Budget().value.heapUsedBytes;
+  ASSERT_GT(held, 0);
+
+  ASSERT_TRUE(manager->RequestRetake(node, /*replace=*/false).ok());
+  EXPECT_TRUE(manager->Candidates(node).value.empty());
+  EXPECT_LT(store->Budget().value.heapUsedBytes, held);
+  EXPECT_FALSE(camera->ExposureLocked());
+}
+
+TEST_F(CaptureSession, EndingMidBurstRollsItBackRatherThanBankingAHalfBurst) {
+  // A burst that never completed was never ranked, so its frames are not evidence: keeping them
+  // would let a half-burst count toward coverage on the next resume.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 5;
+  const NodeId node = FirstNode();
+  const int64_t before = store->Budget().value.heapUsedBytes;
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_GT(store->Budget().value.heapUsedBytes, before);
+
+  ASSERT_TRUE(manager->End().ok());
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
+}
+
+TEST_F(CaptureSession, RefusesANegativeInterval) {
+  // The arithmetic that paces a burst makes a negative interval always overdue, so instead of
+  // failing it would quietly capture on every tick at whatever rate the client runs at. Refused
+  // before the locks are taken, so a rejected spec leaves the camera as it found it.
+  Begin();
+  BurstSpec burst;
+  burst.intervalMs = -1;
+  EXPECT_EQ(manager->ArmBurst(FirstNode(), burst).code, StatusCode::InvalidArgument);
+  EXPECT_FALSE(camera->ExposureLocked());
+}
+
+TEST_F(CaptureSession, ACellWhoseBurstIsStillInFlightIsNotCountedAsCovered) {
+  // Evaluate marks a node covered as soon as any candidate exists for it, so a burst that filled
+  // the cell as it went would report the cell complete on its first frame — while still able to
+  // roll back. A sphere could then read as finished and contain a cell nothing ever ranked.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1) << "the burst did not take a frame";
+
+  auto midway = manager->Coverage();
+  ASSERT_TRUE(midway.ok());
+  EXPECT_EQ(midway.value.nodesSatisfied, 0);
+
+  // Ticked to completion by hand: the burst already in flight cannot be armed a second time.
+  for (int32_t remaining = 1; remaining < burst.frameCount; ++remaining) {
+    clock.AdvanceMs(burst.intervalMs);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+  }
+  ASSERT_EQ(manager->Candidates(node).value.size(), 3u) << "the burst never committed";
+
+  auto after = manager->Coverage();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.nodesSatisfied, 1) << "and it is counted once the burst ranks";
+}
+
+TEST_F(CaptureSession, AFrameOfferedDuringABurstSurvivesThatBurstRollingBack) {
+  // OfferFrame's frames belong to the caller, and forgetting someone else's handle is the worse
+  // bug — its own comment says so. An index into the cell was not an ownership boundary, because
+  // an offer lands in the same vector; the burst's frames are held apart from it instead.
+  RefusingFrameQualityEngine refusing;
+  NullFrameQualityEngine scoring;
+  Begin();
+  const NodeId node = FirstNode();
+
+  auto offered = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(offered.ok());
+  ASSERT_TRUE(manager->OfferFrame(node, offered.value, PoseSample{}).ok());
+  ASSERT_EQ(manager->Candidates(node).value.size(), 1u);
+
+  // A burst over the same cell that then fails to score, taking its own frames back with it.
+  BurstSpec burst;
+  burst.frameCount = 2;
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  ASSERT_TRUE(camera->StopPreview().ok());   // the next peek fails, abandoning the burst
+  EXPECT_FALSE(manager->OnMotion({}).ok());
+
+  auto survivors = manager->Candidates(node);
+  ASSERT_TRUE(survivors.ok());
+  ASSERT_EQ(survivors.value.size(), 1u) << "the offered frame went with the burst";
+  EXPECT_EQ(survivors.value.front().frame.id.value, offered.value.id.value);
+  // And it is still in the store, not forgotten on someone else's behalf.
+  EXPECT_TRUE(store->ResidencyOf(offered.value).ok());
+}
+
+TEST_F(CaptureSession, ATickThatFailsBeforeTheBurstStillGivesTheLocksBack) {
+  // The burst is advanced at the end of OnMotion, so a pose or planner failure returns before it.
+  // Left armed, the exposure stays locked — and the client stops ticking once a call fails, so
+  // nothing would ever reach the cleanup. The lock would outlive the session.
+  UnlocatablePlannerEngine unlocatable;
+  CaptureSessionManager manager(unlocatable, pose, quality, *camera, *sensor, *store, *projects,
+                                clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager.ArmBurst(node, burst).ok());
+  ASSERT_TRUE(camera->ExposureLocked());
+
+  EXPECT_EQ(manager.OnMotion({}).status.code, StatusCode::Unsupported);
+  EXPECT_FALSE(camera->ExposureLocked()) << "the failing tick left the camera locked";
+  // And the burst is gone rather than half-armed, so the cell can be tried again.
+  EXPECT_TRUE(manager.ArmBurst(node, burst).ok());
+}
+
+TEST_F(CaptureSession, ATickWhosePoseFailsAlsoGivesTheLocksBack) {
+  // The planner is not the only way out of OnMotion before the burst is advanced; the pose is the
+  // other, and they are separate lines. A sabotage of the pose guard passed every test until this
+  // one existed, which is the whole argument for writing it.
+  UnintegrablePoseEngine unintegrable;
+  CaptureSessionManager manager(planner, unintegrable, quality, *camera, *sensor, *store,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager.ArmBurst(node, burst).ok());
+  ASSERT_TRUE(camera->ExposureLocked());
+
+  // A non-empty batch, or Integrate is never reached and the tick cannot fail there.
+  std::vector<ImuSample> samples(2);
+  EXPECT_EQ(manager.OnMotion(samples).status.code, StatusCode::ComputeUnavailable);
+  EXPECT_FALSE(camera->ExposureLocked()) << "the failing tick left the camera locked";
+  EXPECT_TRUE(manager.ArmBurst(node, burst).ok());
+}
+
+TEST_F(CaptureSession, AnUnlockThatFailsIsReportedRatherThanSwallowed) {
+  // The port is fallible — applyConstraints can reject — and a discarded result would report a
+  // captured cell while the camera stayed locked, with nothing left holding that knowledge.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  camera->FailUnlock(true);
+
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  clock.AdvanceMs(burst.intervalMs);
+  auto completing = manager->OnMotion({});
+  EXPECT_EQ(completing.status.code, StatusCode::CameraUnavailable);
+
+  // The cell is captured all the same: the frames ranked, and throwing them away because the
+  // camera would not unlock would lose real evidence over a separate problem.
+  EXPECT_EQ(manager->Candidates(node).value.size(), 2u);
+  // And the burst is finished rather than stuck, so the next arm can try the locks again.
+  camera->FailUnlock(false);
+  EXPECT_TRUE(manager->ArmBurst(node, burst).ok());
+}
+
+TEST_F(CaptureSession, ATickThatFailsWhileTheUnlockAlsoFailsReportsBothRatherThanOne) {
+  // Two failures at once, one Status to say them in. The cause keeps the code because it is what
+  // the caller has to act on; the unlock rides along in the detail. Returning the cause alone is
+  // what this used to do — and the client stops ticking once a call fails, so the lock would
+  // outlive the session with nothing anywhere holding the knowledge that it had been taken.
+  UnintegrablePoseEngine unintegrable;
+  CaptureSessionManager manager(planner, unintegrable, quality, *camera, *sensor, *store,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager.ArmBurst(node, burst).ok());
+  camera->FailUnlock(true);
+
+  // A non-empty batch, or Integrate is never reached and the tick cannot fail there.
+  std::vector<ImuSample> samples(2);
+  const Status failed = manager.OnMotion(samples).status;
+  EXPECT_EQ(failed.code, StatusCode::ComputeUnavailable) << "the cause was replaced, not kept";
+  EXPECT_NE(failed.detail.find("still locked"), std::string::npos)
+      << "the unlock failure was discarded: " << failed.detail;
+}
+
+TEST_F(CaptureSession, ARetakeThatCannotGiveTheLocksBackSaysSoAndChangesNothing) {
+  // A retake that answered Ok while the camera stayed pinned to the abandoned burst's exposure
+  // would send the user off to re-aim at a viewfinder that cannot respond. Reported before the
+  // candidate set is touched, so a caller that sees this and asks again gets the retake it wanted.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.lockExposure = true;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+  ASSERT_EQ(manager->Candidates(node).value.size(), 2u);
+
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  camera->FailUnlock(true);
+  EXPECT_EQ(manager->RequestRetake(node, true).code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(manager->Candidates(node).value.size(), 2u)
+      << "the evidence was discarded by a retake that reported failure";
+
+  // And the second attempt does what was asked, because the burst itself is already gone.
+  camera->FailUnlock(false);
+  EXPECT_TRUE(manager->RequestRetake(node, true).ok());
+  EXPECT_TRUE(manager->Candidates(node).value.empty());
+}
+
+TEST_F(CaptureSession, EndingMidBurstIsCleanWhenTheCameraClosesDespiteARefusedUnlock) {
+  // Close stops the track, and a stopped track has no locks: the unlock failure is moot rather
+  // than hidden. Reporting it here would tell the caller a session that ended cleanly did not,
+  // and there is nothing they could do about it either way.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  camera->FailUnlock(true);
+
+  EXPECT_TRUE(manager->End().ok());
+  EXPECT_FALSE(camera->IsOpen());
+}
+
+TEST_F(CaptureSession, EndingMidBurstReportsTheRefusedUnlockWhenTheCameraStaysOpenToo) {
+  // The other half of the same rule. A close that failed leaves a camera that is both open and
+  // still locked, and that is worth saying even though the session itself ended.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  camera->FailUnlock(true);
+  camera->FailClose(true);
+
+  const Status ended = manager->End();
+  EXPECT_EQ(ended.code, StatusCode::CameraUnavailable);
+  EXPECT_NE(ended.detail.find("still locked"), std::string::npos)
+      << "only one of the two failures was reported: " << ended.detail;
+
+  // The session ended regardless: every field was cleared before that status was returned, so a
+  // failure here is a report and not a half-ended session nothing can get out of.
+  camera->FailClose(false);
+  EXPECT_TRUE(manager->Begin(kProject, Spec()).ok());
+}
+
+TEST_F(CaptureSession, ABurstTakesNoFramesFasterThanTheCameraCanMakeThem) {
+  // PeekPreviewFrame borrows the *latest* frame, so ticking faster than the camera produces them
+  // does not capture faster — it captures the same frame twice. The fake reports 30 fps, so a
+  // zero-interval burst in a 60 Hz loop would fill with duplicates and selection would rank one
+  // exposure against copies of itself: worse than a slow burst, because it looks like a fast one.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 0;  // "as fast as you can", which is the camera's business to answer
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1);
+  // Four ticks inside the camera's 33.3 ms period, at about the rate the capture loop runs.
+  for (int i = 0; i < 4; ++i) {
+    clock.AdvanceMs(8);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+  }
+  EXPECT_EQ(camera->FramesTaken(), 1) << "the camera's own rate was ignored";
+
+  clock.AdvanceMs(8);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2);
+}
+
+TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
+  // maxBurstFps is 0 when the platform will not report one, and 0 has to mean "no floor here"
+  // rather than a guess. A default invented in the manager would slow every burst on the browsers
+  // that decline to answer, which is most of them.
+  CameraCapabilities silent = camera->Capabilities();
+  silent.maxBurstFps = 0;
+  camera->SetCapabilities(silent);
+  Begin();
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 0;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // Two ticks with the clock standing still. The tick rate is the only floor left.
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2);
 }
 
 TEST_F(CaptureSession, CapturingAnUnknownCellIsRefused) {
   Begin();
-  EXPECT_EQ(manager->CaptureCell(NodeId{9999}, BurstSpec{}).status.code, StatusCode::NotFound);
+  EXPECT_EQ(manager->ArmBurst(NodeId{9999}, BurstSpec{}).code, StatusCode::NotFound);
 }
 
 TEST_F(CaptureSession, CandidatesAccumulateAcrossBursts) {
@@ -357,8 +877,8 @@ TEST_F(CaptureSession, CandidatesAccumulateAcrossBursts) {
   BurstSpec burst;
   burst.frameCount = 2;
   const NodeId node = FirstNode();
-  ASSERT_TRUE(manager->CaptureCell(node, burst).ok());
-  ASSERT_TRUE(manager->CaptureCell(node, burst).ok());
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+  ASSERT_TRUE(FireBurst(node, burst).ok());
   auto candidates = manager->Candidates(node);
   ASSERT_TRUE(candidates.ok());
   EXPECT_EQ(candidates.value.size(), 4u);
@@ -373,7 +893,7 @@ TEST_F(CaptureSession, CoverageReportsTheCellAsAHoleUntilItIsShot) {
 
   BurstSpec burst;
   burst.frameCount = 1;
-  ASSERT_TRUE(manager->CaptureCell(FirstNode(), burst).ok());
+  ASSERT_TRUE(FireBurst(FirstNode(), burst).ok());
 
   auto after = manager->Coverage();
   ASSERT_TRUE(after.ok());
@@ -386,7 +906,7 @@ TEST_F(CaptureSession, RetakeKeepsExistingEvidenceByDefault) {
   BurstSpec burst;
   burst.frameCount = 2;
   const NodeId node = FirstNode();
-  ASSERT_TRUE(manager->CaptureCell(node, burst).ok());
+  ASSERT_TRUE(FireBurst(node, burst).ok());
   ASSERT_TRUE(manager->RequestRetake(node, /*replace=*/false).ok());
   EXPECT_EQ(manager->Candidates(node).value.size(), 2u);
 }
@@ -398,7 +918,7 @@ TEST_F(CaptureSession, RetakeCanDiscardWhenAskedTo) {
   BurstSpec burst;
   burst.frameCount = 2;
   const NodeId node = FirstNode();
-  ASSERT_TRUE(manager->CaptureCell(node, burst).ok());
+  ASSERT_TRUE(FireBurst(node, burst).ok());
   ASSERT_TRUE(manager->RequestRetake(node, /*replace=*/true).ok());
   EXPECT_TRUE(manager->Candidates(node).value.empty());
 }
@@ -415,7 +935,7 @@ TEST_F(CaptureSession, DiscardedFramesAreReleasedFromTheStore) {
   BurstSpec burst;
   burst.frameCount = 3;
   const NodeId node = FirstNode();
-  ASSERT_TRUE(manager->CaptureCell(node, burst).ok());
+  ASSERT_TRUE(FireBurst(node, burst).ok());
   const int64_t held = store->Budget().value.heapUsedBytes;
   ASSERT_GT(held, 0);
 
@@ -427,7 +947,7 @@ TEST_F(CaptureSession, EndPersistsTheSessionSoItCanBeResumed) {
   Begin();
   BurstSpec burst;
   burst.frameCount = 1;
-  ASSERT_TRUE(manager->CaptureCell(FirstNode(), burst).ok());
+  ASSERT_TRUE(FireBurst(FirstNode(), burst).ok());
   ASSERT_TRUE(manager->End().ok());
   EXPECT_GT(projects->WriteCount(), 0);
 }
@@ -436,7 +956,7 @@ TEST_F(CaptureSession, EndClosesTheCameraSoTheIndicatorGoesOut) {
   // A session that leaves the camera running reads to the user as the app watching them.
   Begin();
   ASSERT_TRUE(manager->End().ok());
-  EXPECT_EQ(camera->CaptureBurst(BurstSpec{}).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(camera->PeekPreviewFrame().status.code, StatusCode::FailedPrecondition);
 }
 
 TEST_F(CaptureSession, WorkAfterEndIsRefused) {
