@@ -5,15 +5,12 @@
  * logic on purpose: reticle placement, acceptance and coverage are manager and engine decisions
  * behind contracts, and a client that computed them here would have to be unwound later.
  */
-import { loadCore, type RuntimeCapabilities, type SphanoramaCore } from './bridge/core';
+import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
+import { connectCore, type RemoteCore } from './bridge/remote-core';
 import type { CapturePlan, ProjectId } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
-import {
-  createCaptureHost, flattenImuSamples, stopCameraStream, type CaptureHost,
-} from './access/capture-host';
-import { createDocumentHost, type DocumentHost } from './access/document-host';
-import { createIndexedDbStore } from './access/indexeddb-store';
+import { flattenImuSamples, stopCameraStream } from './access/capture-host';
 import { toImuSample } from './access/orientation';
 import { describeFailure, formatCapabilities } from './clients/capture/status';
 import {
@@ -42,13 +39,8 @@ const motion = createMotionSensorAccess(window);
 // worker the core runs in, so the host asks and the page stops (ADR 0019).
 let cameraStream: MediaStream | null = null;
 
-/** The resident half of the camera and motion ports, read synchronously from C++ (ADR 0014). */
-const captureHost = createCaptureHost({
-  onCloseCamera: () => {
-    stopCameraStream(cameraStream);
-    cameraStream = null;
-  },
-});
+/** The page's end of the worker: what it pushes across, and the one thing the worker asks back. */
+let remote: RemoteCore;
 
 /**
  * Keeps the motion readout showing what is actually feeding the core.
@@ -64,13 +56,16 @@ function reportMotionSource(capability?: string) {
   motionState.textContent = `${motionCapabilityShown} · ${motion.source()}`;
 }
 
-async function instantiateCore(host: DocumentHost & CaptureHost): Promise<SphanoramaCore> {
-  // Loaded at runtime rather than bundled: the module is an artifact of the C++ build, and the
-  // two builds (ADR 0011) are selected by which one the deploy copied in.
-  const factory = (await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}core/sphanorama-core.js`)).default;
-  // The host is installed on the module before the core runs, so its documents are already
-  // resident when the first synchronous read arrives from C++ (ADR 0014).
-  return loadCore(async () => factory({ sphHost: host }));
+/**
+ * Starts the worker the core runs in and connects to it (ADR 0019).
+ *
+ * The module URL is resolved here because the page is the side that knows the base path, and the
+ * module is fetched at runtime rather than bundled: it is an artifact of the C++ build, and which
+ * of the two builds (ADR 0011) is present is decided by what the deploy copied in.
+ */
+async function startCore() {
+  const worker = new Worker(new URL('./bridge/worker.ts', import.meta.url), { type: 'module' });
+  return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`);
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities) {
@@ -86,22 +81,23 @@ async function enable(core: SphanoramaCore) {
 
   const opened = await camera.open({ preferRearCamera: true });
   if (opened.ok) {
-    // Told to the host before the core is asked to begin: the plan is sized from the lens, and
-    // the core reads the lens through a synchronous port that cannot wait for getUserMedia.
-    captureHost.setCamera(opened.value);
+    // Pushed before the core is asked to begin: the plan is sized from the lens, and the core
+    // reads the lens through a synchronous port that cannot wait for getUserMedia — nor for a
+    // message still in flight.
+    remote.setCamera(opened.value);
     // Held here so the core can ask for it to be stopped: Close is a synchronous port call and
     // cannot reach a MediaStream itself.
     cameraStream = camera.stream();
     cameraState.textContent = `${opened.value.maxWidth}×${opened.value.maxHeight}`;
     viewfinder.srcObject = camera.stream();
   } else {
-    captureHost.clearCamera();
+    remote.setCamera(null);
     cameraState.textContent = 'unavailable';
     stage.textContent = describeFailure(opened.status);
   }
 
   const capability = await motion.capabilities();
-  if (capability.ok) captureHost.setMotion(capability.value);
+  if (capability.ok) remote.setMotion(capability.value);
   const started = await motion.start(60);
   if (started.ok) {
     reportMotionSource(capability.ok ? capability.value : 'unknown');
@@ -109,7 +105,7 @@ async function enable(core: SphanoramaCore) {
     // The core is told None, and that is a supported configuration rather than a failure: the
     // manager puts PoseEngine into vision-only mode and no other component learns the difference
     // (docs/03 UC-4). Declining motion on iOS is the common way to land here.
-    captureHost.setMotion('None');
+    remote.setMotion('None');
     motionState.textContent = 'unavailable';
     // Only overwrite the stage line if the camera did not already claim it: two failures at once
     // should not hide the first one.
@@ -194,7 +190,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // Handed to the host rather than through the facade: the core drains this buffer itself via
     // IMotionSensorAccess (ADR 0014), so the samples cross once as flat doubles instead of being
     // encoded a second time by the wire codec.
-    if (samples.length > 0) captureHost.pushMotion(flattenImuSamples(samples.map(toImuSample)));
+    if (samples.length > 0) remote.pushMotion(flattenImuSamples(samples.map(toImuSample)));
 
     if (samples.length > 0) {
       // The attitude, not whatever triple the platform happened to report: the two sources behind
@@ -256,34 +252,39 @@ async function reportFacade(core: SphanoramaCore) {
 }
 
 async function main() {
-  const documents = await createDocumentHost(createIndexedDbStore());
-  // One object, because the core reaches for one `Module.sphHost`. Both halves are plain
-  // closures over their own state, so composing them here costs nothing and keeps each testable
-  // on its own.
-  const host = { ...documents, ...captureHost };
-
-  // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the
-  // last event that reliably fires; visibilitychange covers the cases where it does not.
-  const flush = () => { void documents.flush(); };
-  window.addEventListener('pagehide', flush);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flush();
-  });
-
   try {
-    const core = await instantiateCore(host);
-    renderCapabilities(core.capabilities({
+    const connected = await startCore();
+    remote = connected.remote;
+    const core = connected.core;
+
+    // The core asked for the camera to be closed. Only this side is holding the tracks.
+    remote.onCloseCamera(() => {
+      stopCameraStream(cameraStream);
+      cameraStream = null;
+    });
+
+    // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the
+    // last event that reliably fires; visibilitychange covers the cases where it does not.
+    const flush = () => { void remote.flush(); };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush();
+    });
+
+    renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
     }));
-    // Exposed for the end-to-end suite to drive the boundary directly. The client itself
-    // never reads this; it holds `core` in scope.
+    // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
+    // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>,
-                  { sphanoramaCore: core, sphanoramaHost: host });
+                  { sphanoramaCore: core, sphanoramaHost: { flush: () => remote.flush() } });
     await reportFacade(core);
     stage.textContent = 'core ready — enable the camera to continue';
     enableButton.addEventListener('click', () => { void enable(core); });
   } catch (cause) {
+    // Three things can fail now rather than one — the worker starts, the module loads inside it,
+    // the document store opens — so the detail is what says which, and it is worth showing.
     stage.textContent = 'The core failed to load.';
     coreCaps.textContent = String(cause);
     enableButton.disabled = true;

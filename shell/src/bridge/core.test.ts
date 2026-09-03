@@ -57,7 +57,7 @@ describe('loadCore', () => {
     const core = await loadCore(async () => fakeModule({
       values: { simd: 1, threads: 1, sharedMemory: 1, hardwareConcurrency: 8 },
     }));
-    expect(core.capabilities({ hardwareConcurrency: 8, crossOriginIsolated: true })).toEqual({
+    await expect(core.capabilities({ hardwareConcurrency: 8, crossOriginIsolated: true })).resolves.toEqual({
       simd: true,
       threads: true,
       sharedMemory: true,
@@ -73,7 +73,7 @@ describe('loadCore', () => {
       values: { simd: 1, threads: 0, sharedMemory: 1, hardwareConcurrency: 4 },
     });
     const core = await loadCore(async () => module);
-    expect(core.capabilities({ hardwareConcurrency: 4, crossOriginIsolated: true })).toEqual({
+    await expect(core.capabilities({ hardwareConcurrency: 4, crossOriginIsolated: true })).resolves.toEqual({
       simd: true,
       threads: false,
       sharedMemory: true,
@@ -85,7 +85,7 @@ describe('loadCore', () => {
     const module = fakeModule();
     const spy = vi.spyOn(module, '_sph_probe_runtime');
     const core = await loadCore(async () => module);
-    core.capabilities({ hardwareConcurrency: 12, crossOriginIsolated: false });
+    await core.capabilities({ hardwareConcurrency: 12, crossOriginIsolated: false });
     expect(spy).toHaveBeenCalledWith(12, 0, expect.any(Number));
   });
 
@@ -93,15 +93,15 @@ describe('loadCore', () => {
     // The probe runs on every startup and on capability changes; a leak here is unbounded.
     const module = fakeModule({ probeStatus: 7 });
     const core = await loadCore(async () => module);
-    expect(() => core.capabilities({ hardwareConcurrency: 1, crossOriginIsolated: false }))
-      .toThrow(/status 7/);
+    await expect(core.capabilities({ hardwareConcurrency: 1, crossOriginIsolated: false }))
+      .rejects.toThrow(/status 7/);
     expect(module.freed).toEqual(module.allocated);
   });
 
   it('frees its scratch buffer on success too', async () => {
     const module = fakeModule();
     const core = await loadCore(async () => module);
-    core.capabilities({ hardwareConcurrency: 2, crossOriginIsolated: false });
+    await core.capabilities({ hardwareConcurrency: 2, crossOriginIsolated: false });
     expect(module.freed).toEqual(module.allocated);
   });
 
@@ -128,8 +128,8 @@ describe('an allocation the core cannot satisfy', () => {
     module._free = (pointer: number) => { freed.push(pointer); };
 
     const core = await loadCore(async () => module);
-    expect(() => core.capabilities({ hardwareConcurrency: 4, crossOriginIsolated: false }))
-      .toThrow(/allocate/i);
+    await expect(core.capabilities({ hardwareConcurrency: 4, crossOriginIsolated: false }))
+      .rejects.toThrow(/allocate/i);
     // Nothing was freed that was never allocated.
     expect(freed).toEqual([]);
   });

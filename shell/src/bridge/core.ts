@@ -5,7 +5,7 @@
  * probe layout and its method table, so nothing here re-declares either. That is why this file
  * can be short: it marshals and wires, it decides nothing.
  */
-import { createFacadeCall, type FacadeModule } from './facade';
+import { createFacadeCall, type FacadeCall, type FacadeModule } from './facade';
 import {
   createCaptureSessionManagerProxy,
   createPanoramaBuildManagerProxy,
@@ -39,20 +39,44 @@ export interface HostState {
   crossOriginIsolated: boolean;
 }
 
-export interface SphanoramaCore {
-  capabilities(host: HostState): RuntimeCapabilities;
-
-  /** Method names the core published, in id order. Useful for diagnostics and version checks. */
+/**
+ * What a core offers before the typed proxies are put on it.
+ *
+ * Two things provide this and the client cannot tell them apart: the module itself, in the
+ * context it was loaded in, and a stand-in that forwards to the worker holding one (ADR 0019).
+ * Splitting it here is what stops the proxies being built twice, once per side.
+ */
+export interface CoreRuntime {
   methods(): string[];
+  capabilities(host: HostState): Promise<RuntimeCapabilities>;
+  call: FacadeCall;
+}
 
+export interface SphanoramaCore extends CoreRuntime {
   project: ReturnType<typeof createProjectManagerProxy>;
   captureSession: ReturnType<typeof createCaptureSessionManagerProxy>;
   panoramaBuild: ReturnType<typeof createPanoramaBuildManagerProxy>;
 }
 
+/** Puts the generated proxies on a runtime, wherever the module behind it happens to be. */
+export function coreFrom(runtime: CoreRuntime): SphanoramaCore {
+  return {
+    ...runtime,
+    project: createProjectManagerProxy(runtime.call),
+    captureSession: createCaptureSessionManagerProxy(runtime.call),
+    panoramaBuild: createPanoramaBuildManagerProxy(runtime.call),
+  };
+}
+
 export type ModuleFactory = () => Promise<EmscriptenModule>;
 
-export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> {
+/**
+ * The core in this context: the module is here and every call is a direct one.
+ *
+ * `capabilities` is a promise even though nothing here awaits, because the interface it satisfies
+ * has to hold for a core on the other side of a `postMessage` too.
+ */
+export async function loadCoreRuntime(factory: ModuleFactory): Promise<CoreRuntime> {
   const module = await factory();
 
   const fieldCount = module._sph_probe_field_count();
@@ -72,11 +96,9 @@ export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> 
 
   return {
     methods: () => methodNames,
-    project: createProjectManagerProxy(call),
-    captureSession: createCaptureSessionManagerProxy(call),
-    panoramaBuild: createPanoramaBuildManagerProxy(call),
+    call,
 
-    capabilities(host: HostState): RuntimeCapabilities {
+    async capabilities(host: HostState): Promise<RuntimeCapabilities> {
       const pointer = module._malloc(fieldCount * 4);
       // Checked before the try, exactly as the facade call path does. Zero means the allocation
       // failed, and it is also a valid heap offset — so using it writes the capability fields
@@ -113,4 +135,9 @@ export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> 
       }
     },
   };
+}
+
+/** The whole thing, for a module in this context. */
+export async function loadCore(factory: ModuleFactory): Promise<SphanoramaCore> {
+  return coreFrom(await loadCoreRuntime(factory));
 }
