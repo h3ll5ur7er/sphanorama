@@ -175,5 +175,56 @@ TEST(FromAzimuthElevation, IsPeriodicInAzimuth) {
               0.0, 1e-9);
 }
 
+
+TEST(Vec3Maths, DotAndCrossFollowTheRightHandRule) {
+  const Vec3 x{1, 0, 0};
+  const Vec3 y{0, 1, 0};
+  EXPECT_DOUBLE_EQ(Dot(x, y), 0.0);
+  EXPECT_DOUBLE_EQ(Dot(x, x), 1.0);
+  const Vec3 z = Cross(x, y);
+  EXPECT_NEAR(z.x, 0.0, 1e-12);
+  EXPECT_NEAR(z.y, 0.0, 1e-12);
+  EXPECT_NEAR(z.z, 1.0, 1e-12);
+}
+
+TEST(Vec3Maths, NormalizeIsTotal) {
+  // Same rule as the quaternion side: a degenerate input yields a zero vector a caller can test
+  // for, never a NaN that propagates silently through a whole session.
+  const Vec3 zero = Normalize(Vec3{0, 0, 0});
+  EXPECT_DOUBLE_EQ(zero.x, 0.0);
+  EXPECT_DOUBLE_EQ(zero.y, 0.0);
+  EXPECT_DOUBLE_EQ(zero.z, 0.0);
+  const Vec3 unit = Normalize(Vec3{0, 3, 4});
+  EXPECT_NEAR(std::sqrt(Dot(unit, unit)), 1.0, 1e-12);
+}
+
+TEST(AngleBetweenDirections, IgnoresLengthAndMeasuresTheAngle) {
+  EXPECT_NEAR(AngleBetweenDirections(Vec3{5, 0, 0}, Vec3{0, 2, 0}) * kDegPerRad, 90.0, 1e-9);
+  EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{-1, 0, 0}) * kDegPerRad, 180.0, 1e-9);
+  EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{1, 0, 0}), 0.0, 1e-9);
+}
+
+TEST(RollBetween, IsZeroForTheSameOrientation) {
+  const Quat q = FromAzimuthElevation(37.0, -12.0);
+  EXPECT_NEAR(RollBetween(q, q), 0.0, 1e-12);
+}
+
+TEST(RollBetween, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
+  const Quat target = FromAzimuthElevation(20.0, 5.0);
+  const Vec3 axis = Direction(target);
+  for (const double degrees : {15.0, -40.0, 90.0}) {
+    const Quat rolled = Multiply(FromAxisAngle(axis, degrees / kDegPerRad), target);
+    EXPECT_NEAR(RollBetween(rolled, target) * kDegPerRad, degrees, 1e-6) << "at " << degrees;
+  }
+}
+
+TEST(RollBetween, SaysNothingRatherThanNonsenseWhenLookingTheOppositeWay) {
+  // Roll about an axis is undefined once the two frames point opposite ways; reporting zero is
+  // the honest answer, and it keeps the number out of NaN territory.
+  const Quat target = FromAzimuthElevation(0.0, 0.0);
+  const Quat away = FromAzimuthElevation(180.0, 0.0);
+  EXPECT_TRUE(std::isfinite(RollBetween(away, target)));
+}
+
 }  // namespace
 }  // namespace sphanorama

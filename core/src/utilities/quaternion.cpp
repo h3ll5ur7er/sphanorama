@@ -82,4 +82,38 @@ Vec3 Direction(const Quat& q) {
   };
 }
 
+double Dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+Vec3 Cross(const Vec3& a, const Vec3& b) {
+  return Vec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+Vec3 Normalize(const Vec3& v) {
+  const double length = std::sqrt(Dot(v, v));
+  if (!(length > 1e-12)) return Vec3{0, 0, 0};
+  return Vec3{v.x / length, v.y / length, v.z / length};
+}
+
+double AngleBetweenDirections(const Vec3& a, const Vec3& b) {
+  const Vec3 x = Normalize(a);
+  const Vec3 y = Normalize(b);
+  if (Dot(x, x) < 0.5 || Dot(y, y) < 0.5) return 0.0;   // a degenerate direction is not an angle
+  return std::acos(std::clamp(Dot(x, y), -1.0, 1.0));
+}
+
+double RollBetween(const Quat& current, const Quat& target) {
+  // The camera's own +X axis is perpendicular to where it looks by construction, so it needs no
+  // projection; the target's does, because the two are only exactly co-directional once the user
+  // has finished aiming.
+  const Vec3 axis = Direction(current);
+  const Vec3 here = Rotate(current, Vec3{1, 0, 0});
+  const Vec3 there = Rotate(target, Vec3{1, 0, 0});
+  const double along = Dot(there, axis);
+  const Vec3 flattened =
+      Normalize(Vec3{there.x - axis.x * along, there.y - axis.y * along, there.z - axis.z * along});
+  // Antipodal: the target's frame collapses onto the viewing axis and roll has no meaning.
+  if (Dot(flattened, flattened) < 0.5) return 0.0;
+  return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
+}
+
 }  // namespace sphanorama

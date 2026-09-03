@@ -167,7 +167,6 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
       const { alpha, beta, gamma } = latest.orientation;
       orientationOut.textContent =
         `α ${alpha.toFixed(0)}° β ${beta.toFixed(0)}° γ ${gamma.toFixed(0)}°`;
-      horizonGroup.setAttribute('transform', `rotate(${-gamma.toFixed(1)} 50 50)`);
     }
 
     // Only when there is something new to fold in, plus once at the start so the reticle has a
@@ -185,6 +184,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null) {
         const radius = reticleRadius(guidance.angularErrorDeg, cone);
         reticle.setAttribute('r', radius.toFixed(1));
         reticle.classList.toggle('locked', radius === RETICLE_LOCKED_RADIUS);
+        // The horizon shows the roll the *core* reported against the target cell, not the raw
+        // gamma from the sensor. Deriving it here would be the client deciding how level is
+        // level enough, which is the planner's call (V4) and used to be wrong anyway: roll was
+        // folded into the angular error until the engine started reporting it separately.
+        horizonGroup.setAttribute('transform',
+                                  `rotate(${(-guidance.rollErrorDeg).toFixed(1)} 50 50)`);
         guidanceOut.textContent = describeGuidance(guidance, {
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
         });

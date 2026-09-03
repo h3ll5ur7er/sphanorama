@@ -396,5 +396,65 @@ TEST(RingsCoveragePlanner, RefusesALensSoNarrowThePlanCouldNotBeHeld) {
   EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
 }
 
+
+TEST(RingsCoveragePlanner, RefusesAStrategyItDoesNotImplement) {
+  // The plan echoes the spec back, so silently substituting rings for a geodesic tessellation
+  // would have the plan claim a layout it does not have — and a caller reasoning about cell
+  // spacing from the strategy it asked for would be reasoning about the wrong sphere.
+  RingsCoveragePlannerEngine engine;
+  for (const auto strategy : {TessellationStrategy::Geodesic, TessellationStrategy::Adaptive}) {
+    CapturePlanSpec spec = Spec();
+    spec.strategy = strategy;
+    auto plan = engine.Plan(spec, Intrinsics{});
+    EXPECT_EQ(plan.status.code, StatusCode::Unsupported);
+  }
+}
+
+TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
+  // Angular error is how far the camera is from pointing at the cell. Comparing whole attitudes
+  // folds rotation about the optical axis into that number, so a phone aimed exactly at a cell
+  // but held at an angle reads as far off target and the reticle never closes. Roll has its own
+  // field precisely because it is a different correction for the user to make.
+  RingsCoveragePlannerEngine engine;
+  const CapturePlan plan = Plan(Spec());
+
+  const Quat aimed = plan.nodes.front().targetOrientation;
+  auto straight = engine.Locate(aimed, plan);
+  ASSERT_TRUE(straight.ok());
+
+  // The same direction, rotated 30 degrees about the axis the camera looks along.
+  const Vec3 axis = Direction(aimed);
+  const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), aimed);
+  auto tilted = engine.Locate(rolled, plan);
+  ASSERT_TRUE(tilted.ok());
+
+  EXPECT_EQ(tilted.value.targetNode.value, straight.value.targetNode.value);
+  EXPECT_NEAR(tilted.value.angularErrorDeg, straight.value.angularErrorDeg, 1e-6);
+  EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);
+}
+
+TEST(CoveragePlanner, ReportsNoRollWhenTheCameraIsUpright) {
+  RingsCoveragePlannerEngine engine;
+  const CapturePlan plan = Plan(Spec());
+  auto guidance = engine.Locate(plan.nodes.front().targetOrientation, plan);
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_NEAR(guidance.value.rollErrorDeg, 0.0, 1e-9);
+}
+
+TEST(CoveragePlanner, PicksTheCellTheCameraActuallyPointsAt) {
+  // With roll excluded, "nearest" has to mean nearest in direction. A rolled phone must still
+  // select the cell in front of it rather than a neighbour that happens to match its attitude.
+  RingsCoveragePlannerEngine engine;
+  const CapturePlan plan = Plan(Spec());
+  for (const auto& node : plan.nodes) {
+    const Vec3 axis = Direction(node.targetOrientation);
+    const Quat rolled = Multiply(FromAxisAngle(axis, 45.0 / kRadToDeg), node.targetOrientation);
+    auto guidance = engine.Locate(rolled, plan);
+    ASSERT_TRUE(guidance.ok());
+    EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
+    EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-6);
+  }
+}
+
 }  // namespace
 }  // namespace sphanorama

@@ -20,6 +20,15 @@ constexpr double kPolarCosineFloor = 0.08;
 
 Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
                                                      const Intrinsics&) {
+  if (spec.strategy != TessellationStrategy::Rings) {
+    // Refused rather than substituted. The plan carries the spec back to the caller, so quietly
+    // laying rings for a geodesic request would have the plan claim a layout it does not have,
+    // and anything reasoning about cell spacing from the strategy it asked for would be reasoning
+    // about a different sphere.
+    return Err<CapturePlan>(StatusCode::Unsupported, kComponent,
+                            "this engine tessellates in rings; no other strategy is implemented");
+  }
+
   // Finiteness first. The spec crosses the facade as doubles, where NaN and Infinity are ordinary
   // values a client can send, and both slip past a ">= 0" test — then reach the conversions
   // below, where a float outside int's range is undefined behaviour rather than a large number.
@@ -108,10 +117,16 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const Quat& current,
     return Err<CaptureGuidance>(StatusCode::FailedPrecondition, kComponent, "plan has no cells");
   }
 
+  // Compared as directions, not as attitudes. AngleBetween on two orientations folds rotation
+  // about the optical axis into the answer, so a phone aimed exactly at a cell but held at an
+  // angle would read as far off target and the reticle would never close. How the phone is held
+  // is a separate correction, and CaptureGuidance has a separate field for it.
+  const Vec3 looking = Direction(current);
+
   const CoverageNode* nearest = &plan.nodes.front();
-  double best = AngleBetween(current, nearest->targetOrientation);
+  double best = AngleBetweenDirections(looking, Direction(nearest->targetOrientation));
   for (const auto& node : plan.nodes) {
-    const double angle = AngleBetween(current, node.targetOrientation);
+    const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
     if (angle < best) {
       best = angle;
       nearest = &node;
@@ -121,6 +136,7 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const Quat& current,
   CaptureGuidance guidance;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg = best * kRadToDeg;
+  guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
   guidance.action = guidance.angularErrorDeg <= nearest->acceptanceConeDeg
                         ? GuidanceAction::HoldStill
                         : GuidanceAction::Seek;
