@@ -116,8 +116,25 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
       worker.postMessage({ ...message, seq: id } as ToWorker, transfer);
     });
 
-  const booted = await ask({ kind: 'boot', coreUrl });
-  if (booted.kind !== 'booted') throw new Error('the worker answered boot with something else');
+  // Every way the handshake can fail takes the worker down with it. A boot that answers `failed`
+  // — the module import threw, say, which happens *after* the OPFS handle has opened — rejects
+  // the promise and leaves `connectCore` with nothing to return, so nobody holds a reference to
+  // the worker any more and nobody can stop it. It keeps its sync access handle, which is
+  // exclusive: the next attempt to open the same file fails, so a page that retried after a
+  // failed boot would be blocked by its own orphan.
+  //
+  // `die` is idempotent, so an `error` event that arrives alongside this is not a second death.
+  let booted: FromWorker;
+  try {
+    booted = await ask({ kind: 'boot', coreUrl });
+  } catch (cause) {
+    die(`the core worker failed to boot: ${cause instanceof Error ? cause.message : String(cause)}`);
+    throw cause;
+  }
+  if (booted.kind !== 'booted') {
+    die('the worker answered boot with something else');
+    throw new Error('the worker answered boot with something else');
+  }
   const methodNames = booted.methods;
 
   const runtime: CoreRuntime = {

@@ -52,9 +52,11 @@ class FrameStoreSpill : public ::testing::Test {
 };
 
 TEST_F(FrameStoreSpill, SpillingHandsTheBytesToTheSinkRatherThanRelabellingThem) {
-  // Without a sink the store moves a number from one total to the other and keeps the vector,
-  // which frees budget without freeing memory. On a phone that is the difference between a
-  // sphere that fits and a tab the operating system kills.
+  // The counter moving is not the evidence: it is the bytes arriving somewhere else, and the
+  // store's own vector being empty afterwards. A spill that only bookkeeps frees budget without
+  // freeing memory, and on a phone that is the difference between a sphere that fits and a tab
+  // the operating system kills — which is why a store with no sink now refuses outright, at the
+  // bottom of this file.
   const FrameRef frame = Allocate();
   Fill(frame, 0xA7);
 

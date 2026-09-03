@@ -110,8 +110,14 @@ not isolated.
 - Nothing crosses a contract differently. `ICameraAccess`, `IMotionSensorAccess`,
   `IFrameStoreAccess` and every manager interface are untouched, and nothing regenerates.
 - **The spill tier is reachable but nothing reaches for it.** `Demote` writes through the sink and
-  `Pin` faults back in, both tested against a real handle in a real browser — and no production
-  caller demotes anything. `Allocate` refuses at the ceiling instead of evicting to make room, so
+  `Pin` faults back in — against `FakeSpillSink`, in the native suite. What a real browser proves
+  is narrower and worth stating exactly, because the temptation is to round it up: the end-to-end
+  suite asserts that `openSpillFile()` succeeded, so a real `createSyncAccessHandle` opened. The
+  page-side allocator is tested against a fake `SpillFile`. **Nothing exercises the allocator over
+  a real handle**, so whether `write`/`read` at an offset behave there as the fake does is
+  assumed. Closing that needs either a test-only entry point in the shipped bundle or a device —
+  and since the same gap is the iOS risk below, a device is the honest way to close it.
+  Meanwhile no production caller demotes anything. `Allocate` refuses at the ceiling instead of evicting to make room, so
   a session that fills the heap is told no rather than spilling. Deciding *when* a frame should
   leave the heap is the store's own policy question and it is unanswered; until it is, the sink is
   a finished mechanism waiting for one.

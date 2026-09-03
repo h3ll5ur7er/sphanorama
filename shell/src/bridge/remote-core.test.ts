@@ -200,3 +200,31 @@ describe('a worker that stops answering', () => {
     await expect(connecting).rejects.toThrow(/the script would not load/);
   });
 });
+
+describe('a boot that fails', () => {
+  it('terminates the worker, so its exclusive OPFS handle does not outlive the attempt', async () => {
+    // The failure that makes this matter is a boot that gets far enough to open the spill handle
+    // and then throws importing the module. `connectCore` has nothing to return, so nobody holds
+    // a reference to the worker and nobody can stop it — and a sync access handle is exclusive,
+    // so the next attempt to open the same file is blocked by the page's own orphan.
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    await Promise.resolve();
+
+    w.reply({ kind: 'failed', seq: w.seqOf('boot'), detail: 'the module would not import' });
+
+    await expect(connecting).rejects.toThrow(/the module would not import/);
+    expect(w.wasTerminated()).toBe(true);
+  });
+
+  it('terminates on an answer of the wrong kind too', async () => {
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    await Promise.resolve();
+
+    w.reply({ kind: 'flushed', seq: w.seqOf('boot'), persistError: null });
+
+    await expect(connecting).rejects.toThrow(/something else/);
+    expect(w.wasTerminated()).toBe(true);
+  });
+});

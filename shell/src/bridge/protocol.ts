@@ -3,8 +3,9 @@
  *
  * One file, imported by both sides, because this is the crossing that is *not* generated. The
  * facade's is: a method id and a byte array in, a byte array out, knowing nothing about names, so
- * it cannot drift. This one carries the host — capabilities, frames, IMU batches — and a hand
- * written protocol is exactly what ADR 0009 built a generator to avoid for the other boundary.
+ * it cannot drift. This one carries the host — camera capabilities and IMU batches today, and a
+ * transferred preview frame once that is built (ADR 0019) — and a hand written protocol is
+ * exactly what ADR 0009 built a generator to avoid for the other boundary.
  * Keeping it in one file that both sides import is the cheap half of that discipline; if it grows
  * past a handful of messages it wants the expensive half too.
  *
