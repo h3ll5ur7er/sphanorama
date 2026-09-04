@@ -427,6 +427,39 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
+test('the ring fills when its cell finishes, without waiting for another sample', async ({ page }) => {
+  // Coverage is refreshed *after* the tick that reports a cell done, so the tick that drew the
+  // markers drew them from the coverage before it. Normally the next tick corrects that — but the
+  // loop only asks for guidance when a sample arrives, and a phone held still through the end of
+  // a burst gets no more. The map would fill in while the ring for that very cell stayed empty,
+  // and nothing would ever put it right. This browser has no gyroscope, so it is that phone.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+
+    // One sample, so there is an attitude to place markers against, then none after the burst.
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 90, gamma: 0,
+      }));
+    });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // A ring drawn as full: the dash offset closes to zero only at a fill of one.
+    await expect.poll(async () => page.evaluate(() => {
+      const fills = document.querySelectorAll('#cell-layer .cell-ring:not([hidden]) .ring-fill');
+      return Array.from(fills).filter((arc) => Number(arc.style.strokeDashoffset) === 0).length;
+    }), { timeout: 15000 }).toBeGreaterThan(0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('the markers keep off the panel even with no ResizeObserver', async ({ page }) => {
   // The layer's inset comes from a CSS variable the page measures. Measuring it only from the
   // observer's first callback leaves the fallback of 0px in force until then — markers over the

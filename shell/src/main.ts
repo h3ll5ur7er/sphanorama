@@ -43,7 +43,14 @@ const measurePanel = () => {
 // leave the layer on its `0px` fallback until then — markers over the panel for a frame — and on a
 // browser without ResizeObserver it would stay there for good, which is the worse half.
 measurePanel();
-if (typeof ResizeObserver === 'function') new ResizeObserver(measurePanel).observe(panel);
+if (typeof ResizeObserver === 'function') {
+  // Named rather than constructed inline. The document is supposed to keep an observer with live
+  // observations reachable, so this should make no difference — but the cost of being wrong is a
+  // layer that silently stops following the panel for the rest of the session, and the cost of
+  // holding the reference is a word.
+  const watchPanel = new ResizeObserver(measurePanel);
+  watchPanel.observe(panel);
+}
 const stage = el('stage');
 const coreCaps = el('core-caps');
 const cameraState = el('camera-state');
@@ -270,6 +277,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // cannot disagree about which cells are done.
   let lastCoverage: CoverageState | null = null;
   const overlay = createOverlayPainter(cellLayer, targetArrow);
+  // Both the guidance tick and the coverage refresh repaint, because either can change what the
+  // markers should say and they do not happen together. A cell finishing updates coverage
+  // *asynchronously*, after the tick that reported it has already drawn — and the tick that would
+  // have redrawn may never come, since the loop only asks for guidance when a sample arrives. A
+  // phone held still through the end of a burst would have watched the map fill in while the ring
+  // for that very cell stayed empty.
+  const paintOverlay = () => {
+    if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
+    overlay.show(planOverlay({ plan, coverage: lastCoverage, attitude, targetNode }));
+  };
   const nodesTotal = plan?.nodes.length ?? 0;
 
   // The review panel only exists once there is a plan to map and a project to record a choice
@@ -295,6 +312,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     nodesSatisfied = state.value.nodesSatisfied;
     lastCoverage = state.value;
     review.show(plan, state.value);
+    paintOverlay();
   };
 
   // Once at the start, and not only when a cell completes. Coverage can only *change* when one
@@ -460,9 +478,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // from the coverage the map already keeps, so the rings and the map cannot disagree about
         // which cells are done — two answers to that question is how the strip ended up in an
         // order nothing had chosen.
-        if (attitude !== null && lastCoverage !== null) {
-          overlay.show(planOverlay({ plan, coverage: lastCoverage, attitude, targetNode }));
-        }
+        paintOverlay();
         if (guidance.action === 'CellDone') void refreshCoverage();
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
