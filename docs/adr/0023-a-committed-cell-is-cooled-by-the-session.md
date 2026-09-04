@@ -20,9 +20,24 @@ capture that completes without an OOM, and it was unreachable by construction.
 So the question was never whether frames should leave the heap. It was **who decides when**.
 
 ## Decision
-**`CaptureSessionManager` cools a cell the moment its burst is committed** — after `Rank`
-succeeds, before the camera is unlocked. Every candidate of that cell, not only the frames this
-burst took, is offered to the store as `Demote(frame, Residency::Spilled)`.
+**`CaptureSessionManager` cools a cell on every way out of a burst** — inside `Disarm`, which is
+the one place every path already goes through: completion, a failed score or rank, a retake, the
+end of a session. Every candidate of that cell *that a burst here produced*, not only the frames
+this burst took, is offered to the store as `Demote(frame, Residency::Spilled)`.
+
+Both halves of that sentence are corrections of a first attempt that cooled on completion only,
+and cooled the cell wholesale:
+
+- **On completion only leaks.** Scoring a retake reads its siblings, which faults the cell's
+  spilled frames back into the heap; a burst that then ends any other way leaves them resident for
+  the rest of the session — the ceiling this exists to keep clear, held by the one route that
+  skipped the policy.
+- **The cell is not an ownership boundary.** `OfferFrame` appends the caller's candidates to the
+  same vector, and their frames are the caller's handles. Demoting one sends a frame somebody else
+  is holding to a sink they do not know exists, so their next `Pin` faults from it or is refused at
+  a ceiling they cannot see. The manager already says exactly this about its rollback mark, one
+  line further up the same function; the ids of burst-produced candidates are now tracked so the
+  boundary is a fact rather than a hope.
 
 The moment is chosen because it is knowable there and nowhere else. A ranked cell is finished:
 nothing reads its pixels again until the build or the review client asks, and both of those go
@@ -72,10 +87,15 @@ named in the consequences below rather than assumed away here.
   pixels, so a retake faults the earlier burst's frames back into the heap; cooling only the new
   ones would leave those resident for the rest of the session — the failure this exists to
   prevent, arriving through the door marked "already handled".
-- **`OfferFrame` is not cooled.** Its frames belong to the caller (file import, replayed datasets,
-  a manual shutter), and changing the residency of a borrowed handle is a surprise the borrower
-  has no way to expect. A session driven entirely through `OfferFrame` — the bench — therefore
-  gets no spilling and is bounded by its ceiling, which on a desktop is what it wants anyway.
+- **`OfferFrame` is not cooled**, and this is enforced rather than asserted. Its frames belong to
+  the caller (file import, replayed datasets, a manual shutter), and changing the residency of a
+  borrowed handle is a surprise the borrower has no way to expect. A session driven entirely
+  through `OfferFrame` — the bench — therefore gets no spilling and is bounded by its ceiling,
+  which on a desktop is what it wants anyway.
+- **`RequestRetake(replace = true)` still forgets offered frames**, which is the same ownership
+  question answered the other way and predates this. It is defensible — a caller asking to replace
+  a cell's evidence is asking for exactly that — but it is worth knowing that the two paths do not
+  agree about whose frames those are.
 - The store's refusal at the ceiling is still there and is still the backstop. It is now what it
   should always have been: the report of a capture that genuinely does not fit, rather than the
   first thing a normal capture runs into.

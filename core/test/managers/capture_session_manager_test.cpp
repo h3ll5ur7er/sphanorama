@@ -1108,6 +1108,70 @@ TEST_F(CaptureSessionUnderPressure, ASinkThatRefusesTheWriteDoesNotCostTheCell) 
   EXPECT_EQ(store->Budget().value.heapUsedBytes, kPreviewFrameBytes * 3);
 }
 
+TEST_F(CaptureSessionUnderPressure, AnOfferedFrameIsNotCooledByALaterBurst) {
+  // The cell is not an ownership boundary. `OfferFrame` appends the caller's own candidate to the
+  // same vector a burst commits into, so cooling the vector wholesale demotes a handle the
+  // manager never owned — and the caller's next Pin then faults from a sink it does not know
+  // exists, or is refused at a ceiling it has no way to see.
+  //
+  // The manager's own comment on `pending_` says exactly this about a rollback mark. The same
+  // vector, the same reason, one line further down.
+  Begin();
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  auto borrowed = store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(borrowed.ok());
+  ASSERT_TRUE(manager->OfferFrame(node, borrowed.value, PoseSample{}).ok());
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+
+  EXPECT_NE(store->ResidencyOf(borrowed.value).value, Residency::Spilled)
+      << "a frame the caller still owns was sent to the sink";
+  // And the burst's own frames still went, so this is not the policy being switched off.
+  const std::vector<Candidate> captured = manager->Candidates(node).value;
+  ASSERT_EQ(captured.size(), 4u);
+  int spilled = 0;
+  for (const auto& candidate : captured) {
+    if (store->ResidencyOf(candidate.frame).value == Residency::Spilled) ++spilled;
+  }
+  EXPECT_EQ(spilled, 3);
+}
+
+TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaultedIn) {
+  // Cooling on the way out of a *successful* burst only is a leak with a plausible cover story.
+  // Scoring a retake reads its siblings, which faults the cell's spilled frames back into the
+  // heap and leaves them there; if that burst then ends any other way — a failure, or the retake
+  // this test uses — nothing sends them back down, and they hold the ceiling for the rest of the
+  // session. Which is the allocation failure the whole policy exists to prevent, arriving by the
+  // one path that skips the policy.
+  SharpnessFrameQualityEngine sharp{*store};
+  CaptureSessionManager real(rings, pose, sharp, *camera, *sensor, *store, *projects, clock);
+  ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = real.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
+  ASSERT_EQ(store->Budget().value.heapUsedBytes, 0);
+
+  // A second burst on the same cell, taken far enough to score against the spilled siblings and
+  // then abandoned rather than completed.
+  ASSERT_TRUE(real.RequestRetake(node, /*replace=*/false).ok());
+  ASSERT_TRUE(real.ArmBurst(node, burst).ok());
+  ASSERT_TRUE(real.OnMotion({}).ok());
+  clock.AdvanceMs(burst.intervalMs);
+  ASSERT_TRUE(real.OnMotion({}).ok());
+  ASSERT_GT(store->Budget().value.heapUsedBytes, 0) << "nothing was faulted in to leave behind";
+
+  ASSERT_TRUE(real.RequestRetake(node, /*replace=*/false).ok());
+
+  for (const auto& candidate : real.Candidates(node).value) {
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
+}
+
 TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHeap) {
   // A retake adds to the evidence pool, and scoring a frame against its siblings reads their
   // pixels — which are in the sink by then. This is the interaction that would make spilling

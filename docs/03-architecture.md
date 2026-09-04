@@ -285,7 +285,7 @@ sequenceDiagram
   end
   M->>Q: Rank(candidates, policy)
   Q-->>M: ranking
-  M->>F: Demote(every candidate, spilled)
+  M->>F: Demote(every candidate this session captured, spilled)
   M->>C: SetLocks(released)
   M->>V: Evaluate(plan, candidates)
   V-->>M: CoverageState{satisfied, holes}

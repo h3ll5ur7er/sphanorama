@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <vector>
 
 #include "sphanorama/engines/coverage_planner_engine.h"
@@ -43,9 +44,12 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   bool HasNode(NodeId node) const;
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
-  // Sends a committed cell's frames to whatever cheaper tier the store has. The session knows
-  // when a frame stops being looked at — that is what a sequence is — and the store knows what
-  // cheaper means; this is the one line where those two facts meet.
+  // Sends a cell's own frames to whatever cheaper tier the store has. The session knows when a
+  // frame stops being looked at — that is what a sequence is — and the store knows what cheaper
+  // means; this is the one line where those two facts meet.
+  //
+  // "Its own" is the load-bearing word: a cell holds offered candidates too, and those belong to
+  // the caller.
   void Cool(const std::vector<Candidate>& candidates);
 
   // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
@@ -85,6 +89,18 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4, ADR 0016).
   PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
+
+  // Which candidates this manager's own bursts produced, by id.
+  //
+  // A cell is not an ownership boundary: `OfferFrame` appends the caller's candidates to the same
+  // vector, and their frames are the caller's handles — demoting one sends a frame somebody else
+  // is holding to a sink they do not know exists, so their next Pin faults from it or is refused
+  // at a ceiling they cannot see. The manager's note on `pending_` says the same thing about a
+  // rollback mark; this is the same vector and the same reason.
+  //
+  // Ids rather than a second vector of candidates, because what is needed is a membership test
+  // and a copy would be a second place for the truth to live.
+  std::set<uint64_t> burst_owned_;
 
   // What the camera said it can deliver when it was opened, in frames per second; 0 when the
   // platform will not say. It is a floor on the burst interval and nothing else reads it.

@@ -66,9 +66,11 @@ misreports it.
 The ceiling matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash, not
 an exception. The store allocates against it with a safety margin and **refuses at it**; it never
 evicts to make room. What keeps a capture away from that refusal is above it:
-`CaptureSessionManager` cools a cell the moment its burst is ranked, offering every candidate to
-the sink, because a finished cell is not read again until the build or the review client asks and
-both of those go through `Pin` (ADR 0023). Peak heap during a capture is therefore one burst plus
+`CaptureSessionManager` cools a cell on every way out of a burst — completion, failure, retake or
+the end of a session — offering the sink every candidate its own bursts produced, because a
+finished cell is not read again until the build or the review client asks and both of those go
+through `Pin` (ADR 0023). Frames offered through `OfferFrame` belong to the caller and are left
+where they are. Peak heap during a capture is therefore one burst plus
 whatever a retake faults back in to score against, rather than the whole sphere so far.
 
 The store's refusal is the backstop rather than the normal case, and a cooling that fails is not
