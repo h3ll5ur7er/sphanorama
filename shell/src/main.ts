@@ -35,10 +35,14 @@ const targetArrow = el<HTMLElement>('target-arrow');
 /*
  * The panel, and getting it out of the way of the picture.
  *
- * It is most of the screen, and the screen is where the markers are — so it folds while a capture
- * is running and comes back when one ends. The state it carries is one tap away either way; what
- * it must not be is parked over the viewfinder for the whole of the part of this app you have to
- * aim with.
+ * It is most of the screen, and the screen is where the markers are — so it folds itself once a
+ * capture starts, and from then on it is the user's: nothing reopens it but a press. The state it
+ * carries is one tap away; what it must not be is parked over the viewfinder for the whole of the
+ * part of this app you have to aim with.
+ *
+ * The label names the press, not the state, so an open panel offers "hide" — while `aria-expanded`
+ * names the state, because that is what it means. They read as contradicting each other and do
+ * not.
  */
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');

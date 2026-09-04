@@ -83,7 +83,9 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
  * for cells the camera is pointing at have nowhere to be.
  */
 #panel[data-open='false'] #panel-details { display: none; }
-#panel-toggle { float: right; margin-left: 12px; }
+/* The panel is a column flex container, where `float` is ignored outright — measured in the
+   browser, where the button sat at the left edge with `float: right` computed and doing nothing. */
+#panel-toggle { align-self: flex-end; }
 #panel { position: absolute; left: 0; right: 0; bottom: 0; max-height: 62%; overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px 18px calc(18px + env(safe-area-inset-bottom));

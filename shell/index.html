@@ -42,11 +42,15 @@
 
     <section id="panel">
       <h1>Sphanorama</h1>
-      <!-- The panel is most of the screen, and the screen is where the markers are. Folded away
-           while a capture is running so there is a viewfinder to aim with; the state it carries is
-           one tap away and comes back by itself when the capture ends. -->
+      <!-- The panel is most of the screen, and the screen is where the markers are, so it folds
+           away once a capture is running and there is something to aim at. Everything it carries
+           stays one tap away.
+
+           Open in the markup, and labelled for that state: the label says what a press will do,
+           so an open panel offers "hide". The script keeps the two in step from here, and before
+           it runs this is what the page actually is. -->
       <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-details">
-        details</button>
+        hide</button>
       <!-- The live region is this line alone. It changes when something happens, which is what a
            screen reader should announce. The readout below changes every animation frame, and
            announcing that would make the app unusable with one. -->

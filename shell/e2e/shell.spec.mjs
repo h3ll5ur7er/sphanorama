@@ -560,14 +560,35 @@ test('the panel gets out of the picture while a capture is running', async ({ pa
 
     // Open to begin with: nothing is being aimed at yet, and this is where the camera is enabled.
     expect(await share()).toBeGreaterThan(0.25);
+    // The label names the press and `aria-expanded` names the state, so they read as opposites and
+    // have to stay in step with each other and with the panel.
+    //
+    // Read out of the served file, not off the page: the script sets both on startup, so by the
+    // time the DOM can be queried it has already covered for whatever the markup said. What is
+    // being checked here is the first paint — the page before any of this has run, which on a
+    // phone on a slow connection is a real thing somebody sees.
+    const markup = await (await page.request.get(server.appUrl)).text();
+    const button = markup.match(/<button id="panel-toggle"[\s\S]*?<\/button>/)[0];
+    expect(button).toContain('aria-expanded="true"');
+    expect(button).toMatch(/>\s*hide\s*</);
+
+    const toggle = page.locator('#panel-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('hide');
 
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
     await expect.poll(share, { timeout: 10000 }).toBeLessThan(0.25);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveText('details');
 
-    // And it comes back on request, because everything it carries is still worth reading.
-    await page.locator('#panel-toggle').click();
+    // And it comes back on request, because everything it carries is still worth reading. Nothing
+    // else reopens it: from the moment a capture starts, whether the picture is covered is the
+    // user's call and not the app's.
+    await toggle.click();
     await expect.poll(share, { timeout: 10000 }).toBeGreaterThan(0.25);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('hide');
   } finally {
     await server.close();
   }
