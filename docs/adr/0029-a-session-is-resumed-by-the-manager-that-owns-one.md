@@ -34,6 +34,14 @@ frame arrives `Spilled`, and `Pin` faults it in exactly as it would one the stor
 itself. The store steps its own counter past every id it adopts, because a resumed session keeps
 capturing from the same counter that issued the restored frames.
 
+`Adopt` is idempotent for a frame the store already holds under the same identity, at the same
+size, still in the sink — that is the same frame, not a second one. It matters because a restore
+that fails partway leaves frames already taken back, and the only way to undo one is `Forget`,
+which takes the sink's copy with it. A resume that tidied up after itself that way would delete
+the user's sphere in order to recover from a failure, and every later attempt would pin-fail
+against an empty file. So nothing is undone: the document still names those frames, which is the
+whole point of it, and the next attempt asks for exactly them.
+
 `Adopt` cannot verify the bytes are down there. `ISpillSink` has no listing, deliberately — the
 store is the only thing that knows what it put where — so a frame adopted against a sink that lost
 it fails at the `Pin`, carrying the sink's own reason, rather than at the adopt.
@@ -62,6 +70,10 @@ load and says so.
 - **`IProjectManager` shrinks.** One fewer method, and no second Resume for a caller to pick
   wrongly between. `List` still reports `nodesSatisfied`, which is what a project picker needs to
   show an unfinished sphere.
+- **A failed resume leaves the frames it took, and can simply be tried again.** The store outlives
+  the attempt — it lives as long as the worker — so a retry meets its own adoptions and accepts
+  them. Adopting over a *live* frame is still refused: two different frames under one identity is
+  a store that hands the wrong pixels to whoever asks second.
 - **The store's identity counter is now something a caller can move.** Adopting an id at or above
   the next one steps the counter past it. Two frames under one identity is a store that hands the
   wrong pixels to whoever asks second, and the ids in a restored document are precisely the ones a

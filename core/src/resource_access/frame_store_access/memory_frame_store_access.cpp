@@ -240,9 +240,19 @@ Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
   if (size <= 0) {
     return Fail(StatusCode::InvalidArgument, kComponent, "frame has no representable size");
   }
-  if (entries_.count(frame.id.value) != 0) {
+  if (auto existing = entries_.find(frame.id.value); existing != entries_.end()) {
+    // Idempotent for the frame it already has. A restore that failed partway leaves frames taken
+    // back under the identities their document gave them, and the next attempt asks for exactly
+    // those again — the alternative to accepting them is a caller that has to undo its own
+    // adoptions, and undoing one means forgetting it, which takes the sink's copy of the capture
+    // with it. Same identity, same size, still in the sink: that is the same frame, not a second
+    // one, and this is the answer the caller wanted.
+    const Entry& held = existing->second;
+    if (held.residency == Residency::Spilled && held.inSink && held.size == size) {
+      return Status::Ok();
+    }
     return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this store already holds a frame under that identity");
+                "this store already holds a different frame under that identity");
   }
 
   Entry entry;

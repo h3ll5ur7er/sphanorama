@@ -387,19 +387,21 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // coverage map claiming cells whose pixels nothing can reach, which is worse than refusing:
   // the capture would look finished and build into nothing.
   //
-  // Rolled back one by one on the way out, because a half-adopted store is a store holding frames
-  // no handle names — the same leak `Begin` refuses a live session to avoid, arriving by a
-  // different door.
-  std::vector<FrameRef> adopted;
-  adopted.reserve(stored.candidates.size());
+  // A failure here leaves the frames it already took, on purpose, and an earlier draft of this
+  // undid them with `Forget` — which takes the sink's copy with it. That is the capture: undoing
+  // a half-finished restore that way would delete the user's sphere in order to tidy up after a
+  // failure, and every later attempt would pin-fail against a file with nothing in it.
+  //
+  // They are not orphans either. The document still names them, which is the whole point of it,
+  // so a frame taken back under the identity it was given is exactly the frame the next attempt
+  // asks for — and `Adopt` is idempotent for one it already holds, so the retry is cheaper rather
+  // than impossible.
   for (const Candidate& candidate : stored.candidates) {
     if (auto taken = frames_.Adopt(candidate.frame); !taken.ok()) {
-      for (const FrameRef& frame : adopted) (void)frames_.Forget(frame);
       (void)camera_.Close();
       return Err<SessionId>(taken.code, kComponent,
                             "a captured frame could not be taken back: " + taken.detail);
     }
-    adopted.push_back(candidate.frame);
   }
 
   // The live capability rather than the stored one: the document says which sphere is being

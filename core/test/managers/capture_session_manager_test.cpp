@@ -1528,11 +1528,39 @@ class StubbornStore final : public IFrameStoreAccess {
   int adoptions_;
 };
 
-TEST_F(ResumedSession, LeavesNothingBehindWhenARestoreFailsHalfway) {
-  // A resume that gives up partway has handed the store frames nothing names any more: no
-  // session holds them, and the document it was reading is not going to be read again by this
-  // attempt. That is the same leak Begin refuses a live session to avoid, arriving by another
-  // door — so every adoption is undone on the way out.
+bool second_store_pin(IFrameStoreAccess& store, const FrameRef& frame) {
+  auto pinned = store.Pin(frame);
+  if (!pinned.ok()) return false;
+  return store.Release(frame).ok();
+}
+
+// A pose engine that will not start, so a resume can be made to fail *after* it has taken the
+// frames back. Everything before that point has already happened by then, which is the state the
+// test below is about.
+class UnwillingPoseEngine final : public IPoseEngine {
+ public:
+  Result<PoseState> Initial(PoseMode, MotionCapability) override {
+    return Err<PoseState>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<PoseState> Integrate(const PoseState&, std::span<const ImuSample>) override {
+    return Err<PoseState>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<PoseSample> Correct(const FrameRef&, const FrameRef&, const PoseSample&) override {
+    return Err<PoseSample>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<double> Stability(std::span<const ImuSample>) override {
+    return Err<double>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+};
+
+TEST_F(ResumedSession, AFailedRestoreLeavesTheCaptureWhereItWas) {
+  // The frames a resume adopts are not the resume's to throw away. They are the capture, they are
+  // still named by the document on disk, and `Forget` takes the sink's copy with it — so undoing
+  // a half-finished restore by forgetting what it had taken would delete the user's sphere to
+  // tidy up after a failure, and every later attempt would pin-fail against an empty file.
+  //
+  // Nothing is undone, and nothing needs to be: a frame the store has taken back under the
+  // identity the document gave it is exactly the frame the next attempt asks for.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
@@ -1542,22 +1570,60 @@ TEST_F(ResumedSession, LeavesNothingBehindWhenARestoreFailsHalfway) {
   BurstSpec burst;
   burst.frameCount = 3;
   ASSERT_TRUE(FireBurstOn(first, clock, node, burst).ok());
-  const std::vector<Candidate> captured = first.Candidates(node).value;
-  ASSERT_EQ(captured.size(), 3u);
+  ASSERT_EQ(first.Candidates(node).value.size(), 3u);
   ASSERT_TRUE(first.End().ok());
 
   auto inner = NewStore();
-  StubbornStore stubborn(inner, 2);   // it takes two of the three, then stops
-  FakeCameraAccess second_camera(inner);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, stubborn,
-                               *projects, clock);
-  EXPECT_FALSE(second.Resume(kProject).ok());
-
-  // The two it did take are gone again: adopting them now has to succeed, which it cannot do
-  // against a store that is still holding them under those identities.
-  for (const Candidate& candidate : captured) {
-    EXPECT_TRUE(inner->Adopt(candidate.frame).ok()) << "frame " << candidate.frame.id.value;
+  {
+    StubbornStore stubborn(inner, 2);   // it takes two of the three, then stops
+    FakeCameraAccess failing_camera(inner);
+    CaptureSessionManager attempt(planner, pose, quality, failing_camera, *sensor, stubborn,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok());
   }
+
+  // Straight into a second attempt, against the same store — which is what a page retrying gets,
+  // since the store lives as long as the worker does.
+  FakeCameraAccess second_camera(inner);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  auto restored = second.Candidates(node);
+  ASSERT_TRUE(restored.ok()) << restored.status.detail;
+  EXPECT_EQ(restored.value.size(), 3u);
+  for (const Candidate& candidate : restored.value) {
+    auto pinned = second_store_pin(*inner, candidate.frame);
+    EXPECT_TRUE(pinned) << "candidate " << candidate.id.value;
+  }
+}
+
+TEST_F(ResumedSession, AResumeThatFailsAfterTakingTheFramesCanStillBeTriedAgain) {
+  // The same property one step later: everything is adopted and then the pose engine refuses. The
+  // frames are in the store by that point, and an attempt that walked them back would hit exactly
+  // the destructive path above — while one that leaves them makes the retry cheaper, not broken.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto inner = NewStore();
+  UnwillingPoseEngine unwilling;
+  {
+    FakeCameraAccess sulking(inner);
+    CaptureSessionManager attempt(planner, unwilling, quality, sulking, *sensor, *inner,
+                                  *projects, clock);
+    EXPECT_EQ(attempt.Resume(kProject).status.code, StatusCode::SensorUnavailable);
+  }
+
+  FakeCameraAccess second_camera(inner);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+                               *projects, clock);
+  EXPECT_TRUE(second.Resume(kProject).ok());
 }
 
 TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {

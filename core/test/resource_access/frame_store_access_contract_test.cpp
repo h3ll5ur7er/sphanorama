@@ -146,11 +146,32 @@ TYPED_TEST(FrameStoreAccessContract, AdoptsAFrameSpilledByAStoreThatIsGone) {
   EXPECT_TRUE(revived->Release(frame).ok());
 }
 
-TYPED_TEST(FrameStoreAccessContract, AdoptingAnIdentityTheStoreAlreadyHoldsIsRefused) {
-  // Two frames under one identity is a store that hands the wrong pixels to whoever asks second,
-  // and a resume replaying a document twice is exactly how that would arrive.
+TYPED_TEST(FrameStoreAccessContract, AdoptingOverALiveFrameIsRefused) {
+  // Two *different* frames under one identity is a store that hands the wrong pixels to whoever
+  // asks second. This one is resident and was allocated here; the document's frame of the same
+  // name is somebody else's.
   auto frame = this->Allocate();
   EXPECT_FALSE(this->store->Adopt(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AdoptingTheSameSpilledFrameTwiceIsAccepted) {
+  // A restore that failed partway has already taken frames back, and undoing that means
+  // forgetting them — which takes the sink's copy of the capture with it. So the second attempt
+  // asks for the same identities, and being refused there is the difference between a retry that
+  // works and a capture nobody can ever open again.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0x5c);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+  ASSERT_TRUE(revived->Adopt(frame).ok());
+  EXPECT_TRUE(revived->Adopt(frame).ok());
+
+  // And it is still the frame it was, not an empty one wearing its name.
+  auto pinned = revived->Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  EXPECT_EQ(pinned.value[0], 0x5c);
+  EXPECT_TRUE(revived->Release(frame).ok());
 }
 
 TYPED_TEST(FrameStoreAccessContract, AnAdoptedIdentityIsNeverHandedOutAgain) {
