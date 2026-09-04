@@ -312,6 +312,14 @@ struct PoseState {
   // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
   // is derived from this, so it has to survive between calls.
   bool absolute = false;
+  // The gyroscope's zero offset, in rad/s, as far as the engine has been able to observe it. A
+  // gyroscope at rest does not read zero, and integrating that offset is how dead reckoning walks
+  // away from the truth during the seconds when no absolute reading is arriving to correct it.
+  //
+  // It is here rather than inside the engine because it is session state, and an engine is
+  // stateless per session (docs/03 §3.3 rule 4, ADR 0016). A bias kept in the engine would be
+  // shared by every session in the process and would outlive the device being put down.
+  Vec3 gyroBias;
 };
 
 struct SelectionPolicy {
