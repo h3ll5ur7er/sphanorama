@@ -78,6 +78,16 @@ describe('mapCoverage', () => {
     }
   });
 
+  it('puts the wrap seam at the map\'s edge, not down its middle', () => {
+    // The fact the panel's own seam marking depends on. Straight ahead is the middle, so the
+    // meridian the map is cut along is the border it already draws — a dashed line down the
+    // centre would mark the one place the sphere is continuous.
+    for (const azimuth of [180, -180]) {
+      const [behind] = mapCoverage(plan(cell(1 as NodeId, azimuth, 0)), nothingCovered);
+      expect(Math.min(behind.x, 1 - behind.x)).toBeCloseTo(0, 6);
+    }
+  });
+
   it('marks the cells the core called holes and no others', () => {
     // Which cells are holes is the planner's answer, not a threshold this client re-derives.
     const covered = mapCoverage(

@@ -13,7 +13,14 @@
   border-radius: 2px;
 }
 
-/* The seam is behind the user, and marking it stops a cell near the edge reading as an outlier. */
+/*
+ * Straight ahead, which is where the map's centre is and where a capture starts. Marking it gives
+ * a cell a reference to be left or right *of*, which a bare rectangle does not.
+ *
+ * Not the seam: the seam is where azimuth wraps, at ±180, and this projection puts that at the
+ * map's left and right edges — the border already draws it. A dashed line down the middle labelled
+ * as the seam would mark the one meridian along which the sphere is continuous.
+ */
 #coverage-map::after {
   content: '';
   position: absolute;
