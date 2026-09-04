@@ -20,9 +20,15 @@
  * Not the seam: the seam is where azimuth wraps, at ±180, and this projection puts that at the
  * map's left and right edges — the border already draws it. A dashed line down the middle labelled
  * as the seam would mark the one meridian along which the sphere is continuous.
+ *
+ * Declared non-interactive, because it is drawn *after* the dots and neither carries a z-index —
+ * so this guide is painted on top of the one cell a capture starts from. It happens not to
+ * swallow that click today, but only because it is a zero-width box with a one-pixel border;
+ * widening it to make it easier to see would silently make the straight-ahead cell unclickable.
  */
 #coverage-map::after {
   content: '';
+  pointer-events: none;
   position: absolute;
   inset-block: 0;
   inset-inline-start: 50%;

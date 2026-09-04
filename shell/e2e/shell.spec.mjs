@@ -297,6 +297,41 @@ test('the coverage map shows the whole plan before anything is captured', async 
   }
 });
 
+test('the cell straight ahead can actually be clicked', async ({ page }) => {
+  // The map draws a dashed guide down its centre, and the centre is where the straight-ahead cell
+  // sits. Both it and the dots are absolutely positioned with no z-index, so the guide — a
+  // generated box, painted after its siblings — is on top of the one dot a user is most likely to
+  // reach for first. A decoration that eats the click is invisible in a unit test, because there
+  // is no layout there to overlap: this needs a real browser hit-test, which is what a click is.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    const ahead = page.locator('#coverage-map .cell[style*="left: 50%"]').first();
+    await expect(ahead).toBeVisible({ timeout: 15000 });
+    // Playwright clicks the element's centre and refuses to click through something else, so an
+    // intercepting guide fails here rather than being clicked instead of the dot.
+    await ahead.click({ timeout: 5000 });
+
+    // Nothing has been captured, so the strip says so — the assertion is that the click arrived
+    // at the button at all.
+    await expect(page.locator('#strip-heading')).toContainText(/nothing captured/i);
+
+    // And the guide says outright that it is not interactive, rather than being harmless by
+    // accident. It is currently a zero-width box with a one-pixel border, and that is the only
+    // reason the dot wins the hit test today: give the guide a width to make it easier to see and
+    // the click it swallows would be the one on the cell a capture starts from.
+    const interactive = await page.evaluate(() => getComputedStyle(
+      document.querySelector('#coverage-map'), '::after').pointerEvents);
+    expect(interactive).toBe('none');
+  } finally {
+    await server.close();
+  }
+});
+
 test('an orientation event moves the pose through the sensor port', async ({ page }) => {
   // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
   // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and
