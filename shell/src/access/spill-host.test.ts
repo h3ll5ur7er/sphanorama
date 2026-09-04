@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSpillHost, openSpillFile, type SpillFile } from './spill-host';
+import { createSpillHost, openSpillTier, type SpillFile } from './spill-host';
 
 /** A spill file in memory. The allocator is what is under test; the syscalls are the browser's. */
 function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(): Uint8Array } {
@@ -27,12 +27,94 @@ function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(
       grow(size);
       buffer = buffer.subarray(0, size);
     },
+    size: () => buffer.length,
     close() {},
     bytes: () => buffer,
   };
 }
 
 const frame = (fill: number, length = 16) => new Uint8Array(length).fill(fill);
+
+describe('a spill tier that outlives the tab', () => {
+  it('finds the frames the last session spilled', () => {
+    // The reload. The core hands back the identities its session document named (ADR 0029) and
+    // asks this for their bytes — but the map from identity to offset lived only in the closed
+    // tab's memory, so every one of those frames was a file full of pixels nobody could find.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.write(2, frame(0xb2));
+    before.close();
+
+    const after = createSpillHost(file, index);
+    const into = new Uint8Array(16);
+    expect(after.read(2, into)).toBe(true);
+    expect(into.every((b) => b === 0xb2)).toBe(true);
+  });
+
+  it('does not give a new frame space an old one is still in', () => {
+    // The half that is easy to miss. Recovering the offsets and not the high-water mark leaves
+    // the allocator handing out offset 0 again, so the resumed session's first spill lands on top
+    // of a cell it just restored — and reads still succeed, with the wrong pixels.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.write(2, frame(0xb2));
+    before.close();
+
+    const after = createSpillHost(file, index);
+    expect(after.write(3, frame(0xc3))).toBe(true);
+
+    const first = new Uint8Array(16);
+    const second = new Uint8Array(16);
+    expect(after.read(1, first)).toBe(true);
+    expect(after.read(2, second)).toBe(true);
+    expect(first.every((b) => b === 0xa1)).toBe(true);
+    expect(second.every((b) => b === 0xb2)).toBe(true);
+  });
+
+  it('remembers a frame that was dropped, and the hole it left', () => {
+    // A drop is as much of the allocator's state as a write. Coming back believing a dropped
+    // frame is still there would answer a read with whatever has since been written over it.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.write(2, frame(0xb2));
+    before.drop(1);
+    before.close();
+
+    const after = createSpillHost(file, index);
+    expect(after.read(1, new Uint8Array(16))).toBe(false);
+    // And the hole is still on the free list, rather than the file growing past it.
+    expect(after.write(3, frame(0xc3))).toBe(true);
+    expect(file.bytes().length).toBe(32);
+  });
+
+  it('starts empty rather than throwing when the index makes no sense', () => {
+    // It is a file on a phone: a tab killed mid-write, a quota that ran out between the frame and
+    // the index. Losing the tier's memory costs a resume; throwing here costs the whole session,
+    // because this runs while the worker is booting.
+    const file = fakeFile();
+    const index = fakeFile();
+    index.write(new TextEncoder().encode('{ this is not an index'), 0);
+
+    const host = createSpillHost(file, index);
+    expect(host.read(1, new Uint8Array(16))).toBe(false);
+    expect(host.write(1, frame(0xa1))).toBe(true);
+  });
+
+  it('works with no index at all, which is what a browser without one gets', () => {
+    const host = createSpillHost(fakeFile());
+    expect(host.write(1, frame(0xa1))).toBe(true);
+    expect(host.read(1, new Uint8Array(16))).toBe(true);
+  });
+});
 
 describe('the spill host', () => {
   it('reads back exactly what was written, for several frames at once', () => {
@@ -140,7 +222,7 @@ describe('the spill host', () => {
  * An origin private file system with the one property that matters here: a sync access handle is
  * exclusive, so a second attempt to lock a file someone else holds throws.
  */
-function fakeOpfs(initial: string[] = []) {
+function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean = () => false) {
   const files = new Map(initial.map((name) => [name, { locked: false }]));
   return {
     names: () => [...files.keys()].sort(),
@@ -152,12 +234,13 @@ function fakeOpfs(initial: string[] = []) {
         files.set(name, file);
         return {
           async createSyncAccessHandle() {
-            if (file.locked) throw new Error(`${name} is in use`);
+            if (file.locked || refuseLock(name)) throw new Error(`${name} is in use`);
             file.locked = true;
             return {
               write: () => 0,
               read: () => 0,
               truncate: () => {},
+              getSize: () => 0,
               close: () => {
                 file.locked = false;
               },
@@ -177,52 +260,94 @@ function fakeOpfs(initial: string[] = []) {
 }
 
 describe('the spill file', () => {
-  it('opens for a second session while the first still holds its own', async () => {
-    // The bug this replaced: one fixed name and an exclusive handle, so the second tab open on
-    // the app got no spill tier at all and captured a smaller sphere for no stated reason.
+  it('comes back to the same file, so a reload can still find its frames', async () => {
+    // The whole reason this file has a fixed name again. A session's frames are named by the
+    // identities its document carries (ADR 0029), and a fresh file per run means those bytes are
+    // in a file that was swept before anybody asked for them.
     const opfs = fakeOpfs();
-    const first = await openSpillFile(opfs.directory);
-    const second = await openSpillFile(opfs.directory);
+    const first = await openSpillTier(opfs.directory);
+    const names = opfs.names();
+    first.frames.close();
+    first.index.close();
 
-    expect(first).not.toBe(second);
-    expect(opfs.names()).toHaveLength(2);
+    await openSpillTier(opfs.directory);
+    expect(opfs.names().sort()).toEqual(names.sort());
+  });
+
+  it('opens for a second session while the first still holds its own', async () => {
+    // The bug that made the name unique in the first place: one fixed name and an exclusive
+    // handle, so the second tab open on the app got no spill tier at all and captured a smaller
+    // sphere for no stated reason. It still gets one — just not the resumable one, which belongs
+    // to whoever is holding it.
+    const opfs = fakeOpfs();
+    const first = await openSpillTier(opfs.directory);
+    const second = await openSpillTier(opfs.directory);
+
+    expect(first.frames).not.toBe(second.frames);
+    expect(opfs.names().filter((name) => name.startsWith('sphanorama-spill-'))).toHaveLength(4);
   });
 
   it('opens anyway when a live session refuses to give its file up', async () => {
-    // The sweep below asks for every spill file that is not this one, and a live sibling's file
-    // says no. Letting that answer escape would cost the new session the tier it just opened —
-    // the second tab's spill would be lost again, by the code meant to keep it.
+    // The sweep asks for every spill file that is neither this session's nor the resident one,
+    // and a live sibling's says no. Letting that answer escape would cost the new session the
+    // tier it just opened — the second tab's spill lost again, by the code meant to keep it.
     const opfs = fakeOpfs();
-    await openSpillFile(opfs.directory);
+    await openSpillTier(opfs.directory);
     const held = opfs.names();
 
-    await expect(openSpillFile(opfs.directory)).resolves.toBeDefined();
+    await expect(openSpillTier(opfs.directory)).resolves.toBeDefined();
     expect(opfs.names()).toEqual(expect.arrayContaining(held));
   });
 
   it('reclaims the file of a session that is gone', async () => {
-    // Nobody deletes these on a crash or a killed tab, and a unique name per session means they
-    // would otherwise accumulate one abandoned spill file per run until the origin's quota went.
+    // Nobody deletes a fallback file on a crash or a killed tab, and they would otherwise
+    // accumulate one per second-tab run until the origin's quota went.
     const opfs = fakeOpfs(['sphanorama-spill-1a2b3c']);
-    await openSpillFile(opfs.directory);
+    await openSpillTier(opfs.directory);
 
     expect(opfs.names()).not.toContain('sphanorama-spill-1a2b3c');
-    expect(opfs.names()).toHaveLength(1);
+  });
+
+  it('never reclaims the resident tier, even lying unlocked', async () => {
+    // The narrow race, and the expensive one. A session that could not take the resident pair
+    // falls back to a name of its own and then sweeps — and if the tab that was holding that pair
+    // closed in between, the sweep meets it unlocked, which is what an abandoned file looks like.
+    // It is not abandoned: it is somebody's finished capture, and the sweep is the one operation
+    // here that can destroy one. Left alone whatever its lock says; clearing it is a new
+    // capture's job, because only the core knows the difference between beginning and resuming.
+    const opfs = fakeOpfs(
+      ['sphanorama-spill-resident', 'sphanorama-spill-resident.index'],
+      (name) => name.startsWith('sphanorama-spill-resident'),
+    );
+
+    const tier = await openSpillTier(opfs.directory);
+
+    expect(opfs.names()).toContain('sphanorama-spill-resident');
+    expect(opfs.names()).toContain('sphanorama-spill-resident.index');
+    // And this session is on a tier of its own rather than sharing one.
+    expect(opfs.names().filter((name) => name.startsWith('sphanorama-spill-'))).toHaveLength(4);
+    tier.frames.close();
+    tier.index.close();
   });
 
   it('leaves files that are not spill files alone', async () => {
     const opfs = fakeOpfs(['someone-elses-database']);
-    await openSpillFile(opfs.directory);
+    await openSpillTier(opfs.directory);
 
     expect(opfs.names()).toContain('someone-elses-database');
   });
 
-  it('removes its own file when the session closes', async () => {
+  it('removes a fallback session\'s own files when it closes', async () => {
+    // A second tab's tier is nobody's to resume — its frames were never written into a session
+    // document anyone will read — so it goes when the tab does rather than waiting for a sweep.
     const opfs = fakeOpfs();
-    const file = await openSpillFile(opfs.directory);
-    expect(opfs.names()).toHaveLength(1);
+    const resident = await openSpillTier(opfs.directory);
+    const fallback = await openSpillTier(opfs.directory);
+    expect(opfs.names()).toHaveLength(4);
 
-    file.close();
-    await vi.waitFor(() => expect(opfs.names()).toHaveLength(0));
+    fallback.frames.close();
+    fallback.index.close();
+    await vi.waitFor(() => expect(opfs.names()).toHaveLength(2));
+    expect(resident.frames).toBeDefined();
   });
 });

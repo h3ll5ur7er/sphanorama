@@ -90,6 +90,10 @@ Three behaviours are worth naming because they are the failure modes a phone act
   which makes the browser's own lock the liveness test and keeps abandoned files from
   accumulating one per run. Reported from a phone, and reproduced in the browser tests with two
   pages in one context.
+- *Narrowed by ADR 0030.* A name per session is now what a session gets when it cannot have the
+  resident one, rather than what every session gets. The reasoning above still holds — it is why
+  the fallback exists — but a tier nobody can find again is no use to a reload, and resuming a
+  capture needs the frames and not only the document.
 
 ## Rejected alternative
 **A second `IFrameStoreAccess` implementation over OPFS.** It is the shape the repo already uses

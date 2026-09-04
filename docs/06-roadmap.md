@@ -244,7 +244,13 @@ recorded per device class.
 full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
 build. What is left:
 
-- **Reload and resume.** Not started, and the only code-shaped item on this list. Scope, decided
+- **Reload and resume.** The OPFS tier now survives one: the spill file has a fixed preferred
+  name with a sibling index carrying the frame-to-offset map, so the bytes a capture spilled are
+  still there and still findable after a reload (ADR 0030). A session that cannot take that pair
+  still gets a tier of its own and still captures, which is the property ADR 0020 added. Two
+  things remain, **in this order**: a `Begin` that empties the tier and a `Resume` that does not —
+  frame identities restart at 1, so without it a new capture overwrites the frames an old
+  project's document still names — and then the page's own resume flow. Scope, decided
   with the maintainer rather than assumed: in practice there is never more than one unfinished
   sphere, because resuming means standing in the same spot again. The case worth building for is
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
