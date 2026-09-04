@@ -262,7 +262,8 @@ describe('the spill host', () => {
  * An origin private file system with the one property that matters here: a sync access handle is
  * exclusive, so a second attempt to lock a file someone else holds throws.
  */
-function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean = () => false) {
+function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean = () => false,
+                 failClose: (name: string) => boolean = () => false) {
   const files = new Map(initial.map((name) => [name, { locked: false }]));
   return {
     names: () => [...files.keys()].sort(),
@@ -283,6 +284,10 @@ function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean 
               getSize: () => 0,
               close: () => {
                 file.locked = false;
+                // A handle that throws on the way out. The spec says closing twice is a no-op,
+                // but this is a browser API on a phone and the code around it already treats
+                // every other call to it as fallible.
+                if (failClose(name)) throw new Error(`${name} would not close`);
               },
             };
           },
@@ -381,6 +386,39 @@ describe('the spill file', () => {
     expect(tier.frames).toBeDefined();
     expect(tier.index).toBeDefined();
     // On a name of its own, both halves of it, rather than half-sharing the resident pair.
+    const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
+    expect(fallbacks).toHaveLength(2);
+  });
+
+  it('gives a fallback file back even when the handle will not close', async () => {
+    // The close and the unlink are two steps, and only the second one frees the disk. A throw
+    // between them leaves the file behind for a sweep that may never come — nobody opens this app
+    // twice a day — so the cleanup has to survive the handle it is cleaning up after.
+    const opfs = fakeOpfs([], () => false, (name) => !name.startsWith('sphanorama-spill-resident'));
+    await openSpillTier(opfs.directory);
+    const fallback = await openSpillTier(opfs.directory);
+
+    expect(() => {
+      fallback.frames.close();
+      fallback.index.close();
+    }).not.toThrow();
+    await vi.waitFor(() => expect(opfs.names()).toHaveLength(2));
+  });
+
+  it('still falls back when the resident frame handle will not let go', async () => {
+    // The recovery path's own cleanup. Releasing the resident frames is what makes the fallback
+    // honest — leaving that handle open would keep the resident file locked for the life of the
+    // worker — but a throw there used to abandon the recovery altogether and cost the session its
+    // spill tier, which is the outcome the fallback exists to prevent.
+    const opfs = fakeOpfs(
+      [],
+      (name) => name === 'sphanorama-spill-resident.index',
+      (name) => name === 'sphanorama-spill-resident',
+    );
+
+    const tier = await openSpillTier(opfs.directory);
+
+    expect(tier.frames).toBeDefined();
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);
   });

@@ -327,6 +327,15 @@ async function originPrivateDirectory(): Promise<SpillDirectory> {
   return (await storage.getDirectory()) as unknown as SpillDirectory;
 }
 
+/** Lets a handle go without letting its failure become the caller's problem. */
+function release(handle: SyncAccessHandle): void {
+  try {
+    handle.close();
+  } catch {
+    // There is nothing to do about it and nobody to tell: every caller is already unwinding.
+  }
+}
+
 /** Opens one file and takes its exclusive handle, or throws whatever the browser said. */
 async function lock(directory: SpillDirectory, name: string): Promise<SyncAccessHandle> {
   const handle = await directory.getFileHandle(name, { create: true });
@@ -343,7 +352,14 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
     truncate: (size) => sync.truncate(size),
     size: () => sync.getSize(),
     close: () => {
-      sync.close();
+      // The close and the unlink are two steps and only the second one frees the disk, so a
+      // handle that throws on the way out must not take the cleanup with it. Every other call to
+      // this handle is already treated as fallible.
+      try {
+        sync.close();
+      } catch {
+        // Nothing left to tell. The session is over and the worker is going away with it.
+      }
       // Fire and forget: the store closes the sink synchronously, and a tab being torn down has
       // no time to await anything. Whatever this misses, the next session's sweep collects.
       if (removeOnClose) void directory.removeEntry(name).catch(() => {});
@@ -383,8 +399,10 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
     index = await lock(root, name + INDEX_SUFFIX);
   } catch (cause) {
     // Half a tier is worse than none: the frame handle would stay locked for the life of the
-    // worker, pushing the next session onto a fallback name over a file nobody is using.
-    frames.close();
+    // worker, pushing the next session onto a fallback name over a file nobody is using. Best
+    // effort, because this is already the recovery path — a throw here would abandon it and cost
+    // the session the tier the fallback below exists to give it.
+    release(frames);
     if (name !== RESIDENT) throw cause;
 
     // Two files and two locks, and only one of them has to be unavailable. Giving up here would
@@ -395,7 +413,7 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
     try {
       index = await lock(root, name + INDEX_SUFFIX);
     } catch (second) {
-      frames.close();
+      release(frames);
       throw second;
     }
   }
