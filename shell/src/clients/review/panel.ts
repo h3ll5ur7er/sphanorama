@@ -92,6 +92,12 @@ export function createReviewPanel(elements: ReviewElements, core: ReviewCore): R
           // Recorded only once the core has taken it, so the strip cannot show a choice that was
           // refused. A failure leaves the previous one in force, which is what the build uses.
           if (set.ok) chosen.set(node, entry.candidate);
+          // Re-opened so the strip shows what is now in force — but only while this strip is
+          // still the one on screen. SetSelection crosses the worker too, so the user can have
+          // opened another cell in the meantime, and re-opening then hauls them back: `opened` is
+          // set before the await inside open(), so the map's pressed dot moves the instant the
+          // late refresh starts, before any answer has even come back for it.
+          if (ticket !== latest) return;
           await open(node);
         })();
       });
