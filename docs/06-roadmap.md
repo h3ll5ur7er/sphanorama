@@ -49,9 +49,25 @@ not report field of view at all. The plan is sized from the camera's **real reso
 ratio** and an **assumed 66° horizontal angle** (`deriveFieldOfView` in
 `shell/src/access/capture-host.ts`). Phase 2's bundle adjustment estimates focal length from the
 captured frames, which is the only way to actually know; until then a wrong assumption shows up as
-cells that overlap more or less than intended rather than as a failure. Orientation samples go through the facade to `CaptureSessionManager`,
-which asks `PoseEngine` for an attitude and `CoveragePlannerEngine` for the nearest cell, and the
-reticle on screen is that answer coming back. Nothing about coverage, acceptance or pose is decided
+cells that overlap more or less than intended rather than as a failure.
+
+That first half was itself overstated until recently, and the correction is worth recording
+because it is the shape of mistake this project is most likely to repeat: the page opened the
+camera without asking for a resolution, so "the camera's real resolution" was the *browser's
+default* — 640×480 in Chromium, measured, against a grabber that budgets for 1280 on the long
+edge. Every frame the core had ever scored or stored was a quarter of the pixels the memory
+ceiling was sized for, and the cap that exists to bound a burst was bounding nothing. The page now
+asks for the long edge the grabber keeps, so the frame the core stores is the frame the camera was
+opened to produce — and for a 4:3 shape, which is not a preference between two crops. A phone's
+sensor is 4:3 and its widescreen video mode is made by discarding the top and bottom, so the taller
+frame is *more* of the picture rather than a differently shaped piece of it. It is worth asking for
+because vertical field of view sets the ring count: 66° across is 40° tall at 16:9 against 52° at
+4:3, which is 44 planned cells rather than 32 — a third more sphere to shoot, from a frame that
+sees less of it. All four numbers are measured through the running app rather than derived.
+
+Orientation samples go through the facade to `CaptureSessionManager`, which asks `PoseEngine` for
+an attitude and `CoveragePlannerEngine` for the nearest cell, and the reticle on screen is that
+answer coming back. Nothing about coverage, acceptance or pose is decided
 in the client.
 
 The generated facade is in: the client calls managers through typed proxies, and a domain failure

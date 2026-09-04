@@ -11,7 +11,7 @@ import type { CapturePlan, NodeId, ProjectId } from '../../contracts/ts/contract
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
 import { flattenImuSamples, stopCameraStream } from './access/capture-host';
-import { canvasDrawTarget, createFrameGrabber } from './access/preview-frame';
+import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
 import { describeFailure, formatCapabilities } from './clients/capture/status';
 import {
@@ -118,7 +118,23 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
 async function enable(core: SphanoramaCore) {
   enableButton.disabled = true;
 
-  const opened = await camera.open({ preferRearCamera: true });
+  // Asked for, because a camera that is not asked answers with the browser's default rather than
+  // its own best — 640x480 in Chromium, a quarter of the pixels the grabber's cap already budgets
+  // for. So the ask is that cap: the frame the core stores is the frame the camera was opened to
+  // produce, and when the cap moves the ask moves with it.
+  //
+  // The shape is asked for too, and 4:3 rather than the 16:9 a bare long edge gets handed. On a
+  // phone that is not a preference between two crops: the sensor is 4:3 and the widescreen video
+  // mode is made by throwing away the top and bottom of it, so asking for the taller frame asks
+  // for more of the picture. What it buys is cells. Vertical field of view is what sets the ring
+  // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — measured through
+  // the whole app, 44 cells planned rather than 32, a third more of the sphere to shoot for a
+  // frame that sees less of it.
+  const opened = await camera.open({
+    preferRearCamera: true,
+    preferredWidth: GRAB_MAX_EDGE,
+    preferredHeight: Math.round((GRAB_MAX_EDGE * 3) / 4),
+  });
   if (opened.ok) {
     // Pushed before the core is asked to begin: the plan is sized from the lens, and the core
     // reads the lens through a synchronous port that cannot wait for getUserMedia — nor for a

@@ -379,7 +379,19 @@ export interface SeamMap {
 
 /** ------------------------------------------------- platform value types */
 export interface CameraCapabilities {
+  /**
+   * The mode the camera actually settled on, not the largest it could reach. The coverage plan is
+   * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
+   * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
+   * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   */
   maxWidth: number;
+  /**
+   * The mode the camera actually settled on, not the largest it could reach. The coverage plan is
+   * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
+   * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
+   * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   */
   maxHeight: number;
   /** 0 when the platform will not say */
   horizontalFovDeg: number;

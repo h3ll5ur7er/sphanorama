@@ -17,6 +17,11 @@
  * the default five-frame burst would be 240 MB against a heap ceiling of 128. At 1280 the same
  * burst is 22 MB, which fits with room for the sphere's other cells.
  *
+ * The page asks the camera for this same long edge when it opens it, so the source and the cap
+ * agree rather than the cap silently shrinking whatever arrived. Left unasked, getUserMedia
+ * answers with the browser's default — 640x480 in Chromium — and the cap bounds nothing. The
+ * shape asked for alongside it is 4:3, which is the sensor's own; see main.ts for why.
+ *
  * It costs real resolution and that is a debt, not a design: the frame that gets *stitched*
  * should be the full-resolution one. Paying it properly means encoding to JPEG before the frame
  * crosses — `PixelFormat::EncodedJpeg` is in the contract for exactly this — which is its own
