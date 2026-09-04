@@ -246,6 +246,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     nodesSatisfied = state.value.nodesSatisfied;
     review.show(plan, state.value);
   };
+
+  // Once at the start, and not only when a cell completes. Coverage can only *change* when one
+  // does, which is why the refresh below is where it is — but a map that is drawn only on change
+  // is empty at the moment it is most worth reading, which is before the capture, when it is what
+  // tells you where to point.
+  void refreshCoverage();
   let guidedOnce = false;
   // Whether the last answer said a burst was still filling. A burst advances on this tick and
   // nothing else (ADR 0018), so it has to keep running even when the sensor has gone quiet.

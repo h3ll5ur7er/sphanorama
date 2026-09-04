@@ -13,23 +13,30 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // The alternative is a map keyed by candidate id, which costs more to build than this costs to
 // walk at that size and would have to be rebuilt on every change.
 //
-// Anything the ranking does not name keeps its place at the end rather than disappearing. An
-// engine that returns a short list is misbehaving, and losing a captured frame to it would be a
-// worse answer to that than an oddly ordered strip.
+// A misbehaving ranking cannot change what the cell holds, only the order. It may name fewer
+// candidates than there are, and it may name one twice; neither is allowed to lose a captured
+// frame or invent one. A short list leaves the strays at the end, and a repeated id is placed
+// once — a cell with two entries carrying the same id has two frames as far as everything
+// downstream can tell, so the strip would show both in force and cooling and forgetting would
+// each run twice over one frame.
 void Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order) {
   std::vector<Candidate> ranked;
   ranked.reserve(cell.size());
+  const auto alreadyPlaced = [&ranked](const CandidateId id) {
+    return std::any_of(ranked.begin(), ranked.end(), [id](const Candidate& placed) {
+      return placed.id.value == id.value;
+    });
+  };
+
   for (const CandidateId id : order) {
+    if (alreadyPlaced(id)) continue;
     const auto found = std::find_if(cell.begin(), cell.end(), [id](const Candidate& candidate) {
       return candidate.id.value == id.value;
     });
     if (found != cell.end()) ranked.push_back(*found);
   }
   for (const Candidate& candidate : cell) {
-    const bool placed = std::any_of(ranked.begin(), ranked.end(), [&](const Candidate& already) {
-      return already.id.value == candidate.id.value;
-    });
-    if (!placed) ranked.push_back(candidate);
+    if (!alreadyPlaced(candidate.id)) ranked.push_back(candidate);
   }
   cell = std::move(ranked);
 }

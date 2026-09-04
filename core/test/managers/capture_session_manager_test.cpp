@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -60,13 +61,18 @@ class ReversedQualityEngine final : public IFrameQualityEngine {
     std::vector<CandidateId> ranked;
     ranked.reserve(candidates.size());
     for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) ranked.push_back(it->id);
+    // A misbehaving engine, on demand: naming the same candidate twice is as easy a mistake to
+    // make as omitting one, and the manager already promises to survive the omission.
+    if (repeat_ && !ranked.empty()) ranked.push_back(ranked.front());
     return Ok(std::move(ranked));
   }
 
   void FailRanking(bool fail) { fail_ = fail; }
+  void RepeatTheBest(bool repeat) { repeat_ = repeat; }
 
  private:
   bool fail_ = false;
+  bool repeat_ = false;
 };
 
 class CaptureSession : public ::testing::Test {
@@ -1247,6 +1253,28 @@ TEST_F(CaptureSession, CandidatesComeBackRankedRatherThanInCaptureOrder) {
   ASSERT_EQ(strip.size(), 3u);
   EXPECT_GT(strip[0].id.value, strip[1].id.value);
   EXPECT_GT(strip[1].id.value, strip[2].id.value);
+}
+
+TEST_F(CaptureSession, ARankingThatNamesACandidateTwiceDoesNotDuplicateIt) {
+  // The other way a ranking can be wrong. Keeping candidates the ranking forgot is already
+  // handled; a ranking that names one twice would grow the cell instead, and a cell holding two
+  // entries with the same id has two frames as far as everything downstream can tell — the strip
+  // shows both in force, and cooling and forgetting each run twice over one frame.
+  ReversedQualityEngine reversed;
+  reversed.RepeatTheBest(true);
+  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok());
+
+  const std::vector<Candidate> strip = ranked.Candidates(node).value;
+  EXPECT_EQ(strip.size(), 3u);
+  std::set<uint64_t> seen;
+  for (const auto& candidate : strip) seen.insert(candidate.id.value);
+  EXPECT_EQ(seen.size(), strip.size());
 }
 
 TEST_F(CaptureSession, AnOfferedFrameTakesItsPlaceInTheRankingRatherThanTheEnd) {

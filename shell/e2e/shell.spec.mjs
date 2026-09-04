@@ -269,6 +269,34 @@ test('enabling plans a sphere sized from the camera and guides toward a cell', a
   }
 });
 
+test('the coverage map shows the whole plan before anything is captured', async ({ page }) => {
+  // A coverage map is most useful before a capture, not after: it is what tells you where to
+  // point. Drawing it only when a cell completes — which is the only moment coverage *changes* —
+  // means the panel is empty at exactly the moment it is worth reading, and the first thing it
+  // ever shows is one cell filled in a field of nothing.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    const cells = page.locator('#coverage-map .cell');
+    await expect.poll(async () => cells.count(), { timeout: 15000 }).toBeGreaterThan(8);
+
+    const planned = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.getPlan();
+      return got.ok ? got.value.nodes.length : 0;
+    });
+    expect(await cells.count()).toBe(planned);
+    // Every one of them a hole, because nothing has been captured yet — a map that opened with
+    // cells already filled would be describing a capture that never happened.
+    expect(await page.locator('#coverage-map .cell[data-state="hole"]').count()).toBe(planned);
+  } finally {
+    await server.close();
+  }
+});
+
 test('an orientation event moves the pose through the sensor port', async ({ page }) => {
   // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
   // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and
