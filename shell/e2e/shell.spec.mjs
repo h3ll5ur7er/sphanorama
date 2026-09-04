@@ -408,6 +408,147 @@ test('the cell straight ahead can actually be clicked', async ({ page }) => {
   }
 });
 
+test('the cells you can see are marked in the viewfinder', async ({ page }) => {
+  // The overlay end to end: the plan the core built, projected through the attitude the sensor
+  // reported, into elements on the page. planOverlay's own tests cover which rings should exist
+  // and where; what they cannot see is whether any of it reaches the DOM, which is the half that
+  // has to survive a build.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    // The adapter hands over to the event because AbsoluteOrientationSensor refuses to start in
+    // this browser; waiting for that is what makes the dispatch below land somewhere.
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+    // Level and facing forward, which is where the plan puts a whole ring of cells.
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 90, gamma: 0,
+      }));
+    });
+
+    const rings = page.locator('#cell-layer .cell-ring:not([hidden])');
+    await expect.poll(async () => rings.count(), { timeout: 15000 }).toBeGreaterThan(0);
+
+    // Positioned as a fraction of the viewfinder, not left at the corner.
+    const placed = await rings.first().evaluate((ring) => ({
+      left: ring.style.left, top: ring.style.top,
+    }));
+    expect(placed.left).toMatch(/%$/);
+    expect(placed.top).toMatch(/%$/);
+
+    // And they stop where the panel starts, rather than being drawn over the status lines.
+    // Polled because the panel's height is observed rather than known: opening the review panel
+    // resizes it, and the layer follows on the next callback rather than in the same frame.
+    await expect.poll(async () => page.evaluate(() => {
+      const layer = document.querySelector('#cell-layer').getBoundingClientRect();
+      const panel = document.querySelector('#panel').getBoundingClientRect();
+      return Math.round(layer.bottom) - Math.round(panel.top);
+    }), { timeout: 10000 }).toBeLessThanOrEqual(1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the ring fills when its cell finishes, without waiting for another sample', async ({ page }) => {
+  // Coverage is refreshed *after* the tick that reports a cell done, so the tick that drew the
+  // markers drew them from the coverage before it. Normally the next tick corrects that — but the
+  // loop only asks for guidance when a sample arrives, and a phone held still through the end of
+  // a burst gets no more. The map would fill in while the ring for that very cell stayed empty,
+  // and nothing would ever put it right. This browser has no gyroscope, so it is that phone.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+
+    // One sample, so there is an attitude to place markers against, then none after the burst.
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 90, gamma: 0,
+      }));
+    });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // A ring drawn as full: the dash offset closes to zero only at a fill of one.
+    await expect.poll(async () => page.evaluate(() => {
+      const fills = document.querySelectorAll('#cell-layer .cell-ring:not([hidden]) .ring-fill');
+      return Array.from(fills).filter((arc) => Number(arc.style.strokeDashoffset) === 0).length;
+    }), { timeout: 15000 }).toBeGreaterThan(0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the markers keep off the panel even with no ResizeObserver', async ({ page }) => {
+  // The layer's inset comes from a CSS variable the page measures. Measuring it only from the
+  // observer's first callback leaves the fallback of 0px in force until then — markers over the
+  // panel for a frame — and on a browser without ResizeObserver it never gets measured at all.
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'ResizeObserver');
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const overlap = await page.evaluate(() => {
+      const layer = document.querySelector('#cell-layer').getBoundingClientRect();
+      const panel = document.querySelector('#panel').getBoundingClientRect();
+      return Math.round(layer.bottom) - Math.round(panel.top);
+    });
+    expect(overlap).toBeLessThanOrEqual(1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the markers go when guidance stops working', async ({ page }) => {
+  // Markers describe where cells are *relative to a pose*, and a failed tick produced no pose.
+  // Leaving the last set on screen draws a confident answer over a line saying guidance has
+  // stopped — so ending the session underneath the loop has to clear them, not freeze them.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 90, gamma: 0,
+      }));
+    });
+
+    const rings = page.locator('#cell-layer .cell-ring:not([hidden])');
+    await expect.poll(async () => rings.count(), { timeout: 15000 }).toBeGreaterThan(0);
+
+    // Pulled out from under the capture loop, which is what a failing tick looks like from here.
+    // Then one more sample, because the loop only asks the core for guidance when there is
+    // something new to fold in — without it the failure never happens and the line just stops.
+    await page.evaluate(async () => { await window.sphanoramaCore.captureSession.end(); });
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 10, beta: 80, gamma: 0,
+      }));
+    });
+
+    await expect(page.locator('#guidance')).toContainText('guidance failed', { timeout: 15000 });
+    await expect.poll(async () => rings.count(), { timeout: 15000 }).toBe(0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('an orientation event moves the pose through the sensor port', async ({ page }) => {
   // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
   // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and

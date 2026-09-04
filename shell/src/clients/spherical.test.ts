@@ -4,7 +4,7 @@
 // aimOfDirection, so such a test could not fail and would only look like coverage.
 import { describe, expect, it } from 'vitest';
 
-import { aimOf } from './spherical';
+import { aimOf, direction, rotateInto } from './spherical';
 import type { Quat } from '../../../contracts/ts/contracts';
 
 /** A cell aimed by azimuth then elevation, as the core's FromAzimuthElevation builds one. */
@@ -15,6 +15,31 @@ function attitude(azimuthDeg: number, elevationDeg: number): Quat {
   const [cp, sp] = [Math.cos(pitch), Math.sin(pitch)];
   return { w: cy * cp, x: cy * sp, y: sy * cp, z: -sy * sp };
 }
+
+describe('rotateInto', () => {
+  it('brings the camera\'s own forward axis back to straight ahead', () => {
+    // The invariant that ties it to `direction`: whatever attitude you hold, taking the direction
+    // the camera looks and expressing it in the camera's own frame must answer "straight ahead".
+    // A conjugate with the wrong sign passes every test about angles and fails only this one.
+    for (let azimuth = -180; azimuth <= 180; azimuth += 30) {
+      for (const elevation of [-60, 0, 60]) {
+        const q = attitude(azimuth, elevation);
+        const forward = rotateInto(q, direction(q));
+        expect(forward.x).toBeCloseTo(0, 9);
+        expect(forward.y).toBeCloseTo(0, 9);
+        expect(forward.z).toBeCloseTo(-1, 9);
+      }
+    }
+  });
+
+  it('leaves a direction alone when there is no rotation to undo', () => {
+    const world = { x: 0.3, y: -0.5, z: 0.81 };
+    const still = rotateInto({ w: 1, x: 0, y: 0, z: 0 }, world);
+    expect(still.x).toBeCloseTo(world.x, 9);
+    expect(still.y).toBeCloseTo(world.y, 9);
+    expect(still.z).toBeCloseTo(world.z, 9);
+  });
+});
 
 describe('aimOf', () => {
   it('keeps azimuth inside the range the map divides by', () => {

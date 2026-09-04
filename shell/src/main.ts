@@ -7,7 +7,9 @@
  */
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
-import type { CapturePlan, NodeId, ProjectId } from '../../contracts/ts/contracts';
+import type {
+  CapturePlan, CoverageState, NodeId, ProjectId, Quat,
+} from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
 import { flattenImuSamples, stopCameraStream } from './access/capture-host';
@@ -18,6 +20,8 @@ import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
 } from './clients/capture/guidance';
 import { describeAttitude } from './clients/capture/attitude';
+import { planOverlay } from './clients/capture/overlay';
+import { createOverlayPainter } from './clients/capture/painter';
 import { createReviewPanel, type ReviewPanel } from './clients/review/panel';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
@@ -25,6 +29,28 @@ const el = <T extends Element>(id: string) => document.getElementById(id) as unk
 const viewfinder = el<HTMLVideoElement>('viewfinder');
 const horizonGroup = el<SVGGElement>('horizon-group');
 const reticle = el<SVGCircleElement>('reticle');
+const cellLayer = el<HTMLElement>('cell-layer');
+const targetArrow = el<HTMLElement>('target-arrow');
+
+// The marker layer ends where the panel begins, and the panel's height is not a constant: it grows
+// when the review strip opens and shrinks when it closes. Measured rather than assumed, because a
+// ring drawn over the status lines is both unreadable and a lie about where a cell is.
+const panel = el<HTMLElement>('panel');
+const measurePanel = () => {
+  document.documentElement.style.setProperty('--panel-height', `${panel.offsetHeight}px`);
+};
+// Once outright, then again whenever it changes. Waiting for the first observer callback would
+// leave the layer on its `0px` fallback until then — markers over the panel for a frame — and on a
+// browser without ResizeObserver it would stay there for good, which is the worse half.
+measurePanel();
+if (typeof ResizeObserver === 'function') {
+  // Named rather than constructed inline. The document is supposed to keep an observer with live
+  // observations reachable, so this should make no difference — but the cost of being wrong is a
+  // layer that silently stops following the panel for the rest of the session, and the cost of
+  // holding the reference is a word.
+  const watchPanel = new ResizeObserver(measurePanel);
+  watchPanel.observe(panel);
+}
 const stage = el('stage');
 const coreCaps = el('core-caps');
 const cameraState = el('camera-state');
@@ -242,6 +268,25 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
   let nodesSatisfied = 0;
+  // The last attitude the sensor reported, held between ticks because a tick with no samples has
+  // nothing newer. Not the pose the core fused — no contract hands that back — so during a sensor
+  // gap the markers hold still while the reticle, sized from the core's own answer, keeps moving.
+  // The two agree whenever samples are arriving, which is whenever anyone is capturing.
+  let attitude: Quat | null = null;
+  // The coverage the map is drawn from, reused for the markers so the two renderings of one sphere
+  // cannot disagree about which cells are done.
+  let lastCoverage: CoverageState | null = null;
+  const overlay = createOverlayPainter(cellLayer, targetArrow);
+  // Both the guidance tick and the coverage refresh repaint, because either can change what the
+  // markers should say and they do not happen together. A cell finishing updates coverage
+  // *asynchronously*, after the tick that reported it has already drawn — and the tick that would
+  // have redrawn may never come, since the loop only asks for guidance when a sample arrives. A
+  // phone held still through the end of a burst would have watched the map fill in while the ring
+  // for that very cell stayed empty.
+  const paintOverlay = () => {
+    if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
+    overlay.show(planOverlay({ plan, coverage: lastCoverage, attitude, targetNode }));
+  };
   const nodesTotal = plan?.nodes.length ?? 0;
 
   // The review panel only exists once there is a plan to map and a project to record a choice
@@ -265,7 +310,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     const state = await core.captureSession.coverage();
     if (!state.ok) return;
     nodesSatisfied = state.value.nodesSatisfied;
+    lastCoverage = state.value;
     review.show(plan, state.value);
+    paintOverlay();
   };
 
   // Once at the start, and not only when a cell completes. Coverage can only *change* when one
@@ -368,7 +415,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // The attitude, not whatever triple the platform happened to report: the two sources behind
       // the port speak different languages, and azimuth/elevation/roll is the one the plan is
       // written in (ADR 0017).
-      orientationOut.textContent = describeAttitude(samples[samples.length - 1].orientation);
+      attitude = samples[samples.length - 1].orientation;
+      orientationOut.textContent = describeAttitude(attitude);
     }
     // Re-read rather than latched at start: the source can change mid-session, and with motion
     // off this line is carrying the reason why, which must not be overwritten with a description
@@ -426,6 +474,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // A cell finishing is the one thing that moves coverage, so it is the one thing that
         // redraws the map — and it is also where `nodesSatisfied` starts being a real number
         // rather than the zero the guidance line has been reporting since it was written.
+        // Markers for what the plan says is out there, from the pose this tick produced. Drawn
+        // from the coverage the map already keeps, so the rings and the map cannot disagree about
+        // which cells are done — two answers to that question is how the strip ended up in an
+        // order nothing had chosen.
+        paintOverlay();
         if (guidance.action === 'CellDone') void refreshCoverage();
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
@@ -434,6 +487,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // what turned a stranded lock into a permanently stranded one.
         firing = false;
         armed = false;
+        // And the markers go with it. They describe where the cells are *relative to a pose*, and
+        // a failed tick is one that produced no pose — leaving the last set on screen would draw
+        // a confident answer over a line that says guidance has stopped working.
+        overlay.show({ rings: [], arrow: null });
         guidanceOut.textContent = `guidance failed: ${guided.status.code}`;
       }
     }

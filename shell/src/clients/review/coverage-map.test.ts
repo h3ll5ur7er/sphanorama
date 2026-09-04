@@ -60,12 +60,28 @@ describe('mapCoverage', () => {
     expect(down.y).toBeCloseTo(1, 6);
   });
 
+  it('puts the cell you turn right to reach on the right of the map', () => {
+    // The map was mirrored. Turning the phone right swings the looking direction toward +X, which
+    // is *decreasing* azimuth in this project's convention — so the cell to your right has a
+    // negative azimuth, and putting increasing azimuth to the right drew the sphere backwards.
+    // Nothing caught it because every other assertion here is about spacing or symmetry, and a
+    // mirror preserves both. It surfaced from the viewfinder overlay, which cannot be mirrored
+    // without the markers sliding the wrong way as you turn.
+    const [right, left] = mapCoverage(
+      plan(cell(1 as NodeId, -45, 0), cell(2 as NodeId, 45, 0)), nothingCovered);
+    expect(right.x).toBeGreaterThan(0.5);
+    expect(left.x).toBeLessThan(0.5);
+  });
+
   it('spreads a full turn across the whole width', () => {
+    // Quarter turns land on quarters. The numbers moved when the mirror above was fixed — this
+    // test asserted 0.25 for azimuth -90 and passed throughout, because spacing is exactly what a
+    // mirror leaves alone. It says which way round as well as how far apart now.
     const cells = mapCoverage(
       plan(cell(1 as NodeId, -90, 0), cell(2 as NodeId, 0, 0), cell(3 as NodeId, 90, 0)), nothingCovered);
-    expect(cells[0].x).toBeCloseTo(0.25, 6);
+    expect(cells[0].x).toBeCloseTo(0.75, 6);
     expect(cells[1].x).toBeCloseTo(0.5, 6);
-    expect(cells[2].x).toBeCloseTo(0.75, 6);
+    expect(cells[2].x).toBeCloseTo(0.25, 6);
   });
 
   it('keeps every cell on the map, including the one behind the user', () => {
