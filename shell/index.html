@@ -27,6 +27,15 @@
       </g>
     </svg>
 
+    <!-- The planned cells, where they fall in the picture. Positions come from the plan the core
+         built and the attitude it reported; this layer only holds them. `aria-hidden` because the
+         guidance line already says the same thing in words, and a screen reader announcing a
+         moving ring per cell would drown it. -->
+    <div id="cell-layer" aria-hidden="true"></div>
+    <div id="target-arrow" aria-hidden="true" hidden>
+      <svg viewBox="0 0 24 24"><path d="M12 3 L18 15 L12 12 L6 15 Z"></path></svg>
+    </div>
+
     <section id="panel">
       <h1>Sphanorama</h1>
       <!-- The live region is this line alone. It changes when something happens, which is what a

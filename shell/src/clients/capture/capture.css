@@ -24,7 +24,52 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
   #horizon-group, #reticle { transition: none; }
 }
 
-#panel { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 18px calc(18px + env(safe-area-inset-bottom));
+/*
+ * The cells, where they fall in the picture, ending where the panel begins.
+ *
+ * A ring drawn over the status lines is unreadable and says something false about where a cell is,
+ * so the markers get the part of the viewfinder that is actually being looked at. The panel is
+ * more than half the screen and its height changes as the review strip opens, so the height comes
+ * from a ResizeObserver rather than a guess.
+ *
+ * #horizon is deliberately left spanning the whole frame: the reticle marks the centre of what the
+ * camera sees, and moving it up to dodge the panel would put it somewhere the camera is not
+ * pointing. That the panel covers it is a panel problem. Percentages of the viewfinder, which is why these are
+ * positioned elements rather than shapes inside #horizon: one SVG spanning the frame has to either
+ * letterbox its coordinates, putting markers in the wrong place, or stretch them, turning every
+ * ring into an ellipse.
+ */
+#cell-layer, #target-arrow { position: absolute; inset: 0 0 var(--panel-height, 0px) 0;
+  pointer-events: none; }
+.cell-ring { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; }
+.cell-ring svg { width: 100%; height: 100%; overflow: visible; }
+.ring-track { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: .35; }
+.ring-fill { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round;
+  transition: stroke-dashoffset 120ms linear; }
+/* The cell being aimed at, so the one that matters is findable among the rest. */
+.cell-ring[data-target='true'] .ring-track { opacity: .9; stroke-width: 2; }
+
+#target-arrow { display: grid; place-items: center; }
+#target-arrow svg { width: 54px; height: 54px; fill: var(--accent); opacity: .8;
+  filter: drop-shadow(0 0 6px rgba(13, 21, 20, .8)); }
+@media (prefers-reduced-motion: reduce) {
+  .ring-fill { transition: none; }
+}
+
+/*
+ * Capped and scrolled inside itself, because it grows: the review panel and a candidate strip take
+ * it past the height of a phone, and anchored to the bottom of a clipped parent that means the top
+ * of it — the title, the stage line, most of the status list — is simply cut off. Seen on a Pixel,
+ * where the first readable row of a scrolled-looking page was `build`, with everything above it
+ * gone rather than scrolled away.
+ *
+ * It also leaves the viewfinder a part of the screen that is always the viewfinder, which is what
+ * the cell markers are positioned against. Without a cap that region can reach zero, and markers
+ * for cells the camera is pointing at have nowhere to be.
+ */
+#panel { position: absolute; left: 0; right: 0; bottom: 0; max-height: 62%; overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 18px calc(18px + env(safe-area-inset-bottom));
   background: linear-gradient(to top, rgba(13,21,20,.94), rgba(13,21,20,.72) 70%, transparent);
   display: flex; flex-direction: column; gap: 10px; }
 h1 { margin: 0; font-size: 1rem; letter-spacing: .02em; }
