@@ -43,6 +43,10 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   bool HasNode(NodeId node) const;
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
+  // Sends a committed cell's frames to whatever cheaper tier the store has. The session knows
+  // when a frame stops being looked at — that is what a sequence is — and the store knows what
+  // cheaper means; this is the one line where those two facts meet.
+  void Cool(const std::vector<Candidate>& candidates);
 
   // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
   // spec asked for and what the camera says it can deliver.

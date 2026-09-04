@@ -270,6 +270,23 @@ Status CaptureSessionManager::Abandon(const Status& cause) {
   return Also(cause, Disarm(true));
 }
 
+void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
+  for (const auto& candidate : candidates) {
+    // Not reported, and the reason is the same for every way this can fail: the cell is already
+    // captured by the time this runs. A store with no sink answers Unsupported, which is the
+    // native build and any browser whose OPFS handle did not open — a supported configuration
+    // that caps a sphere at what fits in RAM rather than a fault. A sink that refuses the write
+    // is a phone out of quota, and it leaves the frame exactly where it was: still in the heap,
+    // still readable, still this cell's evidence.
+    //
+    // Neither is silent. Both mean the heap keeps bytes it hoped to give back, and the store says
+    // so at the next allocation that does not fit — with FrameStoreExhausted, naming the real
+    // problem, rather than here, where the only thing to report is that a capture could not be
+    // made cheaper.
+    (void)frames_.Demote(candidate.frame, Residency::Spilled);
+  }
+}
+
 Result<bool> CaptureSessionManager::AdvanceBurst() {
   const int64_t now = clock_.MonotonicNs();
   const int64_t due = last_frame_ns_ + BurstIntervalNs();
@@ -330,6 +347,12 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
     cell.resize(before);
     return Abandon(ranked.status);
   }
+
+  // Ranked, so the cell is finished, so its pixels are cold: nothing reads them again until the
+  // build or the review client asks, and both of those go through Pin, which faults them back in.
+  // A sphere is hundreds of frames and a phone's store holds a handful of cells, so this is the
+  // line that decides whether a capture reaches the far side of the room.
+  Cool(cell);
 
   // Committed, so the rollback is off the table: Disarm keeps the frames and only unlocks. If the
   // unlock fails the cell is still captured and the caller is told anyway, because a camera left

@@ -283,10 +283,10 @@ sequenceDiagram
     Q-->>M: QualityScore
     M-->>U: Guidance{node, "firing"}
   end
-  M->>Q: SelectBest(candidates, policy)
+  M->>Q: Rank(candidates, policy)
   Q-->>M: ranking
+  M->>F: Demote(every candidate, spilled)
   M->>C: SetLocks(released)
-  M->>F: Pin(selected) / Demote(rest, encoded)
   M->>V: Evaluate(plan, candidates)
   V-->>M: CoverageState{satisfied, holes}
   M-->>U: Guidance{node, "cell done"} + updated coverage
@@ -297,7 +297,11 @@ often enough to pace one and a synchronous port cannot wait (ADR 0018). Arming i
 frames arrive over the ticks that follow, and the exposure lock is held across all of them.
 
 Note what the manager does *not* do: it does not decide what "best" means (V6), nor where a
-reticle sits (V4), nor how bytes are stored (V11). It decides *when* to ask each of them.
+reticle sits (V4), nor how bytes are stored (V11). It decides *when* to ask each of them — and the
+demotion above is that rule rather than an exception to it. A ranked cell is finished, which is a
+fact about the session's sequence and knowable nowhere else; what "cheaper" costs, whether there
+is anywhere cheaper at all, and what happens when the frame is asked for again all stay inside
+`IFrameStoreAccess` (ADR 0023).
 
 ### UC-2 · Retake a ghosted region
 

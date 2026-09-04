@@ -15,9 +15,11 @@
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
+#include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
 #include "support/fake_camera_access.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_motion_sensor_access.h"
+#include "support/fake_spill_sink.h"
 #include "support/fake_project_store_access.h"
 #include "utilities/clock.h"
 
@@ -965,12 +967,174 @@ TEST_F(CaptureSession, WorkAfterEndIsRefused) {
   EXPECT_EQ(manager->OnMotion({}).status.code, StatusCode::FailedPrecondition);
 }
 
+TEST_F(CaptureSession, ACellIsStillCapturedWhenTheStoreHasNoSpillTier) {
+  // This fixture's store has no sink, which is the native build and any browser whose OPFS handle
+  // did not open. Spilling a committed cell is an optimisation, so a store that cannot do it must
+  // still capture: a refusal from the tier is not a refusal of the capture.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+
+  const std::vector<Candidate> captured = manager->Candidates(node).value;
+  ASSERT_EQ(captured.size(), 3u);
+  for (const auto& candidate : captured) {
+    EXPECT_NE(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+}
+
 TEST_F(CaptureSession, ASessionCanBeBegunAgainAfterEnding) {
   const SessionId first = Begin();
   ASSERT_TRUE(manager->End().ok());
   const SessionId second = Begin();
   EXPECT_NE(first.value, second.value);
   EXPECT_TRUE(manager->Candidates(FirstNode()).value.empty());
+}
+
+// ------------------------------------------------------------------- under memory pressure
+//
+// A sphere of bursts does not fit in a phone's frame store — that is the premise the whole spill
+// tier exists for, and the fixture above cannot reach it: its ceiling holds a thousand of the
+// fake camera's tiny frames and its store has nowhere to spill to. This one has a sink and a
+// ceiling smaller than the capture it is asked to complete.
+
+// The fake camera's preview frame, 32x24 RGBA. Stated rather than derived, because the ceiling
+// has to be chosen before the camera is opened — and asserted below against what actually reaches
+// the sink, so a change to the fake fails a test instead of quietly making these ceilings roomy.
+constexpr int64_t kPreviewFrameBytes = 32 * 24 * 4;
+
+class CaptureSessionUnderPressure : public ::testing::Test {
+ protected:
+  // Eight frames: enough for a burst of three, the siblings a retake faults back in to score
+  // against, and nothing like enough for the sphere the test below captures.
+  static constexpr int64_t kCeilingBytes = kPreviewFrameBytes * 8;
+
+  void SetUp() override {
+    store = std::make_shared<MemoryFrameStoreAccess>(kCeilingBytes, &sink);
+    camera = std::make_unique<FakeCameraAccess>(store);
+    sensor = std::make_unique<FakeMotionSensorAccess>();
+    projects = std::make_unique<FakeProjectStoreAccess>();
+    (void)projects->WriteDocument(kProject, "title", "test project");
+    manager = std::make_unique<CaptureSessionManager>(rings, pose, quality, *camera, *sensor,
+                                                      *store, *projects, clock);
+  }
+
+  Status FireBurst(NodeId node, const BurstSpec& burst) {
+    return FireBurstOn(*manager, clock, node, burst);
+  }
+
+  // A real tessellation, because one cell cannot overrun a ceiling that holds a burst.
+  CapturePlanSpec Spec() {
+    CapturePlanSpec spec;
+    spec.acceptanceConeDeg = 5.0;
+    spec.horizontalFovDeg = 66.0;
+    spec.verticalFovDeg = 50.0;
+    return spec;
+  }
+
+  void Begin() { ASSERT_TRUE(manager->Begin(kProject, Spec()).ok()); }
+
+  // Declared before the store so it outlives the store that holds a pointer to it.
+  FakeSpillSink sink;
+  RingsCoveragePlannerEngine rings;
+  NullPoseEngine pose;
+  NullFrameQualityEngine quality;
+  std::shared_ptr<MemoryFrameStoreAccess> store;
+  std::unique_ptr<FakeCameraAccess> camera;
+  std::unique_ptr<FakeMotionSensorAccess> sensor;
+  std::unique_ptr<FakeProjectStoreAccess> projects;
+  ManualClock clock;
+  std::unique_ptr<CaptureSessionManager> manager;
+};
+
+TEST_F(CaptureSessionUnderPressure, ACapturedCellsFramesLeaveTheHeap) {
+  // The moment a burst is ranked, its frames are cold: nothing looks at a captured cell's pixels
+  // again until the build or the review client asks, and both of those go through Pin, which
+  // faults them back in. Holding them in the heap until then is holding the whole sphere.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+
+  const std::vector<Candidate> captured = manager->Candidates(node).value;
+  ASSERT_EQ(captured.size(), 3u);
+  for (const auto& candidate : captured) {
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
+  // The bytes, not a relabelling — and the size the ceilings above were chosen from.
+  ASSERT_TRUE(sink.Holds(captured.front().frame.id.value));
+  EXPECT_EQ(sink.Held(captured.front().frame.id.value).size(),
+            static_cast<size_t>(kPreviewFrameBytes));
+}
+
+TEST_F(CaptureSessionUnderPressure, ASphereLargerThanTheCeilingIsStillCaptured) {
+  // The one that matters. Six cells of three frames is more than twice what this store can hold
+  // at once, which is the phone's situation in miniature: without a policy the fourth cell's
+  // first allocation is refused and the capture stops halfway round with no way forward.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const std::vector<CoverageNode> nodes = manager->GetPlan().value.nodes;
+  ASSERT_GT(nodes.size(), 6u);
+
+  int64_t captured = 0;
+  for (size_t cell = 0; cell < 6; ++cell) {
+    const Status fired = FireBurst(nodes[cell].id, burst);
+    ASSERT_TRUE(fired.ok()) << "cell " << cell << ": " << fired.detail;
+    captured += kPreviewFrameBytes * burst.frameCount;
+    EXPECT_LE(store->Budget().value.heapUsedBytes, kCeilingBytes);
+  }
+  // Says out loud that the capture did not fit, so this cannot pass by the ceiling being roomy.
+  EXPECT_GT(captured, kCeilingBytes);
+  EXPECT_EQ(store->Budget().value.spilledBytes, captured);
+}
+
+TEST_F(CaptureSessionUnderPressure, ASinkThatRefusesTheWriteDoesNotCostTheCell) {
+  // A phone with no quota left. The cell is already ranked and committed by the time anything is
+  // sent to the sink, so a refusal there is a capture that could not be made cheaper — not a
+  // capture that failed. The frames stay in the heap and the session carries on until an
+  // allocation genuinely does not fit, which is the honest place to find out.
+  sink.FailWrites(true);
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+
+  EXPECT_EQ(manager->Candidates(node).value.size(), 3u);
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, kPreviewFrameBytes * 3);
+}
+
+TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHeap) {
+  // A retake adds to the evidence pool, and scoring a frame against its siblings reads their
+  // pixels — which are in the sink by then. This is the interaction that would make spilling
+  // quietly lossy: siblings that cannot be read are skipped rather than reported, so a broken
+  // fault-in would show up as exposure agreement silently computed against nothing.
+  SharpnessFrameQualityEngine sharp{*store};
+  CaptureSessionManager real(rings, pose, sharp, *camera, *sensor, *store, *projects, clock);
+  ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = real.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
+
+  ASSERT_TRUE(real.RequestRetake(node, /*replace=*/false).ok());
+  const Status again = FireBurstOn(real, clock, node, burst);
+  ASSERT_TRUE(again.ok()) << again.detail;
+  const std::vector<Candidate> pool = real.Candidates(node).value;
+  ASSERT_EQ(pool.size(), 6u);
+
+  // And they go back down, all six. Scoring faulted the first burst's frames into the heap to
+  // read them, so a policy that cooled only the frames its own burst took would leave them there
+  // — and a cell retaken a few times would sit in the heap for the rest of the session, which is
+  // the failure this exists to prevent, arriving by the door marked "already handled".
+  for (const auto& candidate : pool) {
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
 }
 
 }  // namespace
