@@ -11,7 +11,7 @@ Status FakeSpillSink::Write(uint64_t frame, std::span<const uint8_t> bytes) {
   if (fail_writes_) {
     // Refused *and* stored nothing, which is the case worth modelling: a sink that half-wrote and
     // reported failure would leave the store choosing between two wrong answers.
-    return Fail(StatusCode::FrameStoreExhausted, kComponent, "no room to spill this frame");
+    return Fail(StatusCode::FrameStoreExhausted, kComponent, write_refusal_);
   }
   held_[frame].assign(bytes.begin(), bytes.end());
   ++writes_;

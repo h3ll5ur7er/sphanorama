@@ -57,6 +57,9 @@ void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
   // replace-retake that leaked would exhaust the device inside one session.
   for (const auto& candidate : candidates) {
     (void)frames_.Forget(candidate.frame);
+    // Forgotten, so no longer this manager's to cool. Left behind, the ids would accumulate for
+    // the length of a session that retook a lot of cells and mean nothing.
+    burst_owned_.erase(candidate.id.value);
   }
   candidates.clear();
 }
@@ -125,6 +128,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   project_ = project;
   session_ = SessionId{next_session_++};
   candidates_.clear();
+  burst_owned_.clear();
   pose_state_ = initialPose.value;
   active_ = true;
   return Ok(session_);
@@ -256,6 +260,17 @@ Status CaptureSessionManager::Disarm(bool rollBack) {
   }
   pending_.clear();
   firing_ = false;
+
+  // Every way out of a burst passes through here, which is why the cooling is here and not on the
+  // path that succeeds. A retake scores against its siblings, and scoring reads pixels — so the
+  // cell's spilled frames are faulted back into the heap by the attempt itself. A burst that then
+  // ends any other way would leave them resident for the rest of the session, holding the ceiling
+  // this policy exists to keep clear, by the one route that skipped the policy.
+  //
+  // Nothing reads a ranked cell's pixels until the build or the review client asks, and both of
+  // those go through Pin, which faults them back in.
+  Cool(candidates_[burst_node_.value]);
+
   // Attempted unconditionally and reported rather than discarded. A burst that ends leaving the
   // exposure pinned to whatever the cell needed is a viewfinder the user cannot fix by pointing
   // somewhere else, and a caller told the cell was captured would have no reason to look.
@@ -268,6 +283,28 @@ Status CaptureSessionManager::Abandon(const Status& cause) {
   // the pose failure alone, and the client stops ticking on a failed call: the lock would then
   // outlive the session with nobody informed it was ever taken.
   return Also(cause, Disarm(true));
+}
+
+void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
+  for (const auto& candidate : candidates) {
+    // Only what a burst here produced. An offered frame is the caller's, and changing the
+    // residency of a borrowed handle is a surprise the borrower has no way to expect.
+    if (burst_owned_.count(candidate.id.value) == 0) continue;
+    // Not reported, and the reason is the same for every way this can fail: the cell is already
+    // captured by the time this runs. A store with no sink answers Unsupported, which is the
+    // native build and any browser whose OPFS handle did not open — a supported configuration
+    // that caps a sphere at what fits in RAM rather than a fault. A sink that refuses the write
+    // is a phone out of quota, and it leaves the frame exactly where it was: still in the heap,
+    // still readable, still this cell's evidence.
+    //
+    // What is lost by discarding it is the cause rather than the consequence. The heap keeps
+    // bytes it hoped to give back, and the next allocation that does not fit is refused — but
+    // FrameStoreExhausted names the ceiling and nothing else, so a sink out of quota looks
+    // exactly like a capture too large for the device. Carrying the reason that far means the
+    // store remembering a refused spill and saying so when it runs out, which is a diagnostic it
+    // does not have yet (ADR 0023).
+    (void)frames_.Demote(candidate.frame, Residency::Spilled);
+  }
 }
 
 Result<bool> CaptureSessionManager::AdvanceBurst() {
@@ -330,6 +367,10 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
     cell.resize(before);
     return Abandon(ranked.status);
   }
+
+  // Ranked, so these frames are the manager's evidence rather than a burst that might roll back,
+  // and cooling them is now its business. Disarm is what does it, on this path and every other.
+  for (const auto& taken : pending_) burst_owned_.insert(taken.id.value);
 
   // Committed, so the rollback is off the table: Disarm keeps the frames and only unlocks. If the
   // unlock fails the cell is still captured and the caller is told anyway, because a camera left
@@ -431,6 +472,7 @@ Status CaptureSessionManager::End() {
   active_ = false;
   max_burst_fps_ = 0;
   candidates_.clear();
+  burst_owned_.clear();
   plan_ = CapturePlan{};
 
   // The session is over regardless — every field above is cleared before this returns, so there

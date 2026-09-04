@@ -27,4 +27,5 @@ and the alternative we rejected and why.
 | [0020](0020-the-spill-destination-is-a-seam-inside-the-frame-store.md) | Where a spilled frame goes is a seam inside the frame store, not a resource-access port beside it |
 | [0021](0021-the-pixel-path-crosses-by-transfer-and-lands-in-the-frame-store.md) | Pixels cross to the worker by transfer; the camera port allocates them in the frame store, and a peeked frame is owned |
 | [0022](0022-a-lock-is-confirmed-before-a-burst-and-released-after-it.md) | A camera lock is applied and confirmed by the page before arming; taking one reads that state, releasing one is posted |
+| [0023](0023-a-committed-cell-is-cooled-by-the-session.md) | A committed cell's frames are cooled by the capture session; the store owns the tier and the refusal |
 | [0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md) | The pose engine fuses an attitude with gyroscope rates when both arrive, and `PoseState` carries the learned gyro offset |
