@@ -41,7 +41,17 @@ export interface Aim {
  * `atan2(0, 0)` answers 0, which is as good as any and is at least a number.
  */
 export function aimOf(orientation: Quat): Aim {
-  const aim = direction(orientation);
+  return aimOfDirection(direction(orientation));
+}
+
+/**
+ * The same conversion for a caller that already has the looking direction in hand.
+ *
+ * Split out because a caller needing both the direction and the angles would otherwise derive the
+ * direction twice — not a cost worth counting, but two derivations of one value in one function
+ * is the kind of thing that drifts when somebody edits one of them.
+ */
+export function aimOfDirection(aim: Vec3): Aim {
   return {
     elevationDeg: Math.asin(Math.max(-1, Math.min(1, aim.y))) * RAD_TO_DEG,
     azimuthDeg: Math.atan2(-aim.x, -aim.z) * RAD_TO_DEG,

@@ -8,7 +8,7 @@
  * coverage plan is written in.
  */
 import type { Quat } from '../../../../contracts/ts/contracts';
-import { aimOf, direction, type Vec3 } from '../spherical';
+import { aimOfDirection, direction, type Vec3 } from '../spherical';
 
 const RAD_TO_DEG = 180 / Math.PI;
 
@@ -30,8 +30,10 @@ const cross = (a: Vec3, b: Vec3): Vec3 => ({
 const whole = (deg: number) => (Math.round(deg) === 0 ? 0 : Math.round(deg));
 
 export function describeAttitude(orientation: Quat): string {
+  // One derivation, read twice: the roll below needs the viewing axis itself, and the angles are
+  // that same direction in another form.
   const aim = direction(orientation);
-  const { azimuthDeg: azimuth, elevationDeg: elevation } = aimOf(orientation);
+  const { azimuthDeg: azimuth, elevationDeg: elevation } = aimOfDirection(aim);
 
   // Roll against the level cell that shares this direction, measured exactly as RollBetween
   // measures it: from the target's horizontal +X axis to the camera's, about the viewing axis.
