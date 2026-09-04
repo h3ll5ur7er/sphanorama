@@ -27,7 +27,13 @@ export function mapCoverage(plan: CapturePlan, coverage: CoverageState): MappedC
       node: node.id,
       // Ahead in the middle, so the seam falls behind the user — the part of a sphere a map is
       // least often read at, and the part a capture is least often aimed at.
-      x: ((azimuthDeg + 180) % 360) / 360,
+      //
+      // Counted *down* from 180 rather than up from -180, because azimuth increases to the left
+      // here: turning the phone right swings the looking direction toward +X, which this
+      // project's convention calls a decreasing azimuth. Reading it the other way drew the sphere
+      // mirrored, so turning right moved the aim left across the map, and every test about
+      // spacing and symmetry passed anyway — a mirror preserves both.
+      x: (((180 - azimuthDeg) % 360) + 360) % 360 / 360,
       y: (90 - elevationDeg) / 180,
       state: holes.has(node.id) ? 'hole' : 'covered',
     };
