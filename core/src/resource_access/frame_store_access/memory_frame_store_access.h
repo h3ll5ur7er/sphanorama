@@ -41,6 +41,7 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
   Status Release(const FrameRef& frame) override;
   Result<Residency> ResidencyOf(const FrameRef& frame) override;
   Status Demote(const FrameRef& frame, Residency target) override;
+  Status Adopt(const FrameRef& frame) override;
   Status Forget(const FrameRef& frame) override;
   Result<uint64_t> ContentHash(const FrameRef& frame) override;
 

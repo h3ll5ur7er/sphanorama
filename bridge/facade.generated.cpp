@@ -32,6 +32,7 @@ void PutStatus(Writer& out, const sphanorama::Status& status) {
 
 const char* const kMethodNames[] = {
     "CaptureSessionManager.begin",
+    "CaptureSessionManager.resume",
     "CaptureSessionManager.getPlan",
     "CaptureSessionManager.onMotion",
     "CaptureSessionManager.armBurst",
@@ -48,7 +49,6 @@ const char* const kMethodNames[] = {
     "PanoramaBuildManager.cancel",
     "ProjectManager.list",
     "ProjectManager.create",
-    "ProjectManager.resume",
     "ProjectManager.delete",
     "ProjectManager.setSelection",
     "ProjectManager.export",
@@ -95,7 +95,22 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 1: {  // CaptureSessionManager.getPlan
+    case 1: {  // CaptureSessionManager.resume
+      ProjectId project{};
+      project.value = in.GetId();
+      if (!in.ok()) {
+        PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
+                            "malformed arguments"));
+        break;
+      }
+      auto result = runtime.captureSession().Resume(project);
+      PutStatus(out, result.status);
+      if (result.ok()) {
+        out.PutF64(static_cast<double>(result.value.value));
+      }
+      break;
+    }
+    case 2: {  // CaptureSessionManager.getPlan
       auto result = runtime.captureSession().GetPlan();
       PutStatus(out, result.status);
       if (result.ok()) {
@@ -103,7 +118,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 2: {  // CaptureSessionManager.onMotion
+    case 3: {  // CaptureSessionManager.onMotion
       std::vector<ImuSample> samples;
       { const size_t count = in.GetCount(115);
     samples.clear();
@@ -121,7 +136,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 3: {  // CaptureSessionManager.armBurst
+    case 4: {  // CaptureSessionManager.armBurst
       NodeId node{};
       node.value = in.GetId();
       BurstSpec burst{};
@@ -135,7 +150,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 4: {  // CaptureSessionManager.offerFrame
+    case 5: {  // CaptureSessionManager.offerFrame
       NodeId node{};
       node.value = in.GetId();
       FrameRef frame{};
@@ -154,7 +169,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 5: {  // CaptureSessionManager.coverage
+    case 6: {  // CaptureSessionManager.coverage
       auto result = runtime.captureSession().Coverage();
       PutStatus(out, result.status);
       if (result.ok()) {
@@ -162,7 +177,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 6: {  // CaptureSessionManager.candidates
+    case 7: {  // CaptureSessionManager.candidates
       NodeId node{};
       node.value = in.GetId();
       if (!in.ok()) {
@@ -178,7 +193,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 7: {  // CaptureSessionManager.requestRetake
+    case 8: {  // CaptureSessionManager.requestRetake
       NodeId node{};
       node.value = in.GetId();
       bool replace{};
@@ -192,12 +207,12 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 8: {  // CaptureSessionManager.end
+    case 9: {  // CaptureSessionManager.end
       const Status status = runtime.captureSession().End();
       PutStatus(out, status);
       break;
     }
-    case 9: {  // PanoramaBuildManager.start
+    case 10: {  // PanoramaBuildManager.start
       SessionId session{};
       session.value = in.GetId();
       BuildSpec spec{};
@@ -214,7 +229,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 10: {  // PanoramaBuildManager.poll
+    case 11: {  // PanoramaBuildManager.poll
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -229,7 +244,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 11: {  // PanoramaBuildManager.panorama
+    case 12: {  // PanoramaBuildManager.panorama
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -244,7 +259,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 12: {  // PanoramaBuildManager.ghosts
+    case 13: {  // PanoramaBuildManager.ghosts
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -259,7 +274,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 13: {  // PanoramaBuildManager.invalidate
+    case 14: {  // PanoramaBuildManager.invalidate
       BuildId build{};
       build.value = in.GetId();
       std::vector<NodeId> dirty;
@@ -276,7 +291,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 14: {  // PanoramaBuildManager.cancel
+    case 15: {  // PanoramaBuildManager.cancel
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -288,7 +303,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 15: {  // ProjectManager.list
+    case 16: {  // ProjectManager.list
       auto result = runtime.project().List();
       PutStatus(out, result.status);
       if (result.ok()) {
@@ -297,7 +312,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 16: {  // ProjectManager.create
+    case 17: {  // ProjectManager.create
       std::string title{};
       title = in.GetString();
       if (!in.ok()) {
@@ -306,21 +321,6 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
         break;
       }
       auto result = runtime.project().Create(title);
-      PutStatus(out, result.status);
-      if (result.ok()) {
-        out.PutF64(static_cast<double>(result.value.value));
-      }
-      break;
-    }
-    case 17: {  // ProjectManager.resume
-      ProjectId project{};
-      project.value = in.GetId();
-      if (!in.ok()) {
-        PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
-                            "malformed arguments"));
-        break;
-      }
-      auto result = runtime.project().Resume(project);
       PutStatus(out, result.status);
       if (result.ok()) {
         out.PutF64(static_cast<double>(result.value.value));

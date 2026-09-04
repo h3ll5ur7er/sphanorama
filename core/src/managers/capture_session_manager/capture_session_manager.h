@@ -29,6 +29,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
                         IProjectStoreAccess& projects, IClock& clock);
 
   Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) override;
+  Result<SessionId> Resume(ProjectId project) override;
   Result<CapturePlan> GetPlan() const override;
   Result<CaptureGuidance> OnMotion(std::span<const ImuSample> samples) override;
   Status ArmBurst(NodeId node, const BurstSpec& burst) override;
@@ -41,6 +42,17 @@ class CaptureSessionManager final : public ICaptureSessionManager {
 
  private:
   Status RequireSession() const;
+  // Writes the session down, so a tab that dies has left something to come back to. Called when a
+  // cell is committed rather than only at End: a burst that finished is evidence, and a crash
+  // costs whatever happened after the last one of these.
+  void Checkpoint() const;
+  // Everything both entry points do once a plan exists: the pose the session starts from, the
+  // sensor, the preview. It closes the camera itself if the pose engine refuses, because by here
+  // the camera is already open and a session that cannot start must not leave the indicator lit.
+  //
+  // The motion capability is the live one on both paths, including a resume: a stored session
+  // says which sphere is being captured, never what the device it comes back on can sense.
+  Result<PoseState> StartTracking(MotionCapability motion);
   bool HasNode(NodeId node) const;
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
@@ -89,6 +101,10 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4, ADR 0016).
   PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
+  // The plan spec as it was resolved when the session began, kept because it is what the plan was
+  // made from. A resumed session replans from this rather than from the camera in front of it.
+  CapturePlanSpec resolved_spec_;
+  Intrinsics lens_;
 
   // Which candidates this manager's own bursts produced, by id.
   //

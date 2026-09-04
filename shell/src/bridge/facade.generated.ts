@@ -26,6 +26,18 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
         'malformed response: CaptureSessionManager.begin returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
+    async resume(project: C.ProjectId) {
+      const args = new Writer();
+      args.f64(project);
+      const raw = await call('CaptureSessionManager.resume', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = input.f64() as C.SessionId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.resume returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async getPlan() {
       const args = new Writer();
       const raw = await call('CaptureSessionManager.getPlan', args.finish());
@@ -220,18 +232,6 @@ export function createProjectManagerProxy(call: FacadeCall) {
       const value = input.f64() as C.ProjectId;
       if (!input.ok) return { ok: false, status: malformedResponse(
         'malformed response: ProjectManager.create returned a value that did not decode') } as const;
-      return { ok: true, value } as const;
-    },
-    async resume(project: C.ProjectId) {
-      const args = new Writer();
-      args.f64(project);
-      const raw = await call('ProjectManager.resume', args.finish());
-      const input = new Reader(raw);
-      const status = decodeStatus(input);
-      if (status.code !== 'Ok') return { ok: false, status } as const;
-      const value = input.f64() as C.SessionId;
-      if (!input.ok) return { ok: false, status: malformedResponse(
-        'malformed response: ProjectManager.resume returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
     async delete(project: C.ProjectId) {

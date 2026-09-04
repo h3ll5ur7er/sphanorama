@@ -228,6 +228,41 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   return Status::Ok();
 }
 
+Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
+  // A store with nowhere to spill has nowhere a frame could have come *from* either, and a frame
+  // adopted into one could never be pinned. Refusing here says so while the caller still has the
+  // document in hand, rather than at a fault-in that reads as a lost frame.
+  if (spill_ == nullptr) {
+    return Fail(StatusCode::Unsupported, kComponent,
+                "this store has no spill tier, so there is nothing to adopt a frame out of");
+  }
+  const int64_t size = FrameByteSize(frame.width, frame.height, frame.format);
+  if (size <= 0) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "frame has no representable size");
+  }
+  if (entries_.count(frame.id.value) != 0) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this store already holds a frame under that identity");
+  }
+
+  Entry entry;
+  entry.size = size;
+  // Carried from the handle rather than recomputed: ContentHash answers for a spilled frame out
+  // of this field, and the bytes are not here to hash. It was true when the document was written
+  // and a spilled frame cannot be written to, so it is true now.
+  entry.spilledHash = frame.contentHash;
+  entry.inSink = true;
+  entry.residency = Residency::Spilled;
+  entries_.emplace(frame.id.value, std::move(entry));
+  spilled_ += size;
+
+  // Stepped over, because a resumed session keeps capturing and its new frames come from this
+  // counter. Two frames under one identity is a store that hands the wrong pixels to whoever asks
+  // second, and the ids in a restored document are exactly the ones a fresh store would reissue.
+  if (frame.id.value >= next_id_) next_id_ = frame.id.value + 1;
+  return Status::Ok();
+}
+
 Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
   Entry* entry = Find(frame);
   if (entry == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such frame");

@@ -31,6 +31,19 @@ class IFrameStoreAccess {
   // store with no GPU tier refuses `GpuTexture` rather than pretending. Taking any value would
   // have ResidencyOf reporting a state that was never true.
   virtual Status Demote(const FrameRef&, Residency target) = 0;
+  // Takes back a frame this store never allocated, whose bytes are already in the sink.
+  //
+  // The identity comes from the caller, which is the whole point of it: a store dies with its
+  // tab, and after a reload the only thing left naming the frames a capture took is the session
+  // document. The frame arrives `Spilled` and a later `Pin` faults it in exactly as it would one
+  // this store had demoted itself.
+  //
+  // It cannot check that the bytes are down there. A sink answers for frames it was given and
+  // offers no listing — deliberately, so that the store stays the only thing that knows what it
+  // put where — so a frame adopted against a sink that lost it fails at the `Pin`, with the
+  // sink's own reason, rather than here.
+  virtual Status Adopt(const FrameRef& frame) = 0;
+
   virtual Status Forget(const FrameRef&) = 0;
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;
 };

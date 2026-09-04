@@ -189,10 +189,17 @@ async function originPrivateDirectory(): Promise<SpillDirectory> {
  * The name is unique per session rather than fixed, because the handle underneath is exclusive:
  * with one shared name, the second tab open on the app — or a reload whose previous worker has
  * not been torn down yet — gets `NoModificationAllowedError` and captures with no spill tier for
- * no reason it could state. A fresh file also settles what a stale one would have meant: spilled
- * bytes are keyed by the store's frame identity, which starts again at 1 in a new session, so
- * yesterday's file would answer for today's frames. Resuming a capture across a reload restores
- * the *session document*, not the pixel heap.
+ * no reason it could state. A fresh file also settled what a stale one would have meant: spilled
+ * bytes are keyed by the store's frame identity, which started again at 1 in every new session,
+ * so yesterday's file would have answered for today's frames.
+ *
+ * That second half no longer holds, and this file is the half of resume that is still outstanding.
+ * A session document now carries the identities its frames were given, and the store takes them
+ * back under those identities on resume (ADR 0029) — so a reload's frames are exactly the ones
+ * the previous run spilled, and sweeping them is throwing away the capture. What has to change
+ * here is the naming and the sweep, not the exclusivity: a resumed session needs to find *its*
+ * file, and the sweep needs a liveness test that outlives a dead tab rather than one that reads
+ * an unfinished capture as abandoned.
  */
 export async function openSpillFile(directory?: SpillDirectory): Promise<SpillFile> {
   const root = directory ?? (await originPrivateDirectory());

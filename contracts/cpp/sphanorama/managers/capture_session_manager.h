@@ -15,6 +15,19 @@ class ICaptureSessionManager {
   virtual ~ICaptureSessionManager() = default;
 
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
+  // Picks a session back up from what was written down about it.
+  //
+  // A tab that goes away mid-capture takes the plan, the candidate sets and the frame store with
+  // it, and the phone that comes back is the same phone standing in the same spot — so the cells
+  // already captured have to still count. What survives is the project store's documents and
+  // whatever the frame store's sink is holding; this reads the first and hands the frames it
+  // names back to the store, which is why a resumed candidate can still be pinned.
+  //
+  // The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
+  // particular sphere, so replanning from whatever lens is in front of the phone now would file
+  // every restored candidate under a different cell.
+  virtual Result<SessionId> Resume(ProjectId project) = 0;
+
   virtual Result<CapturePlan> GetPlan() const = 0;
 
   // The session's tick, called at sensor rate from the capture loop. Cheap by contract.

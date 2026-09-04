@@ -244,13 +244,19 @@ recorded per device class.
 full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
 build. What is left:
 
-- **Reload and resume.** Not started, and the only code-shaped item on this list. Scope, decided
+- **Reload and resume.** The core half is **done**: `ICaptureSessionManager::Resume` reads a
+  session document written at every committed cell, replans from the spec and lens that document
+  carries, and hands the frames it names back to the store through the new
+  `IFrameStoreAccess::Adopt`, so a restored candidate can still be pinned (ADR 0029). What is left
+  is the browser half — the OPFS spill file is named per session and swept when a new one opens,
+  so the bytes an adopted frame wants are not yet on disk where a reload can find them — and the
+  page's own resume flow. Scope, decided
   with the maintainer rather than assumed: in practice there is never more than one unfinished
   sphere, because resuming means standing in the same spot again. The case worth building for is
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the spill file is cleared when a *new* session begins rather than at worker startup, which is
-  what lets a reload find its frames still there. Two changes, in order: durable frame identity,
-  then session restore.
+  what lets a reload find its frames still there — that last part is the change still outstanding,
+  and it reverses the file-per-session rule the second-tab fix put in (ADR 0020, ADR 0029).
 - **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
   `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
 - **An iPhone.** Blocked on hardware, not code: the maintainer has an Android only. The exit

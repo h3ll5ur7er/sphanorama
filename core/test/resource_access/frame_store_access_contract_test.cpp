@@ -121,6 +121,54 @@ TYPED_TEST(FrameStoreAccessContract, ForgettingAPinnedFrameIsRefused) {
   EXPECT_TRUE(this->store->Forget(frame).ok());
 }
 
+TYPED_TEST(FrameStoreAccessContract, AdoptsAFrameSpilledByAStoreThatIsGone) {
+  // The reload. A capture's frames end up in the sink when their cell is committed (ADR 0023),
+  // and the store that put them there dies with the tab — so the only thing left naming them is
+  // the session document, and coming back means handing those names to a store that never
+  // allocated them.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0xAB);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+  ASSERT_TRUE(revived->Adopt(frame).ok());
+
+  // Spilled, not resident: adopting is a promise about where the bytes are, and a store that
+  // called them heap-resident would be charging a budget for memory it does not hold.
+  auto residency = revived->ResidencyOf(frame);
+  ASSERT_TRUE(residency.ok()) << residency.status.detail;
+  EXPECT_EQ(residency.value, Residency::Spilled);
+
+  auto pinned = revived->Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  ASSERT_FALSE(pinned.value.empty());
+  EXPECT_EQ(pinned.value[0], 0xAB);
+  EXPECT_TRUE(revived->Release(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AdoptingAnIdentityTheStoreAlreadyHoldsIsRefused) {
+  // Two frames under one identity is a store that hands the wrong pixels to whoever asks second,
+  // and a resume replaying a document twice is exactly how that would arrive.
+  auto frame = this->Allocate();
+  EXPECT_FALSE(this->store->Adopt(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AnAdoptedIdentityIsNeverHandedOutAgain) {
+  // A resumed session keeps capturing, and its new frames come from the same counter that issued
+  // the restored ones. A store that started again from where it left off would collide with the
+  // document it had just been handed.
+  // Exactly the identity this store would issue next, which is the collision that actually
+  // happens: the document was written by a store that counted the same way from the same start.
+  FrameRef restored = this->Allocate();
+  restored.id = FrameId{restored.id.value + 1};
+  restored.buffer = BufferId{restored.id.value};
+  ASSERT_TRUE(this->store->Adopt(restored).ok());
+
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NE(this->Allocate().id.value, restored.id.value) << "allocation " << i;
+  }
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());

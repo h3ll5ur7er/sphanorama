@@ -48,17 +48,6 @@ Result<ProjectId> ProjectManager::Create(std::string_view title) {
   return Ok(id);
 }
 
-Result<SessionId> ProjectManager::Resume(ProjectId project) {
-  if (!Exists(project)) {
-    return Err<SessionId>(StatusCode::NotFound, kComponent, "no such project");
-  }
-  // Resuming means handing a session back to CaptureSessionManager, which owns session state.
-  // Managers do not call each other (docs/03 §3.3 rule 3), so the client sequences it — and
-  // there is nothing honest to return until that facade call exists.
-  return Err<SessionId>(StatusCode::Unsupported, kComponent,
-                        "resume is sequenced by the client once the capture facade lands");
-}
-
 Status ProjectManager::Delete(ProjectId project) {
   return store_.DeleteProject(project);
 }
