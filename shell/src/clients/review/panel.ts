@@ -51,10 +51,21 @@ export function createReviewPanel(elements: ReviewElements, core: ReviewCore): R
   // has nowhere to answer "what is selected" from — ProjectManager writes the selection and no
   // contract reads it back, so a reload forgets it. Named rather than hidden: see the ADR.
   const chosen = new Map<NodeId, CandidateId>();
+  // Which open() call the strip belongs to. Every call this panel makes crosses a postMessage to
+  // the worker the core runs in (ADR 0019), so two taps in quick succession are two answers in
+  // flight with nothing promising they come back in the order they were asked. Drawing from
+  // whichever settles last would put one cell's candidates under another cell's heading — and
+  // under the map's pressed dot, which is set before the await and so always names the later tap.
+  let latest = 0;
 
   async function open(node: NodeId): Promise<void> {
     opened = node;
+    const ticket = ++latest;
     const answered = await core.candidates(node);
+    // A cell the user has already left. Returning without touching the DOM leaves the strip
+    // showing what was asked for most recently, which is the only cell the rest of the panel
+    // claims to be showing.
+    if (ticket !== latest) return;
     elements.strip.replaceChildren();
     if (!answered.ok) {
       elements.stripHeading.textContent = 'That cell could not be read.';
