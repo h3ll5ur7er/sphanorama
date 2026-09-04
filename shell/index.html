@@ -7,6 +7,7 @@
   <title>Sphanorama</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="./src/clients/capture/capture.css">
+  <link rel="stylesheet" href="./src/clients/review/review.css">
 </head>
 <body>
   <main id="app">
@@ -42,7 +43,15 @@
       </dl>
       <button id="enable" type="button">Enable camera &amp; motion</button>
       <button id="capture" type="button" disabled>Capture this cell</button>
-      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. Firing a burst needs a path for pixels that is not built yet, so the cells stay empty.</p>
+
+      <section id="review" data-active="false" aria-labelledby="review-heading">
+        <h2 id="review-heading">Coverage</h2>
+        <div id="coverage-map" role="group" aria-label="Planned cells; filled means captured">
+        </div>
+        <p id="strip-heading" aria-live="polite">Pick a cell to see its candidates.</p>
+        <ul id="strip" aria-labelledby="strip-heading"></ul>
+      </section>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. A burst captures real pixels into the frame store, and a captured cell&rsquo;s frames are spilled out of the heap so a whole sphere fits. The strip below shows what the core knows about each candidate; the frames themselves are not drawn yet, because reading pixels back out of the store has no path across the worker.</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>
