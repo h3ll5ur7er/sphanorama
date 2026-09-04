@@ -240,6 +240,35 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
 recorded per device class.
 
+*Where this stands:* two of the three conditions are met on one device. A Pixel 9 Pro XL captured a
+full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
+build. What is left:
+
+- **Reload and resume.** Not started, and the only code-shaped item on this list. Scope, decided
+  with the maintainer rather than assumed: in practice there is never more than one unfinished
+  sphere, because resuming means standing in the same spot again. The case worth building for is
+  "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
+  and the spill file is cleared when a *new* session begins rather than at worker startup, which is
+  what lets a reload find its frames still there. Two changes, in order: durable frame identity,
+  then session restore.
+- **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
+  `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
+- **An iPhone.** Blocked on hardware, not code: the maintainer has an Android only. The exit
+  criterion names both, and this half cannot be closed here.
+
+Two known gaps in the phase's own list, both contract-shaped: the review strip shows what the core
+knows about a candidate rather than the frame itself, and a recorded selection cannot be read back.
+
+One open question from the device run, waiting on a measurement rather than on work. A cell's five
+candidates scored 1186, 1180, 459, 459, 458 in capture order; another scored 979, 993, 0.60, 0.60,
+0.61. Both split two-and-three at the same point, in different scenes, tight inside each group —
+two regimes rather than a changing scene. A burst is five frames at 80 ms, about a third of a
+second, which is long enough for a camera with nothing locked to re-expose and refocus. The `locks`
+row (ADR 0022) exists to settle it: if a device reports no manual modes, the spread is the camera
+hunting and the answer is bracketing in Phase 2; if locks are held and the spread survives, the
+locks are not holding and that is a bug with a narrow search. Do not start on it before reading
+that row from a device.
+
 ---
 
 ## Phase 2 — Stitching

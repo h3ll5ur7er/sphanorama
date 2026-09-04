@@ -485,6 +485,33 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
+test('the page says which locks the burst actually got', async ({ page }) => {
+  // The question a burst's numbers raise and the strip could not answer: is the camera free to
+  // re-expose and refocus between these five frames? On a Pixel one cell's candidates scored
+  // 1186, 1180, 459, 458, 458 — two frames from one regime and three from another — with nothing
+  // on screen to say whether that was the camera hunting or the selection policy.
+  //
+  // Chromium's fake camera has no manual modes, which is the interesting case: it is what a
+  // device with nothing locked has to look like.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await page.locator('#panel-toggle').click();
+
+    // Nothing said yet: this is about a burst, and none has been fired.
+    await expect(page.locator('#locks')).toHaveText('—');
+
+    await page.locator('#capture').click();
+    await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
+    await expect(page.locator('#locks')).toContainText(/no manual modes|exposure|focus/i);
+  } finally {
+    await server.close();
+  }
+});
+
 test('the ring fills when its cell finishes, without waiting for another sample', async ({ page }) => {
   // Coverage is refreshed *after* the tick that reports a cell done, so the tick that drew the
   // markers drew them from the coverage before it. Normally the next tick corrects that — but the
@@ -505,6 +532,13 @@ test('the ring fills when its cell finishes, without waiting for another sample'
         alpha: 0, beta: 90, gamma: 0,
       }));
     });
+    // Waited for, not assumed. The sample has to be drained, folded into the pose and drawn
+    // before the burst starts, or there are no rings for the burst to fill and the poll below
+    // times out on a page that was only slow. Rings existing does not weaken what this is about:
+    // no *further* sample is sent after the burst, which is the whole point.
+    await expect(page.locator('#cell-layer .cell-ring:not([hidden])').first())
+      .toBeAttached({ timeout: 15000 });
+
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 

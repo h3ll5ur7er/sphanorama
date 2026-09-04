@@ -220,7 +220,9 @@ alone under this loop rather than to stop and wait:
 
 1. **Build the next thing**, test-first and to the definition of done above.
 2. **Self-review it** before anyone else sees it — reread the diff adversarially, and sabotage
-   every new test to prove it can fail.
+   every new test to prove it can fail. Check the sabotage *landed*: an edit whose pattern never
+   matched leaves the code untouched and every test green, which is indistinguishable from a test
+   that cannot fail. Assert the anchor before editing.
 3. **Open a PR and request a Copilot review.** Opening one does not summon a reviewer; ask
    explicitly, every time.
 4. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
@@ -243,6 +245,10 @@ accident anyway.
 | Adding a fourth manager | A use-case variation of an existing one. Check the volatility map |
 | An engine holding state between calls | It is a manager, or the state belongs in the caller. If the contract leaves the state nowhere else to live, the contract is the defect — name the state as a value the caller threads back in (ADR 0016) |
 | A client importing an engine | The client is doing business logic, or a manager method is missing |
+| A sabotage that leaves every test green | Before concluding the test is worthless, prove the edit applied. A `sed` or a string replace whose pattern did not match reads exactly like a surviving test, and it has happened more than once |
+| One edit that changed three call sites | A whole-file string replace hits every occurrence, not the one it was aimed at. Assert the match count, and prefer an anchor unique to the site |
+| A test that passes alone and fails in the suite | Run what CI runs. `npx playwright test` covers `bridge/` and `shell/` in one worker; a `-g` filtered run is a debugging aid, never the check. The same goes for reading a `tail` of the gate instead of its whole output |
+| A marker, overlay or reticle that is subtly in the wrong place | Ask which box its fractions are fractions *of*. The camera frame, the element it is drawn in and the pixels on screen are three different rectangles, and `object-fit` sits between the last two (ADR 0028) |
 | Reaching for `cv::Stitcher` | See ADR 0005. It cannot do partial rebuilds, sensor priors, or mover-aware seams — the features that justify this project |
 | A pixel buffer in an interface | Use `FrameRef`; pin inside the core |
 | `try` / `catch` near the boundary | Use `Result<T>` |

@@ -61,6 +61,17 @@ could not.
 - **A camera that cannot lock still captures.** Degraded and said out loud: the guidance line
   reads "capturing without exposure lock". That is better than both alternatives — refusing to
   capture, or capturing while claiming a lock that is not held.
+- **What actually settled is on the status list**, as a `locks` row. The read-back was already
+  being computed for the arming call and then discarded, which left the one question a burst's
+  numbers raise unanswerable from a screenshot: on a Pixel, one cell's five candidates scored
+  1186, 1180, 459, 458, 458 — two frames from one regime and three from another — and nothing on
+  screen said whether the camera had been free to re-expose and refocus across the third of a
+  second the burst spans. Held and refused are named separately: a refused lock is a camera that
+  advertised a manual mode and then did not take it, which is the case this read-back exists for,
+  while one never asked for is a camera that said up front it has none. A third case reads
+  `unknown`: asking is itself fallible — a track pulled away mid-gesture leaves no camera to put
+  the question to — and rendering that failure as three absent locks would make the row claim the
+  camera has no manual modes, which is exactly the reading it exists to make trustworthy.
 - **The client sequences a resource access directly**, which looks like a layer violation and is
   not: the shell's page-side adapters are the state ADR 0014's resident host is made of, and the
   client has always called `camera.open()` and `motion.start()` the same way. What it must never
