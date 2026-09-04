@@ -83,6 +83,15 @@ TEST(ChooseHeapCeiling, TheFloorDoesNotOverrideTheLinkedHeap) {
   EXPECT_LE(ChooseHeapCeiling(kGiB / 4, linked), linked);
 }
 
+TEST(ChooseHeapCeiling, ATinyLinkedHeapIsAFactRatherThanASilence) {
+  // Zero is the sentinel for "the platform did not answer", and it was computed from the *share*
+  // of the linked maximum rather than from the maximum itself — so a linked heap of a few bytes
+  // divided down to zero, was read as silence, and returned a ceiling millions of times larger
+  // than the heap it was supposed to be clamped by. A number is a number however small; only the
+  // absence of one is silence.
+  EXPECT_LE(ChooseHeapCeiling(8 * kGiB, 3), 3);
+}
+
 TEST(ChooseHeapCeiling, IsNeverNegativeOrZeroHoweverNonsensicalTheInputs) {
   // Both numbers come from the browser through a boundary that has been wrong before. A ceiling
   // of zero would make the store refuse every allocation, which reads as a broken camera.

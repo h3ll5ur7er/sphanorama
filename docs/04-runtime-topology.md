@@ -63,9 +63,11 @@ used to relabel instead — the budget moved and the bytes stayed — which free
 does not have; a store whose reason to exist is modelling memory pressure cannot be the thing that
 misreports it.
 
-The budget probe matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash,
-not an exception. The store allocates against a ceiling with a safety margin and spills before it
-is reached.
+The ceiling matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash, not
+an exception. The store allocates against it with a safety margin and **refuses at it** — it does
+not yet spill on its own. `Demote` moves a frame to the sink, but only when a caller asks, and no
+production caller asks; the policy that would decide when to spill under pressure is the
+outstanding item, and the roadmap names it.
 
 In the browser that ceiling is **read from the device**: a sixteenth of `navigator.deviceMemory`,
 clamped by three quarters of what the module was linked to allow, floored where one burst stops

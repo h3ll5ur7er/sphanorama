@@ -17,12 +17,18 @@ int64_t ChooseHeapCeiling(int64_t deviceMemoryBytes, int64_t linkedMaxBytes) {
   // not exist.
   const int64_t wanted = std::max(fromDevice, kFloorCeilingBytes);
 
-  const int64_t linked =
-      linkedMaxBytes > 0 ? linkedMaxBytes / kLinkedHeapDenominator * kLinkedHeapNumerator : 0;
   // A linked maximum of zero means the platform did not answer either — natively, or a browser
   // build that reports nothing. Falling back to `wanted` is right: there is no fact to defer to,
   // and refusing to allocate at all is the one outcome that is certainly wrong.
-  const int64_t ceiling = linked > 0 ? std::min(wanted, linked) : wanted;
+  //
+  // The silence is read off `linkedMaxBytes` itself rather than off the share of it, because the
+  // share of a very small number is zero: a heap of three bytes would otherwise be mistaken for a
+  // platform that said nothing, and the clamp it asked for would be dropped. A number is a number
+  // however small, and only the absence of one is silence.
+  const int64_t ceiling =
+      linkedMaxBytes > 0
+          ? std::min(wanted, linkedMaxBytes / kLinkedHeapDenominator * kLinkedHeapNumerator)
+          : wanted;
 
   // Never zero, however nonsensical the inputs were. Both numbers cross from JavaScript through a
   // boundary that has been wrong before, and a store with a ceiling of zero refuses every
