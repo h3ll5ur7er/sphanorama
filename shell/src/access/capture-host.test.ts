@@ -11,8 +11,39 @@ import {
 } from './capture-host';
 
 describe('deriveFieldOfView', () => {
-  it('keeps the horizontal estimate it was given', () => {
-    expect(deriveFieldOfView(1920, 1080, 66).horizontalFovDeg).toBeCloseTo(66, 6);
+  it('puts the assumed angle on the frame\'s long edge, whichever edge that is', () => {
+    // The 66 degrees is a guess about a *lens*, and a lens does not change when the phone is
+    // turned. The browser reports the track in the device's current orientation, so a phone held
+    // upright answers 960x1280 — and reading the assumption onto `width` there applies it to the
+    // sensor's short side and derives a taller angle than the camera has. Measured on a Pixel 9
+    // Pro XL: 960x1280 derived 81.8 degrees vertical, planned 22 cells for a sphere that needs
+    // more, and would have left gaps between them.
+    const landscape = deriveFieldOfView(1280, 960, 66);
+    expect(landscape.horizontalFovDeg).toBeCloseTo(66, 6);
+    expect(landscape.verticalFovDeg).toBeCloseTo(51.9, 1);
+
+    const portrait = deriveFieldOfView(960, 1280, 66);
+    expect(portrait.verticalFovDeg).toBeCloseTo(66, 6);
+    // The half that matters: asserting only the 66 would pass even when the assumption was read
+    // onto the short edge, because naming the angles back onto the frame's axes happens after the
+    // derivation and would still put the wide one on the long side.
+    expect(portrait.horizontalFovDeg).toBeCloseTo(51.9, 1);
+  });
+
+  it('answers the same lens turned on its side, not a different one', () => {
+    const landscape = deriveFieldOfView(1280, 960, 66);
+    const portrait = deriveFieldOfView(960, 1280, 66);
+    expect(portrait.horizontalFovDeg).toBeCloseTo(landscape.verticalFovDeg, 6);
+    expect(portrait.verticalFovDeg).toBeCloseTo(landscape.horizontalFovDeg, 6);
+  });
+
+  it('never derives an angle wider than the one it assumed', () => {
+    // The assumption is the widest thing the lens sees. Anything derived from it is across a
+    // shorter edge, so an answer above it means the assumption landed on the wrong axis.
+    for (const [width, height] of [[1280, 960], [960, 1280], [1920, 1080], [1080, 1920], [640, 640]]) {
+      const fov = deriveFieldOfView(width, height, 66);
+      expect(Math.max(fov.horizontalFovDeg, fov.verticalFovDeg)).toBeLessThanOrEqual(66 + 1e-9);
+    }
   });
 
   it('derives the vertical angle from the real aspect ratio', () => {

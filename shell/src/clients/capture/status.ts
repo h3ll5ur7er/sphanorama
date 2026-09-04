@@ -14,7 +14,8 @@ const MESSAGES: Partial<Record<Status['code'], string>> = {
   SensorUnavailable:
     'This device reports no motion sensors. Capture will fall back to visual tracking.',
   CameraUnavailable:
-    'No usable camera. It may be missing, or another app may be holding it.',
+    'No usable camera. Another tab of this app, or another app, may be holding it — '
+    + 'close them and reload. Otherwise this device has no camera facing that way.',
   StorageQuotaExceeded:
     'Out of storage for this site. Free some space or delete an old sphere.',
   FrameStoreExhausted:

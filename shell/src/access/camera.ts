@@ -94,15 +94,38 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
           'no media devices — the page must be served over https');
       }
 
+      // Everything the caller asked for that is genuinely negotiable. `ideal` is scored rather
+      // than obeyed: getUserMedia picks whichever device has the lowest *combined* fitness
+      // distance across all of these at once.
+      const size = {
+        width: spec.preferredWidth ? { ideal: spec.preferredWidth } : undefined,
+        height: spec.preferredHeight ? { ideal: spec.preferredHeight } : undefined,
+      };
+      const facing = spec.preferRearCamera ? 'environment' : 'user';
+
       try {
-        const stream = await media.getUserMedia({
-          video: {
-            facingMode: spec.preferRearCamera ? { ideal: 'environment' } : { ideal: 'user' },
-            width: spec.preferredWidth ? { ideal: spec.preferredWidth } : undefined,
-            height: spec.preferredHeight ? { ideal: spec.preferredHeight } : undefined,
-          },
-          audio: false,
-        });
+        // Which way the camera faces is `exact`, which makes it a filter instead of a score, and
+        // so takes it out of that competition entirely. Asked as an `ideal` alongside a
+        // resolution, a front camera that matches the requested size more closely outscores a
+        // rear one that does not — and the app shoots a photo sphere as a selfie. That is not
+        // hypothetical: it is what a Pixel 9 Pro XL did the first time a resolution was asked
+        // for, and nothing on screen said which lens had been chosen.
+        let stream: MediaStream;
+        try {
+          stream = await media.getUserMedia({
+            video: { ...size, facingMode: { exact: facing } },
+            audio: false,
+          });
+        } catch (cause) {
+          // A filter has no second choice, so a device with no camera facing that way answers
+          // OverconstrainedError and would get no camera at all. That is the one case where the
+          // direction really is a preference: a laptop should still see its only lens.
+          if ((cause as { name?: string }).name !== 'OverconstrainedError') throw cause;
+          stream = await media.getUserMedia({
+            video: { ...size, facingMode: { ideal: facing } },
+            audio: false,
+          });
+        }
         active = stream;
 
         // Report what the track settled on, not what we asked for: requested and granted
