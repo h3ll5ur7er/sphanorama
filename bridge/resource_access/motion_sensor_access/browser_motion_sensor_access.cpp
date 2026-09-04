@@ -22,16 +22,19 @@ EM_JS(int32_t, host_motion_capability, (), {
 // The layout capture-host.ts writes. Both sides are pinned by a test; changing one without the
 // other decodes into plausible nonsense rather than failing, which is why the order is spelled
 // out in both places rather than being implied by a struct.
-constexpr size_t kDoublesPerSample = 16;
+constexpr size_t kDoublesPerSample = 17;
 
-EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples), {
+EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples, int32_t stride), {
   const host = Module.sphHost;
   if (!host || !host.motionDrain) return 0;
   const flat = host.motionDrain(maxSamples);
   // HEAPF64 is read fresh: Emscripten replaces the view when memory grows, and a cached one
   // would be detached.
   Module.HEAPF64.set(flat, out >> 3);
-  return flat.length / 16;
+  // The stride is passed in rather than written here, because it used to be a third copy of the
+  // layout's length and the one nothing would have caught: a decoder reading the wrong number of
+  // samples produces plausible ones.
+  return flat.length / stride;
 });
 
 EM_JS(void, host_motion_reset, (), {
@@ -68,7 +71,8 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
   // them straight into the caller's span. Sixteen EM_JS calls per sample at 60Hz would cost more
   // in boundary crossings than the samples are worth.
   std::vector<double> flat(out.size() * kDoublesPerSample);
-  const int32_t count = host_motion_drain(flat.data(), static_cast<int32_t>(out.size()));
+  const int32_t count = host_motion_drain(flat.data(), static_cast<int32_t>(out.size()),
+                                          static_cast<int32_t>(kDoublesPerSample));
   if (count <= 0) return Ok(0);
 
   const auto taken = std::min(static_cast<size_t>(count), out.size());
@@ -76,12 +80,13 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
     const double* f = flat.data() + i * kDoublesPerSample;
     ImuSample& sample = out[i];
     sample.timestampNs = static_cast<int64_t>(f[0]);
-    sample.angularVelocity = Vec3{f[1], f[2], f[3]};
-    sample.acceleration = Vec3{f[4], f[5], f[6]};
-    sample.hasMagnetometer = f[7] != 0.0;
-    sample.magneticField = Vec3{f[8], f[9], f[10]};
-    sample.hasOrientation = f[11] != 0.0;
-    sample.orientation = Quat{f[12], f[13], f[14], f[15]};
+    sample.hasAngularVelocity = f[1] != 0.0;
+    sample.angularVelocity = Vec3{f[2], f[3], f[4]};
+    sample.acceleration = Vec3{f[5], f[6], f[7]};
+    sample.hasMagnetometer = f[8] != 0.0;
+    sample.magneticField = Vec3{f[9], f[10], f[11]};
+    sample.hasOrientation = f[12] != 0.0;
+    sample.orientation = Quat{f[13], f[14], f[15], f[16]};
   }
   return Ok(static_cast<int32_t>(taken));
 }

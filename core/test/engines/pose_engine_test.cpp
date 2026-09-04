@@ -30,6 +30,7 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
   ImuSample sample;
   sample.timestampNs = timestampNs;
   sample.angularVelocity = Vec3{0, yawRateRadPerSec, 0};
+  sample.hasAngularVelocity = true;
   return sample;
 }
 
@@ -39,6 +40,7 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
 ImuSample Fused(int64_t timestampNs, double azimuthDeg, double elevationDeg, const Vec3& rate) {
   ImuSample sample = Oriented(timestampNs, azimuthDeg, elevationDeg);
   sample.angularVelocity = rate;
+  sample.hasAngularVelocity = true;
   return sample;
 }
 
@@ -353,12 +355,86 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
     ImuSample rateOnly;
     rateOnly.timestampNs = t;
     rateOnly.angularVelocity = bias;
+    rateOnly.hasAngularVelocity = true;
     state = engine.Integrate(state, std::vector<ImuSample>{rateOnly}).value;
     t += 10'000'000;
   }
 
   // Un-subtracted, one second of 0.02 rad/s is 1.15 degrees of yaw from a device that never moved.
   EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 0.2);
+}
+
+TEST(PoseEngine, ARateNobodyMeasuredIsNotIntegratedEither) {
+  // The other half of the same rule, and the one the fusion path made reachable. A sample with
+  // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`; subtracting
+  // a learned offset from it and integrating the result turns "nothing was reported" into a
+  // rotation backwards at the offset's own rate.
+  OrientationPoseEngine engine;
+  const Vec3 bias{0.0, 0.02, 0.0};
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+
+  int64_t t = 0;
+  for (int step = 0; step < 200; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+    t += 10'000'000;
+  }
+  ASSERT_GT(state.gyroBias.y, 0.01) << "the offset was never learned, so this proves nothing";
+  const Quat settled = state.pose.orientation;
+
+  ImuSample silent;   // no attitude, no measured rate: a sample that reports nothing at all
+  silent.timestampNs = t + 1'000'000'000;
+  state = engine.Integrate(state, std::vector<ImuSample>{silent}).value;
+  EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 1e-9);
+}
+
+TEST(PoseEngine, ASingleMeasuredSampleDoesNotBlindTheRestOfTheBatch) {
+  // Preferring rates was a whole-batch decision, and a batch is no longer one kind of sample. One
+  // measured rate of zero at the start said "this batch has rates", which switched off the
+  // attitude fallback for every sample after it — so a batch that opens still and then sweeps
+  // through 90 degrees of attitudes came back perfectly still. Stability gates firing a burst.
+  OrientationPoseEngine engine;
+  ImuSample still = Fused(0, 0.0, 0.0, Vec3{0.0, 0.0, 0.0});
+  const std::vector<ImuSample> batch{still, Oriented(100'000'000, 0.0, 0.0),
+                                     Oriented(200'000'000, 90.0, 0.0)};
+  auto stability = engine.Stability(batch);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_LT(stability.value, 0.2) << "reported " << stability.value;
+}
+
+TEST(PoseEngine, ARateNobodyMeasuredIsNotFusedAgainst) {
+  // A capability is a claim about the platform; `hasAngularVelocity` is a fact about the sample.
+  // They can disagree — a DeviceMotionEvent that fires with a null rotationRate is a device that
+  // has the API and is not reporting rates — and where they do, the sample wins. Fusing against a
+  // rate nobody measured drags the estimate with a fiction and then learns an offset to cancel it.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  ImuSample unmeasured = Oriented(0, 0.0, 0.0);
+  unmeasured.angularVelocity = Vec3{0.0, 1.0, 0.0};   // present in the struct, never measured
+  state = engine.Integrate(state, std::vector<ImuSample>{unmeasured}).value;
+
+  ImuSample later = Oriented(100'000'000, 30.0, 0.0);
+  later.angularVelocity = Vec3{0.0, 1.0, 0.0};
+  state = engine.Integrate(state, std::vector<ImuSample>{later}).value;
+
+  // Taken as it stands, exactly as an OrientationOnly stream is.
+  EXPECT_LT(AngleBetween(state.pose.orientation, FromAzimuthElevation(30.0, 0.0)) * kRadToDeg,
+            1e-6);
+  EXPECT_EQ(state.gyroBias.y, 0.0);
+}
+
+TEST(PoseEngine, ASwingingPhoneIsUnstableEvenWhenTheSampleAlsoCarriesAnAttitude) {
+  // The half of this that a fused sample breaks. Stability told "no rate measured" from "rate
+  // measured as zero" by hasOrientation, so a sample carrying both was read as having no rate —
+  // and two identical attitudes then said the device was perfectly still while the gyroscope in
+  // the same sample said it was being swung at 3 rad/s. Stability is what gates firing a burst,
+  // so still-when-swinging is the one direction it must never be wrong in.
+  OrientationPoseEngine engine;
+  const Vec3 swung{0.0, 3.0, 0.0};
+  const std::vector<ImuSample> samples{Fused(0, 0.0, 0.0, swung),
+                                       Fused(100'000'000, 0.0, 0.0, swung)};
+  auto stability = engine.Stability(samples);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_LT(stability.value, 0.2);
 }
 
 TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
@@ -509,6 +585,7 @@ TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {
   ImuSample dropout;
   dropout.timestampNs = t + 1'000'000'000;
   dropout.angularVelocity = bias;
+  dropout.hasAngularVelocity = true;
   state = engine.Integrate(state, std::vector<ImuSample>{dropout}).value;
 
   EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 1.15);

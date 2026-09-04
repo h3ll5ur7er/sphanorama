@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Quat } from '../../../contracts/ts/contracts';
 import {
+  angularVelocityFromRotationRate,
   quaternionFromDeviceOrientation, quaternionFromSensorReading, toImuSample,
 } from './orientation';
 
@@ -198,5 +199,109 @@ describe('toImuSample', () => {
     });
     expect(sample.hasMagnetometer).toBe(false);
     expect(sample.angularVelocity).toEqual({ x: 0, y: 0, z: 0 });
+    // And says so, which is the difference between a still device and one nobody measured.
+    expect(sample.hasAngularVelocity).toBe(false);
+  });
+
+  it('carries a measured rate and marks it as measured', () => {
+    const sample = toImuSample({
+      timestampNs: 0,
+      orientation: quaternionFromDeviceOrientation(0, 0, 0, 0),
+      angularVelocity: { x: 0.1, y: 0.2, z: 0.3 },
+    });
+    expect(sample.hasAngularVelocity).toBe(true);
+    expect(sample.angularVelocity).toEqual({ x: 0.1, y: 0.2, z: 0.3 });
+  });
+
+  it('marks a measured rate of exactly zero as measured', () => {
+    // The case the flag exists for: a device held perfectly still reports zeros, and they are
+    // worth as much as any other reading.
+    const sample = toImuSample({
+      timestampNs: 0,
+      orientation: quaternionFromDeviceOrientation(0, 0, 0, 0),
+      angularVelocity: { x: 0, y: 0, z: 0 },
+    });
+    expect(sample.hasAngularVelocity).toBe(true);
+  });
+});
+
+describe('angularVelocityFromRotationRate', () => {
+  /**
+   * The body-frame rotation from `from` to `to`, as an axis-angle vector in radians.
+   *
+   * This is what the pose engine does with an attitude pair, so measuring the converted rate
+   * against it is the only check that actually ties the two halves of a sample together. A rate
+   * on the wrong axis is invisible in every other test: the reticle still tracks, because the
+   * attitude is right, and only the correction the engine applies pulls the wrong way.
+   */
+  function rotationBetween(from: Quat, to: Quat): { x: number; y: number; z: number } {
+    const conj = { w: from.w, x: -from.x, y: -from.y, z: -from.z };
+    let error = {
+      w: conj.w * to.w - conj.x * to.x - conj.y * to.y - conj.z * to.z,
+      x: conj.w * to.x + conj.x * to.w + conj.y * to.z - conj.z * to.y,
+      y: conj.w * to.y - conj.x * to.z + conj.y * to.w + conj.z * to.x,
+      z: conj.w * to.z + conj.x * to.y - conj.y * to.x + conj.z * to.w,
+    };
+    if (error.w < 0) error = { w: -error.w, x: -error.x, y: -error.y, z: -error.z };
+    const axis = Math.hypot(error.x, error.y, error.z);
+    if (axis < 1e-12) return { x: 0, y: 0, z: 0 };
+    const radians = 2 * Math.atan2(axis, error.w);
+    return {
+      x: (error.x / axis) * radians,
+      y: (error.y / axis) * radians,
+      z: (error.z / axis) * radians,
+    };
+  }
+
+  /**
+   * Turns one device axis at a known rate and checks the converted rate against the converted
+   * attitudes either side of it. Both halves of a sample have to describe the same motion in the
+   * same frame or the engine corrects along an axis the device is not turning about.
+   */
+  function agreesWithTheAttitudes(
+    axis: 'alpha' | 'beta' | 'gamma', screenAngleDeg: number,
+  ): void {
+    const rateDegPerSec = 12;
+    const seconds = 0.25;
+    const at = (t: number) => quaternionFromDeviceOrientation(
+      axis === 'alpha' ? rateDegPerSec * t : 0,
+      axis === 'beta' ? rateDegPerSec * t : 0,
+      axis === 'gamma' ? rateDegPerSec * t : 0,
+      screenAngleDeg,
+    );
+
+    const measured = rotationBetween(at(0), at(seconds));
+    const converted = angularVelocityFromRotationRate(
+      axis === 'alpha' ? rateDegPerSec : 0,
+      axis === 'beta' ? rateDegPerSec : 0,
+      axis === 'gamma' ? rateDegPerSec : 0,
+      screenAngleDeg,
+    );
+
+    expect(converted.x).toBeCloseTo(measured.x / seconds, 6);
+    expect(converted.y).toBeCloseTo(measured.y / seconds, 6);
+    expect(converted.z).toBeCloseTo(measured.z / seconds, 6);
+  }
+
+  it('agrees with how the attitude actually changes, on every axis', () => {
+    agreesWithTheAttitudes('alpha', 0);
+    agreesWithTheAttitudes('beta', 0);
+    agreesWithTheAttitudes('gamma', 0);
+  });
+
+  it('agrees with the attitudes when the screen is rotated under the device too', () => {
+    // The screen angle turns the viewfinder's axes under the chassis, so a rate reported about
+    // the chassis is about a different axis of the picture. Getting this wrong is invisible in
+    // portrait and wrong by 90 degrees in landscape, which is how the app is actually held.
+    agreesWithTheAttitudes('alpha', 90);
+    agreesWithTheAttitudes('beta', 90);
+    agreesWithTheAttitudes('gamma', 90);
+  });
+
+  it('is in radians per second, not degrees', () => {
+    // The platform reports degrees and the contract says rad/s. A factor of 57 between them is
+    // the kind of mistake that makes a filter look broken rather than mis-scaled.
+    const converted = angularVelocityFromRotationRate(180, 0, 0, 0);
+    expect(Math.hypot(converted.x, converted.y, converted.z)).toBeCloseTo(Math.PI, 9);
   });
 });

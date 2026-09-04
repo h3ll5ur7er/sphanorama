@@ -10,15 +10,29 @@
  * `deviceorientation` reports an Euler triple whose parameterisation is degenerate in this app's
  * primary pose, and is the fallback (ADR 0017).
  */
-import type { Quat } from '../../../contracts/ts/contracts';
+import type { Quat, Vec3 } from '../../../contracts/ts/contracts';
 import { err, ok, type Result } from './result';
-import { quaternionFromDeviceOrientation, quaternionFromSensorReading } from './orientation';
+import {
+  angularVelocityFromRotationRate, quaternionFromDeviceOrientation, quaternionFromSensorReading,
+} from './orientation';
 
 const COMPONENT = 'MotionSensorAccess';
 
 // Orientation is only useful while it is current: if the capture loop stalls, stale samples are
 // worthless and an unbounded queue is a way to kill the tab.
 const MAX_BUFFERED_SAMPLES = 512;
+
+// How far apart in time a rate and an attitude may be and still describe the same instant. Two
+// streams arrive independently, so the rate riding along with a sample is always a little out; a
+// fifth of a second is several sensor periods of slack and far less than the time it takes a hand
+// to change direction. Past it the sample goes without rates rather than carrying a motion that
+// belongs to a different moment, which the engine would correct against and could not detect.
+//
+// Applied in both directions. It was one-sided at first, on the reasoning that a rate *newer* than
+// the attitude is just the two streams interleaving — true of the few milliseconds of skew between
+// two events on the same clock, and no reason to accept any amount of it. A rate five seconds in
+// the future is mis-associated for exactly the same reason one five seconds old is.
+const MAX_RATE_SKEW_MS = 200;
 
 export type MotionCapability = 'None' | 'OrientationOnly' | 'GyroAccel' | 'GyroAccelMag';
 
@@ -29,6 +43,15 @@ export interface OrientationSample {
   timestampNs: number;
   /** The viewfinder's attitude in the core's frame — already converted (ADR 0017). */
   orientation: Quat;
+  /**
+   * The gyroscope's rate at that moment, in rad/s in the same frame, when the platform measured
+   * one recently enough to describe this attitude.
+   *
+   * Absent rather than zeroed, because zero is a real rate: a sample that cannot tell "still"
+   * from "nobody looked" is the sample that reports a phone mid-swing as perfectly still. It
+   * becomes `hasAngularVelocity` on the contract's ImuSample (ADR 0025).
+   */
+  angularVelocity?: Vec3;
 }
 
 export interface MotionSensorAccess {
@@ -80,7 +103,18 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
   let buffered: OrientationSample[] = [];
   let live: MotionSource = 'none';
   let listener: ((event: Event) => void) | null = null;
+  let motionListener: ((event: Event) => void) | null = null;
   let sensor: OrientationSensorLike | null = null;
+  // The most recent measured rate, in the chassis frame the platform reported it in, and when it
+  // was measured — in the platform's own milliseconds, so it can be compared with the event
+  // timestamps the attitudes carry.
+  //
+  // Unconverted on purpose. The screen angle is read per sample because the user turns the phone
+  // mid-session, so a rate converted when it arrived is frozen in the frame of that moment: a
+  // sample straddling a rotation would carry an attitude and a rate ninety degrees apart, and the
+  // engine would correct along an axis the device is not turning about. It is converted when it
+  // is attached, against the same angle the attitude used.
+  let latestRate: { alpha: number; beta: number; gamma: number; atMs: number } | null = null;
 
   /**
    * How far the page has been rotated under the device, read per sample rather than cached.
@@ -95,24 +129,92 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     return typeof orientation?.angle === 'number' ? orientation.angle : 0;
   }
 
-  function push(sample: OrientationSample) {
-    buffered.push(sample);
+  /**
+   * The rate to attach to an attitude taken at this moment, if there is a fresh one.
+   *
+   * Attached rather than carried on its own sample because fusion wants a prediction and a
+   * reading describing the same instant; a rate on a sample of its own would be integrated on one
+   * tick and corrected on the next, which is the lag this is supposed to remove.
+   */
+  function rateFor(timestampNs: number, screenAngleDeg: number): Vec3 | undefined {
+    if (!latestRate) return undefined;
+    const skewMs = Math.abs(timestampNs / 1e6 - latestRate.atMs);
+    if (skewMs > MAX_RATE_SKEW_MS) return undefined;
+    return angularVelocityFromRotationRate(
+      latestRate.alpha, latestRate.beta, latestRate.gamma, screenAngleDeg);
+  }
+
+  function push(sample: OrientationSample, screenAngleDeg: number) {
+    const rate = rateFor(sample.timestampNs, screenAngleDeg);
+    buffered.push(rate ? { ...sample, angularVelocity: rate } : sample);
     if (buffered.length > MAX_BUFFERED_SAMPLES) {
       buffered = buffered.slice(-MAX_BUFFERED_SAMPLES);
     }
   }
 
   function detect(): MotionCapability {
-    // What this adapter actually delivers, not what the platform could deliver. Both sources
-    // report a fused attitude and no rates — OrientationOnly is the honest description of that
-    // stream even on a device with a gyroscope.
+    // What the platform can report. This used to say OrientationOnly wherever an attitude was
+    // available, because claiming GyroAccel with no rates adapted would have told the core it had
+    // angular velocity it was never going to get — and a zeroed rate read as a measurement is a
+    // phone mid-swing reported as perfectly still.
     //
-    // Claiming GyroAccel because DeviceMotionEvent exists would tell the core it has angular
-    // velocity: PoseEngine would pick a fusion mode for rates that never arrive, and Stability,
-    // computed from the zeros standing in for them, would report a phone mid-swing as perfectly
-    // still. Reporting GyroAccel is a job for the day rotationRate is adapted too.
+    // The rates are adapted now, and more to the point each sample says for itself whether its
+    // rate was measured (ADR 0025). So the capability is free to describe the platform again: an
+    // over-claim costs nothing, because nothing reads it to decide whether a rate is real.
+    if (host.DeviceMotionEvent && (host.AbsoluteOrientationSensor || host.DeviceOrientationEvent)) {
+      return 'GyroAccel';
+    }
     if (host.AbsoluteOrientationSensor || host.DeviceOrientationEvent) return 'OrientationOnly';
     return 'None';
+  }
+
+  /**
+   * Asks for the motion grant, and reports whether there is one.
+   *
+   * Split from installing the listener because of *when* it has to be asked rather than what it
+   * does: iOS requires each `requestPermission` to happen during a transient user activation, and
+   * awaiting the first one spends that activation — so a second request made after it is rejected
+   * unread. Both are therefore started before either is awaited, which is only possible if asking
+   * and listening are separate steps.
+   *
+   * Deliberately not part of `start`'s success: iOS gates DeviceMotionEvent separately from
+   * DeviceOrientationEvent, and a user who granted one and denied the other has a session that
+   * works exactly as it did before rates existed. Failing the start over it would turn a lost
+   * optimisation into a lost capture.
+   */
+  async function askForRates(): Promise<boolean> {
+    if (!host.DeviceMotionEvent) return false;
+    const gate = permissionGate(host.DeviceMotionEvent);
+    if (!gate) return true;
+    try {
+      return await gate.requestPermission() === 'granted';
+    } catch {
+      // Safari rejects when the call did not follow a user gesture; same outcome as a decline.
+      return false;
+    }
+  }
+
+  function listenForRates(): void {
+    motionListener = (rawEvent: Event) => {
+      const event = rawEvent as DeviceMotionEvent;
+      const rate = event.rotationRate;
+      // A null rotationRate is what a desktop with no gyroscope fires, and a partial one is the
+      // same rule the angles already follow: zero is a real rate, only null is unavailable, so a
+      // missing axis is not completed with a zero.
+      if (!rate || rate.alpha === null || rate.beta === null || rate.gamma === null ||
+          rate.alpha === undefined || rate.beta === undefined || rate.gamma === undefined) {
+        // Forgotten rather than left behind. An event that reports no complete rate is the
+        // platform saying it has stopped, and keeping the last one alive until the staleness
+        // window closes would hand the core a measurement that was explicitly withdrawn — marked
+        // as measured, which is the one thing `hasAngularVelocity` exists to prevent.
+        latestRate = null;
+        return;
+      }
+      latestRate = {
+        alpha: rate.alpha, beta: rate.beta, gamma: rate.gamma, atMs: event.timeStamp ?? 0,
+      };
+    };
+    host.addEventListener('devicemotion', motionListener);
   }
 
   async function requestPermissionIfGated(): Promise<Result<void>> {
@@ -166,10 +268,13 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
         const reading = started.quaternion;
         // A reading event with no quaternion is what a sensor fires before its first fix.
         if (!reading || reading.length < 4) return;
+        // One read of the angle for both halves of the sample, so they cannot disagree about
+        // which way up the picture is.
+        const screen = screenAngleDeg();
         push({
           timestampNs: Math.round((started.timestamp ?? 0) * 1e6),
-          orientation: quaternionFromSensorReading(reading, screenAngleDeg()),
-        });
+          orientation: quaternionFromSensorReading(reading, screen),
+        }, screen);
       });
       started.addEventListener('error', () => {
         stopSensor();
@@ -210,10 +315,11 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
           alpha === undefined || beta === undefined || gamma === undefined) {
         return;
       }
+      const screen = screenAngleDeg();
       push({
         timestampNs: Math.round((event.timeStamp ?? 0) * 1e6),
-        orientation: quaternionFromDeviceOrientation(alpha, beta, gamma, screenAngleDeg()),
-      });
+        orientation: quaternionFromDeviceOrientation(alpha, beta, gamma, screen),
+      }, screen);
     };
 
     host.addEventListener('deviceorientation', listener);
@@ -242,8 +348,18 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       // there is no Generic Sensor API, so the gated call still happens inside the user gesture
       // that started this. A sensor that fails later falls back outside the gesture, on a
       // platform that does not gate.
-      if (startSensor(requestedHz, () => { void startEvents(); })) return ok(undefined);
-      return startEvents();
+      // Asked first and awaited last. Both grants have to be requested inside the user gesture
+      // that reached this call, and awaiting either one ends it — so this starts the motion
+      // request and lets the orientation request go out underneath it, then reads both answers.
+      const rates = askForRates();
+
+      // The attitude source is what a failed start reports on, and its listener stays the first
+      // thing registered on the host.
+      const started = startSensor(requestedHz, () => { void startEvents(); })
+                          ? ok(undefined)
+                          : await startEvents();
+      if (started.ok && await rates) listenForRates();
+      return started;
     },
 
     async drain(max: number) {
@@ -256,7 +372,10 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     async stop() {
       stopSensor();
       if (listener) host.removeEventListener('deviceorientation', listener);
+      if (motionListener) host.removeEventListener('devicemotion', motionListener);
       listener = null;
+      motionListener = null;
+      latestRate = null;
       live = 'none';
       buffered = [];
       return ok(undefined);

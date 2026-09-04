@@ -39,7 +39,7 @@ const NO_LOCKS: LockState = { exposure: false, whiteBalance: false, focus: false
  * job is to keep platform shapes out of the core. The C++ side reads the same order, and the two
  * are pinned together by a test on each side.
  */
-export const MOTION_SAMPLE_DOUBLES = 16;
+export const MOTION_SAMPLE_DOUBLES = 17;
 
 /**
  * The most samples kept while the core is not draining. A capture loop that stalls must not be
@@ -137,8 +137,13 @@ export function deriveFieldOfView(width: number, height: number, horizontalFovDe
 export function flattenImuSamples(samples: ImuSample[]): Float64Array {
   const flat = new Float64Array(samples.length * MOTION_SAMPLE_DOUBLES);
   samples.forEach((sample, index) => {
+    // Each optional group is preceded by the flag that says whether it was measured, so a reader
+    // cannot take a zero for a reading. The order is the wire format: it is spelled out again in
+    // browser_motion_sensor_access.cpp, and changing one side alone decodes into plausible
+    // nonsense rather than failing.
     flat.set([
       sample.timestampNs,
+      sample.hasAngularVelocity ? 1 : 0,
       sample.angularVelocity.x, sample.angularVelocity.y, sample.angularVelocity.z,
       sample.acceleration.x, sample.acceleration.y, sample.acceleration.z,
       sample.hasMagnetometer ? 1 : 0,

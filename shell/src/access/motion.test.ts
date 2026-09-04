@@ -62,16 +62,6 @@ const LANDSCAPE_LEVEL: [number, number, number] = [90, 0, -90];
 const landscapeReading = [0.5, -0.5, 0.5, 0.5];
 
 describe('capability detection', () => {
-  it('reports OrientationOnly even where the motion API exists', async () => {
-    // The adapter listens to deviceorientation and nothing else, so every sample it produces
-    // carries a fused attitude and zeroed rates. Claiming GyroAccel because the constructor
-    // exists tells the core it has angular velocity: PoseEngine would pick a mode for rates that
-    // never arrive, and Stability — computed from those zeros — would report a phone being swung
-    // as perfectly still, which is exactly when a burst must not fire.
-    const access = createMotionSensorAccess(fakeWindow() as never);
-    await expect(access.capabilities()).resolves.toEqual({ ok: true, value: 'OrientationOnly' });
-  });
-
   it('reports OrientationOnly when only orientation is available', async () => {
     const access = createMotionSensorAccess(
       fakeWindow({ DeviceMotionEvent: undefined }) as never);
@@ -406,5 +396,233 @@ describe('which way up the page is', () => {
       expect(drained.value[0].orientation)
         .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 0));
     }
+  });
+});
+
+describe('rates, where the platform measures them', () => {
+  function listenerFor(host: ReturnType<typeof fakeWindow>, type: string) {
+    const call = host.addEventListener.mock.calls.find((args) => args[0] === type);
+    return call?.[1] as ((event: Event) => void) | undefined;
+  }
+
+  const spinning = { alpha: 90, beta: 0, gamma: 0 };
+
+  it('attaches a measured rate to the samples that follow it', async () => {
+    // Two event streams, one sample. The attitude decides when a sample exists and the most
+    // recent rate rides along with it, because that is the shape PoseEngine fuses: a prediction
+    // and a reading describing the same instant.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 2, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    expect(drained.ok && drained.value).toHaveLength(1);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    // 90 deg/s about the device's Z, in radians, in the viewfinder's frame.
+    expect(sample.angularVelocity).toBeDefined();
+    expect((sample.angularVelocity as { z: number }).z).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('leaves a sample without rates when the platform fires an event with none', async () => {
+    // Desktop Chrome fires devicemotion with a null rotationRate. Carrying a zeroed rate as
+    // though it were measured is what makes a phone mid-swing read as perfectly still.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: null } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 2, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('drops a rate whose axes the platform could not all supply', async () => {
+    // Same rule the angles already follow: zero is a real rate and only null is unavailable, so a
+    // partial reading is not completed with zeros.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: { alpha: 90, beta: null, gamma: 0 } } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 2, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('does not attach a rate that has gone stale', async () => {
+    // A rate from a second ago describes a motion that is over. Attaching it to a current
+    // attitude would have the engine correcting against a prediction made from history, and the
+    // staleness is invisible: both halves of the sample look equally like measurements.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 0, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 5_000, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('does not attach a rate measured well after the attitude either', async () => {
+    // The bound was one-sided, on the reasoning that a rate newer than the attitude is just the
+    // two streams interleaving. True for the few milliseconds of skew between two DOM events, and
+    // not a reason to accept any amount of it: a rate from five seconds in the future is
+    // mis-associated for exactly the same reason one from five seconds ago is, and the fusion it
+    // feeds cannot tell either way.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 5_000, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 0, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('still attaches a rate a few milliseconds newer than the attitude', async () => {
+    // The case the one-sided bound was protecting, and it survives: two DOM events on the same
+    // clock arrive a few milliseconds apart in either order, and that is interleaving rather than
+    // mis-association.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 8, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 0, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeDefined();
+  });
+
+  it('converts the rate in the frame the attitude it rides with is in', async () => {
+    // The two events carry the screen angle at their own moment, and the screen can turn between
+    // them — the adapter reads it per sample for exactly that reason. Converting the rate when it
+    // arrives freezes it in the old frame, so a sample that straddles a rotation has its two
+    // halves ninety degrees apart, and the engine corrects along an axis the device is not
+    // turning about.
+    let angle = 0;
+    const host = fakeWindow({ screen: { orientation: { get angle() { return angle; } } } });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: { alpha: 0, beta: 90, gamma: 0 } } as unknown as Event);
+    angle = 90;   // the user turns the phone between the two events
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 2, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: { x: number; y: number } }[] }).value[0];
+    // 90 deg/s about the chassis' X, seen from a viewfinder itself turned 90 degrees: the axis of
+    // the picture it turns about is Y, not X.
+    expect(sample.angularVelocity).toBeDefined();
+    expect(sample.angularVelocity?.x).toBeCloseTo(0, 6);
+    expect(Math.abs(sample.angularVelocity?.y ?? 0)).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('forgets a rate when the platform stops reporting one', async () => {
+    // A device that reported rates and then reports a null rotationRate is saying it has stopped.
+    // Keeping the last one alive until the staleness window closes hands the engine a measurement
+    // the platform explicitly withdrew, marked as measured.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 2, rotationRate: null } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 3, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('asks for both iOS grants inside the gesture that started the session', async () => {
+    // Safari requires each requestPermission to happen during transient user activation, and
+    // awaiting the first one spends it. Asking in sequence therefore works for orientation and is
+    // rejected for motion — on the one platform where the whole permission dance exists.
+    const order: string[] = [];
+    let releaseOrientation: (value: string) => void = () => {};
+    const orientationGate = vi.fn().mockImplementation(() => {
+      order.push('orientation asked');
+      return new Promise<string>((resolve) => { releaseOrientation = resolve; });
+    });
+    const motionGate = vi.fn().mockImplementation(() => {
+      order.push('motion asked');
+      return Promise.resolve('granted');
+    });
+    const host = fakeWindow({
+      DeviceOrientationEvent: class { static requestPermission = orientationGate; },
+      DeviceMotionEvent: class { static requestPermission = motionGate; },
+    });
+    const access = createMotionSensorAccess(host as never);
+    const started = access.start(60);
+
+    // Both asked before either answer is in, which is what "inside the same activation" means.
+    // The order between them does not matter and is not pinned; the awaiting does.
+    await Promise.resolve();
+    expect(order).toHaveLength(2);
+    expect(motionGate).toHaveBeenCalled();
+    expect(orientationGate).toHaveBeenCalled();
+    releaseOrientation('granted');
+    expect((await started).ok).toBe(true);
+  });
+
+  it('stops listening for rates when the sensor stops', async () => {
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    await access.stop();
+    expect(host.removeEventListener.mock.calls.map((args) => args[0]))
+      .toContain('devicemotion');
+  });
+
+  it('reports GyroAccel where the platform can report rates', async () => {
+    // Now that a sample says for itself whether its rate was measured, the capability can go back
+    // to describing the platform. An over-claim costs nothing: the engine reads the sample.
+    const access = createMotionSensorAccess(fakeWindow() as never);
+    await expect(access.capabilities()).resolves.toEqual({ ok: true, value: 'GyroAccel' });
+  });
+
+  it('still asks for the motion grant iOS keeps separate from the orientation one', async () => {
+    // Two gates, and granting one says nothing about the other. A denied motion grant is not a
+    // failed start: the session runs on attitudes alone, which is what it did before rates
+    // existed.
+    const motionGate = vi.fn().mockResolvedValue('denied');
+    const host = fakeWindow({
+      DeviceOrientationEvent: class { static requestPermission = vi.fn().mockResolvedValue('granted'); },
+      DeviceMotionEvent: class { static requestPermission = motionGate; },
+    });
+    const access = createMotionSensorAccess(host as never);
+    const started = await access.start(60);
+    expect(started.ok).toBe(true);
+    expect(motionGate).toHaveBeenCalled();
   });
 });

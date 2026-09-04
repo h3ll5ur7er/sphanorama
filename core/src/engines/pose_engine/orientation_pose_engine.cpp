@@ -19,15 +19,14 @@ double Magnitude(const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z *
 
 Vec3 Subtract(const Vec3& a, const Vec3& b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
 
-// Whether the platform measures angular velocity at all. Named rather than compared, because
-// GyroAccelMag is GyroAccel with a magnetometer on top and an equality test silently excluded it
-// — which would have handed the better-equipped device the worse behaviour, and is exactly the
-// kind of thing that reads as correct until someone lists the enumerators. Ordering them and
-// testing >= would work today and would break the first time a capability is added in the middle.
-bool HasGyroscope(MotionCapability capability) {
-  return capability == MotionCapability::GyroAccel ||
-         capability == MotionCapability::GyroAccelMag;
-}
+// Whether this sample's rate is a measurement rather than a zeroed field nobody filled in.
+//
+// Asked of the sample rather than of the session's capability. A capability is a claim about the
+// platform and the two can disagree: a DeviceMotionEvent that fires with a null rotationRate is a
+// device that has the API and is reporting nothing, and a capability answered before the first
+// sample arrived cannot know either way. Where they disagree the sample is the one that knows
+// (ADR 0025).
+bool Measured(const ImuSample& sample) { return sample.hasAngularVelocity; }
 
 // How the disagreement between the gyroscope's prediction and the absolute reading is split: part
 // of it corrects the estimate now, part of it is charged to the gyroscope's zero offset. The pair
@@ -90,16 +89,13 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
                                                    std::span<const ImuSample> samples) {
   PoseState state = prior;
 
-  // Whether there is a gyroscope worth fusing with. Read off the capability rather than guessed
-  // from the numbers, because that is what the capability is for: on an OrientationOnly stream
-  // every sample carries a zeroed angularVelocity standing in for "not measured", and treating
-  // those zeros as a measurement of stillness is the same mistake Stability had to be fixed for.
-  //
-  // It also keeps this exactly as it was on every platform that ships today. Blending a reading
-  // with a gyroscope that does not exist would only add lag to the one signal there is.
-  const bool fusing = HasGyroscope(state.capability);
-
   for (const ImuSample& sample : samples) {
+    // Whether there is a gyroscope reading worth fusing this attitude with. Per sample rather
+    // than per session: a stream can carry rates on some samples and not others, and a zeroed
+    // angularVelocity means "not measured" wherever nothing filled it in. Blending a reading with
+    // a gyroscope that is not there would only add lag to the one signal there is, which is why
+    // every platform reporting an attitude alone behaves exactly as it did before this existed.
+    const bool fusing = Measured(sample);
     const bool advanced = state.observed && sample.timestampNs > state.pose.timestampNs;
     const double seconds =
         advanced ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
@@ -151,13 +147,17 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
-    } else if (advanced) {
+    } else if (advanced && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
-      // answer. Subtracted only where it was learned — on a stream with no gyroscope it is zero
-      // and this is the arithmetic it always was.
-      const Vec3 rate =
-          fusing ? Subtract(sample.angularVelocity, state.gyroBias) : sample.angularVelocity;
+      // answer.
+      //
+      // Gated on the same flag as the fusion, and the gate is not decorative: a sample with
+      // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so
+      // subtracting a learned offset from it and integrating the result would turn "nothing was
+      // reported" into a rotation backwards at the offset's own rate. A sample that reports
+      // nothing should move nothing.
+      const Vec3 rate = Subtract(sample.angularVelocity, state.gyroBias);
       if (Magnitude(rate) > 1e-9) {
         state.pose.orientation = Turned(state.pose.orientation, rate, seconds);
         // Dead reckoning from here on. Leaving the flag set would keep reporting an integrated
@@ -192,36 +192,44 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
 
   // Measured rates when a platform supplies them, differences between attitudes when it does not.
   //
-  // The distinction is not academic. The browser reports an attitude and no rates at all, so
-  // every sample it produces carries a zeroed angularVelocity standing in for "not measured" —
-  // and reading those zeros as a measurement reported a phone mid-swing as perfectly still.
-  // Stability is what gates firing a burst, so that is the one direction this must not be wrong
-  // in. `hasOrientation` is what tells the two kinds of sample apart (ADR 0015).
+  // The distinction is not academic. A browser with no gyroscope adapted reports an attitude and
+  // no rates, so every sample it produces carries a zeroed angularVelocity standing in for "not
+  // measured" — and reading those zeros as a measurement reported a phone mid-swing as perfectly
+  // still. Stability is what gates firing a burst, so that is the one direction this must not be
+  // wrong in.
+  //
+  // `hasAngularVelocity` is what tells the two apart. It used to be `hasOrientation`, on the
+  // reasoning that a sample carrying an attitude came from a platform reporting no rates — true
+  // until a platform reported both, at which point a phone swung between two attitudes that
+  // happened to match came back perfectly still with the gyroscope in the same sample saying
+  // otherwise (ADR 0025).
+  // Per interval rather than per batch, which is the correction a mixed stream forced. Choosing
+  // once for the whole batch meant a single measured rate — a zero one, from a device that was
+  // still a moment ago — switched the attitude fallback off for every sample after it, so a batch
+  // that opened still and then swept through ninety degrees came back perfectly still. Each gap
+  // between samples is now judged by the better signal available for *that* gap.
+  //
+  // Differentiating filtered attitudes is noisier than a gyroscope in exactly the band that
+  // matters, so it remains the fallback wherever a rate was measured, and the only evidence
+  // wherever one was not.
   double peak = 0.0;
   bool measured = false;
+  const ImuSample* previous = nullptr;
 
   for (const ImuSample& sample : samples) {
-    if (!sample.hasOrientation) {
+    if (Measured(sample)) {
       peak = std::max(peak, Magnitude(sample.angularVelocity));
       measured = true;
+    } else if (previous != nullptr && sample.hasOrientation &&
+               sample.timestampNs > previous->timestampNs) {
+      const double seconds =
+          static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
+      peak = std::max(peak, AngleBetween(previous->orientation, sample.orientation) / seconds);
+      measured = true;
     }
-  }
-
-  // Differentiating filtered attitudes is noisier than a gyroscope in exactly the band that
-  // matters, so it is the fallback rather than the default.
-  if (!measured) {
-    const ImuSample* previous = nullptr;
-    for (const ImuSample& sample : samples) {
-      if (!sample.hasOrientation) continue;
-      if (previous != nullptr && sample.timestampNs > previous->timestampNs) {
-        const double seconds =
-            static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
-        const double radians = AngleBetween(previous->orientation, sample.orientation);
-        peak = std::max(peak, radians / seconds);
-        measured = true;
-      }
-      previous = &sample;
-    }
+    // Whatever carried an attitude is what the next gap is measured from, whether or not its own
+    // rate was the thing that judged it.
+    if (sample.hasOrientation) previous = &sample;
   }
 
   if (!measured) {
