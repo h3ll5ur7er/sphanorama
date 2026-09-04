@@ -96,6 +96,46 @@ describe('a spill tier that outlives the tab', () => {
     expect(file.bytes().length).toBe(32);
   });
 
+  it('does not write over a frame the index named, even if it understates the file', () => {
+    // The high-water mark and the slots are two statements about the same file, and only one of
+    // them can be trusted: a slot says a frame is at an offset, which the next read will act on.
+    // An `end` below the highest slot hands the next spill space a restored frame is sitting in,
+    // and that read still succeeds — with the wrong pixels, which is the one failure here that
+    // nothing downstream could trace back to this file.
+    const file = fakeFile();
+    const index = fakeFile();
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.write(2, frame(0xb2));
+    before.close();
+
+    // The same index, with a high-water mark that has fallen behind what it describes.
+    const stored = JSON.parse(new TextDecoder().decode(index.bytes()));
+    const understated = new TextEncoder().encode(JSON.stringify({ ...stored, end: 0 }));
+    index.truncate(understated.length);
+    index.write(understated, 0);
+
+    const after = createSpillHost(file, index);
+    expect(after.write(3, frame(0xc3))).toBe(true);
+
+    const first = new Uint8Array(16);
+    expect(after.read(1, first)).toBe(true);
+    expect(first.every((b) => b === 0xa1)).toBe(true);
+  });
+
+  it('leaves no index at all rather than half of one', () => {
+    // A write that lands short is a phone out of quota mid-spill. The truncate before it means
+    // what survives is a prefix, and no prefix of this document parses — so the next session
+    // already starts empty. Emptying it outright is the difference between that being true by
+    // construction and true by the shape of JSON.
+    const file = fakeFile();
+    const index = fakeFile({ shortWrites: true });
+
+    const host = createSpillHost(file, index);
+    expect(host.write(1, frame(0xa1))).toBe(true);
+    expect(index.bytes().length).toBe(0);
+  });
+
   it('starts empty rather than throwing when the index makes no sense', () => {
     // It is a file on a phone: a tab killed mid-write, a quota that ran out between the frame and
     // the index. Losing the tier's memory costs a resume; throwing here costs the whole session,
@@ -328,6 +368,21 @@ describe('the spill file', () => {
     expect(opfs.names().filter((name) => name.startsWith('sphanorama-spill-'))).toHaveLength(4);
     tier.frames.close();
     tier.index.close();
+  });
+
+  it('still gets a tier when only the index of the resident pair is held', async () => {
+    // Two files, two locks, and only one of them has to be unavailable. Giving up there would
+    // cost the session its spill tier entirely — a sphere capped at RAM — for a file it does not
+    // even keep pixels in. A tier of its own beats no tier at all, here as everywhere else.
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident.index');
+
+    const tier = await openSpillTier(opfs.directory);
+
+    expect(tier.frames).toBeDefined();
+    expect(tier.index).toBeDefined();
+    // On a name of its own, both halves of it, rather than half-sharing the resident pair.
+    const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
+    expect(fallbacks).toHaveLength(2);
   });
 
   it('leaves files that are not spill files alone', async () => {

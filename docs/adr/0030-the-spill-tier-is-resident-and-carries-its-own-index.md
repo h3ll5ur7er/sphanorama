@@ -42,6 +42,11 @@ frames side by side read as one gap of twice the length, which this allocator's 
 would then offer to nothing. Writing them down is shorter than the arithmetic and cannot disagree
 with it.
 
+**Where the index disagrees with itself, the slots win.** The high-water mark and the slots are
+two statements about the same file, and only a slot is ever acted on — a read goes to the offset
+it names. So the mark is raised to cover every slot on the way in. One that had fallen behind
+would hand the next spill space a restored frame is sitting in, and that read would still succeed.
+
 **An unreadable index starts the tier empty rather than throwing.** This runs while the worker is
 booting, and the file is on a phone: a tab killed mid-write, a quota exhausted between the frame
 and the index. Losing the map costs a resume; throwing costs the session.
@@ -74,6 +79,9 @@ resume, so it goes with the tab that made it.
   knows the difference. **This ordering is a correctness requirement, not a preference.**
 - **The resident file keeps the size of the largest capture** until something clears it. That is
   the cost of it being the thing a reload comes back to.
+- **A tier whose index will not lock falls back too**, rather than costing the session its spill
+  entirely. Two files means two locks, and only one of them has to be unavailable; giving up over
+  a file that holds no pixels would cap the sphere at RAM.
 - **`SpillFile` grows a `size()`**, which is `FileSystemSyncAccessHandle.getSize`. The index needs
   to know how much to read back; the frame file never asks.
 

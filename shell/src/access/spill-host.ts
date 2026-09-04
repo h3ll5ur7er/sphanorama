@@ -109,7 +109,14 @@ function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
         free.set(length, [...offsets]);
       }
     }
-    return parsed.end;
+    // The slots win where the two disagree. They are statements about the same file, but only a
+    // slot is acted on — a read goes to the offset it names — so a high-water mark that has
+    // fallen behind one would hand the next spill space a restored frame is sitting in, and that
+    // read still succeeds, with the wrong pixels. Raising it costs the gap in the file and
+    // nothing else.
+    let end = parsed.end;
+    for (const slot of slots.values()) end = Math.max(end, slot.offset + slot.length);
+    return end;
   } catch {
     slots.clear();
     free.clear();
@@ -140,7 +147,13 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
     try {
       const bytes = new TextEncoder().encode(JSON.stringify(stored));
       index.truncate(bytes.length);
-      index.write(bytes, 0);
+      if (index.write(bytes, 0) !== bytes.length) {
+        // A phone out of quota mid-spill. The truncate above means what survives is a prefix of
+        // this document, and no prefix of it parses — so the next session would start empty
+        // anyway. Emptying it outright is the difference between that being true by construction
+        // and true because of the shape of JSON.
+        index.truncate(0);
+      }
     } catch {
       // The frames are written and readable in this session either way. What a failure here costs
       // is the next one's resume, and there is nobody on this path to tell: the store has already
@@ -369,11 +382,22 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
   try {
     index = await lock(root, name + INDEX_SUFFIX);
   } catch (cause) {
-    // Without the index the frames are unfindable next time, and a half-open tier is worse than
-    // none: the handle would stay locked for the life of the worker and the next session would be
-    // pushed onto a fallback name by a file nobody is using.
+    // Half a tier is worse than none: the frame handle would stay locked for the life of the
+    // worker, pushing the next session onto a fallback name over a file nobody is using.
     frames.close();
-    throw cause;
+    if (name !== RESIDENT) throw cause;
+
+    // Two files and two locks, and only one of them has to be unavailable. Giving up here would
+    // cost this session its spill tier entirely — a sphere capped at RAM — over a file that holds
+    // no pixels. A tier of its own beats no tier at all, the same answer as for the frames.
+    name = SPILL_PREFIX + crypto.randomUUID();
+    frames = await lock(root, name);
+    try {
+      index = await lock(root, name + INDEX_SUFFIX);
+    } catch (second) {
+      frames.close();
+      throw second;
+    }
   }
 
   // Swept only once ours are locked, so the sweep cannot reach the files this call is about to
