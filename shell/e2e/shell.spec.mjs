@@ -44,6 +44,29 @@ test('loads the core and reports its capabilities', async ({ page }) => {
   }
 });
 
+test('a second tab open on the app gets a spill tier of its own', async ({ page, context }) => {
+  // Reported from a phone: the app said "no spill tier" until every other tab running it was
+  // closed. A sync access handle is exclusive, and both tabs were asking for the same fixed
+  // filename — so the second one captured a sphere capped at RAM and said nothing about why.
+  // Two pages in one context share the origin's private file system, which is the whole test.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(second.locator('#core-caps')).not.toContainText('no spill tier');
+    // And the first one is untouched: the newcomer's sweep of abandoned files must not have
+    // taken the file the tab beside it is still spilling to.
+    await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which build it is', async ({ page }) => {
   // A screenshot from a phone is the only evidence some of this project has — the OPFS spill
   // tier, the lens the camera chose, the cell count — and every one of those readings is worth
