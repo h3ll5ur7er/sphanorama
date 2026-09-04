@@ -50,7 +50,10 @@ offset kept inside the engine would be shared by every session in the process an
 the device being put down and picked up. It goes where the mode, the capability and the `absolute`
 flag already are, and the manager threads it back in exactly as it does those.
 
-**Fusion is switched on by `MotionCapability::GyroAccel`, not by inspecting the numbers.** On an
+**Fusion is switched on by the capability reporting a gyroscope, not by inspecting the numbers.**
+That is `GyroAccel` or `GyroAccelMag` — the latter is the former with a magnetometer on top, so
+testing for one exact value would have handed the better-equipped device the worse behaviour, and
+the device whose attitude most needs help the least of it. On an
 `OrientationOnly` stream every sample carries a zeroed `angularVelocity` standing in for "not
 measured", and reading those zeros as a measurement of stillness is the mistake `Stability` had to
 be fixed for once already. Deciding from the capability also means every platform shipping today

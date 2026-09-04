@@ -19,6 +19,16 @@ double Magnitude(const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z *
 
 Vec3 Subtract(const Vec3& a, const Vec3& b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
 
+// Whether the platform measures angular velocity at all. Named rather than compared, because
+// GyroAccelMag is GyroAccel with a magnetometer on top and an equality test silently excluded it
+// — which would have handed the better-equipped device the worse behaviour, and is exactly the
+// kind of thing that reads as correct until someone lists the enumerators. Ordering them and
+// testing >= would work today and would break the first time a capability is added in the middle.
+bool HasGyroscope(MotionCapability capability) {
+  return capability == MotionCapability::GyroAccel ||
+         capability == MotionCapability::GyroAccelMag;
+}
+
 // How the disagreement between the gyroscope's prediction and the absolute reading is split: part
 // of it corrects the estimate now, part of it is charged to the gyroscope's zero offset. The pair
 // is what makes this a complementary filter rather than a choice between two sensors — the
@@ -87,7 +97,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
   //
   // It also keeps this exactly as it was on every platform that ships today. Blending a reading
   // with a gyroscope that does not exist would only add lag to the one signal there is.
-  const bool fusing = state.capability == MotionCapability::GyroAccel;
+  const bool fusing = HasGyroscope(state.capability);
 
   for (const ImuSample& sample : samples) {
     const bool advanced = state.observed && sample.timestampNs > state.pose.timestampNs;

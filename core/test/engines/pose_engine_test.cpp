@@ -314,8 +314,6 @@ TEST(PoseEngine, IgnoresATimestampThatDidNotAdvance) {
 // motion, noise that comes out smaller than it went in, an estimate that still ends up where the
 // measurements say, and a bias estimate that does not eat real rotation.
 
-constexpr double kDegToRad = 0.017453292519943295;
-
 TEST(PoseEngine, AnOrientationOnlyStreamIsUnchangedByFusion) {
   // The compatibility floor, and it is not hypothetical: OrientationOnly is every browser today.
   // A stream with no rates has nothing to fuse, so blending would only add lag to the one signal
@@ -360,6 +358,23 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
 
   // Un-subtracted, one second of 0.02 rad/s is 1.15 degrees of yaw from a device that never moved.
   EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 0.2);
+}
+
+TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
+  // GyroAccelMag is GyroAccel with a magnetometer on top — strictly the better-equipped device,
+  // and the one whose attitude most needs a gyroscope's help, since a magnetometer is the noisy
+  // half. Testing the capability for one exact value quietly excluded it, which would have given
+  // the best hardware the worst behaviour.
+  OrientationPoseEngine engine;
+  const Vec3 bias{0.0, 0.02, 0.0};
+  PoseState state = Started(engine, MotionCapability::GyroAccelMag);
+
+  int64_t t = 0;
+  for (int step = 0; step < 200; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+    t += 10'000'000;
+  }
+  EXPECT_GT(state.gyroBias.y, 0.01);
 }
 
 TEST(PoseEngine, AJumpyAbsoluteReadingComesOutSmootherThanItWentIn) {
