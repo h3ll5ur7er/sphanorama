@@ -207,7 +207,15 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     pose_state_ = advanced.value;
   }
 
-  auto located = planner_.Locate(pose_state_.pose.orientation, plan_);
+  // Coverage is asked for on every tick rather than cached, so guidance cannot aim at a cell that
+  // a burst finished a moment ago. It is a scan of the plan against the candidates — a few
+  // thousand comparisons for a sphere this size — against a cached answer that would have to be
+  // invalidated at every one of the five places candidates change, and a missed one would put the
+  // reticle back on a captured cell with nothing to show it had happened.
+  auto covered = planner_.Evaluate(plan_, AllCandidates());
+  if (!covered.ok()) return Abandon(covered.status);
+
+  auto located = planner_.Locate(pose_state_.pose.orientation, plan_, covered.value);
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
 

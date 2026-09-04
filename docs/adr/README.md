@@ -31,3 +31,4 @@ and the alternative we rejected and why.
 | [0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md) | The pose engine fuses an attitude with gyroscope rates when both arrive, and `PoseState` carries the learned gyro offset |
 | [0025](0025-a-sample-says-whether-its-rate-was-measured.md) | `ImuSample` says whether its rate was measured; the browser adapts `rotationRate` and the capability stops deciding |
 | [0026](0026-candidates-come-back-ranked.md) | `Candidates(node)` hands a cell back ranked best-first, so a review client can name the automatic pick without deciding what best means |
+| [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and aims at the nearest cell still needed, and says `SphereDone` when there are none |
