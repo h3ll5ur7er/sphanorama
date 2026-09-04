@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1656,6 +1657,63 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
   EXPECT_EQ(manager_.Resume(kProject).status.code, StatusCode::Unsupported);
   EXPECT_FALSE(fresh_camera.IsOpen());
   EXPECT_TRUE(projects->ReadDocument(kProject, "session").ok());
+}
+
+// Replaces the nth whitespace-separated field of the first line with this tag, so a test can
+// corrupt one number in a session document and leave the rest of it exactly as written.
+std::string ZeroField(const std::string& document, const std::string& tag, size_t field) {
+  std::istringstream lines(document);
+  std::string line;
+  std::string out;
+  bool done = false;
+  while (std::getline(lines, line)) {
+    if (!done && line.rfind(tag + " ", 0) == 0) {
+      std::istringstream in(line);
+      std::vector<std::string> fields;
+      for (std::string token; in >> token;) fields.push_back(token);
+      if (field < fields.size()) fields[field] = "0";
+      line.clear();
+      for (size_t i = 0; i < fields.size(); ++i) line += (i == 0 ? "" : " ") + fields[i];
+      done = true;
+    }
+    out += line + "\n";
+  }
+  return out;
+}
+
+TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
+  // Zero is not an identity here: `Id::valid()` is `value != 0`, and every counter in this
+  // codebase starts at 1. A document carrying one is a document this build cannot honour — and
+  // restoring it anyway would file candidates and frames under names nothing can legitimately
+  // hold, so the first thing to go wrong would go wrong a long way from here.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  // `session <id> <nextCandidate>` and `candidate <id> <node> <frame> <buffer> …`.
+  const std::vector<std::pair<std::string, size_t>> identities = {
+      {"session", 1}, {"session", 2},
+      {"candidate", 1}, {"candidate", 2}, {"candidate", 3}, {"candidate", 4},
+  };
+  for (const auto& [tag, field] : identities) {
+    const std::string tampered = ZeroField(written.value, tag, field);
+    ASSERT_NE(tampered, written.value) << tag << " field " << field << " was not found";
+    ASSERT_TRUE(projects->WriteDocument(kProject, "session", tampered).ok());
+
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
+    EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
+  }
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {

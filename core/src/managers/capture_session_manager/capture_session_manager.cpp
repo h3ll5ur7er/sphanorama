@@ -114,6 +114,10 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
     in >> tag;
     if (tag == "session") {
       if (!(in >> out.session >> out.nextCandidate)) return false;
+      // Zero is not an identity: `Id::valid()` is `value != 0` and every counter in this codebase
+      // starts at 1. A document carrying one is one this build cannot honour, and restoring it
+      // would seat the session under a name nothing can legitimately hold.
+      if (out.session == 0 || out.nextCandidate == 0) return false;
       sawSession = true;
     } else if (tag == "lens") {
       if (!(in >> out.lens.width >> out.lens.height)) return false;
@@ -147,6 +151,13 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
                >> candidate.quality.sharpness >> candidate.quality.motionBlur
                >> candidate.quality.exposureAgreement >> candidate.quality.alignmentResidual
                >> candidate.quality.moverPenalty >> candidate.quality.aggregate)) {
+        return false;
+      }
+      // Same rule as the session line above, and it matters more here: a candidate or frame under
+      // an invalid identity is one the store would be asked to adopt, and the first thing to go
+      // wrong with it would go wrong a long way from this document.
+      if (!candidate.id.valid() || !candidate.node.valid() || !candidate.frame.id.valid()
+          || !candidate.frame.buffer.valid()) {
         return false;
       }
       candidate.pose.visuallyCorrected = corrected != 0;
