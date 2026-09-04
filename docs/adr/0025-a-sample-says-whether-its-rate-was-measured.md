@@ -41,9 +41,12 @@ samples that follow.** Four decisions inside that are worth recording:
   Fusion wants a prediction and a reading describing the same instant; a rate on a sample of its
   own would be integrated on one tick and corrected on the next, which is the lag fusion exists
   to remove.
-- **A rate older than 200 ms is not attached.** Two streams arrive independently, so the rate is
-  always a little stale; past a fifth of a second it describes a motion that is over, and the
-  engine would correct against it with no way to tell.
+- **A rate more than 200 ms from the attitude is not attached, in either direction.** Two streams
+  arrive independently, so the rate is always a little out; past a fifth of a second it describes
+  a different moment, and the engine would correct against it with no way to tell. The bound was
+  one-sided at first, on the reasoning that a rate *newer* than the attitude is the two streams
+  interleaving — true of a few milliseconds of skew between events on the same clock, and no
+  reason to accept any amount of it.
 - **A partial `rotationRate` is dropped whole**, the same rule the orientation angles already
   follow: only null means unavailable, so a missing axis is not completed with a zero.
 - **The motion grant is separate on iOS and its denial is not a failed start.** A user who granted

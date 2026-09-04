@@ -22,12 +22,17 @@ const COMPONENT = 'MotionSensorAccess';
 // worthless and an unbounded queue is a way to kill the tab.
 const MAX_BUFFERED_SAMPLES = 512;
 
-// How old a rate may be and still describe the attitude it is attached to. Two streams arrive
-// independently and the attitude decides when a sample exists, so the rate riding along with it is
-// always a little stale; a fifth of a second is several sensor periods of slack and far less than
-// the time it takes a hand to change direction. Past it the sample goes without rates rather than
-// carrying a motion that is over, which the engine would correct against and could not detect.
-const MAX_RATE_AGE_MS = 200;
+// How far apart in time a rate and an attitude may be and still describe the same instant. Two
+// streams arrive independently, so the rate riding along with a sample is always a little out; a
+// fifth of a second is several sensor periods of slack and far less than the time it takes a hand
+// to change direction. Past it the sample goes without rates rather than carrying a motion that
+// belongs to a different moment, which the engine would correct against and could not detect.
+//
+// Applied in both directions. It was one-sided at first, on the reasoning that a rate *newer* than
+// the attitude is just the two streams interleaving — true of the few milliseconds of skew between
+// two events on the same clock, and no reason to accept any amount of it. A rate five seconds in
+// the future is mis-associated for exactly the same reason one five seconds old is.
+const MAX_RATE_SKEW_MS = 200;
 
 export type MotionCapability = 'None' | 'OrientationOnly' | 'GyroAccel' | 'GyroAccelMag';
 
@@ -126,10 +131,8 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
    */
   function rateFor(timestampNs: number): Vec3 | undefined {
     if (!latestRate) return undefined;
-    const ageMs = timestampNs / 1e6 - latestRate.atMs;
-    // Negative means the rate is *newer* than the attitude, which happens whenever the two
-    // streams interleave and is not staleness.
-    return ageMs <= MAX_RATE_AGE_MS ? latestRate.value : undefined;
+    const skewMs = Math.abs(timestampNs / 1e6 - latestRate.atMs);
+    return skewMs <= MAX_RATE_SKEW_MS ? latestRate.value : undefined;
   }
 
   function push(sample: OrientationSample) {

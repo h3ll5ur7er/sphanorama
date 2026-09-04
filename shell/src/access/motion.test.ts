@@ -480,6 +480,44 @@ describe('rates, where the platform measures them', () => {
     expect(sample.angularVelocity).toBeUndefined();
   });
 
+  it('does not attach a rate measured well after the attitude either', async () => {
+    // The bound was one-sided, on the reasoning that a rate newer than the attitude is just the
+    // two streams interleaving. True for the few milliseconds of skew between two DOM events, and
+    // not a reason to accept any amount of it: a rate from five seconds in the future is
+    // mis-associated for exactly the same reason one from five seconds ago is, and the fusion it
+    // feeds cannot tell either way.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 5_000, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 0, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('still attaches a rate a few milliseconds newer than the attitude', async () => {
+    // The case the one-sided bound was protecting, and it survives: two DOM events on the same
+    // clock arrive a few milliseconds apart in either order, and that is interleaving rather than
+    // mis-association.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 8, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 0, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeDefined();
+  });
+
   it('stops listening for rates when the sensor stops', async () => {
     const host = fakeWindow();
     const access = createMotionSensorAccess(host as never);
