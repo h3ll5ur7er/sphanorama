@@ -1,6 +1,7 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "utilities/pixel_format.h"
@@ -68,8 +69,20 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
   if (heap_used_ + size > ceiling_) {
     // Refused, never attempted: an allocation that overruns on a phone is not an exception, it is
     // a page the operating system kills. The caller is told before that happens.
-    return Err<FrameRef>(StatusCode::FrameStoreExhausted, kComponent,
-                         "allocation would exceed the heap ceiling");
+    //
+    // And told why, when the why is known. Frames that could not leave the heap are the reason it
+    // is full often enough to be worth naming, and nothing downstream can reconstruct it: the
+    // demotion that failed reported to a caller that had already captured the cell and had
+    // nothing to do about it.
+    std::string detail = "allocation would exceed the heap ceiling";
+    if (spill_refusal_.has_value()) {
+      detail += ", and the spill sink last refused a frame";
+      // A refusal that said nothing is still a refusal, and saying so is most of the value: it
+      // tells the reader which of two opposite problems they have, even when the sink cannot say
+      // which flavour of the first one.
+      if (!spill_refusal_->empty()) detail += ": " + *spill_refusal_;
+    }
+    return Err<FrameRef>(StatusCode::FrameStoreExhausted, kComponent, detail);
   }
 
   // In int64 and range-checked, because the obvious form is int32 * int32: FrameByteSize is
@@ -196,8 +209,11 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
     // failure would lose a captured cell to a full disk.
     if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
         !written.ok()) {
+      spill_refusal_ = written.detail;
       return written;
     }
+    // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
+    spill_refusal_.reset();
     entry->spilledHash = HashBytes(entry->bytes);
     entry->inSink = true;
     std::vector<uint8_t>().swap(entry->bytes);

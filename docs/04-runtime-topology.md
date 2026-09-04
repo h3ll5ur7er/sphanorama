@@ -64,10 +64,18 @@ does not have; a store whose reason to exist is modelling memory pressure cannot
 misreports it.
 
 The ceiling matters: mobile WASM heaps are bounded and an OOM is an unrecoverable page crash, not
-an exception. The store allocates against it with a safety margin and **refuses at it** — it does
-not yet spill on its own. `Demote` moves a frame to the sink, but only when a caller asks, and no
-production caller asks; the policy that would decide when to spill under pressure is the
-outstanding item, and the roadmap names it.
+an exception. The store allocates against it with a safety margin and **refuses at it**; it never
+evicts to make room. What keeps a capture away from that refusal is above it:
+`CaptureSessionManager` cools a cell on every way out of a burst — completion, failure, retake or
+the end of a session — offering the sink every candidate its own bursts produced, because a
+finished cell is not read again until the build or the review client asks and both of those go
+through `Pin` (ADR 0023). Frames offered through `OfferFrame` belong to the caller and are left
+where they are. Peak heap during a capture is therefore one burst plus
+whatever a retake faults back in to score against, rather than the whole sphere so far.
+
+The store's refusal is the backstop rather than the normal case, and a cooling that fails is not
+one: a store with no sink, or a sink out of quota, leaves the frames in the heap and the session
+carries on until an allocation genuinely does not fit.
 
 In the browser that ceiling is **read from the device**: a sixteenth of `navigator.deviceMemory`,
 clamped by three quarters of what the module was linked to allow, floored where one burst stops

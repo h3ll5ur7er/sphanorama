@@ -88,9 +88,18 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    one-way and because pushing to the allocator's refusal is walking up to the cliff the ceiling
    exists to stay away from.
 
-   **What is left is the policy: nothing decides when to spill.** `Allocate` refuses at the
-   ceiling instead of evicting, and no production caller demotes, so the tier is a finished
-   mechanism with a real number under it and nothing above it.
+   **And the policy above it is in: the session cools a cell on every way out of a burst** (ADR
+   0023) — completion, a failed score or rank, a retake, the end of a session. `CaptureSessionManager`
+   offers the sink every candidate its own bursts produced, because a finished cell is not read
+   again until the build or the review client asks — both of which go through `Pin` and fault it
+   back in. So a sphere larger than the store is capturable, and peak
+   heap is one burst plus what a retake faults in to score against. `Allocate` still refuses at
+   the ceiling rather than evicting, which is now the backstop it should always have been rather
+   than the thing a normal capture runs into first. Two limits are named in the ADR rather than
+   left to be found: `OfferFrame`'s frames belong to the caller and are not cooled, so a session
+   driven entirely through it — the bench — is bounded by its ceiling; and a review client
+   faulting a sphere back in to display it has no natural "finished" moment, which is the caller
+   that would justify eviction inside the store if one is ever needed.
 
    The browser store has a constraint worth knowing before it is designed, because it decides
    where the core runs. `Pin` faulting a spilled frame back in has to be synchronous — an engine
