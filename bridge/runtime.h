@@ -65,14 +65,16 @@ class Runtime {
   // spill rather than a store that lies about having spilled, and a sphere capped at what fits in
   // RAM is degraded rather than broken.
   //
-  // **The ceiling is stated rather than measured**, on both platforms.
-  // `FrameStoreBudget::heapCeilingBytes` is documented as "measured at startup, not assumed", and
-  // this is the assumption standing in until the probe exists. Native is generous enough that the
-  // bench does not spill on a desktop and low enough that the spill path is still reached. The
-  // browser's is deliberately far smaller: a WASM heap that grows past what a phone will give it
-  // is not an allocation failure the store can report, it is the operating system killing the
-  // tab, and the ceiling exists to stop short of that. It is clamped by whatever the module was
-  // actually linked to allow, which is a real limit even though it is not the device's.
+  // **The browser's ceiling is read from the device** — `navigator.deviceMemory` for a share of
+  // the machine's RAM, clamped by what the module was linked to allow (`heap_budget.h` has the
+  // arithmetic and the argument for why there is no allocation probe). A WASM heap that grows
+  // past what a phone will give a tab is not an allocation failure the store can report, it is
+  // the operating system killing the tab, so the ceiling has to sit below that and above what a
+  // burst needs.
+  //
+  // **Natively it is still stated**, and that is not an oversight. The bench runs on a desktop
+  // where the failure mode does not exist, and 512 MB is chosen to be generous enough not to
+  // spill during a normal run and small enough that the spill path is still reached by a test.
 #if defined(__EMSCRIPTEN__)
   static int64_t BrowserHeapCeilingBytes();
   OpfsSpillSink spill_;

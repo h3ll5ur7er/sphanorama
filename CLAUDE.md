@@ -39,4 +39,6 @@ buffer to the worker the core runs in, where `PeekPreviewFrame` copies it into t
 (ADR 0019, ADR 0021). A burst armed from the capture loop captures real pixels, which an
 end-to-end test drives in a real browser. Its frames share an exposure where the camera can hold
 one: the page applies the locks and confirms them by reading the mode back before arming, and
-`SetLocks` refuses a lock it has not been told is held (ADR 0022). See `docs/06-roadmap.md`.
+`SetLocks` refuses a lock it has not been told is held (ADR 0022). The frame store's browser
+ceiling is read from `navigator.deviceMemory` rather than stated, so it scales with the machine;
+what is still missing is a policy that decides *when* to spill. See `docs/06-roadmap.md`.
