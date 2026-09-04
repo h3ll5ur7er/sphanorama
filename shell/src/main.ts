@@ -15,7 +15,9 @@ import { createMotionSensorAccess } from './access/motion';
 import { flattenImuSamples, stopCameraStream } from './access/capture-host';
 import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
-import { describeFailure, formatCapabilities } from './clients/capture/status';
+import {
+  describeFailure, describeLocks, formatCapabilities,
+} from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
 } from './clients/capture/guidance';
@@ -60,6 +62,7 @@ const cameraState = el('camera-state');
 const motionState = el('motion-state');
 const orientationOut = el('orientation');
 const guidanceOut = el('guidance');
+const locksOut = el('locks');
 const facadeOut = el('facade');
 // Written once, at load, and never touched again: it describes the bundle rather than the session,
 // and a line that can change is a line a screenshot cannot be trusted on. `define` replaces the
@@ -381,8 +384,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       held = await camera.setLocks(wanted);
       // A camera that cannot lock still captures. What must not happen is the *core* believing a
       // lock is held when it is not, and pushing the confirmed state is what prevents that.
-      remote.setLocks(
-        held.ok ? held.value : { exposure: false, whiteBalance: false, focus: false });
+      const settled = held.ok
+        ? held.value : { exposure: false, whiteBalance: false, focus: false };
+      remote.setLocks(settled);
+      // On screen as well as into the core. The page has always known which locks the camera
+      // granted and had nowhere to say it, which left the one question a burst's numbers raise —
+      // is the camera free to re-expose and refocus between these frames? — unanswerable from a
+      // screenshot.
+      locksOut.textContent = describeLocks(wanted, settled);
 
       armedNow = await core.captureSession.armBurst(node, {
         frameCount: 5, intervalMs: 80,

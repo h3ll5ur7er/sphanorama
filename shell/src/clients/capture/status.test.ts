@@ -3,7 +3,7 @@
 // wrong" is the difference between a user fixing their permissions and closing the tab.
 import { describe, expect, it } from 'vitest';
 
-import { describeFailure, formatCapabilities } from './status';
+import { describeFailure, describeLocks, formatCapabilities } from './status';
 
 describe('describeFailure', () => {
   it('tells a user who declined the camera what to do about it', () => {
@@ -84,5 +84,43 @@ describe('Unsupported is not always about the camera', () => {
       code: 'Unsupported', component: 'PanoramaBuildManager',
       detail: 'nothing to build until Phase 2',
     })).toBe('nothing to build until Phase 2');
+  });
+});
+
+describe('what the camera let the burst lock', () => {
+  const none = { exposure: false, whiteBalance: false, focus: false };
+  const all = { exposure: true, whiteBalance: true, focus: true };
+
+  it('names the locks that are actually holding', () => {
+    expect(describeLocks(all, all)).toBe('exposure · white balance · focus');
+  });
+
+  it('says outright when the camera offers no manual modes at all', () => {
+    // The reading this line exists for. With nothing locked, exposure and focus are the camera's
+    // to move for the whole ~320 ms a burst spans — so a burst's frames can differ by more than
+    // the scene does, and the sharpness spread across a cell is the camera hunting rather than
+    // anything selection did. Without it that spread is unattributable.
+    expect(describeLocks(none, none)).toMatch(/no manual modes/i);
+  });
+
+  it('separates a lock that was refused from one that was never asked for', () => {
+    // Different faults. A refused lock is a camera that advertised a manual mode and then did not
+    // take it, which is the case ADR 0022's read-back exists for; one never asked for is a camera
+    // that said up front it could not. Reporting both as "no focus lock" would hide the first.
+    const asked = { exposure: true, whiteBalance: false, focus: true };
+    const got = { exposure: true, whiteBalance: false, focus: false };
+
+    const line = describeLocks(asked, got);
+    expect(line).toContain('exposure');
+    expect(line).toMatch(/focus refused/i);
+    expect(line).not.toMatch(/white balance refused/i);
+  });
+
+  it('says when the camera took a lock nothing asked it for', () => {
+    // Not hypothetical: `advanced` constraints are best-effort, and a camera is free to settle on
+    // manual for its own reasons. The burst is told what actually holds, so the line has to be
+    // the same truth and not a copy of the request.
+    expect(describeLocks(none, { exposure: true, whiteBalance: false, focus: false }))
+      .toContain('exposure');
   });
 });
