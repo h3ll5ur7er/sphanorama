@@ -32,6 +32,11 @@ const motionState = el('motion-state');
 const orientationOut = el('orientation');
 const guidanceOut = el('guidance');
 const facadeOut = el('facade');
+// Written once, at load, and never touched again: it describes the bundle rather than the session,
+// and a line that can change is a line a screenshot cannot be trusted on. `define` replaces the
+// identifier at build time (see vite.config.mjs); the fallback is for `vite dev`, which does not.
+el('build').textContent =
+  typeof __SPHANORAMA_BUILD__ === 'string' ? __SPHANORAMA_BUILD__ : 'unknown';
 const enableButton = el<HTMLButtonElement>('enable');
 const captureButton = el<HTMLButtonElement>('capture');
 const reviewElements = {
