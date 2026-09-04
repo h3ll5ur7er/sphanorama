@@ -307,8 +307,9 @@ TEST(PoseEngine, IgnoresATimestampThatDidNotAdvance) {
 
 // --------------------------------------------------------------- fusion, where there are rates
 //
-// An absolute attitude is truth about where the device points and says nothing about how fast it
-// is turning; a gyroscope is the other way round. An engine handed both and using only one is
+// An absolute attitude bounds the drift in where the device points and says nothing about how
+// fast it is turning; a gyroscope is the other way round. Neither is ground truth — `01 §1.3` is
+// explicit that the sensor pose is a prior — and fusing two priors makes a better one. An engine handed both and using only one is
 // throwing away the half that fixes the other's weakness — and that is what happens today, since
 // `Integrate` prefers the attitude on any sample carrying one and never looks at its rate.
 //
@@ -504,6 +505,52 @@ TEST(PoseEngine, RealRotationIsNotMistakenForBias) {
                                    state.gyroBias.y * state.gyroBias.y +
                                    state.gyroBias.z * state.gyroBias.z);
   EXPECT_LT(learned, 0.02) << "a two-second sweep was absorbed as " << learned << " rad/s of bias";
+}
+
+TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
+  // The estimate of the rate error is the disagreement divided by the time it accumulated over,
+  // and that division is what makes the update independent of how fast samples arrive. Charging
+  // the disagreement *multiplied* by the gap instead is quadratic in it: at 60 Hz the two are
+  // indistinguishable, and one second between fused samples turns a 0.02 rad/s offset into a
+  // learned 0.4 — twenty times the truth and the wrong side of it.
+  //
+  // The invariant is physical and holds for any gap: a still device reporting `b` cannot support
+  // an offset estimate outside [0, b]. There is no more bias available than the rate observed.
+  OrientationPoseEngine engine;
+  const Vec3 bias{0.0, 0.02, 0.0};
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+
+  int64_t t = 0;
+  for (int step = 0; step < 6; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+    t += 1'000'000'000;   // a second apart: a stalled capture loop, or a backgrounded tab
+  }
+  EXPECT_GE(state.gyroBias.y, 0.0);
+  EXPECT_LE(state.gyroBias.y, bias.y * 1.001) << "learned " << state.gyroBias.y;
+}
+
+TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {
+  // The consequence the invariant above is protecting, stated as the thing a user would notice.
+  // A runaway offset is not merely inaccurate: subtracted from the next dropout it drives the
+  // estimate the other way, so dead reckoning ends up further from the truth than doing nothing
+  // at all would have been. Un-subtracted, one second of 0.02 rad/s is 1.15 degrees.
+  OrientationPoseEngine engine;
+  const Vec3 bias{0.0, 0.02, 0.0};
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+
+  int64_t t = 0;
+  for (int step = 0; step < 6; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+    t += 1'000'000'000;
+  }
+  const Quat settled = state.pose.orientation;
+
+  ImuSample dropout;
+  dropout.timestampNs = t + 1'000'000'000;
+  dropout.angularVelocity = bias;
+  state = engine.Integrate(state, std::vector<ImuSample>{dropout}).value;
+
+  EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 1.15);
 }
 
 TEST(PoseEngine, TheBiasEstimateIsPartOfTheStateTheCallerThreadsBack) {
