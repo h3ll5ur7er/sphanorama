@@ -7,6 +7,8 @@
 // pretend to have spilled.
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include <algorithm>
 #include <vector>
 
@@ -276,6 +278,65 @@ TEST(FrameStoreWithoutASink, RefusesToSpillRatherThanRelabelling) {
   auto residency = store.ResidencyOf(frame.value);
   ASSERT_TRUE(residency.ok());
   EXPECT_NE(residency.value, Residency::Spilled);
+}
+
+// ------------------------------------------------------- saying why the store ran out
+//
+// A refused spill and a capture genuinely too large for the device both end at the same place: an
+// allocation that does not fit. They are not the same problem and the fixes are opposite — one is
+// a full disk, the other is a sphere the phone cannot hold — so a refusal that names only the
+// ceiling sends whoever reads it looking in the wrong place.
+
+TEST(FrameStoreRefusal, ARefusalSaysWhenTheSinkIsWhyThereIsNoRoom) {
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{kFrameBytes * 2, &sink};
+  auto first = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(first.ok());
+
+  sink.FailWrites(true);
+  ASSERT_FALSE(store.Demote(first.value, Residency::Spilled).ok());
+
+  auto second = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(second.ok());
+  auto third = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_EQ(third.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_NE(third.status.detail.find("spill"), std::string::npos)
+      << "the refusal was: " << third.status.detail;
+}
+
+TEST(FrameStoreRefusal, ARefusalWithNoRefusedSpillBehindItDoesNotInventOne) {
+  // The other half, and the one that makes the message worth reading: a store that mentions the
+  // sink every time it runs out is a store that has told you nothing.
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{kFrameBytes, &sink};
+  ASSERT_TRUE(store.Allocate(kWidth, kHeight, PixelFormat::RGBA8).ok());
+
+  auto refused = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_EQ(refused.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_EQ(refused.status.detail.find("spill"), std::string::npos)
+      << "the refusal was: " << refused.status.detail;
+}
+
+TEST(FrameStoreRefusal, ASinkThatStartsWorkingAgainStopsBeingBlamed) {
+  // A phone whose quota was freed, or a transient write error. Keeping the blame forever would
+  // make the message a permanent scar from one bad moment rather than a description of now.
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{kFrameBytes * 2, &sink};
+  auto first = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(first.ok());
+  sink.FailWrites(true);
+  ASSERT_FALSE(store.Demote(first.value, Residency::Spilled).ok());
+
+  sink.FailWrites(false);
+  ASSERT_TRUE(store.Demote(first.value, Residency::Spilled).ok());
+
+  // Room again, because that frame really left this time — so fill it and ask.
+  ASSERT_TRUE(store.Allocate(kWidth, kHeight, PixelFormat::RGBA8).ok());
+  ASSERT_TRUE(store.Allocate(kWidth, kHeight, PixelFormat::RGBA8).ok());
+  auto refused = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_EQ(refused.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_EQ(refused.status.detail.find("spill"), std::string::npos)
+      << "the refusal was: " << refused.status.detail;
 }
 
 }  // namespace
