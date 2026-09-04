@@ -116,13 +116,18 @@ async function enable(core: SphanoramaCore) {
   // for. So the ask is that cap: the frame the core stores is the frame the camera was opened to
   // produce, and when the cap moves the ask moves with it.
   //
-  // Only a long edge. Constraining height as well would choose the frame's *shape*, and a camera
-  // that meets a shape by cropping its widest mode would come back with less field of view than
-  // it was already offering — more cells per ring, for a request meant to improve things. A
-  // taller mode is genuinely better for a sphere, since vertical field of view is what sets the
-  // ring count, but nothing here can tell a native 4:3 mode from a cropped 16:9 one without a
-  // real camera to ask. Until one has been measured, the ask is the one with no bad branch.
-  const opened = await camera.open({ preferRearCamera: true, preferredWidth: GRAB_MAX_EDGE });
+  // The shape is asked for too, and 4:3 rather than the 16:9 a bare long edge gets handed. On a
+  // phone that is not a preference between two crops: the sensor is 4:3 and the widescreen video
+  // mode is made by throwing away the top and bottom of it, so asking for the taller frame asks
+  // for more of the picture. What it buys is cells. Vertical field of view is what sets the ring
+  // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — measured through
+  // the whole app, 44 cells planned rather than 32, a third more of the sphere to shoot for a
+  // frame that sees less of it.
+  const opened = await camera.open({
+    preferRearCamera: true,
+    preferredWidth: GRAB_MAX_EDGE,
+    preferredHeight: Math.round((GRAB_MAX_EDGE * 3) / 4),
+  });
   if (opened.ok) {
     // Pushed before the core is asked to begin: the plan is sized from the lens, and the core
     // reads the lens through a synchronous port that cannot wait for getUserMedia — nor for a

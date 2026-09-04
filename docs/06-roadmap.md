@@ -58,10 +58,12 @@ default* — 640×480 in Chromium, measured, against a grabber that budgets for 
 edge. Every frame the core had ever scored or stored was a quarter of the pixels the memory
 ceiling was sized for, and the cap that exists to bound a burst was bounding nothing. The page now
 asks for the long edge the grabber keeps, so the frame the core stores is the frame the camera was
-opened to produce. Only a long edge is asked for: a taller sensor mode would be better for a
-sphere, since vertical field of view is what sets the ring count, but a camera that satisfies a
-shape by cropping its widest mode would answer with *less* field of view than it was already
-offering, and nothing short of a real camera can tell those two apart.
+opened to produce — and for a 4:3 shape, which is not a preference between two crops. A phone's
+sensor is 4:3 and its widescreen video mode is made by discarding the top and bottom, so the taller
+frame is *more* of the picture rather than a differently shaped piece of it. It is worth asking for
+because vertical field of view sets the ring count: 66° across is 40° tall at 16:9 against 52° at
+4:3, which is 44 planned cells rather than 32 — a third more sphere to shoot, from a frame that
+sees less of it. All four numbers are measured through the running app rather than derived.
 
 Orientation samples go through the facade to `CaptureSessionManager`, which asks `PoseEngine` for
 an attitude and `CoveragePlannerEngine` for the nearest cell, and the reticle on screen is that

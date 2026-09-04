@@ -79,6 +79,12 @@ test('the camera is opened at the resolution the frames are stored at', async ({
     // Asserted against the grabber's own cap rather than a number typed twice: the ask exists to
     // match it, so the two move together or this fails.
     expect(Math.max(width, height)).toBeGreaterThanOrEqual(GRAB_MAX_EDGE);
+
+    // And the taller mode, not the wide one. Vertical field of view is what sets the ring count,
+    // so a 16:9 frame plans a third more cells than a 4:3 one for the same sphere — measured,
+    // 44 against 32. On a phone the 4:3 mode is the sensor's own and 16:9 is the crop of it, so
+    // this asks for more of the picture rather than a differently shaped piece of it.
+    expect(Math.max(width, height) / Math.min(width, height)).toBeCloseTo(4 / 3, 2);
   } finally {
     await server.close();
   }

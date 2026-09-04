@@ -62,10 +62,10 @@ describe('opening the camera', () => {
     expect(video?.width).toEqual({ ideal: 1280 });
   });
 
-  it('leaves the aspect ratio to the camera when only a long edge is asked for', async () => {
-    // Constraining height too would pick the frame's shape as well as its size, and a camera that
-    // satisfies a shape by cropping its widest mode would answer with *less* field of view than
-    // it was already giving. Asking only for pixels has no branch where that happens.
+  it('imposes no shape of its own when the client asks only for a size', async () => {
+    // The adapter states what it was told and nothing more. Which shape to ask for is the
+    // client's call — main.ts asks for 4:3 because that is the sensor's own frame and 16:9 is a
+    // crop of it — and an adapter that invented a height would quietly overrule that.
     const media = fakeMedia({});
     const camera = createCameraAccess(media as never);
     await camera.open({ preferRearCamera: true, preferredWidth: 1280 });
@@ -73,6 +73,13 @@ describe('opening the camera', () => {
     expect(video?.height).toBeUndefined();
   });
 
+  it('passes a stated height through as an ideal too', async () => {
+    const media = fakeMedia({});
+    const camera = createCameraAccess(media as never);
+    await camera.open({ preferRearCamera: true, preferredWidth: 1280, preferredHeight: 960 });
+    const video = (media.getUserMedia.mock.calls as unknown as Array<[{ video: Record<string, unknown> }]>)[0]?.[0].video;
+    expect(video?.height).toEqual({ ideal: 960 });
+  });
   it('maps a declined camera onto a permission failure', async () => {
     const camera = createCameraAccess(fakeMedia({ error: { name: 'NotAllowedError' } }) as never);
     const result = await camera.open({ preferRearCamera: true });
