@@ -41,6 +41,14 @@ samples that follow.** Four decisions inside that are worth recording:
   Fusion wants a prediction and a reading describing the same instant; a rate on a sample of its
   own would be integrated on one tick and corrected on the next, which is the lag fusion exists
   to remove.
+- **The rate is kept in the chassis frame and converted when it is attached**, against the same
+  screen angle the attitude used. The angle is read per sample because the user turns the phone
+  mid-session; converting on arrival freezes the rate in the frame of that moment, so a sample
+  straddling a rotation carries its two halves ninety degrees apart.
+- **An event reporting no complete rate forgets the last one.** It is the platform saying it has
+  stopped, and keeping the previous reading alive until the staleness window closed would hand the
+  core a measurement that was explicitly withdrawn — marked as measured, which is the one thing
+  the flag exists to prevent.
 - **A rate more than 200 ms from the attitude is not attached, in either direction.** Two streams
   arrive independently, so the rate is always a little out; past a fifth of a second it describes
   a different moment, and the engine would correct against it with no way to tell. The bound was
@@ -49,9 +57,12 @@ samples that follow.** Four decisions inside that are worth recording:
   reason to accept any amount of it.
 - **A partial `rotationRate` is dropped whole**, the same rule the orientation angles already
   follow: only null means unavailable, so a missing axis is not completed with a zero.
-- **The motion grant is separate on iOS and its denial is not a failed start.** A user who granted
-  orientation and denied motion gets the session that existed before rates did, rather than no
-  session.
+- **The motion grant is separate on iOS, asked inside the same gesture, and its denial is not a
+  failed start.** Safari requires each `requestPermission` to happen during a transient user
+  activation and awaiting the first one spends it, so both are requested before either is awaited
+  — asking in sequence works for orientation and is silently rejected for motion, on the one
+  platform the whole permission dance exists for. A user who granted orientation and denied motion
+  gets the session that existed before rates did, rather than no session.
 
 **The rate is converted into the viewfinder's frame, inverting the screen rotation.** The attitude
 becomes the viewfinder's by post-multiplying the screen rotation; a rate is a body-frame vector, so
@@ -68,6 +79,15 @@ in as an argument, because a decoder reading the wrong number of samples produce
 
 ## Consequences
 - Fusion runs on a real device for the first time, on any browser that reports both.
+- **`Stability` judges each interval rather than the batch.** Preferring rates was a whole-batch
+  decision, and a batch is no longer one kind of sample: a single measured rate — a zero one, from
+  a device that was still a moment ago — switched the attitude fallback off for every sample after
+  it, so a batch that opened still and then swept through ninety degrees came back perfectly
+  still. Each gap between samples is now judged by the better signal available for that gap.
+- **A sample that reports nothing moves nothing.** Dead reckoning is gated on the same flag as the
+  fusion: a sample with neither an attitude nor a measured rate carries a zero-filled
+  `angularVelocity`, and subtracting a learned offset from it would turn silence into a rotation
+  backwards at the offset's own rate.
 - **`Stability` is fixed rather than left as the weaker half.** A phone swung between two attitudes
   that happen to match came back `1.0` — perfectly still — with the gyroscope in the same sample
   reading 3 rad/s. There is a test for it. Stability gates firing a burst, so still-when-swinging

@@ -518,6 +518,83 @@ describe('rates, where the platform measures them', () => {
     expect(sample.angularVelocity).toBeDefined();
   });
 
+  it('converts the rate in the frame the attitude it rides with is in', async () => {
+    // The two events carry the screen angle at their own moment, and the screen can turn between
+    // them — the adapter reads it per sample for exactly that reason. Converting the rate when it
+    // arrives freezes it in the old frame, so a sample that straddles a rotation has its two
+    // halves ninety degrees apart, and the engine corrects along an axis the device is not
+    // turning about.
+    let angle = 0;
+    const host = fakeWindow({ screen: { orientation: { get angle() { return angle; } } } });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: { alpha: 0, beta: 90, gamma: 0 } } as unknown as Event);
+    angle = 90;   // the user turns the phone between the two events
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 2, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: { x: number; y: number } }[] }).value[0];
+    // 90 deg/s about the chassis' X, seen from a viewfinder itself turned 90 degrees: the axis of
+    // the picture it turns about is Y, not X.
+    expect(sample.angularVelocity).toBeDefined();
+    expect(sample.angularVelocity?.x).toBeCloseTo(0, 6);
+    expect(Math.abs(sample.angularVelocity?.y ?? 0)).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('forgets a rate when the platform stops reporting one', async () => {
+    // A device that reported rates and then reports a null rotationRate is saying it has stopped.
+    // Keeping the last one alive until the staleness window closes hands the engine a measurement
+    // the platform explicitly withdrew, marked as measured.
+    const host = fakeWindow();
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 1, rotationRate: spinning } as unknown as Event);
+    listenerFor(host, 'devicemotion')?.(
+      { timeStamp: 2, rotationRate: null } as unknown as Event);
+    listenerFor(host, 'deviceorientation')?.(
+      { timeStamp: 3, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
+
+    const drained = await access.drain(8);
+    const sample = (drained as { value: { angularVelocity?: unknown }[] }).value[0];
+    expect(sample.angularVelocity).toBeUndefined();
+  });
+
+  it('asks for both iOS grants inside the gesture that started the session', async () => {
+    // Safari requires each requestPermission to happen during transient user activation, and
+    // awaiting the first one spends it. Asking in sequence therefore works for orientation and is
+    // rejected for motion — on the one platform where the whole permission dance exists.
+    const order: string[] = [];
+    let releaseOrientation: (value: string) => void = () => {};
+    const orientationGate = vi.fn().mockImplementation(() => {
+      order.push('orientation asked');
+      return new Promise<string>((resolve) => { releaseOrientation = resolve; });
+    });
+    const motionGate = vi.fn().mockImplementation(() => {
+      order.push('motion asked');
+      return Promise.resolve('granted');
+    });
+    const host = fakeWindow({
+      DeviceOrientationEvent: class { static requestPermission = orientationGate; },
+      DeviceMotionEvent: class { static requestPermission = motionGate; },
+    });
+    const access = createMotionSensorAccess(host as never);
+    const started = access.start(60);
+
+    // Both asked before either answer is in, which is what "inside the same activation" means.
+    // The order between them does not matter and is not pinned; the awaiting does.
+    await Promise.resolve();
+    expect(order).toHaveLength(2);
+    expect(motionGate).toHaveBeenCalled();
+    expect(orientationGate).toHaveBeenCalled();
+    releaseOrientation('granted');
+    expect((await started).ok).toBe(true);
+  });
+
   it('stops listening for rates when the sensor stops', async () => {
     const host = fakeWindow();
     const access = createMotionSensorAccess(host as never);

@@ -147,11 +147,16 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
-    } else if (advanced) {
+    } else if (advanced && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
-      // answer. Unconditional because an offset that was never learned is zero, which makes this
-      // the arithmetic it always was on a stream that carries no rates to learn from.
+      // answer.
+      //
+      // Gated on the same flag as the fusion, and the gate is not decorative: a sample with
+      // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so
+      // subtracting a learned offset from it and integrating the result would turn "nothing was
+      // reported" into a rotation backwards at the offset's own rate. A sample that reports
+      // nothing should move nothing.
       const Vec3 rate = Subtract(sample.angularVelocity, state.gyroBias);
       if (Magnitude(rate) > 1e-9) {
         state.pose.orientation = Turned(state.pose.orientation, rate, seconds);
@@ -198,31 +203,33 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   // until a platform reported both, at which point a phone swung between two attitudes that
   // happened to match came back perfectly still with the gyroscope in the same sample saying
   // otherwise (ADR 0025).
+  // Per interval rather than per batch, which is the correction a mixed stream forced. Choosing
+  // once for the whole batch meant a single measured rate — a zero one, from a device that was
+  // still a moment ago — switched the attitude fallback off for every sample after it, so a batch
+  // that opened still and then swept through ninety degrees came back perfectly still. Each gap
+  // between samples is now judged by the better signal available for *that* gap.
+  //
+  // Differentiating filtered attitudes is noisier than a gyroscope in exactly the band that
+  // matters, so it remains the fallback wherever a rate was measured, and the only evidence
+  // wherever one was not.
   double peak = 0.0;
   bool measured = false;
+  const ImuSample* previous = nullptr;
 
   for (const ImuSample& sample : samples) {
     if (Measured(sample)) {
       peak = std::max(peak, Magnitude(sample.angularVelocity));
       measured = true;
+    } else if (previous != nullptr && sample.hasOrientation &&
+               sample.timestampNs > previous->timestampNs) {
+      const double seconds =
+          static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
+      peak = std::max(peak, AngleBetween(previous->orientation, sample.orientation) / seconds);
+      measured = true;
     }
-  }
-
-  // Differentiating filtered attitudes is noisier than a gyroscope in exactly the band that
-  // matters, so it is the fallback rather than the default.
-  if (!measured) {
-    const ImuSample* previous = nullptr;
-    for (const ImuSample& sample : samples) {
-      if (!sample.hasOrientation) continue;
-      if (previous != nullptr && sample.timestampNs > previous->timestampNs) {
-        const double seconds =
-            static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
-        const double radians = AngleBetween(previous->orientation, sample.orientation);
-        peak = std::max(peak, radians / seconds);
-        measured = true;
-      }
-      previous = &sample;
-    }
+    // Whatever carried an attitude is what the next gap is measured from, whether or not its own
+    // rate was the thing that judged it.
+    if (sample.hasOrientation) previous = &sample;
   }
 
   if (!measured) {

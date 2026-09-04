@@ -105,9 +105,16 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
   let listener: ((event: Event) => void) | null = null;
   let motionListener: ((event: Event) => void) | null = null;
   let sensor: OrientationSensorLike | null = null;
-  // The most recent measured rate and when it was measured, in the platform's own milliseconds so
-  // that it can be compared with the event timestamps the attitudes carry.
-  let latestRate: { value: Vec3; atMs: number } | null = null;
+  // The most recent measured rate, in the chassis frame the platform reported it in, and when it
+  // was measured — in the platform's own milliseconds, so it can be compared with the event
+  // timestamps the attitudes carry.
+  //
+  // Unconverted on purpose. The screen angle is read per sample because the user turns the phone
+  // mid-session, so a rate converted when it arrived is frozen in the frame of that moment: a
+  // sample straddling a rotation would carry an attitude and a rate ninety degrees apart, and the
+  // engine would correct along an axis the device is not turning about. It is converted when it
+  // is attached, against the same angle the attitude used.
+  let latestRate: { alpha: number; beta: number; gamma: number; atMs: number } | null = null;
 
   /**
    * How far the page has been rotated under the device, read per sample rather than cached.
@@ -129,14 +136,16 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
    * reading describing the same instant; a rate on a sample of its own would be integrated on one
    * tick and corrected on the next, which is the lag this is supposed to remove.
    */
-  function rateFor(timestampNs: number): Vec3 | undefined {
+  function rateFor(timestampNs: number, screenAngleDeg: number): Vec3 | undefined {
     if (!latestRate) return undefined;
     const skewMs = Math.abs(timestampNs / 1e6 - latestRate.atMs);
-    return skewMs <= MAX_RATE_SKEW_MS ? latestRate.value : undefined;
+    if (skewMs > MAX_RATE_SKEW_MS) return undefined;
+    return angularVelocityFromRotationRate(
+      latestRate.alpha, latestRate.beta, latestRate.gamma, screenAngleDeg);
   }
 
-  function push(sample: OrientationSample) {
-    const rate = rateFor(sample.timestampNs);
+  function push(sample: OrientationSample, screenAngleDeg: number) {
+    const rate = rateFor(sample.timestampNs, screenAngleDeg);
     buffered.push(rate ? { ...sample, angularVelocity: rate } : sample);
     if (buffered.length > MAX_BUFFERED_SAMPLES) {
       buffered = buffered.slice(-MAX_BUFFERED_SAMPLES);
@@ -160,25 +169,32 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
   }
 
   /**
-   * Starts listening for `rotationRate`, and shrugs if the platform will not give it.
+   * Asks for the motion grant, and reports whether there is one.
+   *
+   * Split from installing the listener because of *when* it has to be asked rather than what it
+   * does: iOS requires each `requestPermission` to happen during a transient user activation, and
+   * awaiting the first one spends that activation — so a second request made after it is rejected
+   * unread. Both are therefore started before either is awaited, which is only possible if asking
+   * and listening are separate steps.
    *
    * Deliberately not part of `start`'s success: iOS gates DeviceMotionEvent separately from
    * DeviceOrientationEvent, and a user who granted one and denied the other has a session that
    * works exactly as it did before rates existed. Failing the start over it would turn a lost
    * optimisation into a lost capture.
    */
-  async function startRates(): Promise<void> {
-    if (!host.DeviceMotionEvent) return;
+  async function askForRates(): Promise<boolean> {
+    if (!host.DeviceMotionEvent) return false;
     const gate = permissionGate(host.DeviceMotionEvent);
-    if (gate) {
-      try {
-        if (await gate.requestPermission() !== 'granted') return;
-      } catch {
-        // Safari rejects when the call did not follow a user gesture; same outcome as a decline.
-        return;
-      }
+    if (!gate) return true;
+    try {
+      return await gate.requestPermission() === 'granted';
+    } catch {
+      // Safari rejects when the call did not follow a user gesture; same outcome as a decline.
+      return false;
     }
+  }
 
+  function listenForRates(): void {
     motionListener = (rawEvent: Event) => {
       const event = rawEvent as DeviceMotionEvent;
       const rate = event.rotationRate;
@@ -187,12 +203,15 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       // missing axis is not completed with a zero.
       if (!rate || rate.alpha === null || rate.beta === null || rate.gamma === null ||
           rate.alpha === undefined || rate.beta === undefined || rate.gamma === undefined) {
+        // Forgotten rather than left behind. An event that reports no complete rate is the
+        // platform saying it has stopped, and keeping the last one alive until the staleness
+        // window closes would hand the core a measurement that was explicitly withdrawn — marked
+        // as measured, which is the one thing `hasAngularVelocity` exists to prevent.
+        latestRate = null;
         return;
       }
       latestRate = {
-        value: angularVelocityFromRotationRate(
-          rate.alpha, rate.beta, rate.gamma, screenAngleDeg()),
-        atMs: event.timeStamp ?? 0,
+        alpha: rate.alpha, beta: rate.beta, gamma: rate.gamma, atMs: event.timeStamp ?? 0,
       };
     };
     host.addEventListener('devicemotion', motionListener);
@@ -249,10 +268,13 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
         const reading = started.quaternion;
         // A reading event with no quaternion is what a sensor fires before its first fix.
         if (!reading || reading.length < 4) return;
+        // One read of the angle for both halves of the sample, so they cannot disagree about
+        // which way up the picture is.
+        const screen = screenAngleDeg();
         push({
           timestampNs: Math.round((started.timestamp ?? 0) * 1e6),
-          orientation: quaternionFromSensorReading(reading, screenAngleDeg()),
-        });
+          orientation: quaternionFromSensorReading(reading, screen),
+        }, screen);
       });
       started.addEventListener('error', () => {
         stopSensor();
@@ -293,10 +315,11 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
           alpha === undefined || beta === undefined || gamma === undefined) {
         return;
       }
+      const screen = screenAngleDeg();
       push({
         timestampNs: Math.round((event.timeStamp ?? 0) * 1e6),
-        orientation: quaternionFromDeviceOrientation(alpha, beta, gamma, screenAngleDeg()),
-      });
+        orientation: quaternionFromDeviceOrientation(alpha, beta, gamma, screen),
+      }, screen);
     };
 
     host.addEventListener('deviceorientation', listener);
@@ -325,14 +348,17 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       // there is no Generic Sensor API, so the gated call still happens inside the user gesture
       // that started this. A sensor that fails later falls back outside the gesture, on a
       // platform that does not gate.
-      // Rates last, so that the attitude source is what a failed start reports on and so the
-      // orientation listener stays the first thing registered on the host.
-      if (startSensor(requestedHz, () => { void startEvents(); })) {
-        await startRates();
-        return ok(undefined);
-      }
-      const started = await startEvents();
-      if (started.ok) await startRates();
+      // Asked first and awaited last. Both grants have to be requested inside the user gesture
+      // that reached this call, and awaiting either one ends it — so this starts the motion
+      // request and lets the orientation request go out underneath it, then reads both answers.
+      const rates = askForRates();
+
+      // The attitude source is what a failed start reports on, and its listener stays the first
+      // thing registered on the host.
+      const started = startSensor(requestedHz, () => { void startEvents(); })
+                          ? ok(undefined)
+                          : await startEvents();
+      if (started.ok && await rates) listenForRates();
       return started;
     },
 
