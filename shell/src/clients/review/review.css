@@ -1,0 +1,55 @@
+/*
+ * The review panel. Deliberately plain: what is worth looking at here is the shape of the
+ * coverage and the numbers behind a choice, and anything decorative competes with both.
+ */
+#review { display: none; margin-top: 1rem; }
+#review[data-active='true'] { display: block; }
+
+#coverage-map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 1;   /* equirectangular: a full turn across, half a turn down */
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+/* The seam is behind the user, and marking it stops a cell near the edge reading as an outlier. */
+#coverage-map::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  border-inline-start: 1px dashed currentColor;
+  opacity: 0.25;
+}
+
+.cell {
+  position: absolute;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: -0.55rem 0 0 -0.55rem;   /* the dot is centred on its aim, not hung from it */
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cell[data-state='covered'] { background: currentColor; }
+.cell[aria-pressed='true'] { outline: 2px solid currentColor; outline-offset: 2px; }
+
+#strip { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.35rem; }
+
+#strip button {
+  width: 100%;
+  text-align: start;
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+
+#strip button[aria-pressed='true'] { background: currentColor; color: Canvas; }
+.strip-note { opacity: 0.7; }
