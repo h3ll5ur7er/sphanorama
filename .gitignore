@@ -21,6 +21,9 @@ captures/
 test-results/
 playwright-report/
 
+# the emsdk action stages its cache beside the sources, in both workflows
+emsdk-cache/
+
 # staged build artifacts
 shell/public/core/
 dist/

@@ -16,7 +16,14 @@ import { execFileSync } from 'node:child_process';
 function buildId() {
   const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
   try {
-    return git('rev-parse', '--short', 'HEAD') + (git('status', '--porcelain') ? '-dirty' : '');
+    // `-uno`: uncommitted changes to *tracked* files. Counting untracked ones sounds stricter and
+    // is worse — every tool that drops a directory in the working tree makes a clean checkout
+    // report itself dirty. That is not a hypothetical either: the deploy's own emsdk action
+    // creates `emsdk-cache/` beside the sources, so the first build to carry an id announced
+    // itself as `9d845a8-dirty` on a checkout nobody had touched, which is exactly the kind of
+    // lie this line exists to prevent.
+    const modified = git('status', '--porcelain', '--untracked-files=no');
+    return git('rev-parse', '--short', 'HEAD') + (modified ? '-dirty' : '');
   } catch {
     return 'unknown';
   }
