@@ -149,9 +149,26 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    device. If they do not, the sink simply does not install and the store refuses to spill at all
    — a sphere capped at what fits in RAM, which the capture client says out loud rather than
    discovering partway through.
-3. **A pose engine worth the name.** `OrientationPoseEngine` prefers the browser's fused attitude
-   and integrates rates when there is none (ADR 0015). That is enough to aim; it is not
-   complementary fusion, and gyro bias is not handled at all.
+3. **A pose engine worth the name.** `OrientationPoseEngine` now fuses rather than chooses: on a
+   sample carrying both an attitude and a rate it predicts forward with the gyroscope, corrects
+   part of the way to the reading, and charges the rest to the gyroscope's zero offset — which it
+   therefore learns without a stillness detector, and keeps in `PoseState` because an engine is
+   stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° of yaw into one second
+   of dead reckoning from a device that never moved; it is now under 0.2°, and a reading 3° out on
+   every sample comes out under 1.5°.
+
+   **What is missing is the rates.** The browser adapter reports `OrientationOnly` deliberately —
+   it listens for a fused attitude and never adapts `DeviceMotionEvent.rotationRate` — so no
+   sample carrying both exists outside the tests, and fusion is switched off by the capability
+   until one does. Adapting `rotationRate` is the next piece: a second listener, a second iOS
+   permission gate, and the two streams merged into one sample. Claiming `GyroAccel` before then
+   would have the engine fusing against zeros.
+
+   `Stability` is the weaker half now and is left alone on purpose. It tells "no rate measured"
+   from "rate measured as zero" by `hasOrientation`, which is the heuristic a fused sample breaks,
+   and it takes only a span of samples so it has no capability to consult. On a fused stream it
+   falls back to differentiating attitudes — correct and noisier rather than wrong. Fixing it
+   means passing the state in, which is a second contract change.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
    Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
    synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
@@ -164,7 +181,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
 - `CoveragePlannerEngine`: ring/geodesic tessellation from lens FoV, acceptance cones, coverage
   and hole evaluation.
-- `PoseEngine`: complementary/Madgwick fusion, gyro bias handling, stability gating.
+- `PoseEngine`: complementary fusion and gyro bias handling are **done** (ADR 0024) and waiting on
+  a stream that carries rates; stability gating still reads attitudes rather than rates on a fused
+  stream, which needs the state passed into `Stability`.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the bench now
