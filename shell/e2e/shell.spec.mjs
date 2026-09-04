@@ -61,6 +61,34 @@ test('the page says which build it is', async ({ page }) => {
   }
 });
 
+test('the candidate you picked is still readable', async ({ page }) => {
+  // A rule that painted the chosen row's background and its text the same colour rendered it as
+  // a solid black bar — the one row a user had just chosen was the one row they could not read.
+  // Unit tests cannot see it: it needs a browser to resolve the cascade, and `currentColor`
+  // resolving against the element's *own* colour is exactly the kind of thing that only shows up
+  // once something computes it.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const painted = await page.evaluate(() => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('aria-pressed', 'true');
+      button.textContent = 'a candidate';
+      document.querySelector('#strip').append(button);
+      const style = getComputedStyle(button);
+      const seen = { background: style.backgroundColor, ink: style.color };
+      button.remove();
+      return seen;
+    });
+    expect(painted.background).not.toBe(painted.ink);
+  } finally {
+    await server.close();
+  }
+});
+
 test('enabling starts the camera and the viewfinder gets a stream', async ({ page }) => {
   const server = await serve();
   try {
