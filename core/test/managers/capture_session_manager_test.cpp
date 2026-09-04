@@ -272,7 +272,7 @@ class UnlocatablePlannerEngine final : public ICoveragePlannerEngine {
   Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
     return inner_.Plan(spec, lens);
   }
-  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&) override {
+  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&, const CoverageState&) override {
     return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
   }
   Result<CoverageState> Evaluate(const CapturePlan& plan,
@@ -338,7 +338,7 @@ class RefusingCoveragePlannerEngine final : public ICoveragePlannerEngine {
   Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics&) override {
     return Err<CapturePlan>(StatusCode::Unsupported, "test", "cannot plan");
   }
-  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&) override {
+  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&, const CoverageState&) override {
     return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
   }
   Result<CoverageState> Evaluate(const CapturePlan&, std::span<const Candidate>) override {
@@ -414,6 +414,26 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(manager.Candidates(node).value.empty());
   // Not forgotten: the caller passed it in and still owns it.
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
+}
+
+TEST_F(CaptureSession, GuidanceStopsAskingForACellOnceItIsCaptured) {
+  // The engine decides what "still needed" means, but only if the manager actually hands it the
+  // coverage — and a manager that passed a default-constructed state would look identical from
+  // the engine's own tests. The null planner lays a single cell, so filling it leaves nothing
+  // missing, and a sphere with nothing missing says so.
+  Begin();
+  const NodeId node = FirstNode();
+  // Aimed at it already — the null plan's one cell sits at identity and so does the starting
+  // pose — so the answer before capturing is to hold still, not to go looking.
+  EXPECT_EQ(manager->OnMotion({}).value.action, GuidanceAction::HoldStill);
+
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  ASSERT_TRUE(manager->OfferFrame(node, frame.value, PoseSample{}).ok());
+
+  auto guidance = manager->OnMotion({});
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.action, GuidanceAction::SphereDone);
 }
 
 TEST_F(CaptureSession, AnArmedBurstFillsTheCellOverTheTicksThatFollow) {

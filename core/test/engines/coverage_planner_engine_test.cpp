@@ -232,7 +232,7 @@ TEST(CoveragePlanner, LocateFindsTheCellTheUserIsAimingAt) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   for (const auto& node : plan.nodes) {
-    auto guidance = planner.Locate(node.targetOrientation, plan);
+    auto guidance = planner.Locate(node.targetOrientation, plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
     EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-9);
@@ -244,7 +244,7 @@ TEST(CoveragePlanner, LocateAsksTheUserToKeepLookingWhenTheyAreOff) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   const Quat aim = Multiply(plan.nodes.front().targetOrientation, FromAzimuthElevation(20.0, 0.0));
-  auto guidance = planner.Locate(aim, plan);
+  auto guidance = planner.Locate(aim, plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
   EXPECT_GT(guidance.value.angularErrorDeg, plan.spec.acceptanceConeDeg);
@@ -257,15 +257,89 @@ TEST(CoveragePlanner, NoDirectionIsFurtherFromACellThanAFieldOfView) {
   for (const Vec3& direction : SphereSamples(500)) {
     const double azimuth = std::atan2(direction.x, -direction.z) * kRadToDeg;
     const double elevation = std::asin(std::clamp(direction.y, -1.0, 1.0)) * kRadToDeg;
-    auto guidance = planner.Locate(FromAzimuthElevation(azimuth, elevation), plan);
+    auto guidance = planner.Locate(FromAzimuthElevation(azimuth, elevation), plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_LT(guidance.value.angularErrorDeg, plan.spec.horizontalFovDeg);
   }
 }
 
+// Everything captured except the named cells, which is what a session part-way through looks like.
+CoverageState AllDoneBut(const CapturePlan& plan, std::vector<uint64_t> missing) {
+  CoverageState state;
+  state.nodesTotal = static_cast<int32_t>(plan.nodes.size());
+  for (const auto& node : plan.nodes) {
+    const bool hole = std::find(missing.begin(), missing.end(), node.id.value) != missing.end();
+    if (hole) state.holes.push_back(node.id);
+    else ++state.nodesSatisfied;
+  }
+  return state;
+}
+
+TEST(CoveragePlanner, LocateAimsAtACellThatIsStillMissing) {
+  // Aiming straight at a cell that is already captured used to name that cell and say "hold
+  // still", which is an instruction to stand still and photograph what you already have. A person
+  // reading only the angular error cannot tell the difference, and on a phone that is the whole
+  // interface.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+  const CoverageNode& missing = plan.nodes.back();
+
+  auto guidance = planner.Locate(aimedAt.targetOrientation, plan,
+                                 AllDoneBut(plan, {missing.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, missing.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
+  EXPECT_GT(guidance.value.angularErrorDeg, 0.0);
+}
+
+TEST(CoveragePlanner, LocateStillPicksTheNearestOfTheCellsThatAreMissing) {
+  // Skipping the captured ones must not turn into ignoring distance: of what is left, the closest
+  // is still the one to send someone to.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  ASSERT_GE(plan.nodes.size(), 3u);
+  const CoverageNode& here = plan.nodes[0];
+  const CoverageNode& near = plan.nodes[1];
+  const CoverageNode& far = plan.nodes[plan.nodes.size() / 2];
+
+  auto guidance = planner.Locate(here.targetOrientation, plan,
+                                 AllDoneBut(plan, {near.id.value, far.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  const double toNear = AngleBetweenDirections(Direction(here.targetOrientation),
+                                               Direction(near.targetOrientation));
+  const double toFar = AngleBetweenDirections(Direction(here.targetOrientation),
+                                              Direction(far.targetOrientation));
+  ASSERT_LT(toNear, toFar) << "the fixture picked two cells that are not ordered as assumed";
+  EXPECT_EQ(guidance.value.targetNode.value, near.id.value);
+}
+
+TEST(CoveragePlanner, LocateSaysTheSphereIsDoneWhenNothingIsMissing) {
+  // The action existed and nothing ever produced it, so a finished sphere went on asking for the
+  // cell nearest the phone forever.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  auto guidance = planner.Locate(plan.nodes.front().targetOrientation, plan, AllDoneBut(plan, {}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.action, GuidanceAction::SphereDone);
+}
+
+TEST(CoveragePlanner, LocateAimsAtTheNearestCellWhenNothingHasBeenCaptured) {
+  // The start of every session: no holes recorded yet is not the same as nothing missing, and
+  // reading an empty coverage state as a finished sphere would end a capture before it began.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+  auto guidance = planner.Locate(aimedAt.targetOrientation, plan, CoverageState{});
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
+}
+
 TEST(CoveragePlanner, LocateRefusesAnEmptyPlan) {
   RingsCoveragePlannerEngine planner;
-  EXPECT_EQ(planner.Locate(Quat{}, CapturePlan{}).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(planner.Locate(Quat{}, CapturePlan{}, CoverageState{}).status.code,
+            StatusCode::FailedPrecondition);
 }
 
 // --------------------------------------------------------------------------------- evaluate
@@ -420,13 +494,13 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
   const CapturePlan plan = Plan(Spec());
 
   const Quat aimed = plan.nodes.front().targetOrientation;
-  auto straight = engine.Locate(aimed, plan);
+  auto straight = engine.Locate(aimed, plan, CoverageState{});
   ASSERT_TRUE(straight.ok());
 
   // The same direction, rotated 30 degrees about the axis the camera looks along.
   const Vec3 axis = Direction(aimed);
   const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), aimed);
-  auto tilted = engine.Locate(rolled, plan);
+  auto tilted = engine.Locate(rolled, plan, CoverageState{});
   ASSERT_TRUE(tilted.ok());
 
   EXPECT_EQ(tilted.value.targetNode.value, straight.value.targetNode.value);
@@ -437,7 +511,7 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
 TEST(CoveragePlanner, ReportsNoRollWhenTheCameraIsUpright) {
   RingsCoveragePlannerEngine engine;
   const CapturePlan plan = Plan(Spec());
-  auto guidance = engine.Locate(plan.nodes.front().targetOrientation, plan);
+  auto guidance = engine.Locate(plan.nodes.front().targetOrientation, plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_NEAR(guidance.value.rollErrorDeg, 0.0, 1e-9);
 }
@@ -450,7 +524,7 @@ TEST(CoveragePlanner, PicksTheCellTheCameraActuallyPointsAt) {
   for (const auto& node : plan.nodes) {
     const Vec3 axis = Direction(node.targetOrientation);
     const Quat rolled = Multiply(FromAxisAngle(axis, 45.0 / kRadToDeg), node.targetOrientation);
-    auto guidance = engine.Locate(rolled, plan);
+    auto guidance = engine.Locate(rolled, plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
     EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-6);
@@ -470,14 +544,14 @@ TEST(NullCoveragePlanner, AlsoSeparatesRollFromAim) {
   node.acceptanceConeDeg = 5.0;
   plan.nodes.push_back(node);
 
-  auto straight = engine.Locate(node.targetOrientation, plan);
+  auto straight = engine.Locate(node.targetOrientation, plan, CoverageState{});
   ASSERT_TRUE(straight.ok());
   EXPECT_NEAR(straight.value.angularErrorDeg, 0.0, 1e-9);
   EXPECT_NEAR(straight.value.rollErrorDeg, 0.0, 1e-9);
 
   const Vec3 axis = Direction(node.targetOrientation);
   const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), node.targetOrientation);
-  auto tilted = engine.Locate(rolled, plan);
+  auto tilted = engine.Locate(rolled, plan, CoverageState{});
   ASSERT_TRUE(tilted.ok());
   EXPECT_NEAR(tilted.value.angularErrorDeg, 0.0, 1e-6);
   EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);

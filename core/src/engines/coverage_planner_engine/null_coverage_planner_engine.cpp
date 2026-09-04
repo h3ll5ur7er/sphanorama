@@ -28,7 +28,8 @@ Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
 }
 
 Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
-                                                          const CapturePlan& plan) {
+                                                          const CapturePlan& plan,
+                                                          const CoverageState& coverage) {
   if (plan.nodes.empty()) {
     return Err<CaptureGuidance>(StatusCode::FailedPrecondition, kComponent, "plan has no cells");
   }
@@ -43,21 +44,45 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
   // sequence does not change when V4 lands.
   const Vec3 looking = Direction(current);
 
-  const CoverageNode* nearest = &plan.nodes.front();
-  double best = AngleBetweenDirections(looking, Direction(nearest->targetOrientation));
-  for (const auto& node : plan.nodes) {
-    const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
-    if (angle < best) {
-      best = angle;
-      nearest = &node;
+  // Coverage has an opinion only once something has been evaluated. An empty state is no
+  // information rather than nothing missing: at the start of a session nothing is captured and
+  // nothing is a hole, and reading that as a finished sphere would end a capture before it began.
+  const bool informed = coverage.nodesTotal > 0;
+  const auto missing = [&](NodeId id) {
+    return std::any_of(coverage.holes.begin(), coverage.holes.end(),
+                       [id](NodeId hole) { return hole.value == id.value; });
+  };
+
+  double best = 0.0;
+  const auto nearestOf = [&](bool onlyMissing) -> const CoverageNode* {
+    const CoverageNode* found = nullptr;
+    for (const auto& node : plan.nodes) {
+      if (onlyMissing && !missing(node.id)) continue;
+      const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
+      if (found == nullptr || angle < best) {
+        best = angle;
+        found = &node;
+      }
     }
-  }
+    return found;
+  };
+
+  // Only what is still needed, when that is known. Falling back to the whole plan is not merely
+  // defensive: a holes list naming cells this plan does not contain would otherwise leave nothing
+  // to aim at, and an odd target beats refusing to guide at all.
+  const CoverageNode* nearest = informed ? nearestOf(true) : nullptr;
+  const bool nothingMissing = informed && nearest == nullptr;
+  if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg = best * kRadToDeg;
   guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
-  guidance.action = guidance.angularErrorDeg <= nearest->acceptanceConeDeg
+  // A finished sphere still names a cell and an error, because the fields are read either way —
+  // but it says so, which nothing in this engine ever did before, so a completed capture went on
+  // asking for whichever cell the phone happened to be nearest.
+  guidance.action = nothingMissing ? GuidanceAction::SphereDone
+                    : guidance.angularErrorDeg <= nearest->acceptanceConeDeg
                         ? GuidanceAction::HoldStill
                         : GuidanceAction::Seek;
   return Ok(guidance);
