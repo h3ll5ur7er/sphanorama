@@ -41,4 +41,6 @@ end-to-end test drives in a real browser. Its frames share an exposure where the
 one: the page applies the locks and confirms them by reading the mode back before arming, and
 `SetLocks` refuses a lock it has not been told is held (ADR 0022). The frame store's browser
 ceiling is read from `navigator.deviceMemory` rather than stated, so it scales with the machine;
-what is still missing is a policy that decides *when* to spill. See `docs/06-roadmap.md`.
+and the policy above it is in: `CaptureSessionManager` cools a cell the moment its burst is
+ranked, so a sphere larger than the store still captures and `Allocate`'s refusal is the backstop
+rather than the first thing a capture hits (ADR 0023). See `docs/06-roadmap.md`.
