@@ -136,6 +136,26 @@ describe('a spill tier that outlives the tab', () => {
     expect(index.bytes().length).toBe(0);
   });
 
+  it('does not allocate whatever the index file claims to be', () => {
+    // The size comes off a file on disk, and this runs while the worker is booting. A corrupt
+    // length there is a buffer the phone cannot allocate — the tier is a few kilobytes for a full
+    // sphere, so anything on that scale is a broken file rather than a large one.
+    let asked = 0;
+    const enormous: SpillFile = {
+      write: () => 0,
+      read: (into) => { asked = Math.max(asked, into.length); return 0; },
+      truncate: () => {},
+      size: () => 8 * 1024 * 1024 * 1024,
+      close: () => {},
+    };
+
+    const host = createSpillHost(fakeFile(), enormous);
+
+    expect(asked).toBeLessThan(64 * 1024 * 1024);
+    // And it is a working tier, just an empty one.
+    expect(host.write(1, frame(0xa1))).toBe(true);
+  });
+
   it('starts empty rather than throwing when the index makes no sense', () => {
     // It is a file on a phone: a tab killed mid-write, a quota that ran out between the frame and
     // the index. Losing the tier's memory costs a resume; throwing here costs the whole session,

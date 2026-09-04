@@ -60,13 +60,19 @@ interface StoredIndex {
 
 const INDEX_VERSION = 1;
 
+// What a plausible index cannot exceed. A full sphere is twenty-eight cells of five frames, and
+// each entry is a few dozen bytes of JSON — kilobytes, not megabytes. The length comes off a file
+// on disk and is read while the worker is booting, so a corrupt one is a buffer the phone cannot
+// allocate; past this, the file is broken rather than large.
+const INDEX_CEILING = 8 * 1024 * 1024;
+
 function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
                    free: Map<number, number[]>): number {
   if (!index) return 0;
   let text: string;
   try {
     const size = index.size();
-    if (size <= 0) return 0;
+    if (size <= 0 || size > INDEX_CEILING) return 0;
     const bytes = new Uint8Array(size);
     if (index.read(bytes, 0) !== size) return 0;
     text = new TextDecoder().decode(bytes);
