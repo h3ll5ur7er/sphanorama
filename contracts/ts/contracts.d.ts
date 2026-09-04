@@ -472,6 +472,12 @@ export interface CaptureSessionManager {
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
   coverage(): Promise<Result<CoverageState>>;
+  /**
+   * Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
+   * committed burst. The order is an answer rather than a record of when the shutter fired, so a
+   * review client can show a strip and name the automatic pick without deciding what "best"
+   * means — which is V6's, and not a client's to borrow.
+   */
   candidates(node: NodeId): Promise<Result<Candidate[]>>;
   /**
    * Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to

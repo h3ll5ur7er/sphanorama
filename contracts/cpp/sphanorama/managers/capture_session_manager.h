@@ -39,6 +39,10 @@ class ICaptureSessionManager {
                                           const PoseSample& pose) = 0;
 
   virtual Result<CoverageState> Coverage() const = 0;
+  // Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
+  // committed burst. The order is an answer rather than a record of when the shutter fired, so a
+  // review client can show a strip and name the automatic pick without deciding what "best"
+  // means — which is V6's, and not a client's to borrow.
   virtual Result<std::vector<Candidate>> Candidates(NodeId node) const = 0;
 
   // Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to

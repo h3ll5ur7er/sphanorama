@@ -44,6 +44,31 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
   return Fail(StatusCode::Internal, "test", "the burst never finished");
 }
 
+// Ranks backwards through capture order. What matters is only that it disagrees with the order
+// frames arrived in, so a manager that hands back capture order cannot pass by accident.
+class ReversedQualityEngine final : public IFrameQualityEngine {
+ public:
+  Result<QualityScore> Score(const FrameRef&, const PoseSample&, const NodeContext&) override {
+    return Ok(QualityScore{});
+  }
+
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate> candidates,
+                                        const SelectionPolicy&) override {
+    if (fail_) {
+      return Err<std::vector<CandidateId>>(StatusCode::Internal, "test", "no ranking today");
+    }
+    std::vector<CandidateId> ranked;
+    ranked.reserve(candidates.size());
+    for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) ranked.push_back(it->id);
+    return Ok(std::move(ranked));
+  }
+
+  void FailRanking(bool fail) { fail_ = fail; }
+
+ private:
+  bool fail_ = false;
+};
+
 class CaptureSession : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -1199,6 +1224,72 @@ TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHea
     EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
   }
   EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
+}
+
+// ------------------------------------------------------------------ the order they come back in
+//
+// `Rank` is where "best" is decided (V6), and the manager already asks it on every committed
+// burst — and threw the answer away, so `Candidates` handed back capture order. A review client
+// showing that strip would either display frames in the order the shutter fired, which is not an
+// opinion about anything, or rank them itself, which is the engine's job in the client's hands.
+
+TEST_F(CaptureSession, CandidatesComeBackRankedRatherThanInCaptureOrder) {
+  ReversedQualityEngine reversed;
+  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok());
+
+  const std::vector<Candidate> strip = ranked.Candidates(node).value;
+  ASSERT_EQ(strip.size(), 3u);
+  EXPECT_GT(strip[0].id.value, strip[1].id.value);
+  EXPECT_GT(strip[1].id.value, strip[2].id.value);
+}
+
+TEST_F(CaptureSession, AnOfferedFrameTakesItsPlaceInTheRankingRatherThanTheEnd) {
+  // An imported frame is evidence like any other and may be the best of the set. Appending it
+  // unranked would put a better frame behind worse ones for the rest of the session.
+  ReversedQualityEngine reversed;
+  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok());
+
+  auto imported = store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_TRUE(ranked.OfferFrame(node, imported.value, PoseSample{}).ok());
+
+  const std::vector<Candidate> strip = ranked.Candidates(node).value;
+  ASSERT_EQ(strip.size(), 3u);
+  // Last to arrive, so first under this ranking — which is the point: position is the ranking's
+  // to decide, not arrival's.
+  EXPECT_EQ(strip[0].frame.id.value, imported.value.id.value);
+}
+
+TEST_F(CaptureSession, AnOfferThatCannotBeRankedLeavesTheCellAlone) {
+  // Symmetric with the burst path, which rolls back a set nobody could rank. A cell holding a
+  // candidate the selection engine has already failed on is worse than a rejected offer: the
+  // failure is invisible and the strip is in an order nothing chose.
+  ReversedQualityEngine reversed;
+  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok());
+
+  auto imported = store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  reversed.FailRanking(true);
+  EXPECT_FALSE(ranked.OfferFrame(node, imported.value, PoseSample{}).ok());
+  EXPECT_EQ(ranked.Candidates(node).value.size(), 2u);
 }
 
 }  // namespace

@@ -7,6 +7,33 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
 
+// Puts a cell's candidates into the order the quality engine named.
+//
+// Quadratic in the size of a cell, which is a burst plus whatever was offered — single digits.
+// The alternative is a map keyed by candidate id, which costs more to build than this costs to
+// walk at that size and would have to be rebuilt on every change.
+//
+// Anything the ranking does not name keeps its place at the end rather than disappearing. An
+// engine that returns a short list is misbehaving, and losing a captured frame to it would be a
+// worse answer to that than an oddly ordered strip.
+void Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order) {
+  std::vector<Candidate> ranked;
+  ranked.reserve(cell.size());
+  for (const CandidateId id : order) {
+    const auto found = std::find_if(cell.begin(), cell.end(), [id](const Candidate& candidate) {
+      return candidate.id.value == id.value;
+    });
+    if (found != cell.end()) ranked.push_back(*found);
+  }
+  for (const Candidate& candidate : cell) {
+    const bool placed = std::any_of(ranked.begin(), ranked.end(), [&](const Candidate& already) {
+      return already.id.value == candidate.id.value;
+    });
+    if (!placed) ranked.push_back(candidate);
+  }
+  cell = std::move(ranked);
+}
+
 // One frame's worth at sensor rate, with room to spare. Anything older than the last few
 // frames is not worth integrating: the pose it would produce is already stale.
 constexpr size_t kDrainBatch = 64;
@@ -361,12 +388,18 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // Ranking is what turns a burst into a choice, so a set nobody could rank is not a captured
   // cell — and discarding the failure would leave the cell holding candidates the selection
   // engine had already failed on, with the burst reporting success.
-  if (auto ranked = quality_.Rank(cell, SelectionPolicy{}); !ranked.ok()) {
+  auto ranked = quality_.Rank(cell, SelectionPolicy{});
+  if (!ranked.ok()) {
     // Back to exactly what was there before this line, which may include a frame offered while
     // the burst was in flight. Disarm forgets the pending frames; it must not touch that one.
     cell.resize(before);
     return Abandon(ranked.status);
   }
+  // Kept rather than discarded, which it was. Deciding what "best" means is V6's and the answer
+  // was being computed and thrown away, so `Candidates` handed back the order the shutter fired
+  // in — an order that is not an opinion about anything, and that a client wanting a better one
+  // could only improve by doing the engine's job itself.
+  Reorder(cell, ranked.value);
 
   // Ranked, so these frames are the manager's evidence rather than a burst that might roll back,
   // and cooling them is now its business. Disarm is what does it, on this path and every other.
@@ -403,6 +436,18 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   }
   candidate.quality = scored.value;
   cell.push_back(candidate);
+
+  // Ranked with the rest, because an imported frame is evidence like any other and may be the
+  // best of the set — appending it unranked would hold a better frame behind worse ones for the
+  // rest of the session. Rolled back when nobody can rank it, symmetrically with the burst path:
+  // a cell holding a candidate the selection engine has already failed on is worse than a
+  // rejected offer, because the failure is invisible and the strip is in an order nothing chose.
+  auto ranked = quality_.Rank(cell, SelectionPolicy{});
+  if (!ranked.ok()) {
+    cell.pop_back();
+    return ranked.status;
+  }
+  Reorder(cell, ranked.value);
   return Ok(FrameVerdict::Accepted);
 }
 
