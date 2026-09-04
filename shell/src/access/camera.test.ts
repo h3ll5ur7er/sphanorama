@@ -41,12 +41,47 @@ describe('opening the camera', () => {
     }
   });
 
-  it('asks for the rear camera when told to', async () => {
+  it('requires the rear camera rather than merely preferring it', async () => {
+    // `ideal` is scored, not obeyed: getUserMedia picks the device with the lowest *combined*
+    // fitness distance over every ideal constraint, so a front camera that matches the requested
+    // resolution more closely outscores a rear one that does not, and the app quietly shoots a
+    // photo sphere as a selfie. Measured on a Pixel 9 Pro XL. Which way the phone is facing is
+    // not a preference to be traded against pixels.
     const media = fakeMedia({});
     const camera = createCameraAccess(media as never);
-    await camera.open({ preferRearCamera: true });
+    await camera.open({ preferRearCamera: true, preferredWidth: 1280, preferredHeight: 960 });
     const calls = media.getUserMedia.mock.calls as unknown as Array<[{ video: { facingMode: unknown } }]>;
-    expect(calls[0]?.[0].video.facingMode).toEqual({ ideal: 'environment' });
+    expect(calls[0]?.[0].video.facingMode).toEqual({ exact: 'environment' });
+  });
+
+  it('falls back to a preference when the device has no camera facing that way', async () => {
+    // `exact` is a filter, not a score: a laptop with only a front camera answers
+    // OverconstrainedError and would otherwise get no camera at all rather than the one it has.
+    let attempt = 0;
+    const media = {
+      getUserMedia: vi.fn(async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          const error = new Error('facingMode');
+          error.name = 'OverconstrainedError';
+          throw error;
+        }
+        return {
+          getVideoTracks: () => [{
+            getSettings: () => ({ width: 1280, height: 720 }),
+            getCapabilities: () => ({}),
+            stop: vi.fn(),
+          }],
+          getTracks: () => [{ stop: vi.fn() }],
+        };
+      }),
+    };
+    const camera = createCameraAccess(media as never);
+    const result = await camera.open({ preferRearCamera: true });
+    expect(result.ok).toBe(true);
+    const calls = media.getUserMedia.mock.calls as unknown as Array<[{ video: { facingMode: unknown } }]>;
+    expect(calls[0]?.[0].video.facingMode).toEqual({ exact: 'environment' });
+    expect(calls[1]?.[0].video.facingMode).toEqual({ ideal: 'environment' });
   });
 
   it('asks for a frame at least as large as the one that will be stored', async () => {
