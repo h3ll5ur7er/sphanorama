@@ -1,0 +1,68 @@
+/*
+ * The review panel. Deliberately plain: what is worth looking at here is the shape of the
+ * coverage and the numbers behind a choice, and anything decorative competes with both.
+ */
+#review { display: none; margin-top: 1rem; }
+#review[data-active='true'] { display: block; }
+
+#coverage-map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 1;   /* equirectangular: a full turn across, half a turn down */
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+/*
+ * Straight ahead, which is where the map's centre is and where a capture starts. Marking it gives
+ * a cell a reference to be left or right *of*, which a bare rectangle does not.
+ *
+ * Not the seam: the seam is where azimuth wraps, at ±180, and this projection puts that at the
+ * map's left and right edges — the border already draws it. A dashed line down the middle labelled
+ * as the seam would mark the one meridian along which the sphere is continuous.
+ *
+ * Declared non-interactive, because it is drawn *after* the dots and neither carries a z-index —
+ * so this guide is painted on top of the one cell a capture starts from. It happens not to
+ * swallow that click today, but only because it is a zero-width box with a one-pixel border;
+ * widening it to make it easier to see would silently make the straight-ahead cell unclickable.
+ */
+#coverage-map::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  border-inline-start: 1px dashed currentColor;
+  opacity: 0.25;
+}
+
+.cell {
+  position: absolute;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: -0.55rem 0 0 -0.55rem;   /* the dot is centred on its aim, not hung from it */
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cell[data-state='covered'] { background: currentColor; }
+.cell[aria-pressed='true'] { outline: 2px solid currentColor; outline-offset: 2px; }
+
+#strip { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.35rem; }
+
+#strip button {
+  width: 100%;
+  text-align: start;
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+
+#strip button[aria-pressed='true'] { background: currentColor; color: Canvas; }
+.strip-note { opacity: 0.7; }

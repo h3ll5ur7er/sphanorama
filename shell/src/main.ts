@@ -18,6 +18,7 @@ import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
 } from './clients/capture/guidance';
 import { describeAttitude } from './clients/capture/attitude';
+import { createReviewPanel, type ReviewPanel } from './clients/review/panel';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -33,6 +34,12 @@ const guidanceOut = el('guidance');
 const facadeOut = el('facade');
 const enableButton = el<HTMLButtonElement>('enable');
 const captureButton = el<HTMLButtonElement>('capture');
+const reviewElements = {
+  panel: el<HTMLElement>('review'),
+  map: el<HTMLElement>('coverage-map'),
+  stripHeading: el<HTMLElement>('strip-heading'),
+  strip: el<HTMLElement>('strip'),
+};
 
 const camera = createCameraAccess(navigator.mediaDevices);
 // One canvas for the session: grabbing a frame means drawing the viewfinder into it and reading
@@ -152,7 +159,7 @@ async function enable(core: SphanoramaCore) {
   // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
   // without it would turn a supported degraded mode into a dead end.
   if (opened.ok) await beginSession(core, started.ok);
-  else if (started.ok) pump(core, null, true);
+  else if (started.ok) pump(core, null, true, null);
 }
 
 /**
@@ -184,21 +191,21 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
   });
   if (!begun.ok) {
     stage.textContent = describeFailure(begun.status);
-    pump(core, null, motionRunning);
+    pump(core, null, motionRunning, null);
     return;
   }
 
   const plan = await core.captureSession.getPlan();
   if (!plan.ok) {
     stage.textContent = describeFailure(plan.status);
-    pump(core, null, motionRunning);
+    pump(core, null, motionRunning, null);
     return;
   }
 
   stage.textContent = motionRunning
     ? `capturing — ${plan.value.nodes.length} cells planned`
     : `capturing without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
-  pump(core, plan.value, motionRunning);
+  pump(core, plan.value, motionRunning, created.value as ProjectId);
 }
 
 /**
@@ -208,12 +215,43 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
  * no session the loop still runs, so the sensor readout stays live and the reason capture did
  * not start remains on screen.
  */
-function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boolean) {
+function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boolean,
+              project: ProjectId | null) {
   const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
   let nodesSatisfied = 0;
   const nodesTotal = plan?.nodes.length ?? 0;
+
+  // The review panel only exists once there is a plan to map and a project to record a choice
+  // against. Both arrive together or not at all.
+  const review: ReviewPanel | null = plan === null || project === null ? null : createReviewPanel(
+    reviewElements,
+    {
+      candidates: (node) => core.captureSession.candidates(node),
+      setSelection: (node, candidate) => core.project.setSelection(project, node, candidate),
+    });
+
+  /**
+   * Re-reads coverage and redraws the map.
+   *
+   * Only when a cell completes, which is the only moment coverage can have changed — asking per
+   * frame would be a facade round trip for an answer that cannot have moved, which is the same
+   * reasoning the guidance line already follows.
+   */
+  const refreshCoverage = async () => {
+    if (review === null || plan === null) return;
+    const state = await core.captureSession.coverage();
+    if (!state.ok) return;
+    nodesSatisfied = state.value.nodesSatisfied;
+    review.show(plan, state.value);
+  };
+
+  // Once at the start, and not only when a cell completes. Coverage can only *change* when one
+  // does, which is why the refresh below is where it is — but a map that is drawn only on change
+  // is empty at the moment it is most worth reading, which is before the capture, when it is what
+  // tells you where to point.
+  void refreshCoverage();
   let guidedOnce = false;
   // Whether the last answer said a burst was still filling. A burst advances on this tick and
   // nothing else (ADR 0018), so it has to keep running even when the sensor has gone quiet.
@@ -364,6 +402,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         guidanceOut.textContent = describeGuidance(guidance, {
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
         });
+        // A cell finishing is the one thing that moves coverage, so it is the one thing that
+        // redraws the map — and it is also where `nodesSatisfied` starts being a real number
+        // rather than the zero the guidance line has been reporting since it was written.
+        if (guidance.action === 'CellDone') void refreshCoverage();
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
         // before it returns — so a failure means the burst really is gone and the camera's locks

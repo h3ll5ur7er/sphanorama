@@ -269,6 +269,69 @@ test('enabling plans a sphere sized from the camera and guides toward a cell', a
   }
 });
 
+test('the coverage map shows the whole plan before anything is captured', async ({ page }) => {
+  // A coverage map is most useful before a capture, not after: it is what tells you where to
+  // point. Drawing it only when a cell completes — which is the only moment coverage *changes* —
+  // means the panel is empty at exactly the moment it is worth reading, and the first thing it
+  // ever shows is one cell filled in a field of nothing.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    const cells = page.locator('#coverage-map .cell');
+    await expect.poll(async () => cells.count(), { timeout: 15000 }).toBeGreaterThan(8);
+
+    const planned = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.getPlan();
+      return got.ok ? got.value.nodes.length : 0;
+    });
+    expect(await cells.count()).toBe(planned);
+    // Every one of them a hole, because nothing has been captured yet — a map that opened with
+    // cells already filled would be describing a capture that never happened.
+    expect(await page.locator('#coverage-map .cell[data-state="hole"]').count()).toBe(planned);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the cell straight ahead can actually be clicked', async ({ page }) => {
+  // The map draws a dashed guide down its centre, and the centre is where the straight-ahead cell
+  // sits. Both it and the dots are absolutely positioned with no z-index, so the guide — a
+  // generated box, painted after its siblings — is on top of the one dot a user is most likely to
+  // reach for first. A decoration that eats the click is invisible in a unit test, because there
+  // is no layout there to overlap: this needs a real browser hit-test, which is what a click is.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    const ahead = page.locator('#coverage-map .cell[style*="left: 50%"]').first();
+    await expect(ahead).toBeVisible({ timeout: 15000 });
+    // Playwright clicks the element's centre and refuses to click through something else, so an
+    // intercepting guide fails here rather than being clicked instead of the dot.
+    await ahead.click({ timeout: 5000 });
+
+    // Nothing has been captured, so the strip says so — the assertion is that the click arrived
+    // at the button at all.
+    await expect(page.locator('#strip-heading')).toContainText(/nothing captured/i);
+
+    // And the guide says outright that it is not interactive, rather than being harmless by
+    // accident. It is currently a zero-width box with a one-pixel border, and that is the only
+    // reason the dot wins the hit test today: give the guide a width to make it easier to see and
+    // the click it swallows would be the one on the cell a capture starts from.
+    const interactive = await page.evaluate(() => getComputedStyle(
+      document.querySelector('#coverage-map'), '::after').pointerEvents);
+    expect(interactive).toBe('none');
+  } finally {
+    await server.close();
+  }
+});
+
 test('an orientation event moves the pose through the sensor port', async ({ page }) => {
   // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
   // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and

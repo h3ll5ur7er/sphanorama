@@ -8,20 +8,9 @@
  * coverage plan is written in.
  */
 import type { Quat } from '../../../../contracts/ts/contracts';
+import { aimOfDirection, direction, type Vec3 } from '../spherical';
 
 const RAD_TO_DEG = 180 / Math.PI;
-
-type Vec3 = { x: number; y: number; z: number };
-
-/** Where the camera looks: -Z rotated by the attitude. */
-function direction(q: Quat): Vec3 {
-  const { w, x, y, z } = q;
-  return {
-    x: -2 * (x * z + w * y),
-    y: -2 * (y * z - w * x),
-    z: -(1 - 2 * (x * x + y * y)),
-  };
-}
 
 /** The right edge of the picture: +X rotated by the attitude. */
 function rightEdge(q: Quat): Vec3 {
@@ -41,12 +30,10 @@ const cross = (a: Vec3, b: Vec3): Vec3 => ({
 const whole = (deg: number) => (Math.round(deg) === 0 ? 0 : Math.round(deg));
 
 export function describeAttitude(orientation: Quat): string {
+  // One derivation, read twice: the roll below needs the viewing axis itself, and the angles are
+  // that same direction in another form.
   const aim = direction(orientation);
-
-  // The inverse of FromAzimuthElevation: yaw about +Y, then pitch about +X, so the looking
-  // direction is (-cos el · sin az, sin el, -cos el · cos az).
-  const elevation = Math.asin(Math.max(-1, Math.min(1, aim.y))) * RAD_TO_DEG;
-  const azimuth = Math.atan2(-aim.x, -aim.z) * RAD_TO_DEG;
+  const { azimuthDeg: azimuth, elevationDeg: elevation } = aimOfDirection(aim);
 
   // Roll against the level cell that shares this direction, measured exactly as RollBetween
   // measures it: from the target's horizontal +X axis to the camera's, about the viewing axis.

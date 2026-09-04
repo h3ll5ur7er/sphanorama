@@ -192,9 +192,11 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
 - `CoveragePlannerEngine`: ring/geodesic tessellation from lens FoV, acceptance cones, coverage
   and hole evaluation.
-- `PoseEngine`: complementary fusion and gyro bias handling are **done** (ADR 0024) and waiting on
-  a stream that carries rates; stability gating still reads attitudes rather than rates on a fused
-  stream, which needs the state passed into `Stability`.
+- `PoseEngine`: complementary fusion, gyro bias handling and stability gating are **done** (ADR
+  0024, ADR 0025). The browser adapts `DeviceMotionEvent.rotationRate`, each sample says whether
+  its rate was measured, and `Stability` judges each interval by the better signal available for
+  it. What is left on this line is a device: the correction and offset time constants have never
+  met one.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the bench now
@@ -207,7 +209,13 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   bundle adjustment produces a real focal length — so this waits on one of them rather than on
   an idea.
 - `IFrameStoreAccess` with the tiered residency and OPFS spill; memory-budget probe.
-- Review Client v1: the sphere coverage map, per-cell candidate strip, manual selection.
+- Review Client v1: the sphere coverage map and per-cell candidate strip are **done**, and a pick
+  is recorded through `ProjectManager.SetSelection` (UC-3). Two halves of it are not: the strip
+  shows what the core knows about a candidate rather than the frame itself, because reading pixels
+  back *out* of the store has no path across the worker — `PeekPreviewFrame` only goes inward
+  (ADR 0021); and a recorded selection cannot be read back, because `SetSelection` writes one and
+  no contract returns it, so an override lives in the client's memory and goes with the tab.
+  Neither is hard; both are contract-shaped rather than code-shaped.
 
 **Exit:** a full 360×180 capture on a mid-range Android and an iPhone completes without an OOM,
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
