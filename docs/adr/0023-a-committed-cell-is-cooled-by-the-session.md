@@ -55,10 +55,15 @@ mechanism and the refusal.**
 - A sink that **refuses the write** is a phone out of quota. The store leaves the frame exactly
   where it was: still in the heap, still readable, still this cell's evidence.
 
-In both cases the cell is already captured by the time this runs, so there is nothing to fail. And
-neither is silent: both mean the heap keeps bytes it hoped to give back, and the store says so at
-the next allocation that does not fit — with `FrameStoreExhausted`, naming the real problem, at
-the moment it becomes one.
+In both cases the cell is already captured by the time this runs, so there is nothing to fail.
+
+What discarding the status costs is the **cause**, and that is worth being exact about. The
+consequence is not lost: the heap keeps bytes it hoped to give back, and the next allocation that
+does not fit is refused. But `FrameStoreExhausted` says the ceiling was reached and nothing more —
+a sink out of quota and a capture genuinely too large for the device look identical from there.
+Carrying the reason that far would mean the store remembering that a spill was refused and saying
+so when it later runs out, which it does not do today. That is a diagnostic worth adding and it is
+named in the consequences below rather than assumed away here.
 
 ## Consequences
 - A sphere larger than the store is capturable. Peak heap during capture is one burst plus the
@@ -76,6 +81,11 @@ the moment it becomes one.
   first thing a normal capture runs into.
 - Nothing moves in the volatility map. V1 gains a decision it already had the knowledge for, and
   V11 keeps everything it owned.
+- **A capture that stops because the sink was refusing cannot be told from one that was simply too
+  large.** Both end at `FrameStoreExhausted` naming the ceiling. The fix is small and belongs to
+  the store rather than here — remember that a spill was refused, and say so in the detail of the
+  refusal that follows — and it is worth doing before anyone has to debug a phone from a
+  screenshot of the error.
 
 ## Rejected alternative
 **Evict inside `Allocate`.** When an allocation would overrun the ceiling, demote resting frames

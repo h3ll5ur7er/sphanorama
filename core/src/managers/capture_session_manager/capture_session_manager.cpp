@@ -279,10 +279,12 @@ void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
     // is a phone out of quota, and it leaves the frame exactly where it was: still in the heap,
     // still readable, still this cell's evidence.
     //
-    // Neither is silent. Both mean the heap keeps bytes it hoped to give back, and the store says
-    // so at the next allocation that does not fit — with FrameStoreExhausted, naming the real
-    // problem, rather than here, where the only thing to report is that a capture could not be
-    // made cheaper.
+    // What is lost by discarding it is the cause rather than the consequence. The heap keeps
+    // bytes it hoped to give back, and the next allocation that does not fit is refused — but
+    // FrameStoreExhausted names the ceiling and nothing else, so a sink out of quota looks
+    // exactly like a capture too large for the device. Carrying the reason that far means the
+    // store remembering a refused spill and saying so when it runs out, which is a diagnostic it
+    // does not have yet (ADR 0023).
     (void)frames_.Demote(candidate.frame, Residency::Spilled);
   }
 }
