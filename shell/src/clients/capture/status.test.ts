@@ -3,6 +3,7 @@
 // wrong" is the difference between a user fixing their permissions and closing the tab.
 import { describe, expect, it } from 'vitest';
 
+import { err, ok } from '../../access/result';
 import { describeFailure, describeLocks, formatCapabilities } from './status';
 
 describe('describeFailure', () => {
@@ -92,7 +93,7 @@ describe('what the camera let the burst lock', () => {
   const all = { exposure: true, whiteBalance: true, focus: true };
 
   it('names the locks that are actually holding', () => {
-    expect(describeLocks(all, all)).toBe('exposure · white balance · focus');
+    expect(describeLocks(all, ok(all))).toBe('exposure · white balance · focus');
   });
 
   it('says outright when the camera offers no manual modes at all', () => {
@@ -100,7 +101,7 @@ describe('what the camera let the burst lock', () => {
     // to move for the whole ~320 ms a burst spans — so a burst's frames can differ by more than
     // the scene does, and the sharpness spread across a cell is the camera hunting rather than
     // anything selection did. Without it that spread is unattributable.
-    expect(describeLocks(none, none)).toMatch(/no manual modes/i);
+    expect(describeLocks(none, ok(none))).toMatch(/no manual modes/i);
   });
 
   it('separates a lock that was refused from one that was never asked for', () => {
@@ -110,7 +111,7 @@ describe('what the camera let the burst lock', () => {
     const asked = { exposure: true, whiteBalance: false, focus: true };
     const got = { exposure: true, whiteBalance: false, focus: false };
 
-    const line = describeLocks(asked, got);
+    const line = describeLocks(asked, ok(got));
     expect(line).toContain('exposure');
     expect(line).toMatch(/focus refused/i);
     expect(line).not.toMatch(/white balance refused/i);
@@ -120,7 +121,26 @@ describe('what the camera let the burst lock', () => {
     // Not hypothetical: `advanced` constraints are best-effort, and a camera is free to settle on
     // manual for its own reasons. The burst is told what actually holds, so the line has to be
     // the same truth and not a copy of the request.
-    expect(describeLocks(none, { exposure: true, whiteBalance: false, focus: false }))
+    expect(describeLocks(none, ok({ exposure: true, whiteBalance: false, focus: false })))
       .toContain('exposure');
+  });
+
+  it('does not blame the locks when asking about them is what failed', () => {
+    // `setLocks` fails outright when there is no camera to ask — a track pulled away mid-gesture,
+    // a stream that ended. Rendering that as all-false makes this row say the camera has no
+    // manual modes, which is the one sentence it exists to make trustworthy: it is the reading
+    // that sends the next person after bracketing in Phase 2, for a camera that was never asked.
+    const line = describeLocks(all, err('CameraUnavailable', 'CameraAccess', 'no camera open'));
+
+    expect(line).not.toMatch(/no manual modes/i);
+    expect(line).not.toMatch(/refused/i);
+    expect(line).toContain('no camera open');
+  });
+
+  it('falls back to the code when the failure carried no words', () => {
+    // Every status has a code; detail is optional and empty for anything that failed without a
+    // sentence to offer. An empty tail would read as the row having nothing to say.
+    expect(describeLocks(all, err('CameraUnavailable', 'CameraAccess')))
+      .toContain('CameraUnavailable');
   });
 });

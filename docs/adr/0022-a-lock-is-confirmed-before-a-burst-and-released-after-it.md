@@ -68,7 +68,10 @@ could not.
   screen said whether the camera had been free to re-expose and refocus across the third of a
   second the burst spans. Held and refused are named separately: a refused lock is a camera that
   advertised a manual mode and then did not take it, which is the case this read-back exists for,
-  while one never asked for is a camera that said up front it has none.
+  while one never asked for is a camera that said up front it has none. A third case reads
+  `unknown`: asking is itself fallible — a track pulled away mid-gesture leaves no camera to put
+  the question to — and rendering that failure as three absent locks would make the row claim the
+  camera has no manual modes, which is exactly the reading it exists to make trustworthy.
 - **The client sequences a resource access directly**, which looks like a layer violation and is
   not: the shell's page-side adapters are the state ADR 0014's resident host is made of, and the
   client has always called `camera.open()` and `motion.start()` the same way. What it must never

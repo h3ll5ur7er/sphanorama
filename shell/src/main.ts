@@ -391,7 +391,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // granted and had nowhere to say it, which left the one question a burst's numbers raise —
       // is the camera free to re-expose and refocus between these frames? — unanswerable from a
       // screenshot.
-      locksOut.textContent = describeLocks(wanted, settled);
+      locksOut.textContent = describeLocks(wanted, held);
 
       armedNow = await core.captureSession.armBurst(node, {
         frameCount: 5, intervalMs: 80,
