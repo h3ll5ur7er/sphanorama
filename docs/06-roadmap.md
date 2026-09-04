@@ -46,8 +46,11 @@ rings for a typical phone.
 
 One caveat worth stating plainly, because "planned for your lens" overstates it: the browser does
 not report field of view at all. The plan is sized from the camera's **real resolution and aspect
-ratio** and an **assumed 66° horizontal angle** (`deriveFieldOfView` in
-`shell/src/access/capture-host.ts`). Phase 2's bundle adjustment estimates focal length from the
+ratio** and an **assumed 66° angle across the frame's long edge** (`deriveFieldOfView` in
+`shell/src/access/capture-host.ts`). Across the *long* edge rather than the horizontal one,
+because the assumption is about a lens and a lens does not change when the phone is turned — the
+browser reports the track in the device's current orientation, so a phone held upright answers
+960×1280 and the wide angle belongs to its height. Phase 2's bundle adjustment estimates focal length from the
 captured frames, which is the only way to actually know; until then a wrong assumption shows up as
 cells that overlap more or less than intended rather than as a failure.
 

@@ -112,19 +112,31 @@ export interface CaptureHost {
  * on an assumption, and a wrong assumption shows up as cells that overlap more or less than
  * intended rather than as a failure.
  */
-const ASSUMED_HORIZONTAL_FOV_DEG = 66;
+const ASSUMED_LONG_EDGE_FOV_DEG = 66;
 const FALLBACK_ASPECT = 4 / 3;
 
-export function deriveFieldOfView(width: number, height: number, horizontalFovDeg: number) {
-  // The resolution the track settled on is genuine even though the angle is an assumption, so the
-  // aspect ratio is worth using rather than assuming that too.
-  const aspect = width > 0 && height > 0 ? height / width : 1 / FALLBACK_ASPECT;
+export function deriveFieldOfView(width: number, height: number, longEdgeFovDeg: number) {
+  // The assumption is about a lens, and a lens does not change when the phone is turned. The
+  // browser reports the track in the device's current orientation, so a phone held upright
+  // answers 960x1280 and the wide angle belongs to its *height*. Reading it onto `width`
+  // regardless applies it to the sensor's short side and derives a taller angle than the camera
+  // has — measured on a Pixel 9 Pro XL, 81.8 degrees vertical, which planned 22 cells for a
+  // sphere that needs more and would have spaced them far enough apart to leave gaps.
+  const known = width > 0 && height > 0;
+  const long = known ? Math.max(width, height) : 1;
+  const short = known ? Math.min(width, height) : 1 / FALLBACK_ASPECT;
   const toRad = Math.PI / 180;
   // Angles do not scale linearly with sensor dimensions: scaling the tangent is the relationship
-  // that actually holds, and treating it as linear would overstate the vertical angle and leave
+  // that actually holds, and treating it as linear would overstate the narrow angle and leave
   // gaps between rings.
-  const verticalFovDeg = (2 * Math.atan(Math.tan((horizontalFovDeg * toRad) / 2) * aspect)) / toRad;
-  return { horizontalFovDeg, verticalFovDeg };
+  const shortEdgeFovDeg =
+    (2 * Math.atan(Math.tan((longEdgeFovDeg * toRad) / 2) * (short / long))) / toRad;
+  // Named back onto the frame's own axes at the end, because that is what the planner reasons in.
+  const portrait = known && height > width;
+  return {
+    horizontalFovDeg: portrait ? shortEdgeFovDeg : longEdgeFovDeg,
+    verticalFovDeg: portrait ? longEdgeFovDeg : shortEdgeFovDeg,
+  };
 }
 
 /**
@@ -217,7 +229,7 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
     setCamera(opened) {
       camera = {
         ...opened,
-        ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_HORIZONTAL_FOV_DEG),
+        ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),
       };
     },
 
