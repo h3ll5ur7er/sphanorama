@@ -32,16 +32,30 @@
          guidance line already says the same thing in words, and a screen reader announcing a
          moving ring per cell would drown it. -->
     <div id="cell-layer" aria-hidden="true"></div>
+    <!-- The way to the cell being aimed at, when it is not in the picture: which way to turn, and
+         how far. The distance is the half that was missing — a cell 20 degrees away and one 160
+         degrees away raise the same arrow, and without a number there is nothing to turn by. -->
     <div id="target-arrow" aria-hidden="true" hidden>
       <svg viewBox="0 0 24 24"><path d="M12 3 L18 15 L12 12 L6 15 Z"></path></svg>
+      <span class="arrow-away"></span>
     </div>
 
     <section id="panel">
       <h1>Sphanorama</h1>
+      <!-- The panel is most of the screen, and the screen is where the markers are, so it folds
+           away once a capture is running and there is something to aim at. Everything it carries
+           stays one tap away.
+
+           Open in the markup, and labelled for that state: the label says what a press will do,
+           so an open panel offers "hide". The script keeps the two in step from here, and before
+           it runs this is what the page actually is. -->
+      <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-details">
+        hide</button>
       <!-- The live region is this line alone. It changes when something happens, which is what a
            screen reader should announce. The readout below changes every animation frame, and
            announcing that would make the app unusable with one. -->
       <p id="stage" aria-live="polite">starting…</p>
+      <div id="panel-details">
       <dl>
         <dt>core</dt><dd id="core-caps">—</dd>
         <dt>camera</dt><dd id="camera-state">—</dd>
@@ -61,7 +75,7 @@
         <p id="strip-heading" aria-live="polite">Pick a cell to see its candidates.</p>
         <ul id="strip" aria-labelledby="strip-heading"></ul>
       </section>
-      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. A burst captures real pixels into the frame store, and a captured cell&rsquo;s frames are spilled out of the heap so a whole sphere fits. The strip below shows what the core knows about each candidate; the frames themselves are not drawn yet, because reading pixels back out of the store has no path across the worker.</p>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. A burst captures real pixels into the frame store, and a captured cell&rsquo;s frames are spilled out of the heap so a whole sphere fits. The strip below shows what the core knows about each candidate; the frames themselves are not drawn yet, because reading pixels back out of the store has no path across the worker. Markers are placed in the video&rsquo;s own box and mapped through the crop <code>object-fit: cover</code> applies (ADR 0028).</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>

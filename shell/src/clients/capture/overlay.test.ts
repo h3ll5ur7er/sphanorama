@@ -161,3 +161,94 @@ describe('planOverlay', () => {
     expect(overlay.rings.map((ring) => ring.node)).toEqual([1]);
   });
 });
+
+describe('planOverlay against the box the video is painted in', () => {
+  // The overlay's markers are fractions of the camera frame; the page paints that frame into a
+  // box of a different shape with `object-fit: cover`. Reported from a phone, where the AR "took
+  // a bit to get used to": every marker was a little in from where the thing it named actually
+  // was, and the cell being aimed at did not sit under the reticle.
+  const PORTRAIT = { frameWidth: 960, frameHeight: 1280, boxWidth: 900, boxHeight: 1650 };
+
+  it('keeps the cell being aimed at under the reticle, whatever the box', () => {
+    // The one marker whose position can be checked by eye on a phone: point at a cell and its
+    // ring has to land on the centre of the picture, because that is what the reticle marks.
+    const overlay = planOverlay({
+      plan: plan(cell(1, 0, 0)),
+      coverage: coverage(1),
+      attitude: ahead,
+      targetNode: 1 as NodeId,
+      fit: PORTRAIT,
+    });
+    expect(overlay.rings[0].x).toBeCloseTo(0.5, 6);
+    expect(overlay.rings[0].y).toBeCloseTo(0.5, 6);
+  });
+
+  it('pushes a marker out to where the crop actually put the thing it names', () => {
+    const off = { plan: plan(cell(1, -25, 0)), coverage: coverage(1), attitude: ahead,
+                  targetNode: 1 as NodeId };
+    const unfitted = planOverlay(off);
+    const fitted = planOverlay({ ...off, fit: PORTRAIT });
+
+    expect(unfitted.rings[0].x).toBeGreaterThan(0.5);
+    expect(fitted.rings[0].x).toBeGreaterThan(unfitted.rings[0].x);
+  });
+});
+
+describe('the arrow to a cell out of sight', () => {
+  it('says how far the phone has to turn, not just which way', () => {
+    // Two cells that point the arrow the same way and are nothing like the same distance. Without
+    // a number the user turns and turns with nothing on screen saying how much is left, which is
+    // what "the arrow was not as intuitive as I hoped" turned out to mean.
+    const near = planOverlay({
+      plan: plan(cell(1, -95, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+    });
+    const far = planOverlay({
+      plan: plan(cell(1, -170, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+    });
+
+    expect(near.arrow?.awayDeg).toBeCloseTo(95, 3);
+    expect(far.arrow?.awayDeg).toBeCloseTo(170, 3);
+  });
+
+  it('sits out toward the edge on the side the cell is, rather than in the middle', () => {
+    // An arrow in the centre of the picture is a compass; one out at the edge is a signpost. The
+    // second is the one that reads as "over there" without being decoded.
+    const right = planOverlay({
+      plan: plan(cell(1, -120, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+    });
+    const left = planOverlay({
+      plan: plan(cell(1, 120, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+    });
+
+    expect(right.arrow!.x).toBeGreaterThan(0.8);
+    expect(right.arrow!.x).toBeLessThanOrEqual(1);
+    expect(right.arrow!.y).toBeCloseTo(0.5, 2);
+    expect(left.arrow!.x).toBeLessThan(0.2);
+  });
+
+  it('stays on screen when the frame is cropped into the box', () => {
+    // The arrow is not a point in the camera frame the way a ring is — it is a signpost placed at
+    // a distance from the centre of the *screen*. Sending it through the crop as well marched it
+    // past the edge of the phone on whichever axis the fit had trimmed.
+    const overlay = planOverlay({
+      plan: plan(cell(1, -120, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+      fit: { frameWidth: 960, frameHeight: 1280, boxWidth: 900, boxHeight: 1650 },
+    });
+
+    expect(overlay.arrow!.x).toBeGreaterThan(0.8);
+    expect(overlay.arrow!.x).toBeLessThanOrEqual(1);
+  });
+
+  it('does not point at a cell that has already been captured', () => {
+    // Seen on a finished sphere: 28 of 28 done, and an arrow still sending the user off to a cell
+    // there was nothing left to do at. Guidance keeps naming a nearest node once everything is
+    // covered, which is the right answer to a different question.
+    const overlay = planOverlay({
+      plan: plan(cell(1, 180, 0)),
+      coverage: coverage(),
+      attitude: ahead,
+      targetNode: 1 as NodeId,
+    });
+    expect(overlay.arrow).toBeNull();
+  });
+});

@@ -32,25 +32,28 @@ const reticle = el<SVGCircleElement>('reticle');
 const cellLayer = el<HTMLElement>('cell-layer');
 const targetArrow = el<HTMLElement>('target-arrow');
 
-// The marker layer ends where the panel begins, and the panel's height is not a constant: it grows
-// when the review strip opens and shrinks when it closes. Measured rather than assumed, because a
-// ring drawn over the status lines is both unreadable and a lie about where a cell is.
+/*
+ * The panel, and getting it out of the way of the picture.
+ *
+ * It is most of the screen, and the screen is where the markers are — so it folds itself once a
+ * capture starts, and from then on it is the user's: nothing reopens it but a press. The state it
+ * carries is one tap away; what it must not be is parked over the viewfinder for the whole of the
+ * part of this app you have to aim with.
+ *
+ * The label names the press, not the state, so an open panel offers "hide" — while `aria-expanded`
+ * names the state, because that is what it means. They read as contradicting each other and do
+ * not.
+ */
 const panel = el<HTMLElement>('panel');
-const measurePanel = () => {
-  document.documentElement.style.setProperty('--panel-height', `${panel.offsetHeight}px`);
-};
-// Once outright, then again whenever it changes. Waiting for the first observer callback would
-// leave the layer on its `0px` fallback until then — markers over the panel for a frame — and on a
-// browser without ResizeObserver it would stay there for good, which is the worse half.
-measurePanel();
-if (typeof ResizeObserver === 'function') {
-  // Named rather than constructed inline. The document is supposed to keep an observer with live
-  // observations reachable, so this should make no difference — but the cost of being wrong is a
-  // layer that silently stops following the panel for the rest of the session, and the cost of
-  // holding the reference is a word.
-  const watchPanel = new ResizeObserver(measurePanel);
-  watchPanel.observe(panel);
+const panelToggle = el<HTMLButtonElement>('panel-toggle');
+function openPanel(open: boolean) {
+  panel.dataset.open = String(open);
+  panelToggle.setAttribute('aria-expanded', String(open));
+  panelToggle.textContent = open ? 'hide' : 'details';
 }
+openPanel(true);
+panelToggle.addEventListener('click', () => openPanel(panel.dataset.open !== 'true'));
+
 const stage = el('stage');
 const coreCaps = el('core-caps');
 const cameraState = el('camera-state');
@@ -254,6 +257,9 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
   stage.textContent = motionRunning
     ? `capturing — ${plan.value.nodes.length} cells planned`
     : `capturing without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
+  // Folded once the session is under way. From here the picture is the interface, and the panel
+  // was covering nearly two thirds of it.
+  openPanel(false);
   pump(core, plan.value, motionRunning, created.value as ProjectId);
 }
 
@@ -287,7 +293,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // for that very cell stayed empty.
   const paintOverlay = () => {
     if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
-    overlay.show(planOverlay({ plan, coverage: lastCoverage, attitude, targetNode }));
+    overlay.show(planOverlay({
+      plan, coverage: lastCoverage, attitude, targetNode,
+      // Measured every paint rather than latched. The video reports no size until the first frame
+      // decodes, the box changes shape when the phone is turned, and a marker drawn against the
+      // last orientation's box is a marker in the wrong place.
+      fit: {
+        frameWidth: viewfinder.videoWidth, frameHeight: viewfinder.videoHeight,
+        boxWidth: cellLayer.clientWidth, boxHeight: cellLayer.clientHeight,
+      },
+    }));
   };
   const nodesTotal = plan?.nodes.length ?? 0;
 

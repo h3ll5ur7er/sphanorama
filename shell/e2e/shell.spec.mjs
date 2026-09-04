@@ -380,6 +380,9 @@ test('the coverage map shows the whole plan before anything is captured', async 
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
 
+    // The panel folds itself away when a capture starts, so the picture is not covered while the
+    // user is aiming. Reading what is inside it means opening it, which is what a person does.
+    await page.locator('#panel-toggle').click();
     const cells = page.locator('#coverage-map .cell');
     await expect.poll(async () => cells.count(), { timeout: 15000 }).toBeGreaterThan(8);
 
@@ -409,6 +412,7 @@ test('the cell straight ahead can actually be clicked', async ({ page }) => {
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
 
+    await page.locator('#panel-toggle').click();
     const ahead = page.locator('#coverage-map .cell[style*="left: 50%"]').first();
     await expect(ahead).toBeVisible({ timeout: 15000 });
     // Playwright clicks the element's centre and refuses to click through something else, so an
@@ -465,14 +469,17 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
     expect(placed.left).toMatch(/%$/);
     expect(placed.top).toMatch(/%$/);
 
-    // And they stop where the panel starts, rather than being drawn over the status lines.
-    // Polled because the panel's height is observed rather than known: opening the review panel
-    // resizes it, and the layer follows on the next callback rather than in the same frame.
-    await expect.poll(async () => page.evaluate(() => {
+    // And a fraction of the picture means a fraction of the *picture*. The layer used to stop
+    // where the panel began, which squeezed the whole field of view into the strip above it: the
+    // cell you were aiming at drew a third of a screen clear of the reticle sitting on it. What
+    // the video occupies is what the markers are measured against, and nothing else is.
+    const boxes = await page.evaluate(() => {
       const layer = document.querySelector('#cell-layer').getBoundingClientRect();
-      const panel = document.querySelector('#panel').getBoundingClientRect();
-      return Math.round(layer.bottom) - Math.round(panel.top);
-    }), { timeout: 10000 }).toBeLessThanOrEqual(1);
+      const video = document.querySelector('#viewfinder').getBoundingClientRect();
+      return { layer: [layer.left, layer.top, layer.width, layer.height],
+               video: [video.left, video.top, video.width, video.height] };
+    });
+    expect(boxes.layer.map(Math.round)).toEqual(boxes.video.map(Math.round));
   } finally {
     await server.close();
   }
@@ -511,23 +518,100 @@ test('the ring fills when its cell finishes, without waiting for another sample'
   }
 });
 
-test('the markers keep off the panel even with no ResizeObserver', async ({ page }) => {
-  // The layer's inset comes from a CSS variable the page measures. Measuring it only from the
-  // observer's first callback leaves the fallback of 0px in force until then — markers over the
-  // panel for a frame — and on a browser without ResizeObserver it never gets measured at all.
-  await page.addInitScript(() => {
-    Reflect.deleteProperty(window, 'ResizeObserver');
-  });
+test('the markers follow the crop when the window changes shape', async ({ page }) => {
+  // `object-fit: cover` scales the camera frame to fill its box and cuts off what hangs over, so
+  // how much of the frame is on screen depends on the shape of the window. Whether a cell is in
+  // shot is decided before any of that — so the same phone pointed the same way raises the same
+  // rings either way, and only *where they are drawn* may move. If it does not move, the page is
+  // handing the overlay no fit at all and every marker is short of the thing it names.
+  const server = await serve();
+  try {
+    await page.setViewportSize({ width: 400, height: 900 });
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+
+    // The video has to have reported a size before any of this means anything: an unmeasured
+    // frame passes markers straight through, and two pass-throughs are equal for the wrong reason.
+    await expect(page.locator('#camera-state')).toContainText(/\d+×\d+/, { timeout: 15000 });
+
+    const aim = () => page.evaluate(() => {
+      // Off the straight-ahead cell on purpose. The centre of the frame is the one point a crop
+      // cannot move, so a test aimed dead at a cell would compare 50% with 50% and pass whatever
+      // the page did.
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 12, beta: 90, gamma: 0,
+      }));
+    });
+    // Both axes. `cover` scales by whichever ratio is larger, so exactly one axis is ever cropped
+    // — in a landscape window the horizontal ratio is 1 by construction — and a test watching only
+    // `left` would be comparing two untouched numbers and calling the fit missing.
+    const spots = () => page.evaluate(() => [...document.querySelectorAll(
+      '#cell-layer .cell-ring:not([hidden])')].map((ring) => `${ring.style.left},${ring.style.top}`));
+
+    await aim();
+    await expect.poll(async () => (await spots()).length, { timeout: 15000 }).toBeGreaterThan(0);
+    const tall = await spots();
+
+    await page.setViewportSize({ width: 900, height: 400 });
+    // Re-aimed inside the poll: the capture loop only redraws when a sample arrives, so a resize
+    // on its own leaves the previous window's markers on screen for as long as the phone is still.
+    await expect.poll(async () => {
+      await aim();
+      return (await spots()).join(' ');
+    }, { timeout: 15000 }).not.toBe(tall.join(' '));
+  } finally {
+    await server.close();
+  }
+});
+
+test('the panel gets out of the picture while a capture is running', async ({ page }) => {
+  // It is more than half the screen, and the screen is what you aim with. Before this it sat over
+  // the viewfinder for the whole of a capture, which is why the marker layer had been squeezed
+  // into the strip above it — a workaround that moved every marker rather than the panel.
   const server = await serve();
   try {
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
-    const overlap = await page.evaluate(() => {
-      const layer = document.querySelector('#cell-layer').getBoundingClientRect();
-      const panel = document.querySelector('#panel').getBoundingClientRect();
-      return Math.round(layer.bottom) - Math.round(panel.top);
-    });
-    expect(overlap).toBeLessThanOrEqual(1);
+    const share = async () => page.evaluate(() => (
+      document.querySelector('#panel').getBoundingClientRect().height
+      / document.querySelector('#app').getBoundingClientRect().height));
+
+    // Open to begin with: nothing is being aimed at yet, and this is where the camera is enabled.
+    expect(await share()).toBeGreaterThan(0.25);
+    // The label names the press and `aria-expanded` names the state, so they read as opposites and
+    // have to stay in step with each other and with the panel.
+    //
+    // Read out of the served file, not off the page: the script sets both on startup, so by the
+    // time the DOM can be queried it has already covered for whatever the markup said. What is
+    // being checked here is the first paint — the page before any of this has run, which on a
+    // phone on a slow connection is a real thing somebody sees.
+    const markup = await (await page.request.get(server.appUrl)).text();
+    const button = markup.match(/<button id="panel-toggle"[\s\S]*?<\/button>/)[0];
+    expect(button).toContain('aria-expanded="true"');
+    expect(button).toMatch(/>\s*hide\s*</);
+
+    const toggle = page.locator('#panel-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('hide');
+
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect.poll(share, { timeout: 10000 }).toBeLessThan(0.25);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveText('details');
+
+    // And it comes back on request, because everything it carries is still worth reading. Nothing
+    // else reopens it: from the moment a capture starts, whether the picture is covered is the
+    // user's call and not the app's.
+    await toggle.click();
+    await expect.poll(share, { timeout: 10000 }).toBeGreaterThan(0.25);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('hide');
   } finally {
     await server.close();
   }

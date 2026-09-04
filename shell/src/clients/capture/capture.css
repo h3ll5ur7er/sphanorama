@@ -25,22 +25,25 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
 }
 
 /*
- * The cells, where they fall in the picture, ending where the panel begins.
+ * The cells, where they fall in the picture — in exactly the box the video is painted into.
  *
- * A ring drawn over the status lines is unreadable and says something false about where a cell is,
- * so the markers get the part of the viewfinder that is actually being looked at. The panel is
- * more than half the screen and its height changes as the review strip opens, so the height comes
- * from a ResizeObserver rather than a guess.
+ * This layer used to stop where the panel began, so that a ring was never drawn over the status
+ * lines. That put every marker in the wrong place. A marker is a fraction of the camera frame, and
+ * mapping those fractions onto a box two thirds the height of the picture squeezes the whole field
+ * of view into the strip above the panel: the cell being aimed at drew a third of a screen above
+ * the reticle that is supposed to be sitting on it. Seen on a Pixel, where the AR "took a bit to
+ * get used to".
  *
- * #horizon is deliberately left spanning the whole frame: the reticle marks the centre of what the
- * camera sees, and moving it up to dodge the panel would put it somewhere the camera is not
- * pointing. That the panel covers it is a panel problem. Percentages of the viewfinder, which is why these are
- * positioned elements rather than shapes inside #horizon: one SVG spanning the frame has to either
- * letterbox its coordinates, putting markers in the wrong place, or stretch them, turning every
- * ring into an ellipse.
+ * So the layer is the picture, the same as #horizon, and a marker the panel covers is covered —
+ * which is a panel problem, and the panel folds away while a capture is running. `object-fit:
+ * cover` crops the frame into this box on top of that, and the client maps through the crop
+ * (`intoViewfinder`); nothing here can express it, because CSS does not know the camera's shape.
+ *
+ * Percentages of the box, which is why these are positioned elements rather than shapes inside
+ * #horizon: one SVG spanning the frame has to either letterbox its coordinates, putting markers in
+ * the wrong place, or stretch them, turning every ring into an ellipse.
  */
-#cell-layer, #target-arrow { position: absolute; inset: 0 0 var(--panel-height, 0px) 0;
-  pointer-events: none; }
+#cell-layer { position: absolute; inset: 0; pointer-events: none; }
 .cell-ring { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; }
 .cell-ring svg { width: 100%; height: 100%; overflow: visible; }
 .ring-track { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: .35; }
@@ -49,9 +52,21 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
 /* The cell being aimed at, so the one that matters is findable among the rest. */
 .cell-ring[data-target='true'] .ring-track { opacity: .9; stroke-width: 2; }
 
-#target-arrow { display: grid; place-items: center; }
-#target-arrow svg { width: 54px; height: 54px; fill: var(--accent); opacity: .8;
+/*
+ * The signpost to the cell being aimed at: out on the side it is on rather than in the middle, and
+ * carrying how far there is to turn. Positioned by the client in percentages of the picture and
+ * pulled back onto its own centre here, so the arithmetic stays in one place.
+ *
+ * No transition on the rotation. The bearing wraps at 360, and an interpolated rotation crossing
+ * that point spins the long way round — a target just left of straight up would send the arrow
+ * sweeping through every other direction to get there.
+ */
+#target-arrow { position: absolute; display: grid; justify-items: center; gap: 2px;
+  transform: translate(-50%, -50%); pointer-events: none; }
+#target-arrow svg { width: 54px; height: 54px; fill: var(--accent); opacity: .85;
   filter: drop-shadow(0 0 6px rgba(13, 21, 20, .8)); }
+.arrow-away { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px rgba(13, 21, 20, .95); }
 @media (prefers-reduced-motion: reduce) {
   .ring-fill { transition: none; }
 }
@@ -67,6 +82,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
  * the cell markers are positioned against. Without a cap that region can reach zero, and markers
  * for cells the camera is pointing at have nowhere to be.
  */
+#panel[data-open='false'] #panel-details { display: none; }
+/* The panel is a column flex container, where `float` is ignored outright — measured in the
+   browser, where the button sat at the left edge with `float: right` computed and doing nothing. */
+#panel-toggle { align-self: flex-end; }
 #panel { position: absolute; left: 0; right: 0; bottom: 0; max-height: 62%; overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px 18px calc(18px + env(safe-area-inset-bottom));
