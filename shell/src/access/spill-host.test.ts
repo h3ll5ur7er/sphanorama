@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { createSpillHost, type SpillFile } from './spill-host';
+import { createSpillHost, openSpillFile, type SpillFile } from './spill-host';
 
 /** A spill file in memory. The allocator is what is under test; the syscalls are the browser's. */
 function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(): Uint8Array } {
@@ -133,5 +133,96 @@ describe('the spill host', () => {
     expect(host.drop(4)).toBe(true);
     expect(host.drop(4)).toBe(true); // idempotent: the caller wanted it gone and it is
     expect(host.read(4, new Uint8Array(16))).toBe(false);
+  });
+});
+
+/**
+ * An origin private file system with the one property that matters here: a sync access handle is
+ * exclusive, so a second attempt to lock a file someone else holds throws.
+ */
+function fakeOpfs(initial: string[] = []) {
+  const files = new Map(initial.map((name) => [name, { locked: false }]));
+  return {
+    names: () => [...files.keys()].sort(),
+    directory: {
+      async getFileHandle(name: string, options?: { create?: boolean }) {
+        const existing = files.get(name);
+        if (!existing && !options?.create) throw new Error(`no such file: ${name}`);
+        const file = existing ?? { locked: false };
+        files.set(name, file);
+        return {
+          async createSyncAccessHandle() {
+            if (file.locked) throw new Error(`${name} is in use`);
+            file.locked = true;
+            return {
+              write: () => 0,
+              read: () => 0,
+              truncate: () => {},
+              close: () => {
+                file.locked = false;
+              },
+            };
+          },
+        };
+      },
+      async removeEntry(name: string) {
+        if (files.get(name)?.locked) throw new Error(`${name} is in use`);
+        files.delete(name);
+      },
+      async *keys() {
+        yield* [...files.keys()];
+      },
+    },
+  };
+}
+
+describe('the spill file', () => {
+  it('opens for a second session while the first still holds its own', async () => {
+    // The bug this replaced: one fixed name and an exclusive handle, so the second tab open on
+    // the app got no spill tier at all and captured a smaller sphere for no stated reason.
+    const opfs = fakeOpfs();
+    const first = await openSpillFile(opfs.directory);
+    const second = await openSpillFile(opfs.directory);
+
+    expect(first).not.toBe(second);
+    expect(opfs.names()).toHaveLength(2);
+  });
+
+  it('opens anyway when a live session refuses to give its file up', async () => {
+    // The sweep below asks for every spill file that is not this one, and a live sibling's file
+    // says no. Letting that answer escape would cost the new session the tier it just opened —
+    // the second tab's spill would be lost again, by the code meant to keep it.
+    const opfs = fakeOpfs();
+    await openSpillFile(opfs.directory);
+    const held = opfs.names();
+
+    await expect(openSpillFile(opfs.directory)).resolves.toBeDefined();
+    expect(opfs.names()).toEqual(expect.arrayContaining(held));
+  });
+
+  it('reclaims the file of a session that is gone', async () => {
+    // Nobody deletes these on a crash or a killed tab, and a unique name per session means they
+    // would otherwise accumulate one abandoned spill file per run until the origin's quota went.
+    const opfs = fakeOpfs(['sphanorama-spill-1a2b3c']);
+    await openSpillFile(opfs.directory);
+
+    expect(opfs.names()).not.toContain('sphanorama-spill-1a2b3c');
+    expect(opfs.names()).toHaveLength(1);
+  });
+
+  it('leaves files that are not spill files alone', async () => {
+    const opfs = fakeOpfs(['someone-elses-database']);
+    await openSpillFile(opfs.directory);
+
+    expect(opfs.names()).toContain('someone-elses-database');
+  });
+
+  it('removes its own file when the session closes', async () => {
+    const opfs = fakeOpfs();
+    const file = await openSpillFile(opfs.directory);
+    expect(opfs.names()).toHaveLength(1);
+
+    file.close();
+    await vi.waitFor(() => expect(opfs.names()).toHaveLength(0));
   });
 });

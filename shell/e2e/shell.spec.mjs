@@ -44,6 +44,29 @@ test('loads the core and reports its capabilities', async ({ page }) => {
   }
 });
 
+test('a second tab open on the app gets a spill tier of its own', async ({ page, context }) => {
+  // Reported from a phone: the app said "no spill tier" until every other tab running it was
+  // closed. A sync access handle is exclusive, and both tabs were asking for the same fixed
+  // filename — so the second one captured a sphere capped at RAM and said nothing about why.
+  // Two pages in one context share the origin's private file system, which is the whole test.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(second.locator('#core-caps')).not.toContainText('no spill tier');
+    // And the first one is untouched: the newcomer's sweep of abandoned files must not have
+    // taken the file the tab beside it is still spilling to.
+    await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which build it is', async ({ page }) => {
   // A screenshot from a phone is the only evidence some of this project has — the OPFS spill
   // tier, the lens the camera chose, the cell count — and every one of those readings is worth
@@ -619,6 +642,41 @@ test('the horizon rolls in place instead of swinging across the screen', async (
     }
   } finally {
     await server.close();
+  }
+});
+
+test('a sensor that dies mid-session says so instead of going quiet', async ({ browser }) => {
+  // Reported from a phone: motion simply stopped, with nothing on screen to say why. The
+  // quaternion sensor reports a missing gyroscope or a refused grant asynchronously — long after
+  // start() returned ok — and the fallback it hands over to can fail on its own, with no caller
+  // left to return a failure to. The readout went to 'none' and that was the whole story.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Starts, then errors: Chromium's own way of reporting a device with no gyroscope, and the
+    // one path where the failure arrives after the adapter has already claimed the source.
+    window.AbsoluteOrientationSensor = class {
+      constructor() { this.quaternion = null; this.timestamp = null; this.listeners = {}; }
+      addEventListener(type, callback) { this.listeners[type] = callback; }
+      start() { setTimeout(() => this.listeners.error?.(), 0); }
+      stop() {}
+    };
+    // Nowhere to fall back to, which is what turns a handover into a dead session.
+    delete window.DeviceOrientationEvent;
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    // The reason the fallback could not take over, on the line that already carries the source.
+    await expect(page.locator('#motion-state')).toContainText(/orientation events/i, {
+      timeout: 15000,
+    });
+  } finally {
+    await server.close();
+    await context.close();
   }
 });
 

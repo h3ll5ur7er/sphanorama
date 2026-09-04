@@ -83,6 +83,13 @@ Three behaviours are worth naming because they are the failure modes a phone act
 - The single OPFS handle ADR 0019 describes means the browser sink owns an allocator: one file,
   offsets per frame, and a free list. That is the sink's problem entirely and none of the store's,
   which is the clearest evidence the seam is in the right place.
+- One file *per session*, not one file. A sync access handle is exclusive for as long as it is
+  open, so a fixed filename means the second tab open on the app gets no spill tier at all — a
+  sphere capped at RAM, for a reason the page could not state. The name is a UUID, and the sink
+  sweeps the spill files nobody holds when it opens: a live session's file refuses to unlink,
+  which makes the browser's own lock the liveness test and keeps abandoned files from
+  accumulating one per run. Reported from a phone, and reproduced in the browser tests with two
+  pages in one context.
 
 ## Rejected alternative
 **A second `IFrameStoreAccess` implementation over OPFS.** It is the shape the repo already uses

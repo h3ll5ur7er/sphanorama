@@ -125,39 +125,98 @@ export function createSpillHost(file: SpillFile): SpillHost {
 }
 
 /**
- * Opens the session's spill file, or reports why it could not.
- *
- * Truncated on open rather than resumed: spilled bytes are keyed by the store's frame identity,
- * which starts again at 1 in a new session, so yesterday's file would answer for today's frames.
- * Resuming a capture across a reload restores the *session document*, not the pixel heap.
+ * The pieces of `FileSystemSyncAccessHandle` this uses, typed here rather than relied on from
+ * lib.dom: sync access handles are worker-only and the ambient definitions for them are not in
+ * every TypeScript release we build against, which is exactly the kind of thing that turns into a
+ * red build on someone else's machine.
  */
-export async function openSpillFile(name = 'sphanorama-spill'): Promise<SpillFile> {
+interface SyncAccessHandle {
+  write(bytes: Uint8Array, options: { at: number }): number;
+  read(into: Uint8Array, options: { at: number }): number;
+  truncate(size: number): void;
+  close(): void;
+}
+
+/** The directory the spill files live in — the subset of `FileSystemDirectoryHandle` this uses. */
+export interface SpillDirectory {
+  getFileHandle(
+    name: string,
+    options?: { create?: boolean },
+  ): Promise<{ createSyncAccessHandle?: () => Promise<SyncAccessHandle> }>;
+  removeEntry(name: string): Promise<void>;
+  keys(): AsyncIterable<string>;
+}
+
+const SPILL_PREFIX = 'sphanorama-spill-';
+
+/**
+ * Takes back the spill files no session is holding.
+ *
+ * A live session's file protects itself: a sync access handle is an exclusive lock for as long as
+ * it is open, and unlinking a locked entry fails. So this asks for every spill file that is not
+ * ours and keeps the ones that refuse — which are exactly the ones still in use.
+ *
+ * Nothing else would ever delete these, and with a file per session they would otherwise pile up
+ * one per run — a crashed tab, a killed one, a reload that outran the close below — until the
+ * origin's quota ran out. Best-effort throughout: a file that will not enumerate or unlink stays
+ * where it is, because the cost of leaving it is disk that stays used and the cost of giving up
+ * is the whole tier.
+ */
+async function reclaimAbandoned(directory: SpillDirectory, keep: string): Promise<void> {
+  const names: string[] = [];
+  try {
+    for await (const name of directory.keys()) names.push(name);
+  } catch {
+    // A directory that will not enumerate leaves nothing to reclaim. Ours is already open.
+  }
+
+  for (const name of names) {
+    if (name === keep || !name.startsWith(SPILL_PREFIX)) continue;
+    // Per file, so one live sibling does not stop the sweep reaching the dead ones behind it.
+    await directory.removeEntry(name).catch(() => {});
+  }
+}
+
+async function originPrivateDirectory(): Promise<SpillDirectory> {
   const storage = (navigator as unknown as { storage?: StorageManager }).storage;
   if (!storage?.getDirectory) throw new Error('this browser has no origin private file system');
+  return (await storage.getDirectory()) as unknown as SpillDirectory;
+}
 
-  const root = await storage.getDirectory();
+/**
+ * Opens this session's spill file, or reports why it could not.
+ *
+ * The name is unique per session rather than fixed, because the handle underneath is exclusive:
+ * with one shared name, the second tab open on the app — or a reload whose previous worker has
+ * not been torn down yet — gets `NoModificationAllowedError` and captures with no spill tier for
+ * no reason it could state. A fresh file also settles what a stale one would have meant: spilled
+ * bytes are keyed by the store's frame identity, which starts again at 1 in a new session, so
+ * yesterday's file would answer for today's frames. Resuming a capture across a reload restores
+ * the *session document*, not the pixel heap.
+ */
+export async function openSpillFile(directory?: SpillDirectory): Promise<SpillFile> {
+  const root = directory ?? (await originPrivateDirectory());
+  const name = SPILL_PREFIX + crypto.randomUUID();
   const handle = await root.getFileHandle(name, { create: true });
-  // Typed here rather than relied on from lib.dom: sync access handles are worker-only and the
-  // ambient definitions for them are not in every TypeScript release we build against, which is
-  // exactly the kind of thing that turns into a red build on someone else's machine.
-  interface SyncAccessHandle {
-    write(bytes: Uint8Array, options: { at: number }): number;
-    read(into: Uint8Array, options: { at: number }): number;
-    truncate(size: number): void;
-    close(): void;
-  }
-  const sync = await (
-    handle as unknown as {
-      createSyncAccessHandle?: () => Promise<SyncAccessHandle>;
-    }
-  ).createSyncAccessHandle?.();
+  const sync = await handle.createSyncAccessHandle?.();
   if (!sync) throw new Error('this browser has no synchronous access handles');
 
-  sync.truncate(0);
+  // Swept only once ours is locked, so the sweep cannot reach the file this call is about to
+  // take. Another session inside its own window between create and lock can still lose its file
+  // to this; it falls to the no-spill path the caller already handles, and closing that window
+  // would need a lock protocol of its own for a race two tabs must boot milliseconds apart to
+  // reach.
+  await reclaimAbandoned(root, name);
+
   return {
     write: (bytes, at) => sync.write(bytes, { at }),
     read: (into, at) => sync.read(into, { at }),
     truncate: (size) => sync.truncate(size),
-    close: () => sync.close(),
+    close: () => {
+      sync.close();
+      // Fire and forget: the store closes the sink synchronously, and a tab being torn down has
+      // no time to await anything. Whatever this misses, the next session's sweep collects.
+      void root.removeEntry(name).catch(() => {});
+    },
   };
 }
