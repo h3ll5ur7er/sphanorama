@@ -48,6 +48,8 @@ export interface OverlayPainter {
 }
 
 export function createOverlayPainter(layer: HTMLElement, arrow: HTMLElement): OverlayPainter {
+  const glyph = arrow.querySelector<SVGElement>('svg');
+  const away = arrow.querySelector<HTMLElement>('.arrow-away');
   // Kept and reused rather than rebuilt each frame. This runs on every animation frame beside a
   // camera and a WASM core, and replacing the children thirty times a second would churn the DOM
   // for a set of markers that mostly just move a little.
@@ -71,7 +73,15 @@ export function createOverlayPainter(layer: HTMLElement, arrow: HTMLElement): Ov
 
       arrow.hidden = overlay.arrow === null;
       if (overlay.arrow !== null) {
-        arrow.style.transform = `rotate(${overlay.arrow.bearingDeg.toFixed(1)}deg)`;
+        // Placed rather than centred: the arrow sits out on the side the cell is on, so it reads
+        // as a signpost instead of a compass needle. The glyph alone is rotated — rotating the
+        // wrapper would stand the distance beside it on its head.
+        arrow.style.left = `${(overlay.arrow.x * 100).toFixed(3)}%`;
+        arrow.style.top = `${(overlay.arrow.y * 100).toFixed(3)}%`;
+        if (glyph !== null) {
+          glyph.style.transform = `rotate(${overlay.arrow.bearingDeg.toFixed(1)}deg)`;
+        }
+        if (away !== null) away.textContent = `${Math.round(overlay.arrow.awayDeg)}°`;
       }
     },
   };

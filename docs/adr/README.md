@@ -32,3 +32,4 @@ and the alternative we rejected and why.
 | [0025](0025-a-sample-says-whether-its-rate-was-measured.md) | `ImuSample` says whether its rate was measured; the browser adapts `rotationRate` and the capability stops deciding |
 | [0026](0026-candidates-come-back-ranked.md) | `Candidates(node)` hands a cell back ranked best-first, so a review client can name the automatic pick without deciding what best means |
 | [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and aims at the nearest cell still needed, and says `SphereDone` when there are none |
+| [0028](0028-markers-are-drawn-in-the-box-the-video-is-painted-in.md) | The overlay's markers are drawn in the video's own box and mapped through the `object-fit: cover` crop, and the panel folds out of the picture while a capture runs |
