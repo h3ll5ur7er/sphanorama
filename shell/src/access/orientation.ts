@@ -16,7 +16,7 @@
  * so a second platform reporting a rotation matrix or a replayed log changes this file and nothing
  * above it.
  */
-import type { ImuSample, Quat } from '../../../contracts/ts/contracts';
+import type { ImuSample, Quat, Vec3 } from '../../../contracts/ts/contracts';
 import type { OrientationSample } from './motion';
 
 const DEG_TO_RAD = Math.PI / 180;
@@ -45,6 +45,49 @@ function toCoreFrame(device: Quat, screenAngleDeg: number): Quat {
   const half = (screenAngleDeg * DEG_TO_RAD) / 2;
   const screen: Quat = { w: Math.cos(half), x: 0, y: 0, z: -Math.sin(half) };
   return multiply(EARTH_TO_CORE, multiply(device, screen));
+}
+
+/** A vector turned by a quaternion: q ⊗ v ⊗ q*. */
+function rotate(q: Quat, v: Vec3): Vec3 {
+  const t = multiply(q, { w: 0, x: v.x, y: v.y, z: v.z });
+  const out = multiply(t, { w: q.w, x: -q.x, y: -q.y, z: -q.z });
+  return { x: out.x, y: out.y, z: out.z };
+}
+
+/**
+ * `DeviceMotionEvent.rotationRate` as the viewfinder's angular velocity, in rad/s.
+ *
+ * Three conversions, and each of them is a mistake someone will otherwise make later.
+ *
+ * **The axes are named, not ordered.** The platform reports `alpha` about the device's Z, `beta`
+ * about X and `gamma` about Y — the same axes the orientation triple is composed from and in a
+ * different order from how they are written. Reading the three numbers positionally puts the
+ * yaw rate on the pitch axis.
+ *
+ * **The units are degrees per second** and the contract's are radians. A factor of 57 makes a
+ * filter look broken rather than mis-scaled.
+ *
+ * **The screen rotation applies here too, inverted.** The attitude is turned into the
+ * viewfinder's by post-multiplying the screen rotation (see `toCoreFrame`), and a rate is a
+ * body-frame vector: post-multiplying the attitude by `s` re-expresses body vectors through
+ * `s⁻¹`. So a rate about the chassis' long axis is a rate about a different axis of the picture,
+ * and in landscape — which is how this app is actually held — it is a different axis by 90°.
+ *
+ * Only the screen rotation appears. `EARTH_TO_CORE` is a change of *world* frame and a body-frame
+ * rate does not see it, which is why the pose engine can post-multiply this straight onto an
+ * attitude.
+ */
+export function angularVelocityFromRotationRate(
+  alphaDegPerSec: number, betaDegPerSec: number, gammaDegPerSec: number, screenAngleDeg: number,
+): Vec3 {
+  const device: Vec3 = {
+    x: betaDegPerSec * DEG_TO_RAD,
+    y: gammaDegPerSec * DEG_TO_RAD,
+    z: alphaDegPerSec * DEG_TO_RAD,
+  };
+  const half = (screenAngleDeg * DEG_TO_RAD) / 2;
+  const inverseScreen: Quat = { w: Math.cos(half), x: 0, y: 0, z: Math.sin(half) };
+  return rotate(inverseScreen, device);
 }
 
 /**
@@ -96,15 +139,19 @@ export function quaternionFromSensorReading(
 /**
  * A motion sample as the contract's IMU sample.
  *
- * The platform gives a fused attitude and no rates at all, which is exactly what
- * `MotionCapability::OrientationOnly` describes. The zeroed rate fields are not measurements and
- * `hasOrientation` is what tells PoseEngine which half of the sample is real (ADR 0015).
+ * Both flags are the same idea and both matter: `hasOrientation` says the attitude is real
+ * (ADR 0015) and `hasAngularVelocity` says the rate is (ADR 0025). Zero is a real rate, so a
+ * struct field alone cannot say whether the device was still or nothing measured it — and the
+ * engine fuses or does not fuse on exactly that distinction.
+ *
+ * Acceleration and the magnetometer are still unfilled and still say so.
  */
 export function toImuSample(sample: OrientationSample): ImuSample {
   const zero = { x: 0, y: 0, z: 0 };
   return {
     timestampNs: sample.timestampNs,
-    angularVelocity: zero,
+    angularVelocity: sample.angularVelocity ?? zero,
+    hasAngularVelocity: sample.angularVelocity !== undefined,
     acceleration: zero,
     hasMagnetometer: false,
     magneticField: zero,

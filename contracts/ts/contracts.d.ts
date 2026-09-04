@@ -99,6 +99,15 @@ export interface ImuSample {
    */
   hasOrientation: boolean;
   orientation: Quat;
+  /**
+   * Whether `angularVelocity` is a measurement. It is the same distinction `hasOrientation` draws
+   * and for the same reason: zero is a real rate, so a zeroed field cannot say whether the device
+   * is still or the platform never looked. Reading "not measured" as "not moving" is how a phone
+   * mid-swing was once reported as perfectly still (ADR 0025).
+   * A platform that reports a fused attitude and no gyroscope leaves this false, and so does one
+   * whose DeviceMotionEvent fires with a null rotationRate — which some desktops do.
+   */
+  hasAngularVelocity: boolean;
 }
 
 export interface PoseSample {

@@ -51,6 +51,7 @@ void FakeMotionSensorAccess::EnqueueSpin(int count, int64_t intervalNs,
     ImuSample sample;
     sample.timestampNs = static_cast<int64_t>(i) * intervalNs;
     sample.angularVelocity = Vec3{0.0, radiansPerSecondYaw, 0.0};
+    sample.hasAngularVelocity = true;
     sample.acceleration = Vec3{0.0, 0.0, 9.81};
     pending_.push_back(sample);
   }

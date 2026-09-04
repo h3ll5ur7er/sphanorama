@@ -157,18 +157,20 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    of dead reckoning from a device that never moved; it is now under 0.2°, and a reading 3° out on
    every sample comes out under 1.5°.
 
-   **What is missing is the rates.** The browser adapter reports `OrientationOnly` deliberately —
-   it listens for a fused attitude and never adapts `DeviceMotionEvent.rotationRate` — so no
-   sample carrying both exists outside the tests, and fusion is switched off by the capability
-   until one does. Adapting `rotationRate` is the next piece: a second listener, a second iOS
-   permission gate, and the two streams merged into one sample. Claiming `GyroAccel` before then
-   would have the engine fusing against zeros.
+   **And the rates are real now** (ADR 0025). The browser adapter listens for
+   `DeviceMotionEvent.rotationRate`, converts it into the viewfinder's frame — inverting the
+   screen rotation, which is invisible in portrait and wrong by 90° in landscape — and attaches it
+   to the attitude samples that follow, dropping anything older than 200 ms or missing an axis.
+   iOS gates motion separately from orientation and a denial there is not a failed start.
 
-   `Stability` is the weaker half now and is left alone on purpose. It tells "no rate measured"
-   from "rate measured as zero" by `hasOrientation`, which is the heuristic a fused sample breaks,
-   and it takes only a span of samples so it has no capability to consult. On a fused stream it
-   falls back to differentiating attitudes — correct and noisier rather than wrong. Fixing it
-   means passing the state in, which is a second contract change.
+   What decides whether a rate is real is the sample rather than the capability: `ImuSample` gains
+   `hasAngularVelocity`, the same distinction `hasOrientation` already draws and for the same
+   reason. That also fixed `Stability`, which used to tell the two apart by `hasOrientation` and
+   so reported a phone swung between two matching attitudes as perfectly still while the
+   gyroscope in the same sample read 3 rad/s.
+
+   What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
+   to correct, 0.5 s to learn an offset — have never met a real phone.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
    Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
    synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
