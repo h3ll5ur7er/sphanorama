@@ -26,6 +26,28 @@ export function direction(q: Quat): Vec3 {
   };
 }
 
+/**
+ * A world direction expressed in the frame of something with this attitude.
+ *
+ * The inverse of what `direction` does: that takes the camera's own forward axis out into the
+ * world, and this brings a world direction back in. Used to ask where a cell falls in the picture,
+ * which is a question about the camera's frame — and answering it by comparing world directions
+ * instead would lose the roll, so a tilted phone would draw its markers upright.
+ */
+export function rotateInto(q: Quat, world: Vec3): Vec3 {
+  // Rotating by the conjugate, written out rather than composed from a multiply and an inverse:
+  // the vector part is negated once, here, where it is visible.
+  const [x, y, z, w] = [-q.x, -q.y, -q.z, q.w];
+  const tx = 2 * (y * world.z - z * world.y);
+  const ty = 2 * (z * world.x - x * world.z);
+  const tz = 2 * (x * world.y - y * world.x);
+  return {
+    x: world.x + w * tx + (y * tz - z * ty),
+    y: world.y + w * ty + (z * tx - x * tz),
+    z: world.z + w * tz + (x * ty - y * tx),
+  };
+}
+
 export interface Aim {
   /** Degrees clockwise from straight ahead, in (-180, 180]. */
   azimuthDeg: number;
