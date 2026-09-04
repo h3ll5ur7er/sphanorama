@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -71,14 +72,19 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
   // so the totals cannot drift from the entries they are meant to describe.
   void Reclassify(Entry& entry, Residency target);
 
-  // Why the last spill was refused, and empty when the last one was not refused. A refused spill
+  // Why the last spill was refused, and unset when the last one was not refused. A refused spill
   // and a capture genuinely too large for the device both end at an allocation that does not fit,
   // and they are opposite problems — a full disk against a sphere the phone cannot hold. Without
   // this the refusal names the ceiling and sends whoever reads it looking in the wrong place.
   //
   // The last one rather than a count: a sink that started working again should stop being blamed,
   // and what the reader needs is what is wrong now.
-  std::string spill_refusal_;
+  //
+  // Optional rather than an empty string standing in for "none", because `Fail`'s detail argument
+  // defaults to empty: a sink may refuse a write and say nothing about it and still be
+  // conforming, and reading that as "no refusal" would lose the case this whole field exists for
+  // on a technicality.
+  std::optional<std::string> spill_refusal_;
 
   std::map<uint64_t, Entry> entries_;
   ISpillSink* spill_;

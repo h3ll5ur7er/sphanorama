@@ -75,8 +75,12 @@ Result<FrameRef> MemoryFrameStoreAccess::Allocate(int32_t width, int32_t height,
     // demotion that failed reported to a caller that had already captured the cell and had
     // nothing to do about it.
     std::string detail = "allocation would exceed the heap ceiling";
-    if (!spill_refusal_.empty()) {
-      detail += ", and the spill sink last refused a frame: " + spill_refusal_;
+    if (spill_refusal_.has_value()) {
+      detail += ", and the spill sink last refused a frame";
+      // A refusal that said nothing is still a refusal, and saying so is most of the value: it
+      // tells the reader which of two opposite problems they have, even when the sink cannot say
+      // which flavour of the first one.
+      if (!spill_refusal_->empty()) detail += ": " + *spill_refusal_;
     }
     return Err<FrameRef>(StatusCode::FrameStoreExhausted, kComponent, detail);
   }
@@ -209,7 +213,7 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
       return written;
     }
     // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
-    spill_refusal_.clear();
+    spill_refusal_.reset();
     entry->spilledHash = HashBytes(entry->bytes);
     entry->inSink = true;
     std::vector<uint8_t>().swap(entry->bytes);

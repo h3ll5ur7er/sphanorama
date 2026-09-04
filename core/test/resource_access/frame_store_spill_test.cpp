@@ -300,8 +300,30 @@ TEST(FrameStoreRefusal, ARefusalSaysWhenTheSinkIsWhyThereIsNoRoom) {
   ASSERT_TRUE(second.ok());
   auto third = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
   ASSERT_EQ(third.status.code, StatusCode::FrameStoreExhausted);
-  EXPECT_NE(third.status.detail.find("spill"), std::string::npos)
+  // The sink's own words, not merely the word "spill": what this exists to carry is the reason,
+  // and a fixed sentence about spilling would satisfy a looser assertion while losing exactly the
+  // thing that distinguishes a full disk from a device out of room.
+  EXPECT_NE(third.status.detail.find("no room to spill this frame"), std::string::npos)
       << "the refusal was: " << third.status.detail;
+}
+
+TEST(FrameStoreRefusal, ARefusalThatSaidNothingIsStillARefusal) {
+  // `Fail`'s detail argument defaults to empty, so a sink can refuse a write and say nothing
+  // about it and still be conforming. Reading "no detail" as "no refusal" would report only the
+  // ceiling for that sink — the exact case this was built for, missed on a technicality.
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{kFrameBytes * 2, &sink};
+  auto first = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(first.ok());
+
+  sink.FailWrites(true, "");
+  ASSERT_FALSE(store.Demote(first.value, Residency::Spilled).ok());
+
+  ASSERT_TRUE(store.Allocate(kWidth, kHeight, PixelFormat::RGBA8).ok());
+  auto refused = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_EQ(refused.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_NE(refused.status.detail.find("spill"), std::string::npos)
+      << "the refusal was: " << refused.status.detail;
 }
 
 TEST(FrameStoreRefusal, ARefusalWithNoRefusedSpillBehindItDoesNotInventOne) {
