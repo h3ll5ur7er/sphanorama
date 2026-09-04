@@ -71,10 +71,10 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
   // so the totals cannot drift from the entries they are meant to describe.
   void Reclassify(Entry& entry, Residency target);
 
-  // Why the last spill was refused, empty when the last one was not. A refused spill and a
-  // capture genuinely too large for the device both end at an allocation that does not fit, and
-  // they are opposite problems — a full disk against a sphere the phone cannot hold. Without this
-  // the refusal names the ceiling and sends whoever reads it looking in the wrong place.
+  // Why the last spill was refused, and empty when the last one was not refused. A refused spill
+  // and a capture genuinely too large for the device both end at an allocation that does not fit,
+  // and they are opposite problems — a full disk against a sphere the phone cannot hold. Without
+  // this the refusal names the ceiling and sends whoever reads it looking in the wrong place.
   //
   // The last one rather than a count: a sink that started working again should stop being blamed,
   // and what the reader needs is what is wrong now.
