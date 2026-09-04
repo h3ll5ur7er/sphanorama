@@ -25,6 +25,12 @@ int64_t ChooseHeapCeiling(int64_t deviceMemoryBytes, int64_t linkedMaxBytes) {
   // share of a very small number is zero: a heap of three bytes would otherwise be mistaken for a
   // platform that said nothing, and the clamp it asked for would be dropped. A number is a number
   // however small, and only the absence of one is silence.
+  //
+  // The share is divided before it is multiplied. That truncates twice and so lands up to two
+  // bytes below three quarters exactly — immaterial in a ceiling measured in megabytes, and the
+  // price of an expression that cannot overflow for any int64_t this is handed. Multiplying first
+  // would be exact and would be undefined behaviour near the top of the range, which is not a
+  // trade to make with an untrusted input.
   const int64_t ceiling =
       linkedMaxBytes > 0
           ? std::min(wanted, linkedMaxBytes / kLinkedHeapDenominator * kLinkedHeapNumerator)

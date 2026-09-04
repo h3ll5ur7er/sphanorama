@@ -92,6 +92,18 @@ TEST(ChooseHeapCeiling, ATinyLinkedHeapIsAFactRatherThanASilence) {
   EXPECT_LE(ChooseHeapCeiling(8 * kGiB, 3), 3);
 }
 
+TEST(ChooseHeapCeiling, TakesTheShareOfTheLinkedHeapWithoutOverflowing) {
+  // The share is taken as `linked / denominator * numerator` rather than `linked * numerator /
+  // denominator`, which loses up to two bytes of a memory ceiling and in exchange cannot overflow
+  // for any int64_t the browser might hand over. Multiplying first is undefined behaviour at the
+  // top of the range, and this input is untrusted by the header's own promise — so the order is
+  // deliberate, and this pins it. Under the ASan/UBSan build a multiply-first implementation
+  // fails here rather than passing quietly.
+  const int64_t ceiling = ChooseHeapCeiling(8 * kGiB, INT64_MAX);
+  EXPECT_GT(ceiling, 0);
+  EXPECT_LE(ceiling, 8 * kGiB / kDeviceMemoryShare);
+}
+
 TEST(ChooseHeapCeiling, IsNeverNegativeOrZeroHoweverNonsensicalTheInputs) {
   // Both numbers come from the browser through a boundary that has been wrong before. A ceiling
   // of zero would make the store refuse every allocation, which reads as a broken camera.
