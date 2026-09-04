@@ -36,11 +36,14 @@ const targetArrow = el<HTMLElement>('target-arrow');
 // when the review strip opens and shrinks when it closes. Measured rather than assumed, because a
 // ring drawn over the status lines is both unreadable and a lie about where a cell is.
 const panel = el<HTMLElement>('panel');
-if (typeof ResizeObserver === 'function') {
-  new ResizeObserver(() => {
-    document.documentElement.style.setProperty('--panel-height', `${panel.offsetHeight}px`);
-  }).observe(panel);
-}
+const measurePanel = () => {
+  document.documentElement.style.setProperty('--panel-height', `${panel.offsetHeight}px`);
+};
+// Once outright, then again whenever it changes. Waiting for the first observer callback would
+// leave the layer on its `0px` fallback until then — markers over the panel for a frame — and on a
+// browser without ResizeObserver it would stay there for good, which is the worse half.
+measurePanel();
+if (typeof ResizeObserver === 'function') new ResizeObserver(measurePanel).observe(panel);
 const stage = el('stage');
 const coreCaps = el('core-caps');
 const cameraState = el('camera-state');
@@ -468,6 +471,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // what turned a stranded lock into a permanently stranded one.
         firing = false;
         armed = false;
+        // And the markers go with it. They describe where the cells are *relative to a pose*, and
+        // a failed tick is one that produced no pose — leaving the last set on screen would draw
+        // a confident answer over a line that says guidance has stopped working.
+        overlay.show({ rings: [], arrow: null });
         guidanceOut.textContent = `guidance failed: ${guided.status.code}`;
       }
     }

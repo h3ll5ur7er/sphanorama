@@ -63,7 +63,7 @@ export function planOverlay(input: OverlayInput): Overlay {
   const sized = lens.horizontalFovDeg > 0 && lens.verticalFovDeg > 0;
   if (!sized) return { rings: [], arrow: null };
 
-  const holes = new Set<number>(coverage.holes as unknown as number[]);
+  const holes = new Set<number>(coverage.holes);
   const holding = Math.min(1, Math.max(0, input.holding ?? 0));
 
   const rings: RingMark[] = [];
@@ -71,7 +71,7 @@ export function planOverlay(input: OverlayInput): Overlay {
 
   for (const node of plan.nodes) {
     const seen = sight(attitude, node.targetOrientation, lens);
-    const isTarget = (node.id as unknown as number) === (targetNode as unknown as number);
+    const isTarget = node.id === targetNode;
     // The arrow is only ever about the cell being aimed at, and only when it cannot be seen.
     const needsArrow = isTarget && !seen.onScreen;
     if (needsArrow) arrow = { bearingDeg: seen.bearingDeg };
@@ -80,7 +80,7 @@ export function planOverlay(input: OverlayInput): Overlay {
     // Captured wins over any hold in progress: progress toward taking something is meaningless
     // once it has been taken, and a ring that emptied itself while the user lingered would read
     // as losing the frame they had just got.
-    const captured = !holes.has(node.id as unknown as number);
+    const captured = !holes.has(node.id);
     const fill = captured ? 1 : isTarget ? holding : 0;
     rings.push({ node: node.id, x: seen.x, y: seen.y, fill, isTarget });
   }

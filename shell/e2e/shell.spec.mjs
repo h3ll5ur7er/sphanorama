@@ -427,6 +427,67 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
+test('the markers keep off the panel even with no ResizeObserver', async ({ page }) => {
+  // The layer's inset comes from a CSS variable the page measures. Measuring it only from the
+  // observer's first callback leaves the fallback of 0px in force until then — markers over the
+  // panel for a frame — and on a browser without ResizeObserver it never gets measured at all.
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'ResizeObserver');
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const overlap = await page.evaluate(() => {
+      const layer = document.querySelector('#cell-layer').getBoundingClientRect();
+      const panel = document.querySelector('#panel').getBoundingClientRect();
+      return Math.round(layer.bottom) - Math.round(panel.top);
+    });
+    expect(overlap).toBeLessThanOrEqual(1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the markers go when guidance stops working', async ({ page }) => {
+  // Markers describe where cells are *relative to a pose*, and a failed tick produced no pose.
+  // Leaving the last set on screen draws a confident answer over a line saying guidance has
+  // stopped — so ending the session underneath the loop has to clear them, not freeze them.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 90, gamma: 0,
+      }));
+    });
+
+    const rings = page.locator('#cell-layer .cell-ring:not([hidden])');
+    await expect.poll(async () => rings.count(), { timeout: 15000 }).toBeGreaterThan(0);
+
+    // Pulled out from under the capture loop, which is what a failing tick looks like from here.
+    // Then one more sample, because the loop only asks the core for guidance when there is
+    // something new to fold in — without it the failure never happens and the line just stops.
+    await page.evaluate(async () => { await window.sphanoramaCore.captureSession.end(); });
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 10, beta: 80, gamma: 0,
+      }));
+    });
+
+    await expect(page.locator('#guidance')).toContainText('guidance failed', { timeout: 15000 });
+    await expect.poll(async () => rings.count(), { timeout: 15000 }).toBe(0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('an orientation event moves the pose through the sensor port', async ({ page }) => {
   // The pull path end to end: a browser event lands in the adapter's buffer, the client hands it
   // to the host, IMotionSensorAccess::Drain reads it out of the heap as flat doubles, and
