@@ -14,11 +14,16 @@ discarded — so an engine handed the two signals whose weaknesses cancel would 
 them. The fix and the failure are the same piece of code, which is why this lands before the
 adapter that produces such a sample rather than after it.
 
-What each signal is bad at is the whole argument. An absolute attitude is truth about where the
-device points and says nothing about how fast it is turning; indoors it is also a magnetometer
-reading that wanders by degrees between samples. A gyroscope is precise about change and knows
-nothing about absolute direction, and it does not read zero at rest — that offset integrates
-straight into the estimate during every second when no attitude is arriving to correct it.
+What each signal is bad at is the whole argument. An absolute attitude is a drift-bounded
+reference for where the device points and says nothing about how fast it is turning; indoors it is
+also a magnetometer reading that wanders by degrees between samples. A gyroscope is precise about
+change and knows nothing about absolute direction, and it does not read zero at rest — that offset
+integrates straight into the estimate during every second when no attitude is arriving to correct
+it.
+
+Neither is ground truth and this ADR does not make one: `01 §1.3` says the sensor pose is a prior
+and never truth, and fusing two priors produces a better prior. What the attitude bounds is drift,
+which is the one thing a gyroscope cannot bound for itself.
 
 ## Decision
 **A complementary filter, in the form that estimates the gyroscope's offset as it runs.** On a

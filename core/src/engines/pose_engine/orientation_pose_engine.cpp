@@ -123,15 +123,31 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
       state.pose.orientation = Turned(predicted, error, share);
 
-      // The same disagreement, charged to the gyroscope. Dividing by the correction time turns a
-      // standing misalignment back into the rate error that must have produced it, which is what
-      // a zero offset is; `seconds` then makes this an integral rather than a jump, so the
-      // offset converges over kBiasSeconds however fast the samples arrive.
+      // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
+      // error that must have produced it, which is what a zero offset is.
+      //
+      // `share` is what does that conversion, and getting it wrong is how this went badly wrong
+      // once. A standing disagreement is the rate error multiplied by the window it accumulated
+      // over, and `seconds / share` is that window: it flattens out at the correction time for
+      // samples closer together than one, and equals the gap itself for samples further apart.
+      // So multiplying the disagreement by `share` divides out the window and leaves a rate,
+      // and dividing by kBiasSeconds makes that an integral with a fixed time constant however
+      // fast the samples arrive.
+      //
+      // Charging `seconds` instead — as this did — is quadratic in the gap, because the
+      // disagreement already grows with it. At 60 Hz the two are within 10% of each other and at
+      // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
+      // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
+      //
+      // The clamp is what makes it safe for any gap rather than merely for realistic ones. A
+      // single observation may move the offset by at most the whole rate error it saw, so the
+      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the
+      // capture loop does with its timestamps.
       //
       // No stillness detector, and none needed: what accumulates here is the part of the error
       // that keeps pointing the same way. Noise does not, and cancels. A device that is really
       // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      const double charge = seconds / (kCorrectionSeconds * kBiasSeconds);
+      const double charge = std::min(share / kBiasSeconds, 1.0);
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
