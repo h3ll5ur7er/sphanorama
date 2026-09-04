@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 
 import { startServer } from '../../tools/static_server.mjs';
+import { GRAB_MAX_EDGE } from '../src/access/preview-frame.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = resolve(repoRoot, 'dist');
@@ -54,6 +55,30 @@ test('enabling starts the camera and the viewfinder gets a stream', async ({ pag
     const hasStream = await page.evaluate(
       () => document.querySelector('video').srcObject !== null);
     expect(hasStream).toBe(true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the camera is opened at the resolution the frames are stored at', async ({ page }) => {
+  // Left unasked, getUserMedia hands back the browser's own default rather than the camera's
+  // best: 640x480 in Chromium, against a grabber that keeps 1280 on the long edge. So the cap
+  // that exists to bound memory was bounding nothing, and every frame the core scored was a
+  // quarter of the pixels it had budgeted for. What the camera settled on is on screen, because
+  // the coverage plan is sized from it.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#camera-state')).not.toHaveText('—', { timeout: 15000 });
+
+    const shown = await page.locator('#camera-state').textContent();
+    const [width, height] = (shown ?? '').split('\u00d7').map((part) => Number(part.trim()));
+    expect(Number.isFinite(width) && Number.isFinite(height)).toBe(true);
+    // Asserted against the grabber's own cap rather than a number typed twice: the ask exists to
+    // match it, so the two move together or this fails.
+    expect(Math.max(width, height)).toBeGreaterThanOrEqual(GRAB_MAX_EDGE);
   } finally {
     await server.close();
   }

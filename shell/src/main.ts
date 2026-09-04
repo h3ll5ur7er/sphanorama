@@ -11,7 +11,7 @@ import type { CapturePlan, NodeId, ProjectId } from '../../contracts/ts/contract
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
 import { flattenImuSamples, stopCameraStream } from './access/capture-host';
-import { canvasDrawTarget, createFrameGrabber } from './access/preview-frame';
+import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
 import { describeFailure, formatCapabilities } from './clients/capture/status';
 import {
@@ -111,7 +111,18 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
 async function enable(core: SphanoramaCore) {
   enableButton.disabled = true;
 
-  const opened = await camera.open({ preferRearCamera: true });
+  // Asked for, because a camera that is not asked answers with the browser's default rather than
+  // its own best — 640x480 in Chromium, a quarter of the pixels the grabber's cap already budgets
+  // for. So the ask is that cap: the frame the core stores is the frame the camera was opened to
+  // produce, and when the cap moves the ask moves with it.
+  //
+  // Only a long edge. Constraining height as well would choose the frame's *shape*, and a camera
+  // that meets a shape by cropping its widest mode would come back with less field of view than
+  // it was already offering — more cells per ring, for a request meant to improve things. A
+  // taller mode is genuinely better for a sphere, since vertical field of view is what sets the
+  // ring count, but nothing here can tell a native 4:3 mode from a cropped 16:9 one without a
+  // real camera to ask. Until one has been measured, the ask is the one with no bad branch.
+  const opened = await camera.open({ preferRearCamera: true, preferredWidth: GRAB_MAX_EDGE });
   if (opened.ok) {
     // Pushed before the core is asked to begin: the plan is sized from the lens, and the core
     // reads the lens through a synchronous port that cannot wait for getUserMedia — nor for a

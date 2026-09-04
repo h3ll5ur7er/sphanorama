@@ -49,6 +49,30 @@ describe('opening the camera', () => {
     expect(calls[0]?.[0].video.facingMode).toEqual({ ideal: 'environment' });
   });
 
+  it('asks for a frame at least as large as the one that will be stored', async () => {
+    // Left unasked, getUserMedia hands back the browser's default — 640x480 in Chromium, which is
+    // half the long edge the grabber keeps and a quarter of its pixels. Every frame the core has
+    // ever scored or stored has been that default upscaled by nobody: the cap was guarding
+    // nothing. The adapter's job is only to pass the ask through; which number to ask for is the
+    // client's.
+    const media = fakeMedia({});
+    const camera = createCameraAccess(media as never);
+    await camera.open({ preferRearCamera: true, preferredWidth: 1280 });
+    const video = (media.getUserMedia.mock.calls as unknown as Array<[{ video: Record<string, unknown> }]>)[0]?.[0].video;
+    expect(video?.width).toEqual({ ideal: 1280 });
+  });
+
+  it('leaves the aspect ratio to the camera when only a long edge is asked for', async () => {
+    // Constraining height too would pick the frame's shape as well as its size, and a camera that
+    // satisfies a shape by cropping its widest mode would answer with *less* field of view than
+    // it was already giving. Asking only for pixels has no branch where that happens.
+    const media = fakeMedia({});
+    const camera = createCameraAccess(media as never);
+    await camera.open({ preferRearCamera: true, preferredWidth: 1280 });
+    const video = (media.getUserMedia.mock.calls as unknown as Array<[{ video: Record<string, unknown> }]>)[0]?.[0].video;
+    expect(video?.height).toBeUndefined();
+  });
+
   it('maps a declined camera onto a permission failure', async () => {
     const camera = createCameraAccess(fakeMedia({ error: { name: 'NotAllowedError' } }) as never);
     const result = await camera.open({ preferRearCamera: true });
