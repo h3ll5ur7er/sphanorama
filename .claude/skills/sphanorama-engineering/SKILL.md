@@ -213,6 +213,29 @@ One logical change, with its tests and doc updates. The message says *why* — t
 Keep pure reformats and renames in their own commit so review can skip them. Never commit a red
 test to fix later; work in progress is not a commit.
 
+## Working while the maintainer is away
+
+When the maintainer says they will be away for a while, that is a standing instruction to carry on
+alone under this loop rather than to stop and wait:
+
+1. **Build the next thing**, test-first and to the definition of done above.
+2. **Self-review it** before anyone else sees it — reread the diff adversarially, and sabotage
+   every new test to prove it can fail.
+3. **Open a PR and request a Copilot review.** Opening one does not summon a reviewer; ask
+   explicitly, every time.
+4. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
+   on sight. Fix it and push, or reply with the reasoning and the evidence.
+5. **If the round contained a high-severity finding, request another round.** A round that found
+   something real is a reason to look again; a clean round is where it stops.
+6. **Never merge** until asked for that PR in particular. Green and mergeable is the finish line;
+   merging is not yours to call.
+
+Two habits make the difference between this working and it looking like it worked. **Measure
+claims about the tooling** — when a finding asserts what CI, the browser or floating point does,
+go and get the number (a job log, `elementFromPoint`, a one-line node script) rather than reasoning
+from the diff. And **when the evidence clears the code only by accident**, say so and remove the
+accident anyway.
+
 ## Recurring mistakes
 
 | Symptom | What it usually means |
