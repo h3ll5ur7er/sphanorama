@@ -44,6 +44,23 @@ test('loads the core and reports its capabilities', async ({ page }) => {
   }
 });
 
+test('the page says which build it is', async ({ page }) => {
+  // A screenshot from a phone is the only evidence some of this project has — the OPFS spill
+  // tier, the lens the camera chose, the cell count — and every one of those readings is worth
+  // nothing if nobody can tell which commit produced it. That is not hypothetical: a device
+  // report and a fix for it crossed in flight once already, and the only way to tell was to ask.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    // A short hash, optionally marked dirty — never the placeholder, which would be a build that
+    // cannot say where it came from.
+    await expect(page.locator('#build')).toHaveText(/^[0-9a-f]{7,40}(-dirty)?$/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('enabling starts the camera and the viewfinder gets a stream', async ({ page }) => {
   const server = await serve();
   try {
