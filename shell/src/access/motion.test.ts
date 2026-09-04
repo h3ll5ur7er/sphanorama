@@ -324,6 +324,54 @@ describe('choosing a source', () => {
     await Promise.resolve();
 
     expect(access.source()).toBe('none');
+    // And it says which of the two failed. The fallback happens with no caller left to return to
+    // — start() returned ok long before — so drain is the only channel left, and a generic
+    // "sensor is not running" would leave the phone's screen unable to tell "this device has no
+    // orientation events" from "you declined the grant".
+    const drained = await access.drain(8);
+    expect(drained.ok).toBe(false);
+    if (!drained.ok) {
+      expect(drained.status.code).toBe('SensorUnavailable');
+      expect(drained.status.detail).toMatch(/orientation events/i);
+    }
+  });
+
+  it('says the grant was declined when that is what stopped the fallback', async () => {
+    // The other way startEvents fails, and the one the user can do something about. Two causes
+    // reaching the screen as one message is how a device report turns into a guess.
+    const { sensor, ctor } = fakeSensor();
+    const requestPermission = vi.fn().mockResolvedValue('denied');
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: ctor,
+      DeviceOrientationEvent: { requestPermission },
+    });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+
+    sensor.emitError();
+    // Waited for rather than ticked: the fallback goes through the permission request, so the
+    // reason lands some unknowable number of microtasks later. The capture loop meets it the
+    // same way — it drains every frame and picks the answer up on whichever one it is ready.
+    await vi.waitFor(async () => {
+      const drained = await access.drain(8);
+      expect(drained.ok).toBe(false);
+      if (!drained.ok) expect(drained.status.code).toBe('SensorPermissionDenied');
+    });
+  });
+
+  it('stops blaming a dead sensor once the caller has stopped the session itself', async () => {
+    // A stop() is not a failure. Keeping the last one would have the readout of a session the
+    // user ended still accusing the hardware, which is the sort of thing a device report is
+    // built on.
+    const { sensor, ctor } = fakeSensor();
+    const host = fakeWindow({ AbsoluteOrientationSensor: ctor, DeviceOrientationEvent: undefined });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    sensor.emitError();
+    await Promise.resolve();
+
+    await access.stop();
+
     const drained = await access.drain(8);
     expect(drained.ok).toBe(false);
     if (!drained.ok) expect(drained.status.code).toBe('FailedPrecondition');

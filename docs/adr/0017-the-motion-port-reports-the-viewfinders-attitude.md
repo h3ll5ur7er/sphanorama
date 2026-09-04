@@ -42,6 +42,12 @@ the same pose. It can fail two ways and only one is synchronous — the construc
 permissions policy forbids it, and `start()` reports a missing gyroscope through an error event
 that may arrive at any point — so both land on the fallback, whenever they happen.
 
+A fallback that happens *after* `start()` has returned has no caller left to report to, and it can
+fail on its own: a device with no `deviceorientation` at all, or a grant the user declined. The
+reason is kept and handed out by `drain()`, which the capture loop already reads every tick and
+which was discarding the failure. Without it a phone whose sensor died mid-session showed
+`GyroAccel · none` and nothing else — reported from a device, and reproduced in the browser tests.
+
 `MotionCapability` stays `OrientationOnly` for both. Neither source delivers rates, and that is
 what the capability describes.
 

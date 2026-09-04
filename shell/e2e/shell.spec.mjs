@@ -645,6 +645,41 @@ test('the horizon rolls in place instead of swinging across the screen', async (
   }
 });
 
+test('a sensor that dies mid-session says so instead of going quiet', async ({ browser }) => {
+  // Reported from a phone: motion simply stopped, with nothing on screen to say why. The
+  // quaternion sensor reports a missing gyroscope or a refused grant asynchronously — long after
+  // start() returned ok — and the fallback it hands over to can fail on its own, with no caller
+  // left to return a failure to. The readout went to 'none' and that was the whole story.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Starts, then errors: Chromium's own way of reporting a device with no gyroscope, and the
+    // one path where the failure arrives after the adapter has already claimed the source.
+    window.AbsoluteOrientationSensor = class {
+      constructor() { this.quaternion = null; this.timestamp = null; this.listeners = {}; }
+      addEventListener(type, callback) { this.listeners[type] = callback; }
+      start() { setTimeout(() => this.listeners.error?.(), 0); }
+      stop() {}
+    };
+    // Nowhere to fall back to, which is what turns a handover into a dead session.
+    delete window.DeviceOrientationEvent;
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    // The reason the fallback could not take over, on the line that already carries the source.
+    await expect(page.locator('#motion-state')).toContainText(/orientation events/i, {
+      timeout: 15000,
+    });
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a phone with no motion sensors still captures', async ({ browser }) => {
   // Declining motion on iOS lands here, and so does any desktop without sensors. The core treats
   // it as a supported configuration — PoseEngine switches to vision-only (docs/03 UC-4) — so a

@@ -11,7 +11,7 @@
  * primary pose, and is the fallback (ADR 0017).
  */
 import type { Quat, Vec3 } from '../../../contracts/ts/contracts';
-import { err, ok, type Result } from './result';
+import { err, ok, type Result, type Status } from './result';
 import {
   angularVelocityFromRotationRate, quaternionFromDeviceOrientation, quaternionFromSensorReading,
 } from './orientation';
@@ -105,6 +105,14 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
   let listener: ((event: Event) => void) | null = null;
   let motionListener: ((event: Event) => void) | null = null;
   let sensor: OrientationSensorLike | null = null;
+  // Why nothing is running, when something used to be.
+  //
+  // The quaternion sensor reports a missing gyroscope or a refused grant asynchronously, long
+  // after start() returned ok, and the fallback it hands over to can fail on its own — with no
+  // caller left to return to. Kept here and handed out by drain(), which the capture loop reads
+  // every tick: without it the phone simply stops tracking, and the only thing on screen is a
+  // source that has quietly gone to 'none'.
+  let lost: Status | null = null;
   // The most recent measured rate, in the chassis frame the platform reported it in, and when it
   // was measured — in the platform's own milliseconds, so it can be compared with the event
   // timestamps the attitudes carry.
@@ -293,6 +301,16 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     }
   }
 
+  /**
+   * Hands over to the orientation event after the quaternion sensor has died, and remembers it if
+   * that fails too. The `error` listener has nowhere to return a Result to, so this is the seam
+   * where one stops being a return value and becomes state drain() reports.
+   */
+  async function fallBackToEvents(): Promise<void> {
+    const fallback = await startEvents();
+    lost = fallback.ok ? null : fallback.status;
+  }
+
   async function startEvents(): Promise<Result<void>> {
     if (!host.DeviceOrientationEvent) {
       return err('SensorUnavailable', COMPONENT, 'no orientation events on this device');
@@ -355,7 +373,7 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
 
       // The attitude source is what a failed start reports on, and its listener stays the first
       // thing registered on the host.
-      const started = startSensor(requestedHz, () => { void startEvents(); })
+      const started = startSensor(requestedHz, () => { void fallBackToEvents(); })
                           ? ok(undefined)
                           : await startEvents();
       if (started.ok && await rates) listenForRates();
@@ -363,7 +381,11 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     },
 
     async drain(max: number) {
-      if (live === 'none') return err('FailedPrecondition', COMPONENT, 'sensor is not running');
+      if (live === 'none') {
+        return lost
+          ? err(lost.code, lost.component, lost.detail)
+          : err('FailedPrecondition', COMPONENT, 'sensor is not running');
+      }
       const taken = buffered.slice(0, Math.max(0, max));
       buffered = buffered.slice(taken.length);
       return ok(taken);
@@ -377,6 +399,9 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       motionListener = null;
       latestRate = null;
       live = 'none';
+      // A deliberate stop is not a failure, and leaving the last one set would have drain blaming
+      // a dead sensor for a session the caller ended itself.
+      lost = null;
       buffered = [];
       return ok(undefined);
     },

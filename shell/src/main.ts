@@ -121,9 +121,11 @@ let lensLocks = {
  * the pose this app spends its time in (ADR 0017).
  */
 let motionCapabilityShown = 'unknown';
-function reportMotionSource(capability?: string) {
+function reportMotionSource(capability?: string, lostReason = '') {
   if (capability !== undefined) motionCapabilityShown = capability;
-  motionState.textContent = `${motionCapabilityShown} · ${motion.source()}`;
+  const source = motion.source();
+  motionState.textContent =
+    `${motionCapabilityShown} · ${source}` + (lostReason ? ` · ${lostReason}` : '');
 }
 
 /**
@@ -421,7 +423,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // Re-read rather than latched at start: the source can change mid-session, and with motion
     // off this line is carrying the reason why, which must not be overwritten with a description
     // of nothing.
-    if (motionRunning) reportMotionSource();
+    //
+    // The failed drain carries its detail onto the line rather than being dropped. A quaternion
+    // sensor that dies mid-session hands over asynchronously, with nobody left to return a
+    // failure to, so a fallback that fails too used to leave the phone tracking nothing and the
+    // readout saying only 'none'. Read every tick rather than latched, because the handover can
+    // succeed on a later one.
+    if (motionRunning) reportMotionSource(undefined, drained.ok ? '' : drained.status.detail);
 
     // Only when there is something new to fold in, plus once at the start so the reticle has a
     // position before the first sample arrives. An empty batch cannot change the pose, so it
