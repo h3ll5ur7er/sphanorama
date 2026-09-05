@@ -40,6 +40,15 @@ class FakeCameraAccess final : public ICameraAccess {
   bool ExposureLocked() const { return exposure_locked_; }
   const CameraCapabilities& Capabilities() const { return capabilities_; }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
+  /**
+   * Where this camera's fills start, so two of them can produce frames a test can tell apart.
+   * Every instance counts from 1 otherwise, which is right — a fresh camera in a fresh process is
+   * what it models — and it means two captures write identical bytes. A test about one capture's
+   * frames being written over another's needs them different, and it cannot get there by taking a
+   * frame first: that allocation would step the store's identity counter, and the collision it is
+   * about is the one a store that has just started produces.
+   */
+  void FillFrom(uint8_t value) { next_fill_ = value; }
   /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
   void FailUnlock(bool fail) { fail_unlock_ = fail; }
   /** Makes closing fail, which is what leaves a camera both open and possibly still locked. */

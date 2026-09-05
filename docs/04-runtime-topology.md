@@ -124,8 +124,15 @@ store through `Adopt`, which registers it as spilled so the first `Pin` faults i
 The document is written on the way out of every burst rather than at `End`, because a tab the
 browser killed never reached `End`. The bytes those frames name survive with them: the OPFS tier
 has a resident name and a sibling index carrying the frame-to-offset map, so a reload finds the
-file and can locate each frame inside it (ADR 0030). What is not wired up yet is the page's own
-resume flow, and a `Begin` that empties the tier before a new capture reuses those identities.
+file and can locate each frame inside it (ADR 0030).
+
+Those frames are only the resumed session's because the tier says so. Identities restart at 1 in
+every session while the tier does not, so a new capture — which empties the tier before it starts
+(ADR 0034) — writes its own frames under the names an older document still carries. The tier
+therefore holds a token for the capture in it, minted whenever it is emptied and kept in the same
+index as the offsets; the document records what the tier said when its frames were written, and a
+`Resume` that reads a different one refuses rather than adopting somebody else's pixels
+(ADR 0035). What is not wired up yet is the page's own resume flow.
 
 ## 4.4 The build graph
 

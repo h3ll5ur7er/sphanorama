@@ -310,6 +310,68 @@ TYPED_TEST(FrameStoreAccessContract, ClearingAnEmptyStoreIsFine) {
   EXPECT_TRUE(this->store->Clear().ok());
 }
 
+TYPED_TEST(FrameStoreAccessContract, TheTierSaysWhichCaptureItIsHolding) {
+  // What a clear leaves behind, which `ClearEmptiesTheStore` above cannot see: identities restart
+  // at 1 in the next process, so an emptied tier is about to be refilled under exactly the names
+  // some other project's session document is still carrying. The token is how a document says
+  // which capture its frames were written for, and the store is the only thing that can be asked.
+  const FrameRef frame = this->Allocate();
+  auto before = this->store->TierGeneration();
+  ASSERT_TRUE(before.ok()) << before.status.detail;
+
+  // Using the store does not move it. It is a property of the tier's contents as a whole, not of
+  // this store's map — a document written after a spill has to match one written before it.
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+  ASSERT_TRUE(this->store->Forget(frame).ok());
+  auto during = this->store->TierGeneration();
+  ASSERT_TRUE(during.ok());
+  EXPECT_EQ(during.value, before.value);
+
+  ASSERT_TRUE(this->store->Clear().ok());
+  auto after = this->store->TierGeneration();
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_NE(after.value, before.value) << "the emptied tier still answers to the capture it held";
+}
+
+TYPED_TEST(FrameStoreAccessContract, TheTierGenerationOutlivesTheStoreThatReadIt) {
+  // The property the whole check rests on. A store dies with its tab and the tier does not, so a
+  // token that lived in the store would be a fresh one every session — matching nothing, or worse,
+  // matching by accident. What answers is the tier.
+  auto held = this->store->TierGeneration();
+  ASSERT_TRUE(held.ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+  auto again = revived->TierGeneration();
+  ASSERT_TRUE(again.ok());
+  EXPECT_EQ(again.value, held.value);
+}
+
+TYPED_TEST(FrameStoreAccessContract, ATierThatWouldNotEmptyStillAnswersForWhatItHolds) {
+  // A refused clear is a clear that did not happen, and that has to include this: the frames are
+  // still down there under the identities their document names, so a token that had moved on would
+  // strand a capture whose pixels are exactly where it left them.
+  auto before = this->store->TierGeneration();
+  ASSERT_TRUE(before.ok());
+  this->sink.FailClears(true);
+  ASSERT_FALSE(this->store->Clear().ok());
+  this->sink.FailClears(false);
+
+  auto after = this->store->TierGeneration();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, before.value);
+}
+
+TYPED_TEST(FrameStoreAccessContract, ATierThatCannotSayIsNotGuessedAt) {
+  // Reachable on a page whose worker script is older than the module calling it — the same
+  // half-updated page the browser sink's `clear` already guards against. Any number invented here
+  // would be one a session document could be written against and later matched to, which is the
+  // failure the token exists to remove rather than a smaller version of it.
+  this->sink.FailGenerations(true);
+  EXPECT_FALSE(this->store->TierGeneration().ok());
+  this->sink.FailGenerations(false);
+  EXPECT_TRUE(this->store->TierGeneration().ok());
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());

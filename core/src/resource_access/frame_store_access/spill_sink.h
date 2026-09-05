@@ -17,9 +17,11 @@ namespace sphanorama {
 // Promoting it to contracts/ would make it a resource access that another resource access calls,
 // which is the coupling the layer rules exist to prevent.
 //
-// It is three calls because that is all a spill needs. There is no listing, no iteration and no
-// notion of a directory: the store knows exactly which frames it put here and asks for them by
-// the identity it gave them.
+// Three of the five calls are a spill: the store knows exactly which frames it put here and asks
+// for them by the identity it gave them. The other two are about the tier as a whole — emptying
+// it, and asking which capture is in it — and neither is a listing. There is still no iteration
+// and no notion of a directory here, which is the invariant: the sink never tells the store what
+// it holds.
 class ISpillSink {
  public:
   virtual ~ISpillSink() = default;
@@ -48,6 +50,23 @@ class ISpillSink {
   // already taken down here. Dropping them one at a time is not open to a store that has just
   // started and knows of no frames at all.
   virtual Status Clear() = 0;
+
+  // Which capture is down here, as an opaque token. The fifth call, and the one that is about the
+  // tier rather than about a frame.
+  //
+  // A sink outlives the process that filled it and the store above restarts its identities at 1,
+  // so "frame 7" names a different frame in each capture the tier has held. The token is what
+  // tells them apart: it is minted fresh whenever the tier is emptied, it is written down beside
+  // the frames, and it comes back with them. Whoever writes a session document records it, and a
+  // resume that reads a different one knows the pixels it is about are gone (ADR 0035).
+  //
+  // Not a listing, for the same reason Clear is not: the sink says which capture it holds, never
+  // what it holds.
+  //
+  // Fallible because a sink can be present and unable to say — the browser's host is a page-side
+  // object and a page can be half-updated. The store passes that refusal up rather than inventing
+  // a token, since a wrong answer here is a document that matches a tier it does not belong to.
+  virtual Result<uint64_t> Generation() = 0;
 };
 
 }  // namespace sphanorama

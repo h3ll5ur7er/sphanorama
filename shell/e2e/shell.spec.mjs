@@ -228,6 +228,70 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
   }
 });
 
+test('a sphere from before the last capture cannot come back as this one', async ({ page }) => {
+  // The whole tier generation, end to end, in the one place every piece of it meets: the token in
+  // the OPFS index, the token in the session document, a reload between them, and the C ABI in
+  // the middle. Unit tests cover each half against a fake; nothing else runs the real chain.
+  //
+  // The failure it is about does not look like one. Frame identities restart at 1 in every
+  // session and the tier does not, so a second capture writes its own frames under the names the
+  // first capture's document still carries — right identities, right size, really on disk. A
+  // resume of the first project adopts them, pins them and builds a sphere out of somebody else's
+  // pixels, with nothing failing anywhere (ADR 0035).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+
+    // A cell, so the session has frames in the tier and a document that names them. Cooling
+    // spills a committed cell (ADR 0023), which is what puts them in the OPFS file at all.
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    const first = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      // Durability is eventual by design (ADR 0014): ask for it rather than racing the timer.
+      await window.sphanoramaHost.flush();
+      return listed.ok && listed.value.length === 1 ? listed.value[0].id : null;
+    });
+    expect(first).not.toBeNull();
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    // The same tier, so the resume runs the whole way and stops at the camera — which nothing on
+    // this fresh page has opened yet. Every earlier step had to pass to get here: the document was
+    // written (so the tier answered when it was checkpointed), it parsed, its token matched the
+    // one the index came back with, and the store took every frame it names. A resume refused at
+    // the tier would say FailedPrecondition instead, and one whose checkpoint never wrote a
+    // document would say NotFound.
+    const sameTier = await page.evaluate(
+      (id) => window.sphanoramaCore.captureSession.resume(id), first);
+    expect(sameTier.ok).toBe(false);
+    expect(sameTier.status.code).toBe('CameraUnavailable');
+
+    // And now a different sphere is started on this device, which empties the tier (ADR 0034) and
+    // fills it again from identity 1.
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+
+    const afterAnotherCapture = await page.evaluate(async (id) => {
+      // Ended first, or the refusal below would be the one about a session already being in
+      // progress — the same status code for an entirely different reason.
+      await window.sphanoramaCore.captureSession.end();
+      return window.sphanoramaCore.captureSession.resume(id);
+    }, first);
+    expect(afterAnotherCapture.ok).toBe(false);
+    expect(afterAnotherCapture.status.code).toBe('FailedPrecondition');
+    expect(afterAnotherCapture.status.detail).toContain('spill tier');
+  } finally {
+    await server.close();
+  }
+});
+
 test('asks iOS for motion before it goes anywhere near the camera', async ({ browser }) => {
   // Reported from an iPhone: `motion unavailable`, in every orientation, forever. iOS grants
   // DeviceOrientationEvent only during a transient user activation, and awaiting a permission

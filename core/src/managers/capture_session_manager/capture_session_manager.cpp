@@ -21,8 +21,13 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // Versioned by its first line. A document from a build that wrote a different shape is refused
 // rather than guessed at — half a restored session is a coverage map that lies about which cells
 // hold frames.
+//
+// Version 2 added the tier line, and every version-1 document stopped loading with it. That is
+// the right outcome rather than a cost of it: a document written before this build is precisely
+// one that cannot say which capture its frames belong to, and reading it would mean assuming the
+// answer this field exists to stop assuming (ADR 0035).
 constexpr const char* kSessionKey = "session";
-constexpr int kSessionVersion = 1;
+constexpr int kSessionVersion = 2;
 
 // Every double round-trips: 17 significant digits is what IEEE-754 needs to come back bit for
 // bit, and a pose that drifts in the last place on every reload would be a slow corruption of the
@@ -44,6 +49,11 @@ bool ReadEnum(std::istringstream& in, int limit, Enum& out) {
 struct StoredSession {
   uint64_t session = 0;
   uint64_t nextCandidate = 1;
+  // Which spill tier the frames below are in, as the store reported it when this was written.
+  // Frame identities restart at 1 in every process and the tier does not, so the identities alone
+  // do not say whose pixels they are; this is what a resume compares before it adopts any of them
+  // (ADR 0035). Zero is a real value — a host with no spill tier at all — rather than "unset".
+  uint64_t generation = 0;
   CapturePlanSpec spec;
   Intrinsics lens;
   // Only the frames this session's own bursts produced, and the reason is where their bytes are.
@@ -58,6 +68,10 @@ std::string EncodeSession(const StoredSession& stored) {
   std::ostringstream out;
   out << "sphanorama-session " << kSessionVersion << '\n';
   out << "session " << stored.session << ' ' << stored.nextCandidate << '\n';
+  // A line of its own rather than a field on the session line: it is a statement about the tier
+  // the frames are in, not about the session's counters, and the two are written from different
+  // places.
+  out << "tier " << stored.generation << '\n';
   out << "lens " << stored.lens.width << ' ' << stored.lens.height << '\n';
   out << "spec " << static_cast<int>(stored.spec.strategy)
       << ' ' << Digits(stored.spec.horizontalFovDeg)
@@ -115,7 +129,7 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
     return !(in >> extra);
   };
 
-  bool sawSession = false, sawLens = false, sawSpec = false;
+  bool sawSession = false, sawLens = false, sawSpec = false, sawTier = false;
   while (std::getline(lines, line)) {
     if (line.empty()) continue;
     std::istringstream in(line);
@@ -129,6 +143,12 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
       if (out.session == 0 || out.nextCandidate == 0) return false;
       if (!exhausted(in)) return false;
       sawSession = true;
+    } else if (tag == "tier") {
+      // Zero is legal here, unlike the identities above: it is what a host with no spill tier
+      // reports, and a document written against one has to be able to say so.
+      if (!(in >> out.generation)) return false;
+      if (!exhausted(in)) return false;
+      sawTier = true;
     } else if (tag == "lens") {
       if (!(in >> out.lens.width >> out.lens.height)) return false;
       if (!exhausted(in)) return false;
@@ -182,7 +202,10 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
       return false;
     }
   }
-  if (!(sawSession && sawLens && sawSpec)) return false;
+  // The tier line is required, not defaulted. A document that does not say which capture it
+  // belongs to is exactly the document this build must not act on, and a missing line reading as
+  // zero would make it look like one written on a host with no tier at all.
+  if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
 
   // The candidates win where the two disagree, for the same reason the spill index's slots beat
   // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
@@ -408,6 +431,30 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                           "this project's session document is from a shape this build cannot read");
   }
 
+  // Before the plan, the frames and the camera, because it is the cheapest thing that can refuse
+  // and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
+  // a document belonging to a *different* project names frames that are now some other capture's
+  // — right identities, right size, really there, and a `Pin` of them succeeds with the wrong
+  // pixels. Nothing downstream of here can tell; only the tier can, and this is it asking
+  // (ADR 0035).
+  auto generation = frames_.TierGeneration();
+  if (!generation.ok()) {
+    return Err<SessionId>(generation.status.code, kComponent,
+                          "the spill tier cannot say which capture it holds: "
+                              + generation.status.detail);
+  }
+  if (stored.generation != generation.value) {
+    // Refused, and the document is left where it is. A mismatch says this tier is not the one
+    // those frames went into, which is not the same as saying they are gone: a session that could
+    // not take the resident pair and fell back to a tier of its own (ADR 0030) says exactly this
+    // about frames that are still on disk, and the next run that gets the resident pair resumes
+    // them. Deleting here would turn a device that is momentarily wrong into a capture that is
+    // permanently lost.
+    return Err<SessionId>(StatusCode::FailedPrecondition, kComponent,
+                          "this project's session was captured into a spill tier this device no "
+                          "longer holds");
+  }
+
   // From the document, not from the camera. This is the whole reason the spec is stored — and it
   // is also why nothing here needs a camera yet. `Begin` opens one before it plans because the
   // lens is an input to its tessellation; a resume has the lens in front of it already, so
@@ -486,7 +533,19 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
 }
 
 void CaptureSessionManager::Checkpoint() const {
+  // Which tier these frames are in, asked at the moment the claim is written down rather than
+  // remembered from the start of the session. The answer belongs to the tier, and this is the
+  // only place that repeats it.
+  //
+  // Nothing is written when the store cannot say. A document whose tier line was invented would
+  // be one a later resume could match — the failure this field exists to remove — while no
+  // document costs a resume on a device that is already half-updated, and costs the capture in
+  // front of the user nothing at all.
+  auto generation = frames_.TierGeneration();
+  if (!generation.ok()) return;
+
   StoredSession stored;
+  stored.generation = generation.value;
   stored.session = session_.value;
   stored.nextCandidate = next_candidate_;
   stored.spec = resolved_spec_;
