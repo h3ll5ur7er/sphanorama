@@ -566,6 +566,12 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // quietly capture on every tick, at whatever rate the client happens to run.
     return Fail(StatusCode::InvalidArgument, kComponent, "a burst interval cannot be negative");
   }
+  if (burst.settleMs < 0) {
+    // The same arithmetic and the same reason: a negative settle makes the first frame overdue
+    // the moment the burst is armed, which is precisely the behaviour the settle exists to
+    // remove — and it would come back silently rather than as a refusal (ADR 0032).
+    return Fail(StatusCode::InvalidArgument, kComponent, "a burst settle cannot be negative");
+  }
   if (firing_) {
     // Refused rather than replacing: the burst in flight holds the exposure lock and frames it
     // has not committed, and a second arm would strand both. One burst at a time is also all a
@@ -585,9 +591,9 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   burst_node_ = node;
   burst_spec_ = burst;
   pending_.clear();
-  // Far enough in the past that the first frame is taken on the next tick rather than after one
-  // interval: the burst starts when it is armed.
-  last_frame_ns_ = clock_.MonotonicNs() - BurstIntervalNs();
+  // The burst does not start when it is armed: the locks applied a line ago are what the camera
+  // now has to converge to, and the first frame waits for that (ADR 0032).
+  next_frame_ns_ = clock_.MonotonicNs() + BurstSettleNs();
   return Status::Ok();
 }
 
@@ -607,6 +613,25 @@ int64_t CaptureSessionManager::BurstIntervalNs() const {
     if (byCamera > interval) interval = byCamera;
   }
   return interval;
+}
+
+int64_t CaptureSessionManager::BurstSettleNs() const {
+  int64_t settle = static_cast<int64_t>(burst_spec_.settleMs) * 1000000;
+
+  // The camera's own rate floors this too, and for a reason one step earlier than the interval's.
+  // PeekPreviewFrame borrows the *latest* preview frame: inside one frame period of arming, the
+  // latest frame is one the camera produced before the locks landed, so the first frame of the
+  // burst would be the last frame of the viewfinder before it — which is the failure this settle
+  // was written for, in its cheapest form.
+  //
+  // Zero still means "the platform will not say", and then the tick rate is the only floor there
+  // is. A caller asking for no settle at all on a camera that reports its rate gets one frame
+  // period, which is the least that can be asked for and still mean anything.
+  if (max_burst_fps_ > 0) {
+    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
+    if (byCamera > settle) settle = byCamera;
+  }
+  return settle;
 }
 
 Status CaptureSessionManager::Disarm(bool rollBack) {
@@ -672,8 +697,9 @@ void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
 
 Result<bool> CaptureSessionManager::AdvanceBurst() {
   const int64_t now = clock_.MonotonicNs();
-  const int64_t due = last_frame_ns_ + BurstIntervalNs();
-  if (now < due) return Ok(false);   // still inside the interval; the burst keeps waiting
+  // One deadline for both waits, because from here they are the same question: the settle set it
+  // when the burst was armed, every frame since has set it one interval ahead.
+  if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
 
   auto frame = camera_.PeekPreviewFrame();
   if (!frame.ok()) {
@@ -682,7 +708,7 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
     // lock while doing it.
     return Abandon(frame.status);
   }
-  last_frame_ns_ = now;
+  next_frame_ns_ = now + BurstIntervalNs();
 
   Candidate candidate;
   candidate.id = CandidateId{next_candidate_++};

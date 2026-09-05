@@ -272,6 +272,13 @@ build. What is left:
   needs an ADR either way.
 - **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
   `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
+- **How long a camera takes to settle after a lock.** Also never measured, and now a number the
+  code depends on: `BurstSpec::settleMs` defaults to 150 ms because one frame 16 ms after arming
+  was unusable and one 96 ms after arming was not, on one device in one scene (ADR 0032). Too long
+  only costs time; too short leaves a soft frame that still scores and still ranks, which is how
+  this went unnoticed in the first place. It wants the same per-device-class treatment as the
+  memory figure — a burst armed at a known target with the settle swept, and the sharpness curve
+  read off it.
 - **An iPhone.** *Run.* iOS 18 Safari, 1280×960, 32 cells planned. Two things worked that were
   not certain to: the OPFS spill tier opened (no "no spill tier" in the capabilities line, so
   Safari's synchronous access handles are there), and the white balance lock took — the only one
@@ -295,6 +302,16 @@ So not bracketing, and not the selection policy: a lock that was asked for and d
 negotiation is fixed — one constraint set per lock rather than all three in one, an exposure time
 offered alongside `manual`, and `single-shot` as a fallback (ADR 0031). Whether it
 now holds on that camera is the next thing a screenshot answers.
+
+*And the next reading found the other half of it.* With a focus lock actually held, a five-frame
+burst on the Pixel scored 5.9, 1145, 720, 583, 586 — four frames within about 2× of each other and
+a first one a hundredth of any of them. The iPhone, which takes a white balance lock and no focus
+lock at all, has no such first frame. The lock is the cause rather than the scene: applying a focus
+mode makes the camera re-converge, and `PeekPreviewFrame` borrows the *latest* preview frame, so
+the frame taken 16 ms after arming is one from mid-refocus — or one the camera produced before the
+constraints landed. A fifth of every burst was going in the bin on the device that succeeds at
+locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
+never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
 ---
 

@@ -276,6 +276,7 @@ sequenceDiagram
   U->>M: ArmBurst(node, burst)
   M->>C: SetLocks(exposure, white balance, focus)
   C-->>M: Ok, or FailedPrecondition naming the locks not held
+  Note over M,C: ticks pass and no frame is taken for burst.settleMs, while the camera converges
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)
     M->>C: PeekPreviewFrame()
@@ -295,7 +296,11 @@ sequenceDiagram
 
 The burst rides on the tick the client was already making, because that is the only call made
 often enough to pace one and a synchronous port cannot wait (ADR 0018). Arming is not firing: the
-frames arrive over the ticks that follow, and the exposure lock is held across all of them.
+frames arrive over the ticks that follow, and the exposure lock is held across all of them —
+including the first `settleMs` of them, during which no frame is taken at all. Applying a focus
+lock makes a camera re-converge, and `PeekPreviewFrame` borrows the latest preview frame, so a
+frame taken immediately is one from mid-refocus: on a Pixel that holds the lock it scored a
+hundredth of what its siblings did (ADR 0032).
 
 Note what the manager does *not* do: it does not decide what "best" means (V6), nor where a
 reticle sits (V4), nor how bytes are stored (V11). It decides *when* to ask each of them — and the
