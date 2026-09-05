@@ -85,6 +85,9 @@ could not.
   three and the client uses it, so nothing crosses a contract that cannot describe it. Adding the
   third field is a contract change worth making when something in the core needs to reason about
   it, and nothing does yet.
+- **Asking is its own problem, and the read-back exposed it.** The first device reading came back
+  `focus · exposure refused · white balance refused`, and how the page should ask instead is a
+  decision of its own: **ADR 0031**.
 
 ## Rejected alternative
 **Lock once for the whole session.** The page could apply the locks when capture begins and hold

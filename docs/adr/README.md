@@ -35,3 +35,4 @@ and the alternative we rejected and why.
 | [0028](0028-markers-are-drawn-in-the-box-the-video-is-painted-in.md) | The overlay's markers are drawn in the video's own box and mapped through the `object-fit: cover` crop, and the panel folds out of the picture while a capture runs |
 | [0029](0029-a-session-is-resumed-by-the-manager-that-owns-one.md) | `Resume` moves to `ICaptureSessionManager`, the frame store can `Adopt` frames a dead store spilled, and the session document is written at every cell |
 | [0030](0030-the-spill-tier-is-resident-and-carries-its-own-index.md) | The OPFS spill tier has a fixed preferred name and a sibling index, so a reload can find the frames its session document names |
+| [0031](0031-a-lock-is-asked-for-one-at-a-time.md) | Each lock is negotiated in a constraint set of its own, with an exposure time and a `single-shot` fallback, and a refusal is remembered for the track |
