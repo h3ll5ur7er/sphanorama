@@ -85,6 +85,28 @@ could not.
   three and the client uses it, so nothing crosses a contract that cannot describe it. Adding the
   third field is a contract change worth making when something in the core needs to reason about
   it, and nothing does yet.
+- **Asking is its own problem, which the read-back exposed.** The first device reading came back
+  `focus · exposure refused · white balance refused`, and the frames agreed: the sharpness cliff
+  in a burst fell on exactly the candidates whose exposure agreement had dropped. Three things
+  were wrong with how the page asked, and none of them was visible until this row named a refusal.
+
+  **One constraint set per lock, not all three in one.** An advanced constraint set is applied
+  only if the *whole* of it can be satisfied, so a mode the camera will not take silently
+  discards the ones it would have. That camera had refused the exposure and been recorded as
+  refusing the white balance too.
+
+  **An exposure time offered alongside `manual`.** On Android `manual` largely means "and I will
+  tell you the number"; asked for on its own it is refused. The number to offer is the one the
+  camera is metering at when the cell is framed, which is the exposure the burst wants held.
+
+  **`single-shot` as a fallback.** The weaker promise — converge once, then hold — costs nothing
+  to make and is all a burst needs, so giving up after `manual` left cameras metering for no
+  reason. It counts as a lock on the way back in too: what matters is that the camera has stopped
+  moving, not which word it used.
+
+  A refusal is remembered per track, because locks are applied before every burst and a sphere is
+  twenty-eight of them; a camera that said no once will say no every time, and each attempt is a
+  round trip between framing a cell and capturing it.
 
 ## Rejected alternative
 **Lock once for the whole session.** The page could apply the locks when capture begins and hold

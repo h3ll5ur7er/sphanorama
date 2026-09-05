@@ -267,15 +267,19 @@ build. What is left:
 Two known gaps in the phase's own list, both contract-shaped: the review strip shows what the core
 knows about a candidate rather than the frame itself, and a recorded selection cannot be read back.
 
-One open question from the device run, waiting on a measurement rather than on work. A cell's five
-candidates scored 1186, 1180, 459, 459, 458 in capture order; another scored 979, 993, 0.60, 0.60,
-0.61. Both split two-and-three at the same point, in different scenes, tight inside each group —
-two regimes rather than a changing scene. A burst is five frames at 80 ms, about a third of a
-second, which is long enough for a camera with nothing locked to re-expose and refocus. The `locks`
-row (ADR 0022) exists to settle it: if a device reports no manual modes, the spread is the camera
-hunting and the answer is bracketing in Phase 2; if locks are held and the spread survives, the
-locks are not holding and that is a bug with a narrow search. Do not start on it before reading
-that row from a device.
+*Answered.* A cell's five candidates scored 1186, 1180, 459, 459, 458 in capture order, and
+another 979, 993, 0.60, 0.60, 0.61 — both splitting two-and-three at the same point, in different
+scenes, tight inside each group. The `locks` row (ADR 0022) settled it on the first device
+reading, and the answer was neither of the two the question anticipated: `focus · exposure
+refused · white balance refused`. The lens advertised a manual exposure mode and then would not
+take it, so the burst fired with auto-exposure free for the whole third of a second. The strip
+confirms it from the other side — the sharpness cliff falls on exactly the frames whose exposure
+agreement drops (1.00, 1.00, 0.67, 0.78, 0.84), climbing back as the metering settles.
+
+So not bracketing, and not the selection policy: a lock that was asked for and did not take. The
+negotiation is fixed — one constraint set per lock rather than all three in one, an exposure time
+offered alongside `manual`, and `single-shot` as a fallback (ADR 0022's consequences). Whether it
+now holds on that camera is the next thing a screenshot answers.
 
 ---
 

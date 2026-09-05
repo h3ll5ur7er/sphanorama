@@ -191,9 +191,17 @@ function fakeTrack(options: {
   /** What getSettings() reports after applyConstraints resolves. Defaults to what was asked. */
   settleAs?: Record<string, string>;
   rejectWith?: string;
+  /**
+   * Whether this camera can satisfy one advanced constraint set. The spec applies such a set only
+   * if the whole of it can be satisfied, and a set it cannot is skipped rather than an error — so
+   * a camera that advertises a mode and then will not take it is silence, not a rejection.
+   */
+  refuses?: (set: Record<string, string>) => boolean;
+  /** Settings the camera reports before anything is asked of it. */
+  initial?: Record<string, unknown>;
 } = {}) {
   const applied: unknown[] = [];
-  let settings: Record<string, unknown> = { width: 1920, height: 1080 };
+  let settings: Record<string, unknown> = { width: 1920, height: 1080, ...options.initial };
   const track = {
     applied,
     getSettings: () => settings,
@@ -209,8 +217,10 @@ function fakeTrack(options: {
         error.name = options.rejectWith;
         throw error;
       }
-      const asked = (constraints as { advanced?: Record<string, string>[] }).advanced?.[0] ?? {};
-      settings = { ...settings, ...(options.settleAs ?? asked) };
+      for (const asked of (constraints as { advanced?: Record<string, string>[] }).advanced ?? []) {
+        if (options.refuses?.(asked)) continue;
+        settings = { ...settings, ...(options.settleAs ?? asked) };
+      }
     },
     stop: vi.fn(),
   };
@@ -272,7 +282,10 @@ describe('applying the locks', () => {
 
     expect(locked.ok).toBe(true);
     if (locked.ok) expect(locked.value).toEqual({ exposure: true, whiteBalance: true, focus: true });
-    expect(track.applied).toHaveLength(1);
+    // What it asked for, rather than how many times: each lock is negotiated on its own now, so a
+    // count would pin the number of round trips instead of the thing under test.
+    expect(JSON.stringify(track.applied)).toContain('"exposureMode":"manual"');
+    expect(JSON.stringify(track.applied)).toContain('"focusMode":"manual"');
   });
 
   it('reports a lock as not held when the track quietly stayed automatic', async () => {
@@ -315,7 +328,87 @@ describe('applying the locks', () => {
 
     expect(released.ok).toBe(true);
     if (released.ok) expect(released.value.exposure).toBe(false);
-    expect(track.applied).toHaveLength(2);
+    expect(JSON.stringify(track.applied.slice(-3))).toContain('"exposureMode":"continuous"');
+  });
+
+  it('does not let one refused lock take the others down with it', async () => {
+    // The reading from a Pixel: `focus · exposure refused · white balance refused`. An advanced
+    // constraint set is applied only if the *whole* of it can be satisfied, so asking for all
+    // three at once means one mode the camera will not take discards the two it would have.
+    const track = fakeTrack({
+      refuses: (set) => 'exposureMode' in set && set.exposureMode !== 'continuous',
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) {
+      expect(locked.value.exposure).toBe(false);
+      expect(locked.value.focus).toBe(true);
+      expect(locked.value.whiteBalance).toBe(true);
+    }
+  });
+
+  it('offers the exposure time it is already using when it asks for manual', async () => {
+    // `manual` on Android generally means "I will tell you the number", and a camera asked to go
+    // manual without one refuses. The number it is metering at right now is the one that holds
+    // the exposure where the burst wants it: exactly where it was when the cell was framed.
+    const track = fakeTrack({
+      initial: { exposureTime: 312 },
+      refuses: (set) => set.exposureMode === 'manual' && set.exposureTime === undefined,
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value.exposure).toBe(true);
+    expect(JSON.stringify(track.applied)).toContain('"exposureTime":312');
+  });
+
+  it('falls back to single-shot for a camera that will not go manual', async () => {
+    // The other way to say "stop metering": one-and-done rather than a number. A camera that
+    // takes neither is a camera with no lock, but one that takes only this is common enough that
+    // giving up after `manual` would leave a burst metering for no reason.
+    const track = fakeTrack({
+      capabilities: { exposureMode: ['continuous', 'manual', 'single-shot'] },
+      refuses: (set) => set.exposureMode === 'manual',
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value.exposure).toBe(true);
+  });
+
+  it('reads single-shot back as a lock, because it is one', async () => {
+    const track = fakeTrack({ settleAs: { exposureMode: 'single-shot' } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value.exposure).toBe(true);
+  });
+
+  it('stops asking for a lock this camera has already refused', async () => {
+    // Locks are applied before every burst, and a sphere is twenty-eight of them. A camera that
+    // said no once will say no every time, and each attempt is a round trip in front of the
+    // frames — the delay lands between framing a cell and capturing it.
+    const track = fakeTrack({ refuses: (set) => 'exposureMode' in set && set.exposureMode !== 'continuous' });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+    const afterFirst = track.applied.length;
+    await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+
+    expect(track.applied.length - afterFirst).toBeLessThan(afterFirst);
   });
 
   it('refuses when no camera is open, rather than reporting locks it cannot have', async () => {

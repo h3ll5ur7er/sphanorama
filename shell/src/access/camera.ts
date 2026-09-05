@@ -57,9 +57,20 @@ export interface CameraAccess {
   close(): Promise<Result<void>>;
 }
 
-/** A capability array offers a lock when it contains a manual mode; absent means no. */
+/**
+ * The modes that mean "stop adapting", in the order worth asking for them.
+ *
+ * `manual` is the strongest — it fixes the value — but on Android it generally means "and I will
+ * tell you the number", so a camera asked to go manual with nothing else in the set refuses.
+ * `single-shot` is the weaker promise that costs nothing to make: converge once, then hold.
+ * Either keeps a burst's frames comparable, which is all this is for (ADR 0022).
+ */
+const HOLDING_MODES = ['manual', 'single-shot'] as const;
+const ADAPTING_MODE = 'continuous';
+
+/** A capability array offers a lock when it contains any mode that stops the camera adapting. */
 function offersManual(modes: unknown): boolean {
-  return Array.isArray(modes) && modes.includes('manual');
+  return Array.isArray(modes) && HOLDING_MODES.some((mode) => modes.includes(mode));
 }
 
 const MODE_OF: Record<keyof LockState, string> = {
@@ -67,6 +78,30 @@ const MODE_OF: Record<keyof LockState, string> = {
   whiteBalance: 'whiteBalanceMode',
   focus: 'focusMode',
 };
+
+/** Whether the settings this track reports say the camera has stopped moving this control. */
+function holding(settings: Record<string, unknown>, key: keyof LockState): boolean {
+  return HOLDING_MODES.includes(settings[MODE_OF[key]] as typeof HOLDING_MODES[number]);
+}
+
+/**
+ * One constraint set: this lock, this mode, and whatever else that mode needs to be satisfiable.
+ *
+ * One set per lock rather than all three in one, which is the whole point. An advanced set is
+ * applied only if the *whole* of it can be satisfied, so a mode the camera will not take discards
+ * the ones it would have — a Pixel reported `focus · exposure refused · white balance refused`
+ * and had in fact refused nothing but the exposure.
+ */
+function constraintFor(key: keyof LockState, mode: string,
+                       settings: Record<string, unknown>): Record<string, unknown> {
+  const set: Record<string, unknown> = { [MODE_OF[key]]: mode };
+  // The number a manual exposure needs, taken from what the camera is metering at right now —
+  // which is the exposure the cell was framed at, and the one the burst wants held.
+  if (key === 'exposure' && mode === 'manual' && typeof settings.exposureTime === 'number') {
+    set.exposureTime = settings.exposureTime;
+  }
+  return set;
+}
 
 /** getUserMedia's failure vocabulary, translated once. */
 function statusFor(name: string) {
@@ -85,6 +120,10 @@ function statusFor(name: string) {
 
 export function createCameraAccess(media: MediaDevices | undefined): CameraAccess {
   let active: MediaStream | null = null;
+  // What this camera has already said no to, so a sphere does not ask twenty-eight times. Locks
+  // are applied before every burst, and each attempt is a round trip sitting between framing a
+  // cell and capturing it. Cleared with the track, because the next one is a different camera.
+  let hopeless = new Set<keyof LockState>();
 
   return {
     async open(spec: CameraOpenSpec) {
@@ -161,17 +200,30 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
         return err<LockState>('CameraUnavailable', COMPONENT, 'no camera open');
       }
 
-      const advanced: Record<string, string> = {};
-      for (const key of Object.keys(MODE_OF) as (keyof LockState)[]) {
-        advanced[MODE_OF[key]] = wanted[key] ? 'manual' : 'continuous';
-      }
+      // A refusal is never a failure of this call: it means the camera would not take that lock,
+      // which is exactly what the returned state is for. Reporting it as an error would make the
+      // caller choose between no burst and a burst it knows nothing about.
+      const ask = async (set: Record<string, unknown>) => {
+        try {
+          await track.applyConstraints?.({ advanced: [set] });
+        } catch {
+          // Silence and refusal look the same from here, and the read-back tells them apart.
+        }
+      };
 
-      try {
-        await track.applyConstraints?.({ advanced: [advanced] });
-      } catch {
-        // A refusal is not a failure of this call: it means the camera would not take the locks,
-        // which is exactly what the returned state is for. Reporting it as an error would make
-        // the caller choose between no burst and a burst it knows nothing about.
+      for (const key of Object.keys(MODE_OF) as (keyof LockState)[]) {
+        if (!wanted[key]) {
+          await ask({ [MODE_OF[key]]: ADAPTING_MODE });
+          continue;
+        }
+        if (hopeless.has(key)) continue;
+
+        for (const mode of HOLDING_MODES) {
+          const settings = track.getSettings() as Record<string, unknown>;
+          if (holding(settings, key)) break;
+          await ask(constraintFor(key, mode, settings));
+        }
+        if (!holding(track.getSettings() as Record<string, unknown>, key)) hopeless.add(key);
       }
 
       // Read back rather than trust. `applyConstraints` resolving says the browser accepted the
@@ -179,9 +231,9 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       // above would compare candidates on sharpness while the exposure moved under it.
       const settled = track.getSettings() as Record<string, unknown>;
       return ok<LockState>({
-        exposure: settled[MODE_OF.exposure] === 'manual',
-        whiteBalance: settled[MODE_OF.whiteBalance] === 'manual',
-        focus: settled[MODE_OF.focus] === 'manual',
+        exposure: holding(settled, 'exposure'),
+        whiteBalance: holding(settled, 'whiteBalance'),
+        focus: holding(settled, 'focus'),
       });
     },
 
@@ -190,6 +242,7 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       // users reasonably read as the app spying on them.
       active?.getTracks().forEach((track) => track.stop());
       active = null;
+      hopeless = new Set();
       return ok(undefined);
     },
   };

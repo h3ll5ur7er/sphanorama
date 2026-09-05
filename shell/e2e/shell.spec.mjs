@@ -247,7 +247,9 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
       return { ...settings.call(this), ...settled };
     };
     MediaStreamTrack.prototype.applyConstraints = async function (constraints) {
-      settled = { ...(constraints?.advanced?.[0] ?? {}) };
+      // Merged, the way a track's settings actually behave: each lock is negotiated in a set of
+      // its own now, so replacing wholesale would leave only whichever went last.
+      for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
     };
     window.__locksApplied = () => settled;
   });
