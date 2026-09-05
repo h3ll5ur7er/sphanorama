@@ -158,10 +158,37 @@ for a frame that arrived through `OfferFrame` and belongs to the caller.
   its C++ type for the same reason `Param` does — every width of integer maps onto `number`, so
   the mirror cannot say which one to check against.
 
-  What is still filed rather than done is the format: `i32` on the wire for narrow integers,
-  fields and parameters alike. It is smaller on the wire and it is no longer a correctness
-  question, because nothing casts unchecked any more. It updates every generated struct in both
-  languages and both golden hexes, which is a change of its own.
+  The format — `i32` on the wire for narrow integers, fields and parameters alike — was left
+  filed. It has since been measured, and **declined**. It is no longer a correctness question,
+  because nothing casts unchecked any more, so what was left was bytes; and the bytes are not
+  there.
+
+  Counted against the structs that actually cross:
+
+  | what crosses | how often | `int32_t` fields | saved |
+  | --- | --- | --- | --- |
+  | `CaptureGuidance` | every tick, 60 Hz | **none** — an id, three doubles, an enum | 0 |
+  | `FramePreview` | per candidate thumbnail | `width`, `height` | 8 B on ~48 KB of pixels |
+  | `FrameRef` | per captured frame | `width`, `height`, `stride` | 12 B |
+  | `CoverageNode` | once, in the plan | `ringIndex` | 4 B × 28 nodes = 112 B |
+  | `CoverageState` | per coverage refresh | `nodesTotal`, `nodesSatisfied` | 8 B |
+
+  The first row is the answer on its own. The only thing crossing at frame rate carries no narrow
+  integer at all, so the change cannot touch the hot path — it was proposed for a saving on a path
+  that has none. Everywhere else the integers ride alongside a payload that dwarfs them: eight
+  bytes on a thumbnail's forty-eight kilobytes is 0.017%, and a full 28-cell capture reviewed
+  end to end saves on the order of three kilobytes against about eleven megabytes of preview
+  pixels.
+
+  Against that: every generated struct in both languages, both golden hexes, and a break in the
+  format itself. This is the same trade the parameter check was cheap *because* it avoided — the
+  encode was untouched, so a decoder from before it reads the same bytes. Paying that for 0.03%
+  is not a trade worth making, and "smaller on the wire" was true but unquantified when it was
+  filed, which is why it survived three ADRs as a plausible-sounding to-do.
+
+  It becomes worth revisiting if a narrow integer ever joins the per-tick path, or if a future
+  contract carries arrays of them — a per-node integer over a 28-node plan is 112 bytes, but the
+  same field over a few thousand features would not be. Neither exists today.
 - **The review client caches an open cell's previews.** Recording a pick re-opens the cell, and
   asking for every preview again would fault each frame in and spill it out once more — roughly
   350 ms of file work for a cell of eight, to redraw pictures the page is still holding. The cache
