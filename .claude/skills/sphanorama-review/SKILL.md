@@ -1,0 +1,158 @@
+---
+name: sphanorama-review
+description: Review a change to this repository by spawning reviewer subagents, one per lens, each publishing its findings to the pull request, then answering them there. Use on every PR before merging, in place of an external review bot. Also use when asked to review a diff, a PR, or a branch here, or when a change is finished and needs scrutiny it cannot give itself.
+---
+
+# Reviewing a change
+
+A review here is run by spawning subagents, not by asking a service. This file says what to point
+them at, what they must hand back, and what to do with it.
+
+`sphanorama-engineering/SKILL.md` is the standard being reviewed *against* — layers, contract
+discipline, the definition of done. This file is about finding where a change fails it.
+
+## Why subagents rather than one more careful read
+
+The author of a change cannot review it. Not for want of care: the reasoning that produced the
+code is the same reasoning that would check it, so a wrong assumption is invisible from inside. A
+subagent starts cold, reads the diff without the author's intent, and has to reconstruct why each
+line is there — which is exactly the pass that finds a guard that cannot fire, a sentinel that
+absorbs too much, or a promise the header makes and the code does not keep.
+
+Self-review still happens first and is not replaced by this. Sabotage every new test, reread the
+diff adversarially, run the whole gate. This is the pass *after* that one.
+
+## How to run it
+
+1. **Open the PR first.** The review is published on it, so it has to exist. A draft is fine.
+2. **Get the diff.** `git diff origin/main...HEAD` — the three-dot form, so it is the branch's own
+   work rather than everything main has done since.
+3. **Pick the lenses** from the table below that the diff actually touches. A C++-only change does
+   not need the shell-ordering lens; a docs-only change needs none of them. Two to four is usual.
+   One lens per subagent: a reviewer given six things to look for finds the easy ones.
+4. **Spawn them in parallel, in the background.** They are independent, and each posts its own
+   review to the PR when it is done.
+5. **Reconcile in public.** Reply to each finding on its own thread with what you did about it.
+   Every finding is yours to verify before you act on it — the subagent's confidence is not
+   evidence.
+
+Each subagent gets: the lens, the PR number, the diff (or the branch to diff itself), a pointer to
+`.claude/skills/sphanorama-engineering/SKILL.md`, and the reporting contract below.
+
+**Point them at a copy of this file that exists on the branch they will check out.** A reviewer
+works in a worktree of the branch under review, so a skill that has not merged to `main` yet is
+simply not there — the first four rounds this skill ran, every reviewer was told to read it and
+only the fourth said it could not find it. Until it is on `main`, name the branch in the prompt:
+`git show origin/<this branch>:.claude/skills/sphanorama-review/SKILL.md`. The same goes for any
+lens or rule that lives on an unmerged branch.
+
+**They review and publish. They do not fix.** No edits to tracked files, no commits, no pushes, no
+approving, no merging. A reviewer that fixes what it finds has stopped being able to tell you what
+it found, and two agents editing one branch is how a green tree becomes a mystery. Building and
+running tests to confirm a finding is expected; scratch files go in `/tmp`.
+
+## Publishing the review
+
+**Every reviewer posts to the pull request, and so does every answer.** Not because a report needs
+an audience, but because the reasoning is the artefact. A repository records what was decided; the
+threads record *why*, and why the alternative was rejected — which is the thing nobody can
+reconstruct later from a diff, and the thing a human collaborator arriving cold most needs.
+
+It also puts agent and human on the same footing. A person reviewing this PR reads the same threads,
+answers in the same place, and can disagree with a finding or with the answer to one. A review that
+lived only in a transcript would make them a spectator.
+
+A reviewer posts once, as a single review carrying all of its findings:
+
+1. `mcp__github__pull_request_review_write` with `method: "create"` opens a pending review.
+2. `mcp__github__add_comment_to_pending_review` adds each finding, anchored to its file and line.
+   The anchor is what makes a finding actionable, so use it rather than describing the location in
+   prose.
+3. `mcp__github__pull_request_review_write` with `method: "submit_pending"` and `event: "COMMENT"`
+   submits it. **Never `APPROVE` or `REQUEST_CHANGES`** — a reviewer here informs, it does not gate.
+
+The review body says which lens it is and what was examined. **A lens that found nothing still
+posts**, saying what it looked at and found clean: a review nobody can see is indistinguishable
+from one nobody ran, and "these files, this lens, nothing" is a fact worth having on the record
+when the same question comes up in three months.
+
+**The posted review is the deliverable. What a reviewer hands back to the caller is a receipt for
+it, not a substitute.** A reviewer that ends with its findings written out beautifully in a
+transcript and nothing on the pull request has not reviewed anything, however good the findings
+are — this happened on the first run of this skill, with one lens out of three, and the whole
+trail for one commit's reasoning had to be reconstructed and published afterwards by hand. So:
+submit the review *before* writing the summary, and make the last line of the summary the review's
+URL. A summary with no URL in it is a reviewer reporting that it did not finish.
+
+Every comment ends with the attribution footer, so a reader knows what wrote it:
+
+```
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+```
+
+## What each reviewer must hand back
+
+For every finding:
+
+- **Where** — file and line.
+- **What breaks** — concrete inputs or state, and the wrong output or crash they produce. Not "this
+  could be unsafe".
+- **Verdict** — `CONFIRMED` if it was reproduced (a test written, a value printed, a sanitizer run,
+  a log read) or `REASONED` if it is an argument from the code that was not executed. Both are
+  worth having; conflating them is not. A `REASONED` finding about arithmetic is usually cheap to
+  promote — say what would settle it.
+- **Why it is not already handled** — the check it walks past, or the caller it reaches through.
+  Most wrong findings die here, and asking for it up front kills them before they cost anything.
+
+And once at the end: **what was looked at and found clean.** A review that lists only problems
+cannot be told apart from one that stopped early.
+
+And the URL of the submitted review, as the last line. See "Publishing the review": the summary is
+the receipt, and this is what it is a receipt for.
+
+## The lenses
+
+| Lens | What it looks for |
+| ---- | ----------------- |
+| **The boundary and its arithmetic** | Every number arriving from JavaScript is a double. Casts to narrow integers (`static_cast<int32_t>` of a NaN, an infinity or 1e300 is undefined — `wire::GetInteger<T>` exists for this). Products that overflow before the check that would have refused them — ask by division. `size_t` is 32 bits on wasm32, so a count times an element size wraps. Length prefixes and counts bounded against the bytes actually present |
+| **Pixels and spans** | A `FrameRef` is a plain value a caller passes in; the store's entry is the only thing that knows the real allocation. Stride against a row's own width, dimensions against the bytes pinned, a sampling window against the frame it samples. Accumulator width against the largest sum a loop can reach. Every `Pin` released on every path out, failures included |
+| **Contract promises** | Read the header comment and then the implementation, and ask whether the second does what the first says. "Whatever residency a frame had before this call, it has after it" was kept by coincidence for one tier. A comment that is aspirational is a defect in the same way a wrong line is |
+| **Sentinels and second copies** | A value meaning "none" only means it if nothing else can produce it: check the writer cannot store one, the reader cannot invent one from a failure, and an unset argument is refused rather than answered. Separately: any fact held in two places will drift — a flag beside the thing it describes, a client cache mirroring what the core knows. Prefer deriving it; if it must be copied, find what invalidates the copy |
+| **Ownership and lifetime** | Who owns a frame, and what a refusal leaves behind. `Forget` can fail and keep accounting for the bytes, so dropping the handle orphans them. An offered frame belongs to its caller. Caches bounded in *every* dimension they can grow in — across cells and within one |
+| **Ordering in the shell** | Every call crosses a worker, so several are in flight at once. For each guard, ask what question it answers: a per-render ticket and a per-cell identity are different questions, and using one for the other's job is a race that only shows under fast input. Late answers must not paint, and must not haul the user back |
+| **Tests that cannot fail** | For each new test, what would make it fail? A test that passes because something refused the input earlier proves only that. Watch for: an arrangement whose oscillation never reaches the condition; an assertion satisfied by a default (`toBeHidden` on an element hidden by something else); a guard asserted against a fake that cannot produce the state. And for the build: `npm run build` only *stages* a prebuilt wasm, so after a contract change the browser tests run against the previous core |
+| **Docs and ADRs** | Did the change invalidate a sentence somewhere? `docs/06-roadmap.md`, the volatility map, the contract READMEs and the engineering skill all make claims the code has to keep. An ADR is required for a new component, a contract change, a new dependency or a rule exception — and its *consequences* section is where the costs it accepted belong |
+
+## Handling what comes back
+
+Verify before acting. A confirmed finding is a bug report; a reasoned one is a hypothesis, and both
+can be wrong about this codebase.
+
+**Answer every finding on its own thread, and resolve the ones you addressed.** The answer is part
+of the record: the commit that fixed it, or the argument that it is not a defect. A finding left
+without a reply reads as one nobody looked at.
+
+- **Reproduce first, then fix.** The test comes before the change, as always. A finding you could
+  not reproduce is a finding you do not yet understand.
+- **Declining is a legitimate outcome**, with the evidence, posted where the finding is. Run the
+  proposed change as a sabotage: if implementing it fails a test, that test is the argument. Say
+  which one. A declined finding with its reasoning on the thread is worth more to the next reader
+  than a quietly closed one, because it says what was considered and why it lost.
+- **Say when a finding changed your mind about something else.** Three separate rounds on one PR
+  each closed a different leak into the same sentinel; none was visible from the decision itself,
+  and the pattern only became sayable once all three were written down together.
+- **A fix is new code**, subject to everything above. The worst defect on a recent PR was introduced
+  *by* a fix, and caught only because the existing test for the opposite case was still there and
+  the whole suite was run.
+- **Re-run the review when a round found something real.** A round that found nothing is where it
+  stops. Findings that keep arriving on your own fixes mean the root cause is still there.
+
+## What this does not do
+
+It does not approve, and it does not merge. Green, mergeable and reviewed is the finish line;
+merging is the maintainer's call unless they have said otherwise for that branch.
+
+It also does not replace a human reading the PR. What it does is make sure that when one arrives,
+the reasoning is already there in the threads rather than locked in somebody's session.
