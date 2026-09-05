@@ -233,9 +233,22 @@ alone under this loop rather than to stop and wait:
    worst defect in a recent PR was not in the feature: it was a rollback added *during* this step
    to close a leak, which deleted the captured pixels it was unwinding. New code written to make
    old code safer is still new code.
-3. **Open the PR.**
+3. **Open the PR. Every change gets one — docs-only changes included.** A PR is how the
+   maintainer sees that work exists; a branch pushed without one is invisible in the flow they
+   actually use, and they will find it only if someone mentions it in passing. "This needs no
+   review" is a fact about the lenses and says nothing about whether it needs a PR: those are
+   different questions and conflating them has already stranded two finished branches.
+
+   **The description is a few short bullets and nothing else.** What changed, what it decides,
+   what is still open, what a reader has to know before merging. Not an essay — the reasoning
+   belongs in the commit messages, the ADR and the review threads, all of which the PR links to.
 4. **Review it with `sphanorama-review`**, which spawns reviewer subagents — one per lens — and
    has each publish its findings to the PR.
+
+   A docs-only change needs no lens, and saying so in the PR body is the whole of that step: the
+   lens table is about C++ arithmetic, pixel spans, shell ordering, sentinels and tests, and
+   inventing a pass to look thorough would be the first violation of a skill about not doing that.
+   Measured claims in a doc are the exception worth a second pair of eyes.
 
    Not an external bot. Those are metered, and a day of rounds can eat a month of somebody's
    allowance; a subagent costs what the work costs. The lens table in that skill is also worth more
