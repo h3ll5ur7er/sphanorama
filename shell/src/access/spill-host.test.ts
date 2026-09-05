@@ -335,7 +335,8 @@ describe('the spill host', () => {
  * exclusive, so a second attempt to lock a file someone else holds throws.
  */
 function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean = () => false,
-                 failClose: (name: string) => boolean = () => false) {
+                 failClose: (name: string) => boolean = () => false,
+                 noSyncHandles = false) {
   const files = new Map(initial.map((name) => [name, { locked: false }]));
   return {
     names: () => [...files.keys()].sort(),
@@ -345,6 +346,9 @@ function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean 
         if (!existing && !options?.create) throw new Error(`no such file: ${name}`);
         const file = existing ?? { locked: false };
         files.set(name, file);
+        // A browser with no synchronous access handles at all, which is a different thing from a
+        // handle somebody else is holding: no amount of trying another name will help.
+        if (noSyncHandles) return {};
         return {
           async createSyncAccessHandle() {
             if (file.locked || refuseLock(name)) throw new Error(`${name} is in use`);
@@ -493,6 +497,17 @@ describe('the spill file', () => {
     expect(tier.frames).toBeDefined();
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);
+  });
+
+  it('does not litter the disk on a browser that has no sync handles at all', async () => {
+    // The fallback exists for a tier somebody else is holding — try another name and you get one.
+    // "This browser cannot do synchronous handles" is not that: no name will work, and taking a
+    // fresh uuid each boot creates an empty file, fails again, and leaves it there. Nothing ever
+    // collects it either, because the sweep only runs once a tier has been locked.
+    const opfs = fakeOpfs([], () => false, () => false, true);
+
+    await expect(openSpillTier(opfs.directory)).rejects.toThrow(/synchronous access handles/);
+    expect(opfs.names().filter((name) => name !== 'sphanorama-spill-resident')).toHaveLength(0);
   });
 
   it('leaves files that are not spill files alone', async () => {

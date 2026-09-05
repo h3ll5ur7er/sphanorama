@@ -349,11 +349,25 @@ function release(handle: SyncAccessHandle): void {
   }
 }
 
+/**
+ * The platform cannot do this at all, as opposed to this particular file being held.
+ *
+ * Worth its own type because the two failures want opposite answers: a file somebody else has is
+ * a reason to try another name, and a browser with no synchronous handles is a reason to stop.
+ * Trying another name there creates an empty file, fails again, and leaves it — once per boot,
+ * collected by nothing, because the sweep only runs once a tier has been locked.
+ */
+class NoSyncAccessHandles extends Error {
+  constructor() {
+    super('this browser has no synchronous access handles');
+  }
+}
+
 /** Opens one file and takes its exclusive handle, or throws whatever the browser said. */
 async function lock(directory: SpillDirectory, name: string): Promise<SyncAccessHandle> {
   const handle = await directory.getFileHandle(name, { create: true });
   const sync = await handle.createSyncAccessHandle?.();
-  if (!sync) throw new Error('this browser has no synchronous access handles');
+  if (!sync) throw new NoSyncAccessHandles();
   return sync;
 }
 
@@ -401,8 +415,10 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
   let frames: SyncAccessHandle;
   try {
     frames = await lock(root, RESIDENT);
-  } catch {
-    // Held by somebody. A tier of its own beats no tier at all.
+  } catch (cause) {
+    // No name will help on a platform that cannot lock at all, so this is where it stops.
+    if (cause instanceof NoSyncAccessHandles) throw cause;
+    // Held by somebody, then. A tier of its own beats no tier at all.
     name = SPILL_PREFIX + crypto.randomUUID();
     frames = await lock(root, name);
   }

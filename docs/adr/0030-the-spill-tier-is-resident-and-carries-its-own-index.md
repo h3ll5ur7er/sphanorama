@@ -87,6 +87,11 @@ resume, so it goes with the tab that made it.
   knows the difference. **This ordering is a correctness requirement, not a preference.**
 - **The resident file keeps the size of the largest capture** until something clears it. That is
   the cost of it being the thing a reload comes back to.
+- **The fallback is for a tier somebody holds, not for a browser that cannot lock at all.** Those
+  want opposite answers: another name gets you a tier in the first case and, in the second, an
+  empty file that fails again and stays there — once per boot, collected by nothing, since the
+  sweep only runs once a tier has been locked. "No synchronous access handles" is its own error
+  type so that it stops rather than retries.
 - **A tier whose index will not lock falls back too**, rather than costing the session its spill
   entirely. Two files means two locks, and only one of them has to be unavailable; giving up over
   a file that holds no pixels would cap the sphere at RAM.
