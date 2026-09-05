@@ -80,7 +80,13 @@ export type PaintPreview = (canvas: HTMLCanvasElement, preview: FramePreview) =>
  * to find that out.
  */
 export function previewIsDrawable(preview: FramePreview): boolean {
-  return preview.width > 0 && preview.height > 0
+  // Whole numbers, not merely positive ones. `ImageData` puts its dimensions through WebIDL's
+  // integer conversion *before* it compares them to the pixel count, so a width of 1.5 becomes 1
+  // and a payload that satisfied the count check a moment ago throws — which is the one outcome
+  // this guard exists to keep out of a loop. `Number.isInteger` rules out NaN and the infinities
+  // on the way past, since they arrive through the same door.
+  return Number.isInteger(preview.width) && Number.isInteger(preview.height)
+    && preview.width > 0 && preview.height > 0
     && preview.pixels.length === preview.width * preview.height * 4;
 }
 

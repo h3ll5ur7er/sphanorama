@@ -356,6 +356,17 @@ describe('paintPreviewOnCanvas', () => {
     expect(previewIsDrawable(shaped(4, 3, 4 * 3 * 4))).toBe(true);
   });
 
+  it('refuses one whose dimensions are not whole numbers', () => {
+    // A fraction survives the count check and then does not survive `ImageData`: WebIDL truncates
+    // 1.5 to 1 on the way in and *then* compares the length, so 1.5x8 with 48 pixels passes here
+    // and throws there — a throw being exactly what this guard exists to keep out of a loop.
+    // `Number.isInteger` also rules out NaN and the infinities, which arrive the same way.
+    expect(previewIsDrawable(shaped(1.5, 8, Math.round(1.5 * 8 * 4)))).toBe(false);
+    expect(previewIsDrawable(shaped(4, 2.5, Math.round(4 * 2.5 * 4)))).toBe(false);
+    expect(previewIsDrawable(shaped(Number.NaN, 8, 0))).toBe(false);
+    expect(previewIsDrawable(shaped(Number.POSITIVE_INFINITY, 8, 0))).toBe(false);
+  });
+
   it('refuses one whose pixel count does not match its dimensions', () => {
     // `ImageData` throws on a mismatch, and `fillPreviews` is a loop: a throw would stop every
     // row after this one from being drawn. The core would have to be wrong for this to happen —
