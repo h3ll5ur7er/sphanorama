@@ -228,13 +228,22 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   bundle adjustment produces a real focal length — so this waits on one of them rather than on
   an idea.
 - `IFrameStoreAccess` with the tiered residency and OPFS spill; memory-budget probe.
-- Review Client v1: the sphere coverage map and per-cell candidate strip are **done**, and a pick
-  is recorded through `ProjectManager.SetSelection` (UC-3). Two halves of it are not: the strip
-  shows what the core knows about a candidate rather than the frame itself, because reading pixels
-  back *out* of the store has no path across the worker — `PeekPreviewFrame` only goes inward
-  (ADR 0021); and a recorded selection cannot be read back, because `SetSelection` writes one and
-  no contract returns it, so an override lives in the client's memory and goes with the tab.
-  Neither is hard; both are contract-shaped rather than code-shaped.
+- Review Client v1: the sphere coverage map and per-cell candidate strip are **done**, a pick is
+  recorded through `ProjectManager.SetSelection` (UC-3), and **the strip shows the frames**. That
+  last part was the gap: reading pixels back *out* of the store had no path across the worker, and
+  now it does. `CandidatePreview` answers with a `FramePreview` — a reduced RGBA copy the page puts
+  straight into an `ImageData`, at a long edge the client names and the contract bounds. Reduced
+  because the arithmetic decides it: a cell's frames are 39 MB against a 128 MB ceiling and its
+  previews are 384 KB. Where the reduction happens took a new engine and a new volatility axis
+  (V16), because none of the store, the quality engine or the composition engine owns "make this
+  frame small enough to look at" (ADR 0038). Reading a preview also puts the frame back in the tier
+  it came from, which is the caller ADR 0023 named in advance and left open — a review client
+  faulting a sphere's frames in to display them, with no natural finished moment. It has one: the
+  reduced copy exists.
+
+  One half of it is still not done: a recorded selection cannot be read back, because
+  `SetSelection` writes one and no contract returns it, so an override lives in the client's memory
+  and goes with the tab. It is contract-shaped rather than code-shaped.
 
 **Exit:** a full 360×180 capture on a mid-range Android and an iPhone completes without an OOM,
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
@@ -317,8 +326,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   criterion also wants a completed sphere and a peak-memory number from it, and neither exists
   yet on that device.
 
-Two known gaps in the phase's own list, both contract-shaped: the review strip shows what the core
-knows about a candidate rather than the frame itself, and a recorded selection cannot be read back.
+One known gap left in the phase's own list, and it is contract-shaped: a recorded selection cannot
+be read back. The other — a review strip that showed what the core knows about a candidate rather
+than the frame itself — is closed (ADR 0038).
 
 *Answered.* A cell's five candidates scored 1186, 1180, 459, 459, 458 in capture order, and
 another 979, 993, 0.60, 0.60, 0.61 — both splitting two-and-three at the same point, in different

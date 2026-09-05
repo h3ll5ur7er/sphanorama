@@ -7,13 +7,21 @@
 // decoding into plausible nonsense in a browser.
 import { describe, expect, it } from 'vitest';
 
-import { decodeCaptureGuidance, decodeCapturePlan, encodeCaptureGuidance, encodeCapturePlan }
-  from './codec.generated';
+import {
+  decodeCaptureGuidance, decodeCapturePlan, decodeFramePreview,
+  encodeCaptureGuidance, encodeCapturePlan, encodeFramePreview,
+} from './codec.generated';
 import { Reader, Writer } from './wire';
 import type * as C from '../../../contracts/ts/contracts';
 
 const GOLDEN_CAPTURE_GUIDANCE =
   '0000000000001c4000000000000029400000000000000ac0000000000000e03f01000000';
+
+// The one field kind that carries a length prefix, and the only one that carries pixels
+// (ADR 0038). A prefix the two halves disagreed about decodes into a plausible image of the wrong
+// size rather than into a failure, which is exactly the class of bug a golden exists to catch.
+const GOLDEN_FRAME_PREVIEW =
+  '00000000000022400000000000000040000000000000f03f0100000008000000010203ff040506ff';
 
 function fromHex(hex: string): Uint8Array {
   return new Uint8Array((hex.match(/../g) ?? []).map((pair) => parseInt(pair, 16)));
@@ -43,6 +51,38 @@ describe('cross-language wire format', () => {
       action: 'HoldStill',
     });
     expect(toHex(writer.finish())).toBe(GOLDEN_CAPTURE_GUIDANCE);
+  });
+});
+
+describe('a byte payload', () => {
+  const preview: C.FramePreview = {
+    frame: 9 as C.FrameId,
+    width: 2,
+    height: 1,
+    format: 'RGBA8',
+    pixels: new Uint8Array([1, 2, 3, 255, 4, 5, 6, 255]),
+  };
+
+  it('decodes the payload the C++ side produces', () => {
+    const decoded = decodeFramePreview(new Reader(fromHex(GOLDEN_FRAME_PREVIEW)));
+    expect(decoded.frame).toBe(9);
+    expect(decoded.width).toBe(2);
+    expect(decoded.height).toBe(1);
+    expect(decoded.format).toBe('RGBA8');
+    expect(Array.from(decoded.pixels)).toEqual([1, 2, 3, 255, 4, 5, 6, 255]);
+  });
+
+  it('produces the payload the C++ side expects', () => {
+    const writer = new Writer();
+    encodeFramePreview(writer, preview);
+    expect(toHex(writer.finish())).toBe(GOLDEN_FRAME_PREVIEW);
+  });
+
+  it('round-trips the pixels unchanged', () => {
+    const writer = new Writer();
+    encodeFramePreview(writer, preview);
+    const decoded = decodeFramePreview(new Reader(writer.finish()));
+    expect(Array.from(decoded.pixels)).toEqual(Array.from(preview.pixels));
   });
 });
 

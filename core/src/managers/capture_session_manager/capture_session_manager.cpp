@@ -273,12 +273,13 @@ Status Also(Status cause, const Status& unlock) {
 }
 
 CaptureSessionManager::CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
-                                             IFrameQualityEngine& quality, ICameraAccess& camera,
+                                             IFrameQualityEngine& quality,
+                                             IFramePreviewEngine& preview, ICameraAccess& camera,
                                              IMotionSensorAccess& sensor,
                                              IFrameStoreAccess& frames,
                                              IProjectStoreAccess& projects, IClock& clock)
-    : planner_(planner), pose_(pose), quality_(quality), camera_(camera), sensor_(sensor),
-      frames_(frames), projects_(projects), clock_(clock) {}
+    : planner_(planner), pose_(pose), quality_(quality), preview_(preview), camera_(camera),
+      sensor_(sensor), frames_(frames), projects_(projects), clock_(clock) {}
 
 Status CaptureSessionManager::RequireSession() const {
   return active_ ? Status::Ok()
@@ -904,6 +905,43 @@ Result<std::vector<Candidate>> CaptureSessionManager::Candidates(NodeId node) co
   }
   const auto it = candidates_.find(node.value);
   return Ok(it == candidates_.end() ? std::vector<Candidate>{} : it->second);
+}
+
+Result<FramePreview> CaptureSessionManager::CandidatePreview(NodeId node, CandidateId candidate,
+                                                            int32_t maxEdge) const {
+  if (auto status = RequireSession(); !status.ok()) return status;
+  if (!HasNode(node)) {
+    return Err<FramePreview>(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  }
+  const auto cell = candidates_.find(node.value);
+  const Candidate* found = nullptr;
+  if (cell != candidates_.end()) {
+    for (const Candidate& held : cell->second) {
+      if (held.id.value == candidate.value) found = &held;
+    }
+  }
+  if (found == nullptr) {
+    // Ordinary rather than exceptional: a replace-retake forgets a cell's frames while a review
+    // client is still holding the strip it fetched before that happened.
+    return Err<FramePreview>(StatusCode::NotFound, kComponent,
+                             "this cell holds no such candidate");
+  }
+
+  // Where the frame's bytes were before this read, so that the read can put them back. Pin faults
+  // a spilled frame into the heap and leaves it there, so a user opening cell after cell would
+  // fill the heap by browsing — the caller with no natural finished moment that ADR 0023 named
+  // and left open. Here the moment is exact: the reduced copy exists, and nothing wants the frame
+  // again. Restoring what was found rather than imposing a tier is what keeps this safe for an
+  // offered frame, whose residency is the caller's business and not this manager's.
+  const Residency before = frames_.ResidencyOf(found->frame).value;
+  auto reduced = preview_.Reduce(found->frame, maxEdge);
+  if (before == Residency::Spilled) {
+    // Discarded for the same reason `Cool` discards one: by here the preview has either been
+    // produced or failed, and a store that cannot take the frame back leaves it exactly where it
+    // is — readable, in the heap, and accounted for.
+    (void)frames_.Demote(found->frame, Residency::Spilled);
+  }
+  return reduced;
 }
 
 Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {

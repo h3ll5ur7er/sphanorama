@@ -2,6 +2,7 @@
 
 #include "engines/composition_engine/null_composition_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
+#include "engines/frame_preview_engine/box_frame_preview_engine.h"
 #include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
 #include "engines/pose_engine/orientation_pose_engine.h"
 #include "engines/registration_engine/null_registration_engine.h"
@@ -105,6 +106,11 @@ class Runtime {
   // frames and a coin flip.
   SharpnessFrameQualityEngine quality_{frames_};
 
+  // Declared beside it and for the same reason: reading a stored frame back out is pixel work,
+  // and pixel work reaches the store. This is what makes a review strip show the frames rather
+  // than what the core knows about them (ADR 0038).
+  BoxFramePreviewEngine preview_{frames_};
+
   // The one contract with a real implementation on both platforms: a browser port backed by the
   // page's document host, and an in-memory store natively. Both are held to the same contract
   // suite (ADR 0010), which is what makes swapping them here safe.
@@ -118,8 +124,8 @@ class Runtime {
   // directly so a replayed dataset can drive the same manager from recorded timestamps.
   SystemClock clock_;
 
-  CaptureSessionManager capture_session_{planner_, pose_, quality_, camera_, motion_, frames_,
-                                         projects_, clock_};
+  CaptureSessionManager capture_session_{planner_, pose_, quality_, preview_, camera_,
+                                         motion_, frames_, projects_, clock_};
   PanoramaBuildManager panorama_build_;
   ProjectManager project_{projects_};
 };

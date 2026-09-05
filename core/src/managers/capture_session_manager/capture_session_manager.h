@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "sphanorama/engines/coverage_planner_engine.h"
+#include "sphanorama/engines/frame_preview_engine.h"
 #include "sphanorama/engines/frame_quality_engine.h"
 #include "sphanorama/engines/pose_engine.h"
 #include "sphanorama/managers/capture_session_manager.h"
@@ -24,9 +25,9 @@ namespace sphanorama {
 class CaptureSessionManager final : public ICaptureSessionManager {
  public:
   CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
-                        IFrameQualityEngine& quality, ICameraAccess& camera,
-                        IMotionSensorAccess& sensor, IFrameStoreAccess& frames,
-                        IProjectStoreAccess& projects, IClock& clock);
+                        IFrameQualityEngine& quality, IFramePreviewEngine& preview,
+                        ICameraAccess& camera, IMotionSensorAccess& sensor,
+                        IFrameStoreAccess& frames, IProjectStoreAccess& projects, IClock& clock);
 
   Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) override;
   Result<SessionId> Resume(ProjectId project) override;
@@ -37,6 +38,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
                                   const PoseSample& pose) override;
   Result<CoverageState> Coverage() const override;
   Result<std::vector<Candidate>> Candidates(NodeId node) const override;
+  Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
+                                       int32_t maxEdge) const override;
   Status RequestRetake(NodeId node, bool replace) override;
   Status End() override;
 
@@ -91,6 +94,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   ICoveragePlannerEngine& planner_;
   IPoseEngine& pose_;
   IFrameQualityEngine& quality_;
+  IFramePreviewEngine& preview_;
   ICameraAccess& camera_;
   IMotionSensorAccess& sensor_;
   IFrameStoreAccess& frames_;

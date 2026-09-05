@@ -25,7 +25,9 @@ import { describeResumeRefusal, resumableProject } from './clients/capture/resum
 import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
-import { createReviewPanel, type ReviewPanel } from './clients/review/panel';
+import {
+  createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
+} from './clients/review/panel';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -399,8 +401,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     reviewElements,
     {
       candidates: (node) => core.captureSession.candidates(node),
+      candidatePreview: (node, candidate, maxEdge) =>
+        core.captureSession.candidatePreview(node, candidate, maxEdge),
       setSelection: (node, candidate) => core.project.setSelection(project, node, candidate),
-    });
+    },
+    paintPreviewOnCanvas);
 
   /**
    * Re-reads coverage and redraws the map.

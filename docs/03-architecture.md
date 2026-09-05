@@ -22,6 +22,7 @@ flowchart TB
     E3["FrameQualityEngine"]
     E4["RegistrationEngine"]
     E5["CompositionEngine"]
+    E6["FramePreviewEngine"]
   end
 
   subgraph RA["ResourceAccess — atomic verbs over resources"]
@@ -52,6 +53,7 @@ flowchart TB
   M1 --> E1
   M1 --> E2
   M1 --> E3
+  M1 --> E6
   M1 --> R1
   M1 --> R2
   M1 --> R3
@@ -75,6 +77,7 @@ flowchart TB
   E5 -.-> R6
   E4 -.-> R3
   E5 -.-> R3
+  E6 -.-> R3
 
   R1 --> S1
   R2 --> S2
@@ -164,6 +167,11 @@ estimate. Its loop is:
   cell's candidate set (and whether the burst continues), asks `CoveragePlannerEngine` whether the
   cell is now satisfied, persists through `IFrameStoreAccess`/`IProjectStoreAccess`.
 - `RequestRetake(nodeId)` → clears or supplements a cell's candidates and re-arms that reticle.
+- `CandidatePreview(node, candidate, maxEdge)` → asks `FramePreviewEngine` for a reduced copy of
+  one candidate's frame, and puts the frame back in the tier it found it in. This is the only call
+  in the contracts that answers with pixels, and the reduction is why: a review client needs to
+  *see* the frames, and 39 MB of a cell's full frames across a 128 MB budget is what a `FrameRef`
+  exists to prevent (ADR 0038).
 
 It never stitches and never blends.
 
@@ -223,9 +231,15 @@ app is ever served isolated.
 
 Two rules keep this from becoming a performance disaster:
 
-- **Control crosses the boundary; pixels do not.** Frame bytes are written once into the WASM heap
+- **Control crosses the boundary; frames do not.** Frame bytes are written once into the WASM heap
   — transferred in as an `ArrayBuffer`, or copied straight into a heap view where a shared one is
-  available — and thereafter referred to by handle. No pixel array is ever serialised by value.
+  available — and thereafter referred to by handle. No *frame* is ever serialised by value.
+
+  There is one image that crosses outward, and the exception is measured rather than granted:
+  `CandidatePreview` answers with a `FramePreview`, a copy reduced to a long edge the caller names
+  and the contract bounds. The rule is a rule about cost — a cell's frames are 39 MB, its previews
+  are 384 KB — and reducing is what pays it. A handle cannot do this job in this direction at all,
+  because there is no frame store on the page to resolve one against (ADR 0038).
 - **The boundary is generated, not hand-written.** One IDL produces the C++ facade, the TS client
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.
@@ -338,7 +352,10 @@ The client sequences the two managers; they never call each other.
 
 ### UC-3 · Pick a different frame from the burst by hand
 
-The Review Client shows a cell's candidates with their scores. Choosing one is
+The Review Client shows a cell's candidates ranked best-first, each with its scores and with the
+frame itself — `CaptureSessionManager.CandidatePreview` reduces one to something a canvas can take,
+because the scores alone cannot answer whether the thing the user wanted is even in the picture
+(ADR 0038). Choosing one is
 `ProjectManager.SetSelection(project, node, candidate)` followed by
 `PanoramaBuildManager.Invalidate(buildId, [node])` — the *same* dirty path as a retake. One
 mechanism, two features. That is the payoff of modelling the build as a graph.

@@ -28,6 +28,8 @@ void Encode(Writer& out, const PoseSample& value);
 bool Decode(Reader& in, PoseSample& value);
 void Encode(Writer& out, const FrameRef& value);
 bool Decode(Reader& in, FrameRef& value);
+void Encode(Writer& out, const FramePreview& value);
+bool Decode(Reader& in, FramePreview& value);
 void Encode(Writer& out, const CapturePlanSpec& value);
 bool Decode(Reader& in, CapturePlanSpec& value);
 void Encode(Writer& out, const CoverageNode& value);
@@ -162,6 +164,23 @@ inline bool Decode(Reader& in, FrameRef& value) {
   value.stride = static_cast<decltype(value.stride)>(in.GetF64());
   value.timestampNs = static_cast<decltype(value.timestampNs)>(in.GetF64());
   value.contentHash = in.GetU64();
+  return in.ok();
+}
+
+inline void Encode(Writer& out, const FramePreview& value) {
+  out.PutF64(static_cast<double>(value.frame.value));
+  out.PutF64(static_cast<double>(value.width));
+  out.PutF64(static_cast<double>(value.height));
+  out.PutI32(static_cast<int32_t>(value.format));
+  out.PutBytes(value.pixels);
+}
+
+inline bool Decode(Reader& in, FramePreview& value) {
+  value.frame.value = in.GetId();
+  value.width = static_cast<decltype(value.width)>(in.GetF64());
+  value.height = static_cast<decltype(value.height)>(in.GetF64());
+  value.format = static_cast<PixelFormat>(in.GetI32());
+  value.pixels = in.GetBytes();
   return in.ok();
 }
 

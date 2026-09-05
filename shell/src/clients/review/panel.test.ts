@@ -4,9 +4,12 @@
 // worker.
 import { describe, expect, it } from 'vitest';
 
-import { createReviewPanel, type ReviewCore, type ReviewElements } from './panel';
+import {
+  createReviewPanel, PREVIEW_MAX_EDGE,
+  type PaintPreview, type ReviewCore, type ReviewElements,
+} from './panel';
 import type {
-  Candidate, CapturePlan, CoverageState, NodeId,
+  Candidate, CandidateId, CapturePlan, CoverageState, FramePreview, NodeId,
 } from '../../../../contracts/ts/contracts';
 
 /**
@@ -25,6 +28,32 @@ function candidate(id: number, node: number): Candidate {
   } as unknown as Candidate;
 }
 
+/** The shape the facade answers with, mirrored here so the fake core can hand one back. */
+type Answered<T> = { readonly ok: true; readonly value: T } | { readonly ok: false };
+
+/** A preview of a candidate, sized as the core would size one. */
+function preview(candidate: number): FramePreview {
+  const width = 4;
+  const height = 3;
+  return {
+    frame: candidate as unknown as FramePreview['frame'],
+    width,
+    height,
+    format: 'RGBA8',
+    pixels: new Uint8Array(width * height * 4).fill(candidate),
+  };
+}
+
+/** A painter that records what it was asked to draw, so the DOM never needs a real canvas. */
+function recordingPainter() {
+  const painted: Array<{ candidate: number; canvas: HTMLCanvasElement }> = [];
+  const paint: PaintPreview = (canvas, drawn) => {
+    canvas.dataset.preview = 'ready';
+    painted.push({ candidate: drawn.frame as unknown as number, canvas });
+  };
+  return { paint, painted };
+}
+
 /** A core whose answers are released by hand, so an out-of-order reply can be staged. */
 function deferredCore() {
   const pending = new Map<number, (candidates: Candidate[]) => void>();
@@ -32,6 +61,13 @@ function deferredCore() {
   // a click handler, so a test cannot always be holding the promise at the moment it wants to
   // decide what comes back.
   const queued = new Map<number, Candidate[]>();
+  const previewsPending = new Map<number, (answer: Answered<FramePreview>) => void>();
+  const previewCalls: Array<{ node: number; candidate: number; maxEdge: number }> = [];
+  // Which candidates have no frame any more. A replace-retake forgets a cell's frames while a
+  // strip fetched a moment ago is still naming them.
+  const gone = new Set<number>();
+  // Whether previews answer as they are asked for, or wait to be released by hand.
+  let holdPreviews = false;
   let recording: (() => void) | null = null;
   const core: ReviewCore = {
     candidates: (node: NodeId) => new Promise((resolve) => {
@@ -43,10 +79,30 @@ function deferredCore() {
       }
       pending.set(node as number, (value) => resolve({ ok: true, value }));
     }),
+    candidatePreview: (node: NodeId, candidate: CandidateId, maxEdge: number) =>
+      new Promise((resolve) => {
+        previewCalls.push({
+          node: node as number, candidate: candidate as number, maxEdge,
+        });
+        const answer: Answered<FramePreview> = gone.has(candidate as number)
+          ? { ok: false }
+          : { ok: true, value: preview(candidate as number) };
+        if (holdPreviews) previewsPending.set(candidate as number, resolve);
+        else resolve(answer);
+      }),
     setSelection: () => new Promise((resolve) => { recording = () => resolve({ ok: true }); }),
   };
   return {
     core,
+    previewCalls,
+    forget(candidate: number) { gone.add(candidate); },
+    holdPreviews() { holdPreviews = true; },
+    releasePreview(candidate: number) {
+      const release = previewsPending.get(candidate);
+      if (release === undefined) throw new Error(`no preview in flight for ${candidate}`);
+      previewsPending.delete(candidate);
+      release(gone.has(candidate) ? { ok: false } : { ok: true, value: preview(candidate) });
+    },
     answer(node: number, candidates: Candidate[]) {
       const release = pending.get(node);
       if (release === undefined) { queued.set(node, candidates); return; }
@@ -85,8 +141,9 @@ describe('opening a cell', () => {
     // the DOM from whichever settles last puts one cell's candidates under another cell's
     // heading — and the map's pressed dot, which is set synchronously, would name the second.
     const { core, answer } = deferredCore();
+    const { paint } = recordingPainter();
     const ui = elements();
-    const panel = createReviewPanel(ui, core);
+    const panel = createReviewPanel(ui, core, paint);
     panel.show(plan, coverage);
 
     const first = panel.open(1 as NodeId);
@@ -106,8 +163,9 @@ describe('opening a cell', () => {
     // and a re-open then wins on both halves at once, because it takes the newest ticket *and*
     // sets `opened`, which is what the map's pressed dot is drawn from.
     const { core, answer, recorded } = deferredCore();
+    const { paint } = recordingPainter();
     const ui = elements();
-    const panel = createReviewPanel(ui, core);
+    const panel = createReviewPanel(ui, core, paint);
     panel.show(plan, coverage);
 
     const first = panel.open(1 as NodeId);
@@ -134,8 +192,9 @@ describe('opening a cell', () => {
     // The other half of the guard above: staying put has to still redraw, or the strip would go
     // on showing the core's automatic pick as the one in force after you overrode it.
     const { core, answer, recorded } = deferredCore();
+    const { paint } = recordingPainter();
     const ui = elements();
-    const panel = createReviewPanel(ui, core);
+    const panel = createReviewPanel(ui, core, paint);
     panel.show(plan, coverage);
 
     const opening = panel.open(1 as NodeId);
@@ -151,10 +210,129 @@ describe('opening a cell', () => {
     expect(pressed).toEqual([expect.stringContaining('#11')]);
   });
 
+  it('shows each candidate\'s frame rather than only what the core knows about it', async () => {
+    // The gap this closes. A strip of numbers cannot answer the question a burst exists to raise
+    // — which of these five frames of the same wall is the one to keep — and the pixels had no
+    // way out of the core until `CandidatePreview` (ADR 0038).
+    const { core, answer, previewCalls } = deferredCore();
+    const { paint, painted } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    // One picture per row, in the order the core ranked them.
+    expect(painted.map((p) => p.candidate)).toEqual([10, 11]);
+    expect(ui.strip.querySelectorAll('canvas.thumb')).toHaveLength(2);
+    expect(Array.from(ui.strip.querySelectorAll('canvas.thumb'),
+                      (c) => (c as HTMLElement).dataset.preview)).toEqual(['ready', 'ready']);
+    // Asked for at the size the strip draws, not at whatever the frame happens to be.
+    expect(previewCalls.map((call) => call.maxEdge)).toEqual([PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE]);
+    // And the numbers are still there: the picture is beside the scores, not instead of them.
+    expect(ui.strip.querySelector('button')!.textContent).toContain('sharpness');
+  });
+
+  it('leaves a row readable when its frame has gone', async () => {
+    // A replace-retake forgets a cell's frames, and a strip fetched a moment before that is still
+    // naming them. `candidates.ts` already copes with a selection that outlives what it names;
+    // this is the same staleness one call further down, and one missing picture must not take
+    // the rest of the strip with it.
+    const { core, answer, forget } = deferredCore();
+    const { paint, painted } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    forget(10);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    expect(painted.map((p) => p.candidate)).toEqual([11]);
+    expect(Array.from(ui.strip.querySelectorAll('canvas.thumb'),
+                      (c) => (c as HTMLElement).dataset.preview)).toEqual(['missing', 'ready']);
+    expect(ui.strip.querySelectorAll('button')).toHaveLength(2);
+  });
+
+  it('does not paint a preview into the cell that replaced the one it was asked for', async () => {
+    // Every preview is its own crossing, so a cell of eight is eight answers in flight while the
+    // user is free to tap another dot. Painting whichever arrives would put one cell's frames
+    // under another cell's heading — the same race the candidate list already guards, one call
+    // further down and eight times as likely.
+    const { core, answer, holdPreviews, releasePreview } = deferredCore();
+    const { paint, painted } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    holdPreviews();
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1)]);
+    await Promise.resolve();
+    const second = panel.open(2 as NodeId);
+    answer(2, [candidate(20, 2)]);
+    releasePreview(10);
+    await first;
+    releasePreview(20);
+    await second;
+
+    expect(painted.map((p) => p.candidate)).toEqual([20]);
+  });
+
+  it('does not read a cell\'s pixels again to show a pick it just recorded', async () => {
+    // Recording a pick re-opens the cell so the strip can show what is in force. Every preview it
+    // asked for a second time would fault a spilled frame back into the heap and send it away
+    // again — hundreds of milliseconds of file work to redraw pictures the page is still holding.
+    const { core, answer, recorded, previewCalls } = deferredCore();
+    const { paint, painted } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+    expect(previewCalls).toHaveLength(2);
+
+    ui.strip.querySelectorAll('button')[1].click();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+
+    expect(previewCalls).toHaveLength(2);
+    // Redrawn from what was already held, so the refreshed strip still has its pictures.
+    expect(painted.map((p) => p.candidate)).toEqual([10, 11, 10, 11]);
+  });
+
+  it('drops the pictures it was holding when another cell is opened', async () => {
+    // The cache is for the cell on screen. Keeping every cell's thumbnails would be the review
+    // client's own copy of the memory problem the reduction exists to solve.
+    const { core, answer, previewCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1)]);
+    await first;
+    const second = panel.open(2 as NodeId);
+    answer(2, [candidate(20, 2)]);
+    await second;
+    const again = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1)]);
+    await again;
+
+    expect(previewCalls.map((call) => call.candidate)).toEqual([10, 20, 10]);
+  });
+
   it('still draws the cell you asked for when the replies are in order', async () => {
     const { core, answer } = deferredCore();
+    const { paint } = recordingPainter();
     const ui = elements();
-    const panel = createReviewPanel(ui, core);
+    const panel = createReviewPanel(ui, core, paint);
     panel.show(plan, coverage);
 
     const opening = panel.open(3 as NodeId);

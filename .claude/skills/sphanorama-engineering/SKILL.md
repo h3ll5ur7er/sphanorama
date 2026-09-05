@@ -77,8 +77,11 @@ through the shared heap.
 A `std::string_view` cannot be a data member of a contract type: it encodes fine and cannot be
 decoded, since there is nothing owning the bytes. The generator refuses it.
 
-- **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is the
-  only route to bytes, and only inside the core.
+- **No frames in a contract.** Frames cross as `FrameRef` handles, and `IFrameStoreAccess::Pin` is
+  the only route to a frame's bytes, inside the core. One reduced image leaves —
+  `CandidatePreview` answers with a `FramePreview` — because the page has no frame store to
+  resolve a handle against, and because the rule is about cost: a cell's frames are 39 MB and its
+  previews are 384 KB (ADR 0038). Anything full-resolution still crosses as a handle.
 - **No exceptions.** Everything fallible returns `Result<T>` with a closed `StatusCode` enum, so a
   client can branch on `SensorPermissionDenied` specifically. Exceptions are disabled in the core.
 - **Managers are the client's entire surface.**
@@ -261,7 +264,7 @@ accident anyway.
 | A marker, overlay or reticle that is subtly in the wrong place | Ask which box its fractions are fractions *of*. The camera frame, the element it is drawn in and the pixels on screen are three different rectangles, and `object-fit` sits between the last two (ADR 0028) |
 | Reaching for `cv::Stitcher` | See ADR 0005. It cannot do partial rebuilds, sensor priors, or mover-aware seams — the features that justify this project |
 | A rollback that destroys what it was protecting | Before undoing work in an error path, ask what the thing being undone *is*. Forgetting an adopted frame frees the store — and drops the sink's only copy of a captured cell, so a restore that gave up halfway deleted the user's sphere to tidy up after itself. Leaving a bounded leak is almost always cheaper than deleting durable data, and an operation that is safe to repeat usually removes the need to undo anything |
-| A pixel buffer in an interface | Use `FrameRef`; pin inside the core |
+| A pixel buffer in an interface | Use `FrameRef`; pin inside the core. The one exception is a reduced `FramePreview` leaving for a screen, and it was argued with the arithmetic (ADR 0038) |
 | `try` / `catch` near the boundary | Use `Result<T>` |
 | Browser types in `core/` | A resource-access contract is missing or leaking |
 | Holding a full-resolution burst for the whole sphere | ~15 GB. Only selected candidates are pinned; the rest rest encoded or spilled |

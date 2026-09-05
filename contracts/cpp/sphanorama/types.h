@@ -176,6 +176,27 @@ struct FrameRef {
   uint64_t contentHash = 0;   // build-graph fingerprinting
 };
 
+// A frame reduced to something a screen can take — and the one place pixel bytes are a value in
+// a contract rather than a handle.
+//
+// The rule they are an exception to is a rule about cost. A `FrameRef` exists so that a
+// 1280x960 RGBA frame — 4.9 MB, and eight of them in a cell — is never serialised by value; a
+// review strip handed the frames themselves would move 39 MB across the boundary and hold it in
+// the page, against a browser heap ceiling of 128 MB (ADR 0023). The reduction is what pays that
+// bill: at a long edge of 128 this is 48 KB, three orders of magnitude down, and the reason for
+// the handle no longer applies. What a handle *cannot* do is the thing needed here — the page has
+// no frame store to resolve one against, and `IFrameStoreAccess::Pin` reaches no further than the
+// core (ADR 0038).
+//
+// Always `RGBA8` and tightly packed, so the stride is `width * 4` and there is nothing to decode:
+// a browser can hand these straight to `ImageData` and a canvas.
+struct FramePreview {
+  FrameId frame;
+  int32_t width = 0, height = 0;
+  PixelFormat format = PixelFormat::RGBA8;
+  std::vector<uint8_t> pixels;
+};
+
 // ---------------------------------------------------------------- capture plan
 enum class TessellationStrategy : uint8_t { Rings, Geodesic, Adaptive };
 

@@ -55,6 +55,9 @@
 
 #strip button {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   text-align: start;
   font: inherit;
   padding: 0.4rem 0.6rem;
@@ -63,6 +66,35 @@
   background: transparent;
   cursor: pointer;
 }
+
+/*
+ * The candidate's own frame. The box is fixed and the picture is fitted into it rather than
+ * stretched: the frames in one cell are all the same shape, but an imported one need not be, and
+ * a strip whose rows change height as its pictures arrive is a strip that moves under the finger.
+ *
+ * The canvas is sized in *pixels* by the painter, from the preview the core sent — these two
+ * lengths are the box it is drawn in, which is a different rectangle and the distinction that has
+ * put a marker in the wrong place here before (ADR 0028).
+ */
+.thumb {
+  flex: none;
+  width: 4rem;
+  height: 3rem;
+  object-fit: contain;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+/* Nothing drawn yet, and nothing to draw. Hatched rather than blank, so a frame that has gone is
+ * legible as an absence instead of as a very dark photograph. */
+.thumb[data-preview='pending'] { opacity: 0.35; }
+.thumb[data-preview='missing'] {
+  opacity: 0.5;
+  background: repeating-linear-gradient(
+    45deg, transparent, transparent 4px, currentColor 4px, currentColor 5px);
+}
+
+.strip-label { min-width: 0; }
 
 /*
  * The one in force. Both colours are named outright, because `currentColor` resolves against the

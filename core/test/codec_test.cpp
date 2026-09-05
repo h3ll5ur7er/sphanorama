@@ -118,5 +118,45 @@ TEST(Codec, TheWireFormatIsPinnedAcrossLanguages) {
             "0000000000001c4000000000000029400000000000000ac0000000000000e03f01000000");
 }
 
+TEST(Codec, RoundTripsABytePayload) {
+  // The first field in these contracts that is bytes rather than numbers, and it carries the one
+  // thing the boundary otherwise refuses to move: pixels (ADR 0038). A byte sequence is
+  // length-prefixed, so it is also the one field where a disagreement about the prefix decodes as
+  // a shorter image rather than as a failure.
+  FramePreview preview;
+  preview.frame = FrameId{4};
+  preview.width = 2;
+  preview.height = 2;
+  preview.format = PixelFormat::RGBA8;
+  preview.pixels.assign(2 * 2 * 4, 0u);
+  preview.pixels.front() = 200u;
+  preview.pixels.back() = 255u;
+
+  const FramePreview decoded = RoundTrip(preview);
+  EXPECT_EQ(decoded.frame.value, 4u);
+  EXPECT_EQ(decoded.width, 2);
+  EXPECT_EQ(decoded.height, 2);
+  EXPECT_EQ(decoded.format, PixelFormat::RGBA8);
+  ASSERT_EQ(decoded.pixels.size(), preview.pixels.size());
+  EXPECT_EQ(decoded.pixels, preview.pixels);
+}
+
+TEST(Codec, TheByteFormatIsPinnedAcrossLanguagesToo) {
+  // The same discipline as the guidance golden above, over the one field kind that carries a
+  // length prefix. A prefix width or endianness the two halves disagreed about would decode into
+  // a plausible image of the wrong size rather than failing.
+  FramePreview preview;
+  preview.frame = FrameId{9};
+  preview.width = 2;
+  preview.height = 1;
+  preview.format = PixelFormat::RGBA8;
+  preview.pixels = {1u, 2u, 3u, 255u, 4u, 5u, 6u, 255u};
+
+  Writer writer;
+  Encode(writer, preview);
+  EXPECT_EQ(Hex(writer.bytes()),
+            "00000000000022400000000000000040000000000000f03f0100000008000000010203ff040506ff");
+}
+
 }  // namespace
 }  // namespace sphanorama::codec

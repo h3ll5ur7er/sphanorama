@@ -175,6 +175,31 @@ TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
 }
 
+TEST(Facade, APreviewRequestReachesTheManagerRatherThanStoppingAtTheArguments) {
+  // The one call that answers with pixels (ADR 0038), and the first with an `int32_t` parameter:
+  // the generator used to decode every number into a `double`, which the core will not narrow.
+  // Three arguments in the order the contract declares them, and a status back from the manager
+  // — `FailedPrecondition`, because nothing here has begun a session — rather than the facade's
+  // own `InvalidArgument`, which is what a parameter list read in the wrong order produces.
+  wire::Writer args;
+  args.PutF64(1.0);          // node
+  args.PutF64(1.0);          // candidate
+  args.PutF64(128.0);        // maxEdge
+  Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+  ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all";
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::FailedPrecondition);
+}
+
+TEST(Facade, ATruncatedPreviewRequestIsReportedAsAStatus) {
+  wire::Writer args;
+  args.PutF64(1.0);          // a node, and then the request simply stops
+  Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+  ASSERT_FALSE(response.bytes.empty());
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
 TEST(Facade, AListCountIsRefusedWhenThePayloadCouldNotPossiblyHoldThatMany) {
   // The count is what the vector is sized from, so bounding it at one byte per element let a
   // small message ask for a very large allocation: 100 kB of filler claiming 100000 ImuSamples

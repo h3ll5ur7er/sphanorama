@@ -128,6 +128,24 @@ export function decodeFrameRef(input: Reader): C.FrameRef {
   };
 }
 
+export function encodeFramePreview(out: Writer, value: C.FramePreview): void {
+  out.f64(value.frame);
+  out.f64(value.width);
+  out.f64(value.height);
+  out.i32(PixelFormatValues.indexOf(value.format));
+  out.bytes(value.pixels);
+}
+
+export function decodeFramePreview(input: Reader): C.FramePreview {
+  return {
+    frame: input.f64() as C.FrameId,
+    width: input.f64(),
+    height: input.f64(),
+    format: PixelFormatValues[input.i32()],
+    pixels: input.bytes(),
+  };
+}
+
 export function encodeCapturePlanSpec(out: Writer, value: C.CapturePlanSpec): void {
   out.i32(TessellationStrategyValues.indexOf(value.strategy));
   out.f64(value.horizontalFovDeg);
