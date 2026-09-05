@@ -34,9 +34,24 @@ export interface SpillHost {
    * Empties the file, for a capture that is starting over rather than resuming.
    *
    * Not expressible as a sequence of `drop`s: the frames that make it necessary belong to a
-   * process that is gone, and the store asking for it has never heard of them. `false` means the
-   * file is untouched — the store's own Clear reports that upward and the session declines to
-   * begin, which is the only answer that cannot end with a new capture written over an old one.
+   * process that is gone, and the store asking for it has never heard of them.
+   *
+   * `false` means the tier was not emptied. The store's own `Clear` reports that upward and the
+   * session declines to begin, which is the only answer that cannot end with a new capture
+   * written over an old one — and that much is unconditional.
+   *
+   * What `false` does **not** promise is that nothing was written. This doc used to say the file
+   * is untouched, and three rounds of getting the implementation wrong started from believing it.
+   * The emptied index is written before the frames file is truncated, so a failure at the second
+   * step has already changed the first; the same is true at the first step, because a short write
+   * leaves an unparseable prefix and the writer truncates rather than leave one. Both failures
+   * put the old index back, and that restore is itself a write that can fail.
+   *
+   * So the guarantee is the one that matters and not the one that reads best: whatever `false`
+   * leaves behind, no identity resolves to somebody else's pixels. The worst case is a tier
+   * naming nothing over a file that still holds bytes — the capture is lost, which is bad, and
+   * nothing is mislabelled, which is the part that must hold. Callers get "did not empty", never
+   * "did not write".
    */
   clear(): boolean;
   close(): void;
