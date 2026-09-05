@@ -29,6 +29,7 @@ from pathlib import Path
 # them out would eventually make the checker flag itself, and the usual answer to that — excluding
 # tools/ from the scan — would leave the checkers as the one tree where a bad merge goes unnoticed.
 OURS = "<" * 7
+BASE = "|" * 7
 THEIRS = ">" * 7
 SPLIT = "=" * 7
 
@@ -65,13 +66,24 @@ class Marker:
 def is_marker(text: str) -> bool:
     """Whether a line is a conflict marker rather than prose that resembles one.
 
-    `<<<<<<<` and `>>>>>>>` are followed by a branch name, so the space is part of the shape and
-    requiring it costs nothing. `=======` stands alone, which makes it the one that could collide
-    with prose — a setext heading underlined with exactly seven `=` would match. No such line
-    exists in this repository, and a heading that needs exactly seven is a heading that can have
-    eight, so the ambiguity is worth taking to catch a resolution that left only the middle.
+    The head and tail markers are followed by a branch name, so the space is part of the shape and
+    requiring it costs nothing — while a bare prefix would trip on the arrows these documents use
+    to draw the layer diagram.
+
+    The base marker is the one `merge.conflictStyle = diff3` or `zdiff3` adds, naming the common
+    ancestor. Checked against a real three-way merge in each of the three styles rather than
+    assumed: git writes seven pipes, a space, then a description. The bare form is accepted too,
+    since unlike the arrows there is no prose here that seven pipes could be — a markdown table
+    rule carries dashes between its pipes.
+
+    The split marker stands alone, which makes it the one that could collide with prose: a setext
+    heading underlined with exactly seven `=` would match. No such line exists in this repository,
+    and a heading that needs exactly seven can have eight, so the ambiguity is worth taking to
+    catch a resolution that left only the middle.
     """
     if text.startswith(OURS + " ") or text.startswith(THEIRS + " "):
+        return True
+    if text.startswith(BASE + " ") or text.rstrip() == BASE:
         return True
     return text.rstrip() == SPLIT
 
@@ -95,12 +107,19 @@ def check(root: Path) -> list[Marker]:
 
     for rel in tracked_files(root):
         path = root / rel
+        # Not every listed path is a file to read: a submodule is a gitlink, and a tracked file
+        # deleted from the working tree is still in the index. Neither has content to scan.
+        if not path.is_file():
+            continue
         try:
-            if not path.is_file() or path.stat().st_size > MAX_BYTES:
+            if path.stat().st_size > MAX_BYTES:
                 continue
             body = path.read_text(errors="replace")
-        except OSError:
-            continue
+        except OSError as failure:
+            # Reported, not skipped. A tracked file this cannot read is a file it cannot clear,
+            # and swallowing that would make an unreadable tree look like a clean one — which is
+            # the same false pass the git failure above refuses to give.
+            raise RuntimeError(f"{rel} could not be read: {failure}") from failure
         for number, text in enumerate(body.splitlines(), start=1):
             if is_marker(text):
                 found.append(Marker(rel, number, text))

@@ -6,6 +6,7 @@ until this checker existed nothing in the gate would have said so.
 """
 import subprocess
 import sys
+from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ import conflict_marker_check  # noqa: E402
 # Built rather than written out, for the same reason the checker builds them: a test file spelling
 # them literally would be flagged by the checker it is testing.
 OURS = "<" * 7
+BASE = "|" * 7
 THEIRS = ">" * 7
 SPLIT = "=" * 7
 
@@ -71,6 +73,47 @@ class ConflictMarkerCheckTest(unittest.TestCase):
                         f"{OURS} HEAD\nours\n{SPLIT}\ntheirs\n{THEIRS} origin/main\n")
         self.assertEqual([m.line for m in self.markers()], [1, 3, 5])
 
+    def test_catches_the_base_marker_a_diff3_merge_leaves(self):
+        # `merge.conflictStyle = diff3` and `zdiff3` add a fourth marker naming the common
+        # ancestor. A resolution that left it behind is exactly as broken as one that left the
+        # others, and until now it would have passed.
+        self.repo.write("docs/a.md", f"{BASE} c13ba62\nbase text\n")
+        self.repo.write("docs/b.md", f"{BASE}\n")   # git can write it without a description
+        self.assertEqual(sorted(m.path for m in self.markers()), ["docs/a.md", "docs/b.md"])
+
+    def test_catches_a_conflict_git_itself_produced_in_diff3_style(self):
+        # The shape asserted above, taken from git rather than from memory. A unit test that
+        # hard-codes a format is only as good as whoever typed it; this one breaks if git ever
+        # writes something else.
+        root = self.repo.root
+        run = lambda *a: subprocess.run(a, cwd=root, check=True,
+                                        capture_output=True, text=True)
+        run("git", "config", "user.email", "t@example.invalid")
+        run("git", "config", "user.name", "t")
+        run("git", "config", "merge.conflictStyle", "diff3")
+        self.repo.write("docs/a.md", "base\n")
+        run("git", "add", "docs/a.md")
+        run("git", "commit", "-qm", "base")
+        run("git", "checkout", "-qb", "other")
+        self.repo.write("docs/a.md", "theirs\n")
+        run("git", "commit", "-qam", "theirs")
+        run("git", "checkout", "-q", "-")
+        self.repo.write("docs/a.md", "ours\n")
+        run("git", "commit", "-qam", "ours")
+        subprocess.run(["git", "merge", "other"], cwd=root, capture_output=True, text=True)
+
+        shapes = {m.text.split(" ")[0].rstrip() for m in self.markers()}
+        self.assertEqual(shapes, {OURS, BASE, SPLIT, THEIRS})
+
+    def test_a_file_it_cannot_read_is_an_error_not_a_pass(self):
+        # The same refusal the git failure gets. A tracked file this cannot read is a file it
+        # cannot clear, and swallowing the error would make an unreadable tree look like a clean
+        # one — the false pass this checker exists to prevent, in its own machinery.
+        self.repo.write("docs/a.md", "fine\n")
+        with mock.patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            with self.assertRaises(RuntimeError):
+                self.markers()
+
     def test_a_marker_in_source_is_caught_too(self):
         # Redundant against the compiler and kept anyway: the checker should not carry an opinion
         # about which trees are allowed to be broken.
@@ -83,6 +126,7 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         self.repo.write("docs/03-architecture.md",
                         "Clients " + ">" * 3 + " Managers\n"
                         "A rule: " + "=" * 40 + "\n"
+                        "| col | col |\n|-----|-----|\n"
                         + "<" * 8 + " not this either\n"
                         + THEIRS + "no space, so not a marker\n")
         self.assertEqual(self.markers(), [])
