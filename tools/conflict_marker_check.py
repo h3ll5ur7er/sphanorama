@@ -15,6 +15,7 @@ Usage:  python3 tools/conflict_marker_check.py [repo_root]
 """
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,10 +29,14 @@ THEIRS = ">" * 7
 SPLIT = "=" * 7
 
 # Directories that are not ours to police: dependencies, build output, other checkouts.
+# Pruned by name wherever they appear — a `node_modules` is a `node_modules` at any depth.
 SKIPPED_DIRS = frozenset({
     ".git", "node_modules", "dist", "emsdk-cache", ".claude",
 })
-SKIPPED_PREFIXES = ("build", "shell/public/core")
+# And these by their path from the repository root, because the names are ordinary English and
+# only these locations are build output. Matched exactly rather than as a prefix: `build` should
+# not also silence a directory called `buildings`.
+SKIPPED_ROOTS = frozenset({"build", "shell/public/core"})
 
 # Read as text; anything that is not decodes to replacement characters and simply will not match.
 # A size ceiling because a marker lives in a hand-edited file, and walking a large binary line by
@@ -64,26 +69,39 @@ def is_marker(text: str) -> bool:
 
 
 def check(root: Path) -> list[Marker]:
+    """Every marker under `root`, in path order.
+
+    Walked rather than globbed, and the skipped directories are pruned *before* descending. That
+    is not premature: this repository's `node_modules`, `build/` and agent worktrees hold tens of
+    thousands of files between them, and a glob that enumerates them all and then filters pays for
+    every one. The cost also grows with the number of worktrees, which is the case where somebody
+    is most likely to be running the gate by hand.
+    """
     root = Path(root)
     found: list[Marker] = []
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
-        if any(part in SKIPPED_DIRS for part in path.relative_to(root).parts[:-1]):
-            continue
-        if rel.startswith(SKIPPED_PREFIXES):
-            continue
-        try:
-            if path.stat().st_size > MAX_BYTES:
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        # In place, because os.walk reads this list to decide where to go next.
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if name not in SKIPPED_DIRS
+            and (here / name).relative_to(root).as_posix() not in SKIPPED_ROOTS
+        )
+        for name in sorted(filenames):
+            path = here / name
+            if not path.is_file():
                 continue
-            body = path.read_text(errors="replace")
-        except OSError:
-            continue
-        for number, text in enumerate(body.splitlines(), start=1):
-            if is_marker(text):
-                found.append(Marker(rel, number, text))
+            rel = path.relative_to(root).as_posix()
+            try:
+                if path.stat().st_size > MAX_BYTES:
+                    continue
+                body = path.read_text(errors="replace")
+            except OSError:
+                continue
+            for number, text in enumerate(body.splitlines(), start=1):
+                if is_marker(text):
+                    found.append(Marker(rel, number, text))
     return found
 
 

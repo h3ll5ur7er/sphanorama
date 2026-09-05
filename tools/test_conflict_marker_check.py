@@ -90,14 +90,23 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         self.repo.write(".claude/worktrees/agent-x/docs/a.md", f"{OURS} HEAD\n")
         self.assertEqual(self.markers(), [])
 
+    def test_a_name_that_merely_starts_like_build_output_is_still_scanned(self):
+        # The skip list was a prefix match, so `build` also silenced anything whose path began
+        # with those letters. Build output lives at exactly two known paths; a directory that
+        # happens to share a prefix with one is ordinary content and its documents count.
+        self.repo.write("buildings/notes.md", f"{THEIRS} origin/main\n")
+        self.repo.write("shell/public/manifest.json", f"{OURS} HEAD\n")
+        self.assertEqual(sorted(m.path for m in self.markers()),
+                         ["buildings/notes.md", "shell/public/manifest.json"])
+
     def test_reports_a_nonzero_exit_and_names_the_file(self):
-        self.repo.write("docs/06-raodmap.md", f"{THEIRS} origin/main\n")
+        self.repo.write("docs/06-roadmap.md", f"{THEIRS} origin/main\n")
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "conflict_marker_check.py"),
              str(self.repo.root)],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("docs/06-raodmap.md", result.stderr)
+        self.assertIn("docs/06-roadmap.md", result.stderr)
 
     def test_a_clean_tree_exits_zero(self):
         self.repo.write("docs/a.md", "nothing wrong here\n")
