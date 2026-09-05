@@ -39,6 +39,13 @@ diff adversarially, run the whole gate. This is the pass *after* that one.
 Each subagent gets: the lens, the PR number, the diff (or the branch to diff itself), a pointer to
 `.claude/skills/sphanorama-engineering/SKILL.md`, and the reporting contract below.
 
+**Point them at a copy of this file that exists on the branch they will check out.** A reviewer
+works in a worktree of the branch under review, so a skill that has not merged to `main` yet is
+simply not there — the first four rounds this skill ran, every reviewer was told to read it and
+only the fourth said it could not find it. Until it is on `main`, name the branch in the prompt:
+`git show origin/<this branch>:.claude/skills/sphanorama-review/SKILL.md`. The same goes for any
+lens or rule that lives on an unmerged branch.
+
 **They review and publish. They do not fix.** No edits to tracked files, no commits, no pushes, no
 approving, no merging. A reviewer that fixes what it finds has stopped being able to tell you what
 it found, and two agents editing one branch is how a green tree becomes a mystery. Building and
