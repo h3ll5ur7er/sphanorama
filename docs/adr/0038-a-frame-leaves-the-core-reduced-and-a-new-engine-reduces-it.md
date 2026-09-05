@@ -141,11 +141,19 @@ for a frame that arrived through `OfferFrame` and belongs to the caller.
   compile. Nothing had hit it because no `@boundary` method had ever taken an integer. A parameter
   now carries its C++ type alongside its TypeScript one, which is the sort of hole ADR 0009 said
   the strict subset would surface rather than hide.
-- **A number still reaches that cast unchecked.** `static_cast<int32_t>(in.GetF64())` is undefined
-  for a NaN or a 1e300, exactly as `GetId` was before it was given `IsRepresentableId`. This is
-  not new — every `int32_t` *field* in the codec has decoded that way since ADR 0013 — and it is
-  now reachable from a parameter too. It wants the same treatment `GetId` got, across the codec
-  rather than at this one call site, which is why it is named here rather than fixed here.
+- **An integer parameter is read checked, and an integer *field* still is not.**
+  `static_cast<int32_t>(in.GetF64())` is undefined for a NaN, an infinity or a 1e300 — exactly what
+  `GetId` was before `IsRepresentableId`. The parameter path this ADR opens gets the same
+  treatment: `wire::GetInteger<T>` refuses a value the conversion is not defined for and fails the
+  reader, so the facade answers "malformed arguments" instead of passing on whatever the cast
+  produced.
+
+  The wire format is deliberately untouched. `int32_t` still crosses as an f64, because every
+  `int32_t` *field* in the codec has done so since ADR 0013, and making the same C++ type cross
+  one way as a parameter and another as a field would be worse than the lossy-but-uniform rule it
+  replaced. Moving both together — `i32` on the wire for narrow integers, fields and parameters
+  alike — is a change of its own with a golden-hex update in both suites, and that is what remains
+  filed here rather than done here.
 - **The review client caches an open cell's previews.** Recording a pick re-opens the cell, and
   asking for every preview again would fault each frame in and spill it out once more — roughly
   350 ms of file work for a cell of eight, to redraw pictures the page is still holding. The cache

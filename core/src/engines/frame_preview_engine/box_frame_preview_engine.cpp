@@ -98,10 +98,17 @@ Result<FramePreview> BoxFramePreviewEngine::Reduce(const FrameRef& frame, int32_
   preview.height = static_cast<int32_t>(rows);
   preview.pixels.assign(static_cast<size_t>(cols * rows * 4), 0u);
 
-  const uint32_t area = static_cast<uint32_t>(block * block);
+  // Sixty-four bits, for the same reason the offsets above are. A block is the whole frame when
+  // `maxEdge` is 1, so `area` is the pixel count and each channel's sum is that times 255: a
+  // frame past about 4100 on a side overflows a `uint32_t` and the average comes out darker than
+  // anything in the picture. No frame here is that large yet — the grabber caps its long edge at
+  // 1280 — and no test asserts it, because the frame that would demonstrate it is 67 MB, which is
+  // half a phone's whole frame-store ceiling (ADR 0023). Widening it costs nothing and removes
+  // the trap from the arithmetic rather than from a comment.
+  const uint64_t area = static_cast<uint64_t>(block) * static_cast<uint64_t>(block);
   for (int64_t row = 0; row < rows; ++row) {
     for (int64_t col = 0; col < cols; ++col) {
-      std::array<uint32_t, 3> sum{0, 0, 0};
+      std::array<uint64_t, 3> sum{0, 0, 0};
       for (int64_t dy = 0; dy < block; ++dy) {
         for (int64_t dx = 0; dx < block; ++dx) {
           const auto rgb = ColourAt(pinned.value, frame.format, stride, col * block + dx,

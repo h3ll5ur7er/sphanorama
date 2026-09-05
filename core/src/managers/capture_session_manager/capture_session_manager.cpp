@@ -1006,7 +1006,12 @@ Result<FramePreview> CaptureSessionManager::CandidatePreview(NodeId node, Candid
   const Candidate* found = nullptr;
   if (cell != candidates_.end()) {
     for (const Candidate& held : cell->second) {
-      if (held.id.value == candidate.value) found = &held;
+      // Stops at the first match rather than the last. Identical either way — a cell cannot hold
+      // two candidates under one identity — and stopping says so.
+      if (held.id.value == candidate.value) {
+        found = &held;
+        break;
+      }
     }
   }
   if (found == nullptr) {

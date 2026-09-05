@@ -43,6 +43,18 @@ SCALARS = {
 ARITHMETIC_SCALARS = frozenset(
     name for name in SCALARS if name not in ("std::string", "std::string_view", "void"))
 
+# The integer types whose every value is exactly a double, so a decoded number can be range-checked
+# against them without the bound itself rounding. `wire::IsRepresentableInteger` refuses anything
+# wider at compile time, and says why.
+NARROW_INTEGERS = frozenset(
+    ("bool", "int8_t", "int16_t", "int32_t", "uint8_t", "uint16_t", "uint32_t")) - {"bool"}
+
+
+def _canonical_cpp(cpp: str) -> str:
+    """A parameter's type without the qualifiers a caller cannot see: `const int32_t&` is int32_t."""
+    return re.sub(r"\bconst\b", "", cpp).strip().rstrip("&").strip()
+
+
 HEADERS_IN_ORDER = (
     "types.h",
     "managers/capture_session_manager.h",
@@ -1153,10 +1165,27 @@ def _cpp_param_decl(param: Param, kind: str, enums: set[str], ids: set[str],
     decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="", structs=structs)
     # The declared C++ type where the header names an arithmetic one, so that an `int32_t`
     # parameter arrives as an `int32_t` rather than as the `double` the mirror maps every number
-    # onto — a narrowing the core refuses to compile. The decode narrows through `decltype`, so it
-    # follows this declaration rather than fighting it. Strings are excluded deliberately: a
+    # onto — a narrowing the core refuses to compile. Strings are excluded deliberately: a
     # `std::string_view` parameter has to be decoded into something that owns its bytes.
-    declared = param.cpp if param.cpp in ARITHMETIC_SCALARS else None
+    #
+    # Canonicalised first, because the parser keeps a parameter's type as written: `const int32_t`
+    # and `int32_t&` are the same type to a caller and neither matches the table, so a header that
+    # spelled either would silently fall back to `double` and reinstate the narrowing this exists
+    # to remove.
+    declared = _canonical_cpp(param.cpp)
+    declared = declared if declared in ARITHMETIC_SCALARS else None
+    if declared in NARROW_INTEGERS:
+        # Read as the integer it is rather than cast from the double it crossed as. Every number
+        # crosses as a double — JavaScript has no other kind — and `static_cast` of a NaN, an
+        # infinity or an out-of-range value is undefined. `GetInteger` refuses those the way
+        # `GetId` refuses an unrepresentable identifier, so the facade answers "malformed
+        # arguments" instead of passing on whatever the cast produced.
+        #
+        # The wire format is untouched: it is still an f64 on the wire, because a struct *field*
+        # of the same C++ type still crosses that way and one type crossing two ways depending on
+        # whether it is a field or a parameter would be worse than the lossy-but-uniform rule.
+        # Moving both is a change of its own (ADR 0038's consequences).
+        decode = f"{name} = in.GetInteger<{declared}>();"
     return ([f"{declared or _cpp_type_for(param.ts, enums, ids)} {name}{{}};", decode], name)
 
 

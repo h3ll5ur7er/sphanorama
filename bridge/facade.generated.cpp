@@ -200,7 +200,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       CandidateId candidate{};
       candidate.value = in.GetId();
       int32_t maxEdge{};
-      maxEdge = static_cast<decltype(maxEdge)>(in.GetF64());
+      maxEdge = in.GetInteger<int32_t>();
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
