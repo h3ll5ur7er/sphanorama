@@ -44,3 +44,4 @@ and the alternative we rejected and why.
 | [0037](0037-a-cell-keeps-only-what-it-can-still-rank.md) | A cell keeps the best eight candidates and forgets the rest, because ranking faults the whole cell back into the heap |
 | [0038](0038-a-frame-leaves-the-core-reduced-and-a-new-engine-reduces-it.md) | A frame leaves the core reduced to a preview, and a new engine (V16) is what reduces it |
 | [0039](0039-a-refused-resume-keeps-its-offer-unless-only-a-build-could-change-it.md) | A refused resume keeps its offer unless only a new build could change the answer; the withdrawal lives in the tab and is never written down |
+| [0040](0040-a-selection-is-read-back-from-the-core.md) | `IProjectManager` gains `GetSelection`, so the review strip shows the recorded pick rather than a copy of its own writes |

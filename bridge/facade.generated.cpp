@@ -52,10 +52,11 @@ const char* const kMethodNames[] = {
     "ProjectManager.create",
     "ProjectManager.delete",
     "ProjectManager.setSelection",
+    "ProjectManager.getSelection",
     "ProjectManager.export",
 };
 
-constexpr int32_t kMethodCount = 22;
+constexpr int32_t kMethodCount = 23;
 
 }  // namespace
 
@@ -375,7 +376,24 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 21: {  // ProjectManager.export
+    case 21: {  // ProjectManager.getSelection
+      ProjectId project{};
+      project.value = in.GetId();
+      NodeId node{};
+      node.value = in.GetId();
+      if (!in.ok()) {
+        PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
+                            "malformed arguments"));
+        break;
+      }
+      auto result = runtime.project().GetSelection(project, node);
+      PutStatus(out, result.status);
+      if (result.ok()) {
+        out.PutF64(static_cast<double>(result.value.value));
+      }
+      break;
+    }
+    case 22: {  // ProjectManager.export
       ProjectId project{};
       project.value = in.GetId();
       BuildId build{};

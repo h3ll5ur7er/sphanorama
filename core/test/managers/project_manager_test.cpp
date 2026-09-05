@@ -106,6 +106,84 @@ TEST_F(Projects, SelectionOnAnUnknownProjectIsRefused) {
             StatusCode::NotFound);
 }
 
+TEST_F(Projects, ARecordedSelectionCanBeReadBack) {
+  // The whole point, and what was missing: a pick was written here and read nowhere, so the only
+  // thing that knew which candidate was in force was the client that had just set it — and a
+  // reload forgets that. The build reads this document; now so can whoever has to show it.
+  auto created = manager->Create("kitchen");
+  ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
+
+  auto chosen = manager->GetSelection(created.value, NodeId{3});
+  ASSERT_TRUE(chosen.ok()) << chosen.status.detail;
+  EXPECT_EQ(chosen.value.value, 7u);
+}
+
+TEST_F(Projects, ACellNobodyHasChosenForAnswersZeroRatherThanFailing) {
+  // Zero is a real answer here, not an absence dressed as one: `Id::valid()` is `value != 0` and
+  // every counter in these contracts starts at 1, so no selection can be zero.
+  //
+  // It matters that this is not `NotFound`. A client reads a Result's status to tell a call that
+  // failed from one that worked, so folding "nobody has chosen here" into the failure branch
+  // would make an unreadable project look exactly like an unedited one — and the review strip
+  // would show the automatic pick in force either way, which is right for one and a lie for the
+  // other.
+  auto created = manager->Create("kitchen");
+  auto chosen = manager->GetSelection(created.value, NodeId{9});
+  ASSERT_TRUE(chosen.ok()) << chosen.status.detail;
+  EXPECT_EQ(chosen.value.value, 0u);
+  EXPECT_FALSE(chosen.value.valid());
+}
+
+TEST_F(Projects, ASelectionIsPerCellAndPerProject) {
+  // One key per node, and the key carries the project. Reading a cell's pick must not answer with
+  // its neighbour's, and two projects that both chose something for cell 3 must not share it.
+  auto kitchen = manager->Create("kitchen");
+  auto garden = manager->Create("garden");
+  ASSERT_TRUE(manager->SetSelection(kitchen.value, NodeId{3}, CandidateId{7}).ok());
+  ASSERT_TRUE(manager->SetSelection(kitchen.value, NodeId{4}, CandidateId{11}).ok());
+  ASSERT_TRUE(manager->SetSelection(garden.value, NodeId{3}, CandidateId{2}).ok());
+
+  EXPECT_EQ(manager->GetSelection(kitchen.value, NodeId{3}).value.value, 7u);
+  EXPECT_EQ(manager->GetSelection(kitchen.value, NodeId{4}).value.value, 11u);
+  EXPECT_EQ(manager->GetSelection(garden.value, NodeId{3}).value.value, 2u);
+}
+
+TEST_F(Projects, TheLastChoiceForACellIsTheOneThatAnswers) {
+  // Changing a pick overwrites rather than accumulating, which is what a user pressing a second
+  // thumbnail means.
+  auto created = manager->Create("kitchen");
+  ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
+  ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{8}).ok());
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 8u);
+}
+
+TEST_F(Projects, ASelectionDocumentThatIsNotACandidateIsRefusedRatherThanGuessed) {
+  // Written underneath the manager, because no contract writes this shape — which is the point.
+  // The document went through a store that outlives the process and lives in storage anything
+  // with the origin can edit, so "this manager wrote it" is not a reason to trust what comes
+  // back. A partial parse is the trap worth naming: "7x" would answer 7 to anything that stopped
+  // reading at the first non-digit, and the pick shown would be a candidate nobody chose.
+  auto created = manager->Create("kitchen");
+  for (const char* garbage : {"", "  ", "seven", "7x", "-1", "0", "9999999999999999999999"}) {
+    ASSERT_TRUE(store.WriteDocument(created.value, "selection/3", garbage).ok()) << garbage;
+    auto chosen = manager->GetSelection(created.value, NodeId{3});
+    EXPECT_FALSE(chosen.ok()) << "\"" << garbage << "\" was read as a selection";
+    EXPECT_EQ(chosen.status.code, StatusCode::Internal) << garbage;
+  }
+
+  // And a real one still reads, so this cannot pass by refusing everything.
+  ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 7u);
+}
+
+TEST_F(Projects, ReadingASelectionFromAnUnknownProjectIsRefused) {
+  // The same answer `SetSelection` gives, and for the same reason: a project that does not exist
+  // is a failure rather than a cell nobody has chosen for.
+  auto chosen = manager->GetSelection(ProjectId{404}, NodeId{1});
+  EXPECT_FALSE(chosen.ok());
+  EXPECT_EQ(chosen.status.code, StatusCode::NotFound);
+}
+
 TEST_F(Projects, ExportingABuildThatDoesNotExistIsRefused) {
   // There is no build pipeline yet, so this is the honest answer rather than a file full of
   // nothing.

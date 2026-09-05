@@ -270,6 +270,19 @@ export function createProjectManagerProxy(call: FacadeCall) {
         ? ({ ok: true, value: undefined } as const)
         : ({ ok: false, status } as const);
     },
+    async getSelection(project: C.ProjectId, node: C.NodeId) {
+      const args = new Writer();
+      args.f64(project);
+      args.f64(node);
+      const raw = await call('ProjectManager.getSelection', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = input.f64() as C.CandidateId;
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: ProjectManager.getSelection returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async export(project: C.ProjectId, build: C.BuildId, spec: C.ExportSpec) {
       const args = new Writer();
       args.f64(project);

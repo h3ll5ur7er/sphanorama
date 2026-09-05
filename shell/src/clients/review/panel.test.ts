@@ -28,6 +28,17 @@ function candidate(id: number, node: number): Candidate {
   } as unknown as Candidate;
 }
 
+/**
+ * Enough microtask turns for the panel's awaits to unwind.
+ *
+ * Counting individual `await Promise.resolve()`s is how these tests used to wait, and it broke the
+ * day `open()` gained a second call to await alongside the first: the panel had not changed what
+ * it does, only how many ticks it takes to get there. A settle is indifferent to that.
+ */
+async function settle(turns = 6): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
+}
+
 /** The shape the facade answers with, mirrored here so the fake core can hand one back. */
 type Answered<T> = { readonly ok: true; readonly value: T } | { readonly ok: false };
 
@@ -68,6 +79,10 @@ function deferredCore() {
   const gone = new Set<number>();
   // Whether previews answer as they are asked for, or wait to be released by hand.
   let holdPreviews = false;
+  // The selections the core is holding — the thing the panel used to keep for itself.
+  const recorded = new Map<number, number>();
+  let writesLand = true;
+  let selectionReadable = true;
   let recording: (() => void) | null = null;
   const core: ReviewCore = {
     candidates: (node: NodeId) => new Promise((resolve) => {
@@ -90,11 +105,28 @@ function deferredCore() {
         if (holdPreviews) previewsPending.set(candidate as number, resolve);
         else resolve(answer);
       }),
-    setSelection: () => new Promise((resolve) => { recording = () => resolve({ ok: true }); }),
+    setSelection: (node: NodeId, candidate: CandidateId) => new Promise((resolve) => {
+      recording = () => {
+        // The core is what remembers, which is the whole point of the change: the panel keeps no
+        // copy, so a write that never lands leaves the previous answer standing.
+        if (writesLand) recorded.set(node as number, candidate as number);
+        resolve({ ok: writesLand });
+      };
+    }),
+    selection: (node: NodeId) => Promise.resolve(
+      selectionReadable
+        ? { ok: true as const, value: (recorded.get(node as number) ?? 0) as CandidateId }
+        : { ok: false as const }),
   };
   return {
     core,
     previewCalls,
+    /** What the core already has recorded, as a reload would find it. */
+    record(node: number, candidate: number) { recorded.set(node, candidate); },
+    /** Make the next writes fail, as a core that refuses would. */
+    refuseWrites() { writesLand = false; },
+    /** Make reading a selection fail, which the strip has to survive. */
+    refuseReads() { selectionReadable = false; },
     forget(candidate: number) { gone.add(candidate); },
     holdPreviews() { holdPreviews = true; },
     releasePreview(candidate: number) {
@@ -271,7 +303,7 @@ describe('opening a cell', () => {
 
     const first = panel.open(1 as NodeId);
     answer(1, [candidate(10, 1)]);
-    await Promise.resolve();
+    await settle();
     const second = panel.open(2 as NodeId);
     answer(2, [candidate(20, 2)]);
     releasePreview(10);
@@ -355,6 +387,75 @@ describe('opening a cell', () => {
     await restored;
 
     expect(previewCalls.map((call) => call.candidate)).toEqual([10, 11, 12, 13, 10, 11]);
+  });
+
+  it('shows the pick the core has recorded, not one it watched being made', async () => {
+    // The gap this closes. The panel used to remember its own writes, so what was in force was
+    // whatever *this tab* had clicked — and a reload started again from the ranking, silently
+    // disagreeing with the build, which reads the document. Now a fresh panel over a core that
+    // already has a selection shows it, having watched nothing.
+    const { core, answer, record } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    record(1, 11);   // chosen before this panel existed, as a reload would find it
+
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    // The second candidate, which is not the ranking's own pick — so this cannot pass by
+    // falling back to the first.
+    expect(pressed).toEqual(['false', 'true']);
+  });
+
+  it('leaves the previous pick in force when the core refuses the new one', async () => {
+    // Nothing is remembered on this side, so a refused write needs no undo: re-opening asks the
+    // core, and the core still holds what it held. The strip shows what the build will use rather
+    // than what the user last touched.
+    const { core, answer, record, refuseWrites, recorded } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    record(1, 11);
+    refuseWrites();
+
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    [...ui.strip.querySelectorAll('button')][0].click();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed).toEqual(['false', 'true']);
+  });
+
+  it('falls back to the ranking when the selection cannot be read', async () => {
+    // A read that fails is not a cell nobody has chosen for, but the strip has the same thing to
+    // show for both: the ranking's own pick is what the build uses when no override applies, and
+    // showing nothing in force would say the cell has no frame.
+    const { core, answer, record, refuseReads } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    record(1, 11);
+    refuseReads();
+
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed).toEqual(['true', 'false']);
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {

@@ -229,6 +229,58 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
   }
 });
 
+test('a pick survives the tab that made it', async ({ page }) => {
+  // The claim, end to end. A selection used to live in the review panel's own memory, so what the
+  // strip showed as "in force" was whatever this tab had clicked — and a reload started again
+  // from the ranking, silently disagreeing with the build, which reads the document. Everything
+  // under this is covered against fakes; this is the only place a real document, a real reload
+  // and a real strip meet.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    const openTheStrip = async () => {
+      await page.locator('#panel-toggle').click();
+      const captured = page.locator('#coverage-map .cell[data-state="covered"]').first();
+      await expect(captured).toBeVisible({ timeout: 15000 });
+      await captured.click({ timeout: 5000 });
+      await expect(page.locator('#strip-heading')).toContainText(/candidates, best first/i,
+                                                                { timeout: 15000 });
+    };
+    const pressedIndex = async () => page.evaluate(() =>
+      [...document.querySelectorAll('#strip button')]
+        .findIndex((button) => button.getAttribute('aria-pressed') === 'true'));
+
+    await openTheStrip();
+    // The ranking's own pick is first, so choosing the last one is a choice that cannot be
+    // confused with the default.
+    expect(await pressedIndex()).toBe(0);
+    const buttons = page.locator('#strip button');
+    const last = (await buttons.count()) - 1;
+    expect(last).toBeGreaterThan(0);
+    await buttons.nth(last).click();
+    await expect.poll(pressedIndex, { timeout: 15000 }).toBe(last);
+
+    // Durability is eventual by design (ADR 0014), and a reload does not wait for a flush timer.
+    await page.evaluate(() => window.sphanoramaHost.flush());
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+
+    await openTheStrip();
+    expect(await pressedIndex()).toBe(last);
+  } finally {
+    await server.close();
+  }
+});
+
 test('the review strip shows the frames, not just their scores', async ({ page }) => {
   // The pixel path outward, end to end (ADR 0038). Everything inward is covered above; this is
   // the return leg — the store's bytes reduced by the preview engine, encoded by the generated

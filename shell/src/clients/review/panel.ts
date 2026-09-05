@@ -44,6 +44,8 @@ export interface ReviewCore {
   candidatePreview(
     node: NodeId, candidate: CandidateId, maxEdge: number): Promise<Answered<FramePreview>>;
   setSelection(node: NodeId, candidate: CandidateId): Promise<{ readonly ok: boolean }>;
+  /** What the core has recorded for this cell. A zero candidate means nobody has chosen. */
+  selection(node: NodeId): Promise<Answered<CandidateId>>;
 }
 
 /**
@@ -126,10 +128,6 @@ export function createReviewPanel(
   // Which cell's strip is open, so a redraw of the map keeps it open rather than closing the
   // thing the user was reading every time another cell completes.
   let opened: NodeId | null = null;
-  // The manual override per cell, as recorded through SetSelection. Held here because the core
-  // has nowhere to answer "what is selected" from — ProjectManager writes the selection and no
-  // contract reads it back, so a reload forgets it. Named rather than hidden: see the ADR.
-  const chosen = new Map<NodeId, CandidateId>();
   // Which open() call the strip belongs to. Every call this panel makes crosses a postMessage to
   // the worker the core runs in (ADR 0019), so two taps in quick succession are two answers in
   // flight with nothing promising they come back in the order they were asked. Drawing from
@@ -189,7 +187,10 @@ export function createReviewPanel(
       previews.clear();
       previewsFor = node;
     }
-    const answered = await core.candidates(node);
+    // Asked together, because they are one question with two halves — what is here, and which of
+    // it is in force — and asking them in sequence would put a second round trip in front of the
+    // first row of pixels for no reason.
+    const [answered, recorded] = await Promise.all([core.candidates(node), core.selection(node)]);
     // A cell the user has already left. Returning without touching the DOM leaves the strip
     // showing what was asked for most recently, which is the only cell the rest of the panel
     // claims to be showing.
@@ -200,7 +201,13 @@ export function createReviewPanel(
       return;
     }
 
-    const entries = candidateStrip(answered.value, chosen.get(node) ?? null);
+    // A read that failed is no override, because the ranking's own pick is what the build uses
+    // when none applies. Zero — the core's answer for "nobody has chosen here" — is passed
+    // straight through rather than translated: it is an identity no candidate can have, so
+    // `candidateStrip` lands it in the same place as a choice whose candidate a retake forgot,
+    // which is where it belongs. Checking for it here would be a branch that cannot change an
+    // answer.
+    const entries = candidateStrip(answered.value, recorded.ok ? recorded.value : null);
     // Pruned to what the strip is about to show. Clearing on a *change* of cell is not enough on
     // its own: a retake gives this same cell new identities and the old ones never come back, so
     // their pictures would be held for as long as the user stays here — 48 KB each, growing with
@@ -232,10 +239,12 @@ export function createReviewPanel(
       button.append(thumbnail, label);
       button.addEventListener('click', () => {
         void (async () => {
-          const set = await core.setSelection(node, entry.candidate);
-          // Recorded only once the core has taken it, so the strip cannot show a choice that was
-          // refused. A failure leaves the previous one in force, which is what the build uses.
-          if (set.ok) chosen.set(node, entry.candidate);
+          await core.setSelection(node, entry.candidate);
+          // Nothing is remembered here. Re-opening asks the core what is recorded, so a refused
+          // write leaves the previous choice in force without this having to know that it was
+          // refused — and what the strip shows is what the build will use, rather than a second
+          // copy of it kept on this side that a reload would forget.
+          //
           // Re-opened so the strip shows what is now in force — but only while this strip is
           // still the one on screen. SetSelection crosses the worker too, so the user can have
           // opened another cell in the meantime, and re-opening then hauls them back: `opened` is

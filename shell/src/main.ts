@@ -415,6 +415,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       candidatePreview: (node, candidate, maxEdge) =>
         core.captureSession.candidatePreview(node, candidate, maxEdge),
       setSelection: (node, candidate) => core.project.setSelection(project, node, candidate),
+      selection: (node) => core.project.getSelection(project, node),
     },
     paintPreviewOnCanvas);
 
