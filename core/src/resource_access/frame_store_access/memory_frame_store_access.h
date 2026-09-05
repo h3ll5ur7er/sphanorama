@@ -44,6 +44,7 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
   Status Adopt(const FrameRef& frame) override;
   Status Forget(const FrameRef& frame) override;
   Status Clear() override;
+  Result<uint64_t> TierGeneration() override;
   Result<uint64_t> ContentHash(const FrameRef& frame) override;
 
  private:

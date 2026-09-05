@@ -1522,9 +1522,9 @@ TEST_F(ResumedSession, AnAbandonedSphereCannotBeHalfResumed) {
   //
   // This is the case the scope note in docs/06-roadmap.md is about — one unfinished sphere,
   // resumed by the person standing in the same spot. Two projects are a different question, and
-  // an open one: this manager cannot see another project's document to invalidate it, so a
-  // document belonging to some *other* project would still name identities a later capture
-  // reissues. Recorded in the roadmap rather than solved here.
+  // this manager still cannot see another project's document to invalidate it — what closes that
+  // case is the tier saying which capture it is holding, in
+  // `RefusesADocumentFromACaptureTheTierNoLongerHolds` below (ADR 0035).
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
@@ -1558,6 +1558,170 @@ TEST_F(ResumedSession, AnAbandonedSphereCannotBeHalfResumed) {
   // Begin's Checkpoint replaces it either way — while the tier quietly keeps every frame of every
   // sphere the phone has ever abandoned. That is the disk half, and nothing else asserts it.
   EXPECT_EQ(sink.HeldCount(), 0u) << "the abandoned sphere's frames are still on the disk";
+}
+
+// The case ADR 0034 left open, and the only one where a resume can succeed with the wrong
+// pixels. Two unfinished spheres, in two projects: the second `Begin` empties the tier and then
+// reissues identities from 1, so the frames the *first* project's document names are the second
+// capture's now — same identities, same size, really there. `Adopt` takes them, `Pin` faults them
+// in, nothing fails, and the sphere that comes back is somebody else's.
+//
+// This manager cannot reach across and invalidate that document: it reads documents by project id
+// and `IProjectStoreAccess` has no listing. So the tier says which capture it is holding, and a
+// document that names another one is refused (ADR 0035).
+TEST_F(ResumedSession, RefusesADocumentFromACaptureTheTierNoLongerHolds) {
+  constexpr ProjectId kOther{2};
+  ASSERT_TRUE(projects->WriteDocument(kOther, "title", "a second unfinished sphere").ok());
+
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const std::vector<Candidate> captured = first.Candidates(node).value;
+  ASSERT_FALSE(captured.empty());
+  ASSERT_TRUE(first.End().ok());
+
+  // What the first project's document now names, and what is behind it. Read here rather than
+  // asserted at the end, because the point of the test is that both of these survive the second
+  // capture unchanged in every respect except the one that matters.
+  const uint64_t named = captured.front().frame.id.value;
+  ASSERT_TRUE(sink.Holds(named)) << "the arrangement never spilled the frame it is about";
+  const std::vector<uint8_t> written = sink.Held(named);
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  // Frames the second capture can be told apart by. Every FakeCameraAccess fills from 1, so
+  // without this the two captures write identical bytes and the assertion below could not tell a
+  // tier that had been written over from one nothing had touched. Set rather than taken: peeking
+  // a frame first would step this store's identity counter, and the whole point of the second
+  // store is that it starts where a fresh process starts.
+  second_camera.FillFrom(0x80);
+
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Begin(kOther, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(second, clock, second.GetPlan().value.nodes.front().id,
+                          BurstSpec{}).ok());
+  ASSERT_TRUE(second.End().ok());
+
+  // The collision, stated rather than assumed: the identity the first project's document carries
+  // is in the tier, at the size it expects, holding the second capture's pixels. Without these
+  // two lines the refusal below could be passing because nothing collided.
+  ASSERT_TRUE(sink.Holds(named)) << "the second capture never reissued the identity in question";
+  ASSERT_EQ(sink.Held(named).size(), written.size());
+  ASSERT_NE(sink.Held(named), written) << "the second capture wrote the same bytes, so this test "
+                                          "cannot tell a refusal from a coincidence";
+
+  auto third_store = NewStore();
+  FakeCameraAccess third_camera(third_store);
+  CaptureSessionManager third(planner, pose, quality, third_camera, *sensor, *third_store,
+                              *projects, clock);
+
+  auto resumed = third.Resume(kProject);
+  EXPECT_FALSE(resumed.ok()) << "the first sphere came back holding the second capture's pixels";
+  EXPECT_EQ(resumed.status.code, StatusCode::FailedPrecondition);
+  // Never asked for: everything that can refuse a resume refuses it before the indicator lights.
+  EXPECT_EQ(third_camera.Opens(), 0);
+  // And the document stays. A generation mismatch is a statement about the tier in front of it,
+  // not about the capture: a session that fell back to a tier of its own (ADR 0030) says exactly
+  // this about a resident tier that still holds its frames.
+  EXPECT_TRUE(projects->ReadDocument(kProject, "session").ok());
+}
+
+TEST_F(ResumedSession, TheDocumentSaysWhichTierItsFramesAreIn) {
+  // The other half of the refusal above, and the one that keeps it honest: a document written
+  // against the tier it captured into resumes, because the token it carries is the token the tier
+  // still answers with. A check that refused everything would pass the test above and take the
+  // feature with it.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const size_t captured = first.Candidates(node).value.size();
+  ASSERT_GT(captured, 0u);
+  ASSERT_TRUE(first.End().ok());
+
+  // What was written down, against what the tier says. Read out of the document rather than
+  // asserted through a successful resume, because a resume that ignored the field entirely would
+  // look exactly the same from the outside.
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  auto tier = first_store->TierGeneration();
+  ASSERT_TRUE(tier.ok());
+  std::istringstream lines(written.value);
+  std::string line;
+  uint64_t recorded = 0;
+  bool found = false;
+  while (std::getline(lines, line)) {
+    if (line.rfind("tier ", 0) != 0) continue;
+    std::istringstream in(line);
+    std::string tag;
+    ASSERT_TRUE(in >> tag >> recorded);
+    found = true;
+  }
+  ASSERT_TRUE(found) << "the document does not say which tier its frames are in";
+  EXPECT_EQ(recorded, tier.value);
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  auto resumed = second.Resume(kProject);
+  ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
+  EXPECT_EQ(second.Candidates(node).value.size(), captured);
+}
+
+TEST_F(ResumedSession, WritesNoDocumentAgainstATierThatCannotSayWhichCaptureItHolds) {
+  // A page whose worker script is older than the module calling it: the tier is there, it spills,
+  // and it cannot answer the one question a document has to record. Writing one anyway would file
+  // this capture under whatever token the field defaults to, and a later resume would match it.
+  //
+  // The capture itself carries on, which is the direction the rest of the core takes with a
+  // degraded device. What is lost is the resume, and only for as long as the page is half-updated.
+  sink.FailGenerations(true);
+  auto store = NewStore();
+  FakeCameraAccess camera(store);
+  CaptureSessionManager manager_(planner, pose, quality, camera, *sensor, *store, *projects,
+                                 clock);
+  ASSERT_TRUE(manager_.Begin(kProject, Spec()).ok());
+  const NodeId node = manager_.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(manager_, clock, node, BurstSpec{}).ok());
+  EXPECT_GT(manager_.Candidates(node).value.size(), 0u) << "the capture failed instead of the "
+                                                           "document";
+
+  EXPECT_FALSE(projects->ReadDocument(kProject, "session").ok())
+      << "a document was written that cannot say which capture it belongs to";
+}
+
+TEST_F(ResumedSession, RefusesToResumeAgainstATierThatCannotSayWhichCaptureItHolds) {
+  // The same half-updated page, one reload later. The document is from a build that could ask;
+  // the tier in front of it cannot answer, so nothing here can tell whether those frames are the
+  // ones it names. Refusing is the only answer that is not a guess.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  sink.FailGenerations(true);
+  EXPECT_FALSE(second.Resume(kProject).ok());
+  EXPECT_EQ(second_camera.Opens(), 0);
+
+  // And it comes back when the page does, which is what makes this a refusal rather than a loss.
+  sink.FailGenerations(false);
+  EXPECT_TRUE(second.Resume(kProject).ok());
 }
 
 TEST_F(ResumedSession, BringsBackTheCandidatesAndTheBytesBehindThem) {
@@ -1730,6 +1894,7 @@ class StubbornStore final : public IFrameStoreAccess {
   Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_->ResidencyOf(f); }
   Status Demote(const FrameRef& f, Residency t) override { return inner_->Demote(f, t); }
   Status Forget(const FrameRef& f) override { return inner_->Forget(f); }
+  Result<uint64_t> TierGeneration() override { return inner_->TierGeneration(); }
   Result<uint64_t> ContentHash(const FrameRef& f) override { return inner_->ContentHash(f); }
 
   Status Adopt(const FrameRef& frame) override {
@@ -1918,10 +2083,10 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
 
   auto written = projects->ReadDocument(kProject, "session");
   ASSERT_TRUE(written.ok());
-  const std::string stamp = "sphanorama-session 1";
+  const std::string stamp = "sphanorama-session 2";
   std::string newer = written.value;
   ASSERT_EQ(newer.rfind(stamp, 0), 0u);
-  newer.replace(0, stamp.size(), "sphanorama-session 2");
+  newer.replace(0, stamp.size(), "sphanorama-session 3");
   ASSERT_TRUE(projects->WriteDocument(kProject, "session", newer).ok());
 
   auto store_with_sink = NewStore();
@@ -1990,6 +2155,80 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
     EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
   }
+}
+
+TEST_F(ResumedSession, RefusesADocumentThatNamesAnotherTier) {
+  // The field on its own, out of a real document with everything else exactly as the manager
+  // wrote it. The two-project test above is the same refusal reached the way a phone reaches it;
+  // this one is what would still be true if some future Begin stopped clearing the tier.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  const std::string tampered = SetField(written.value, "tier", 1, "999999");
+  ASSERT_NE(tampered, written.value) << "no tier line to corrupt";
+  ASSERT_TRUE(projects->WriteDocument(kProject, "session", tampered).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  auto resumed = second.Resume(kProject);
+  EXPECT_EQ(resumed.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(second_camera.Opens(), 0);
+  EXPECT_TRUE(projects->ReadDocument(kProject, "session").ok()) << "the refusal deleted it";
+}
+
+TEST_F(ResumedSession, RefusesADocumentWithNoTierLineAtAll) {
+  // A missing line must not read as a token of zero, because zero is a real answer: it is what a
+  // host with no spill tier reports, and matching it is what lets such a host resume at all. So a
+  // document that simply does not say would come back cleanly on exactly the hosts that cannot
+  // check anything — which is the opposite of what the line is for.
+  //
+  // A store with no sink on both sides, deliberately. Against a tier that answers with a token,
+  // a missing line is refused by the comparison whatever the parser does, and this test would
+  // have passed without reaching the rule it is about.
+  auto tierless = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess first_camera(tierless);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *tierless, *projects,
+                              clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  // One line taken out of a document that is otherwise exactly what the manager wrote: anything
+  // malformed in a second way would be refused before the missing line was ever missed.
+  std::string kept;
+  std::string line;
+  bool dropped = false;
+  for (std::istringstream lines(written.value); std::getline(lines, line);) {
+    if (line.rfind("tier ", 0) == 0) {
+      dropped = true;
+      continue;
+    }
+    kept += line + "\n";
+  }
+  ASSERT_TRUE(dropped) << "there was no tier line to remove";
+  ASSERT_TRUE(projects->WriteDocument(kProject, "session", kept).ok());
+
+  auto second_tierless = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess second_camera(second_tierless);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_tierless,
+                               *projects, clock);
+  EXPECT_EQ(second.Resume(kProject).status.code, StatusCode::Unsupported);
+  EXPECT_EQ(second_camera.Opens(), 0);
+
+  // And the same document with its line put back does resume, so what is under test is the line
+  // and not the arrangement around it.
+  ASSERT_TRUE(projects->WriteDocument(kProject, "session", written.value).ok());
+  EXPECT_TRUE(second.Resume(kProject).ok());
 }
 
 TEST_F(ResumedSession, RefusesALineCarryingMoreThanItShould) {

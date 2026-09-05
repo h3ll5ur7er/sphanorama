@@ -65,6 +65,30 @@ class IFrameStoreAccess {
   // else's pixels.
   virtual Status Clear() = 0;
 
+  // Which capture the spill tier is holding, as an opaque token.
+  //
+  // The counterpart of Clear, and the reason it exists is what Clear cannot do: a session
+  // document belonging to another project still names the identities a cleared tier is about to
+  // reissue, and this store cannot see that document — the manager above it reads documents by
+  // project id and the project store has no listing. So the tier says which capture it holds,
+  // whoever writes a document records that answer, and a resume compares the two (ADR 0035).
+  //
+  // Compared for equality and never ordered. A token is minted fresh on every clear rather than
+  // counted up, because the tier's own index is a file that can be lost — and a counter that
+  // restarted from 1 after losing it would reissue an epoch some surviving document still names,
+  // which is the failure at the level above the one this exists to fix.
+  //
+  // **Zero means there is no durable tier at all** — a store with no sink, which is a desktop or
+  // a browser with no origin private file system. That is a real answer rather than an absent
+  // one: such a store has no pixels that can outlive it, so no document can be matched to the
+  // wrong ones, and a document written against it records zero and matches zero later. What it
+  // does not do is make those frames reachable; `Adopt` still refuses, saying there is no tier.
+  //
+  // Fallible because a sink can be there and unable to answer — a page whose worker script is
+  // older than its module. A store that cannot say which capture its tier holds must not have a
+  // document written against it, and the manager's checkpoint declines to write one.
+  virtual Result<uint64_t> TierGeneration() = 0;
+
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;
 };
 

@@ -46,7 +46,19 @@ Status FakeSpillSink::Clear() {
   if (fail_clears_) return Fail(StatusCode::Internal, kComponent, "the handle would not empty");
   ++clears_;
   held_.clear();
+  // A refused clear leaves this alone, which the early return above is what provides: a tier that
+  // did not empty is still holding the capture its token names, and moving it on would strand
+  // that capture's document over pixels that are still there.
+  ++generation_;
   return Status::Ok();
+}
+
+Result<uint64_t> FakeSpillSink::Generation() {
+  if (fail_generations_) {
+    return Err<uint64_t>(StatusCode::Unsupported, kComponent,
+                         "this tier cannot say which capture it holds");
+  }
+  return Ok(generation_);
 }
 
 }  // namespace sphanorama
