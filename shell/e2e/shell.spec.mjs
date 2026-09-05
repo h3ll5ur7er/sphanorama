@@ -202,7 +202,8 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
     const armed = await page.evaluate(() => window.sphanoramaCapture());
     expect(armed).toBe(true);
 
-    // Five frames at 80 ms, so the burst needs about half a second of ticks to fill.
+    // A settle of 150 ms and then five frames at 80 ms, so the burst needs the better part of
+    // a second of ticks to fill.
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 
     const candidates = await page.evaluate(async () => {

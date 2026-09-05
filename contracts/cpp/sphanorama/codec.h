@@ -256,6 +256,7 @@ inline bool Decode(Reader& in, Candidate& value) {
 inline void Encode(Writer& out, const BurstSpec& value) {
   out.PutF64(static_cast<double>(value.frameCount));
   out.PutF64(static_cast<double>(value.intervalMs));
+  out.PutF64(static_cast<double>(value.settleMs));
   out.PutBool(value.lockExposure);
   out.PutBool(value.lockWhiteBalance);
   out.PutBool(value.lockFocus);
@@ -264,6 +265,7 @@ inline void Encode(Writer& out, const BurstSpec& value) {
 inline bool Decode(Reader& in, BurstSpec& value) {
   value.frameCount = static_cast<decltype(value.frameCount)>(in.GetF64());
   value.intervalMs = static_cast<decltype(value.intervalMs)>(in.GetF64());
+  value.settleMs = static_cast<decltype(value.settleMs)>(in.GetF64());
   value.lockExposure = in.GetBool();
   value.lockWhiteBalance = in.GetBool();
   value.lockFocus = in.GetBool();

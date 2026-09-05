@@ -199,6 +199,19 @@ export interface Candidate {
 export interface BurstSpec {
   frameCount: number;
   intervalMs: number;
+  /**
+   * How long the camera is given to converge after the locks go on, before the first frame is
+   * taken. It is a different quantity from the interval — that is how far apart two frames have
+   * to be, this is how long one camera takes to settle — and a caller that knows its device
+   * should be able to say so.
+   * The default is a guess, and it is worth saying so plainly: nobody has measured how long a
+   * phone camera takes to converge after a lock. What is known is one device in one scene. A
+   * Pixel that holds a focus lock scored its five-frame burst 5.9, 1145, 720, 583, 586 in capture
+   * order — the first frame taken 16 ms after arming and roughly 100x less sharp than any of its
+   * siblings, the second taken 96 ms after arming and normal. 150 ms is that datapoint with
+   * margin. Measuring it per device class is what would replace it.
+   */
+  settleMs: number;
   lockExposure: boolean;
   lockWhiteBalance: boolean;
   lockFocus: boolean;
@@ -491,6 +504,10 @@ export interface CaptureSessionManager {
    * a spec asking for less than a tick apart gets a tick apart, and a spec asking for less than
    * the camera's own `maxBurstFps` period gets that instead. Locks are applied here and held
    * until the burst completes or is abandoned.
+   * The first frame is not taken until `burst.settleMs` after arming, because the locks applied
+   * on this call are what the camera has to converge to. Under that floor the camera's own frame
+   * period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
+   * frame period the latest frame is one the camera produced before the locks landed.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
