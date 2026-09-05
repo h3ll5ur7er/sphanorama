@@ -293,7 +293,7 @@ agreement drops (1.00, 1.00, 0.67, 0.78, 0.84), climbing back as the metering se
 
 So not bracketing, and not the selection policy: a lock that was asked for and did not take. The
 negotiation is fixed — one constraint set per lock rather than all three in one, an exposure time
-offered alongside `manual`, and `single-shot` as a fallback (ADR 0022's consequences). Whether it
+offered alongside `manual`, and `single-shot` as a fallback (ADR 0031). Whether it
 now holds on that camera is the next thing a screenshot answers.
 
 ---

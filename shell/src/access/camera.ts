@@ -122,7 +122,8 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
   let active: MediaStream | null = null;
   // What this camera has already said no to, so a sphere does not ask twenty-eight times. Locks
   // are applied before every burst, and each attempt is a round trip sitting between framing a
-  // cell and capturing it. Cleared with the track, because the next one is a different camera.
+  // cell and capturing it. Cleared wherever the track changes — both ends of it, `open` as well
+  // as `close`, because a refusal belongs to the camera that made it.
   let hopeless = new Set<keyof LockState>();
 
   return {
@@ -165,6 +166,13 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
             audio: false,
           });
         }
+        // The one it was already holding goes first. Nothing else is holding that stream, so a
+        // second open would leave it running for the life of the page with the indicator lit —
+        // which a user reads, correctly, as the app watching them. And what a camera will not do
+        // is a fact about *that* camera: carrying a refusal across an open is how the next one
+        // silently loses a lock it would have given.
+        active?.getTracks().forEach((track) => track.stop());
+        hopeless = new Set();
         active = stream;
 
         // Report what the track settled on, not what we asked for: requested and granted
