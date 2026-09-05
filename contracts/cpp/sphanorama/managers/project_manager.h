@@ -13,6 +13,11 @@ class IProjectManager {
   // No Resume here, deliberately. Picking a capture back up means handing a live session to
   // whatever owns session state, and that is `ICaptureSessionManager` — this manager could only
   // ever have returned a SessionId it had no way to make (ADR 0029).
+  //
+  // `hasSession` is not that method coming back. It reports that a session document exists, which
+  // is metadata about a project and nothing a caller could mistake for a session: there is no
+  // SessionId in a summary, and nothing here parses the document or hands back what is in it. It
+  // is what lets a page offer a resume rather than discover one by attempting it (ADR 0036).
   virtual Result<std::vector<ProjectSummary>> List() = 0;
   virtual Result<ProjectId> Create(std::string_view title) = 0;
   virtual Status Delete(ProjectId project) = 0;

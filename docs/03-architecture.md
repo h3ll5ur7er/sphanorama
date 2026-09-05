@@ -180,7 +180,10 @@ and it is the reason the build is modelled as a graph and not a pipeline run (§
 
 ### ProjectManager (V3)
 Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture
-back up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). Export means asking
+back up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). It does
+report *that* there is one: `ProjectSummary.hasSession` says a session document exists, which is
+metadata about a project rather than a session anybody can be handed, and it is what lets a client
+offer a resume instead of discovering one by attempting it (ADR 0036). Export means asking
 `IImageCodecAccess` to encode and attach XMP `GPano` metadata, then handing bytes to
 `IExportAccess`. It is the only manager that touches `IExportAccess`.
 
@@ -347,3 +350,18 @@ mechanism, two features. That is the payoff of modelling the build as a graph.
 `RegistrationEngine` output rather than from integration. `CoveragePlannerEngine` switches to a
 looser acceptance tolerance. No other component learns that sensors were absent — the volatility
 is contained in V5 plus one flag in the plan spec.
+
+### UC-5 · Coming back to a capture a phone call interrupted
+
+At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
+`hasSession`. If there is one it offers a resume beside the ordinary enable; both are the same user
+gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed,
+it opens the camera, pushes the lens to the host, and calls `CaptureSessionManager.Resume(project)`
+instead of `Create` plus `Begin` — the manager reads the document it wrote, replans from the spec
+and lens that document carries, and hands the frames it names back to the store, so the cells
+already captured keep counting (ADR 0029).
+
+A client sequencing two managers, and the boundary is what keeps it honest: the first call answers
+whether to offer, the second is the only thing that hands back a session. A refusal from the second
+— a document this build cannot read, a plan the stored spec no longer produces, frames the tier
+lost — goes on screen through `describeFailure`, and a new capture stays one press away.
