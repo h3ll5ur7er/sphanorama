@@ -94,6 +94,21 @@ setting a pick does not read and rewrite its neighbours.
   be checked against the case where the assumption fails, and the test fake has to be able to
   produce that case. This one could only ever release writes oldest-first, so every test in the
   file agreed with the assumption the guard was written to reject.
+
+  **And the fix cost something the count it replaced did not.** Counting picks issued was
+  *monotone*: nothing ever had to be given back, so no sequence of events could wedge it. Counting
+  what is outstanding is a *balance* — the handler acquires before its await and releases after —
+  and a cell whose release never runs is a cell that never refreshes again. One `setSelection` that
+  never settles leaves that cell's count at one for the life of the page; every later pick on it
+  stands down, the core moves, the strip does not, and only re-opening the cell repairs it.
+
+  That case is reachable and it is accepted, because in it the reads hang too: a worker that stops
+  answering without firing `error` leaves every call pending, so the refresh this suppresses could
+  not have completed either. What is *not* accepted is leaving the property unwritten. The count
+  must balance, nothing enforces that it does, and the next edit is what collects — an early
+  `return` between the acquire and the release would gag a cell permanently and no test in the
+  suite would notice, because the fake cannot construct an unbalanced count. That is the same
+  sentence as the paragraph above, one level down, and it is the fifth correction's warning.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth
@@ -103,10 +118,11 @@ setting a pick does not read and rewrite its neighbours.
 
   And the failure is for the screen, because there is nowhere else for it to go: no `ILogger` is
   wired into anything the core builds, and the panel's `Answered<T>` drops the status by design so
-  that `value` cannot be touched on the failing branch. A *rejection* — a dead worker, or a bundle
-  whose core has no such method — has nowhere at all, so its reason goes to the console: the
-  heading blames the document, and a version skew is not the document's fault, nor something
-  picking again can repair. So the strip marks *nothing* in force and
+  that `value` cannot be touched on the failing branch. A *rejection* has nowhere at all, so its
+  reason goes to the console. Five things can produce one — a version skew, a failed allocation, a
+  dead worker, a worker that answered `failed`, a reply that is not one — and the count is not the
+  argument: none of them is the document's fault, and none is repaired by picking again, which is
+  what the heading advises. So the strip marks *nothing* in force and
   its heading says which one is in force could not be read. It keeps its rows — they were read
   fine, and picking again is how a user repairs the document that failed — but it does not offer
   the ranking's pick as though that were what the build will use. That fold is available and it is

@@ -2,7 +2,7 @@
 // the strip says is candidateStrip's business and what the map looks like is reviewed by eye;
 // what is here is the ordering the panel has to survive because every call it makes crosses a
 // worker.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createReviewPanel, paintPreviewOnCanvas, previewIsDrawable, PREVIEW_MAX_EDGE,
@@ -528,8 +528,8 @@ describe('opening a cell', () => {
   it('coalesces two quick picks into one refresh', async () => {
     // Every refresh is two round trips through the worker, and the earlier of two reads a core
     // the later write is about to change — a trip paid to paint something already out of date.
-    // Only the newest write refreshes. This is a count rather than an assumption about which
-    // answer comes back first, so it holds whichever order they arrive in.
+    // So only the last pick to *land* refreshes, counted per cell. Which order they land in is
+    // the sibling test below; this one is only about the count.
     const { core, answer, recorded, candidateCalls } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
@@ -563,6 +563,7 @@ describe('opening a cell', () => {
     const { core, killWorker } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
     killWorker();
 
     const panel = createReviewPanel(ui, core, paint);
@@ -571,6 +572,12 @@ describe('opening a cell', () => {
 
     expect(ui.stripHeading.textContent).toBe('That cell could not be read.');
     expect(ui.strip.querySelectorAll('button')).toHaveLength(0);
+    // And the reason is somewhere. The heading is the honest sentence for a *user* and carries no
+    // reason, deliberately — none of the things that reject here is repairable by picking again,
+    // so the one who needs to know is a developer, and this is where they look.
+    expect(reported).toHaveBeenCalledWith(
+      'sphanorama review: a call to the core did not answer', expect.anything());
+    reported.mockRestore();
   });
 
   it('keeps the rows it drew when the worker dies partway through the pictures', async () => {

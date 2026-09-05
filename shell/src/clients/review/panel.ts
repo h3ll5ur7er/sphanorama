@@ -49,12 +49,13 @@ type Answered<T> = { readonly ok: true; readonly value: T } | { readonly ok: fal
  * first it would leave the *previous* cell's rows standing under the new cell's identity, which is
  * worse still. A rejection is the same news as `{ok: false}` and is told the same way.
  *
- * The reason goes to the console, because the screen cannot carry it. Only three things reject
- * here and one of them is a version skew — `facade.ts` throws "the bundle and the core disagree"
- * by name, precisely so it will not surface as a silent empty result somewhere else. Folding it
- * into a heading that says the *document* could not be read would make this that somewhere else,
- * and the strip's advice for that heading, pick again, cannot repair a stale bundle. `worker.ts`
- * already reports its own unhandled failures this way.
+ * The reason goes to the console, because the screen cannot carry it. Nothing that rejects here
+ * is repairable by picking again — a version skew (`facade.ts` throws "the bundle and the core
+ * disagree" by name, precisely so it will not surface as a silent empty result somewhere else),
+ * a failed allocation, a dead worker, a worker that answered `failed`, a reply that is not one.
+ * So none of them belongs under a heading that says the *document* could not be read, whose
+ * advice is to pick again; and the reason a user cannot act on belongs where a developer will
+ * look. `worker.ts` already reports its own unhandled failures this way.
  */
 function answering<T>(call: Promise<Answered<T>>): Promise<Answered<T>> {
   return call.then(undefined, (reason: unknown) => {
@@ -289,6 +290,10 @@ export function createReviewPanel(
       button.append(thumbnail, label);
       button.addEventListener('click', () => {
         void (async () => {
+          // Acquired here, released below, and everything between the two must reach the release
+          // — an early `return` inserted in there would leave this cell's count raised forever
+          // and it would never refresh again. The bookkeeping below is deliberately above the
+          // guard for the same reason: walking away from a cell still releases its count.
           outstanding.set(node, (outstanding.get(node) ?? 0) + 1);
           // A rejection is not an outcome this has to tell apart. Nothing is remembered here:
           // re-opening asks the core what is recorded, so a write that was refused — or one that
@@ -309,7 +314,14 @@ export function createReviewPanel(
           //
           // `left` is whether this cell has any pick still in flight. Without it two quick picks
           // cost two refreshes, the first of them reading a core the second is about to change.
-          const left = (outstanding.get(node) ?? 1) - 1;
+          //
+          // The entry is always here. This handler put it in before the await, and an entry is
+          // removed only when its count reaches zero, which cannot have happened while this write
+          // is still counted in it — so there is no missing-entry case to defend, and writing one
+          // would be a branch nothing can reach. What *can* go wrong is the opposite: a count
+          // stuck above zero, which no `??` helps with. See ADR 0040.
+          const held = outstanding.get(node) as number;
+          const left = held - 1;
           if (left === 0) outstanding.delete(node);
           else outstanding.set(node, left);
           if (opened !== node || left > 0) return;
