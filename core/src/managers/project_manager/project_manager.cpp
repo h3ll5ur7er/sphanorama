@@ -6,6 +6,12 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "ProjectManager";
 constexpr const char* kTitleKey = "title";
+// Written by CaptureSessionManager, read here and nowhere else in this file. A key, not a format:
+// what is inside it belongs to the manager that wrote it, and this one never opens it — the
+// listing answers "is there something to come back to", which is a fact about the project rather
+// than about the session (ADR 0036). Reading across is the shape the store already has: Begin
+// reads `title`, which is this manager's, for the same kind of reason.
+constexpr const char* kSessionKey = "session";
 }  // namespace
 
 ProjectManager::ProjectManager(IProjectStoreAccess& store) : store_(store) {}
@@ -23,6 +29,11 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
     ProjectSummary summary;
     summary.id = id;
     if (auto title = store_.ReadDocument(id, kTitleKey); title.ok()) summary.title = title.value;
+    // Asked of the store on every listing rather than remembered. A session document appears
+    // while this manager is alive — the capture manager checkpoints one on the way out of every
+    // burst — so anything cached here would report the tab's own capture as unresumable, and
+    // that tab is the one holding the phone.
+    summary.hasSession = store_.ReadDocument(id, kSessionKey).ok();
     summaries.push_back(std::move(summary));
   }
   return Ok(std::move(summaries));

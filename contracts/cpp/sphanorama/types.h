@@ -438,6 +438,14 @@ struct ProjectSummary {
   int64_t createdAtMs = 0;
   int32_t nodesTotal = 0, nodesSatisfied = 0;
   bool hasBuild = false;
+  // Whether this project has a capture session written down — something to come back to.
+  //
+  // The fact, not a promise: `ICaptureSessionManager::Resume` is still free to refuse this
+  // document, and a client that treated the flag as a guarantee would have nowhere to put that
+  // refusal. What it buys is that a page never has to *try* a resume to find out whether to
+  // offer one — a successful attempt opens the camera and starts tracking, so probing commits to
+  // a resume nobody asked for (ADR 0036).
+  bool hasSession = false;
 };
 
 struct ExportSpec {

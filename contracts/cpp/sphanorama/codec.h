@@ -431,6 +431,7 @@ inline void Encode(Writer& out, const ProjectSummary& value) {
   out.PutF64(static_cast<double>(value.nodesTotal));
   out.PutF64(static_cast<double>(value.nodesSatisfied));
   out.PutBool(value.hasBuild);
+  out.PutBool(value.hasSession);
 }
 
 inline bool Decode(Reader& in, ProjectSummary& value) {
@@ -440,6 +441,7 @@ inline bool Decode(Reader& in, ProjectSummary& value) {
   value.nodesTotal = static_cast<decltype(value.nodesTotal)>(in.GetF64());
   value.nodesSatisfied = static_cast<decltype(value.nodesSatisfied)>(in.GetF64());
   value.hasBuild = in.GetBool();
+  value.hasSession = in.GetBool();
   return in.ok();
 }
 

@@ -47,6 +47,42 @@ TEST_F(Projects, ListingIsEmptyBeforeAnythingIsCreated) {
   EXPECT_TRUE(listed.value.empty());
 }
 
+TEST_F(Projects, AProjectWithASessionDocumentIsOfferedBackToTheUser) {
+  // The page cannot find out by trying: `Resume` reads its document before it touches anything,
+  // but a *successful* one opens the camera and starts tracking, so probing would commit to a
+  // resume nobody asked for. The listing is the side-effect-free answer (ADR 0036).
+  auto interrupted = manager->Create("interrupted");
+  auto untouched = manager->Create("untouched");
+  ASSERT_TRUE(interrupted.ok());
+  ASSERT_TRUE(untouched.ok());
+  ASSERT_TRUE(store.WriteDocument(interrupted.value, "session", "sphanorama-session 1\n").ok());
+
+  auto listed = manager->List();
+  ASSERT_TRUE(listed.ok());
+  ASSERT_EQ(listed.value.size(), 2u);
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_EQ(summary.hasSession, summary.id.value == interrupted.value.value)
+        << "project " << summary.id.value;
+  }
+}
+
+TEST_F(Projects, TheSessionFlagIsReadOffTheStoreEveryTime) {
+  // Not latched at Create, and not cached from the last listing. A session document appears while
+  // this manager is alive — CaptureSessionManager checkpoints one on the way out of every burst —
+  // so a listing answering from anything but the store would report a capture as unresumable for
+  // as long as the tab that made it stayed open, which is exactly the tab that can resume it.
+  auto created = manager->Create("kitchen");
+  ASSERT_FALSE(manager->List().value.front().hasSession);
+
+  ASSERT_TRUE(store.WriteDocument(created.value, "session", "sphanorama-session 1\n").ok());
+  EXPECT_TRUE(manager->List().value.front().hasSession);
+
+  // And a manager that never saw it written agrees, which is the case that actually happens: the
+  // page that resumes is a new process reading a store that outlived the last one.
+  ProjectManager reloaded(store);
+  EXPECT_TRUE(reloaded.List().value.front().hasSession);
+}
+
 TEST_F(Projects, DeletingRemovesItFromTheListing) {
   auto created = manager->Create("kitchen");
   ASSERT_TRUE(manager->Delete(created.value).ok());

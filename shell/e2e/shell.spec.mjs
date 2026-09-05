@@ -1036,6 +1036,146 @@ test('a project written through the core survives a reload', async ({ page }) =>
   }
 });
 
+test('nothing to come back to means nothing is offered', async ({ page }) => {
+  // The other half of the pair below, and the one that keeps the offer meaningful: a page that
+  // proposed resuming on every load would train the button out of being read, and the state it
+  // proposes resuming into does not exist.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeHidden();
+
+    // And a project on its own is not a capture. `project.create` writes a title and nothing
+    // else, so a page that read "a project exists" as "there is a session" would offer to resume
+    // every sphere anyone ever named — including one whose capture never began.
+    const created = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.create('named but never captured');
+      await window.sphanoramaHost.flush();
+      return result.ok ? result.value : null;
+    });
+    expect(created).not.toBeNull();
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#facade')).toContainText('1 projects');
+    await expect(page.locator('#resume')).toBeHidden();
+    await expect(page.locator('#stage')).toContainText('enable the camera to continue');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a capture interrupted by a reload is offered back with its cells', async ({ page }) => {
+  // The whole point of the machinery, from the outside: capture a cell, lose the tab, and find
+  // the sphere still there. Everything under it is covered against fakes — the document, the
+  // replan, the adoption (ADR 0029), the durable spill index (ADR 0030) — and this is the only
+  // place they meet a real browser, a real OPFS file and a page the user has to press.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    const before = await page.evaluate(async () => {
+      const state = await window.sphanoramaCore.captureSession.coverage();
+      // Asked for rather than raced: durability is eventual by design (ADR 0014), and the
+      // reload below is exactly the event that does not wait for a flush timer.
+      await window.sphanoramaHost.flush();
+      return state.ok ? state.value.nodesSatisfied : 0;
+    });
+    expect(before).toBeGreaterThan(0);
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    // Offered without anything having been tried: no camera has been opened on this load, which
+    // is the property the flag exists for (ADR 0036).
+    await expect(page.locator('#resume')).toBeVisible();
+    expect(await page.evaluate(() => document.querySelector('video').srcObject)).toBeNull();
+
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+
+    const after = await page.evaluate(async () => {
+      const state = await window.sphanoramaCore.captureSession.coverage();
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      let restored = 0;
+      for (const node of plan.value.nodes) {
+        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+        if (got.ok) restored += got.value.length;
+      }
+      return { satisfied: state.ok ? state.value.nodesSatisfied : 0, restored };
+    });
+    expect(after.satisfied).toBe(before);
+    // The candidates came back too, not just the count of cells. A resume that restored the
+    // coverage map and nothing else is the artefact ADR 0029 refused to produce: a sphere that
+    // says it is captured and builds into nothing.
+    expect(after.restored).toBe(5);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a resume the core refuses says why and still lets a new capture start', async ({ page }) => {
+  // `Resume` can honestly say no — a document from a shape this build does not read is the case
+  // ADR 0029 named, and it keeps the document rather than deleting it. What the page must not do
+  // is offer a resume, have it refused, and leave nothing to press: the reason goes on screen and
+  // starting over stays one press away.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const created = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.create('interrupted');
+      await window.sphanoramaHost.flush();
+      return result.ok ? result.value : null;
+    });
+    expect(created).not.toBeNull();
+
+    // Written underneath the core rather than through it, because no contract writes a document
+    // this shape — that is the point of it. The store is hydrated once at startup, so this has to
+    // land before the reload that reads it.
+    await page.evaluate(async (project) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('sphanorama', 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put('sphanorama-session 99\n', `${project}/session`);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }, created);
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeVisible();
+
+    await page.locator('#resume').click();
+    // The component's own words, not a sentence about https: `Unsupported` means one thing in the
+    // camera adapter and another everywhere else, and only the first is about a secure origin.
+    await expect(page.locator('#stage')).toContainText('Could not resume', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('this build cannot read');
+    await expect(page.locator('#stage')).not.toContainText('https');
+
+    // And not stranded: a new sphere from here, on the camera the refused resume already opened.
+    await expect(page.locator('#new-capture')).toBeVisible();
+    await page.locator('#new-capture').click();
+    await expect(page.locator('#stage')).toContainText(/capturing.*cells planned/,
+                                                       { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
 test('deleting a project removes it for good', async ({ page }) => {
   const server = await serve();
   try {

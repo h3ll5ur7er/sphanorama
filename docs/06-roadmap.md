@@ -242,21 +242,26 @@ recorded per device class.
 
 *Where this stands:* two of the three conditions are met on one device. A Pixel 9 Pro XL captured a
 full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
-build. What is left:
+build. The reload-and-resume condition is met in a real browser — an end-to-end test drives it —
+but not yet demonstrated on a phone. What is left, and what has landed since:
 
-- **Reload and resume.** Both halves of the machinery are **done**, and neither is wired to a
-  button yet. The core reads a session document written at every committed cell, replans from the
-  spec and lens that document carries, and hands the frames it names back to the store through
-  `IFrameStoreAccess::Adopt`, so a restored candidate can still be pinned (ADR 0029). Underneath
-  it the OPFS tier survives a reload too: a fixed preferred name and a sibling index carrying the
-  frame-to-offset map, with a tier of its own for any session that cannot take that pair, which is
-  the property ADR 0020 added (ADR 0030). The first of the two things that remained is **done**:
-  `Begin` empties the tier and `Resume` does not (ADR 0034), so a new capture no longer issues
-  identities the tier is already holding frames under, and abandoned spheres stop accumulating on
-  disk. What is left is the page's own resume flow — a button, and something that knows a project
-  has a session to come back to. Scope, decided
-  with the maintainer rather than assumed: in practice there is never more than one unfinished
-  sphere, because resuming means standing in the same spot again. The case worth building for is
+- **Reload and resume.** **Done**, and wired to a button. The core reads a session document
+  written at every committed cell, replans from the spec and lens that document carries, and hands
+  the frames it names back to the store through `IFrameStoreAccess::Adopt`, so a restored candidate
+  can still be pinned (ADR 0029). Underneath it the OPFS tier survives a reload too: a fixed
+  preferred name and a sibling index carrying the frame-to-offset map, with a tier of its own for
+  any session that cannot take that pair, which is the property ADR 0020 added (ADR 0030). `Begin`
+  empties the tier and `Resume` does not (ADR 0034), so a new capture no longer issues identities
+  the tier is already holding frames under, and abandoned spheres stop accumulating on disk. And
+  the page now knows: `ProjectSummary` carries `hasSession`, filled from the project's session
+  document by the listing the page already makes at load, so a capture that was interrupted is
+  offered back rather than discovered by attempting one — a successful `Resume` opens the camera,
+  so probing would have started a capture nobody asked for (ADR 0036). A resume the core refuses
+  says why and leaves a new capture one press away. An end-to-end test captures a cell in a real
+  browser, reloads the tab, presses resume and finds the cell and its five candidates still there.
+  Scope, decided with the maintainer rather than assumed: in practice there is never more than one
+  unfinished sphere, because resuming means standing in the same spot again — so the page offers
+  the newest project that has a session, and only that one. The case worth building for is
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the tier is cleared when a *new* session begins rather than at worker startup, which is what
   lets a reload find its frames still there.

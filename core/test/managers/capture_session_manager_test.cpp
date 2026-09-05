@@ -17,6 +17,7 @@
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
+#include "managers/project_manager/project_manager.h"
 #include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
 #include "support/fake_camera_access.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
@@ -1462,6 +1463,35 @@ class ResumedSession : public CaptureSession {
 
   FakeSpillSink sink;
 };
+
+TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
+  // The two halves of ADR 0036 meeting: this manager writes the session document, and
+  // `ProjectManager::List` is what tells the page one is there without opening a camera to find
+  // out. They agree on a key in a store they share and on nothing else - so a checkpoint written
+  // under a name the listing does not look for would leave a captured sphere unoffered, with
+  // both managers' own suites green. This is the only test that would notice.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ProjectManager listing(*projects);
+
+  auto untouched = listing.Create("never captured");
+  ASSERT_TRUE(untouched.ok());
+  for (const ProjectSummary& summary : listing.List().value) {
+    EXPECT_FALSE(summary.hasSession) << "project " << summary.id.value << " before any capture";
+  }
+
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+
+  auto listed = listing.List();
+  ASSERT_TRUE(listed.ok());
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_EQ(summary.hasSession, summary.id.value == kProject.value)
+        << "project " << summary.id.value << " after a cell was captured";
+  }
+}
 
 TEST_F(ResumedSession, ANewSessionEmptiesTheSpillTier) {
   // Frame identities restart at 1 in every process, and the tier does not (ADR 0030). A capture

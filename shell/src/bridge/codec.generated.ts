@@ -388,6 +388,7 @@ export function encodeProjectSummary(out: Writer, value: C.ProjectSummary): void
   out.f64(value.nodesTotal);
   out.f64(value.nodesSatisfied);
   out.bool(value.hasBuild);
+  out.bool(value.hasSession);
 }
 
 export function decodeProjectSummary(input: Reader): C.ProjectSummary {
@@ -398,6 +399,7 @@ export function decodeProjectSummary(input: Reader): C.ProjectSummary {
     nodesTotal: input.f64(),
     nodesSatisfied: input.f64(),
     hasBuild: input.bool(),
+    hasSession: input.bool(),
   };
 }
 

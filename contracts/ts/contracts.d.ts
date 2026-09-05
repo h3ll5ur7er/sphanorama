@@ -459,6 +459,15 @@ export interface ProjectSummary {
   nodesTotal: number;
   nodesSatisfied: number;
   hasBuild: boolean;
+  /**
+   * Whether this project has a capture session written down — something to come back to.
+   * The fact, not a promise: `ICaptureSessionManager::Resume` is still free to refuse this
+   * document, and a client that treated the flag as a guarantee would have nowhere to put that
+   * refusal. What it buys is that a page never has to *try* a resume to find out whether to
+   * offer one — a successful attempt opens the camera and starts tracking, so probing commits to
+   * a resume nobody asked for (ADR 0036).
+   */
+  hasSession: boolean;
 }
 
 export interface ExportSpec {
@@ -549,6 +558,10 @@ export interface ProjectManager {
    * No Resume here, deliberately. Picking a capture back up means handing a live session to
    * whatever owns session state, and that is `ICaptureSessionManager` — this manager could only
    * ever have returned a SessionId it had no way to make (ADR 0029).
+   * `hasSession` is not that method coming back. It reports that a session document exists, which
+   * is metadata about a project and nothing a caller could mistake for a session: there is no
+   * SessionId in a summary, and nothing here parses the document or hands back what is in it. It
+   * is what lets a page offer a resume rather than discover one by attempting it (ADR 0036).
    */
   list(): Promise<Result<ProjectSummary[]>>;
   create(title: string): Promise<Result<ProjectId>>;

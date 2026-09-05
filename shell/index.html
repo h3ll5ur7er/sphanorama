@@ -69,8 +69,17 @@
         <dt>facade</dt><dd id="facade">—</dd>
         <dt>build</dt><dd id="build">—</dd>
       </dl>
+      <!-- Only when the listing says there is a session to come back to (ADR 0036). It is the
+           same gesture as enabling — a resume opens the camera and asks for motion exactly as a
+           new capture does — and it is offered first because a phone that comes back mid-sphere
+           is the case it exists for. -->
+      <button id="resume" type="button" hidden>Resume the last capture</button>
       <button id="enable" type="button">Enable camera &amp; motion</button>
       <button id="capture" type="button" disabled>Capture this cell</button>
+      <!-- Shown only when a resume was refused, so the reason on the stage line is not a dead
+           end: the core can honestly say no — a document this build cannot read, frames the tier
+           lost — and starting over has to stay one press away when it does. -->
+      <button id="new-capture" type="button" hidden>Start a new capture</button>
 
       <section id="review" data-active="false" aria-labelledby="review-heading">
         <h2 id="review-heading">Coverage</h2>

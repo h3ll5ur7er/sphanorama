@@ -8,7 +8,7 @@
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
 import type {
-  CapturePlan, CoverageState, NodeId, ProjectId, Quat,
+  CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat,
 } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
@@ -21,6 +21,7 @@ import {
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
 } from './clients/capture/guidance';
+import { describeResumeRefusal, resumableProject } from './clients/capture/resume';
 import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
@@ -71,6 +72,10 @@ el('build').textContent =
   typeof __SPHANORAMA_BUILD__ === 'string' ? __SPHANORAMA_BUILD__ : 'unknown';
 const enableButton = el<HTMLButtonElement>('enable');
 const captureButton = el<HTMLButtonElement>('capture');
+// The two halves of coming back to a capture: the offer, shown at load when the listing says
+// there is a session to resume, and the way out when that resume is refused (ADR 0036).
+const resumeButton = el<HTMLButtonElement>('resume');
+const newCaptureButton = el<HTMLButtonElement>('new-capture');
 const reviewElements = {
   panel: el<HTMLElement>('review'),
   map: el<HTMLElement>('coverage-map'),
@@ -151,11 +156,26 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
 }
 
 /**
+ * Whether motion was running when this session was enabled.
+ *
+ * Held here because a resume that is refused hands the decision back to the user, and the press
+ * that answers it — "start a new capture" — arrives long after `enable` has returned. Asking the
+ * adapter again at that point would be a second permission story to tell; this is the answer the
+ * gesture already got.
+ */
+let motionIsRunning = false;
+
+/**
  * Enabling has to happen inside a user gesture: iOS rejects the motion permission request
  * otherwise, and does so in a way indistinguishable from a decline.
+ *
+ * `resume` names the project to pick back up, or is null for a new sphere. Both take this same
+ * path: a resume needs the camera and the sensor exactly as a fresh capture does, and the only
+ * thing that differs is which call to the session manager comes at the end of it.
  */
-async function enable(core: SphanoramaCore) {
+async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.disabled = true;
+  resumeButton.disabled = true;
 
   // Asked for, because a camera that is not asked answers with the browser's default rather than
   // its own best — 640x480 in Chromium, a quarter of the pixels the grabber's cap already budgets
@@ -228,9 +248,11 @@ async function enable(core: SphanoramaCore) {
   }
 
   enableButton.hidden = true;
+  resumeButton.hidden = true;
+  motionIsRunning = started.ok;
   // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
   // without it would turn a supported degraded mode into a dead end.
-  if (opened.ok) await beginSession(core, started.ok);
+  if (opened.ok) await beginSession(core, started.ok, resume);
   else if (started.ok) pump(core, null, true, null);
 }
 
@@ -239,12 +261,63 @@ async function enable(core: SphanoramaCore) {
  *
  * A project comes first because a session belongs to one — the manager writes the session's
  * documents through the project store, and a capture with nowhere to be saved is a demo.
+ *
+ * With `resume` set the project already exists and so does its session: the manager reads what it
+ * wrote, replans from the spec and lens the document carries, and hands the frames it names back
+ * to the store (ADR 0029). Nothing is created, and in particular no `begin` — that would empty
+ * the spill tier holding the very frames being come back for (ADR 0034).
  */
-async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
+async function beginSession(core: SphanoramaCore, motionRunning: boolean,
+                            resume: ProjectId | null) {
+  const project = resume === null
+    ? await startFresh(core, motionRunning)
+    : await pickUp(core, resume);
+  if (project === null) return;
+
+  const plan = await core.captureSession.getPlan();
+  if (!plan.ok) {
+    stage.textContent = describeFailure(plan.status);
+    pump(core, null, motionRunning, null);
+    return;
+  }
+
+  const opening = resume === null ? 'capturing' : 'resumed';
+  stage.textContent = motionRunning
+    ? `${opening} — ${plan.value.nodes.length} cells planned`
+    : `${opening} without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
+  // Folded once the session is under way. From here the picture is the interface, and the panel
+  // was covering nearly two thirds of it.
+  openPanel(false);
+  pump(core, plan.value, motionRunning, project);
+}
+
+/**
+ * Picks a capture back up, or says why it could not and leaves a way forward.
+ *
+ * The refusals are real ones — a document this build cannot read, a plan the stored spec no
+ * longer produces, frames the tier lost — and every one of them is a state the user can still do
+ * something from. So the reason goes on the stage line and the fresh-start button appears; what
+ * must not happen is a page that offered a resume, failed it, and left nothing to press.
+ *
+ * The loop is deliberately not started here. It is started once, by whichever call settles the
+ * session, and a `pump` on this path would leave a second one running under the capture the user
+ * is about to start.
+ */
+async function pickUp(core: SphanoramaCore, project: ProjectId): Promise<ProjectId | null> {
+  const resumed = await core.captureSession.resume(project);
+  if (resumed.ok) return project;
+  stage.textContent = describeResumeRefusal(resumed.status);
+  newCaptureButton.hidden = false;
+  return null;
+}
+
+/** A new project and a new session on it: the path every capture took before resume existed. */
+async function startFresh(core: SphanoramaCore,
+                          motionRunning: boolean): Promise<ProjectId | null> {
   const created = await core.project.create(`sphere ${new Date().toISOString().slice(0, 16)}`);
   if (!created.ok) {
     stage.textContent = describeFailure(created.status);
-    return;
+    return null;
   }
 
   const begun = await core.captureSession.begin(created.value as ProjectId, {
@@ -264,23 +337,9 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean) {
   if (!begun.ok) {
     stage.textContent = describeFailure(begun.status);
     pump(core, null, motionRunning, null);
-    return;
+    return null;
   }
-
-  const plan = await core.captureSession.getPlan();
-  if (!plan.ok) {
-    stage.textContent = describeFailure(plan.status);
-    pump(core, null, motionRunning, null);
-    return;
-  }
-
-  stage.textContent = motionRunning
-    ? `capturing — ${plan.value.nodes.length} cells planned`
-    : `capturing without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
-  // Folded once the session is under way. From here the picture is the interface, and the panel
-  // was covering nearly two thirds of it.
-  openPanel(false);
-  pump(core, plan.value, motionRunning, created.value as ProjectId);
+  return created.value as ProjectId;
 }
 
 /**
@@ -563,12 +622,17 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
  * ProjectManager.list is the honest choice: it needs no resource-access port, so what it proves
  * is the marshalling round trip — encode, dispatch, decode a Result — and nothing about a
  * capture pipeline that is not built.
+ *
+ * The summaries are handed back rather than counted and dropped: the same listing is what says
+ * whether there is a capture to come back to, and asking twice for one answer would be a second
+ * round trip for a question already answered (ADR 0036).
  */
-async function reportFacade(core: SphanoramaCore) {
+async function reportFacade(core: SphanoramaCore): Promise<ProjectSummary[]> {
   const listed = await core.project.list();
   facadeOut.textContent = listed.ok
     ? `${core.methods().length} methods · ${listed.value.length} projects`
     : `call failed: ${listed.status.code}`;
+  return listed.ok ? listed.value : [];
 }
 
 async function main() {
@@ -611,9 +675,23 @@ async function main() {
       sphanoramaCapture: () =>
         (targetNode === null ? undefined : captureCell?.(targetNode)) ?? Promise.resolve(false),
     });
-    await reportFacade(core);
-    stage.textContent = 'core ready — enable the camera to continue';
-    enableButton.addEventListener('click', () => { void enable(core); });
+    // Asked before anything is offered, and answered without touching the camera: a session that
+    // can be come back to is a fact about a project, and finding it out by *trying* would start
+    // the very capture the user has not chosen yet (ADR 0036).
+    const resume = resumableProject(await reportFacade(core));
+    resumeButton.hidden = resume === null;
+    stage.textContent = resume === null
+      ? 'core ready — enable the camera to continue'
+      : 'core ready — resume the last capture, or enable the camera to start a new one';
+    enableButton.addEventListener('click', () => { void enable(core, null); });
+    resumeButton.addEventListener('click', () => { void enable(core, resume); });
+    // The way out of a refused resume. Hidden again on the way in, so the fresh capture it starts
+    // is the only one: `beginSession` starts the render loop, and a second press would start a
+    // second loop over the same session.
+    newCaptureButton.addEventListener('click', () => {
+      newCaptureButton.hidden = true;
+      void beginSession(core, motionIsRunning, null);
+    });
     captureButton.addEventListener('click', () => {
       if (targetNode !== null) void captureCell?.(targetNode);
     });
