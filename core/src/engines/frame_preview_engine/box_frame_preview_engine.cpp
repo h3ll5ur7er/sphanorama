@@ -91,6 +91,20 @@ Result<FramePreview> BoxFramePreviewEngine::Reduce(const FrameRef& frame, int32_
   const int64_t cols = std::max<int64_t>(1, frame.width / block);
   const int64_t rows = std::max<int64_t>(1, frame.height / block);
 
+  // The window each output pixel averages, per axis, and it is not always the block.
+  //
+  // A block is sized from the *longest* edge, so a wide, short frame gets one taller than the
+  // frame is — and the row count above is then forced up to 1, because a preview of no rows is
+  // not an image. Sampling `block` rows of a frame that has two reads off the end of the
+  // allocation. Clamping per axis is what makes the forced count honest: the window is the
+  // dimension itself when the dimension is smaller.
+  //
+  // It changes nothing in the ordinary case. `cols` reaches 1 without being forced exactly when
+  // `frame.width >= block`, so the clamp only ever bites on the shape that would have read out of
+  // bounds.
+  const int64_t windowX = std::min<int64_t>(block, frame.width);
+  const int64_t windowY = std::min<int64_t>(block, frame.height);
+
   FramePreview preview;
   preview.frame = frame.id;
   preview.format = PixelFormat::RGBA8;
@@ -105,12 +119,12 @@ Result<FramePreview> BoxFramePreviewEngine::Reduce(const FrameRef& frame, int32_
   // 1280 — and no test asserts it, because the frame that would demonstrate it is 67 MB, which is
   // half a phone's whole frame-store ceiling (ADR 0023). Widening it costs nothing and removes
   // the trap from the arithmetic rather than from a comment.
-  const uint64_t area = static_cast<uint64_t>(block) * static_cast<uint64_t>(block);
+  const uint64_t area = static_cast<uint64_t>(windowX) * static_cast<uint64_t>(windowY);
   for (int64_t row = 0; row < rows; ++row) {
     for (int64_t col = 0; col < cols; ++col) {
       std::array<uint64_t, 3> sum{0, 0, 0};
-      for (int64_t dy = 0; dy < block; ++dy) {
-        for (int64_t dx = 0; dx < block; ++dx) {
+      for (int64_t dy = 0; dy < windowY; ++dy) {
+        for (int64_t dx = 0; dx < windowX; ++dx) {
           const auto rgb = ColourAt(pinned.value, frame.format, stride, col * block + dx,
                                     row * block + dy);
           sum[0] += rgb[0];

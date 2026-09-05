@@ -87,8 +87,15 @@ class Enum:
 
 @dataclass
 class Field:
+    """A struct member, kept in both languages.
+
+    The C++ type is not recoverable from the mirror's: every width of integer maps onto `number`.
+    A decoder written from the mirror therefore has to cast a double back down, and
+    `static_cast<int32_t>` of a NaN or a 1e300 is undefined — the same reason `Param` carries one.
+    """
     name: str
     type: str
+    cpp: str = "double"
     doc: list[str] = field(default_factory=list)
 
 
@@ -383,7 +390,7 @@ def _parse_fields(body: str, name: str) -> list[Field]:
                     raise ContractSyntaxError(
                         f"struct {name}: cannot parse declarator {piece!r}")
                 fields.append(Field(piece, map_type(cpp_type, f"struct {name}.{piece}"),
-                                    _collect_doc(pending)))
+                                    _canonical_cpp(cpp_type), _collect_doc(pending)))
         pending = []
     return fields
 
@@ -914,6 +921,17 @@ def emit_cpp_codec(module: Module) -> str:
             out.append("  (void)in; (void)value;")
         for field in struct.fields:
             kind = _field_wire_kind(struct, field)
+            if field.cpp in NARROW_INTEGERS:
+                # Read as the integer the header declared rather than cast down from the double it
+                # crossed as. `static_cast<int32_t>` of a NaN, an infinity or a 1e300 is undefined,
+                # and every one of those is a value the far side can present — the same hazard
+                # `GetId` exists for, and the same treatment.
+                #
+                # The wire is untouched: still a `PutF64` going out, so the golden hexes hold and
+                # a decoder from before this change reads the same bytes. What changes is that a
+                # number that was never an integer fails the reader instead of becoming one.
+                out.append(f"  value.{field.name} = in.GetInteger<{field.cpp}>();")
+                continue
             out.append(f"  {_cpp_get(kind, f'value.{field.name}', enums, id_set, structs=structs)}")
         out.append("  return in.ok();")
         out.append("}")

@@ -6,6 +6,9 @@
 // their own emitter.
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
 #include <sstream>
 
 #include "sphanorama/codec.h"
@@ -156,6 +159,50 @@ TEST(Codec, TheByteFormatIsPinnedAcrossLanguagesToo) {
   Encode(writer, preview);
   EXPECT_EQ(Hex(writer.bytes()),
             "00000000000022400000000000000040000000000000f03f0100000008000000010203ff040506ff");
+}
+
+TEST(Codec, AnIntegerFieldThatIsNotAnIntegerFailsTheDecode) {
+  // Every number crosses as a double, because JavaScript has no other kind, so an `int32_t` field
+  // arrives as one and has to become an integer again. `static_cast<int32_t>` of a NaN, an
+  // infinity or a 1e300 is undefined — the far side can present all three, whether through a bug,
+  // a hostile page or a document written by another build — and the codec used to do exactly that.
+  //
+  // The bytes are made by the encoder and then one field is overwritten, rather than assembled by
+  // hand, so this does not encode a second copy of the field order and cannot rot when the struct
+  // gains a member.
+  FrameRef frame;
+  frame.id = FrameId{1};
+  frame.buffer = BufferId{1};
+  frame.format = PixelFormat::RGBA8;
+  frame.width = 24680;          // a value nothing else in this struct holds
+  frame.height = 8;
+  frame.stride = 32;
+
+  Writer writer;
+  Encode(writer, frame);
+  const std::vector<uint8_t> good = writer.bytes();
+
+  const double sentinel = 24680.0;
+  std::vector<uint8_t> pattern(sizeof(double));
+  std::memcpy(pattern.data(), &sentinel, sizeof(double));
+  const auto at = std::search(good.begin(), good.end(), pattern.begin(), pattern.end());
+  ASSERT_NE(at, good.end()) << "the width is not in the payload, so this test found nothing to bend";
+
+  for (const double raw : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), 1e300, 0.5}) {
+    std::vector<uint8_t> bent = good;
+    std::memcpy(bent.data() + (at - good.begin()), &raw, sizeof(double));
+    Reader reader(bent.data(), bent.size());
+    FrameRef decoded{};
+    EXPECT_FALSE(Decode(reader, decoded)) << "a width of " << raw << " decoded into something";
+  }
+
+  // And the untouched payload still decodes, or the assertions above would pass against a codec
+  // that had simply stopped working.
+  Reader reader(good.data(), good.size());
+  FrameRef decoded{};
+  ASSERT_TRUE(Decode(reader, decoded));
+  EXPECT_EQ(decoded.width, frame.width);
 }
 
 }  // namespace

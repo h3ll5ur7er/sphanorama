@@ -148,12 +148,20 @@ for a frame that arrived through `OfferFrame` and belongs to the caller.
   reader, so the facade answers "malformed arguments" instead of passing on whatever the cast
   produced.
 
-  The wire format is deliberately untouched. `int32_t` still crosses as an f64, because every
-  `int32_t` *field* in the codec has done so since ADR 0013, and making the same C++ type cross
-  one way as a parameter and another as a field would be worse than the lossy-but-uniform rule it
-  replaced. Moving both together — `i32` on the wire for narrow integers, fields and parameters
-  alike — is a change of its own with a golden-hex update in both suites, and that is what remains
-  filed here rather than done here.
+  Fields get it too. That was not the first answer here — the review asked for the *wire kind* to
+  change, and this ADR declined that for parameters alone, because every `int32_t` field had
+  crossed as an f64 since ADR 0013 and making one C++ type cross two ways depending on its
+  position would be worse than a lossy-but-uniform rule. The check is a different question from
+  the format, and the distinction is what makes it cheap: the encode is untouched, so the golden
+  hexes hold and a decoder from before this reads the same bytes. What changes is that a number
+  that was never an integer fails the reader instead of quietly becoming one. `Field` now carries
+  its C++ type for the same reason `Param` does — every width of integer maps onto `number`, so
+  the mirror cannot say which one to check against.
+
+  What is still filed rather than done is the format: `i32` on the wire for narrow integers,
+  fields and parameters alike. It is smaller on the wire and it is no longer a correctness
+  question, because nothing casts unchecked any more. It updates every generated struct in both
+  languages and both golden hexes, which is a change of its own.
 - **The review client caches an open cell's previews.** Recording a pick re-opens the cell, and
   asking for every preview again would fault each frame in and spill it out once more — roughly
   350 ms of file work for a cell of eight, to redraw pictures the page is still holding. The cache

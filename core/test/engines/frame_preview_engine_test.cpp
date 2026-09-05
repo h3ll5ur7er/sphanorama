@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "engines/frame_preview_engine/box_frame_preview_engine.h"
@@ -254,6 +255,34 @@ TEST_F(FramePreviewEngine, AFrameShorterThanItClaimsIsRefusedRatherThanReadPast)
 
   auto reduced = engine.Reduce(lying, 32);
   EXPECT_EQ(reduced.status.code, StatusCode::FailedPrecondition);
+}
+
+TEST_F(FramePreviewEngine, AFrameThinnerThanOneBlockIsNotReadPastItsEdge) {
+  // The block is sized from the *longest* edge, so a very wide, very short frame gets a block
+  // taller than the frame is. `rows` is then forced up to 1 — a preview of no rows is not an
+  // image — and the sampling window went on being `block` tall regardless, reading rows that do
+  // not exist. Off the end of the allocation, which is a crash on a good day and somebody else's
+  // pixels on a bad one, and the same failure the handle-versus-bytes check above guards the
+  // other approach to.
+  //
+  // Not exotic: `OfferFrame` takes a frame the caller allocated, in whatever shape it liked.
+  //
+  // The colour is what makes this assert rather than merely execute. A flat frame reduces to its
+  // own colour, so anything sampled from beyond the last row drags the average off it — and the
+  // sanitizer build fails outright, which is the sharper of the two signals.
+  const Rgb colour{200, 100, 50};
+  for (const auto& shape : {std::pair<int32_t, int32_t>{64, 1}, {1, 64}, {96, 3}, {3, 96}}) {
+    const FrameRef frame = Flat(shape.first, shape.second, colour);
+    auto preview = engine.Reduce(frame, 8);
+    ASSERT_TRUE(preview.ok()) << shape.first << "x" << shape.second << ": "
+                              << preview.status.detail;
+    ASSERT_FALSE(preview.value.pixels.empty());
+    for (size_t at = 0; at + 3 < preview.value.pixels.size(); at += 4) {
+      EXPECT_EQ(preview.value.pixels[at], colour[0]) << shape.first << "x" << shape.second;
+      EXPECT_EQ(preview.value.pixels[at + 1], colour[1]) << shape.first << "x" << shape.second;
+      EXPECT_EQ(preview.value.pixels[at + 2], colour[2]) << shape.first << "x" << shape.second;
+    }
+  }
 }
 
 }  // namespace

@@ -159,9 +159,9 @@ inline bool Decode(Reader& in, FrameRef& value) {
   value.id.value = in.GetId();
   value.buffer.value = in.GetId();
   value.format = static_cast<PixelFormat>(in.GetI32());
-  value.width = static_cast<decltype(value.width)>(in.GetF64());
-  value.height = static_cast<decltype(value.height)>(in.GetF64());
-  value.stride = static_cast<decltype(value.stride)>(in.GetF64());
+  value.width = in.GetInteger<int32_t>();
+  value.height = in.GetInteger<int32_t>();
+  value.stride = in.GetInteger<int32_t>();
   value.timestampNs = static_cast<decltype(value.timestampNs)>(in.GetF64());
   value.contentHash = in.GetU64();
   return in.ok();
@@ -177,8 +177,8 @@ inline void Encode(Writer& out, const FramePreview& value) {
 
 inline bool Decode(Reader& in, FramePreview& value) {
   value.frame.value = in.GetId();
-  value.width = static_cast<decltype(value.width)>(in.GetF64());
-  value.height = static_cast<decltype(value.height)>(in.GetF64());
+  value.width = in.GetInteger<int32_t>();
+  value.height = in.GetInteger<int32_t>();
   value.format = static_cast<PixelFormat>(in.GetI32());
   value.pixels = in.GetBytes();
   return in.ok();
@@ -216,7 +216,7 @@ inline bool Decode(Reader& in, CoverageNode& value) {
   value.id.value = in.GetId();
   if (!Decode(in, value.targetOrientation)) return false;
   value.acceptanceConeDeg = static_cast<decltype(value.acceptanceConeDeg)>(in.GetF64());
-  value.ringIndex = static_cast<decltype(value.ringIndex)>(in.GetF64());
+  value.ringIndex = in.GetInteger<int32_t>();
   return in.ok();
 }
 
@@ -282,9 +282,9 @@ inline void Encode(Writer& out, const BurstSpec& value) {
 }
 
 inline bool Decode(Reader& in, BurstSpec& value) {
-  value.frameCount = static_cast<decltype(value.frameCount)>(in.GetF64());
-  value.intervalMs = static_cast<decltype(value.intervalMs)>(in.GetF64());
-  value.settleMs = static_cast<decltype(value.settleMs)>(in.GetF64());
+  value.frameCount = in.GetInteger<int32_t>();
+  value.intervalMs = in.GetInteger<int32_t>();
+  value.settleMs = in.GetInteger<int32_t>();
   value.lockExposure = in.GetBool();
   value.lockWhiteBalance = in.GetBool();
   value.lockFocus = in.GetBool();
@@ -319,8 +319,8 @@ inline void Encode(Writer& out, const CoverageState& value) {
 }
 
 inline bool Decode(Reader& in, CoverageState& value) {
-  value.nodesTotal = static_cast<decltype(value.nodesTotal)>(in.GetF64());
-  value.nodesSatisfied = static_cast<decltype(value.nodesSatisfied)>(in.GetF64());
+  value.nodesTotal = in.GetInteger<int32_t>();
+  value.nodesSatisfied = in.GetInteger<int32_t>();
   value.coveredSolidAngleFraction = static_cast<decltype(value.coveredSolidAngleFraction)>(in.GetF64());
   { const size_t count = in.GetCount(8);
     if (!in.ok()) return false;
@@ -345,7 +345,7 @@ inline void Encode(Writer& out, const BuildSpec& value) {
 inline bool Decode(Reader& in, BuildSpec& value) {
   value.tier = static_cast<QualityTier>(in.GetI32());
   value.projection = static_cast<Projection>(in.GetI32());
-  value.outputWidth = static_cast<decltype(value.outputWidth)>(in.GetF64());
+  value.outputWidth = in.GetInteger<int32_t>();
   value.ghostAware = in.GetBool();
   return in.ok();
 }
@@ -363,8 +363,8 @@ inline bool Decode(Reader& in, BuildProgress& value) {
   value.id.value = in.GetId();
   value.stage = static_cast<BuildStage>(in.GetI32());
   value.fraction = static_cast<decltype(value.fraction)>(in.GetF64());
-  value.tilesReady = static_cast<decltype(value.tilesReady)>(in.GetF64());
-  value.tilesTotal = static_cast<decltype(value.tilesTotal)>(in.GetF64());
+  value.tilesReady = in.GetInteger<int32_t>();
+  value.tilesTotal = in.GetInteger<int32_t>();
   if (!Decode(in, value.failure)) return false;
   return in.ok();
 }
@@ -410,10 +410,10 @@ inline void Encode(Writer& out, const EncodeSpec& value) {
 
 inline bool Decode(Reader& in, EncodeSpec& value) {
   value.format = static_cast<EncodeFormat>(in.GetI32());
-  value.quality = static_cast<decltype(value.quality)>(in.GetF64());
+  value.quality = in.GetInteger<int32_t>();
   value.attachGPanoXmp = in.GetBool();
-  value.fullPanoWidth = static_cast<decltype(value.fullPanoWidth)>(in.GetF64());
-  value.fullPanoHeight = static_cast<decltype(value.fullPanoHeight)>(in.GetF64());
+  value.fullPanoWidth = in.GetInteger<int32_t>();
+  value.fullPanoHeight = in.GetInteger<int32_t>();
   return in.ok();
 }
 
@@ -431,9 +431,9 @@ inline void Encode(Writer& out, const PanoramaRef& value) {
 inline bool Decode(Reader& in, PanoramaRef& value) {
   value.build.value = in.GetId();
   value.projection = static_cast<Projection>(in.GetI32());
-  value.width = static_cast<decltype(value.width)>(in.GetF64());
-  value.height = static_cast<decltype(value.height)>(in.GetF64());
-  value.tileSize = static_cast<decltype(value.tileSize)>(in.GetF64());
+  value.width = in.GetInteger<int32_t>();
+  value.height = in.GetInteger<int32_t>();
+  value.tileSize = in.GetInteger<int32_t>();
   { const size_t count = in.GetCount(60);
     if (!in.ok()) return false;
     value.tiles.clear();
@@ -457,8 +457,8 @@ inline bool Decode(Reader& in, ProjectSummary& value) {
   value.id.value = in.GetId();
   value.title = in.GetString();
   value.createdAtMs = static_cast<decltype(value.createdAtMs)>(in.GetF64());
-  value.nodesTotal = static_cast<decltype(value.nodesTotal)>(in.GetF64());
-  value.nodesSatisfied = static_cast<decltype(value.nodesSatisfied)>(in.GetF64());
+  value.nodesTotal = in.GetInteger<int32_t>();
+  value.nodesSatisfied = in.GetInteger<int32_t>();
   value.hasBuild = in.GetBool();
   value.hasSession = in.GetBool();
   return in.ok();
