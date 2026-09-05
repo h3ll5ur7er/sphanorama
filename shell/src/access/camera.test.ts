@@ -199,7 +199,11 @@ function fakeTrack(options: {
   refuses?: (set: Record<string, unknown>) => boolean;
   /** Settings the camera reports before anything is asked of it. */
   initial?: Record<string, unknown>;
-  /** A track with no `getCapabilities` at all — Safari has none. */
+  /**
+   * A track with no `getCapabilities` at all. The method is optional and browsers differ; which
+   * ones omit it is not something this repo has measured, and the code under test does not care —
+   * what it must do is treat an absent method as "nothing reported" rather than as an error.
+   */
   omitCapabilitiesApi?: boolean;
   /** A `getCapabilities` that throws instead of answering. */
   capabilitiesThrow?: string;
@@ -332,7 +336,9 @@ describe('what the camera says it offers', () => {
   });
 
   it('reports nothing, and still opens, where there is no getCapabilities at all', async () => {
-    // Safari. The camera works; the question about it is what cannot be put.
+    // The camera works; the question about it is what cannot be put. Modelled rather than
+    // attributed: `getCapabilities` is optional, and naming the browser that omits it would be
+    // stating something this repo has not measured — the same guess this whole change removes.
     const track = fakeTrack({ omitCapabilitiesApi: true });
     const camera = createCameraAccess(mediaWith(track) as never);
     const opened = await camera.open({ preferRearCamera: true });

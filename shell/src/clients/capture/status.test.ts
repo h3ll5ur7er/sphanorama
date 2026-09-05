@@ -151,8 +151,12 @@ describe('what the camera let the burst lock', () => {
   });
 
   it('does not pass off a browser that said nothing as a camera that offers nothing', () => {
-    // Safari reports no enumerations at all, and Chromium omits these three keys. A row that
-    // rendered that silence as "offers continuous" would be inventing the evidence.
+    // A browser that answered for none of the three. Real: these keys are optional and browsers
+    // fill the dictionary in as they like — Chromium's own fake device omits `whiteBalanceMode`
+    // while listing the other two, so a browser omitting all three is the same behaviour further
+    // along. Which browsers do that is not something this repo has measured, and the row does not
+    // need to know: what matters is that rendering silence as "offers continuous" would be
+    // inventing the evidence, which is the guess this whole change removes.
     const line = describeLocks({ exposure: true, whiteBalance: false, focus: false },
       ok(none), unlisted);
 
