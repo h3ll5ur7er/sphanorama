@@ -275,10 +275,17 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // cannot swallow it — reporting success over an index still naming the old frames leaves
       // the next session recovering slots into a file this one is about to refill from offset
       // zero, which is the right length of the wrong bytes and the whole failure being fixed here.
-      //
-      // Refusing before anything is touched is what makes "refused" and "unchanged" the same
-      // state, which is what the store above relies on to decline a session cleanly.
-      if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) return false;
+      if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) {
+        // Refusing here is not the same as having touched nothing, which is what this said
+        // before and it was wrong. `writeIndex` empties the index on a short write *on purpose*:
+        // what survives a partial write is a prefix of a JSON document, no prefix of one parses,
+        // and truncating is the difference between the next session starting empty by
+        // construction and starting empty by luck. Right for an ordinary spill, whose frame is on
+        // disk either way — and for a clear it has just destroyed the only thing naming the
+        // capture this call is in the middle of refusing.
+        void writeIndex(held());
+        return false;
+      }
 
       try {
         file.truncate(0);
@@ -295,8 +302,8 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
         // next capture refills from offset zero, which hands somebody else's pixels back under
         // the old names — and that is the failure this whole change exists to remove.
         // `held()` and not a snapshot taken earlier: the in-memory map is only cleared once the
-        // truncate below has succeeded, so what it describes here is still exactly the state this
-        // call was asked to discard.
+        // truncate below has succeeded, so what it describes here — and in the branch above — is
+        // still exactly the state this call was asked to discard.
         void writeIndex(held());
         return false;
       }

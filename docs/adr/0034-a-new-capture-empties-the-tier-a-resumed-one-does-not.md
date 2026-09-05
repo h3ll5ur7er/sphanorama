@@ -49,13 +49,16 @@ a span into a freed buffer still looks like a span.
 
 **"Unchanged" has to hold across a reload, not only in this process.** The store keeps its entries
 on a refusal by never touching them, which is easy; the tier underneath has to work for it. The
-browser sink writes its emptied index before it truncates the frames file, so a failure at the
-first step changes nothing at all — and a failure at the second, where the frames file is untouched
-because the handle that threw never modified it, puts the old index back. Only if that restore
-also fails is anything lost, and what is left then is an index naming nothing over a file that
-still holds the bytes: the capture is gone, which is bad, and no identity resolves to somebody
-else's pixels, which is the thing that must not happen. That asymmetry is the whole reason the
-index is written first rather than last.
+browser sink writes its emptied index before it truncates the frames file, and puts the old index
+back if either step fails. Both steps need that, which is less obvious than it looks: a failed
+index write is not the same as an untouched one, because a short write leaves a prefix of a JSON
+document that no reader can parse, so the writer truncates the index deliberately rather than
+leave something that fails to load later. That is right for an ordinary spill, whose frame is on
+disk whatever the index says, and destructive for a clear — it removes the only thing naming the
+capture being refused. Only if the restore fails too is anything lost, and what is left then is an
+index naming nothing over a file that still holds the bytes: the capture is gone, which is bad,
+and no identity resolves to somebody else's pixels, which is the thing that must not happen. That
+asymmetry is the whole reason the index is written first rather than last.
 
 **`Clear` does not wind the identity counter back.** A handle is a plain value that outlives the
 frame it names. Reissuing one would turn a stale handle from dangling — a `NotFound` the caller can

@@ -6,9 +6,10 @@ import { createSpillHost, openSpillTier, type SpillFile } from './spill-host';
 function fakeFile(options: { shortWrites?: boolean } = {}):
     SpillFile & { bytes(): Uint8Array; failWrites(fail: boolean): void;
                   throwWrites(fail: boolean): void; throwTruncates(fail: boolean): void;
-                  throwTruncatesAfter(n: number): void } {
+                  throwTruncatesAfter(n: number): void; failWritesFor(n: number): void } {
   let buffer = new Uint8Array(0);
   let short = options.shortWrites === true;
+  let shortWritesLeft = 0;
   let throws = false;
   let throwsTruncate = false;
   let truncates = 0;
@@ -24,7 +25,9 @@ function fakeFile(options: { shortWrites?: boolean } = {}):
       // The other way a sync handle refuses: `write` is allowed to throw, and does when the
       // handle has gone away under it.
       if (throws) throw new Error('the handle is gone');
-      if (short) {
+      const falls = short || shortWritesLeft > 0;
+      if (shortWritesLeft > 0) shortWritesLeft -= 1;
+      if (falls) {
         // Partially, the way a quota running out mid-write does: the bytes that fit are on disk.
         grow(at + bytes.length - 1);
         buffer.set(bytes.subarray(0, bytes.length - 1), at);
@@ -52,6 +55,10 @@ function fakeFile(options: { shortWrites?: boolean } = {}):
     close() {},
     bytes: () => buffer,
     failWrites: (fail: boolean) => { short = fail; },
+    // Bounded, so a path that writes the index twice can have the first attempt fall short and
+    // the second succeed — which is the difference between testing a restore and testing what
+    // happens when the restore fails too.
+    failWritesFor: (n: number) => { shortWritesLeft = n; },
     throwWrites: (fail: boolean) => { throws = fail; },
     throwTruncates: (fail: boolean) => { throwsTruncate = fail; },
     throwTruncatesAfter: (n: number) => { truncates = 0; throwTruncateAfter = n; },
@@ -505,6 +512,27 @@ describe('the spill host', () => {
     expect(file.bytes()).toEqual(before);
     const into = new Uint8Array(16);
     expect(host.read(1, into)).toBe(true);
+    expect(into.every((b) => b === 0xa1)).toBe(true);
+  });
+
+  it('puts the index back when the index write itself falls short', () => {
+    // The same loss one step earlier, and the reason "refused before anything is touched" was
+    // never quite true. `writeIndex` empties the index on a short write *on purpose* — what
+    // survives a partial write is a prefix of a JSON document and no prefix of one parses, so it
+    // truncates rather than leave something that fails to load later. That is right for an
+    // ordinary spill, whose frame is on disk either way. For a clear it destroys the only thing
+    // naming the capture being refused.
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+    host.write(1, frame(0xa1));
+    index.failWritesFor(1);   // the empty index falls short; the restore after it does not
+
+    expect(host.clear()).toBe(false);
+
+    const after = createSpillHost(file, index);
+    const into = new Uint8Array(16);
+    expect(after.read(1, into)).toBe(true);
     expect(into.every((b) => b === 0xa1)).toBe(true);
   });
 
