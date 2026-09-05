@@ -313,6 +313,15 @@ negotiation is fixed — one constraint set per lock rather than all three in on
 offered alongside `manual`, and `single-shot` as a fallback (ADR 0031). Whether it
 now holds on that camera is the next thing a screenshot answers.
 
+And if it still does not, the same screenshot now says what the camera claims to offer: a refusal
+is written against the mode list the track reported, so `exposure refused (offers continuous,
+manual)` — a camera contradicting itself — is legible from `exposure refused (offers continuous)`,
+which is a camera with no lock to give, and from `exposure refused (not reported)`, which is a
+browser that would not answer. Reported only, never used to decide what to ask for: browsers
+under-report, and the iPhone's one working lock cannot be told apart today from a lock that camera
+was simply already sitting in — which is the same collapse, and the second thing that screenshot
+now answers (ADR 0033).
+
 *And the next reading found the other half of it.* With a focus lock actually held, a five-frame
 burst on the Pixel scored 5.9, 1145, 720, 583, 586 — four frames within about 2× of each other and
 a first one a hundredth of any of them. The iPhone, which takes a white balance lock and no focus

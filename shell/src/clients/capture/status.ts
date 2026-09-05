@@ -82,6 +82,34 @@ const LOCK_NAMES: [keyof LockReport, string][] = [
 ];
 
 /**
+ * What the camera said it can do for each control, or null where the browser did not say.
+ *
+ * Named here rather than imported from the camera adapter for the same reason `LockReport` is:
+ * a client must not depend on a resource access. Nothing pushes this to the core — the contract
+ * has no field for it and no component would decide anything with one — so unlike the lock report
+ * there is no crossing type to borrow, and the client states the shape it renders (ADR 0033).
+ */
+export interface LockModes {
+  exposure: readonly string[] | null;
+  whiteBalance: readonly string[] | null;
+  focus: readonly string[] | null;
+}
+
+/**
+ * What one control offers, as a phrase for a refusal to be read against.
+ *
+ * The modes are named rather than summarised. "Offers continuous" and "offers continuous, manual"
+ * are the two halves of the question a refusal raises — is there a lock here at all, or is this
+ * camera contradicting itself? — and any wording that decides which of those the reader is
+ * looking at is a guess this row exists to stop making.
+ */
+function offering(modes: readonly string[] | null): string {
+  if (modes === null) return 'not reported';
+  if (modes.length === 0) return 'offers nothing';
+  return `offers ${modes.join(', ')}`;
+}
+
+/**
  * What the camera actually let this burst hold still, against what it was asked for.
  *
  * A burst of five frames at 80 ms spans about a third of a second, and with nothing locked that is
@@ -94,8 +122,14 @@ const LOCK_NAMES: [keyof LockReport, string][] = [
  * mode and then did not take it, which is the case ADR 0022's read-back exists for; a lock that
  * was never asked for is a camera that said up front it has no manual mode. Reporting both as
  * absence would hide the first behind the second.
+ *
+ * `offered` is what the camera said it can do, and a refusal is written against it because
+ * "refused" on its own does not say which of those two a reader is looking at — that ambiguity is
+ * what left a Pixel guessed at twice (ADR 0033). It is evidence for the sentence and nothing more:
+ * what to ask the camera for is decided without it, by asking.
  */
-export function describeLocks(wanted: LockReport, held: Result<LockReport>): string {
+export function describeLocks(wanted: LockReport, held: Result<LockReport>,
+                              offered: LockModes): string {
   // Asking is itself fallible — there is no camera to put a question to once a track has been
   // pulled away — and a failure rendered as three absent locks reads as "this camera has no
   // manual modes". That is the one sentence this row exists to make trustworthy, and it would
@@ -108,10 +142,27 @@ export function describeLocks(wanted: LockReport, held: Result<LockReport>): str
   // Read off `held` rather than `wanted`: `advanced` constraints are best-effort in both
   // directions, and a camera is free to settle on manual for its own reasons. The burst is armed
   // with what actually holds, so this line has to be that and not a copy of the request.
+  //
+  // And carrying what the camera says it has, because "refused" alone is the reading that sent us
+  // guessing: a camera that lists a manual mode and will not take it and a camera that lists none
+  // are opposite problems, and the row said the same word for both. Only refusals carry it — a
+  // lock that is holding raises no question worth the width.
   const refused = LOCK_NAMES.filter(([key]) => wanted[key] && !held.value[key])
-    .map(([, name]) => `${name} refused`);
+    .map(([key, name]) => `${name} refused (${offering(offered[key])})`);
 
   const parts = [...holding, ...refused];
-  if (parts.length === 0) return 'none — this camera offers no manual modes';
-  return parts.join(' · ');
+  if (parts.length > 0) return parts.join(' · ');
+
+  // Nothing held and nothing asked for, which is a camera with no manual modes — or a browser
+  // that was never going to say. The second is not the first: these keys are optional and a
+  // browser fills them in as it likes, so a row concluding "this camera offers no manual modes"
+  // from that silence is the same invention one line up, made about the whole camera at once.
+  const lists = LOCK_NAMES.map(([key]) => offered[key]);
+  if (lists.every((modes) => modes === null)) {
+    return 'none — this browser does not report what the camera offers';
+  }
+  if (lists.every((modes) => modes !== null)) return 'none — this camera offers no manual modes';
+  // Answered for some controls and not others. Neither sentence above is true of this camera, so
+  // the row says which is which rather than rounding to whichever is closer.
+  return `none — ${LOCK_NAMES.map(([key, name]) => `${name} ${offering(offered[key])}`).join(' · ')}`;
 }
