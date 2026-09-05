@@ -41,3 +41,4 @@ and the alternative we rejected and why.
 | [0034](0034-a-new-capture-empties-the-tier-a-resumed-one-does-not.md) | A new capture empties the spill tier; a resumed one does not |
 | [0035](0035-the-tier-says-which-capture-it-is-holding.md) | The spill tier carries a token saying which capture it holds; the session document records it and `Resume` refuses a document that names another |
 | [0036](0036-a-resumable-capture-is-visible-in-the-project-listing.md) | `ProjectSummary` carries `hasSession`, so the page can offer a resume without attempting one |
+| [0039](0039-a-refused-resume-keeps-its-offer-unless-only-a-build-could-change-it.md) | A refused resume keeps its offer unless only a new build could change the answer; the withdrawal lives in the tab and is never written down |
