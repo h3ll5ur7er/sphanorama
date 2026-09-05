@@ -832,7 +832,20 @@ void CaptureSessionManager::Trim(std::vector<Candidate>& cell, size_t judged) {
     // leaving it spilled would bound the cell and not the disk. Not reported, for the reason
     // every cleanup here is not — the cell is captured, and a store that will not let go of a
     // frame is a diagnostic about the store rather than about this capture.
-    (void)frames_.Forget(candidate.frame);
+    const Status forgotten = frames_.Forget(candidate.frame);
+    // But a refusal keeps the candidate. `Forget` leaves its entry in place when it says no —
+    // a pin it promised a span to, a sink that would not drop the copy — and says so precisely
+    // because the budget goes on accounting for those bytes. Dropping the candidate anyway would
+    // throw away the last handle to a frame the store is still charging for: an orphan nothing
+    // can name, free, checkpoint or resume. Keeping it costs a place under the cap for memory
+    // that is being spent either way, and the next trim tries again.
+    //
+    // `NotFound` is the exception and not a refusal at all: the store is not holding it, so there
+    // is nothing left to keep a handle to and the candidate would be a row pointing at nothing.
+    if (!forgotten.ok() && forgotten.code != StatusCode::NotFound) {
+      kept.push_back(candidate);
+      continue;
+    }
     burst_owned_.erase(candidate.id.value);
   }
   cell.swap(kept);

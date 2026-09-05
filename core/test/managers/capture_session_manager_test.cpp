@@ -1419,6 +1419,85 @@ TEST_F(CaptureSessionRetakes, TheCapCountsFramesRatherThanOwnership) {
   EXPECT_EQ(displaced, 1) << "exactly one candidate should have made room for the offered frame";
 }
 
+TEST_F(CaptureSessionRetakes, AFrameTheStoreWouldNotLetGoOfKeepsItsCandidate) {
+  // `Forget` can refuse, and when it does the entry stays and the budget goes on accounting for
+  // it — the store says so itself, because its callers are expected to still hold the frame.
+  // Dropping the candidate anyway would throw away the last handle to bytes the store is still
+  // charging for: an orphan nothing can name, free, checkpoint or resume. So a trim that cannot
+  // end a frame keeps the candidate instead, and the next one tries again.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  for (int retake = 0; retake < 2; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+  const std::vector<Candidate> before = manager->Candidates(node).value;
+  ASSERT_FALSE(before.empty());
+
+  // The one ranked last, which is where the next trim reaches first. Pinned, which is the
+  // store's own documented refusal: Pin promises its span until Release, so erasing the entry
+  // underneath it would be a use-after-free.
+  const Candidate& doomed = before.back();
+  ASSERT_TRUE(store->Pin(doomed.frame).ok());
+
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  EXPECT_TRUE(std::any_of(kept.value.begin(), kept.value.end(), [&](const Candidate& now) {
+    return now.id.value == doomed.id.value;
+  })) << "the candidate was dropped although its frame could not be forgotten";
+  EXPECT_TRUE(store->ResidencyOf(doomed.frame).ok())
+      << "the store should still be holding the frame it refused to let go of";
+
+  // And once the pin is gone the next trim finishes the job, so this is a retry rather than a
+  // candidate that has become permanent.
+  ASSERT_TRUE(store->Release(doomed.frame).ok());
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  auto after = manager->Candidates(node);
+  ASSERT_TRUE(after.ok());
+  EXPECT_FALSE(std::any_of(after.value.begin(), after.value.end(), [&](const Candidate& now) {
+    return now.id.value == doomed.id.value;
+  })) << "the candidate outlived the refusal that saved it";
+  EXPECT_EQ(store->ResidencyOf(doomed.frame).status.code, StatusCode::NotFound);
+}
+
+TEST_F(CaptureSessionRetakes, AFrameTheStoreNoLongerHasLosesItsCandidateAnyway) {
+  // The other side of that refusal, and the reason it is not simply "keep it whenever `Forget`
+  // says no". `NotFound` is not the store declining to let go — it is the store not holding the
+  // frame at all, so there is no handle worth keeping and no bytes anyone is being charged for.
+  // A candidate kept here would be a row in a strip pointing at nothing, and it would never
+  // leave, because every later trim would get the same answer.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  for (int retake = 0; retake < 2; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+  const std::vector<Candidate> before = manager->Candidates(node).value;
+  ASSERT_FALSE(before.empty());
+
+  // Taken out from under the manager, so its own Forget answers NotFound when the trim reaches
+  // this candidate. Nothing in the core does this today; the arrangement is what makes the
+  // branch reachable at all.
+  const Candidate& vanished = before.back();
+  ASSERT_TRUE(store->Forget(vanished.frame).ok());
+
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  EXPECT_FALSE(std::any_of(kept.value.begin(), kept.value.end(), [&](const Candidate& now) {
+    return now.id.value == vanished.id.value;
+  })) << "a candidate whose frame the store does not have was kept as evidence";
+}
+
 TEST_F(CaptureSessionRetakes, AFrameSomebodyElseOwnsIsNeverTrimmed) {
   // `Cool` already refuses to touch an offered frame, because changing the residency of a
   // borrowed handle is a surprise the borrower cannot expect. Forgetting one outright is the

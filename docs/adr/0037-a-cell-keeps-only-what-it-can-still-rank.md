@@ -69,6 +69,16 @@ on a device nobody here has. **What would change the decision:** a device whose 
 thirteen frames too many. The arithmetic to redo it is in the constant's comment, next to the
 number.
 
+**A trim that cannot end a frame keeps its candidate.** `Forget` refuses in two ways that leave
+the store's entry in place — a pin it has promised a span to, a sink that would not drop the copy —
+and it says so precisely because the budget goes on accounting for those bytes. Dropping the
+candidate anyway would throw away the last handle to a frame the store is still charging for: an
+orphan nothing can name, free, checkpoint or resume, which is a worse failure than the unbounded
+growth this ADR exists to stop, because it cannot be recovered from at all. Keeping it costs a
+place under the cap for memory that is being spent either way, and the next trim tries again.
+`NotFound` is the exception, and not a refusal: the store is not holding the frame, so there is
+nothing to keep a handle to and the candidate would be a row pointing at nothing.
+
 **The cap counts the frames a cell keeps, not the frames this manager owns.** Ranking reads every
 candidate's pixels regardless of who allocated them, so an offered frame takes a place under the
 cap like any other: never forgotten, because it is not this manager's to end, but not free either.
