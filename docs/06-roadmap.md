@@ -280,6 +280,11 @@ build. What is left:
   by retaking a cell enough times. The fix is a policy question rather than a bug — keep the best
   N after each ranking, or rank incrementally — so it wants deciding rather than patching, and it
   needs an ADR either way.
+- **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
+  this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
+  a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes —
+  the ones documentation is a deliverable of (ADR 0007). `tools/conflict_marker_check.py` now runs
+  beside the other checkers. **Done.**
 - **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
   `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
 - **How long a camera takes to settle after a lock.** Also never measured, and now a number the
