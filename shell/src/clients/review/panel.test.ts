@@ -403,6 +403,11 @@ describe('opening a cell', () => {
 
     // Cell 2 asked for and then abandoned: its answer never arrives, and cell 1 is asked for
     // again before it could have.
+    //
+    // Deliberately never settled rather than merely un-awaited. `answer(2, …)` is never called, so
+    // this promise stays pending forever and cannot reject — which matters because a rejection
+    // from a floating promise does not reach `window` under happy-dom and would surface as
+    // vitest's process-level failure, attributed to whichever test it happened to notice.
     void panel.open(2 as NodeId);
     const again = panel.open(1 as NodeId);
     answer(1, [candidate(10, 1), candidate(11, 1)]);
