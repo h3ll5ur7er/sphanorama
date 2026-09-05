@@ -196,7 +196,7 @@ function fakeTrack(options: {
    * if the whole of it can be satisfied, and a set it cannot is skipped rather than an error — so
    * a camera that advertises a mode and then will not take it is silence, not a rejection.
    */
-  refuses?: (set: Record<string, string>) => boolean;
+  refuses?: (set: Record<string, unknown>) => boolean;
   /** Settings the camera reports before anything is asked of it. */
   initial?: Record<string, unknown>;
 } = {}) {
@@ -217,7 +217,7 @@ function fakeTrack(options: {
         error.name = options.rejectWith;
         throw error;
       }
-      for (const asked of (constraints as { advanced?: Record<string, string>[] }).advanced ?? []) {
+      for (const asked of (constraints as { advanced?: Record<string, unknown>[] }).advanced ?? []) {
         if (options.refuses?.(asked)) continue;
         settings = { ...settings, ...(options.settleAs ?? asked) };
       }
@@ -225,6 +225,17 @@ function fakeTrack(options: {
     stop: vi.fn(),
   };
   return track;
+}
+
+/** A camera that hands out a different track each time it is opened, the way switching does. */
+function mediaHanding(tracks: ReturnType<typeof fakeTrack>[]) {
+  let next = 0;
+  return {
+    getUserMedia: vi.fn(async () => {
+      const track = tracks[Math.min(next++, tracks.length - 1)];
+      return { getVideoTracks: () => [track], getTracks: () => [track] };
+    }),
+  };
 }
 
 function mediaWith(track: ReturnType<typeof fakeTrack>) {
@@ -409,6 +420,39 @@ describe('applying the locks', () => {
     await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
 
     expect(track.applied.length - afterFirst).toBeLessThan(afterFirst);
+  });
+
+  it('lets go of the camera it was holding when it opens another', async () => {
+    // Opening twice is switching cameras, or re-enabling after a stop. The stream that was open
+    // has to go: nothing else is holding it, so it would run for the life of the page with the
+    // indicator lit — which a user reads, correctly, as the app watching them.
+    const first = fakeTrack();
+    const second = fakeTrack();
+    const camera = createCameraAccess(mediaHanding([first, second]) as never);
+
+    await camera.open({ preferRearCamera: true });
+    await camera.open({ preferRearCamera: true });
+
+    expect(first.stop).toHaveBeenCalled();
+  });
+
+  it('does not hold a new camera to what the last one refused', async () => {
+    // What a camera will not do is a fact about that camera. Carrying a refusal across an open
+    // is how the second camera silently loses a lock it would have given — and the comment on
+    // that memory said it was cleared with the track, which is the claim under test.
+    const stubborn = fakeTrack({
+      refuses: (set) => 'exposureMode' in set && set.exposureMode !== 'continuous',
+    });
+    const willing = fakeTrack();
+    const camera = createCameraAccess(mediaHanding([stubborn, willing]) as never);
+
+    await camera.open({ preferRearCamera: true });
+    await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+    await camera.open({ preferRearCamera: true });
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value.exposure).toBe(true);
   });
 
   it('refuses when no camera is open, rather than reporting locks it cannot have', async () => {
