@@ -809,6 +809,12 @@ void CaptureSessionManager::Trim(std::vector<Candidate>& cell, size_t judged) {
   // alone cannot tell "judged and last" from "not judged at all", and `judged` is the prefix that
   // can. Only inside it is a candidate this manager's to end.
   //
+  // What is counted is what the cell keeps, not what this manager owns: ranking reads every
+  // candidate's pixels whoever allocated them, so an offered frame takes a place under the cap
+  // like any other — it is never ended here, but it is not free either. Counting only what could
+  // be forgotten would allow the cap plus every offered frame, which is more heap during a rank
+  // than the number allows for.
+  //
   // So a cell can still exceed the cap: by being offered more frames than it, which is the
   // caller's arithmetic to do, or by having an engine that leaves candidates out of its ranking,
   // which is the state before this cap existed rather than a new one. `Allocate` still refuses at

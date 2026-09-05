@@ -1349,10 +1349,74 @@ TEST_F(CaptureSessionRetakes, WhatTheRankingDidNotNameIsNotWhatItCalledWorst) {
         << "candidate " << missed.id.value << "'s frame was forgotten without being judged";
   }
 
+  // And they are at the *end* of the cell, which is why keeping them costs a judged candidate
+  // nothing: `Reorder` places everything the engine named first, so an unranked candidate can
+  // never sit ahead of a ranked one and take its place under the cap.
+  const size_t named = kept.value.size() - ForgetfulQualityEngine::kUnnamed;
+  for (size_t position = 0; position < kept.value.size(); ++position) {
+    const bool isUnnamed = std::any_of(unnamed.begin(), unnamed.end(),
+                                       [&](const Candidate& missed) {
+                                         return missed.id.value == kept.value[position].id.value;
+                                       });
+    EXPECT_EQ(isUnnamed, position >= named)
+        << "candidate " << kept.value[position].id.value << " is at position " << position
+        << ", which is the wrong side of the ranked prefix";
+  }
+
   // And the ones it did name are still trimmed, or this passes by having switched the cap off.
   EXPECT_LT(kept.value.size(), 20u) << "twenty frames were shot at one cell and it kept them all";
   EXPECT_GT(kept.value.size(), ForgetfulQualityEngine::kUnnamed)
       << "the ranked candidates were all dropped, so the assertions above proved nothing";
+}
+
+TEST_F(CaptureSessionRetakes, TheCapCountsFramesRatherThanOwnership) {
+  // What the cap bounds is how many frames a ranking faults back into the heap, and `Rank` reads
+  // every candidate's pixels regardless of who allocated them. So a frame the caller offered
+  // takes a place under the cap like any other — it is not forgotten, because it is not this
+  // manager's to end, but it does not come free either.
+  //
+  // Stated as a comparison rather than against the constant: what has to hold is that offering a
+  // frame into a cell already at the cap does not make the cell bigger.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  for (int retake = 0; retake < 3; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+  const std::vector<Candidate> atTheCap = manager->Candidates(node).value;
+  ASSERT_LT(atTheCap.size(), 15u) << "the cell never reached the cap, so this asserts nothing";
+
+  // Offered last, so it takes the highest identity and this engine ranks it first — the position
+  // where a slot is actually contested.
+  auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_EQ(manager->OfferFrame(node, imported.value, PoseSample{}).value, FrameVerdict::Accepted);
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  EXPECT_EQ(kept.value.size(), atTheCap.size())
+      << "the offered frame was added on top of the cap rather than taking a place under it";
+  EXPECT_TRUE(std::any_of(kept.value.begin(), kept.value.end(), [&](const Candidate& candidate) {
+    return candidate.frame.id.value == imported.value.id.value;
+  })) << "the offered frame is what should have survived";
+
+  // And the burst candidate it displaced left properly: dropped from the cell and its frame
+  // forgotten, which is the same treatment any other surplus gets.
+  int displaced = 0;
+  for (const Candidate& was : atTheCap) {
+    const bool still = std::any_of(kept.value.begin(), kept.value.end(),
+                                   [&was](const Candidate& now) {
+                                     return now.id.value == was.id.value;
+                                   });
+    if (still) continue;
+    ++displaced;
+    EXPECT_EQ(store->ResidencyOf(was.frame).status.code, StatusCode::NotFound)
+        << "candidate " << was.id.value << " left the cell but its frame stayed in the store";
+  }
+  EXPECT_EQ(displaced, 1) << "exactly one candidate should have made room for the offered frame";
 }
 
 TEST_F(CaptureSessionRetakes, AFrameSomebodyElseOwnsIsNeverTrimmed) {

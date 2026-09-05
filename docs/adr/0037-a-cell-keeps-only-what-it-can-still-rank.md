@@ -69,11 +69,19 @@ on a device nobody here has. **What would change the decision:** a device whose 
 thirteen frames too many. The arithmetic to redo it is in the constant's comment, next to the
 number.
 
+**The cap counts the frames a cell keeps, not the frames this manager owns.** Ranking reads every
+candidate's pixels regardless of who allocated them, so an offered frame takes a place under the
+cap like any other: never forgotten, because it is not this manager's to end, but not free either.
+Counting only what a trim *could* forget would let a cell sit at the cap plus every offered frame
+in it, which is more heap during a rank than the number was chosen to allow.
+
 Two things can therefore still push a cell past the cap, and both are named rather than left to be
-found. A caller that offers more frames than the cap is doing its own arithmetic with handles it
-allocated and holds. And an engine whose ranking omits candidates leaves them uncounted against the
-cap — which is the state before this ADR rather than a new one, with `Allocate`'s refusal
-underneath it exactly as before.
+found. A caller that offers more frames than the cap fills it with candidates nothing here may end
+— its own arithmetic, with handles it allocated and holds. And an engine whose ranking omits
+candidates leaves those outside anything a trim may reach; they sort after everything the engine
+placed, so they cost a ranked candidate nothing and are kept in addition to the cap rather than
+within it. Both are the state before this ADR rather than a new one, with `Allocate`'s refusal
+underneath them exactly as before.
 
 ## Alternatives rejected
 
