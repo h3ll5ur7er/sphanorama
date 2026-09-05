@@ -33,6 +33,15 @@ class Repo:
     def __init__(self, root: Path):
         self.root = root
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        # Pinned rather than inherited. A fixture that produces a real merge conflict produces
+        # whatever shape the *developer's* global git config asks for, so a machine with
+        # `merge.conflictStyle = diff3` set would see a fourth marker in every conflict here and
+        # fail tests that counted three. Set explicitly so what these fixtures build is a property
+        # of the test rather than of whoever is running it; the diff3 test overrides it, which is
+        # the only place the style is the subject.
+        for key, value in (("user.email", "t@example.invalid"), ("user.name", "t"),
+                           ("merge.conflictStyle", "merge")):
+            subprocess.run(["git", "config", key, value], cwd=root, check=True)
 
     def write(self, rel: str, body: str = ""):
         path = self.root / rel
@@ -88,8 +97,7 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         root = self.repo.root
         run = lambda *a: subprocess.run(a, cwd=root, check=True,
                                         capture_output=True, text=True)
-        run("git", "config", "user.email", "t@example.invalid")
-        run("git", "config", "user.name", "t")
+        # The one place the style is the subject rather than the background.
         run("git", "config", "merge.conflictStyle", "diff3")
         self.repo.write("docs/a.md", "base\n")
         run("git", "add", "docs/a.md")
@@ -162,6 +170,29 @@ class ConflictMarkerCheckTest(unittest.TestCase):
                         f"# Skill\n{THEIRS} origin/main\n")
         self.assertEqual([m.path for m in self.markers()],
                          [".claude/skills/sphanorama-engineering/SKILL.md"])
+
+    def test_a_file_in_conflict_is_counted_once(self):
+        # During an unresolved merge `git ls-files` emits the conflicted path once per stage —
+        # base, ours, theirs — so the file arrives three times and every marker in it was reported
+        # three times. Which is precisely when this check runs and precisely when its output most
+        # needs to be readable: the merge that left the markers has not been finished yet.
+        root = self.repo.root
+        run = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True, text=True)
+        self.repo.write("docs/a.md", "base\n")
+        run("git", "add", "docs/a.md")
+        run("git", "commit", "-qm", "base")
+        run("git", "checkout", "-qb", "other")
+        self.repo.write("docs/a.md", "theirs\n")
+        run("git", "commit", "-qam", "theirs")
+        run("git", "checkout", "-q", "-")
+        self.repo.write("docs/a.md", "ours\n")
+        run("git", "commit", "-qam", "ours")
+        subprocess.run(["git", "merge", "other"], cwd=root, capture_output=True, text=True)
+
+        # Three markers in the file, each once — not nine.
+        found = self.markers()
+        self.assertEqual(len(found), 3)
+        self.assertEqual(sorted(m.line for m in found), [1, 3, 5])
 
     def test_a_file_staged_but_not_yet_committed_counts(self):
         # `--cached --others` is the set that can become a commit, which is the set that matters.
