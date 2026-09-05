@@ -104,11 +104,22 @@ setting a pick does not read and rewrite its neighbours.
 
   That case is reachable and it is accepted, because in it the reads hang too: a worker that stops
   answering without firing `error` leaves every call pending, so the refresh this suppresses could
-  not have completed either. What is *not* accepted is leaving the property unwritten. The count
-  must balance, nothing enforces that it does, and the next edit is what collects — an early
-  `return` between the acquire and the release would gag a cell permanently and no test in the
-  suite would notice, because the fake cannot construct an unbalanced count. That is the same
-  sentence as the paragraph above, one level down, and it is the fifth correction's warning.
+  not have completed either.
+
+  Everything else about the balance is *enforced* rather than warned about, and the first attempt
+  at this paragraph got that wrong in a way worth keeping. It said the property had to be written
+  down because "no test in the suite would notice, because the fake cannot construct an unbalanced
+  count". The first half was true and the second was false — the fake could construct it, with
+  affordances added the round before, and the test is twenty-five lines: pick in a cell, leave it,
+  let the write land off-cell, come back, pick again, and assert the strip refreshed. Writing a
+  warning for the next editor on an unchecked premise about the fake is exactly the move the
+  paragraph above this one exists to condemn, one level down again.
+
+  So the release is now in a `finally`, which covers every way out of the block — a rejection, a
+  synchronous throw (`ReviewCore` permits one; the generated proxy happens to be `async`, but that
+  is a property of generated code rather than of the interface), and an early `return` a later
+  edit puts in the middle. And the two cases a test can reach have tests: a pick released while
+  its cell was off screen, and a write that throws where a promise was expected.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth
@@ -119,10 +130,13 @@ setting a pick does not read and rewrite its neighbours.
   And the failure is for the screen, because there is nowhere else for it to go: no `ILogger` is
   wired into anything the core builds, and the panel's `Answered<T>` drops the status by design so
   that `value` cannot be touched on the failing branch. A *rejection* has nowhere at all, so its
-  reason goes to the console. Five things can produce one — a version skew, a failed allocation, a
-  dead worker, a worker that answered `failed`, a reply that is not one — and the count is not the
-  argument: none of them is the document's fault, and none is repaired by picking again, which is
-  what the heading advises. So the strip marks *nothing* in force and
+  reason goes to the console. Three mechanisms produce one — the worker is dead, it answered
+  `failed`, or it answered something that is not a reply — and the second of those is how a
+  version skew and a failed allocation arrive, since the facade runs inside the worker and its
+  throws are caught there. What they have in common is not that a retry cannot help; a failed
+  allocation is transient and a later pick would re-issue the read. It is that none of them is the
+  *document's* fault, so a heading blaming the document is wrong about all of them, and the rows
+  it leaves clickable are wrong advice for all of them too. So the strip marks *nothing* in force and
   its heading says which one is in force could not be read. It keeps its rows — they were read
   fine, and picking again is how a user repairs the document that failed — but it does not offer
   the ranking's pick as though that were what the build will use. That fold is available and it is

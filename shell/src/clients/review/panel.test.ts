@@ -2,7 +2,7 @@
 // the strip says is candidateStrip's business and what the map looks like is reviewed by eye;
 // what is here is the ordering the panel has to survive because every call it makes crosses a
 // worker.
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createReviewPanel, paintPreviewOnCanvas, previewIsDrawable, PREVIEW_MAX_EDGE,
@@ -193,6 +193,11 @@ const plan = { nodes: [node(1, 0), node(2, 90)], spec: {} } as unknown as Captur
 const coverage = { nodesSatisfied: 0, holes: [], underOverlapped: [] } as unknown as CoverageState;
 
 describe('opening a cell', () => {
+  // Restored here rather than after each assertion: a `mockRestore()` on the line below an
+  // `expect` never runs on the red run, and a leaked `console.error` spy silences every test
+  // after it — losing exactly the diagnostics a failing console-reporting test needs.
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it('lets the answer you are waiting for win, whatever order the replies arrive in', async () => {
     // Every call crosses a postMessage to the worker the core runs in, so two taps in quick
     // succession are two answers in flight with no promise that they come back in order. Writing
@@ -575,9 +580,12 @@ describe('opening a cell', () => {
     // And the reason is somewhere. The heading is the honest sentence for a *user* and carries no
     // reason, deliberately — none of the things that reject here is repairable by picking again,
     // so the one who needs to know is a developer, and this is where they look.
+    // The reason itself, not merely that two arguments were passed: `expect.anything()` cannot
+    // tell the rejection's reason from a placeholder, and the reason is the whole of what a
+    // developer opens the console for.
     expect(reported).toHaveBeenCalledWith(
-      'sphanorama review: a call to the core did not answer', expect.anything());
-    reported.mockRestore();
+      'sphanorama review: a call to the core did not answer',
+      expect.objectContaining({ message: 'the worker is gone' }));
   });
 
   it('keeps the rows it drew when the worker dies partway through the pictures', async () => {
@@ -725,6 +733,77 @@ describe('opening a cell', () => {
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['false', 'true']);
+  });
+
+  it('still refreshes a cell after an earlier pick was released while you were away', async () => {
+    // The balance, asserted through what a user would see rather than through the counter. A pick
+    // that lands while its cell is off screen releases its count and does not refresh — correct,
+    // and the moment the release stops happening on that path, the cell is gagged for good: every
+    // later pick on it looks like one with a sibling still in flight. Nothing else in the suite
+    // goes away, lets a write land off-cell, comes back and picks again, which is the only shape
+    // that tells a released count from a leaked one.
+    const { core, answer, recordedAt, candidateCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await first;
+    [...ui.strip.querySelectorAll('button')][1].click();   // cell 1, left in flight
+
+    const second = panel.open(2 as NodeId);
+    answer(2, [candidate(20, 2)]);
+    await second;
+    await recordedAt(0);                                   // lands off-cell: no refresh, but a release
+
+    const back = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await back;
+
+    const before = candidateCalls.length;
+    [...ui.strip.querySelectorAll('button')][0].click();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recordedAt(0);
+    expect(candidateCalls.length).toBe(before + 1);
+  });
+
+  it('still refreshes after a pick whose write throws rather than rejects', async () => {
+    // `.catch` on the call covered a rejection and not a synchronous throw, which is the other way
+    // out between acquiring this cell's count and releasing it. `ReviewCore` permits one — the
+    // generated proxy happens to be `async`, but that is a property of generated code rather than
+    // of this interface — and a throw that escaped the release would leave the count raised, so
+    // every later pick on the cell would look like one with a sibling still in flight and stand
+    // down. The second pick here is the assertion: it can only refresh if the first one released.
+    const { core, answer, recorded, candidateCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let thrown = false;
+    const throwing: ReviewCore = {
+      ...core,
+      setSelection: ((node: NodeId, candidate: CandidateId) => {
+        if (!thrown) { thrown = true; throw new Error('not even a promise'); }
+        return core.setSelection(node, candidate);
+      }) as ReviewCore['setSelection'],
+    };
+    const panel = createReviewPanel(ui, throwing, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const buttons = () => [...ui.strip.querySelectorAll('button')] as HTMLButtonElement[];
+    buttons()[1].click();                                  // throws where a promise was expected
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+
+    const before = candidateCalls.length;
+    buttons()[0].click();                                  // an ordinary pick, on the same cell
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+    expect(candidateCalls.length).toBe(before + 1);
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {
