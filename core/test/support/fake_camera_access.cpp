@@ -21,6 +21,7 @@ FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
 }
 
 Result<CameraCapabilities> FakeCameraAccess::Open(const CameraOpenSpec&) {
+  ++opens_;
   open_ = true;
   return Ok(capabilities_);
 }

@@ -10,9 +10,11 @@ class IProjectManager {
  public:
   virtual ~IProjectManager() = default;
 
+  // No Resume here, deliberately. Picking a capture back up means handing a live session to
+  // whatever owns session state, and that is `ICaptureSessionManager` — this manager could only
+  // ever have returned a SessionId it had no way to make (ADR 0029).
   virtual Result<std::vector<ProjectSummary>> List() = 0;
   virtual Result<ProjectId> Create(std::string_view title) = 0;
-  virtual Result<SessionId> Resume(ProjectId project) = 0;
   virtual Status Delete(ProjectId project) = 0;
 
   // A manual override of automatic burst selection. Marks the node dirty for the next build, so

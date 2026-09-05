@@ -101,9 +101,5 @@ TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
   EXPECT_EQ(listed.value.size(), 3u);
 }
 
-TEST_F(Projects, ResumingAnUnknownProjectIsRefused) {
-  EXPECT_EQ(manager->Resume(ProjectId{404}).status.code, StatusCode::NotFound);
-}
-
 }  // namespace
 }  // namespace sphanorama

@@ -2,10 +2,199 @@
 
 #include <algorithm>
 #include <array>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+
+// ------------------------------------------------------------------ the session document
+//
+// What a tab leaves behind. It is deliberately a flat text document rather than the generated
+// wire codec: that codec belongs to the boundary (ADR 0013) and a manager reaching into bridge/
+// would be a client dependency pointing the wrong way. This is small enough to read in a
+// debugger, which is worth something for the one artefact whose job is to outlive the process
+// that wrote it.
+//
+// Versioned by its first line. A document from a build that wrote a different shape is refused
+// rather than guessed at — half a restored session is a coverage map that lies about which cells
+// hold frames.
+constexpr const char* kSessionKey = "session";
+constexpr int kSessionVersion = 1;
+
+// Every double round-trips: 17 significant digits is what IEEE-754 needs to come back bit for
+// bit, and a pose that drifts in the last place on every reload would be a slow corruption of the
+// only thing anchoring a cell to a direction.
+std::string Digits(double value) {
+  std::ostringstream out;
+  out << std::setprecision(17) << value;
+  return out.str();
+}
+
+template <typename Enum>
+bool ReadEnum(std::istringstream& in, int limit, Enum& out) {
+  int raw = -1;
+  if (!(in >> raw) || raw < 0 || raw >= limit) return false;
+  out = static_cast<Enum>(raw);
+  return true;
+}
+
+struct StoredSession {
+  uint64_t session = 0;
+  uint64_t nextCandidate = 1;
+  CapturePlanSpec spec;
+  Intrinsics lens;
+  // Only the frames this session's own bursts produced, and the reason is where their bytes are.
+  // Cooling spills a cell's own candidates and deliberately leaves offered ones alone (ADR 0023),
+  // so an offered frame — a file import, a manual shutter — has nothing in the sink under its
+  // name. Writing it down would restore a candidate whose first Pin fails, which is a cell
+  // claiming evidence it cannot produce. The caller's handle went away with the tab that held it.
+  std::vector<Candidate> candidates;
+};
+
+std::string EncodeSession(const StoredSession& stored) {
+  std::ostringstream out;
+  out << "sphanorama-session " << kSessionVersion << '\n';
+  out << "session " << stored.session << ' ' << stored.nextCandidate << '\n';
+  out << "lens " << stored.lens.width << ' ' << stored.lens.height << '\n';
+  out << "spec " << static_cast<int>(stored.spec.strategy)
+      << ' ' << Digits(stored.spec.horizontalFovDeg)
+      << ' ' << Digits(stored.spec.verticalFovDeg)
+      << ' ' << Digits(stored.spec.overlapTarget)
+      << ' ' << Digits(stored.spec.acceptanceConeDeg)
+      << ' ' << (stored.spec.coverPoles ? 1 : 0)
+      << ' ' << static_cast<int>(stored.spec.motion) << '\n';
+
+  for (const Candidate& candidate : stored.candidates) {
+    const FrameRef& frame = candidate.frame;
+    const PoseSample& pose = candidate.pose;
+    const QualityScore& quality = candidate.quality;
+    out << "candidate " << candidate.id.value << ' ' << candidate.node.value
+        << ' ' << frame.id.value << ' ' << frame.buffer.value
+        << ' ' << static_cast<int>(frame.format)
+        << ' ' << frame.width << ' ' << frame.height << ' ' << frame.stride
+        << ' ' << frame.timestampNs << ' ' << frame.contentHash
+        << ' ' << pose.timestampNs
+        << ' ' << Digits(pose.orientation.w) << ' ' << Digits(pose.orientation.x)
+        << ' ' << Digits(pose.orientation.y) << ' ' << Digits(pose.orientation.z)
+        << ' ' << Digits(pose.angularVelocity.x) << ' ' << Digits(pose.angularVelocity.y)
+        << ' ' << Digits(pose.angularVelocity.z)
+        << ' ' << Digits(pose.confidence) << ' ' << (pose.visuallyCorrected ? 1 : 0)
+        << ' ' << Digits(quality.sharpness) << ' ' << Digits(quality.motionBlur)
+        << ' ' << Digits(quality.exposureAgreement) << ' ' << Digits(quality.alignmentResidual)
+        << ' ' << Digits(quality.moverPenalty) << ' ' << Digits(quality.aggregate) << '\n';
+  }
+  return out.str();
+}
+
+// All or nothing. A line this does not understand fails the whole read, because the alternative
+// is a session that comes back missing the cells whose lines were malformed — and a coverage map
+// that quietly lost a cell is worse than one that refuses to load, which at least says so.
+bool DecodeSession(const std::string& text, StoredSession& out) {
+  std::istringstream lines(text);
+  std::string line;
+
+  if (!std::getline(lines, line)) return false;
+  {
+    std::istringstream header(line);
+    std::string tag;
+    int version = 0;
+    if (!(header >> tag >> version) || tag != "sphanorama-session" || version != kSessionVersion) {
+      return false;
+    }
+  }
+
+  // Nothing may be left over on a line once this build has read what it knows about. A trailing
+  // field is a document from a shape this one does not have, and the version gate is the only
+  // sanctioned way to read one of those — taking the prefix that fits is how a session comes back
+  // missing whatever the extra field was there to say.
+  const auto exhausted = [](std::istringstream& in) {
+    std::string extra;
+    return !(in >> extra);
+  };
+
+  bool sawSession = false, sawLens = false, sawSpec = false;
+  while (std::getline(lines, line)) {
+    if (line.empty()) continue;
+    std::istringstream in(line);
+    std::string tag;
+    in >> tag;
+    if (tag == "session") {
+      if (!(in >> out.session >> out.nextCandidate)) return false;
+      // Zero is not an identity: `Id::valid()` is `value != 0` and every counter in this codebase
+      // starts at 1. A document carrying one is one this build cannot honour, and restoring it
+      // would seat the session under a name nothing can legitimately hold.
+      if (out.session == 0 || out.nextCandidate == 0) return false;
+      if (!exhausted(in)) return false;
+      sawSession = true;
+    } else if (tag == "lens") {
+      if (!(in >> out.lens.width >> out.lens.height)) return false;
+      if (!exhausted(in)) return false;
+      sawLens = true;
+    } else if (tag == "spec") {
+      int coverPoles = 0;
+      if (!ReadEnum(in, 3, out.spec.strategy)) return false;
+      if (!(in >> out.spec.horizontalFovDeg >> out.spec.verticalFovDeg >> out.spec.overlapTarget
+               >> out.spec.acceptanceConeDeg >> coverPoles)) {
+        return false;
+      }
+      if (!ReadEnum(in, 4, out.spec.motion)) return false;
+      out.spec.coverPoles = coverPoles != 0;
+      if (!exhausted(in)) return false;
+      sawSpec = true;
+    } else if (tag == "candidate") {
+      Candidate candidate;
+      int corrected = 0;
+      if (!(in >> candidate.id.value >> candidate.node.value
+               >> candidate.frame.id.value >> candidate.frame.buffer.value)) {
+        return false;
+      }
+      if (!ReadEnum(in, 7, candidate.frame.format)) return false;
+      if (!(in >> candidate.frame.width >> candidate.frame.height >> candidate.frame.stride
+               >> candidate.frame.timestampNs >> candidate.frame.contentHash
+               >> candidate.pose.timestampNs
+               >> candidate.pose.orientation.w >> candidate.pose.orientation.x
+               >> candidate.pose.orientation.y >> candidate.pose.orientation.z
+               >> candidate.pose.angularVelocity.x >> candidate.pose.angularVelocity.y
+               >> candidate.pose.angularVelocity.z
+               >> candidate.pose.confidence >> corrected
+               >> candidate.quality.sharpness >> candidate.quality.motionBlur
+               >> candidate.quality.exposureAgreement >> candidate.quality.alignmentResidual
+               >> candidate.quality.moverPenalty >> candidate.quality.aggregate)) {
+        return false;
+      }
+      // Same rule as the session line above, and it matters more here: a candidate or frame under
+      // an invalid identity is one the store would be asked to adopt, and the first thing to go
+      // wrong with it would go wrong a long way from this document.
+      if (!candidate.id.valid() || !candidate.node.valid() || !candidate.frame.id.valid()
+          || !candidate.frame.buffer.valid()) {
+        return false;
+      }
+      if (!exhausted(in)) return false;
+      candidate.pose.visuallyCorrected = corrected != 0;
+      out.candidates.push_back(candidate);
+    } else {
+      // An unknown tag is a document from a shape this build does not have, which the version
+      // line should already have caught. Refusing rather than skipping keeps that the only way a
+      // newer document can be read, instead of half-read.
+      return false;
+    }
+  }
+  if (!(sawSession && sawLens && sawSpec)) return false;
+
+  // The candidates win where the two disagree, for the same reason the spill index's slots beat
+  // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
+  // behind them — a write torn between the candidate lines and the session line — would have the
+  // next burst issue ids naming frames the cell is already holding, and a cell with two
+  // candidates under one id has two frames as far as everything downstream can tell. Raised
+  // rather than refused, because nothing is lost by raising it and a capture is lost by refusing.
+  for (const Candidate& candidate : out.candidates) {
+    out.nextCandidate = std::max(out.nextCandidate, candidate.id.value + 1);
+  }
+  return true;
+}
 
 // Puts a cell's candidates into the order the quality engine named.
 //
@@ -145,27 +334,154 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     return plan.status;
   }
 
-  // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
-  // vision-only and no other component learns the difference (docs/03 UC-4).
-  const PoseMode mode =
-      resolved.motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
-  auto initialPose = pose_.Initial(mode, resolved.motion);
-  if (!initialPose.ok()) {
-    (void)camera_.Close();
-    return initialPose.status;
-  }
-
-  (void)sensor_.Start(60);
-  (void)camera_.StartPreview();
+  auto initialPose = StartTracking(resolved.motion);
+  if (!initialPose.ok()) return initialPose.status;
 
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{next_session_++};
   candidates_.clear();
   burst_owned_.clear();
+  // Kept because it is what the plan was made from, and a resume has to make the same one: node
+  // ids are indices into a particular tessellation, so a sphere replanned from another lens files
+  // every restored candidate under a different cell.
+  resolved_spec_ = resolved;
+  lens_ = lens;
+  pose_state_ = initialPose.value;
+  active_ = true;
+  Checkpoint();
+  return Ok(session_);
+}
+
+Result<PoseState> CaptureSessionManager::StartTracking(MotionCapability motion) {
+  // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
+  // vision-only and no other component learns the difference (docs/03 UC-4).
+  const PoseMode mode = motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
+  auto initial = pose_.Initial(mode, motion);
+  if (!initial.ok()) {
+    (void)camera_.Close();
+    return initial.status;
+  }
+  (void)sensor_.Start(60);
+  (void)camera_.StartPreview();
+  return initial;
+}
+
+Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
+  if (active_) {
+    return Err<SessionId>(StatusCode::FailedPrecondition, kComponent,
+                          "a session is already in progress; end it first");
+  }
+
+  // Read before the camera is touched, for the same reason Begin checks the title first: asking
+  // for a camera on behalf of a session that cannot start is the worst order to fail in.
+  auto document = projects_.ReadDocument(project, kSessionKey);
+  if (!document.ok()) {
+    return Err<SessionId>(StatusCode::NotFound, kComponent,
+                          "this project has no session to resume");
+  }
+  StoredSession stored;
+  if (!DecodeSession(document.value, stored)) {
+    // Kept, not deleted. The bytes it names may still be in the sink, and a build that can read
+    // this shape may yet come along; throwing away the only record of a capture because this
+    // build cannot parse it is the one unrecoverable move available here.
+    // `Unsupported` rather than a code of its own: it is what every other "this build does not
+    // read that" answer in the core uses, and the shell already turns it into the component's own
+    // words rather than a sentence about https (`describeFailure`).
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          "this project's session document is from a shape this build cannot read");
+  }
+
+  // From the document, not from the camera. This is the whole reason the spec is stored — and it
+  // is also why nothing here needs a camera yet. `Begin` opens one before it plans because the
+  // lens is an input to its tessellation; a resume has the lens in front of it already, so
+  // everything that can refuse this gets to refuse it before the indicator lights.
+  auto plan = planner_.Plan(stored.spec, stored.lens);
+  if (!plan.ok()) return plan.status;
+
+  // Every candidate has to name a cell of this plan. It should be unreachable — the plan is made
+  // from the spec the document carries — but a document naming a node the sphere does not have
+  // would put candidates somewhere `Coverage` counts and nothing can ever aim at.
+  for (const Candidate& candidate : stored.candidates) {
+    const bool known = std::any_of(plan.value.nodes.begin(), plan.value.nodes.end(),
+                                   [&candidate](const CoverageNode& planned) {
+                                     return planned.id.value == candidate.node.value;
+                                   });
+    if (!known) {
+      return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                            "this project's session document names a cell this plan does not have");
+    }
+  }
+
+  // The frames come back before the session does. A store that will not take them leaves a
+  // coverage map claiming cells whose pixels nothing can reach, which is worse than refusing:
+  // the capture would look finished and build into nothing.
+  //
+  // A failure here leaves the frames it already took, on purpose, and an earlier draft of this
+  // undid them with `Forget` — which takes the sink's copy with it. That is the capture: undoing
+  // a half-finished restore that way would delete the user's sphere in order to tidy up after a
+  // failure, and every later attempt would pin-fail against a file with nothing in it.
+  //
+  // They are not orphans either. The document still names them, which is the whole point of it,
+  // so a frame taken back under the identity it was given is exactly the frame the next attempt
+  // asks for — and `Adopt` is idempotent for one it already holds, so the retry is cheaper rather
+  // than impossible.
+  for (const Candidate& candidate : stored.candidates) {
+    if (auto taken = frames_.Adopt(candidate.frame); !taken.ok()) {
+      return Err<SessionId>(taken.code, kComponent,
+                            "a captured frame could not be taken back: " + taken.detail);
+    }
+  }
+
+  // Last, once nothing left can refuse. Opening is what lights the indicator and raises the
+  // permission prompt, and a resume that was going to fail on its document, its plan or its
+  // frames has no business doing either on the way there — the same rule Begin follows when it
+  // checks the project exists before touching the camera.
+  auto opened = camera_.Open(CameraOpenSpec{});
+  if (!opened.ok()) return opened.status;
+  max_burst_fps_ = opened.value.maxBurstFps;
+
+  // The live capability rather than the stored one: the document says which sphere is being
+  // captured, never what the device it came back on can sense.
+  auto capability = sensor_.Capabilities();
+  auto initialPose = StartTracking(capability.ok() ? capability.value : MotionCapability::None);
+  if (!initialPose.ok()) return initialPose.status;
+
+  plan_ = std::move(plan.value);
+  project_ = project;
+  session_ = SessionId{stored.session};
+  resolved_spec_ = stored.spec;
+  lens_ = stored.lens;
+  candidates_.clear();
+  burst_owned_.clear();
+  for (const Candidate& candidate : stored.candidates) {
+    candidates_[candidate.node.value].push_back(candidate);
+    // Everything in the document is this session's own — that is the only thing it holds — so
+    // cooling and discarding treat a restored frame exactly as they would the burst that made it.
+    burst_owned_.insert(candidate.id.value);
+  }
+  // Stepped past what the document already used, or the next burst of this session would issue
+  // candidate ids that name restored frames.
+  next_candidate_ = stored.nextCandidate;
+  if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;
   active_ = true;
   return Ok(session_);
+}
+
+void CaptureSessionManager::Checkpoint() const {
+  StoredSession stored;
+  stored.session = session_.value;
+  stored.nextCandidate = next_candidate_;
+  stored.spec = resolved_spec_;
+  stored.lens = lens_;
+  for (const Candidate& candidate : AllCandidates()) {
+    if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
+  }
+  // Not reported, and there is nobody to report it to: this runs on the way out of a burst the
+  // caller has already been told about. A write that fails costs the resume, not the capture —
+  // the frames are still in the store and the session is still live.
+  (void)projects_.WriteDocument(project_, kSessionKey, EncodeSession(stored));
 }
 
 Result<CapturePlan> CaptureSessionManager::GetPlan() const {
@@ -312,6 +628,11 @@ Status CaptureSessionManager::Disarm(bool rollBack) {
   // Nothing reads a ranked cell's pixels until the build or the review client asks, and both of
   // those go through Pin, which faults them back in.
   Cool(candidates_[burst_node_.value]);
+
+  // Written down here rather than only at End, because End is the one way out of a session a
+  // reload never takes. A burst that finished is evidence, and what a crash costs is whatever
+  // happened after the last one of these.
+  Checkpoint();
 
   // Attempted unconditionally and reported rather than discarded. A burst that ends leaving the
   // exposure pinned to whatever the cell needed is a viewfinder the user cannot fix by pointing
@@ -519,11 +840,9 @@ Status CaptureSessionManager::End() {
   // open, with `active_` still true and no way to end it.
   const Status disarmed = Disarm(true);
 
-  // Metadata is persisted; pixels stay in the frame store under their own handles, which is what
-  // makes resuming a metadata read rather than a restore (docs/04 §4.3).
-  const std::vector<Candidate> all = AllCandidates();
-  (void)projects_.WriteDocument(project_, "session",
-                                std::to_string(session_.value) + ":" + std::to_string(all.size()));
+  // Metadata is persisted; the pixels stay wherever the frame store has put them, which is what
+  // makes resuming a document read plus an Adopt rather than a restore (docs/04 §4.3).
+  Checkpoint();
 
   (void)sensor_.Stop();
   (void)camera_.StopPreview();

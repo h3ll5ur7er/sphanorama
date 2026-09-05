@@ -19,7 +19,6 @@ class ProjectManager final : public IProjectManager {
 
   Result<std::vector<ProjectSummary>> List() override;
   Result<ProjectId> Create(std::string_view title) override;
-  Result<SessionId> Resume(ProjectId project) override;
   Status Delete(ProjectId project) override;
   Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) override;
   Status Export(ProjectId project, BuildId build, const ExportSpec& spec) override;

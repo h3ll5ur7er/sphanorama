@@ -244,19 +244,21 @@ recorded per device class.
 full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
 build. What is left:
 
-- **Reload and resume.** The OPFS tier now survives one: the spill file has a fixed preferred
-  name with a sibling index carrying the frame-to-offset map, so the bytes a capture spilled are
-  still there and still findable after a reload (ADR 0030). A session that cannot take that pair
-  still gets a tier of its own and still captures, which is the property ADR 0020 added. Two
-  things remain, **in this order**: a `Begin` that empties the tier and a `Resume` that does not —
-  frame identities restart at 1, so without it a new capture overwrites the frames an old
-  project's document still names — and then the page's own resume flow. Scope, decided
+- **Reload and resume.** Both halves of the machinery are **done**, and neither is wired to a
+  button yet. The core reads a session document written at every committed cell, replans from the
+  spec and lens that document carries, and hands the frames it names back to the store through
+  `IFrameStoreAccess::Adopt`, so a restored candidate can still be pinned (ADR 0029). Underneath
+  it the OPFS tier survives a reload too: a fixed preferred name and a sibling index carrying the
+  frame-to-offset map, with a tier of its own for any session that cannot take that pair, which is
+  the property ADR 0020 added (ADR 0030). Two things remain, **in this order**: a `Begin` that
+  empties the tier and a `Resume` that does not — frame identities restart at 1, so without it a
+  new capture overwrites the frames an old project's document still names — and then the page's
+  own resume flow. Scope, decided
   with the maintainer rather than assumed: in practice there is never more than one unfinished
   sphere, because resuming means standing in the same spot again. The case worth building for is
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
-  and the spill file is cleared when a *new* session begins rather than at worker startup, which is
-  what lets a reload find its frames still there. Two changes, in order: durable frame identity,
-  then session restore.
+  and the tier is cleared when a *new* session begins rather than at worker startup, which is what
+  lets a reload find its frames still there.
 - **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
   `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
 - **An iPhone.** Blocked on hardware, not code: the maintainer has an Android only. The exit

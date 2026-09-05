@@ -118,6 +118,15 @@ Everything except pixel payloads lives in `IProjectStoreAccess` (IndexedDB). Pix
 `IFrameStoreAccess` (OPFS), referenced by handle. The split exists so that "resume my session
 after the browser killed the tab" is a metadata read plus lazy pixel faulting, not a restore.
 
+That is what `ICaptureSessionManager::Resume` does: it reads the session document, replans from
+the spec and lens the document carries, and hands every frame the document names back to the
+store through `Adopt`, which registers it as spilled so the first `Pin` faults it in (ADR 0029).
+The document is written on the way out of every burst rather than at `End`, because a tab the
+browser killed never reached `End`. The bytes those frames name survive with them: the OPFS tier
+has a resident name and a sibling index carrying the frame-to-offset map, so a reload finds the
+file and can locate each frame inside it (ADR 0030). What is not wired up yet is the page's own
+resume flow, and a `Begin` that empties the tier before a new capture reuses those identities.
+
 ## 4.4 The build graph
 
 A build is a DAG, not a pipeline run:

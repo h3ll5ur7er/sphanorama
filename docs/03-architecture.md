@@ -179,7 +179,8 @@ the affected seam region — and re-blends the affected tiles. This is the mecha
 and it is the reason the build is modelled as a graph and not a pipeline run (§4.4).
 
 ### ProjectManager (V3)
-Owns projects across sessions: list, open, resume, delete, and export. Export means asking
+Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture
+back up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). Export means asking
 `IImageCodecAccess` to encode and attach XMP `GPano` metadata, then handing bytes to
 `IExportAccess`. It is the only manager that touches `IExportAccess`.
 

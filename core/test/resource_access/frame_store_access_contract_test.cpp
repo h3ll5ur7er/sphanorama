@@ -121,6 +121,98 @@ TYPED_TEST(FrameStoreAccessContract, ForgettingAPinnedFrameIsRefused) {
   EXPECT_TRUE(this->store->Forget(frame).ok());
 }
 
+TYPED_TEST(FrameStoreAccessContract, AdoptsAFrameSpilledByAStoreThatIsGone) {
+  // The reload. A capture's frames end up in the sink when their cell is committed (ADR 0023),
+  // and the store that put them there dies with the tab — so the only thing left naming them is
+  // the session document, and coming back means handing those names to a store that never
+  // allocated them.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0xAB);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+  ASSERT_TRUE(revived->Adopt(frame).ok());
+
+  // Spilled, not resident: adopting is a promise about where the bytes are, and a store that
+  // called them heap-resident would be charging a budget for memory it does not hold.
+  auto residency = revived->ResidencyOf(frame);
+  ASSERT_TRUE(residency.ok()) << residency.status.detail;
+  EXPECT_EQ(residency.value, Residency::Spilled);
+
+  auto pinned = revived->Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  ASSERT_FALSE(pinned.value.empty());
+  EXPECT_EQ(pinned.value[0], 0xAB);
+  EXPECT_TRUE(revived->Release(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AdoptingAnIdentityThatIsNotOneIsRefused) {
+  // Zero is not an identity: `Id::valid()` is `value != 0`, and every counter here starts at 1.
+  // A store that took one would hold an entry nothing can legitimately name, and step its own
+  // counter from a number that should never have existed — after which every later question
+  // about what it holds has a wrong answer in it.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0x11);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+
+  FrameRef nameless = frame;
+  nameless.id = FrameId{0};
+  EXPECT_EQ(revived->Adopt(nameless).code, StatusCode::InvalidArgument);
+
+  FrameRef bufferless = frame;
+  bufferless.buffer = BufferId{0};
+  EXPECT_EQ(revived->Adopt(bufferless).code, StatusCode::InvalidArgument);
+
+  // And the refusals left nothing behind: the real frame still adopts.
+  EXPECT_TRUE(revived->Adopt(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AdoptingOverALiveFrameIsRefused) {
+  // Two *different* frames under one identity is a store that hands the wrong pixels to whoever
+  // asks second. This one is resident and was allocated here; the document's frame of the same
+  // name is somebody else's.
+  auto frame = this->Allocate();
+  EXPECT_FALSE(this->store->Adopt(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AdoptingTheSameSpilledFrameTwiceIsAccepted) {
+  // A restore that failed partway has already taken frames back, and undoing that means
+  // forgetting them — which takes the sink's copy of the capture with it. So the second attempt
+  // asks for the same identities, and being refused there is the difference between a retry that
+  // works and a capture nobody can ever open again.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0x5c);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+  ASSERT_TRUE(revived->Adopt(frame).ok());
+  EXPECT_TRUE(revived->Adopt(frame).ok());
+
+  // And it is still the frame it was, not an empty one wearing its name.
+  auto pinned = revived->Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  EXPECT_EQ(pinned.value[0], 0x5c);
+  EXPECT_TRUE(revived->Release(frame).ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AnAdoptedIdentityIsNeverHandedOutAgain) {
+  // A resumed session keeps capturing, and its new frames come from the same counter that issued
+  // the restored ones. A store that started again from where it left off would collide with the
+  // document it had just been handed.
+  // Exactly the identity this store would issue next, which is the collision that actually
+  // happens: the document was written by a store that counted the same way from the same start.
+  FrameRef restored = this->Allocate();
+  restored.id = FrameId{restored.id.value + 1};
+  restored.buffer = BufferId{restored.id.value};
+  ASSERT_TRUE(this->store->Adopt(restored).ok());
+
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NE(this->Allocate().id.value, restored.id.value) << "allocation " << i;
+  }
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());

@@ -33,4 +33,5 @@ and the alternative we rejected and why.
 | [0026](0026-candidates-come-back-ranked.md) | `Candidates(node)` hands a cell back ranked best-first, so a review client can name the automatic pick without deciding what best means |
 | [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and aims at the nearest cell still needed, and says `SphereDone` when there are none |
 | [0028](0028-markers-are-drawn-in-the-box-the-video-is-painted-in.md) | The overlay's markers are drawn in the video's own box and mapped through the `object-fit: cover` crop, and the panel folds out of the picture while a capture runs |
+| [0029](0029-a-session-is-resumed-by-the-manager-that-owns-one.md) | `Resume` moves to `ICaptureSessionManager`, the frame store can `Adopt` frames a dead store spilled, and the session document is written at every cell |
 | [0030](0030-the-spill-tier-is-resident-and-carries-its-own-index.md) | The OPFS spill tier has a fixed preferred name and a sibling index, so a reload can find the frames its session document names |

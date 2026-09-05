@@ -228,6 +228,61 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   return Status::Ok();
 }
 
+Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
+  // The identity is the caller's here, which is what makes checking it this store's job. Zero is
+  // not one — `Id::valid()` is `value != 0`, and every counter in this codebase starts at 1 — so
+  // taking it would leave an entry nothing can legitimately name and step `next_id_` from a
+  // number that should never have existed, after which every later question about what this
+  // store holds has a wrong answer in it.
+  if (!frame.id.valid() || !frame.buffer.valid()) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "a frame with no identity cannot be adopted");
+  }
+
+  // A store with nowhere to spill has nowhere a frame could have come *from* either, and a frame
+  // adopted into one could never be pinned. Refusing here says so while the caller still has the
+  // document in hand, rather than at a fault-in that reads as a lost frame.
+  if (spill_ == nullptr) {
+    return Fail(StatusCode::Unsupported, kComponent,
+                "this store has no spill tier, so there is nothing to adopt a frame out of");
+  }
+  const int64_t size = FrameByteSize(frame.width, frame.height, frame.format);
+  if (size <= 0) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "frame has no representable size");
+  }
+  if (auto existing = entries_.find(frame.id.value); existing != entries_.end()) {
+    // Idempotent for the frame it already has. A restore that failed partway leaves frames taken
+    // back under the identities their document gave them, and the next attempt asks for exactly
+    // those again — the alternative to accepting them is a caller that has to undo its own
+    // adoptions, and undoing one means forgetting it, which takes the sink's copy of the capture
+    // with it. Same identity, same size, still in the sink: that is the same frame, not a second
+    // one, and this is the answer the caller wanted.
+    const Entry& held = existing->second;
+    if (held.residency == Residency::Spilled && held.inSink && held.size == size) {
+      return Status::Ok();
+    }
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this store already holds a different frame under that identity");
+  }
+
+  Entry entry;
+  entry.size = size;
+  // Carried from the handle rather than recomputed: ContentHash answers for a spilled frame out
+  // of this field, and the bytes are not here to hash. It was true when the document was written
+  // and a spilled frame cannot be written to, so it is true now.
+  entry.spilledHash = frame.contentHash;
+  entry.inSink = true;
+  entry.residency = Residency::Spilled;
+  entries_.emplace(frame.id.value, std::move(entry));
+  spilled_ += size;
+
+  // Stepped over, because a resumed session keeps capturing and its new frames come from this
+  // counter. Two frames under one identity is a store that hands the wrong pixels to whoever asks
+  // second, and the ids in a restored document are exactly the ones a fresh store would reissue.
+  if (frame.id.value >= next_id_) next_id_ = frame.id.value + 1;
+  return Status::Ok();
+}
+
 Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
   Entry* entry = Find(frame);
   if (entry == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such frame");

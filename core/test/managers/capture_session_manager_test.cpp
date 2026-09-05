@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -996,15 +997,6 @@ TEST_F(CaptureSession, DiscardedFramesAreReleasedFromTheStore) {
   EXPECT_LT(store->Budget().value.heapUsedBytes, held);
 }
 
-TEST_F(CaptureSession, EndPersistsTheSessionSoItCanBeResumed) {
-  Begin();
-  BurstSpec burst;
-  burst.frameCount = 1;
-  ASSERT_TRUE(FireBurst(FirstNode(), burst).ok());
-  ASSERT_TRUE(manager->End().ok());
-  EXPECT_GT(projects->WriteCount(), 0);
-}
-
 TEST_F(CaptureSession, EndClosesTheCameraSoTheIndicatorGoesOut) {
   // A session that leaves the camera running reads to the user as the app watching them.
   Begin();
@@ -1338,6 +1330,549 @@ TEST_F(CaptureSession, AnOfferThatCannotBeRankedLeavesTheCellAlone) {
   reversed.FailRanking(true);
   EXPECT_FALSE(ranked.OfferFrame(node, imported.value, PoseSample{}).ok());
   EXPECT_EQ(ranked.Candidates(node).value.size(), 2u);
+}
+
+// A session that outlives the tab it was captured in. Everything below builds a second manager
+// over a second store, because that is what a reload leaves standing: the project store's
+// documents, and whatever the spill sink is holding. Nothing in the first manager's memory
+// survives, so a test that reused it would be testing nothing.
+class ResumedSession : public CaptureSession {
+ protected:
+  // A store with somewhere to spill, which the base fixture deliberately does not have: `Cool`
+  // demotes a committed cell's frames (ADR 0023), and a store with no sink refuses that and keeps
+  // them in a heap that is about to be destroyed.
+  std::shared_ptr<MemoryFrameStoreAccess> NewStore() {
+    return std::make_shared<MemoryFrameStoreAccess>(1 << 22, &sink);
+  }
+
+  FakeSpillSink sink;
+};
+
+TEST_F(ResumedSession, BringsBackTheCandidatesAndTheBytesBehindThem) {
+  // The reload case, and the last code-shaped item in Phase 1's exit criterion. A call comes in
+  // mid-capture and the tab is evicted; coming back has to find the cells already captured *and*
+  // the pixels behind them. Coverage without pixels would be worse than starting over — a map
+  // that says done, pointing at frames nothing can ever build from.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  auto before = first.Candidates(node);
+  ASSERT_TRUE(before.ok()) << before.status.detail;
+  ASSERT_FALSE(before.value.empty());
+  ASSERT_TRUE(first.End().ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+
+  auto resumed = second.Resume(kProject);
+  ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
+
+  auto after = second.Candidates(node);
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  ASSERT_EQ(after.value.size(), before.value.size());
+  EXPECT_EQ(after.value.front().id.value, before.value.front().id.value);
+  EXPECT_EQ(after.value.front().frame.id.value, before.value.front().frame.id.value);
+  // Ranked order, not the order they were written down in: `Candidates` promises best-first, and
+  // a restore that hands back its own document order would quietly replace the engine's answer.
+  for (size_t i = 0; i < after.value.size(); ++i) {
+    EXPECT_EQ(after.value[i].id.value, before.value[i].id.value) << "candidate " << i;
+  }
+
+  // The bytes, not only the paperwork. This is the assertion the whole feature is for: the frame
+  // was allocated by a store that no longer exists, and pinning it here has to fault it in from
+  // the sink under the identity the document carried.
+  const FrameRef& frame = after.value.front().frame;
+  auto pinned = second_store->Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  EXPECT_EQ(pinned.value.size(), static_cast<size_t>(frame.stride) * frame.height);
+  EXPECT_TRUE(second_store->Release(frame).ok());
+}
+
+TEST_F(ResumedSession, ComesBackFromASessionThatWasNeverEnded) {
+  // The case the feature exists for, and the one a document written only by End would miss: a
+  // tab evicted while the phone is still being pointed around never reaches End at all. What is
+  // on disk has to be whatever was true at the last cell, not whatever a clean exit wrote.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const size_t captured = first.Candidates(node).value.size();
+  ASSERT_GT(captured, 0u);
+  // And now the tab goes away. No End, no close, no chance to tidy up.
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  EXPECT_EQ(second.Candidates(node).value.size(), captured);
+}
+
+TEST_F(ResumedSession, DoesNotBringBackAFrameTheSessionNeverOwned) {
+  // An offered frame is the caller's handle — a file import, a manual shutter — and this session
+  // never spilled it, because cooling deliberately touches only its own (ADR 0023). So there is
+  // nothing in the sink under that name, and writing it into the document would restore a
+  // candidate whose first Pin fails: a cell claiming evidence it cannot produce. The handle went
+  // away with the tab that owned it, and the honest restore is the one that says so by not
+  // holding it.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const size_t captured = first.Candidates(node).value.size();
+
+  auto imported = first_store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_TRUE(first.OfferFrame(node, imported.value, PoseSample{}).ok());
+  ASSERT_EQ(first.Candidates(node).value.size(), captured + 1);
+  ASSERT_TRUE(first.End().ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  auto restored = second.Candidates(node);
+  ASSERT_TRUE(restored.ok()) << restored.status.detail;
+  EXPECT_EQ(restored.value.size(), captured);
+  // The property underneath the count: every candidate a resumed cell holds can produce its
+  // pixels. A restored cell that cannot is the failure this whole feature exists to avoid.
+  for (const Candidate& candidate : restored.value) {
+    auto pinned = second_store->Pin(candidate.frame);
+    EXPECT_TRUE(pinned.ok()) << "candidate " << candidate.id.value << ": " << pinned.status.detail;
+    if (pinned.ok()) {
+      EXPECT_TRUE(second_store->Release(candidate.frame).ok());
+    }
+  }
+}
+
+TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
+  // Node ids are indices into a tessellation, so a resumed session that replanned from whatever
+  // the camera reports today would hand every restored candidate to a different cell if the
+  // phone came back in another orientation. The plan the candidates were captured against is
+  // part of the session, and it is stored rather than recomputed from the lens.
+  // The real tessellation, not the null one: what is under test is that the plan came from the
+  // stored field of view, and a planner that ignores the field of view cannot tell the two apart.
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  CapturePlanSpec spec = Spec();
+  spec.acceptanceConeDeg = 7.5;
+  ASSERT_TRUE(first.Begin(kProject, spec).ok());
+  const CapturePlan planned = first.GetPlan().value;
+  ASSERT_TRUE(first.End().ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  // A different lens on the way back — a much wider field of view, which is the input the
+  // tessellation is actually made from. A Resume that replanned from the camera in front of it
+  // would come back with a coarser sphere and hand every restored candidate to another cell.
+  CameraCapabilities wider = second_camera.Capabilities();
+  wider.horizontalFovDeg = 110.0;
+  wider.verticalFovDeg = 90.0;
+  second_camera.SetCapabilities(wider);
+  CaptureSessionManager second(rings, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  auto plan = second.GetPlan();
+  ASSERT_TRUE(plan.ok()) << plan.status.detail;
+  ASSERT_EQ(plan.value.nodes.size(), planned.nodes.size());
+  for (size_t i = 0; i < plan.value.nodes.size(); ++i) {
+    EXPECT_EQ(plan.value.nodes[i].id.value, planned.nodes[i].id.value) << "node " << i;
+    EXPECT_DOUBLE_EQ(plan.value.nodes[i].acceptanceConeDeg, planned.nodes[i].acceptanceConeDeg);
+  }
+}
+
+// A store that takes a stated number of frames back and then refuses. Everything else is the
+// real store's: what is under test is what the *manager* does with a refusal partway through, and
+// a hand-written stub would have had to reimplement the tiering to get there.
+class StubbornStore final : public IFrameStoreAccess {
+ public:
+  StubbornStore(std::shared_ptr<IFrameStoreAccess> inner, int adoptions)
+      : inner_(std::move(inner)), adoptions_(adoptions) {}
+
+  Result<FrameStoreBudget> Budget() override { return inner_->Budget(); }
+  Result<FrameRef> Allocate(int32_t w, int32_t h, PixelFormat f) override {
+    return inner_->Allocate(w, h, f);
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef& f) override { return inner_->Pin(f); }
+  Status Release(const FrameRef& f) override { return inner_->Release(f); }
+  Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_->ResidencyOf(f); }
+  Status Demote(const FrameRef& f, Residency t) override { return inner_->Demote(f, t); }
+  Status Forget(const FrameRef& f) override { return inner_->Forget(f); }
+  Result<uint64_t> ContentHash(const FrameRef& f) override { return inner_->ContentHash(f); }
+
+  Status Adopt(const FrameRef& frame) override {
+    if (adoptions_-- <= 0) return Fail(StatusCode::Internal, "test", "not taking any more");
+    return inner_->Adopt(frame);
+  }
+
+ private:
+  std::shared_ptr<IFrameStoreAccess> inner_;
+  int adoptions_;
+};
+
+bool second_store_pin(IFrameStoreAccess& store, const FrameRef& frame) {
+  auto pinned = store.Pin(frame);
+  if (!pinned.ok()) return false;
+  return store.Release(frame).ok();
+}
+
+// A pose engine that will not start, so a resume can be made to fail *after* it has taken the
+// frames back. Everything before that point has already happened by then, which is the state the
+// test below is about.
+class UnwillingPoseEngine final : public IPoseEngine {
+ public:
+  Result<PoseState> Initial(PoseMode, MotionCapability) override {
+    return Err<PoseState>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<PoseState> Integrate(const PoseState&, std::span<const ImuSample>) override {
+    return Err<PoseState>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<PoseSample> Correct(const FrameRef&, const FrameRef&, const PoseSample&) override {
+    return Err<PoseSample>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+  Result<double> Stability(std::span<const ImuSample>) override {
+    return Err<double>(StatusCode::SensorUnavailable, "test", "not starting today");
+  }
+};
+
+TEST_F(ResumedSession, AFailedRestoreLeavesTheCaptureWhereItWas) {
+  // The frames a resume adopts are not the resume's to throw away. They are the capture, they are
+  // still named by the document on disk, and `Forget` takes the sink's copy with it — so undoing
+  // a half-finished restore by forgetting what it had taken would delete the user's sphere to
+  // tidy up after a failure, and every later attempt would pin-fail against an empty file.
+  //
+  // Nothing is undone, and nothing needs to be: a frame the store has taken back under the
+  // identity the document gave it is exactly the frame the next attempt asks for.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, burst).ok());
+  ASSERT_EQ(first.Candidates(node).value.size(), 3u);
+  ASSERT_TRUE(first.End().ok());
+
+  auto inner = NewStore();
+  {
+    StubbornStore stubborn(inner, 2);   // it takes two of the three, then stops
+    FakeCameraAccess failing_camera(inner);
+    CaptureSessionManager attempt(planner, pose, quality, failing_camera, *sensor, stubborn,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok());
+  }
+
+  // Straight into a second attempt, against the same store — which is what a page retrying gets,
+  // since the store lives as long as the worker does.
+  FakeCameraAccess second_camera(inner);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  auto restored = second.Candidates(node);
+  ASSERT_TRUE(restored.ok()) << restored.status.detail;
+  EXPECT_EQ(restored.value.size(), 3u);
+  for (const Candidate& candidate : restored.value) {
+    auto pinned = second_store_pin(*inner, candidate.frame);
+    EXPECT_TRUE(pinned) << "candidate " << candidate.id.value;
+  }
+}
+
+TEST_F(ResumedSession, AResumeThatFailsAfterTakingTheFramesCanStillBeTriedAgain) {
+  // The same property one step later: everything is adopted and then the pose engine refuses. The
+  // frames are in the store by that point, and an attempt that walked them back would hit exactly
+  // the destructive path above — while one that leaves them makes the retry cheaper, not broken.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto inner = NewStore();
+  UnwillingPoseEngine unwilling;
+  {
+    FakeCameraAccess sulking(inner);
+    CaptureSessionManager attempt(planner, unwilling, quality, sulking, *sensor, *inner,
+                                  *projects, clock);
+    EXPECT_EQ(attempt.Resume(kProject).status.code, StatusCode::SensorUnavailable);
+  }
+
+  FakeCameraAccess second_camera(inner);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+                               *projects, clock);
+  EXPECT_TRUE(second.Resume(kProject).ok());
+}
+
+TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
+  // A half-read document is a coverage map missing the cells whose lines did not parse, which
+  // says "captured" about a sphere with holes in it. Refusing is the only honest answer, and the
+  // document is kept rather than deleted: the bytes it names may still be in the sink.
+  // A real document with a newer version stamped on it, rather than a stub: a document that is
+  // malformed anyway would be refused by the parse and prove nothing about the version line.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  const std::string stamp = "sphanorama-session 1";
+  std::string newer = written.value;
+  ASSERT_EQ(newer.rfind(stamp, 0), 0u);
+  newer.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, "session", newer).ok());
+
+  auto store_with_sink = NewStore();
+  FakeCameraAccess fresh_camera(store_with_sink);
+  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
+                                 *projects, clock);
+
+  EXPECT_EQ(manager_.Resume(kProject).status.code, StatusCode::Unsupported);
+  EXPECT_FALSE(fresh_camera.IsOpen());
+  EXPECT_TRUE(projects->ReadDocument(kProject, "session").ok());
+}
+
+// Replaces the nth whitespace-separated field of the first line with this tag, so a test can
+// corrupt one number in a session document and leave the rest of it exactly as written.
+std::string SetField(const std::string& document, const std::string& tag, size_t field,
+                     const std::string& value) {
+  std::istringstream lines(document);
+  std::string line;
+  std::string out;
+  bool done = false;
+  while (std::getline(lines, line)) {
+    if (!done && line.rfind(tag + " ", 0) == 0) {
+      std::istringstream in(line);
+      std::vector<std::string> fields;
+      for (std::string token; in >> token;) fields.push_back(token);
+      if (field < fields.size()) fields[field] = value;
+      line.clear();
+      for (size_t i = 0; i < fields.size(); ++i) line += (i == 0 ? "" : " ") + fields[i];
+      done = true;
+    }
+    out += line + "\n";
+  }
+  return out;
+}
+
+TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
+  // Zero is not an identity here: `Id::valid()` is `value != 0`, and every counter in this
+  // codebase starts at 1. A document carrying one is a document this build cannot honour — and
+  // restoring it anyway would file candidates and frames under names nothing can legitimately
+  // hold, so the first thing to go wrong would go wrong a long way from here.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  // `session <id> <nextCandidate>` and `candidate <id> <node> <frame> <buffer> …`.
+  const std::vector<std::pair<std::string, size_t>> identities = {
+      {"session", 1}, {"session", 2},
+      {"candidate", 1}, {"candidate", 2}, {"candidate", 3}, {"candidate", 4},
+  };
+  for (const auto& [tag, field] : identities) {
+    const std::string tampered = SetField(written.value, tag, field, "0");
+    ASSERT_NE(tampered, written.value) << tag << " field " << field << " was not found";
+    ASSERT_TRUE(projects->WriteDocument(kProject, "session", tampered).ok());
+
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
+    EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
+  }
+}
+
+TEST_F(ResumedSession, RefusesALineCarryingMoreThanItShould) {
+  // All-or-nothing means the whole line, not the prefix of it this build happens to understand.
+  // A line with a field on the end is a document from a shape this one does not have — the
+  // version gate is the only sanctioned way to read one of those, and reading the part that fits
+  // is how a session comes back missing whatever the extra field was there to say.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  for (const std::string& tag : {std::string("session"), std::string("lens"),
+                                 std::string("spec"), std::string("candidate")}) {
+    std::string tampered;
+    for (std::istringstream lines(written.value); std::getline(lines, tampered);) {
+      if (tampered.rfind(tag + " ", 0) == 0) break;
+    }
+    ASSERT_FALSE(tampered.empty()) << tag;
+    const std::string extended =
+        std::string(written.value).replace(written.value.find(tampered), tampered.size(),
+                                           tampered + " 7");
+    ASSERT_TRUE(projects->WriteDocument(kProject, "session", extended).ok());
+
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok()) << "a trailing field on the " << tag << " line";
+  }
+}
+
+TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
+  // The counter and the candidates are two statements about the same session, and only the
+  // candidates are acted on. A counter that has fallen behind them — a write torn between the
+  // candidate lines and the session line — would have the next burst issue ids that name frames
+  // the cell is already holding, and a cell with two candidates under one id has two frames as
+  // far as everything downstream can tell.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const std::vector<Candidate> before = first.Candidates(node).value;
+  ASSERT_FALSE(before.empty());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  ASSERT_TRUE(projects->WriteDocument(
+      kProject, "session", SetField(written.value, "session", 2, "1")).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  ASSERT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
+
+  std::set<uint64_t> seen;
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_TRUE(seen.insert(candidate.id.value).second)
+        << "candidate " << candidate.id.value << " was issued twice";
+  }
+  // And the restored ones are still there rather than having been written over.
+  EXPECT_GT(second.Candidates(node).value.size(), before.size());
+}
+
+TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
+  // It should be unreachable, since the plan is made from the spec the document carries. But a
+  // candidate filed under a cell the sphere does not have is one `Coverage` counts and nothing
+  // can ever aim at — a capture that can never finish, with no way to see why.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto document = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(document.ok());
+  // Move one candidate to a cell number no tessellation this size reaches.
+  std::string tampered = document.value;
+  const size_t at = tampered.find("candidate ");
+  ASSERT_NE(at, std::string::npos);
+  const size_t idEnd = tampered.find(' ', tampered.find(' ', at) + 1);
+  tampered.replace(idEnd + 1, tampered.find(' ', idEnd + 1) - idEnd - 1, "99999");
+  ASSERT_TRUE(projects->WriteDocument(kProject, "session", tampered).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  EXPECT_FALSE(second.Resume(kProject).ok());
+  // Never asked for, rather than opened and closed again: the prompt and the indicator have
+  // already happened by the time a failure path gets round to closing it.
+  EXPECT_EQ(second_camera.Opens(), 0);
+}
+
+TEST_F(ResumedSession, DoesNotAskForTheCameraForAResumeThatCannotHappen) {
+  // Everything a resume needs to know before it can succeed is on disk: the document, the plan
+  // that comes out of it, and whether the store will take the frames back. None of it needs a
+  // camera — `Begin` opens one first only because the lens is an input to its plan, and Resume
+  // has the lens in the document. So a resume that is going to fail must not have lit the
+  // indicator and asked for permission on the way to failing.
+  //
+  // The failure driven here is the realistic one: a device whose OPFS handle did not open has a
+  // store with no spill tier, which refuses every Adopt.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  MemoryFrameStoreAccess sinkless{1 << 22};
+  FakeCameraAccess camera(std::make_shared<MemoryFrameStoreAccess>(1 << 22));
+  CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, sinkless,
+                                *projects, clock);
+
+  EXPECT_FALSE(attempt.Resume(kProject).ok());
+  EXPECT_EQ(camera.Opens(), 0);
+}
+
+TEST_F(ResumedSession, RefusesAProjectThatWasNeverCaptured) {
+  // A project with a title and no session document is one that was created and never begun.
+  // Resuming it has to say so rather than handing back an empty session, which would read as a
+  // capture whose cells had all been lost.
+  auto store_with_sink = NewStore();
+  FakeCameraAccess fresh_camera(store_with_sink);
+  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
+                                 *projects, clock);
+  auto resumed = manager_.Resume(kProject);
+  EXPECT_EQ(resumed.status.code, StatusCode::NotFound);
+  // And it must not have opened the camera to find that out.
+  EXPECT_FALSE(fresh_camera.IsOpen());
+}
+
+TEST_F(ResumedSession, WillNotResumeOverALiveSession) {
+  // The same rule Begin has, for the same reason: replacing a live session drops its candidate
+  // map with the frames still in the store and nothing left holding the handles.
+  auto store_with_sink = NewStore();
+  FakeCameraAccess fresh_camera(store_with_sink);
+  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
+                                 *projects, clock);
+  ASSERT_TRUE(manager_.Begin(kProject, Spec()).ok());
+  auto resumed = manager_.Resume(kProject);
+  EXPECT_EQ(resumed.status.code, StatusCode::FailedPrecondition);
 }
 
 }  // namespace
