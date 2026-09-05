@@ -419,7 +419,14 @@ describe('applying the locks', () => {
     const afterFirst = track.applied.length;
     await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
 
-    expect(track.applied.length - afterFirst).toBeLessThan(afterFirst);
+    // Not asked at all on the second pass, rather than asked fewer times. A count would go on
+    // passing while one of the two attempts survived, which is most of the delay and all of the
+    // pointlessness.
+    const second = JSON.stringify(track.applied.slice(afterFirst));
+    expect(second).not.toContain('exposureMode');
+    // And the release of what was not wanted still happens, so this is not passing because the
+    // second call did nothing whatsoever.
+    expect(second).toContain('"focusMode":"continuous"');
   });
 
   it('lets go of the camera it was holding when it opens another', async () => {
