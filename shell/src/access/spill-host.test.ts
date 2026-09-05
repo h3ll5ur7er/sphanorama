@@ -5,11 +5,14 @@ import { createSpillHost, openSpillTier, type SpillFile } from './spill-host';
 /** A spill file in memory. The allocator is what is under test; the syscalls are the browser's. */
 function fakeFile(options: { shortWrites?: boolean } = {}):
     SpillFile & { bytes(): Uint8Array; failWrites(fail: boolean): void;
-                  throwWrites(fail: boolean): void; throwTruncates(fail: boolean): void } {
+                  throwWrites(fail: boolean): void; throwTruncates(fail: boolean): void;
+                  throwTruncatesAfter(n: number): void } {
   let buffer = new Uint8Array(0);
   let short = options.shortWrites === true;
   let throws = false;
   let throwsTruncate = false;
+  let truncates = 0;
+  let throwTruncateAfter = Infinity;
   const grow = (size: number) => {
     if (size <= buffer.length) return;
     const next = new Uint8Array(size);
@@ -38,8 +41,10 @@ function fakeFile(options: { shortWrites?: boolean } = {}):
     },
     truncate(size) {
       // The other way a sync handle refuses. `truncate` throws when the handle has gone away, and
-      // a clear that cannot truncate has not emptied anything.
-      if (throwsTruncate) throw new Error('the handle is gone');
+      // a clear that cannot truncate has not emptied anything. The counted form is for the paths
+      // that write the index twice: it lets the first write land and the second fail.
+      truncates += 1;
+      if (throwsTruncate || truncates > throwTruncateAfter) throw new Error('the handle is gone');
       grow(size);
       buffer = buffer.subarray(0, size);
     },
@@ -49,6 +54,7 @@ function fakeFile(options: { shortWrites?: boolean } = {}):
     failWrites: (fail: boolean) => { short = fail; },
     throwWrites: (fail: boolean) => { throws = fail; },
     throwTruncates: (fail: boolean) => { throwsTruncate = fail; },
+    throwTruncatesAfter: (n: number) => { truncates = 0; throwTruncateAfter = n; },
   };
 }
 
@@ -502,12 +508,13 @@ describe('the spill host', () => {
     expect(into.every((b) => b === 0xa1)).toBe(true);
   });
 
-  it('empties the index before the frames, so neither can be left naming the other', () => {
-    // Ordering, and it is the opposite of the one inside a successful clear. There the file goes
-    // first so a failure leaves this host still able to find its frames. Across a *reload* the
-    // index is the only thing that can name them, so it goes first: a clear that dies halfway
-    // then leaves an index naming nothing, and orphaned bytes nobody can ask for are recoverable
-    // in a way that bytes somebody can ask for by the wrong name are not.
+  it('puts the index back when the frames will not go, so a refusal costs nothing', () => {
+    // A refused clear has to be refused across a reload too, not only in this process. The
+    // truncate that throws is a handle that has gone away, so the frames file is untouched — the
+    // only thing standing between the old capture and a resume is the empty index this call wrote
+    // a moment ago, and putting it back costs one write. Leaving it empty would turn a Begin that
+    // declines cleanly into a capture nobody can ever get back: the pixels are still on the disk
+    // and nothing names them.
     const file = fakeFile();
     const index = fakeFile();
     const host = createSpillHost(file, index);
@@ -519,7 +526,29 @@ describe('the spill host', () => {
     // This session is unharmed — its map is in memory and the file was never touched.
     expect(host.read(1, new Uint8Array(16))).toBe(true);
 
-    // The next one finds nothing rather than finding frame 1 wherever the new capture put it.
+    // And so is the next one, which is the half a restore buys.
+    file.throwTruncates(false);
+    const after = createSpillHost(file, index);
+    const into = new Uint8Array(16);
+    expect(after.read(1, into)).toBe(true);
+    expect(into.every((b) => b === 0xa1)).toBe(true);
+  });
+
+  it('leaves the index naming nothing rather than the wrong thing, if the restore fails too', () => {
+    // The degraded end of it. If the index cannot be put back either, what is left is an index
+    // that names nothing over a file that still holds the bytes: the capture is lost, which is
+    // bad, and no identity resolves to somebody else's pixels, which is the thing that must not
+    // happen. That ordering is why the empty index is written before the frames are touched and
+    // not after.
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+    host.write(1, frame(0xa1));
+    file.throwTruncates(true);
+    index.throwTruncatesAfter(1);   // the empty index goes down; the restore does not
+
+    expect(host.clear()).toBe(false);
+
     file.throwTruncates(false);
     const after = createSpillHost(file, index);
     after.write(9, frame(0xc3));

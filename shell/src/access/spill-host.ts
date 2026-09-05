@@ -280,12 +280,24 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // state, which is what the store above relies on to decline a session cleanly.
       if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) return false;
 
-      // And if *this* dies, the index above already names nothing: the bytes are orphaned rather
-      // than mislabelled, which is the recoverable half. In-memory the map is untouched, so this
-      // session can still find every frame it could find before.
       try {
         file.truncate(0);
       } catch {
+        // A truncate throws when the handle has gone away, which means the frames file is exactly
+        // as it was — so the only thing standing between the old capture and a resume is the
+        // empty index written a line ago. Putting it back costs one write and makes the refusal
+        // real on disk too.
+        //
+        // Best effort, and the failure below it is the reason the empty index goes first rather
+        // than last: if the restore cannot be written either, what is left is an index naming
+        // nothing over a file that still holds the bytes. That loses the capture, which is bad.
+        // Writing the index last would instead leave one naming the old frames over a file the
+        // next capture refills from offset zero, which hands somebody else's pixels back under
+        // the old names — and that is the failure this whole change exists to remove.
+        // `held()` and not a snapshot taken earlier: the in-memory map is only cleared once the
+        // truncate below has succeeded, so what it describes here is still exactly the state this
+        // call was asked to discard.
+        void writeIndex(held());
         return false;
       }
       slots.clear();

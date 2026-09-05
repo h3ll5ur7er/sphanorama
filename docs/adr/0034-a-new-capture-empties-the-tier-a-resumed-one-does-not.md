@@ -47,6 +47,16 @@ store refuses before it drops anything, and "refused" and "unchanged" are the sa
 **`Clear` is refused while any frame is pinned.** `Pin` guarantees its mapping until `Release`, and
 a span into a freed buffer still looks like a span.
 
+**"Unchanged" has to hold across a reload, not only in this process.** The store keeps its entries
+on a refusal by never touching them, which is easy; the tier underneath has to work for it. The
+browser sink writes its emptied index before it truncates the frames file, so a failure at the
+first step changes nothing at all — and a failure at the second, where the frames file is untouched
+because the handle that threw never modified it, puts the old index back. Only if that restore
+also fails is anything lost, and what is left then is an index naming nothing over a file that
+still holds the bytes: the capture is gone, which is bad, and no identity resolves to somebody
+else's pixels, which is the thing that must not happen. That asymmetry is the whole reason the
+index is written first rather than last.
+
 **`Clear` does not wind the identity counter back.** A handle is a plain value that outlives the
 frame it names. Reissuing one would turn a stale handle from dangling — a `NotFound` the caller can
 act on — into a handle on somebody else's pixels, which is the failure this ADR exists to remove.
