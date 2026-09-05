@@ -241,9 +241,16 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   faulting a sphere's frames in to display them, with no natural finished moment. It has one: the
   reduced copy exists.
 
-  One half of it is still not done: a recorded selection cannot be read back, because
-  `SetSelection` writes one and no contract returns it, so an override lives in the client's memory
-  and goes with the tab. It is contract-shaped rather than code-shaped.
+  And a recorded selection can be read back, which was the other half. `SetSelection` used to write
+  one and no contract returned it, so the override lived in the client's memory and went with the
+  tab — the strip came back showing the ranking's pick while the build, which reads the document,
+  would use something else. `GetSelection` closes it, and the panel now keeps nothing of its own:
+  a zero candidate is the core's answer for "nobody has chosen here", which is a success rather
+  than a `NotFound`, because a client that folded the two together would make a project it cannot
+  read look like one nobody has edited (ADR 0040). The strip keeps that distinction rather than
+  spending it: a cell whose recorded pick could not be read shows its candidates with *none* of
+  them claimed to be in force, and says so, because offering the ranking's pick there would be the
+  screen disagreeing with the build without a word anywhere.
 
 **Exit:** a full 360×180 capture on a mid-range Android and an iPhone completes without an OOM,
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
@@ -347,9 +354,10 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   criterion also wants a completed sphere and a peak-memory number from it, and neither exists
   yet on that device.
 
-One known gap left in the phase's own list, and it is contract-shaped: a recorded selection cannot
-be read back. The other — a review strip that showed what the core knows about a candidate rather
-than the frame itself — is closed (ADR 0038).
+Both of the phase's own contract-shaped gaps are closed: the review strip shows the frames rather
+than what the core knows about them (ADR 0038), and a recorded selection can be read back rather
+than being remembered by the client that wrote it (ADR 0040). What is left in this phase needs a
+phone, not a keyboard.
 
 *Answered.* A cell's five candidates scored 1186, 1180, 459, 459, 458 in capture order, and
 another 979, 993, 0.60, 0.60, 0.61 — both splitting two-and-three at the same point, in different

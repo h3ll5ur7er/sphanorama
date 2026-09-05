@@ -115,6 +115,61 @@ TEST(Facade, CreatesAProjectAndReadsItBack) {
   EXPECT_TRUE(found);
 }
 
+TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
+  // The new call in ADR 0040, over the generated dispatch rather than over a manager held
+  // directly. Until now the only thing exercising it was one end-to-end test in a browser, which
+  // is the slowest place to find a boundary mistake and the one that says least about which end
+  // made it.
+  //
+  // Each `Response` is held in a named local because `reader()` points into its buffer, which a
+  // temporary would free at the end of the statement.
+  wire::Writer named;
+  named.PutString("kitchen");
+  Response opened = Call("ProjectManager.create", named.bytes());
+  wire::Reader created = opened.reader();
+  ASSERT_EQ(ReadStatus(created).code, StatusCode::Ok);
+  const double project = created.GetF64();
+
+  // A cell nobody has chosen for is a *success* answering zero, not a failure — the sentinel this
+  // whole decision turns on, and this is the only test that watches it survive the wire.
+  wire::Writer cell;
+  cell.PutF64(project);
+  cell.PutF64(3.0);
+  Response never = Call("ProjectManager.getSelection", cell.bytes());
+  wire::Reader absent = never.reader();
+  ASSERT_EQ(ReadStatus(absent).code, StatusCode::Ok);
+  EXPECT_EQ(absent.GetF64(), 0.0);
+  // The reader is asked whether it read anything, which on this leg is the whole assertion.
+  // `StatusCode::Ok` is zero and a failed `wire::Reader` answers zero to everything, so both lines
+  // above are also satisfied by a response of no bytes at all — on the one leg where zero is the
+  // value under test rather than an incidental one. `wire.h` states this protocol: check `ok()`
+  // once at the end rather than after every read.
+  EXPECT_TRUE(absent.ok()) << "a zero read out of a failed reader is not an answer of zero";
+
+  wire::Writer pick;
+  pick.PutF64(project);
+  pick.PutF64(3.0);
+  pick.PutF64(7.0);
+  Response wrote = Call("ProjectManager.setSelection", pick.bytes());
+  wire::Reader recorded = wrote.reader();
+  ASSERT_EQ(ReadStatus(recorded).code, StatusCode::Ok);
+
+  Response asked = Call("ProjectManager.getSelection", cell.bytes());
+  wire::Reader read = asked.reader();
+  ASSERT_EQ(ReadStatus(read).code, StatusCode::Ok);
+  EXPECT_EQ(read.GetF64(), 7.0);
+  EXPECT_TRUE(read.ok());
+
+  // And a cell the writer refuses is refused rather than answered, so the two ends cannot be made
+  // to agree on a value neither of them considers an identity.
+  wire::Writer unset;
+  unset.PutF64(project);
+  unset.PutF64(0.0);
+  Response denied = Call("ProjectManager.getSelection", unset.bytes());
+  wire::Reader refused = denied.reader();
+  EXPECT_EQ(ReadStatus(refused).code, StatusCode::InvalidArgument);
+}
+
 TEST(Facade, ADomainFailureCrossesAsAStatusNotAsATrap) {
   wire::Writer args;
   args.PutString("");                 // an untitled project is refused by the manager

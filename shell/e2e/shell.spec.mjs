@@ -25,6 +25,35 @@ async function serve() {
   return startServer({ roots: [dist], basePath });
 }
 
+/**
+ * Waits for the viewfinder to be delivering frames, which is not the same as being able to aim.
+ *
+ * `#capture` becomes enabled when guidance has named a cell — a fact about the plan, not about the
+ * camera. The grabber refuses a video with no data or no dimensions and the loop only grabs at all
+ * once a burst is armed, so a burst armed before the first frame arrives spends its whole settle
+ * (ADR 0032) waiting for one that is not there and then fails with `CameraUnavailable`. On a loaded
+ * runner that window is wide enough to fail a test, which is how this was found: one job, one
+ * assertion, "the page has not grabbed a frame yet".
+ *
+ * The same condition the grabber itself checks (`preview-frame.ts`'s `createFrameGrabber`, both
+ * guards), so this waits for the thing that actually has to be true rather than for a length of
+ * time.
+ *
+ * It is usually satisfied the moment it is asked: this runner has the video at `readyState 4` and
+ * its full size by the time `#stage` says `capturing`, so the wait returns in single-digit
+ * milliseconds and no assertion here depends on it. That is what it is for. `srcObject` is
+ * assigned several worker round trips before the stage text changes, so the ordering is not
+ * guaranteed by anything, and the failure it prevents — `CameraUnavailable`, the page has not
+ * grabbed a frame yet — is one CI has actually produced on a branch that touched none of this.
+ */
+async function viewfinderIsLive(page) {
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video');
+    return video !== null && video.readyState >= 2
+      && video.videoWidth > 0 && video.videoHeight > 0;
+  }, null, { timeout: 15000 });
+}
+
 test('loads the core and reports its capabilities', async ({ page }) => {
   const server = await serve();
   try {
@@ -200,6 +229,7 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
     // Through the client's own hook rather than the core directly: arming outside the capture
     // loop is the mistake ADR 0018 warned about, so the test must not be able to make it either.
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
     const armed = await page.evaluate(() => window.sphanoramaCapture());
     expect(armed).toBe(true);
 
@@ -229,6 +259,65 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
   }
 });
 
+test('a pick survives the tab that made it', async ({ page }) => {
+  // The claim, end to end. A selection used to live in the review panel's own memory, so what the
+  // strip showed as "in force" was whatever this tab had clicked — and a reload started again
+  // from the ranking, silently disagreeing with the build, which reads the document. Everything
+  // under this is covered against fakes; this is the only place a real document, a real reload
+  // and a real strip meet.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    const openTheStrip = async () => {
+      await page.locator('#panel-toggle').click();
+      const captured = page.locator('#coverage-map .cell[data-state="covered"]').first();
+      await expect(captured).toBeVisible({ timeout: 15000 });
+      await captured.click({ timeout: 5000 });
+      await expect(page.locator('#strip-heading')).toContainText(/candidates, best first/i,
+                                                                { timeout: 15000 });
+    };
+    const pressedIndex = async () => page.evaluate(() =>
+      [...document.querySelectorAll('#strip button')]
+        .findIndex((button) => button.getAttribute('aria-pressed') === 'true'));
+
+    await openTheStrip();
+    // The ranking's own pick is first, so choosing the last one is a choice that cannot be
+    // confused with the default.
+    expect(await pressedIndex()).toBe(0);
+    const buttons = page.locator('#strip button');
+    const last = (await buttons.count()) - 1;
+    expect(last).toBeGreaterThan(0);
+    await buttons.nth(last).click();
+    await expect.poll(pressedIndex, { timeout: 15000 }).toBe(last);
+
+    // Durability is eventual by design (ADR 0014) — the host coalesces writes behind a 250 ms
+    // timer — and a reload does not wait for that timer. This is the same call `main.ts` makes
+    // from its `pagehide` and `visibilitychange` handlers, which is how a real tab gets here;
+    // driving it directly keeps the barrier deterministic instead of racing the timer, at the
+    // cost of not covering that wiring. On a runner fast enough for the timer to have fired
+    // already the assertion below survives without it, which is exactly why it stays: what it
+    // rules out is a flake on a slower one, not a wrong answer on this one.
+    await page.evaluate(() => window.sphanoramaHost.flush());
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+
+    await openTheStrip();
+    expect(await pressedIndex()).toBe(last);
+  } finally {
+    await server.close();
+  }
+});
+
 test('the review strip shows the frames, not just their scores', async ({ page }) => {
   // The pixel path outward, end to end (ADR 0038). Everything inward is covered above; this is
   // the return leg — the store's bytes reduced by the preview engine, encoded by the generated
@@ -242,6 +331,7 @@ test('the review strip shows the frames, not just their scores', async ({ page }
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, {
       timeout: 15000,
@@ -316,6 +406,7 @@ test('a sphere from before the last capture cannot come back as this one', async
     // A cell, so the session has frames in the tier and a document that names them. Cooling
     // spills a committed cell (ADR 0023), which is what puts them in the OPFS file at all.
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 
@@ -474,6 +565,7 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
 
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
@@ -823,6 +915,7 @@ test('the ring fills when its cell finishes, without waiting for another sample'
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
 
     // One sample, so there is an attitude to place markers against, then none after the burst.
     await page.evaluate(() => {
@@ -1211,6 +1304,7 @@ test('a capture interrupted by a reload is offered back with its cells', async (
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
 
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
     const before = await page.evaluate(async () => {
@@ -1336,6 +1430,7 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 

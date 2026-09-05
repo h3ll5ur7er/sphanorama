@@ -21,6 +21,7 @@ class ProjectManager final : public IProjectManager {
   Result<ProjectId> Create(std::string_view title) override;
   Status Delete(ProjectId project) override;
   Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) override;
+  Result<CandidateId> GetSelection(ProjectId project, NodeId node) override;
   Status Export(ProjectId project, BuildId build, const ExportSpec& spec) override;
 
  private:
