@@ -7,6 +7,10 @@ tooling. Decomposed by volatility (iDesign).
 layer rules, the TDD workflow, contract discipline, repo structure and the definition of done.
 Rationale is in `docs/00-principles.md` and `docs/03-architecture.md`.
 
+**Review with `.claude/skills/sphanorama-review/SKILL.md` before opening a PR.** It spawns reviewer
+subagents, one per lens, against the mistakes this codebase has actually made. Reviews are run here
+rather than bought from a bot.
+
 The four things that are most expensive to get wrong:
 
 1. **Write the test first.** Correctness here is invisible to the eye and the target device is a

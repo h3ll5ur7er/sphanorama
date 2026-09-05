@@ -1,0 +1,91 @@
+---
+name: sphanorama-review
+description: Review a change to this repository by spawning reviewer subagents, one per lens, and reconciling what they report. Use before merging any branch, in place of an external review bot. Also use when asked to review a diff, a PR, or a branch here, or when a change is finished and needs scrutiny it cannot give itself.
+---
+
+# Reviewing a change
+
+A review here is run by spawning subagents, not by asking a service. This file says what to point
+them at, what they must hand back, and what to do with it.
+
+`sphanorama-engineering/SKILL.md` is the standard being reviewed *against* — layers, contract
+discipline, the definition of done. This file is about finding where a change fails it.
+
+## Why subagents rather than one more careful read
+
+The author of a change cannot review it. Not for want of care: the reasoning that produced the
+code is the same reasoning that would check it, so a wrong assumption is invisible from inside. A
+subagent starts cold, reads the diff without the author's intent, and has to reconstruct why each
+line is there — which is exactly the pass that finds a guard that cannot fire, a sentinel that
+absorbs too much, or a promise the header makes and the code does not keep.
+
+Self-review still happens first and is not replaced by this. Sabotage every new test, reread the
+diff adversarially, run the whole gate. This is the pass *after* that one.
+
+## How to run it
+
+1. **Get the diff.** `git diff origin/main...HEAD` — the three-dot form, so it is the branch's own
+   work rather than everything main has done since.
+2. **Pick the lenses** from the table below that the diff actually touches. A C++-only change does
+   not need the shell-ordering lens; a docs-only change needs none of them. Two to four is usual.
+   One lens per subagent: a reviewer given six things to look for finds the easy ones.
+3. **Spawn them in parallel, in the background.** They are read-only work and independent.
+4. **Reconcile.** Every finding is yours to verify before you act on it — the subagent's confidence
+   is not evidence.
+
+Each subagent gets: the lens, the diff (or the branch to diff itself), a pointer to
+`.claude/skills/sphanorama-engineering/SKILL.md`, and the reporting contract below.
+
+**They review. They do not fix.** No edits, no commits, no pushes. A reviewer that fixes what it
+finds has stopped being able to tell you what it found, and two agents editing one branch is how a
+green tree becomes a mystery.
+
+## What each reviewer must hand back
+
+For every finding:
+
+- **Where** — file and line.
+- **What breaks** — concrete inputs or state, and the wrong output or crash they produce. Not "this
+  could be unsafe".
+- **Verdict** — `CONFIRMED` if it was reproduced (a test written, a value printed, a sanitizer run,
+  a log read) or `REASONED` if it is an argument from the code that was not executed. Both are
+  worth having; conflating them is not. A `REASONED` finding about arithmetic is usually cheap to
+  promote — say what would settle it.
+- **Why it is not already handled** — the check it walks past, or the caller it reaches through.
+  Most wrong findings die here, and asking for it up front kills them before they cost anything.
+
+And once at the end: **what was looked at and found clean.** A review that lists only problems
+cannot be told apart from one that stopped early.
+
+## The lenses
+
+| Lens | What it looks for |
+| ---- | ----------------- |
+| **The boundary and its arithmetic** | Every number arriving from JavaScript is a double. Casts to narrow integers (`static_cast<int32_t>` of a NaN, an infinity or 1e300 is undefined — `wire::GetInteger<T>` exists for this). Products that overflow before the check that would have refused them — ask by division. `size_t` is 32 bits on wasm32, so a count times an element size wraps. Length prefixes and counts bounded against the bytes actually present |
+| **Pixels and spans** | A `FrameRef` is a plain value a caller passes in; the store's entry is the only thing that knows the real allocation. Stride against a row's own width, dimensions against the bytes pinned, a sampling window against the frame it samples. Accumulator width against the largest sum a loop can reach. Every `Pin` released on every path out, failures included |
+| **Contract promises** | Read the header comment and then the implementation, and ask whether the second does what the first says. "Whatever residency a frame had before this call, it has after it" was kept by coincidence for one tier. A comment that is aspirational is a defect in the same way a wrong line is |
+| **Sentinels and second copies** | A value meaning "none" only means it if nothing else can produce it: check the writer cannot store one, the reader cannot invent one from a failure, and an unset argument is refused rather than answered. Separately: any fact held in two places will drift — a flag beside the thing it describes, a client cache mirroring what the core knows. Prefer deriving it; if it must be copied, find what invalidates the copy |
+| **Ownership and lifetime** | Who owns a frame, and what a refusal leaves behind. `Forget` can fail and keep accounting for the bytes, so dropping the handle orphans them. An offered frame belongs to its caller. Caches bounded in *every* dimension they can grow in — across cells and within one |
+| **Ordering in the shell** | Every call crosses a worker, so several are in flight at once. For each guard, ask what question it answers: a per-render ticket and a per-cell identity are different questions, and using one for the other's job is a race that only shows under fast input. Late answers must not paint, and must not haul the user back |
+| **Tests that cannot fail** | For each new test, what would make it fail? A test that passes because something refused the input earlier proves only that. Watch for: an arrangement whose oscillation never reaches the condition; an assertion satisfied by a default (`toBeHidden` on an element hidden by something else); a guard asserted against a fake that cannot produce the state. And for the build: `npm run build` only *stages* a prebuilt wasm, so after a contract change the browser tests run against the previous core |
+| **Docs and ADRs** | Did the change invalidate a sentence somewhere? `docs/06-roadmap.md`, the volatility map, the contract READMEs and the engineering skill all make claims the code has to keep. An ADR is required for a new component, a contract change, a new dependency or a rule exception — and its *consequences* section is where the costs it accepted belong |
+
+## Handling what comes back
+
+Verify before acting. A confirmed finding is a bug report; a reasoned one is a hypothesis, and both
+can be wrong about this codebase.
+
+- **Reproduce first, then fix.** The test comes before the change, as always. A finding you could
+  not reproduce is a finding you do not yet understand.
+- **Declining is a legitimate outcome**, with the evidence. Run the proposed change as a sabotage:
+  if implementing it fails a test, that test is the argument. Say which one.
+- **A fix is new code**, subject to everything above. The nastiest defect found today was
+  introduced *by* a fix, and caught only because the existing test for the opposite case was still
+  there and the whole suite was run.
+- **Re-run the review when a round found something real.** A round that found nothing is where it
+  stops. Findings that keep arriving on your own fixes mean the root cause is still there.
+
+## What this does not do
+
+It does not approve, and it does not merge. Green, mergeable and reviewed is the finish line;
+merging is the maintainer's call unless they have said otherwise for that branch.

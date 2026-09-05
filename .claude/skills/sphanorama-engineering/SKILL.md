@@ -233,14 +233,25 @@ alone under this loop rather than to stop and wait:
    worst defect in a recent PR was not in the feature: it was a rollback added *during* this step
    to close a leak, which deleted the captured pixels it was unwinding. New code written to make
    old code safer is still new code.
-3. **Open a PR and request a Copilot review.** Opening one does not summon a reviewer; ask
-   explicitly, every time.
-4. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
-   on sight. Fix it and push, or reply with the reasoning and the evidence.
-5. **If the round contained a high-severity finding, request another round.** A round that found
-   something real is a reason to look again; a clean round is where it stops.
-6. **Never merge** until asked for that PR in particular. Green and mergeable is the finish line;
-   merging is not yours to call.
+3. **Review it with `sphanorama-review`**, which spawns reviewer subagents — one per lens — and
+   says what each must hand back. Run it before opening the PR, so the branch that reaches a
+   reviewer is one you have already had reviewed.
+
+   Not an external bot. Those are metered, and a day of rounds can eat a month of somebody's
+   allowance; a subagent costs what the work costs. The lens table in that skill is also worth more
+   here than a general reviewer, because it is a list of the mistakes this codebase has actually
+   made.
+4. **Open the PR.** Say what was reviewed and what the review found, including the lenses that came
+   back clean — a PR body claiming "reviewed" without saying against what is a claim nobody can
+   check.
+5. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
+   on sight. Reproduce, then fix and push — or record the reasoning and the evidence, including the
+   sabotage that shows why the proposed change is wrong.
+6. **If a round found something real, run another.** A round that found nothing is where it stops.
+   Findings that keep arriving on your own fixes mean the root cause is still there — and remember
+   that a fix is new code, so it goes through the same loop.
+7. **Never merge** until asked for that PR in particular. Green, mergeable and reviewed is the
+   finish line; merging is not yours to call.
 
 Two habits make the difference between this working and it looking like it worked. **Measure
 claims about the tooling** — when a finding asserts what CI, the browser or floating point does,
