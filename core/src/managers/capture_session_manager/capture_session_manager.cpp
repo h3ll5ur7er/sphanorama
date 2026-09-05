@@ -392,16 +392,12 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                           "this project's session document is from a shape this build cannot read");
   }
 
-  auto opened = camera_.Open(CameraOpenSpec{});
-  if (!opened.ok()) return opened.status;
-  max_burst_fps_ = opened.value.maxBurstFps;
-
-  // From the document, not from the camera. This is the whole reason the spec is stored.
+  // From the document, not from the camera. This is the whole reason the spec is stored — and it
+  // is also why nothing here needs a camera yet. `Begin` opens one before it plans because the
+  // lens is an input to its tessellation; a resume has the lens in front of it already, so
+  // everything that can refuse this gets to refuse it before the indicator lights.
   auto plan = planner_.Plan(stored.spec, stored.lens);
-  if (!plan.ok()) {
-    (void)camera_.Close();
-    return plan.status;
-  }
+  if (!plan.ok()) return plan.status;
 
   // Every candidate has to name a cell of this plan. It should be unreachable — the plan is made
   // from the spec the document carries — but a document naming a node the sphere does not have
@@ -412,7 +408,6 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                                      return planned.id.value == candidate.node.value;
                                    });
     if (!known) {
-      (void)camera_.Close();
       return Err<SessionId>(StatusCode::Unsupported, kComponent,
                             "this project's session document names a cell this plan does not have");
     }
@@ -433,11 +428,18 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // than impossible.
   for (const Candidate& candidate : stored.candidates) {
     if (auto taken = frames_.Adopt(candidate.frame); !taken.ok()) {
-      (void)camera_.Close();
       return Err<SessionId>(taken.code, kComponent,
                             "a captured frame could not be taken back: " + taken.detail);
     }
   }
+
+  // Last, once nothing left can refuse. Opening is what lights the indicator and raises the
+  // permission prompt, and a resume that was going to fail on its document, its plan or its
+  // frames has no business doing either on the way there — the same rule Begin follows when it
+  // checks the project exists before touching the camera.
+  auto opened = camera_.Open(CameraOpenSpec{});
+  if (!opened.ok()) return opened.status;
+  max_burst_fps_ = opened.value.maxBurstFps;
 
   // The live capability rather than the stored one: the document says which sphere is being
   // captured, never what the device it came back on can sense.

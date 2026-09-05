@@ -31,6 +31,12 @@ class FakeCameraAccess final : public ICameraAccess {
   // Test affordances.
   int FramesTaken() const { return frames_taken_; }
   bool IsOpen() const { return open_; }
+  /**
+   * How many times the camera has been asked for, which is not the same question as whether it
+   * is open now: opening is what lights the indicator and raises the permission prompt, and a
+   * path that opens and then closes on its way to failing has already done both.
+   */
+  int Opens() const { return opens_; }
   bool ExposureLocked() const { return exposure_locked_; }
   const CameraCapabilities& Capabilities() const { return capabilities_; }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
@@ -48,6 +54,7 @@ class FakeCameraAccess final : public ICameraAccess {
   bool fail_unlock_ = false;
   bool fail_close_ = false;
   int frames_taken_ = 0;
+  int opens_ = 0;
   uint8_t next_fill_ = 1;
 };
 

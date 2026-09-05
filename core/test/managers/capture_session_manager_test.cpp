@@ -1818,6 +1818,35 @@ TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
   CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
                                *projects, clock);
   EXPECT_FALSE(second.Resume(kProject).ok());
+  // Never asked for, rather than opened and closed again: the prompt and the indicator have
+  // already happened by the time a failure path gets round to closing it.
+  EXPECT_EQ(second_camera.Opens(), 0);
+}
+
+TEST_F(ResumedSession, DoesNotAskForTheCameraForAResumeThatCannotHappen) {
+  // Everything a resume needs to know before it can succeed is on disk: the document, the plan
+  // that comes out of it, and whether the store will take the frames back. None of it needs a
+  // camera — `Begin` opens one first only because the lens is an input to its plan, and Resume
+  // has the lens in the document. So a resume that is going to fail must not have lit the
+  // indicator and asked for permission on the way to failing.
+  //
+  // The failure driven here is the realistic one: a device whose OPFS handle did not open has a
+  // store with no spill tier, which refuses every Adopt.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  MemoryFrameStoreAccess sinkless{1 << 22};
+  FakeCameraAccess camera(std::make_shared<MemoryFrameStoreAccess>(1 << 22));
+  CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, sinkless,
+                                *projects, clock);
+
+  EXPECT_FALSE(attempt.Resume(kProject).ok());
+  EXPECT_EQ(camera.Opens(), 0);
 }
 
 TEST_F(ResumedSession, RefusesAProjectThatWasNeverCaptured) {
