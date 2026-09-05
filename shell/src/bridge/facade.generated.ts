@@ -110,6 +110,20 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
         'malformed response: CaptureSessionManager.candidates returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
+    async candidatePreview(node: C.NodeId, candidate: C.CandidateId, maxEdge: number) {
+      const args = new Writer();
+      args.f64(node);
+      args.f64(candidate);
+      args.f64(maxEdge);
+      const raw = await call('CaptureSessionManager.candidatePreview', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = codec.decodeFramePreview(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.candidatePreview returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async requestRetake(node: C.NodeId, replace: boolean) {
       const args = new Writer();
       args.f64(node);

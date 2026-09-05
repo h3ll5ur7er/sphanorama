@@ -10,6 +10,7 @@ add_library(sphanorama_core
   src/engines/composition_engine/null_composition_engine.cpp
   src/engines/coverage_planner_engine/null_coverage_planner_engine.cpp
   src/engines/coverage_planner_engine/rings_coverage_planner_engine.cpp
+  src/engines/frame_preview_engine/box_frame_preview_engine.cpp
   src/engines/frame_quality_engine/null_frame_quality_engine.cpp
   src/engines/frame_quality_engine/sharpness_frame_quality_engine.cpp
   src/engines/pose_engine/null_pose_engine.cpp

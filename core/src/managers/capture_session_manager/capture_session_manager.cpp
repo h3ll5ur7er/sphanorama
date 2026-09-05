@@ -297,12 +297,13 @@ Status Also(Status cause, const Status& unlock) {
 }
 
 CaptureSessionManager::CaptureSessionManager(ICoveragePlannerEngine& planner, IPoseEngine& pose,
-                                             IFrameQualityEngine& quality, ICameraAccess& camera,
+                                             IFrameQualityEngine& quality,
+                                             IFramePreviewEngine& preview, ICameraAccess& camera,
                                              IMotionSensorAccess& sensor,
                                              IFrameStoreAccess& frames,
                                              IProjectStoreAccess& projects, IClock& clock)
-    : planner_(planner), pose_(pose), quality_(quality), camera_(camera), sensor_(sensor),
-      frames_(frames), projects_(projects), clock_(clock) {}
+    : planner_(planner), pose_(pose), quality_(quality), preview_(preview), camera_(camera),
+      sensor_(sensor), frames_(frames), projects_(projects), clock_(clock) {}
 
 Status CaptureSessionManager::RequireSession() const {
   return active_ ? Status::Ok()
@@ -993,6 +994,60 @@ Result<std::vector<Candidate>> CaptureSessionManager::Candidates(NodeId node) co
   }
   const auto it = candidates_.find(node.value);
   return Ok(it == candidates_.end() ? std::vector<Candidate>{} : it->second);
+}
+
+Result<FramePreview> CaptureSessionManager::CandidatePreview(NodeId node, CandidateId candidate,
+                                                            int32_t maxEdge) const {
+  if (auto status = RequireSession(); !status.ok()) return status;
+  if (!HasNode(node)) {
+    return Err<FramePreview>(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  }
+  const auto cell = candidates_.find(node.value);
+  const Candidate* found = nullptr;
+  if (cell != candidates_.end()) {
+    for (const Candidate& held : cell->second) {
+      // Stops at the first match rather than the last. Identical either way — a cell cannot hold
+      // two candidates under one identity — and stopping says so.
+      if (held.id.value == candidate.value) {
+        found = &held;
+        break;
+      }
+    }
+  }
+  if (found == nullptr) {
+    // Ordinary rather than exceptional: a replace-retake forgets a cell's frames while a review
+    // client is still holding the strip it fetched before that happened.
+    return Err<FramePreview>(StatusCode::NotFound, kComponent,
+                             "this cell holds no such candidate");
+  }
+
+  // Where the frame's bytes were before this read, so that the read can put them back. Pin faults
+  // a spilled frame into the heap and leaves it there, so a user opening cell after cell would
+  // fill the heap by browsing — the caller with no natural finished moment that ADR 0023 named
+  // and left open. Here the moment is exact: the reduced copy exists, and nothing wants the frame
+  // again. Restoring what was found rather than imposing a tier is what keeps this safe for an
+  // offered frame, whose residency is the caller's business and not this manager's.
+  //
+  // Asked as a Result rather than for its value, because a `Result`'s value on a failure is
+  // whatever `T{}` is — here `HeapPinned`, the first enumerator, which happens to mean "do not
+  // restore" and would silently become "always demote" if anyone reordered the enum. A store that
+  // cannot say where a frame is gets nothing done to it, which is the answer either way.
+  const auto before = frames_.ResidencyOf(found->frame);
+  auto reduced = preview_.Reduce(found->frame, maxEdge);
+  // Any tier but `HeapPinned`, which is not a tier a demotion may assert — it is what `Pin`
+  // establishes, and a frame found pinned was pinned by somebody else whose pin outlives this
+  // call anyway. Everything else is restored by name rather than by case: `Spilled` is the tier
+  // this exists for, `HeapEncoded` is where `Release` already left it and asks for nothing, and a
+  // store with a `GpuTexture` tier gets its frame back where it had it instead of silently
+  // keeping it in the heap. The contract promises the residency a frame had, not the one this
+  // manager happened to enumerate.
+  if (before.ok() && before.value != Residency::HeapPinned) {
+    // Discarded for the same reason `Cool` discards one: by here the preview has either been
+    // produced or failed, and a store that cannot take the frame back leaves it exactly where it
+    // is — readable, in the heap, and accounted for.
+    (void)frames_.Demote(found->frame, before.value);
+  }
+  return reduced;
 }
 
 Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {

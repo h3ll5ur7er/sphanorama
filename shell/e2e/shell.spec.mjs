@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 
 import { startServer } from '../../tools/static_server.mjs';
 import { GRAB_MAX_EDGE } from '../src/access/preview-frame.ts';
+import { PREVIEW_MAX_EDGE } from '../src/clients/review/panel.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = resolve(repoRoot, 'dist');
@@ -223,6 +224,73 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
     // Distinct allocations, which is what the camera contract requires of repeated peeks and
     // what makes selecting a best frame from a burst mean anything.
     expect(new Set(candidates.map((c) => c.frame.id)).size).toBe(5);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the review strip shows the frames, not just their scores', async ({ page }) => {
+  // The pixel path outward, end to end (ADR 0038). Everything inward is covered above; this is
+  // the return leg — the store's bytes reduced by the preview engine, encoded by the generated
+  // codec, back across the worker as a transferred buffer, and drawn onto a canvas by the review
+  // client. Every piece has a test against a fake; this is the only place they meet, and the only
+  // check that would notice a strip that went back to being a line of numbers.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, {
+      timeout: 15000,
+    });
+
+    // The panel folds away while a capture runs, so reviewing means asking for it back — which is
+    // what a user does when the burst is in and they want to look at it.
+    await page.locator('#panel-toggle').click();
+    const captured = page.locator('#coverage-map .cell[data-state="covered"]').first();
+    await expect(captured).toBeVisible({ timeout: 15000 });
+    await captured.click({ timeout: 5000 });
+
+    await expect(page.locator('#strip-heading')).toContainText(/candidates, best first/i, {
+      timeout: 15000,
+    });
+    const thumbnails = page.locator('#strip canvas.thumb[data-preview="ready"]');
+    await expect(thumbnails).toHaveCount(5, { timeout: 15000 });
+
+    const drawn = await page.evaluate(() => Array.from(
+      document.querySelectorAll('#strip canvas.thumb'),
+      (canvas) => {
+        const pixels = canvas.getContext('2d')
+          .getImageData(0, 0, canvas.width, canvas.height).data;
+        let lit = 0;
+        let darkest = 255;
+        let brightest = 0;
+        for (let at = 0; at < pixels.length; at += 4) {
+          if (pixels[at] !== 0 || pixels[at + 1] !== 0 || pixels[at + 2] !== 0) lit += 1;
+          darkest = Math.min(darkest, pixels[at]);
+          brightest = Math.max(brightest, pixels[at]);
+        }
+        return {
+          width: canvas.width, height: canvas.height, lit, darkest, brightest,
+          opaque: pixels[3] === 255,
+        };
+      }));
+
+    expect(drawn).toHaveLength(5);
+    for (const thumbnail of drawn) {
+      // Reduced, and to the size the strip asked for rather than to the frame's own.
+      expect(Math.max(thumbnail.width, thumbnail.height)).toBeLessThanOrEqual(PREVIEW_MAX_EDGE);
+      expect(thumbnail.width).toBeGreaterThan(0);
+      expect(thumbnail.lit).toBe(thumbnail.width * thumbnail.height);
+      expect(thumbnail.opaque).toBe(true);
+      // A photograph rather than a fill. Chromium's fake camera draws a moving pattern, so a
+      // preview of it has range in it — which a canvas painted from zeros, or from one averaged
+      // colour, would not.
+      expect(thumbnail.brightest - thumbnail.darkest).toBeGreaterThan(8);
+    }
   } finally {
     await server.close();
   }

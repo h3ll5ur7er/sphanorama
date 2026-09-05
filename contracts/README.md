@@ -45,8 +45,11 @@ and dispatching one would generate a call into a runtime that has no such thing.
    `tools/contract_gen.py`, along with both halves of the wire codec and the facade dispatch —
    never edit it. Change the C++ header, run the generator, and commit the output with it;
    `contract_gen.py --check` fails CI on drift.
-2. **No pixels in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is
-   the only way to reach bytes, and only inside the core.
+2. **No frames in a contract.** Frames cross as `FrameRef` handles. `IFrameStoreAccess::Pin` is
+   the only way to reach a frame's bytes, and only inside the core. The one image that leaves is a
+   `FramePreview` — reduced, bounded by `kFramePreviewMaxEdge`, and there because a page has no
+   frame store to resolve a handle against. The rule is about cost, and the reduction is what pays
+   it (ADR 0038).
 3. **No exceptions.** Everything fallible returns `Result<T>`; a bare `return status;` propagates
    a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates.
 4. **Managers are the client's only surface.** If a client needs an engine, either the client is

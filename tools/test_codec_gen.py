@@ -241,6 +241,77 @@ class MethodTableTest(unittest.TestCase):
         self.assertNotIn("static_cast<uint64_t>(in.GetF64())", cpp)
         self.assertIn("GetId(", cpp)
 
+    def test_a_parameter_is_decoded_into_the_type_the_contract_declared(self):
+        # A number crosses as a double because JavaScript has no other kind, and the mirror maps
+        # every width of integer onto it. What comes *back* has to be the type the C++ method
+        # actually takes: decoding into a `double` and passing it to an `int32_t` parameter is a
+        # narrowing the core refuses to compile under -Wconversion, so an entirely ordinary
+        # contract — a pixel count, a tile index — could not cross at all. The subset is meant to
+        # fail the build on what it cannot represent, and this it can.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Preview(int32_t maxEdge) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_facade(module)
+        self.assertIn("int32_t maxEdge{};", cpp)
+        self.assertNotIn("double maxEdge{};", cpp)
+
+    def test_a_qualified_integer_parameter_is_still_that_integer(self):
+        # The parser keeps a parameter's type as written, and the subset allows `const` and `&`.
+        # A table lookup on the raw spelling therefore misses `const int32_t`, falls back to the
+        # mirror's `double`, and quietly reinstates the narrowing the test above exists to stop —
+        # in the one place nobody would look again, because the plain spelling still works.
+        for spelling in ("const int32_t maxEdge", "const int32_t& maxEdge", "int32_t& maxEdge"):
+            module = parse(
+                "// @boundary @facade\n"
+                "class ICaptureSessionManager {\n"
+                " public:\n"
+                f"  virtual Result<CoverageState> Preview({spelling}) = 0;\n"
+                "};\n")
+            cpp = contract_gen.emit_cpp_facade(module)
+            self.assertIn("int32_t maxEdge{};", cpp, spelling)
+            self.assertNotIn("double maxEdge{};", cpp, spelling)
+
+    def test_an_integer_parameter_is_read_checked_rather_than_cast(self):
+        # Declaring it `int32_t` is only half of it. The value still crosses as a double, and
+        # `static_cast<int32_t>` of a NaN, an infinity or 1e300 is undefined — the same hazard
+        # `GetId` exists for, one door along. The reader has to refuse those rather than convert
+        # them, or a malformed message becomes whatever the cast happened to produce.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Preview(int32_t maxEdge) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_facade(module)
+        self.assertIn("maxEdge = in.GetInteger<int32_t>();", cpp)
+        self.assertNotIn("static_cast<decltype(maxEdge)>(in.GetF64())", cpp)
+
+    def test_a_double_parameter_is_not_read_as_an_integer(self):
+        # The other half again: an angle is not a count, and routing one through an integer read
+        # would refuse every fraction the contract exists to carry.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Aim(double azimuthDeg) = 0;\n"
+            "};\n")
+        self.assertNotIn("GetInteger", contract_gen.emit_cpp_facade(module))
+
+    def test_a_double_parameter_is_still_a_double(self):
+        # The other half, so the fix above cannot be "always int32_t": most numbers in these
+        # contracts are angles and fractions, and rounding one at the boundary would be a
+        # reticle in the wrong place rather than a compile error.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Aim(double azimuthDeg) = 0;\n"
+            "};\n")
+        self.assertIn("double azimuthDeg{};", contract_gen.emit_cpp_facade(module))
+
     def test_a_list_count_is_bounded_by_its_element_size_not_by_one_byte(self):
         # GetCount(1) lets a payload claim one element per byte present. Sized from that claim,
         # a small malformed message becomes a very large allocation: a hundred kilobytes of

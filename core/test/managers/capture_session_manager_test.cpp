@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
+#include "engines/frame_preview_engine/box_frame_preview_engine.h"
+#include "support/recording_frame_store_access.h"
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
@@ -49,6 +51,19 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
   }
   return Fail(StatusCode::Internal, "test", "the burst never finished");
 }
+
+// A preview engine that refuses, for the manager tests that are not about previews.
+//
+// A real one wired to the fixture's store would be wrong wiring in every test that builds a store
+// of its own — inert, because nothing asks it for a preview, and exactly the kind of thing that
+// stops being inert the day somebody adds an assertion. Refusing says what is true: previews are
+// not under test here.
+class RefusingFramePreviewEngine final : public IFramePreviewEngine {
+ public:
+  Result<FramePreview> Reduce(const FrameRef&, int32_t) override {
+    return Err<FramePreview>(StatusCode::Unsupported, "test", "no previews in this test");
+  }
+};
 
 // Ranks backwards through capture order. What matters is only that it disagrees with the order
 // frames arrived in, so a manager that hands back capture order cannot pass by accident.
@@ -91,8 +106,8 @@ class CaptureSession : public ::testing::Test {
     // Begin conjure it is the point of the test below.
     (void)projects->WriteDocument(kProject, "title", "test project");
 
-    manager = std::make_unique<CaptureSessionManager>(
-        planner, pose, quality, *camera, *sensor, *store, *projects, clock);
+    manager = std::make_unique<CaptureSessionManager>(planner, pose, quality, preview, *camera,
+                                                      *sensor, *store, *projects, clock);
   }
 
   Status FireBurst(NodeId node, const BurstSpec& burst) {
@@ -116,6 +131,7 @@ class CaptureSession : public ::testing::Test {
   NullCoveragePlannerEngine planner;
   NullPoseEngine pose;
   NullFrameQualityEngine quality;
+  RefusingFramePreviewEngine preview;
   std::shared_ptr<MemoryFrameStoreAccess> store;
   std::unique_ptr<FakeCameraAccess> camera;
   std::unique_ptr<FakeMotionSensorAccess> sensor;
@@ -129,7 +145,8 @@ TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   // demand — so a session begun against an arbitrary id leaves a project behind with no title,
   // which then shows up in the user's list as a blank row nobody made.
   FakeProjectStoreAccess empty;
-  CaptureSessionManager orphan(planner, pose, quality, *camera, *sensor, *store, empty, clock);
+  CaptureSessionManager orphan(planner, pose, quality, preview, *camera, *sensor, *store, empty,
+                               clock);
   auto begun = orphan.Begin(ProjectId{404}, Spec());
   EXPECT_EQ(begun.status.code, StatusCode::NotFound);
   // Refused before the camera is touched: a permission prompt for a session that cannot start is
@@ -324,7 +341,8 @@ TEST_F(CaptureSession, ABurstThatCannotBeRankedIsRolledBackToo) {
   // end up holding candidates the selection engine had failed on while the burst reported
   // success. Picking the best of a burst is the point; an unrankable burst is not a capture.
   UnrankableFrameQualityEngine unrankable;
-  CaptureSessionManager manager(planner, pose, unrankable, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager manager(planner, pose, unrankable, preview, *camera, *sensor, *store,
+                                *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -361,7 +379,8 @@ TEST_F(CaptureSession, AFailedPlanClosesTheCameraItOpened) {
   // that never started. Rejecting an unsupported strategy and a nonsense field of view, both
   // added recently, are exactly what make this reachable.
   RefusingCoveragePlannerEngine refusing;
-  CaptureSessionManager manager(refusing, pose, quality, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager manager(refusing, pose, quality, preview, *camera, *sensor, *store,
+                                *projects, clock);
 
   EXPECT_EQ(manager.Begin(kProject, Spec()).status.code, StatusCode::Unsupported);
   EXPECT_FALSE(camera->IsOpen());
@@ -375,7 +394,8 @@ TEST_F(CaptureSession, AFailedScoreDoesNotBecomeACandidateWithAZeroScore) {
   // reports a cell complete that nothing ever judged. Selection would later pick a "best" frame
   // from a set where every score is a placeholder.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
+                                *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -394,7 +414,8 @@ TEST_F(CaptureSession, AFailedBurstReleasesTheFramesItAlreadyTook) {
   // leaves a burst pinned in the store with nothing holding the handles — and a full sphere of
   // those is the memory ceiling this whole design is arranged around.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
+                                *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -408,7 +429,8 @@ TEST_F(CaptureSession, AFailedBurstReleasesTheFramesItAlreadyTook) {
 TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccepted) {
   // Same reasoning, except the frame belongs to the caller — so it is reported, not forgotten.
   RefusingFrameQualityEngine refusing;
-  CaptureSessionManager manager(planner, pose, refusing, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
+                                *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -672,7 +694,8 @@ TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   // being fired at" and "the nearest cell" are the same answer and the assertion cannot fail —
   // which it did not, until a deliberate sabotage of the line under test failed to turn it red.
   RingsCoveragePlannerEngine rings;
-  CaptureSessionManager real(rings, pose, quality, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager real(rings, pose, quality, preview, *camera, *sensor, *store, *projects,
+                             clock);
   CapturePlanSpec spec = Spec();
   spec.horizontalFovDeg = 66.0;
   spec.verticalFovDeg = 50.0;
@@ -834,8 +857,8 @@ TEST_F(CaptureSession, ATickThatFailsBeforeTheBurstStillGivesTheLocksBack) {
   // Left armed, the exposure stays locked — and the client stops ticking once a call fails, so
   // nothing would ever reach the cleanup. The lock would outlive the session.
   UnlocatablePlannerEngine unlocatable;
-  CaptureSessionManager manager(unlocatable, pose, quality, *camera, *sensor, *store, *projects,
-                                clock);
+  CaptureSessionManager manager(unlocatable, pose, quality, preview, *camera, *sensor, *store,
+                                *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
@@ -856,7 +879,7 @@ TEST_F(CaptureSession, ATickWhosePoseFailsAlsoGivesTheLocksBack) {
   // other, and they are separate lines. A sabotage of the pose guard passed every test until this
   // one existed, which is the whole argument for writing it.
   UnintegrablePoseEngine unintegrable;
-  CaptureSessionManager manager(planner, unintegrable, quality, *camera, *sensor, *store,
+  CaptureSessionManager manager(planner, unintegrable, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
@@ -904,7 +927,7 @@ TEST_F(CaptureSession, ATickThatFailsWhileTheUnlockAlsoFailsReportsBothRatherTha
   // what this used to do — and the client stops ticking once a call fails, so the lock would
   // outlive the session with nothing anywhere holding the knowledge that it had been taken.
   UnintegrablePoseEngine unintegrable;
-  CaptureSessionManager manager(planner, unintegrable, quality, *camera, *sensor, *store,
+  CaptureSessionManager manager(planner, unintegrable, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
@@ -1150,6 +1173,71 @@ TEST_F(CaptureSession, ASessionCanBeBegunAgainAfterEnding) {
   EXPECT_TRUE(manager->Candidates(FirstNode()).value.empty());
 }
 
+// ------------------------------------------------------------------- candidate previews
+//
+// The other half of `Candidates`: a person choosing between five frames of the same wall has to
+// see them, and a `FrameRef` is no use to a page with no frame store to resolve one against
+// (ADR 0038). What the manager owns here is the lookup and the residency — the reduction itself
+// is the preview engine's, and its own suite is where the pixels are asserted.
+
+TEST_F(CaptureSession, APreviewShowsTheFrameACandidateNames) {
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
+                               *projects, clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(viewer, clock, node, BurstSpec{}).ok());
+  const std::vector<Candidate> ranked = viewer.Candidates(node).value;
+  ASSERT_FALSE(ranked.empty());
+
+  auto preview = viewer.CandidatePreview(node, ranked.front().id, 128);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+  // The frame it names, not merely a frame: a lookup that took the first candidate of the cell
+  // would pass every other assertion here while showing the wrong picture.
+  EXPECT_EQ(preview.value.frame.value, ranked.front().frame.id.value);
+  EXPECT_EQ(preview.value.format, PixelFormat::RGBA8);
+  EXPECT_GT(preview.value.width, 0);
+  EXPECT_GT(preview.value.height, 0);
+  EXPECT_EQ(preview.value.pixels.size(),
+            static_cast<size_t>(preview.value.width * preview.value.height * 4));
+}
+
+TEST_F(CaptureSession, APreviewOfACandidateTheCellNoLongerHoldsIsNotFound) {
+  // A replace-retake forgets a cell's frames, and a review client can be holding a strip it
+  // fetched a moment before that happened. `candidates.ts` already copes with a *selection* that
+  // outlives what it names; this is the same staleness one call further down.
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
+                               *projects, clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(viewer, clock, node, BurstSpec{}).ok());
+  const CandidateId stale = viewer.Candidates(node).value.front().id;
+
+  ASSERT_TRUE(viewer.RequestRetake(node, true).ok());
+  auto preview = viewer.CandidatePreview(node, stale, 128);
+  EXPECT_EQ(preview.status.code, StatusCode::NotFound);
+}
+
+TEST_F(CaptureSession, APreviewOfACellThatIsNotInThePlanIsNotFound) {
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
+                               *projects, clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+
+  auto preview = viewer.CandidatePreview(NodeId{9999}, CandidateId{1}, 128);
+  EXPECT_EQ(preview.status.code, StatusCode::NotFound);
+}
+
+TEST_F(CaptureSession, APreviewWithoutASessionIsRefused) {
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
+                               *projects, clock);
+
+  auto preview = viewer.CandidatePreview(NodeId{1}, CandidateId{1}, 128);
+  EXPECT_EQ(preview.status.code, StatusCode::FailedPrecondition);
+}
+
 // ------------------------------------------------------------------- under memory pressure
 //
 // Ranks by identity, newest first, whatever order the cell happens to be in.
@@ -1219,13 +1307,13 @@ class CaptureSessionRetakes : public CaptureSession {
   ForgetfulQualityEngine forgetful;
 
   std::unique_ptr<CaptureSessionManager> Rebuilt() {
-    return std::make_unique<CaptureSessionManager>(planner, pose, newestFirst, *camera, *sensor,
-                                                   *store, *projects, clock);
+    return std::make_unique<CaptureSessionManager>(planner, pose, newestFirst, preview, *camera,
+                                                   *sensor, *store, *projects, clock);
   }
 
   std::unique_ptr<CaptureSessionManager> RebuiltForgetful() {
-    return std::make_unique<CaptureSessionManager>(planner, pose, forgetful, *camera, *sensor,
-                                                   *store, *projects, clock);
+    return std::make_unique<CaptureSessionManager>(planner, pose, forgetful, preview, *camera,
+                                                   *sensor, *store, *projects, clock);
   }
 };
 
@@ -1551,8 +1639,8 @@ class CaptureSessionUnderPressure : public ::testing::Test {
     sensor = std::make_unique<FakeMotionSensorAccess>();
     projects = std::make_unique<FakeProjectStoreAccess>();
     (void)projects->WriteDocument(kProject, "title", "test project");
-    manager = std::make_unique<CaptureSessionManager>(rings, pose, quality, *camera, *sensor,
-                                                      *store, *projects, clock);
+    manager = std::make_unique<CaptureSessionManager>(rings, pose, quality, preview, *camera,
+                                                      *sensor, *store, *projects, clock);
   }
 
   Status FireBurst(NodeId node, const BurstSpec& burst) {
@@ -1575,6 +1663,7 @@ class CaptureSessionUnderPressure : public ::testing::Test {
   RingsCoveragePlannerEngine rings;
   NullPoseEngine pose;
   NullFrameQualityEngine quality;
+  RefusingFramePreviewEngine preview;
   std::shared_ptr<MemoryFrameStoreAccess> store;
   std::unique_ptr<FakeCameraAccess> camera;
   std::unique_ptr<FakeMotionSensorAccess> sensor;
@@ -1674,6 +1763,86 @@ TEST_F(CaptureSessionUnderPressure, AnOfferedFrameIsNotCooledByALaterBurst) {
   EXPECT_EQ(spilled, 3);
 }
 
+TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesASpilledFrameSpilled) {
+  // The failure ADR 0023 named in advance and did not solve: "a review client faulting a sphere's
+  // frames back in to display them is a caller with no natural finished moment". Reading a
+  // preview goes through Pin, which faults the frame in; leaving it resident means a user who
+  // opens three cells has filled a phone's heap by browsing. The moment is knowable exactly — the
+  // reduced copy exists — and the session is what knows it, which is the same split as `Cool`.
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(viewer, clock, node, burst).ok());
+
+  const std::vector<Candidate> captured = viewer.Candidates(node).value;
+  ASSERT_EQ(captured.size(), 3u);
+  ASSERT_EQ(store->ResidencyOf(captured.front().frame).value, Residency::Spilled);
+
+  auto preview = viewer.CandidatePreview(node, captured.front().id, 128);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+  EXPECT_EQ(store->ResidencyOf(captured.front().frame).value, Residency::Spilled)
+      << "a frame faulted in to be looked at stayed in the heap";
+  // And the heap is genuinely back where it was, not merely relabelled.
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
+}
+
+TEST_F(CaptureSessionUnderPressure, ReadingAPreviewPutsAFrameBackInTheTierItCameFrom) {
+  // The two tests around this one cover the tiers `MemoryFrameStoreAccess` can actually be in.
+  // The contract promises more than that — "whatever residency a frame had before this call, it
+  // has after it" — and a restore written as `if it was spilled` keeps that promise only by
+  // coincidence, for as long as no store has a third tier. A `GpuTexture` frame would be faulted
+  // into the heap to be looked at and quietly left there, which is the same leak this whole
+  // mechanism exists to stop, in the one case nothing here can see.
+  RecordingFrameStoreAccess recording{*store};
+  BoxFramePreviewEngine reducer{recording};
+  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, recording,
+                               *projects, clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(viewer, clock, node, burst).ok());
+  const std::vector<Candidate> captured = viewer.Candidates(node).value;
+  ASSERT_FALSE(captured.empty());
+
+  // From here the store says every frame is in a tier this build has never produced.
+  recording.ClaimResidency(Residency::GpuTexture);
+  const size_t before = recording.demotions().size();
+  auto preview = viewer.CandidatePreview(node, captured.front().id, 64);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+
+  ASSERT_GT(recording.demotions().size(), before)
+      << "the frame was read and nothing was asked to put it back";
+  EXPECT_EQ(recording.demotions().back(), Residency::GpuTexture)
+      << "the frame was put back somewhere other than where it was found";
+}
+
+TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesAResidentFrameResident) {
+  // The other direction, and it is not symmetry for its own sake. `OfferFrame`'s frames belong to
+  // the caller (ADR 0023), so a preview that *spilled* one would send a handle somebody else is
+  // holding to a sink they do not know exists. What this restores is the residency it found, not
+  // a residency it prefers.
+  BoxFramePreviewEngine reducer{*store};
+  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, *store, *projects,
+                               clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+
+  auto borrowed = store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(borrowed.ok());
+  ASSERT_TRUE(viewer.OfferFrame(node, borrowed.value, PoseSample{}).ok());
+  const CandidateId offered = viewer.Candidates(node).value.front().id;
+  ASSERT_NE(store->ResidencyOf(borrowed.value).value, Residency::Spilled);
+
+  ASSERT_TRUE(viewer.CandidatePreview(node, offered, 128).ok());
+  EXPECT_NE(store->ResidencyOf(borrowed.value).value, Residency::Spilled)
+      << "a frame the caller still owns was sent to the sink to tidy up after a preview";
+}
+
 TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaultedIn) {
   // Cooling on the way out of a *successful* burst only is a leak with a plausible cover story.
   // Scoring a retake reads its siblings, which faults the cell's spilled frames back into the
@@ -1682,7 +1851,8 @@ TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaulte
   // session. Which is the allocation failure the whole policy exists to prevent, arriving by the
   // one path that skips the policy.
   SharpnessFrameQualityEngine sharp{*store};
-  CaptureSessionManager real(rings, pose, sharp, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager real(rings, pose, sharp, preview, *camera, *sensor, *store, *projects,
+                             clock);
   ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
@@ -1714,7 +1884,8 @@ TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHea
   // quietly lossy: siblings that cannot be read are skipped rather than reported, so a broken
   // fault-in would show up as exposure agreement silently computed against nothing.
   SharpnessFrameQualityEngine sharp{*store};
-  CaptureSessionManager real(rings, pose, sharp, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager real(rings, pose, sharp, preview, *camera, *sensor, *store, *projects,
+                             clock);
   ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
@@ -1746,8 +1917,8 @@ TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHea
 
 TEST_F(CaptureSession, CandidatesComeBackRankedRatherThanInCaptureOrder) {
   ReversedQualityEngine reversed;
-  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
-                               clock);
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
   ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
@@ -1767,8 +1938,8 @@ TEST_F(CaptureSession, ARankingThatNamesACandidateTwiceDoesNotDuplicateIt) {
   // shows both in force, and cooling and forgetting each run twice over one frame.
   ReversedQualityEngine reversed;
   reversed.RepeatTheBest(true);
-  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
-                               clock);
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
   ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
@@ -1786,8 +1957,8 @@ TEST_F(CaptureSession, AnOfferedFrameTakesItsPlaceInTheRankingRatherThanTheEnd) 
   // An imported frame is evidence like any other and may be the best of the set. Appending it
   // unranked would put a better frame behind worse ones for the rest of the session.
   ReversedQualityEngine reversed;
-  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
-                               clock);
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
   ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 2;
@@ -1810,8 +1981,8 @@ TEST_F(CaptureSession, AnOfferThatCannotBeRankedLeavesTheCellAlone) {
   // candidate the selection engine has already failed on is worse than a rejected offer: the
   // failure is invisible and the strip is in an order nothing chose.
   ReversedQualityEngine reversed;
-  CaptureSessionManager ranked(planner, pose, reversed, *camera, *sensor, *store, *projects,
-                               clock);
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
   ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 2;
@@ -1849,7 +2020,7 @@ TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
   // both managers' own suites green. This is the only test that would notice.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ProjectManager listing(*projects);
 
@@ -1878,7 +2049,7 @@ TEST_F(ResumedSession, ANewSessionEmptiesTheSpillTier) {
   // issue unclaimed.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -1887,8 +2058,8 @@ TEST_F(ResumedSession, ANewSessionEmptiesTheSpillTier) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
 
   EXPECT_EQ(sink.HeldCount(), 0u) << "the new capture began on top of the old one's frames";
@@ -1902,7 +2073,7 @@ TEST_F(ResumedSession, ResumingLeavesTheSpillTierAlone) {
   // its effect, that would be the bug here.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -1913,8 +2084,8 @@ TEST_F(ResumedSession, ResumingLeavesTheSpillTierAlone) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
 
   EXPECT_EQ(sink.Clears(), clearsAfterCapture) << "the resume emptied the tier it came back for";
@@ -1934,7 +2105,7 @@ TEST_F(ResumedSession, AnAbandonedSphereCannotBeHalfResumed) {
   // `RefusesADocumentFromACaptureTheTierNoLongerHolds` below (ADR 0035).
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -1942,15 +2113,15 @@ TEST_F(ResumedSession, AnAbandonedSphereCannotBeHalfResumed) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
   const NodeId node = second.GetPlan().value.nodes.front().id;
   ASSERT_TRUE(second.End().ok());
 
   auto third_store = NewStore();
   FakeCameraAccess third_camera(third_store);
-  CaptureSessionManager third(planner, pose, quality, third_camera, *sensor, *third_store,
+  CaptureSessionManager third(planner, pose, quality, preview, third_camera, *sensor, *third_store,
                               *projects, clock);
   ASSERT_TRUE(third.Resume(kProject).ok());
 
@@ -1982,7 +2153,7 @@ TEST_F(ResumedSession, RefusesADocumentFromACaptureTheTierNoLongerHolds) {
 
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2007,8 +2178,8 @@ TEST_F(ResumedSession, RefusesADocumentFromACaptureTheTierNoLongerHolds) {
   // store is that it starts where a fresh process starts.
   second_camera.FillFrom(0x80);
 
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Begin(kOther, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(second, clock, second.GetPlan().value.nodes.front().id,
                           BurstSpec{}).ok());
@@ -2024,7 +2195,7 @@ TEST_F(ResumedSession, RefusesADocumentFromACaptureTheTierNoLongerHolds) {
 
   auto third_store = NewStore();
   FakeCameraAccess third_camera(third_store);
-  CaptureSessionManager third(planner, pose, quality, third_camera, *sensor, *third_store,
+  CaptureSessionManager third(planner, pose, quality, preview, third_camera, *sensor, *third_store,
                               *projects, clock);
 
   auto resumed = third.Resume(kProject);
@@ -2045,7 +2216,7 @@ TEST_F(ResumedSession, TheDocumentSaysWhichTierItsFramesAreIn) {
   // feature with it.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2077,8 +2248,8 @@ TEST_F(ResumedSession, TheDocumentSaysWhichTierItsFramesAreIn) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   auto resumed = second.Resume(kProject);
   ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
   EXPECT_EQ(second.Candidates(node).value.size(), captured);
@@ -2094,8 +2265,8 @@ TEST_F(ResumedSession, WritesNoDocumentAgainstATierThatCannotSayWhichCaptureItHo
   sink.FailGenerations(true);
   auto store = NewStore();
   FakeCameraAccess camera(store);
-  CaptureSessionManager manager_(planner, pose, quality, camera, *sensor, *store, *projects,
-                                 clock);
+  CaptureSessionManager manager_(planner, pose, quality, preview, camera, *sensor, *store,
+                                 *projects, clock);
   ASSERT_TRUE(manager_.Begin(kProject, Spec()).ok());
   const NodeId node = manager_.GetPlan().value.nodes.front().id;
   ASSERT_TRUE(FireBurstOn(manager_, clock, node, BurstSpec{}).ok());
@@ -2112,7 +2283,7 @@ TEST_F(ResumedSession, RefusesToResumeAgainstATierThatCannotSayWhichCaptureItHol
   // ones it names. Refusing is the only answer that is not a guess.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2120,8 +2291,8 @@ TEST_F(ResumedSession, RefusesToResumeAgainstATierThatCannotSayWhichCaptureItHol
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   sink.FailGenerations(true);
   EXPECT_FALSE(second.Resume(kProject).ok());
   EXPECT_EQ(second_camera.Opens(), 0);
@@ -2138,7 +2309,7 @@ TEST_F(ResumedSession, BringsBackTheCandidatesAndTheBytesBehindThem) {
   // that says done, pointing at frames nothing can ever build from.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
 
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
@@ -2151,8 +2322,8 @@ TEST_F(ResumedSession, BringsBackTheCandidatesAndTheBytesBehindThem) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
 
   auto resumed = second.Resume(kProject);
   ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
@@ -2184,7 +2355,7 @@ TEST_F(ResumedSession, ComesBackFromASessionThatWasNeverEnded) {
   // on disk has to be whatever was true at the last cell, not whatever a clean exit wrote.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2195,8 +2366,8 @@ TEST_F(ResumedSession, ComesBackFromASessionThatWasNeverEnded) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
   EXPECT_EQ(second.Candidates(node).value.size(), captured);
 }
@@ -2210,7 +2381,7 @@ TEST_F(ResumedSession, DoesNotBringBackAFrameTheSessionNeverOwned) {
   // holding it.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2225,8 +2396,8 @@ TEST_F(ResumedSession, DoesNotBringBackAFrameTheSessionNeverOwned) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
 
   auto restored = second.Candidates(node);
@@ -2253,7 +2424,7 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   RingsCoveragePlannerEngine rings;
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(rings, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   CapturePlanSpec spec = Spec();
   spec.acceptanceConeDeg = 7.5;
@@ -2270,7 +2441,7 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   wider.horizontalFovDeg = 110.0;
   wider.verticalFovDeg = 90.0;
   second_camera.SetCapabilities(wider);
-  CaptureSessionManager second(rings, pose, quality, second_camera, *sensor, *second_store,
+  CaptureSessionManager second(rings, pose, quality, preview, second_camera, *sensor, *second_store,
                                *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
 
@@ -2336,8 +2507,8 @@ TEST_F(ResumedSession, ASessionDoesNotBeginOnATierThatWillNotEmpty) {
   auto inner = NewStore();
   StubbornStore stubborn(inner, 0);
   FakeCameraAccess camera(inner);
-  CaptureSessionManager manager(planner, pose, quality, camera, *sensor, stubborn, *projects,
-                                clock);
+  CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, stubborn,
+                                *projects, clock);
   stubborn.RefuseClear(true);
 
   EXPECT_FALSE(manager.Begin(kProject, Spec()).ok());
@@ -2370,7 +2541,8 @@ TEST_F(ResumedSession, ASessionThatCannotBePlannedLeavesTheTierAlone) {
   // the spec leaves it unset — the first arrangement here did that and began perfectly happily.
   impossible.overlapTarget = 1.0;
   RingsCoveragePlannerEngine rings;
-  CaptureSessionManager planned(rings, pose, quality, camera, *sensor, stubborn, *projects, clock);
+  CaptureSessionManager planned(rings, pose, quality, preview, camera, *sensor, stubborn, *projects,
+                                clock);
   EXPECT_FALSE(planned.Begin(kProject, impossible).ok());
 
   EXPECT_EQ(stubborn.Clears(), 0) << "the tier was emptied for a session that never started";
@@ -2411,7 +2583,7 @@ TEST_F(ResumedSession, AFailedRestoreLeavesTheCaptureWhereItWas) {
   // identity the document gave it is exactly the frame the next attempt asks for.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2425,15 +2597,15 @@ TEST_F(ResumedSession, AFailedRestoreLeavesTheCaptureWhereItWas) {
   {
     StubbornStore stubborn(inner, 2);   // it takes two of the three, then stops
     FakeCameraAccess failing_camera(inner);
-    CaptureSessionManager attempt(planner, pose, quality, failing_camera, *sensor, stubborn,
-                                  *projects, clock);
+    CaptureSessionManager attempt(planner, pose, quality, preview, failing_camera, *sensor,
+                                  stubborn, *projects, clock);
     EXPECT_FALSE(attempt.Resume(kProject).ok());
   }
 
   // Straight into a second attempt, against the same store — which is what a page retrying gets,
   // since the store lives as long as the worker does.
   FakeCameraAccess second_camera(inner);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor, *inner,
                                *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
 
@@ -2452,7 +2624,7 @@ TEST_F(ResumedSession, AResumeThatFailsAfterTakingTheFramesCanStillBeTriedAgain)
   // the destructive path above — while one that leaves them makes the retry cheaper, not broken.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2463,13 +2635,13 @@ TEST_F(ResumedSession, AResumeThatFailsAfterTakingTheFramesCanStillBeTriedAgain)
   UnwillingPoseEngine unwilling;
   {
     FakeCameraAccess sulking(inner);
-    CaptureSessionManager attempt(planner, unwilling, quality, sulking, *sensor, *inner,
+    CaptureSessionManager attempt(planner, unwilling, quality, preview, sulking, *sensor, *inner,
                                   *projects, clock);
     EXPECT_EQ(attempt.Resume(kProject).status.code, StatusCode::SensorUnavailable);
   }
 
   FakeCameraAccess second_camera(inner);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *inner,
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor, *inner,
                                *projects, clock);
   EXPECT_TRUE(second.Resume(kProject).ok());
 }
@@ -2482,7 +2654,7 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
   // malformed anyway would be refused by the parse and prove nothing about the version line.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2498,8 +2670,8 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
 
   auto store_with_sink = NewStore();
   FakeCameraAccess fresh_camera(store_with_sink);
-  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
-                                 *projects, clock);
+  CaptureSessionManager manager_(planner, pose, quality, preview, fresh_camera, *sensor,
+                                 *store_with_sink, *projects, clock);
 
   EXPECT_EQ(manager_.Resume(kProject).status.code, StatusCode::Unsupported);
   EXPECT_FALSE(fresh_camera.IsOpen());
@@ -2536,7 +2708,7 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
   // hold, so the first thing to go wrong would go wrong a long way from here.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2557,8 +2729,8 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
 
     auto store_with_sink = NewStore();
     FakeCameraAccess camera(store_with_sink);
-    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
-                                  *projects, clock);
+    CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
     EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
   }
@@ -2570,7 +2742,7 @@ TEST_F(ResumedSession, RefusesADocumentThatNamesAnotherTier) {
   // this one is what would still be true if some future Begin stopped clearing the tier.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2584,8 +2756,8 @@ TEST_F(ResumedSession, RefusesADocumentThatNamesAnotherTier) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   auto resumed = second.Resume(kProject);
   EXPECT_EQ(resumed.status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(second_camera.Opens(), 0);
@@ -2603,8 +2775,8 @@ TEST_F(ResumedSession, RefusesADocumentWithNoTierLineAtAll) {
   // have passed without reaching the rule it is about.
   auto tierless = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeCameraAccess first_camera(tierless);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *tierless, *projects,
-                              clock);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *tierless,
+                              *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(first.End().ok());
 
@@ -2627,8 +2799,8 @@ TEST_F(ResumedSession, RefusesADocumentWithNoTierLineAtAll) {
 
   auto second_tierless = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeCameraAccess second_camera(second_tierless);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_tierless,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_tierless, *projects, clock);
   EXPECT_EQ(second.Resume(kProject).status.code, StatusCode::Unsupported);
   EXPECT_EQ(second_camera.Opens(), 0);
 
@@ -2645,7 +2817,7 @@ TEST_F(ResumedSession, RefusesALineCarryingMoreThanItShould) {
   // is how a session comes back missing whatever the extra field was there to say.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2668,8 +2840,8 @@ TEST_F(ResumedSession, RefusesALineCarryingMoreThanItShould) {
 
     auto store_with_sink = NewStore();
     FakeCameraAccess camera(store_with_sink);
-    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
-                                  *projects, clock);
+    CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << "a trailing field on the " << tag << " line";
   }
 }
@@ -2682,7 +2854,7 @@ TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
   // far as everything downstream can tell.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   const NodeId node = first.GetPlan().value.nodes.front().id;
@@ -2698,8 +2870,8 @@ TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   ASSERT_TRUE(second.Resume(kProject).ok());
   ASSERT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
 
@@ -2718,7 +2890,7 @@ TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
   // can ever aim at — a capture that can never finish, with no way to see why.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2736,8 +2908,8 @@ TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
 
   auto second_store = NewStore();
   FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
-                               *projects, clock);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
   EXPECT_FALSE(second.Resume(kProject).ok());
   // Never asked for, rather than opened and closed again: the prompt and the indicator have
   // already happened by the time a failure path gets round to closing it.
@@ -2755,7 +2927,7 @@ TEST_F(ResumedSession, DoesNotAskForTheCameraForAResumeThatCannotHappen) {
   // store with no spill tier, which refuses every Adopt.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
@@ -2763,7 +2935,7 @@ TEST_F(ResumedSession, DoesNotAskForTheCameraForAResumeThatCannotHappen) {
 
   MemoryFrameStoreAccess sinkless{1 << 22};
   FakeCameraAccess camera(std::make_shared<MemoryFrameStoreAccess>(1 << 22));
-  CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, sinkless,
+  CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor, sinkless,
                                 *projects, clock);
 
   EXPECT_FALSE(attempt.Resume(kProject).ok());
@@ -2776,8 +2948,8 @@ TEST_F(ResumedSession, RefusesAProjectThatWasNeverCaptured) {
   // capture whose cells had all been lost.
   auto store_with_sink = NewStore();
   FakeCameraAccess fresh_camera(store_with_sink);
-  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
-                                 *projects, clock);
+  CaptureSessionManager manager_(planner, pose, quality, preview, fresh_camera, *sensor,
+                                 *store_with_sink, *projects, clock);
   auto resumed = manager_.Resume(kProject);
   EXPECT_EQ(resumed.status.code, StatusCode::NotFound);
   // And it must not have opened the camera to find that out.
@@ -2789,8 +2961,8 @@ TEST_F(ResumedSession, WillNotResumeOverALiveSession) {
   // map with the frames still in the store and nothing left holding the handles.
   auto store_with_sink = NewStore();
   FakeCameraAccess fresh_camera(store_with_sink);
-  CaptureSessionManager manager_(planner, pose, quality, fresh_camera, *sensor, *store_with_sink,
-                                 *projects, clock);
+  CaptureSessionManager manager_(planner, pose, quality, preview, fresh_camera, *sensor,
+                                 *store_with_sink, *projects, clock);
   ASSERT_TRUE(manager_.Begin(kProject, Spec()).ok());
   auto resumed = manager_.Resume(kProject);
   EXPECT_EQ(resumed.status.code, StatusCode::FailedPrecondition);

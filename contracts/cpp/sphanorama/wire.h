@@ -1,11 +1,12 @@
 #pragma once
 
 #include <cmath>
-
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 // Wire primitives for the generated boundary codec.
@@ -68,6 +69,27 @@ inline bool IsRepresentableId(double raw) {
   return raw >= 0.0 && raw <= 18446744073709549568.0 && raw == std::trunc(raw);
 }
 
+// Whether a double can become an integer of type T without undefined behaviour.
+//
+// The same hazard as IsRepresentableId, one door along. Every number crosses as a double because
+// JavaScript has no other kind, so an `int32_t` parameter is a double that has to become one —
+// and NaN, an infinity, a fraction and anything outside T's range are all undefined to cast.
+//
+// Both bounds are exact here, which is why this can compare directly where an identifier cannot:
+// for an integer of four bytes or fewer every representable value is a double, so `lowest()` and
+// `max()` convert without rounding. Wider types are refused at compile time rather than checked
+// approximately — 2^63 is not a double, and a bound that rounds the wrong way is a check that
+// passes the one value it exists to stop. `GetId` is the shape a 64-bit reader wants.
+template <typename T>
+inline bool IsRepresentableInteger(double raw) {
+  static_assert(std::is_integral_v<T>, "this is for integers");
+  static_assert(sizeof(T) <= 4, "a wider integer needs GetId's treatment: its bounds are not "
+                                "exactly representable as doubles");
+  return raw == std::trunc(raw) &&
+         raw >= static_cast<double>(std::numeric_limits<T>::lowest()) &&
+         raw <= static_cast<double>(std::numeric_limits<T>::max());
+}
+
 class Reader {
  public:
   Reader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
@@ -109,6 +131,20 @@ class Reader {
   // corrupt length prefix would otherwise turn one bad byte into a multi-gigabyte allocation.
   // An identifier, checked. See IsRepresentableId: a value that is not a whole non-negative
   // number in range fails the reader rather than being cast.
+  // A number that has to become an integer, checked. See IsRepresentableInteger: a value the
+  // conversion is not defined for fails the reader rather than being cast, which turns undefined
+  // behaviour into the facade's own "malformed arguments".
+  template <typename T>
+  T GetInteger() {
+    const double raw = GetF64();
+    if (failed_) return 0;
+    if (!IsRepresentableInteger<T>(raw)) {
+      failed_ = true;
+      return 0;
+    }
+    return static_cast<T>(raw);
+  }
+
   uint64_t GetId() {
     const double raw = GetF64();
     if (failed_) return 0;

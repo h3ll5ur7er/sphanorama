@@ -28,6 +28,7 @@ wrong place.
 | V13 | **How images are decoded/encoded and metadata written** — browser codecs vs libjpeg-turbo in WASM, JPEG vs AVIF, XMP GPano | Format support, output requirements | `IImageCodecAccess` |
 | V14 | **Where heavy math executes** — scalar C++, WASM SIMD, WASM threads, WebGPU compute | Device capability | `IComputeDeviceAccess` |
 | V15 | **How a result leaves the device** — download, Web Share, File System Access, clipboard | Platform APIs | `IExportAccess` |
+| V16 | **How a stored frame is made small enough to look at** — the reduction factor, the filter, the pixel format it lands in | The surface doing the reviewing, and what a crossing costs | `FramePreviewEngine` |
 
 ## 2.2 Axes deliberately *not* given their own component
 
@@ -38,6 +39,7 @@ wrong place.
 | "Portrait vs landscape sphere" | A parameter of V4 |
 | "Different UI skin / desktop layout" | Client-layer variation. Clients are cheap and expected to multiply |
 | "Undo/redo" | A cross-cutting concern over the project document, handled in the utilities bar as an event-sourced journal — see 04 |
+| "A thumbnail is just a small composition" | It was the closest existing owner and it is not one. V8 is *many frames becoming one image* and every method of `ICompositionEngine` takes a `GlobalSolution`; a per-frame reduction for a screen shares the word "resampling" and nothing else, and putting it there would have a capture session calling the composition engine (ADR 0038) |
 
 ## 2.3 The trap this avoids
 

@@ -73,6 +73,12 @@ through `Pin` (ADR 0023). Frames offered through `OfferFrame` belong to the call
 where they are. Peak heap during a capture is therefore one burst plus
 whatever a retake faults back in to score against, rather than the whole sphere so far.
 
+The review client is the other caller, and it is the one with no natural finished moment — opening
+a cell's strip faults in every candidate it shows. `CandidatePreview` therefore reads the frame's
+residency before reducing it and puts it back afterwards, so browsing cells does not fill the heap
+one cell at a time (ADR 0038). What crosses to the page is the reduced copy: 48 KB against the
+frame's 4.9 MB.
+
 The store's refusal is the backstop rather than the normal case, and a cooling that fails is not
 one: a store with no sink, or a sink out of quota, leaves the frames in the heap and the session
 carries on until an allocation genuinely does not fit.

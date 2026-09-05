@@ -144,6 +144,28 @@ export interface FrameRef {
   contentHash: bigint;
 }
 
+/**
+ * A frame reduced to something a screen can take — and the one place pixel bytes are a value in
+ * a contract rather than a handle.
+ * The rule they are an exception to is a rule about cost. A `FrameRef` exists so that a
+ * 1280x960 RGBA frame — 4.9 MB, and eight of them in a cell — is never serialised by value; a
+ * review strip handed the frames themselves would move 39 MB across the boundary and hold it in
+ * the page, against a browser heap ceiling of 128 MB (ADR 0023). The reduction is what pays that
+ * bill: at a long edge of 128 this is 48 KB, three orders of magnitude down, and the reason for
+ * the handle no longer applies. What a handle *cannot* do is the thing needed here — the page has
+ * no frame store to resolve one against, and `IFrameStoreAccess::Pin` reaches no further than the
+ * core (ADR 0038).
+ * Always `RGBA8` and tightly packed, so the stride is `width * 4` and there is nothing to decode:
+ * a browser can hand these straight to `ImageData` and a canvas.
+ */
+export interface FramePreview {
+  frame: FrameId;
+  width: number;
+  height: number;
+  format: PixelFormat;
+  pixels: Uint8Array;
+}
+
 /** ---------------------------------------------------------------- capture plan */
 export type TessellationStrategy = 'Rings' | 'Geodesic' | 'Adaptive';
 
@@ -529,6 +551,30 @@ export interface CaptureSessionManager {
    * means — which is V6's, and not a client's to borrow.
    */
   candidates(node: NodeId): Promise<Result<Candidate[]>>;
+  /**
+   * One candidate's frame, reduced to something a screen can take.
+   * The counterpart of `Candidates`, and the reason it is here rather than anywhere else: that
+   * call hands back what the core *knows* about a candidate, and a person choosing between five
+   * frames of the same wall needs to see them. A `FrameRef` cannot do that job — the page has no
+   * frame store to resolve one against, and `IFrameStoreAccess::Pin` reaches no further than the
+   * core — so this is the one call in the contracts that answers with pixels (ADR 0038).
+   * `maxEdge` bounds the long edge and the caller states it, because how large a thumbnail wants
+   * to be is a fact about the screen it is going on. It is bounded in turn: past
+   * `kFramePreviewMaxEdge` the reduction stops paying for itself and the call is refused.
+   * `NotFound` covers both halves of a stale request — a cell that is not in the plan, and a
+   * candidate this cell no longer holds. A replace-retake forgets a cell's frames, so a client
+   * showing a strip it fetched a moment ago can ask about a candidate that has since gone; that
+   * is an ordinary answer here rather than a fault.
+   * Reading a preview does not warm a cell. A captured cell's frames have been cooled to whatever
+   * cheaper tier the store has (ADR 0023) and faulting one in to look at it would leave it
+   * resident — eight candidates of a 1280x960 frame are 39 MB, so a user opening three cells
+   * would fill a phone's heap by browsing. Whatever residency a frame had before this call, it
+   * has after it: the tier is read first and restored by name, so a store with tiers this build
+   * has never seen gets its frame back where it had it. Best effort, and deliberately so — a
+   * store that will not take the frame back leaves it readable in the heap, which is a worse
+   * ceiling rather than a lost frame.
+   */
+  candidatePreview(node: NodeId, candidate: CandidateId, maxEdge: number): Promise<Result<FramePreview>>;
   /**
    * Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to
    * the evidence pool rather than discard it.

@@ -6,7 +6,6 @@
 #include <gtest/gtest.h>
 
 #include <limits>
-
 #include <set>
 #include <string>
 #include <vector>
@@ -173,6 +172,68 @@ TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {
   ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all";
   wire::Reader in = response.reader();
   EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
+TEST(Facade, APreviewRequestReachesTheManagerRatherThanStoppingAtTheArguments) {
+  // The one call that answers with pixels (ADR 0038), and the first with an `int32_t` parameter:
+  // the generator used to decode every number into a `double`, which the core will not narrow.
+  // Three arguments in the order the contract declares them, and a status back from the manager
+  // — `FailedPrecondition`, because nothing here has begun a session — rather than the facade's
+  // own `InvalidArgument`, which is what a parameter list read in the wrong order produces.
+  wire::Writer args;
+  args.PutF64(1.0);          // node
+  args.PutF64(1.0);          // candidate
+  args.PutF64(128.0);        // maxEdge
+  Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+  ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all";
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::FailedPrecondition);
+}
+
+TEST(Facade, ATruncatedPreviewRequestIsReportedAsAStatus) {
+  wire::Writer args;
+  args.PutF64(1.0);          // a node, and then the request simply stops
+  Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+  ASSERT_FALSE(response.bytes.empty());
+  wire::Reader in = response.reader();
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument);
+}
+
+TEST(Facade, AnIntegerArgumentThatIsNotOneIsRefusedRatherThanCast) {
+  // Every number crosses as a double, because JavaScript has no other kind, and an `int32_t`
+  // parameter is therefore a double that has to become an integer. `static_cast` of a NaN or of
+  // anything outside the target's range is undefined — the same hazard `GetId` exists for, one
+  // door along. So the reader refuses the message rather than converting it, and the caller gets
+  // the facade's own `InvalidArgument` instead of whatever the cast happened to produce.
+  for (const double raw : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(),
+                           1e300, -1e300, 2147483648.0, -2147483649.0, 12.5}) {
+    wire::Writer args;
+    args.PutF64(1.0);          // node
+    args.PutF64(1.0);          // candidate
+    args.PutF64(raw);          // maxEdge, which is an int32_t on the other side
+    Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+    ASSERT_FALSE(response.bytes.empty()) << "the facade returned nothing at all for " << raw;
+    wire::Reader in = response.reader();
+    EXPECT_EQ(ReadStatus(in).code, StatusCode::InvalidArgument) << "for " << raw;
+  }
+}
+
+TEST(Facade, AnIntegerArgumentAtTheEdgeOfItsRangeStillCrosses) {
+  // The bounds are inclusive, and asserting that matters: a check written with the wrong
+  // comparison would reject the largest valid value and nothing above would notice.
+  for (const double raw : {2147483647.0, -2147483648.0}) {
+    wire::Writer args;
+    args.PutF64(1.0);
+    args.PutF64(1.0);
+    args.PutF64(raw);
+    Response response = Call("CaptureSessionManager.candidatePreview", args.bytes());
+    ASSERT_FALSE(response.bytes.empty());
+    wire::Reader in = response.reader();
+    // Refused by the manager for having no session, which is one layer past the reader — the
+    // point is that it got there rather than being rejected as malformed.
+    EXPECT_EQ(ReadStatus(in).code, StatusCode::FailedPrecondition) << "for " << raw;
+  }
 }
 
 TEST(Facade, AListCountIsRefusedWhenThePayloadCouldNotPossiblyHoldThatMany) {

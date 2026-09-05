@@ -37,6 +37,24 @@ SCALARS = {
     "void": "void",
 }
 
+# The scalars a parameter may be declared as and decoded back into unchanged. Strings are not
+# here: a `std::string_view` parameter has to be decoded into something that owns its bytes, which
+# is the same reason the generator refuses one as a data member (ADR 0013).
+ARITHMETIC_SCALARS = frozenset(
+    name for name in SCALARS if name not in ("std::string", "std::string_view", "void"))
+
+# The integer types whose every value is exactly a double, so a decoded number can be range-checked
+# against them without the bound itself rounding. `wire::IsRepresentableInteger` refuses anything
+# wider at compile time, and says why.
+NARROW_INTEGERS = frozenset(
+    ("bool", "int8_t", "int16_t", "int32_t", "uint8_t", "uint16_t", "uint32_t")) - {"bool"}
+
+
+def _canonical_cpp(cpp: str) -> str:
+    """A parameter's type without the qualifiers a caller cannot see: `const int32_t&` is int32_t."""
+    return re.sub(r"\bconst\b", "", cpp).strip().rstrip("&").strip()
+
+
 HEADERS_IN_ORDER = (
     "types.h",
     "managers/capture_session_manager.h",
@@ -69,8 +87,15 @@ class Enum:
 
 @dataclass
 class Field:
+    """A struct member, kept in both languages.
+
+    The C++ type is not recoverable from the mirror's: every width of integer maps onto `number`.
+    A decoder written from the mirror therefore has to cast a double back down, and
+    `static_cast<int32_t>` of a NaN or a 1e300 is undefined — the same reason `Param` carries one.
+    """
     name: str
     type: str
+    cpp: str = "double"
     doc: list[str] = field(default_factory=list)
 
 
@@ -81,10 +106,25 @@ class Struct:
     doc: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class Param:
+    """A method parameter, kept in both languages.
+
+    The mirror needs the TypeScript type and the dispatcher needs the C++ one, and they are not
+    recoverable from each other: every width of integer maps onto `number`, so a parameter
+    decoded back from the mirror's type would hand an `int32_t` method a `double`. That is a
+    narrowing the core refuses to compile, which made an ordinary contract — a pixel count, a
+    tile index — impossible to cross for no reason anybody had chosen.
+    """
+    name: str
+    ts: str
+    cpp: str
+
+
 @dataclass
 class Method:
     name: str
-    params: list[tuple[str, str]]
+    params: list[Param]
     returns: str
     doc: list[str] = field(default_factory=list)
 
@@ -350,7 +390,7 @@ def _parse_fields(body: str, name: str) -> list[Field]:
                     raise ContractSyntaxError(
                         f"struct {name}: cannot parse declarator {piece!r}")
                 fields.append(Field(piece, map_type(cpp_type, f"struct {name}.{piece}"),
-                                    _collect_doc(pending)))
+                                    _canonical_cpp(cpp_type), _collect_doc(pending)))
         pending = []
     return fields
 
@@ -396,8 +436,8 @@ def _parse_methods(body: str, name: str) -> list[Method]:
     return methods
 
 
-def _parse_params(params: str, context: str) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
+def _parse_params(params: str, context: str) -> list[Param]:
+    out: list[Param] = []
     if not params.strip():
         return out
     for part in _split_params(params):
@@ -407,7 +447,8 @@ def _parse_params(params: str, context: str) -> list[tuple[str, str]]:
             raise ContractSyntaxError(
                 f"{context}: parameter {piece!r} has no name — an unnamed parameter cannot be "
                 f"mirrored, and a guessed name would document nothing")
-        out.append((m.group(2), map_type(m.group(1), f"{context} parameter {m.group(2)}")))
+        name, cpp = m.group(2), m.group(1).strip()
+        out.append(Param(name, map_type(cpp, f"{context} parameter {name}"), cpp))
     return out
 
 
@@ -454,7 +495,7 @@ class BoundaryMethod:
     cpp_interface: str      # e.g. IProjectManager
     method: str             # C++ name, e.g. Create
     wire_name: str          # e.g. ProjectManager.create
-    params: list[tuple[str, str]]
+    params: list[Param]
     returns: str
 
 
@@ -609,7 +650,7 @@ def emit_typescript(module: Module) -> str:
             out.append(f"export interface {name} {{")
             for method in decl.methods:
                 out += _doc_block(method.doc, "  ")
-                args = ", ".join(f"{p}: {t}" for p, t in method.params)
+                args = ", ".join(f"{p.name}: {p.ts}" for p in method.params)
                 out.append(f"  {lower_camel(method.name)}({args}): Promise<{method.returns}>;")
             out.append("}")
             out.append("")
@@ -741,8 +782,8 @@ def _reachable_types(module: Module, methods: list[BoundaryMethod]) -> list[str]
 
     for method in methods:
         visit(wire_kind_from_ts(method.returns))
-        for _name, ts in method.params:
-            visit(wire_kind_from_ts(ts))
+        for param in method.params:
+            visit(wire_kind_from_ts(param.ts))
 
     order = [d.name for d in module.declarations
              if isinstance(d, (Struct, Enum, IdAlias)) and d.name in wanted]
@@ -880,6 +921,17 @@ def emit_cpp_codec(module: Module) -> str:
             out.append("  (void)in; (void)value;")
         for field in struct.fields:
             kind = _field_wire_kind(struct, field)
+            if field.cpp in NARROW_INTEGERS:
+                # Read as the integer the header declared rather than cast down from the double it
+                # crossed as. `static_cast<int32_t>` of a NaN, an infinity or a 1e300 is undefined,
+                # and every one of those is a value the far side can present — the same hazard
+                # `GetId` exists for, and the same treatment.
+                #
+                # The wire is untouched: still a `PutF64` going out, so the golden hexes hold and
+                # a decoder from before this change reads the same bytes. What changes is that a
+                # number that was never an integer fails the reader instead of becoming one.
+                out.append(f"  value.{field.name} = in.GetInteger<{field.cpp}>();")
+                continue
             out.append(f"  {_cpp_get(kind, f'value.{field.name}', enums, id_set, structs=structs)}")
         out.append("  return in.ok();")
         out.append("}")
@@ -1075,9 +1127,9 @@ def emit_cpp_facade(module: Module) -> str:
         accessor = _runtime_accessor(method.interface)
         out.append(f"    case {method.id}: {{  // {method.wire_name}")
         arg_names = []
-        for name, ts in method.params:
-            kind = wire_kind_from_ts(ts)
-            decl, expr = _cpp_param_decl(name, ts, kind, enums, id_set, structs)
+        for param in method.params:
+            kind = wire_kind_from_ts(param.ts)
+            decl, expr = _cpp_param_decl(param, kind, enums, id_set, structs)
             out.extend("      " + line for line in decl)
             arg_names.append(expr)
         if method.params:
@@ -1119,16 +1171,40 @@ def _runtime_accessor(interface: str) -> str:
     return lower_camel(interface).replace("Manager", "")
 
 
-def _cpp_param_decl(name: str, ts: str, kind: str, enums: set[str], ids: set[str],
+def _cpp_param_decl(param: Param, kind: str, enums: set[str], ids: set[str],
                     structs: dict[str, Struct]) -> tuple[list[str], str]:
     """Lines declaring a decoded parameter, and the expression to pass to the manager."""
+    name = param.name
     if kind.startswith("list:"):
         inner = kind[5:]
         decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="", structs=structs)
         return ([f"std::vector<{inner}> {name};", decode], f"std::span<const {inner}>({name})")
 
     decode = _cpp_get(kind, name, enums, ids, qualifier="codec::", on_fail="", structs=structs)
-    return ([f"{_cpp_type_for(ts, enums, ids)} {name}{{}};", decode], name)
+    # The declared C++ type where the header names an arithmetic one, so that an `int32_t`
+    # parameter arrives as an `int32_t` rather than as the `double` the mirror maps every number
+    # onto — a narrowing the core refuses to compile. Strings are excluded deliberately: a
+    # `std::string_view` parameter has to be decoded into something that owns its bytes.
+    #
+    # Canonicalised first, because the parser keeps a parameter's type as written: `const int32_t`
+    # and `int32_t&` are the same type to a caller and neither matches the table, so a header that
+    # spelled either would silently fall back to `double` and reinstate the narrowing this exists
+    # to remove.
+    declared = _canonical_cpp(param.cpp)
+    declared = declared if declared in ARITHMETIC_SCALARS else None
+    if declared in NARROW_INTEGERS:
+        # Read as the integer it is rather than cast from the double it crossed as. Every number
+        # crosses as a double — JavaScript has no other kind — and `static_cast` of a NaN, an
+        # infinity or an out-of-range value is undefined. `GetInteger` refuses those the way
+        # `GetId` refuses an unrepresentable identifier, so the facade answers "malformed
+        # arguments" instead of passing on whatever the cast produced.
+        #
+        # The wire format is untouched: it is still an f64 on the wire, because a struct *field*
+        # of the same C++ type still crosses that way and one type crossing two ways depending on
+        # whether it is a field or a parameter would be worse than the lossy-but-uniform rule.
+        # Moving both is a change of its own (ADR 0038's consequences).
+        decode = f"{name} = in.GetInteger<{declared}>();"
+    return ([f"{declared or _cpp_type_for(param.ts, enums, ids)} {name}{{}};", decode], name)
 
 
 def _cpp_type_for(ts: str, enums: set[str], ids: set[str]) -> str:
@@ -1167,15 +1243,16 @@ def emit_ts_facade(module: Module) -> str:
         out.append(f"export function create{interface}Proxy(call: FacadeCall) {{")
         out.append("  return {")
         for method in group:
-            params = ", ".join(f"{n}: {_ts_param_type(t)}" for n, t in method.params)
+            params = ", ".join(f"{p.name}: {_ts_param_type(p.ts)}" for p in method.params)
             ret = method.returns
             out.append(f"    async {lower_camel(method.method)}({params}): "
                        f"Promise<C.{ret[7:-1]}> {{" if False else
                        f"    async {lower_camel(method.method)}({params}) {{")
             out.append("      const args = new Writer();")
-            for name, ts in method.params:
-                kind = wire_kind_from_ts(ts)
-                out.append(f"      {_ts_put(kind, name, enum_map, id_set, 'args', 'codec.')}")
+            for param in method.params:
+                kind = wire_kind_from_ts(param.ts)
+                out.append(
+                    f"      {_ts_put(kind, param.name, enum_map, id_set, 'args', 'codec.')}")
             out.append(f"      const raw = await call('{method.wire_name}', args.finish());")
             out.append("      const input = new Reader(raw);")
             out.append("      const status = decodeStatus(input);")
