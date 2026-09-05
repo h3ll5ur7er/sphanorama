@@ -43,7 +43,13 @@ export interface LockState {
 }
 
 /**
- * What the track said it can do for each control, verbatim from `getCapabilities()`.
+ * What the track said it can do for each control, as strings.
+ *
+ * Not verbatim: `getCapabilities()` returns a dictionary the browser fills in as it likes, so the
+ * entries are coerced with `String` rather than trusted to be strings already. A mode is only ever
+ * shown to a reader, so a value that is not a string has nothing to lose by being rendered as one
+ * — and a row that threw while formatting a status line would be worse than one naming something
+ * odd.
  *
  * `null` is a different answer from an empty list, and keeping them apart is the whole reason
  * this exists. A camera that lists `["continuous"]` has told us it has no lock to give; a track
