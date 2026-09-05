@@ -30,6 +30,15 @@ export interface SpillHost {
   write(frame: number, bytes: Uint8Array): boolean;
   read(frame: number, into: Uint8Array): boolean;
   drop(frame: number): boolean;
+  /**
+   * Empties the file, for a capture that is starting over rather than resuming.
+   *
+   * Not expressible as a sequence of `drop`s: the frames that make it necessary belong to a
+   * process that is gone, and the store asking for it has never heard of them. `false` means the
+   * file is untouched — the store's own Clear reports that upward and the session declines to
+   * begin, which is the only answer that cannot end with a new capture written over an old one.
+   */
+  clear(): boolean;
   close(): void;
 }
 
@@ -245,6 +254,25 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       if (slot === undefined) return true;
       slots.delete(frame);
       release(slot);
+      persist();
+      return true;
+    },
+
+    clear() {
+      // The file first and the map second, so a truncate that throws leaves this host still able
+      // to find every frame it could find before. The reverse order would forget them and then
+      // fail, which is the one state the caller cannot recover from: it would be told the tier is
+      // untouched while this host had already lost the only map to it.
+      try {
+        file.truncate(0);
+      } catch {
+        return false;
+      }
+      slots.clear();
+      free.clear();
+      // The high-water mark goes back with them. Keeping it would leave the new capture writing
+      // past the space it just reclaimed, which is the disk cost of every sphere ever abandoned.
+      end = 0;
       persist();
       return true;
     },

@@ -38,6 +38,11 @@ EM_JS(int32_t, host_spill_drop, (double frame), {
   return Module.sphSpill.drop(frame) ? 1 : 0;
 });
 
+EM_JS(int32_t, host_spill_clear, (), {
+  if (!Module.sphSpill) return 0;
+  return Module.sphSpill.clear() ? 1 : 0;
+});
+
 }  // namespace
 
 bool OpfsSpillSink::Available() { return host_spill_available() != 0; }
@@ -60,6 +65,16 @@ Status OpfsSpillSink::Read(uint64_t frame, std::span<uint8_t> bytes) {
   if (host_spill_read(static_cast<double>(frame), bytes.data(),
                       static_cast<int32_t>(bytes.size())) == 0) {
     return Fail(StatusCode::Internal, kComponent, "the spilled frame could not be read back");
+  }
+  return Status::Ok();
+}
+
+Status OpfsSpillSink::Clear() {
+  if (host_spill_clear() == 0) {
+    // A refusal here stops a session from beginning, which is the point: the frames still down
+    // there belong to a sphere whose document may still name them, and a capture that started
+    // anyway would issue their identities to its own frames.
+    return Fail(StatusCode::Internal, kComponent, "the spill file could not be emptied");
   }
   return Status::Ok();
 }

@@ -5,7 +5,11 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: ['bridge/test/*.spec.mjs', 'shell/e2e/*.spec.mjs'],
-  testIgnore: ['node_modules/**', 'build/**'],
+  // `.claude/**` because agent worktrees are checked out under it, and a worktree is a whole
+  // second copy of this repository — node_modules and this config included. Playwright refuses to
+  // run at all when it finds itself loaded twice. Nothing in CI has one, since CI clones fresh,
+  // which is exactly why this belongs in the file rather than in somebody's memory.
+  testIgnore: ['node_modules/**', 'build/**', '.claude/**'],
   fullyParallel: false,
   reporter: process.env.CI ? 'list' : 'line',
   use: {

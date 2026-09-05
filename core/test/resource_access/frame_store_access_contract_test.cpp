@@ -213,6 +213,103 @@ TYPED_TEST(FrameStoreAccessContract, AnAdoptedIdentityIsNeverHandedOutAgain) {
   }
 }
 
+TYPED_TEST(FrameStoreAccessContract, ClearEmptiesTheStore) {
+  // Frame identities restart at 1 in every process, and the spill tier outlives the process
+  // (ADR 0030). A new capture therefore writes over the frames an older session document still
+  // names unless something empties the tier first, and this is that something.
+  const FrameRef heap = this->Allocate();
+  const FrameRef spilled = this->Allocate();
+  ASSERT_TRUE(this->store->Demote(spilled, Residency::Spilled).ok());
+
+  ASSERT_TRUE(this->store->Clear().ok());
+
+  EXPECT_EQ(this->store->ResidencyOf(heap).status.code, StatusCode::NotFound);
+  EXPECT_EQ(this->store->ResidencyOf(spilled).status.code, StatusCode::NotFound);
+
+  auto budget = this->store->Budget();
+  ASSERT_TRUE(budget.ok());
+  EXPECT_EQ(budget.value.heapUsedBytes, 0);
+}
+
+TYPED_TEST(FrameStoreAccessContract, ClearTakesTheSpilledBytesWithIt) {
+  // The half that matters. A clear that emptied only this process's map would leave the tier
+  // holding the old capture's pixels at the offsets the next capture is about to claim — which
+  // is the corruption this exists to prevent, and it is invisible from inside the store.
+  const FrameRef frame = this->Allocate();
+  this->Fill(frame, 0x5a);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+  ASSERT_TRUE(this->sink.Holds(frame.id.value)) << "the arrangement never spilled anything";
+
+  ASSERT_TRUE(this->store->Clear().ok());
+
+  EXPECT_FALSE(this->sink.Holds(frame.id.value))
+      << "the tier still holds a frame the store has forgotten";
+  // The whole tier, not the frames this store happens to know about — the ones that make a clear
+  // necessary belong to a process that is gone, and asserting only on `frame` would pass against
+  // a store that walked its own map calling Drop.
+  EXPECT_EQ(this->sink.HeldCount(), 0u);
+  EXPECT_EQ(this->sink.Clears(), 1);
+}
+
+TYPED_TEST(FrameStoreAccessContract, ClearDoesNotHandBackAnIdentityItJustForgot) {
+  // A handle is a plain value and callers keep them: a session document names frames by id, and
+  // so does a candidate in flight. If clearing wound the counter back, a stale handle would stop
+  // being dangling and start naming somebody else's pixels — a wrong frame that reads as a right
+  // one, which is strictly worse than the NotFound above.
+  const FrameRef before = this->Allocate();
+  ASSERT_TRUE(this->store->Clear().ok());
+
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NE(this->Allocate().id.value, before.id.value) << "allocation " << i;
+  }
+}
+
+TYPED_TEST(FrameStoreAccessContract, ClearIsRefusedWhileAFrameIsPinned) {
+  // Pin guarantees the mapping until Release, and a span into a freed vector does not stop
+  // looking like a span. A store that let a clear run underneath an engine would corrupt memory
+  // rather than report anything, so the refusal is the contract.
+  const FrameRef pinned = this->Allocate();
+  const FrameRef other = this->Allocate();
+  auto mapped = this->store->Pin(pinned);
+  ASSERT_TRUE(mapped.ok()) << mapped.status.detail;
+
+  EXPECT_EQ(this->store->Clear().code, StatusCode::FailedPrecondition);
+
+  // Refused *and* unchanged: a clear that had already dropped half the store before noticing the
+  // pin would be worse than one that went through.
+  EXPECT_TRUE(this->store->ResidencyOf(other).ok()) << "the refused clear took a frame with it";
+  std::fill(mapped.value.begin(), mapped.value.end(), 0x11);
+  EXPECT_TRUE(this->store->Release(pinned).ok());
+  EXPECT_EQ(this->FirstByte(pinned), 0x11);
+
+  // And it works once the pin is gone, so the refusal is about the pin and not about the store.
+  EXPECT_TRUE(this->store->Clear().ok());
+}
+
+TYPED_TEST(FrameStoreAccessContract, AClearTheTierRefusesFailsWithTheStoreIntact) {
+  // The direction of this failure is the decision. Dropping the map anyway would leave the tier
+  // holding bytes nothing can name and the next capture writing over them — silently. Refusing
+  // means a session declines to begin on a device whose tier is stuck, which is loud, recoverable
+  // and cannot corrupt a sphere that is still on disk.
+  const FrameRef frame = this->Allocate();
+  this->Fill(frame, 0x33);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+  this->sink.FailClears(true);
+
+  EXPECT_FALSE(this->store->Clear().ok());
+
+  this->sink.FailClears(false);
+  EXPECT_TRUE(this->store->ResidencyOf(frame).ok()) << "the refused clear forgot the frame anyway";
+  EXPECT_EQ(this->FirstByte(frame), 0x33) << "and its pixels did not survive";
+}
+
+TYPED_TEST(FrameStoreAccessContract, ClearingAnEmptyStoreIsFine) {
+  // Begin calls this before every session, including the first one on a device that has never
+  // spilled anything. "Nothing to do" is the outcome the caller asked for, not a failure.
+  EXPECT_TRUE(this->store->Clear().ok());
+  EXPECT_TRUE(this->store->Clear().ok());
+}
+
 TYPED_TEST(FrameStoreAccessContract, ResidencyIsQueriedFromTheStoreNotTheHandle) {
   const FrameRef frame = this->Allocate();
   ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
