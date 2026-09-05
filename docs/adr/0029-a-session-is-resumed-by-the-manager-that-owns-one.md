@@ -77,8 +77,7 @@ load and says so.
   the candidate lines newer than the session line. Only the candidates are acted on, so a stale
   counter would have the next burst mint ids naming frames the cell already holds; nothing is lost
   by raising it and a capture is lost by refusing it. The spill index resolves its own
-  high-water mark against its slots the same way, for the same reason — the browser half carries
-  its own ADR, and points back here.
+  high-water mark against its slots the same way, for the same reason (ADR 0030).
 - **A failed resume leaves the frames it took, and can simply be tried again.** The store outlives
   the attempt — it lives as long as the worker — so a retry meets its own adoptions and accepts
   them. Adopting over a *live* frame is still refused: two different frames under one identity is
@@ -96,6 +95,9 @@ load and says so.
   yet where a reload can find them. The core is ready for them; the OPFS index and the page's
   resume flow are the next change, and until then a reload restores the document against an empty
   tier and fails at the first `Pin` — with the sink's reason, which is the honest answer.
+  *Since landed, in ADR 0030:* the tier has a resident name and a durable index, so the bytes are
+  where a reload can find them. What is still missing from the browser half is the page's own
+  resume flow, and a `Begin` that empties the tier — see that ADR's ordering note.
 - **A cost per committed cell**: one document write, proportional to the candidates captured so
   far. A full sphere's document is a few hundred lines, and it is written once per cell rather
   than once per frame.

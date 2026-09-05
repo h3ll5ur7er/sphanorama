@@ -222,7 +222,14 @@ alone under this loop rather than to stop and wait:
 2. **Self-review it** before anyone else sees it — reread the diff adversarially, and sabotage
    every new test to prove it can fail. Check the sabotage *landed*: an edit whose pattern never
    matched leaves the code untouched and every test green, which is indistinguishable from a test
-   that cannot fail. Assert the anchor before editing.
+   that cannot fail. Assert the anchor before editing. Then check it landed in the second sense —
+   name the test that should break and why, before running it. Text restored is not behaviour
+   restored, and a sabotage that changes nothing accuses the wrong party.
+
+   Self-review is also where a fix of your own gets the scrutiny a review would give it. The
+   worst defect in a recent PR was not in the feature: it was a rollback added *during* this step
+   to close a leak, which deleted the captured pixels it was unwinding. New code written to make
+   old code safer is still new code.
 3. **Open a PR and request a Copilot review.** Opening one does not summon a reviewer; ask
    explicitly, every time.
 4. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
@@ -246,10 +253,14 @@ accident anyway.
 | An engine holding state between calls | It is a manager, or the state belongs in the caller. If the contract leaves the state nowhere else to live, the contract is the defect — name the state as a value the caller threads back in (ADR 0016) |
 | A client importing an engine | The client is doing business logic, or a manager method is missing |
 | A sabotage that leaves every test green | Before concluding the test is worthless, prove the edit applied. A `sed` or a string replace whose pattern did not match reads exactly like a surviving test, and it has happened more than once |
+| A sabotage that applied, compiled, and changed nothing | Reinstating the *text* of the old code is not reinstating its *behaviour*. A rollback loop put back without the `push_back` that fills it iterates over nothing, and reads exactly like a test that cannot fail. Predict which test should break and why before running it; if a different one breaks, or none does, the sabotage is the suspect before the test is |
+| A test that passes for a reason you did not intend | It proves whatever refused the input first. A version-gate test never reached the version line, because the document it fed in was malformed in other ways too and the parser threw it out before then. Make the input valid in every respect except the one under test — build it from a real artefact and corrupt a single field |
+| A guard no test can reach | Ask whether the state is reachable *in life* before deleting it. If it is, give the fake what it needs to get there — a lock it can refuse, a close that throws — and keep the guard with a test. If it is not, delete it. What you must not do is keep an untested guard because it feels safer |
 | One edit that changed three call sites | A whole-file string replace hits every occurrence, not the one it was aimed at. Assert the match count, and prefer an anchor unique to the site |
 | A test that passes alone and fails in the suite | Run what CI runs. `npx playwright test` covers `bridge/` and `shell/` in one worker; a `-g` filtered run is a debugging aid, never the check. The same goes for reading a `tail` of the gate instead of its whole output |
 | A marker, overlay or reticle that is subtly in the wrong place | Ask which box its fractions are fractions *of*. The camera frame, the element it is drawn in and the pixels on screen are three different rectangles, and `object-fit` sits between the last two (ADR 0028) |
 | Reaching for `cv::Stitcher` | See ADR 0005. It cannot do partial rebuilds, sensor priors, or mover-aware seams — the features that justify this project |
+| A rollback that destroys what it was protecting | Before undoing work in an error path, ask what the thing being undone *is*. Forgetting an adopted frame frees the store — and drops the sink's only copy of a captured cell, so a restore that gave up halfway deleted the user's sphere to tidy up after itself. Leaving a bounded leak is almost always cheaper than deleting durable data, and an operation that is safe to repeat usually removes the need to undo anything |
 | A pixel buffer in an interface | Use `FrameRef`; pin inside the core |
 | `try` / `catch` near the boundary | Use `Result<T>` |
 | Browser types in `core/` | A resource-access contract is missing or leaking |
