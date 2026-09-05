@@ -33,6 +33,15 @@ class Repo:
     def __init__(self, root: Path):
         self.root = root
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        # Pinned rather than inherited. A fixture that produces a real merge conflict produces
+        # whatever shape the *developer's* global git config asks for, so a machine with
+        # `merge.conflictStyle = diff3` set would see a fourth marker in every conflict here and
+        # fail tests that counted three. Set explicitly so what these fixtures build is a property
+        # of the test rather than of whoever is running it; the diff3 test overrides it, which is
+        # the only place the style is the subject.
+        for key, value in (("user.email", "t@example.invalid"), ("user.name", "t"),
+                           ("merge.conflictStyle", "merge")):
+            subprocess.run(["git", "config", key, value], cwd=root, check=True)
 
     def write(self, rel: str, body: str = ""):
         path = self.root / rel
@@ -88,8 +97,7 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         root = self.repo.root
         run = lambda *a: subprocess.run(a, cwd=root, check=True,
                                         capture_output=True, text=True)
-        run("git", "config", "user.email", "t@example.invalid")
-        run("git", "config", "user.name", "t")
+        # The one place the style is the subject rather than the background.
         run("git", "config", "merge.conflictStyle", "diff3")
         self.repo.write("docs/a.md", "base\n")
         run("git", "add", "docs/a.md")
@@ -170,8 +178,6 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         # needs to be readable: the merge that left the markers has not been finished yet.
         root = self.repo.root
         run = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True, text=True)
-        run("git", "config", "user.email", "t@example.invalid")
-        run("git", "config", "user.name", "t")
         self.repo.write("docs/a.md", "base\n")
         run("git", "add", "docs/a.md")
         run("git", "commit", "-qm", "base")
