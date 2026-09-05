@@ -42,6 +42,12 @@ outlives the process and lives in storage anything with the origin can edit. `fr
 end pointer checked rejects a partial parse — `"7x"` would otherwise answer 7 to anything that
 stopped at the first non-digit, and the pick shown would be a candidate nobody chose.
 
+**And the write side refuses an unset id**, which is what makes the sentinel safe rather than
+merely chosen. `SetSelection` used to persist whatever it was handed, so `CandidateId{0}` produced
+a document holding zero — a value the reader has to call corrupt, because zero is what it answers
+for "nobody has chosen here". A writer able to create state its own reader cannot represent is the
+kind of asymmetry a sentinel invites, and the cheapest place to close it is at the door.
+
 **One document per cell, unchanged.** `selection/<node>` is what `SetSelection` already writes, so
 setting a pick does not read and rewrite its neighbours.
 

@@ -106,6 +106,25 @@ TEST_F(Projects, SelectionOnAnUnknownProjectIsRefused) {
             StatusCode::NotFound);
 }
 
+TEST_F(Projects, AnUnsetIdIsNotASelection) {
+  // The write path must not be able to create state the read path calls impossible. Zero is what
+  // `GetSelection` answers for "nobody has chosen here", so a document *containing* zero is a
+  // contradiction — and it was reachable, because `SetSelection` wrote whatever it was handed.
+  // `Id::valid()` is `value != 0` and every counter here starts at 1, so an unset id is a caller
+  // mistake rather than a choice.
+  auto created = manager->Create("kitchen");
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{0}).code,
+            StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{0}, CandidateId{7}).code,
+            StatusCode::InvalidArgument);
+
+  // And nothing was written: the cell still reads as one nobody has chosen for, rather than as a
+  // document this manager cannot parse.
+  auto chosen = manager->GetSelection(created.value, NodeId{3});
+  EXPECT_TRUE(chosen.ok()) << chosen.status.detail;
+  EXPECT_EQ(chosen.value.value, 0u);
+}
+
 TEST_F(Projects, ARecordedSelectionCanBeReadBack) {
   // The whole point, and what was missing: a pick was written here and read nowhere, so the only
   // thing that knew which candidate was in force was the client that had just set it — and a

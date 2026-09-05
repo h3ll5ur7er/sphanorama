@@ -24,6 +24,10 @@ class IProjectManager {
 
   // A manual override of automatic burst selection. Marks the node dirty for the next build, so
   // it takes exactly the same path as a retake.
+  //
+  // An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
+  // chosen here", so writing one would put the two halves of this pair in contradiction: a
+  // document the writer accepted and the reader has to call corrupt.
   virtual Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) = 0;
 
   // What was chosen for a cell, or nothing.

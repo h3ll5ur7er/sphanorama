@@ -74,6 +74,15 @@ Status ProjectManager::Delete(ProjectId project) {
 }
 
 Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId candidate) {
+  // Before the project, because this is about the arguments rather than the store. Zero is what
+  // `GetSelection` answers for "nobody has chosen here", so a document holding zero would be a
+  // contradiction the read path has to call corrupt — a write that creates state its own reader
+  // cannot represent. `Id::valid()` is `value != 0` and every counter in these contracts starts
+  // at 1, so an unset id is a caller mistake and not a choice anybody made.
+  if (!node.valid() || !candidate.valid()) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "a selection needs a real cell and a real candidate");
+  }
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
   // Recorded so the next build can treat it exactly like a retake: one dirty node, one partial
   // rebuild (ADR 0004).
