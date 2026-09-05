@@ -27,3 +27,7 @@ emsdk-cache/
 # staged build artifacts
 shell/public/core/
 dist/
+
+# Agent worktrees. A worktree here is a whole second checkout of this repository, node_modules
+# and all; it is scratch space for a background agent, never something to commit.
+.claude/worktrees/

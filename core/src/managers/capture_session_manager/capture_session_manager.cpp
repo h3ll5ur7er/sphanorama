@@ -334,6 +334,22 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     return plan.status;
   }
 
+  // Late on purpose, and here rather than at the top of this function. Everything above can
+  // refuse, and the tier is holding the only copy of whatever sphere came before — a Begin that
+  // emptied it and then failed to plan would have destroyed a capture on its way to doing
+  // nothing. From here the only thing left that can refuse is the tracking below, and its own
+  // failure path closes the camera exactly as this one does.
+  //
+  // Why it happens at all: frame identities restart at 1 in every process while the tier outlives
+  // one (ADR 0030), so a capture beginning on top of an old one would issue identities the tier
+  // has already filled. The Checkpoint at the end of this function replaces the project's session
+  // document in the same breath, which is what keeps the two halves of an abandoned sphere from
+  // getting separated (ADR 0034).
+  if (auto cleared = frames_.Clear(); !cleared.ok()) {
+    (void)camera_.Close();
+    return cleared;
+  }
+
   auto initialPose = StartTracking(resolved.motion);
   if (!initialPose.ok()) return initialPose.status;
 

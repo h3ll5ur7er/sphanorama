@@ -45,6 +45,26 @@ class IFrameStoreAccess {
   virtual Status Adopt(const FrameRef& frame) = 0;
 
   virtual Status Forget(const FrameRef&) = 0;
+
+  // Forgets every frame, and takes the spill tier's copies with it.
+  //
+  // The counterpart of Adopt, and it exists for the same reason: the tier outlives the process
+  // that filled it, while frame identities restart at 1 in the next one. A capture beginning
+  // against a tier somebody else's session document still names would write over those frames at
+  // the identities it reissues — a read that succeeds with the wrong pixels, which is the one
+  // failure the fault-in on Pin cannot catch. So a new session empties the tier and a resumed one
+  // does not (ADR 0034).
+  //
+  // Refused while any frame is pinned: Pin guarantees its mapping until Release, and a span into
+  // a freed buffer still looks like a span. Refused, too, when the tier will not let go — with
+  // nothing forgotten, so that the caller's choice is between declining to start and starting on
+  // a tier it knows is stale, rather than between two states it cannot tell apart.
+  //
+  // It does not wind the identity counter back. A handle is a plain value that outlives the frame
+  // it names; reissuing one would turn a stale handle from dangling into a handle on somebody
+  // else's pixels.
+  virtual Status Clear() = 0;
+
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;
 };
 

@@ -30,6 +30,30 @@ export interface SpillHost {
   write(frame: number, bytes: Uint8Array): boolean;
   read(frame: number, into: Uint8Array): boolean;
   drop(frame: number): boolean;
+  /**
+   * Empties the file, for a capture that is starting over rather than resuming.
+   *
+   * Not expressible as a sequence of `drop`s: the frames that make it necessary belong to a
+   * process that is gone, and the store asking for it has never heard of them.
+   *
+   * `false` means the tier was not emptied. The store's own `Clear` reports that upward and the
+   * session declines to begin, which is the only answer that cannot end with a new capture
+   * written over an old one — and that much is unconditional.
+   *
+   * What `false` does **not** promise is that nothing was written. This doc used to say the file
+   * is untouched, and three rounds of getting the implementation wrong started from believing it.
+   * The emptied index is written before the frames file is truncated, so a failure at the second
+   * step has already changed the first; the same is true at the first step, because a short write
+   * leaves an unparseable prefix and the writer truncates rather than leave one. Both failures
+   * put the old index back, and that restore is itself a write that can fail.
+   *
+   * So the guarantee is the one that matters and not the one that reads best: whatever `false`
+   * leaves behind, no identity resolves to somebody else's pixels. The worst case is a tier
+   * naming nothing over a file that still holds bytes — the capture is lost, which is bad, and
+   * nothing is mislabelled, which is the part that must hold. Callers get "did not empty", never
+   * "did not write".
+   */
+  clear(): boolean;
   close(): void;
 }
 
@@ -145,14 +169,11 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
   // succeed — with the wrong pixels.
   let end = readIndex(index, slots, free);
 
-  const persist = (): void => {
-    if (!index) return;
-    const stored: StoredIndex = {
-      v: INDEX_VERSION,
-      end,
-      slots: [...slots].map(([frame, slot]) => [frame, slot.offset, slot.length]),
-      free: [...free].map(([length, offsets]) => [length, [...offsets]]),
-    };
+  // Whether the index on disk now says what it was handed. Separated from `persist` because the
+  // two callers want opposite things from a failure: an ordinary write can carry on without its
+  // index, and a clear cannot.
+  const writeIndex = (stored: StoredIndex): boolean => {
+    if (!index) return true;   // no index file: nothing that can fall out of step
     try {
       const bytes = new TextEncoder().encode(JSON.stringify(stored));
       index.truncate(bytes.length);
@@ -162,12 +183,26 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
         // anyway. Emptying it outright is the difference between that being true by construction
         // and true because of the shape of JSON.
         index.truncate(0);
+        return false;
       }
     } catch {
-      // The frames are written and readable in this session either way. What a failure here costs
-      // is the next one's resume, and there is nobody on this path to tell: the store has already
-      // been told its frame is safe, which it is.
+      return false;
     }
+    return true;
+  };
+
+  const held = (): StoredIndex => ({
+    v: INDEX_VERSION,
+    end,
+    slots: [...slots].map(([frame, slot]) => [frame, slot.offset, slot.length]),
+    free: [...free].map(([length, offsets]) => [length, [...offsets]]),
+  });
+
+  const persist = (): void => {
+    // Deliberately ignored. The frames are written and readable in this session either way. What
+    // a failure here costs is the next one's resume, and there is nobody on this path to tell:
+    // the store has already been told its frame is safe, which it is.
+    void writeIndex(held());
   };
 
   const release = (slot: Slot): void => {
@@ -246,6 +281,52 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       slots.delete(frame);
       release(slot);
       persist();
+      return true;
+    },
+
+    clear() {
+      // The index first, and this is the one place it goes first. `persist` swallows its failures
+      // and should: an ordinary write has put the frame on disk whatever the index says. A clear
+      // cannot swallow it — reporting success over an index still naming the old frames leaves
+      // the next session recovering slots into a file this one is about to refill from offset
+      // zero, which is the right length of the wrong bytes and the whole failure being fixed here.
+      if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) {
+        // Refusing here is not the same as having touched nothing, which is what this said
+        // before and it was wrong. `writeIndex` empties the index on a short write *on purpose*:
+        // what survives a partial write is a prefix of a JSON document, no prefix of one parses,
+        // and truncating is the difference between the next session starting empty by
+        // construction and starting empty by luck. Right for an ordinary spill, whose frame is on
+        // disk either way — and for a clear it has just destroyed the only thing naming the
+        // capture this call is in the middle of refusing.
+        void writeIndex(held());
+        return false;
+      }
+
+      try {
+        file.truncate(0);
+      } catch {
+        // A truncate throws when the handle has gone away, which means the frames file is exactly
+        // as it was — so the only thing standing between the old capture and a resume is the
+        // empty index written a line ago. Putting it back costs one write and makes the refusal
+        // real on disk too.
+        //
+        // Best effort, and the failure below it is the reason the empty index goes first rather
+        // than last: if the restore cannot be written either, what is left is an index naming
+        // nothing over a file that still holds the bytes. That loses the capture, which is bad.
+        // Writing the index last would instead leave one naming the old frames over a file the
+        // next capture refills from offset zero, which hands somebody else's pixels back under
+        // the old names — and that is the failure this whole change exists to remove.
+        // `held()` and not a snapshot taken earlier: the in-memory map is only cleared once the
+        // truncate below has succeeded, so what it describes here — and in the branch above — is
+        // still exactly the state this call was asked to discard.
+        void writeIndex(held());
+        return false;
+      }
+      slots.clear();
+      free.clear();
+      // The high-water mark goes back with them. Keeping it would leave the new capture writing
+      // past the space it just reclaimed, which is the disk cost of every sphere ever abandoned.
+      end = 0;
       return true;
     },
 
