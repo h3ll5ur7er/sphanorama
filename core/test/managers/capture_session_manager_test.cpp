@@ -14,6 +14,7 @@
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 #include "engines/frame_preview_engine/box_frame_preview_engine.h"
+#include "support/recording_frame_store_access.h"
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
@@ -1787,6 +1788,37 @@ TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesASpilledFrameSpilled) {
       << "a frame faulted in to be looked at stayed in the heap";
   // And the heap is genuinely back where it was, not merely relabelled.
   EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
+}
+
+TEST_F(CaptureSessionUnderPressure, ReadingAPreviewPutsAFrameBackInTheTierItCameFrom) {
+  // The two tests around this one cover the tiers `MemoryFrameStoreAccess` can actually be in.
+  // The contract promises more than that — "whatever residency a frame had before this call, it
+  // has after it" — and a restore written as `if it was spilled` keeps that promise only by
+  // coincidence, for as long as no store has a third tier. A `GpuTexture` frame would be faulted
+  // into the heap to be looked at and quietly left there, which is the same leak this whole
+  // mechanism exists to stop, in the one case nothing here can see.
+  RecordingFrameStoreAccess recording{*store};
+  BoxFramePreviewEngine reducer{recording};
+  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, recording,
+                               *projects, clock);
+  ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(viewer, clock, node, burst).ok());
+  const std::vector<Candidate> captured = viewer.Candidates(node).value;
+  ASSERT_FALSE(captured.empty());
+
+  // From here the store says every frame is in a tier this build has never produced.
+  recording.ClaimResidency(Residency::GpuTexture);
+  const size_t before = recording.demotions().size();
+  auto preview = viewer.CandidatePreview(node, captured.front().id, 64);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+
+  ASSERT_GT(recording.demotions().size(), before)
+      << "the frame was read and nothing was asked to put it back";
+  EXPECT_EQ(recording.demotions().back(), Residency::GpuTexture)
+      << "the frame was put back somewhere other than where it was found";
 }
 
 TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesAResidentFrameResident) {

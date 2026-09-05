@@ -1034,11 +1034,18 @@ Result<FramePreview> CaptureSessionManager::CandidatePreview(NodeId node, Candid
   // cannot say where a frame is gets nothing done to it, which is the answer either way.
   const auto before = frames_.ResidencyOf(found->frame);
   auto reduced = preview_.Reduce(found->frame, maxEdge);
-  if (before.ok() && before.value == Residency::Spilled) {
+  // Any tier but `HeapPinned`, which is not a tier a demotion may assert — it is what `Pin`
+  // establishes, and a frame found pinned was pinned by somebody else whose pin outlives this
+  // call anyway. Everything else is restored by name rather than by case: `Spilled` is the tier
+  // this exists for, `HeapEncoded` is where `Release` already left it and asks for nothing, and a
+  // store with a `GpuTexture` tier gets its frame back where it had it instead of silently
+  // keeping it in the heap. The contract promises the residency a frame had, not the one this
+  // manager happened to enumerate.
+  if (before.ok() && before.value != Residency::HeapPinned) {
     // Discarded for the same reason `Cool` discards one: by here the preview has either been
     // produced or failed, and a store that cannot take the frame back leaves it exactly where it
     // is — readable, in the heap, and accounted for.
-    (void)frames_.Demote(found->frame, Residency::Spilled);
+    (void)frames_.Demote(found->frame, before.value);
   }
   return reduced;
 }

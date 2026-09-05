@@ -70,7 +70,28 @@ export type PaintPreview = (canvas: HTMLCanvasElement, preview: FramePreview) =>
  * today, a `SharedArrayBuffer` in the threaded build (ADR 0011). At a long edge of 128 the copy
  * is 48 KB, which is the size the reduction was chosen to make not worth optimising.
  */
+/**
+ * Whether a preview's pixels are the shape its dimensions claim.
+ *
+ * `ImageData` throws on a mismatch, and a throw here would take the rest of the strip with it —
+ * `fillPreviews` is a loop, so one bad row would stop every row after it from being drawn. The
+ * core would have to be wrong for this to be false, which is exactly why it is checked: the
+ * decode can succeed on a payload that is internally inconsistent, and a list is the wrong place
+ * to find that out.
+ */
+export function previewIsDrawable(preview: FramePreview): boolean {
+  return preview.width > 0 && preview.height > 0
+    && preview.pixels.length === preview.width * preview.height * 4;
+}
+
 export const paintPreviewOnCanvas: PaintPreview = (canvas, preview) => {
+  // Before the context, so that a preview which could never be drawn says so rather than being
+  // reported as a canvas this browser would not give one for. They are different problems and
+  // only one of them is about the picture.
+  if (!previewIsDrawable(preview)) {
+    canvas.dataset.preview = 'malformed';
+    return;
+  }
   const context = canvas.getContext('2d');
   if (context === null) {
     // Marked rather than thrown: the strip is a list, and one row that cannot be drawn must not

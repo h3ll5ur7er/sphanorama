@@ -84,7 +84,10 @@ class ICaptureSessionManager {
   // cheaper tier the store has (ADR 0023) and faulting one in to look at it would leave it
   // resident — eight candidates of a 1280x960 frame are 39 MB, so a user opening three cells
   // would fill a phone's heap by browsing. Whatever residency a frame had before this call, it
-  // has after it.
+  // has after it: the tier is read first and restored by name, so a store with tiers this build
+  // has never seen gets its frame back where it had it. Best effort, and deliberately so — a
+  // store that will not take the frame back leaves it readable in the heap, which is a worse
+  // ceiling rather than a lost frame.
   virtual Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
                                                 int32_t maxEdge) const = 0;
 

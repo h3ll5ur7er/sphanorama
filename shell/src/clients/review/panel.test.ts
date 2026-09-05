@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  createReviewPanel, PREVIEW_MAX_EDGE,
+  createReviewPanel, paintPreviewOnCanvas, previewIsDrawable, PREVIEW_MAX_EDGE,
   type PaintPreview, type ReviewCore, type ReviewElements,
 } from './panel';
 import type {
@@ -340,5 +340,45 @@ describe('opening a cell', () => {
     await opening;
 
     expect(ui.strip.querySelectorAll('button')).toHaveLength(1);
+  });
+});
+
+describe('paintPreviewOnCanvas', () => {
+  const shaped = (width: number, height: number, bytes: number) => ({
+    frame: 1 as FramePreview['frame'],
+    width,
+    height,
+    format: 'RGBA8' as FramePreview['format'],
+    pixels: new Uint8Array(bytes),
+  });
+
+  it('accepts a preview whose pixels are the shape its dimensions claim', () => {
+    expect(previewIsDrawable(shaped(4, 3, 4 * 3 * 4))).toBe(true);
+  });
+
+  it('refuses one whose pixel count does not match its dimensions', () => {
+    // `ImageData` throws on a mismatch, and `fillPreviews` is a loop: a throw would stop every
+    // row after this one from being drawn. The core would have to be wrong for this to happen —
+    // which is the reason to check it, because a decode can succeed on a payload that is
+    // internally inconsistent and a list is the wrong place to discover that.
+    expect(previewIsDrawable(shaped(4, 3, 4 * 3 * 4 - 4))).toBe(false);
+    expect(previewIsDrawable(shaped(4, 3, 4 * 3 * 4 + 4))).toBe(false);
+    expect(previewIsDrawable(shaped(0, 3, 0))).toBe(false);
+    expect(previewIsDrawable(shaped(4, 0, 0))).toBe(false);
+  });
+
+  it('marks a malformed preview rather than throwing', () => {
+    // Told apart from `missing`, which is what a canvas this environment will not give a 2D
+    // context for gets — and that is every canvas under jsdom, so a single marker would make
+    // this assertion pass without the guard existing at all.
+    const canvas = document.createElement('canvas');
+    expect(() => paintPreviewOnCanvas(canvas, shaped(4, 3, 7))).not.toThrow();
+    expect(canvas.dataset.preview).toBe('malformed');
+  });
+
+  it('leaves a well-formed preview to the canvas, whatever the canvas does about it', () => {
+    const canvas = document.createElement('canvas');
+    paintPreviewOnCanvas(canvas, shaped(4, 3, 4 * 3 * 4));
+    expect(canvas.dataset.preview).not.toBe('malformed');
   });
 });

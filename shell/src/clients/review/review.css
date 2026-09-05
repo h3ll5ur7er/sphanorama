@@ -88,6 +88,7 @@
 /* Nothing drawn yet, and nothing to draw. Hatched rather than blank, so a frame that has gone is
  * legible as an absence instead of as a very dark photograph. */
 .thumb[data-preview='pending'] { opacity: 0.35; }
+.thumb[data-preview='malformed'],
 .thumb[data-preview='missing'] {
   opacity: 0.5;
   background: repeating-linear-gradient(
