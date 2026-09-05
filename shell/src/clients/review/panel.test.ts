@@ -189,15 +189,16 @@ function node(id: number, azimuthDeg: number) {
   };
 }
 
+// Restored between every test in the file, rather than after each assertion: a `mockRestore()` on
+// the line below an `expect` never runs on the red run, and a leaked `console.error` spy silences
+// every test after it — losing exactly the diagnostics a failing console-reporting test needs. At
+// file scope rather than inside one `describe`, so a spy added to another one is covered too.
+afterEach(() => { vi.restoreAllMocks(); });
+
 const plan = { nodes: [node(1, 0), node(2, 90)], spec: {} } as unknown as CapturePlan;
 const coverage = { nodesSatisfied: 0, holes: [], underOverlapped: [] } as unknown as CoverageState;
 
 describe('opening a cell', () => {
-  // Restored here rather than after each assertion: a `mockRestore()` on the line below an
-  // `expect` never runs on the red run, and a leaked `console.error` spy silences every test
-  // after it — losing exactly the diagnostics a failing console-reporting test needs.
-  afterEach(() => { vi.restoreAllMocks(); });
-
   it('lets the answer you are waiting for win, whatever order the replies arrive in', async () => {
     // Every call crosses a postMessage to the worker the core runs in, so two taps in quick
     // succession are two answers in flight with no promise that they come back in order. Writing
@@ -779,7 +780,7 @@ describe('opening a cell', () => {
     const { core, answer, recorded, candidateCalls } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
     let thrown = false;
     const throwing: ReviewCore = {
       ...core,
@@ -804,6 +805,50 @@ describe('opening a cell', () => {
     answer(1, [candidate(10, 1), candidate(11, 1)]);
     await recorded();
     expect(candidateCalls.length).toBe(before + 1);
+    // The reason, too. A failed write has no other channel — `Answered<T>` is not in play on this
+    // path and the strip says nothing about it — so the console is the whole of what a developer
+    // gets, and a spy that only keeps the throw out of the run's output would read as covering it.
+    expect(reported).toHaveBeenCalledWith(
+      'sphanorama review: recording a pick did not answer',
+      expect.objectContaining({ message: 'not even a promise' }));
+  });
+
+  it('still refreshes after a pick whose write rejects', async () => {
+    // The third way out of the block, and the one the `.catch` this replaced already handled — so
+    // no round had a reason to write it, and the arm went unexercised. Same shape as the throw
+    // above: reject once, behave after, and the second pick can only refresh if the first
+    // released.
+    const { core, answer, recorded, candidateCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let rejected = false;
+    const rejecting: ReviewCore = {
+      ...core,
+      setSelection: ((node: NodeId, candidate: CandidateId) => {
+        if (!rejected) { rejected = true; return Promise.reject(new Error('the worker is gone')); }
+        return core.setSelection(node, candidate);
+      }) as ReviewCore['setSelection'],
+    };
+    const panel = createReviewPanel(ui, rejecting, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const buttons = () => [...ui.strip.querySelectorAll('button')] as HTMLButtonElement[];
+    buttons()[1].click();
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+
+    const before = candidateCalls.length;
+    buttons()[0].click();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+    expect(candidateCalls.length).toBe(before + 1);
+    expect(reported).toHaveBeenCalledWith(
+      'sphanorama review: recording a pick did not answer',
+      expect.objectContaining({ message: 'the worker is gone' }));
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {

@@ -118,8 +118,17 @@ setting a pick does not read and rewrite its neighbours.
   So the release is now in a `finally`, which covers every way out of the block — a rejection, a
   synchronous throw (`ReviewCore` permits one; the generated proxy happens to be `async`, but that
   is a property of generated code rather than of the interface), and an early `return` a later
-  edit puts in the middle. And the two cases a test can reach have tests: a pick released while
-  its cell was off screen, and a write that throws where a promise was expected.
+  edit puts in the middle. The first two have tests: a write that rejects, and a write that throws
+  where a promise was expected, each rejecting or throwing once and behaving after, so the second
+  pick can only refresh if the first released. The third has none and cannot — a `return` nobody
+  has written is not a state a fake can produce — which is the whole reason the release is in a
+  `finally` rather than in a comment. A separate test covers the guard *after* the block, that a
+  pick released while its cell was off screen still leaves the cell able to refresh.
+
+  Counting three exits and then listing two tests is how the previous draft of this paragraph read,
+  and the missing one was the rejection — reachable, and untested only because the `.catch` this
+  replaced had always handled it, so no round had a reason to write it. That is the same error one
+  size smaller: a narrowing of what is testable, asserted rather than checked.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth
