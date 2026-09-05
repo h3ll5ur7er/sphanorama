@@ -233,20 +233,22 @@ alone under this loop rather than to stop and wait:
    worst defect in a recent PR was not in the feature: it was a rollback added *during* this step
    to close a leak, which deleted the captured pixels it was unwinding. New code written to make
    old code safer is still new code.
-3. **Review it with `sphanorama-review`**, which spawns reviewer subagents — one per lens — and
-   says what each must hand back. Run it before opening the PR, so the branch that reaches a
-   reviewer is one you have already had reviewed.
+3. **Open the PR.**
+4. **Review it with `sphanorama-review`**, which spawns reviewer subagents — one per lens — and
+   has each publish its findings to the PR.
 
    Not an external bot. Those are metered, and a day of rounds can eat a month of somebody's
    allowance; a subagent costs what the work costs. The lens table in that skill is also worth more
    here than a general reviewer, because it is a list of the mistakes this codebase has actually
    made.
-4. **Open the PR.** Say what was reviewed and what the review found, including the lenses that came
-   back clean — a PR body claiming "reviewed" without saying against what is a claim nobody can
-   check.
-5. **Handle the findings.** Verify each against the code before acting: neither dismiss nor accept
-   on sight. Reproduce, then fix and push — or record the reasoning and the evidence, including the
-   sabotage that shows why the proposed change is wrong.
+5. **Handle the findings, on the threads.** Verify each against the code before acting: neither
+   dismiss nor accept on sight. Reproduce, then fix and push — or reply with the reasoning and the
+   evidence, including the sabotage that shows why the proposed change is wrong. Resolve what you
+   addressed.
+
+   Answering in public is the point rather than a formality. The PR is where a human collaborator
+   picks this up, and a decision is only inheritable if the rejected alternative is written down
+   next to it.
 6. **If a round found something real, run another.** A round that found nothing is where it stops.
    Findings that keep arriving on your own fixes mean the root cause is still there — and remember
    that a fix is new code, so it goes through the same loop.
