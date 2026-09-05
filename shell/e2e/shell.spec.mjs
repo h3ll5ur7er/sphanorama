@@ -1171,6 +1171,15 @@ test('a resume the core refuses says why and still lets a new capture start', as
     await expect(page.locator('#stage')).toContainText(/capturing.*cells planned/,
                                                        { timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+
+    // And gone once that capture is running. It is the only thing on screen that starts a render
+    // loop, so leaving it pressable would let a second one run over the same session — two sets
+    // of frame callbacks draining the same sensor and drawing the same overlay.
+    //
+    // The property rather than `toBeHidden`, which was the first thing written here and could not
+    // fail: `beginSession` folds the panel this button sits in, so it is invisible either way and
+    // the assertion passed with nothing hiding it at all.
+    await expect(page.locator('#new-capture')).toHaveJSProperty('hidden', true);
   } finally {
     await server.close();
   }

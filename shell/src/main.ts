@@ -351,6 +351,14 @@ async function startFresh(core: SphanoramaCore,
  */
 function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boolean,
               project: ProjectId | null) {
+  // The one place a render loop starts, and therefore the one place that can promise there is
+  // only ever one. The way out of a refused resume has to disappear the moment something is
+  // running, or a second press starts a second loop over the same session — two sets of
+  // `requestAnimationFrame` callbacks drawing the same overlay and draining the same sensor.
+  // Enforced here rather than at each caller because there are four of them and the invariant is
+  // about the loop, not about any one path into it.
+  newCaptureButton.hidden = true;
+
   const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
@@ -685,12 +693,14 @@ async function main() {
       : 'core ready — resume the last capture, or enable the camera to start a new one';
     enableButton.addEventListener('click', () => { void enable(core, null); });
     resumeButton.addEventListener('click', () => { void enable(core, resume); });
-    // The way out of a refused resume. Hidden again on the way in, so the fresh capture it starts
-    // is the only one: `beginSession` starts the render loop, and a second press would start a
-    // second loop over the same session.
+    // The way out of a refused resume. Disabled while the attempt runs rather than hidden by it:
+    // `beginSession` can return having started nothing — a project that could not be created is
+    // the one path that does — and hiding on the way in would take away the only thing left to
+    // press. What hides it is `pump`, once something is actually running.
     newCaptureButton.addEventListener('click', () => {
-      newCaptureButton.hidden = true;
-      void beginSession(core, motionIsRunning, null);
+      newCaptureButton.disabled = true;
+      void beginSession(core, motionIsRunning, null)
+        .finally(() => { newCaptureButton.disabled = false; });
     });
     captureButton.addEventListener('click', () => {
       if (targetNode !== null) void captureCell?.(targetNode);
