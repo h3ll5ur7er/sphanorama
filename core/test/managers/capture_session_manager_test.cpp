@@ -1176,6 +1176,36 @@ class NewestFirstQualityEngine final : public IFrameQualityEngine {
   }
 };
 
+// An engine that does not name every candidate it was handed.
+//
+// `IFrameQualityEngine::Rank` says "ranked best-first" and does not say "all of them", and
+// `Reorder` has always tolerated the gap by keeping whatever the ranking left out rather than
+// dropping it. What a trim does with those is the question this arrangement asks: a candidate the
+// engine declined to compare is not one it called worst.
+class ForgetfulQualityEngine final : public IFrameQualityEngine {
+ public:
+  static constexpr size_t kUnnamed = 3;
+
+  Result<QualityScore> Score(const FrameRef&, const PoseSample&, const NodeContext&) override {
+    return Ok(QualityScore{});
+  }
+
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate> candidates,
+                                        const SelectionPolicy&) override {
+    std::vector<CandidateId> ranked;
+    ranked.reserve(candidates.size());
+    for (const Candidate& candidate : candidates) ranked.push_back(candidate.id);
+    std::sort(ranked.begin(), ranked.end(), [](CandidateId a, CandidateId b) {
+      return a.value > b.value;
+    });
+    // The lowest identities go unmentioned — the first burst's frames, which a newest-first
+    // ranking puts at exactly the end of the cell a trim reaches for.
+    if (ranked.size() > kUnnamed) ranked.resize(ranked.size() - kUnnamed);
+    else ranked.clear();
+    return Ok(std::move(ranked));
+  }
+};
+
 // A cell that keeps every frame ever shot at it is a cell that cannot be ranked: scoring reads
 // every candidate's pixels, so ranking faults the whole accumulated set back into the heap at
 // once. On an iPhone that arrived as 25 candidates of 1280x960x4 — 123 MB against a 128 MB
@@ -1186,9 +1216,15 @@ class CaptureSessionRetakes : public CaptureSession {
   // last however often the cell is reordered. Which frames a trim keeps and which it reaches for
   // is then a fact the test can state.
   NewestFirstQualityEngine newestFirst;
+  ForgetfulQualityEngine forgetful;
 
   std::unique_ptr<CaptureSessionManager> Rebuilt() {
     return std::make_unique<CaptureSessionManager>(planner, pose, newestFirst, *camera, *sensor,
+                                                   *store, *projects, clock);
+  }
+
+  std::unique_ptr<CaptureSessionManager> RebuiltForgetful() {
+    return std::make_unique<CaptureSessionManager>(planner, pose, forgetful, *camera, *sensor,
                                                    *store, *projects, clock);
   }
 };
@@ -1271,6 +1307,52 @@ TEST_F(CaptureSessionRetakes, ABurstOnItsOwnIsLeftAlone) {
   ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
 
   EXPECT_EQ(manager->Candidates(node).value.size(), 5u);
+}
+
+TEST_F(CaptureSessionRetakes, WhatTheRankingDidNotNameIsNotWhatItCalledWorst) {
+  // `Reorder` puts everything the ranking named first and appends the rest in the order it found
+  // them, which leaves an unranked candidate at the bottom of the cell — indistinguishable, by
+  // position alone, from one the engine judged and placed last. A trim that reads position as
+  // judgement therefore ends frames the engine never compared, and ends them silently.
+  //
+  // So a trim forgets only what the ranking actually named. What that costs is stated rather than
+  // hidden: a cell whose engine leaves candidates out can exceed the cap, which is the state
+  // before ADR 0037 rather than a new one, and `Allocate`'s refusal is still underneath it.
+  auto manager = RebuiltForgetful();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  // The first burst's lowest identities are the ones this engine never mentions again.
+  std::vector<Candidate> unnamed = manager->Candidates(node).value;
+  ASSERT_EQ(unnamed.size(), 5u);
+  std::sort(unnamed.begin(), unnamed.end(), [](const Candidate& a, const Candidate& b) {
+    return a.id.value < b.id.value;
+  });
+  unnamed.resize(ForgetfulQualityEngine::kUnnamed);
+
+  for (int retake = 0; retake < 3; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  for (const Candidate& missed : unnamed) {
+    EXPECT_TRUE(std::any_of(kept.value.begin(), kept.value.end(),
+                            [&missed](const Candidate& now) {
+                              return now.id.value == missed.id.value;
+                            }))
+        << "candidate " << missed.id.value << " was trimmed and the engine never ranked it";
+    EXPECT_TRUE(store->ResidencyOf(missed.frame).ok())
+        << "candidate " << missed.id.value << "'s frame was forgotten without being judged";
+  }
+
+  // And the ones it did name are still trimmed, or this passes by having switched the cap off.
+  EXPECT_LT(kept.value.size(), 20u) << "twenty frames were shot at one cell and it kept them all";
+  EXPECT_GT(kept.value.size(), ForgetfulQualityEngine::kUnnamed)
+      << "the ranked candidates were all dropped, so the assertions above proved nothing";
 }
 
 TEST_F(CaptureSessionRetakes, AFrameSomebodyElseOwnsIsNeverTrimmed) {

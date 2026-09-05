@@ -72,8 +72,9 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // a different reason (ADR 0032).
   int64_t BurstSettleNs() const;
   // Drops a cell's surplus candidates, best-first order assumed, and forgets the frames of the
-  // ones it drops — but never a frame the caller offered (ADR 0037).
-  void Trim(std::vector<Candidate>& cell);
+  // ones it drops — but never a frame the caller offered, and never one past `judged`, the length
+  // of the prefix `Reorder` says the ranking actually named (ADR 0037).
+  void Trim(std::vector<Candidate>& cell, size_t judged);
   // Takes at most one frame for the armed burst. Reports whether the burst finished on this tick,
   // so OnMotion can say CellDone exactly once.
   Result<bool> AdvanceBurst();

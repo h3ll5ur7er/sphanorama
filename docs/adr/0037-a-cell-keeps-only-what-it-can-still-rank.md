@@ -52,6 +52,14 @@ Candidates are destroyed rather than hidden. Whatever a review strip eventually 
 it will show at most this many — and the ones it does show are the ones the selection engine put
 first, which is the order `Candidates` already promises.
 
+**A trim ends only what the ranking named.** `IFrameQualityEngine::Rank` says "ranked best-first"
+and does not say "all of them", and `Reorder` has always tolerated that gap by appending whatever
+the ranking left out rather than dropping it. That puts an unranked candidate at exactly the end of
+the cell a trim reaches for, where position alone cannot tell "judged and placed last" from "never
+compared" — so `Reorder` now reports how long its ranked prefix is, and only inside that prefix is
+a candidate this manager's to end. A frame the engine declined to look at is not one it called
+worst, and ending it silently is the one outcome here that cannot be undone.
+
 **The number is stated rather than derived, and that is the weak part.** ADR 0023 rejected a
 stated heap ceiling in favour of probing `navigator.deviceMemory`, and the same argument applies
 here: the store knows its ceiling, a frame's size is on its handle, and a cap could be computed
@@ -60,6 +68,12 @@ bound of any reasonable size closes it; deriving one adds a second thing that ca
 on a device nobody here has. **What would change the decision:** a device whose ceiling makes
 thirteen frames too many. The arithmetic to redo it is in the constant's comment, next to the
 number.
+
+Two things can therefore still push a cell past the cap, and both are named rather than left to be
+found. A caller that offers more frames than the cap is doing its own arithmetic with handles it
+allocated and holds. And an engine whose ranking omits candidates leaves them uncounted against the
+cap — which is the state before this ADR rather than a new one, with `Allocate`'s refusal
+underneath it exactly as before.
 
 ## Alternatives rejected
 

@@ -247,7 +247,13 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
 // kept can win some places without taking all of them (ADR 0037).
 constexpr size_t kMostCandidatesPerCell = 8;
 
-void Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order) {
+// Rearranges a cell best-first and answers how many of its candidates the ranking actually named.
+//
+// The count is not a diagnostic. A candidate the ranking left out is appended after the ones it
+// named, which puts it at exactly the position a trim reaches for — and position is all a trim can
+// otherwise read, so it would end frames the engine never compared, silently. The prefix length is
+// what tells the two apart (ADR 0037).
+size_t Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order) {
   std::vector<Candidate> ranked;
   ranked.reserve(cell.size());
   const auto alreadyPlaced = [&ranked](const CandidateId id) {
@@ -263,10 +269,12 @@ void Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order
     });
     if (found != cell.end()) ranked.push_back(*found);
   }
+  const size_t judged = ranked.size();
   for (const Candidate& candidate : cell) {
     if (!alreadyPlaced(candidate.id)) ranked.push_back(candidate);
   }
   cell = std::move(ranked);
+  return judged;
 }
 
 // One frame's worth at sensor rate, with room to spare. Anything older than the last few
@@ -786,23 +794,31 @@ void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
   }
 }
 
-void CaptureSessionManager::Trim(std::vector<Candidate>& cell) {
+void CaptureSessionManager::Trim(std::vector<Candidate>& cell, size_t judged) {
   if (cell.size() <= kMostCandidatesPerCell) return;
 
   // Best-first by the time this runs, so the surplus is the tail. Walked rather than truncated,
-  // because what may go is not simply "everything past the cut": an offered frame belongs to the
-  // caller, who still holds the handle, and forgetting it would take the bytes out from under
-  // somebody who has every right to read them. `Cool` declines to change their residency for the
-  // same reason; this declines to end them.
+  // because what may go is not simply "everything past the cut", for two reasons.
   //
-  // So a cell can still exceed the cap, by being offered more frames than it. That is the
-  // caller's arithmetic to do — it allocated them and it owns them — and a manager that deleted
-  // them to keep its own number tidy would be answering a question nobody asked it.
+  // An offered frame belongs to the caller, who still holds the handle, and forgetting it would
+  // take the bytes out from under somebody who has every right to read them. `Cool` declines to
+  // change their residency for the same reason; this declines to end them.
+  //
+  // And a candidate the ranking never named is not one it called worst. `Reorder` appends those
+  // after everything the engine placed, which puts them exactly where this reaches — so position
+  // alone cannot tell "judged and last" from "not judged at all", and `judged` is the prefix that
+  // can. Only inside it is a candidate this manager's to end.
+  //
+  // So a cell can still exceed the cap: by being offered more frames than it, which is the
+  // caller's arithmetic to do, or by having an engine that leaves candidates out of its ranking,
+  // which is the state before this cap existed rather than a new one. `Allocate` still refuses at
+  // the ceiling underneath both.
   std::vector<Candidate> kept;
   kept.reserve(cell.size());
-  for (Candidate& candidate : cell) {
+  for (size_t position = 0; position < cell.size(); ++position) {
+    Candidate& candidate = cell[position];
     const bool ours = burst_owned_.count(candidate.id.value) != 0;
-    if (kept.size() < kMostCandidatesPerCell || !ours) {
+    if (kept.size() < kMostCandidatesPerCell || !ours || position >= judged) {
       kept.push_back(candidate);
       continue;
     }
@@ -882,7 +898,7 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // was being computed and thrown away, so `Candidates` handed back the order the shutter fired
   // in — an order that is not an opinion about anything, and that a client wanting a better one
   // could only improve by doing the engine's job itself.
-  Reorder(cell, ranked.value);
+  const size_t judged = Reorder(cell, ranked.value);
 
   // Ranked, so these frames are the manager's evidence rather than a burst that might roll back,
   // and cooling them is now its business. Disarm is what does it, on this path and every other.
@@ -891,7 +907,7 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // After the ownership above, which is what tells a trim which frames are its to end. A cell
   // that kept every retake would have a ranking that grows with it, and ranking is what faults
   // the whole set back into the heap (ADR 0037).
-  Trim(cell);
+  Trim(cell, judged);
 
   // Committed, so the rollback is off the table: Disarm keeps the frames and only unlocks. If the
   // unlock fails the cell is still captured and the caller is told anyway, because a camera left
@@ -935,10 +951,10 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
     cell.pop_back();
     return ranked.status;
   }
-  Reorder(cell, ranked.value);
+  const size_t judged = Reorder(cell, ranked.value);
   // An offer can push a burst's frame below the cut, so the cell is trimmed here too. The frame
   // just offered is not this manager's to end and Trim knows it.
-  Trim(cell);
+  Trim(cell, judged);
   return Ok(FrameVerdict::Accepted);
 }
 
