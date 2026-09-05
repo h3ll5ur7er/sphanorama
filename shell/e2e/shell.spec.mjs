@@ -1319,12 +1319,27 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     await expect(page.locator('#resume')).toBeVisible();
     await expect(page.locator('#resume')).toBeEnabled();
 
-    // And pressing it again really does try again. The stage is cleared first because the second
-    // refusal reads exactly like the first, so an assertion on that sentence would pass against a
-    // button whose handler did nothing at all.
+    // And pressing it again really does try again. The camera the first press opened is still
+    // held, which is the fact that sends the second press straight at the session rather than
+    // back through `enable` — asserted rather than assumed, because the branch is chosen by it.
+    expect(await page.evaluate(() => document.querySelector('video').srcObject !== null)).toBe(true);
+    // Counted from here, because "retries the session rather than the enabling" is a claim about
+    // what the second press does *not* do. Both branches end at the same refusal on screen, so
+    // the only thing that tells them apart is whether the camera was asked for a second time.
+    await page.evaluate(() => {
+      window.__cameraOpens = 0;
+      const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = (...args) => {
+        window.__cameraOpens += 1;
+        return real(...args);
+      };
+    });
+    // The stage is cleared first because the second refusal reads exactly like the first, so an
+    // assertion on that sentence would pass against a button whose handler did nothing at all.
     await page.evaluate(() => { document.getElementById('stage').textContent = 'cleared'; });
     await page.locator('#resume').click();
     await expect(page.locator('#stage')).toContainText('spill tier', { timeout: 15000 });
+    expect(await page.evaluate(() => window.__cameraOpens)).toBe(0);
 
     // Until something starts. A live offer beside a running capture is a second render loop over
     // the same session one press away, which is the invariant `pump` holds for both buttons.

@@ -165,15 +165,6 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
  */
 let motionIsRunning = false;
 
-/**
- * Whether the camera and the sensor are already up.
- *
- * A refused resume can put its own offer back (ADR 0039), and by then `enable` has already run:
- * the camera is open, the motion permission has been answered, and the gesture that did both is
- * long spent. So the second press retries the session and nothing else — asking for a camera that
- * is already in hand is at best a wasted round trip and at worst a second permission story.
- */
-let deviceIsEnabled = false;
 
 /**
  * Enabling has to happen inside a user gesture: iOS rejects the motion permission request
@@ -260,7 +251,6 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.hidden = true;
   resumeButton.hidden = true;
   motionIsRunning = started.ok;
-  deviceIsEnabled = opened.ok;
   // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
   // without it would turn a supported degraded mode into a dead end.
   if (opened.ok) await beginSession(core, started.ok, resume);
@@ -719,7 +709,18 @@ async function main() {
       // button is: `pickUp` decides whether this offer survives its own refusal, and hiding on
       // the way in would take that decision away from it.
       resumeButton.disabled = true;
-      const attempt = deviceIsEnabled
+      // A refused resume can put this button back (ADR 0039), and by then `enable` has usually
+      // run: the camera is open, the motion permission has been answered, and the gesture that
+      // did both is long spent. So a second press retries the session and nothing else — asking
+      // for a camera already in hand is at best a wasted round trip and at worst a second
+      // permission story.
+      //
+      // Read off the stream the page is holding rather than a flag beside it, because the two
+      // would drift and the drift is reachable: `Resume` opens the camera and can still fail
+      // after it, in `StartTracking`, and that failure closes the camera on the way out. The page
+      // learns through `onCloseCamera` and stops the tracks. A flag saying "enabled" would still
+      // say so, and the retry would begin a session against a camera nobody is holding.
+      const attempt = cameraStream !== null
         ? beginSession(core, motionIsRunning, resume)
         : enable(core, resume);
       void attempt.finally(() => { resumeButton.disabled = false; });

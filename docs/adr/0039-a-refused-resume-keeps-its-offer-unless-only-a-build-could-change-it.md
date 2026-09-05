@@ -56,9 +56,16 @@ button. Whichever is pressed first starts a render loop, and the other must not 
 start a second one over the same session.
 
 **A second press retries the session, not the enabling.** By the time the offer comes back,
-`enable` has run: the camera is open and the motion permission has been answered. The retry goes
-straight to `beginSession`, because asking for a camera already in hand is at best a wasted round
-trip and at worst a second permission prompt on a gesture that has long since been spent.
+`enable` has usually run: the camera is open and the motion permission has been answered. The retry
+goes straight to `beginSession`, because asking for a camera already in hand is at best a wasted
+round trip and at worst a second permission prompt on a gesture that has long since been spent.
+
+**Which of the two it is comes from the stream the page is holding, not from a flag beside it.**
+The distinction is not pedantry: `Resume` opens the camera and can still fail *after* it, in
+`StartTracking`, and that failure closes the camera on its way out. The page learns through
+`onCloseCamera` and stops the tracks — but a flag set when `enable` ran would still say "enabled",
+and the retry would begin a session against a camera nobody holds. Deriving it from `cameraStream`
+leaves no second fact to go stale.
 
 ## Consequences
 
