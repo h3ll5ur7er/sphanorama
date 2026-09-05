@@ -208,6 +208,80 @@ describe('a spill tier that outlives the tab', () => {
     expect(after.read(1, new Uint8Array(16))).toBe(false);
   });
 
+  it('refuses an index whose numbers are not whole', () => {
+    // A byte offset is not a quantity that can be 12.5. Nothing here would say so, though:
+    // `Uint8Array` and the sync handle both truncate silently, so a fractional offset from a
+    // corrupt-but-parseable index would address a real byte range — just not the one the frame is
+    // in. That is a wrong-pixels read that reports success, which is the one failure mode this
+    // file cannot afford.
+    const file = fakeFile();
+    const index = fakeFile();
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.close();
+
+    const stored = JSON.parse(new TextDecoder().decode(index.bytes()));
+    stored.slots[0][1] += 0.5;
+    const bent = new TextEncoder().encode(JSON.stringify(stored));
+    index.truncate(bent.length);
+    index.write(bent, 0);
+
+    const after = createSpillHost(file, index);
+
+    // The whole index is refused, not merely that one slot: asserting the read fails would pass
+    // on the fake's own arithmetic, since a fractional offset happens to make it return a short
+    // count. A real sync handle truncates and returns the full length — success, wrong bytes.
+    // So the assertion is that the allocator came up empty, which only the guard produces.
+    expect(after.read(1, new Uint8Array(16))).toBe(false);
+    expect(after.write(2, frame(0xc3))).toBe(true);
+    expect(file.bytes().length).toBe(16);
+  });
+
+  it('refuses one whose high-water mark is not whole either', () => {
+    // The mark is arithmetic that every later offset is built from, so a fractional one spreads:
+    // it is not a slot that goes wrong, it is every slot allocated after it.
+    const file = fakeFile();
+    const index = fakeFile();
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.close();
+
+    const stored = JSON.parse(new TextDecoder().decode(index.bytes()));
+    stored.end += 0.5;
+    const bent = new TextEncoder().encode(JSON.stringify(stored));
+    index.truncate(bent.length);
+    index.write(bent, 0);
+
+    const after = createSpillHost(file, index);
+    expect(after.write(2, frame(0xc3))).toBe(true);
+    expect(file.bytes().length).toBe(16);
+  });
+
+  it('refuses one whose holes are not whole', () => {
+    // The free list is where an offset goes to wait for the next frame of its size, so a
+    // fractional one there is handed out later rather than used now — the corruption arrives a
+    // frame after the file that caused it.
+    const file = fakeFile();
+    const index = fakeFile();
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    before.write(2, frame(0xb2));
+    before.drop(1);
+    before.close();
+
+    const stored = JSON.parse(new TextDecoder().decode(index.bytes()));
+    expect(stored.free[0][1]).toHaveLength(1);
+    stored.free[0][1][0] += 0.5;
+    const bent = new TextEncoder().encode(JSON.stringify(stored));
+    index.truncate(bent.length);
+    index.write(bent, 0);
+
+    const after = createSpillHost(file, index);
+    expect(after.read(2, new Uint8Array(16))).toBe(false);
+    expect(after.write(3, frame(0xc3))).toBe(true);
+    expect(file.bytes().length).toBe(32);
+  });
+
   it('starts empty rather than throwing when the index makes no sense', () => {
     // It is a file on a phone: a tab killed mid-write, a quota that ran out between the frame and
     // the index. Losing the tier's memory costs a resume; throwing here costs the whole session,

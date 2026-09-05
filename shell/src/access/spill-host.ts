@@ -66,6 +66,11 @@ const INDEX_VERSION = 1;
 // allocate; past this, the file is broken rather than large.
 const INDEX_CEILING = 8 * 1024 * 1024;
 
+/** A byte position or length as the file can actually hold one: whole, and not negative. */
+function whole(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
                    free: Map<number, number[]>): number {
   if (!index) return 0;
@@ -86,15 +91,16 @@ function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
   try {
     const parsed = JSON.parse(text) as StoredIndex;
     if (parsed?.v !== INDEX_VERSION || !Array.isArray(parsed.slots)) return 0;
-    if (typeof parsed.end !== 'number' || !Number.isFinite(parsed.end) || parsed.end < 0) return 0;
+    // Whole numbers throughout, not merely finite ones. A byte offset is not a quantity that can
+    // be 12.5, and nothing downstream would say so: `Uint8Array` and the sync handle both
+    // truncate silently, so a fractional offset out of a corrupt-but-parseable index addresses a
+    // real byte range — just not the one the frame is in, and the read reports success.
+    if (!whole(parsed.end)) return 0;
     const giveUp = () => { slots.clear(); free.clear(); return 0; };
     for (const entry of parsed.slots) {
       if (!Array.isArray(entry) || entry.length !== 3) return giveUp();
       const [frame, offset, length] = entry;
-      if (!Number.isFinite(frame) || !Number.isFinite(offset) || !Number.isFinite(length)
-          || offset < 0 || length <= 0) {
-        return giveUp();
-      }
+      if (!whole(frame) || !whole(offset) || !whole(length) || length <= 0) return giveUp();
       slots.set(frame, { offset, length });
     }
 
@@ -108,10 +114,7 @@ function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
           return giveUp();
         }
         const [length, offsets] = entry;
-        if (!Number.isFinite(length) || length <= 0
-            || !offsets.every((at) => Number.isFinite(at) && at >= 0)) {
-          return giveUp();
-        }
+        if (!whole(length) || length <= 0 || !offsets.every(whole)) return giveUp();
         free.set(length, [...offsets]);
       }
     }

@@ -55,6 +55,11 @@ keeps a frame it could not spill in the heap. A durable index is precisely somet
 again, so the forgetting has to be written down; otherwise the next session reads that slot, gets
 half of each frame, and reports success.
 
+**Every number in it has to be a whole one.** A byte offset is not a quantity that can be 12.5,
+and nothing downstream would object: `Uint8Array` and the sync handle both truncate silently, so a
+fractional offset out of a corrupt-but-parseable index addresses a real byte range — just not the
+one the frame is in — and the read reports success.
+
 **An unreadable index starts the tier empty rather than throwing.** This runs while the worker is
 booting, and the file is on a phone: a tab killed mid-write, a quota exhausted between the frame
 and the index. Losing the map costs a resume; throwing costs the session.
