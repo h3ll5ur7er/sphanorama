@@ -219,9 +219,12 @@ async function enable(core: SphanoramaCore) {
     // this is the branch that did not.
     motionState.textContent =
       `unavailable · ${started.status.detail || started.status.code}`;
-    // Only overwrite the stage line if the camera did not already claim it: two failures at once
-    // should not hide the first one.
-    if (opened.ok) stage.textContent = describeFailure(started.status);
+    // The stage line is deliberately left alone. It used to carry this failure too, which was
+    // wrong twice: `describeFailure` tells the user to change a permission and reload, and there
+    // is nothing to fix — capture without motion is a supported configuration the very next line
+    // goes on to start. It was also invisible, because every path through `beginSession` writes
+    // the stage, and `beginSession` runs whenever the camera opened, which is the only case this
+    // branch wrote it in at all. The reason belongs on the motion row, and is on it.
   }
 
   enableButton.hidden = true;
