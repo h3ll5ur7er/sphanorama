@@ -241,6 +241,35 @@ class MethodTableTest(unittest.TestCase):
         self.assertNotIn("static_cast<uint64_t>(in.GetF64())", cpp)
         self.assertIn("GetId(", cpp)
 
+    def test_a_parameter_is_decoded_into_the_type_the_contract_declared(self):
+        # A number crosses as a double because JavaScript has no other kind, and the mirror maps
+        # every width of integer onto it. What comes *back* has to be the type the C++ method
+        # actually takes: decoding into a `double` and passing it to an `int32_t` parameter is a
+        # narrowing the core refuses to compile under -Wconversion, so an entirely ordinary
+        # contract — a pixel count, a tile index — could not cross at all. The subset is meant to
+        # fail the build on what it cannot represent, and this it can.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Preview(int32_t maxEdge) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_facade(module)
+        self.assertIn("int32_t maxEdge{};", cpp)
+        self.assertNotIn("double maxEdge{};", cpp)
+
+    def test_a_double_parameter_is_still_a_double(self):
+        # The other half, so the fix above cannot be "always int32_t": most numbers in these
+        # contracts are angles and fractions, and rounding one at the boundary would be a
+        # reticle in the wrong place rather than a compile error.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Result<CoverageState> Aim(double azimuthDeg) = 0;\n"
+            "};\n")
+        self.assertIn("double azimuthDeg{};", contract_gen.emit_cpp_facade(module))
+
     def test_a_list_count_is_bounded_by_its_element_size_not_by_one_byte(self):
         # GetCount(1) lets a payload claim one element per byte present. Sized from that claim,
         # a small malformed message becomes a very large allocation: a hundred kilobytes of
