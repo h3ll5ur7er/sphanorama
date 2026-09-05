@@ -43,7 +43,8 @@ class IProjectManager {
   // that failed from one that worked, and folding "no override" into the failure branch would make
   // a project this build cannot read look exactly like one nobody has edited. A project that does
   // not exist is still a failure, because that is a question about the project rather than an
-  // answer about the cell.
+  // answer about the cell — and so is an unset cell, which nothing can have written a selection
+  // for. The sentinel only means something because every other answer is a real one.
   virtual Result<CandidateId> GetSelection(ProjectId project, NodeId node) = 0;
 
   virtual Status Export(ProjectId project, BuildId build, const ExportSpec& spec) = 0;

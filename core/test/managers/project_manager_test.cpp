@@ -125,6 +125,24 @@ TEST_F(Projects, AnUnsetIdIsNotASelection) {
   EXPECT_EQ(chosen.value.value, 0u);
 }
 
+TEST_F(Projects, AskingAboutAnUnsetCellIsACallerMistakeRatherThanAnEmptyAnswer) {
+  // The mirror of the rule above. `SetSelection` refuses an unset cell, so `selection/0` is a key
+  // nothing can ever write — and answering "nobody has chosen here" for it would make a caller
+  // passing an uninitialised id indistinguishable from a cell that genuinely has no override.
+  // The sentinel is worth protecting: it only means something because every other answer is a
+  // real one.
+  auto created = manager->Create("kitchen");
+  auto asked = manager->GetSelection(created.value, NodeId{0});
+  EXPECT_FALSE(asked.ok());
+  EXPECT_EQ(asked.status.code, StatusCode::InvalidArgument);
+
+  // A real cell with nothing recorded still answers zero, so this cannot pass by refusing every
+  // cell that has not been chosen for.
+  auto empty = manager->GetSelection(created.value, NodeId{9});
+  EXPECT_TRUE(empty.ok()) << empty.status.detail;
+  EXPECT_EQ(empty.value.value, 0u);
+}
+
 TEST_F(Projects, ARecordedSelectionCanBeReadBack) {
   // The whole point, and what was missing: a pick was written here and read nowhere, so the only
   // thing that knew which candidate was in force was the client that had just set it — and a

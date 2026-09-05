@@ -90,6 +90,13 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
 }
 
 Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node) {
+  // The mirror of the rule in `SetSelection`, and it protects the sentinel rather than the store.
+  // Nothing can write `selection/0`, so answering "nobody has chosen here" for it would make a
+  // caller passing an uninitialised id look exactly like a cell that genuinely has no override.
+  // Zero only means something as an answer because every other answer is a real one.
+  if (!node.valid()) {
+    return Err<CandidateId>(StatusCode::InvalidArgument, kComponent, "that is not a cell");
+  }
   if (!Exists(project)) {
     return Err<CandidateId>(StatusCode::NotFound, kComponent, "no such project");
   }
