@@ -4,39 +4,47 @@
 Nothing else here would notice. The compilers only see C++ and TypeScript, and a marker in either
 of those is a syntax error the build already catches — so the files actually at risk are the ones
 no tool reads: the ADRs, the roadmap, the architecture notes. Documentation is a deliverable in
-this repository (ADR 0007), and a document carrying `<<<<<<< HEAD` is a document that has stopped
-being one, which is worse than an out-of-date one because it reads as damage rather than drift.
+this repository (ADR 0007), and a document carrying a half-finished merge is a document that has
+stopped being one — worse than an out-of-date one, because it reads as damage rather than drift.
 
-This exists because it happened: a resolution during a three-way merge left a `>>>>>>> origin/main`
-line in docs/06-roadmap.md, the full gate went green over it, and it was caught by an ad-hoc grep
-rather than by anything that would have run in CI.
+This exists because it happened: a resolution during a three-way merge left a tail marker in
+docs/06-roadmap.md, the full gate went green over it, and it was caught by an ad-hoc grep rather
+than by anything that would have run in CI.
+
+The markers are described rather than spelled anywhere in this file. The check is anchored to the
+start of a line, so quoting one mid-sentence would in fact be safe — but only until somebody
+reflows the paragraph and it lands in column one, and a checker that can be broken by rewrapping
+its own documentation is not one to rely on.
 
 Usage:  python3 tools/conflict_marker_check.py [repo_root]
 """
 from __future__ import annotations
 
-import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Built rather than written out, so that this file and its tests can be scanned like everything
-# else. Spelling them literally would make the checker flag itself, and the usual answer to that —
-# excluding tools/ from the scan — would leave the checkers as the one tree where a bad merge goes
-# unnoticed.
+# Built from repeated characters, so that no line of this file or its tests can be one. Spelling
+# them out would eventually make the checker flag itself, and the usual answer to that — excluding
+# tools/ from the scan — would leave the checkers as the one tree where a bad merge goes unnoticed.
 OURS = "<" * 7
 THEIRS = ">" * 7
 SPLIT = "=" * 7
 
-# Directories that are not ours to police: dependencies, build output, other checkouts.
-# Pruned by name wherever they appear — a `node_modules` is a `node_modules` at any depth.
-SKIPPED_DIRS = frozenset({
-    ".git", "node_modules", "dist", "emsdk-cache", ".claude",
-})
-# And these by their path from the repository root, because the names are ordinary English and
-# only these locations are build output. Matched exactly rather than as a prefix: `build` should
-# not also silence a directory called `buildings`.
-SKIPPED_ROOTS = frozenset({"build", "shell/public/core"})
+# What counts as "in the repository" is asked of git rather than described here.
+#
+# The first version of this carried its own skip list — node_modules, build, dist, .claude — and
+# it was wrong in both directions within an hour. It missed half of what .gitignore already knew
+# about (.venv, datasets, captures, playwright-report, __pycache__), so it walked them for
+# nothing; and it pruned the whole of `.claude`, of which `.claude/skills/` is *tracked* content,
+# so a marker in the engineering skill would have gone unnoticed. A hand-written list beside an
+# existing one drifts, and this one drifted before it was ever merged.
+#
+# `--cached --others --exclude-standard` is precisely the set that can become a commit: tracked
+# files, plus untracked ones git is not ignoring. An ignored file cannot carry a marker into the
+# history, and an untracked-but-not-ignored one is exactly what somebody is about to add.
+LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
 
 # Read as text; anything that is not decodes to replacement characters and simply will not match.
 # A size ceiling because a marker lives in a hand-edited file, and walking a large binary line by
@@ -68,40 +76,34 @@ def is_marker(text: str) -> bool:
     return text.rstrip() == SPLIT
 
 
-def check(root: Path) -> list[Marker]:
-    """Every marker under `root`, in path order.
+def tracked_files(root: Path) -> list[str]:
+    """Every path git would let you commit, relative to `root`.
 
-    Walked rather than globbed, and the skipped directories are pruned *before* descending. That
-    is not premature: this repository's `node_modules`, `build/` and agent worktrees hold tens of
-    thousands of files between them, and a glob that enumerates them all and then filters pays for
-    every one. The cost also grows with the number of worktrees, which is the case where somebody
-    is most likely to be running the gate by hand.
+    A failure to ask is reported rather than swallowed. Returning "no files" from a git that would
+    not answer would make an unrunnable check indistinguishable from a clean tree, which is the
+    shape of bug this whole checker exists to catch.
     """
+    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
+    return sorted(name for name in result.stdout.split("\0") if name)
+
+
+def check(root: Path) -> list[Marker]:
     root = Path(root)
     found: list[Marker] = []
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        here = Path(dirpath)
-        # In place, because os.walk reads this list to decide where to go next.
-        dirnames[:] = sorted(
-            name for name in dirnames
-            if name not in SKIPPED_DIRS
-            and (here / name).relative_to(root).as_posix() not in SKIPPED_ROOTS
-        )
-        for name in sorted(filenames):
-            path = here / name
-            if not path.is_file():
+    for rel in tracked_files(root):
+        path = root / rel
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_BYTES:
                 continue
-            rel = path.relative_to(root).as_posix()
-            try:
-                if path.stat().st_size > MAX_BYTES:
-                    continue
-                body = path.read_text(errors="replace")
-            except OSError:
-                continue
-            for number, text in enumerate(body.splitlines(), start=1):
-                if is_marker(text):
-                    found.append(Marker(rel, number, text))
+            body = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for number, text in enumerate(body.splitlines(), start=1):
+            if is_marker(text):
+                found.append(Marker(rel, number, text))
     return found
 
 

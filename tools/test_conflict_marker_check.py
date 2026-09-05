@@ -21,14 +21,25 @@ SPLIT = "=" * 7
 
 
 class Repo:
+    """A real git repository, because the checker asks git what is in one.
+
+    That is the point of the design rather than an inconvenience of testing it: the skipping rules
+    under test are `.gitignore`'s, so a fixture that faked them would be asserting against a copy
+    of the thing rather than the thing.
+    """
+
     def __init__(self, root: Path):
         self.root = root
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
 
     def write(self, rel: str, body: str = ""):
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body)
         return path
+
+    def ignore(self, *patterns: str):
+        self.write(".gitignore", "".join(f"{p}\n" for p in patterns))
 
 
 class ConflictMarkerCheckTest(unittest.TestCase):
@@ -83,12 +94,44 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         self.repo.write("docs/notes.md", f"text\n{SPLIT}\nmore\n")
         self.assertEqual([m.line for m in self.markers()], [2])
 
-    def test_dependencies_and_build_output_are_not_ours_to_police(self):
+    def test_what_git_ignores_is_not_ours_to_police(self):
+        # The skip rules are `.gitignore`'s, whatever it happens to say. Listed here as the real
+        # one lists them, so a scratch tree added there later is skipped without touching this.
+        self.repo.ignore("node_modules/", "build/", "dist/", ".claude/worktrees/",
+                         ".venv/", "captures/", "playwright-report/")
         self.repo.write("node_modules/pkg/index.js", f"{OURS} HEAD\n")
         self.repo.write("build/native-debug/x.h", f"{THEIRS} origin/main\n")
         self.repo.write("dist/app.js", f"{SPLIT}\n")
         self.repo.write(".claude/worktrees/agent-x/docs/a.md", f"{OURS} HEAD\n")
+        self.repo.write(".venv/lib/thing.py", f"{OURS} HEAD\n")
+        self.repo.write("captures/run/frame.md", f"{THEIRS} origin/main\n")
+        self.repo.write("playwright-report/index.html", f"{SPLIT}\n")
         self.assertEqual(self.markers(), [])
+
+    def test_tracked_content_under_a_partly_ignored_directory_is_still_scanned(self):
+        # The hole this replaced: the old skip list pruned all of `.claude`, but only
+        # `.claude/worktrees/` is scratch — `.claude/skills/` is tracked, and it is the file that
+        # tells everyone how to work in this repository. A marker there went unnoticed.
+        self.repo.ignore(".claude/worktrees/")
+        self.repo.write(".claude/worktrees/agent-x/notes.md", f"{OURS} HEAD\n")
+        self.repo.write(".claude/skills/sphanorama-engineering/SKILL.md",
+                        f"# Skill\n{THEIRS} origin/main\n")
+        self.assertEqual([m.path for m in self.markers()],
+                         [".claude/skills/sphanorama-engineering/SKILL.md"])
+
+    def test_a_file_staged_but_not_yet_committed_counts(self):
+        # `--cached --others` is the set that can become a commit, which is the set that matters.
+        # A marker is caught before it is committed or not at all.
+        self.repo.write("docs/new.md", f"{OURS} HEAD\n")
+        subprocess.run(["git", "add", "docs/new.md"], cwd=self.repo.root, check=True)
+        self.assertEqual([m.path for m in self.markers()], ["docs/new.md"])
+
+    def test_a_tree_git_will_not_answer_for_is_an_error_not_a_pass(self):
+        # The failure this checker exists to prevent, in its own machinery: a check that cannot
+        # run must not be indistinguishable from a check that found nothing.
+        with tempfile.TemporaryDirectory() as outside:
+            with self.assertRaises(RuntimeError):
+                conflict_marker_check.check(Path(outside))
 
     def test_a_name_that_merely_starts_like_build_output_is_still_scanned(self):
         # The skip list was a prefix match, so `build` also silenced anything whose path began
