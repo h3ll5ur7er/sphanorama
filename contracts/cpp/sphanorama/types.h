@@ -224,6 +224,18 @@ struct Candidate {
 struct BurstSpec {
   int32_t frameCount = 5;
   int32_t intervalMs = 80;
+  // How long the camera is given to converge after the locks go on, before the first frame is
+  // taken. It is a different quantity from the interval — that is how far apart two frames have
+  // to be, this is how long one camera takes to settle — and a caller that knows its device
+  // should be able to say so.
+  //
+  // The default is a guess, and it is worth saying so plainly: nobody has measured how long a
+  // phone camera takes to converge after a lock. What is known is one device in one scene. A
+  // Pixel that holds a focus lock scored its five-frame burst 5.9, 1145, 720, 583, 586 in capture
+  // order — the first frame taken 16 ms after arming and roughly 100x less sharp than any of its
+  // siblings, the second taken 96 ms after arming and normal. 150 ms is that datapoint with
+  // margin. Measuring it per device class is what would replace it.
+  int32_t settleMs = 150;
   bool lockExposure = true;
   bool lockWhiteBalance = true;
   bool lockFocus = true;

@@ -415,6 +415,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
 
       armedNow = await core.captureSession.armBurst(node, {
         frameCount: 5, intervalMs: 80,
+        // The locks above have just been applied, and a camera that takes a focus lock re-focuses
+        // to honour it. The first frame waits for that rather than borrowing whatever the
+        // viewfinder was showing mid-convergence — the contract's own default, restated here
+        // because the wire carries every field and the page has to name one (ADR 0032).
+        settleMs: 150,
         // Exactly what came back held, so the manager's own SetLocks matches the state the page
         // confirmed. Asking for a lock this camera did not take would fail arming; claiming one
         // it did not take would be worse — the burst would compare candidates on sharpness while

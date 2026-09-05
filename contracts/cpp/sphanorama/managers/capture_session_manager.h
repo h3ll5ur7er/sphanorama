@@ -45,6 +45,11 @@ class ICaptureSessionManager {
   // a spec asking for less than a tick apart gets a tick apart, and a spec asking for less than
   // the camera's own `maxBurstFps` period gets that instead. Locks are applied here and held
   // until the burst completes or is abandoned.
+  //
+  // The first frame is not taken until `burst.settleMs` after arming, because the locks applied
+  // on this call are what the camera has to converge to. Under that floor the camera's own frame
+  // period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
+  // frame period the latest frame is one the camera produced before the locks landed.
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.

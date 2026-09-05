@@ -220,6 +220,7 @@ export function decodeCandidate(input: Reader): C.Candidate {
 export function encodeBurstSpec(out: Writer, value: C.BurstSpec): void {
   out.f64(value.frameCount);
   out.f64(value.intervalMs);
+  out.f64(value.settleMs);
   out.bool(value.lockExposure);
   out.bool(value.lockWhiteBalance);
   out.bool(value.lockFocus);
@@ -229,6 +230,7 @@ export function decodeBurstSpec(input: Reader): C.BurstSpec {
   return {
     frameCount: input.f64(),
     intervalMs: input.f64(),
+    settleMs: input.f64(),
     lockExposure: input.bool(),
     lockWhiteBalance: input.bool(),
     lockFocus: input.bool(),

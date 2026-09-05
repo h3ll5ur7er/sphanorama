@@ -37,6 +37,9 @@ constexpr ProjectId kProject{1};
 Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId node,
                    const BurstSpec& burst) {
   if (auto armed = manager.ArmBurst(node, burst); !armed.ok()) return armed;
+  // The first frame waits for the camera to converge on the locks this call just applied
+  // (ADR 0032), so the clock has to cross the settle before any of the intervals below matter.
+  clock.AdvanceMs(burst.settleMs);
   for (int32_t tick = 0; tick < burst.frameCount * 4 + 8; ++tick) {
     auto guidance = manager.OnMotion({});
     if (!guidance.ok()) return guidance.status;
@@ -447,6 +450,10 @@ TEST_F(CaptureSession, AnArmedBurstFillsTheCellOverTheTicksThatFollow) {
   // which is the whole of ADR 0018.
   EXPECT_TRUE(manager->Candidates(node).value.empty());
   EXPECT_EQ(camera->FramesTaken(), 0);
+  // Nor on the tick after it: the camera is converging on the locks arming just applied, and the
+  // frames only start once it has (ADR 0032), which TakesNoFrameUntilTheCameraHasHadTimeToSettle
+  // asserts on its own. Here it is only the reason the clock has to move before the loop below.
+  clock.AdvanceMs(burst.settleMs);
 
   // Ticked by hand rather than through FireBurst, so the guidance the client would render on the
   // way is asserted too: Firing until the burst is full, CellDone exactly on the tick that
@@ -498,6 +505,12 @@ TEST_F(CaptureSession, LocksExposureWhileABurstIsInFlightAndReleasesItAfter) {
   ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
 
   ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_TRUE(camera->ExposureLocked()) << "held from the moment the burst is armed";
+
+  // The settle is inside the lock, not before it — the whole reason to wait is that the camera
+  // is converging on locks it has already been given (ADR 0032).
+  clock.AdvanceMs(burst.settleMs);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
   EXPECT_TRUE(camera->ExposureLocked()) << "held across the ticks the burst spans";
 
   clock.AdvanceMs(burst.intervalMs);
@@ -517,6 +530,7 @@ TEST_F(CaptureSession, RefusesASecondBurstWhileOneIsStillInFlight) {
 
   // The refusal left the burst already in flight alone rather than disarming it on the way out:
   // it still fills on the ticks that follow.
+  clock.AdvanceMs(burst.settleMs);
   for (int32_t i = 0; i < burst.frameCount; ++i) {
     ASSERT_TRUE(manager->OnMotion({}).ok());
     clock.AdvanceMs(burst.intervalMs);
@@ -543,6 +557,7 @@ TEST_F(CaptureSession, TakesNoMoreThanOneFramePerInterval) {
   burst.intervalMs = 80;
   const NodeId node = FirstNode();
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // the burst's first frame waits for the camera (ADR 0032)
 
   // Counted at the camera rather than in the cell: an in-flight burst is deliberately invisible
   // through Candidates until it ranks, and what this test is about is how often the port is read.
@@ -559,6 +574,93 @@ TEST_F(CaptureSession, TakesNoMoreThanOneFramePerInterval) {
   clock.AdvanceMs(burst.intervalMs);
   ASSERT_TRUE(manager->OnMotion({}).ok());
   EXPECT_EQ(camera->FramesTaken(), 2);
+}
+
+TEST_F(CaptureSession, TakesNoFrameUntilTheCameraHasHadTimeToSettle) {
+  // Arming applies the locks, and applying one is a thing the camera has to converge to: a focus
+  // lock makes some of them re-focus. PeekPreviewFrame borrows the *latest* preview frame, so a
+  // frame taken on the very next tick is either mid-refocus or older than the constraints.
+  //
+  // Measured on a Pixel that holds a focus lock: a five-frame burst scored 5.9, 1145, 720, 583,
+  // 586 in capture order. The first frame, taken 16 ms after arming, was ~100x less sharp than
+  // any of its siblings, and a fifth of every burst on that device was going in the bin.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 80;
+  burst.settleMs = 150;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+
+  // Nine ticks at animation rate — 144 ms, still inside the settle. This is exactly what the
+  // capture loop does while the camera converges, and it is what used to take the bad frame.
+  for (int tick = 0; tick < 9; ++tick) {
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+    clock.AdvanceMs(16);
+  }
+  EXPECT_EQ(camera->FramesTaken(), 0) << "a frame was taken before the camera had settled";
+
+  clock.AdvanceMs(16);   // 160 ms since arming
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 1) << "and none was taken once it had";
+}
+
+TEST_F(CaptureSession, TheSettleDelaysTheFirstFrameAndNotTheOnesAfterIt) {
+  // Two different quantities: the settle is how long this camera takes to converge on the locks,
+  // the interval is how far apart two frames have to be to be worth comparing. A burst that
+  // paced every frame at the settle would take three times as long for the same evidence, and a
+  // hold-still that long is one nobody manages.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.intervalMs = 40;   // above the fake camera's 33.3 ms period, so the spec is in charge
+  burst.settleMs = 200;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  clock.AdvanceMs(burst.settleMs);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  ASSERT_EQ(camera->FramesTaken(), 1);
+
+  // One interval later, not one settle later.
+  clock.AdvanceMs(burst.intervalMs);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 2) << "the rest of the burst was paced by the settle";
+}
+
+TEST_F(CaptureSession, ASettleOfZeroStillWaitsOutOneOfTheCamerasOwnFrames) {
+  // Zero says this camera needs no convergence time, and its own frame period is still a floor
+  // under that — the same floor as the interval's, one step earlier and for a related reason.
+  // PeekPreviewFrame borrows the latest preview frame, and inside one frame period the latest
+  // frame is one the camera produced before the locks landed: the first frame of the burst would
+  // be the last frame of the viewfinder before it.
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.settleMs = 0;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // The fake reports 30 fps, so two ticks of a 60 Hz loop are still inside one of its frames.
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  clock.AdvanceMs(16);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 0) << "a frame the locks could not have reached yet";
+
+  clock.AdvanceMs(20);   // 36 ms, past the camera's 33.3 ms frame period
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), 1);
+}
+
+TEST_F(CaptureSession, RefusesANegativeSettle) {
+  // The same arithmetic and the same reason as the negative interval below: a negative settle
+  // makes the first frame overdue the moment the burst is armed, so rather than failing it would
+  // quietly reinstate the behaviour the settle exists to remove.
+  Begin();
+  BurstSpec burst;
+  burst.settleMs = -1;
+  EXPECT_EQ(manager->ArmBurst(FirstNode(), burst).code, StatusCode::InvalidArgument);
+  // Refused before the locks are taken. A burst that never starts must not leave the camera
+  // pinned to the exposure of a cell nobody is capturing.
+  EXPECT_FALSE(camera->ExposureLocked());
 }
 
 TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
@@ -605,6 +707,7 @@ TEST_F(CaptureSession, ACameraThatStopsProducingFramesAbandonsTheBurstRatherThan
   burst.lockExposure = true;
   const NodeId node = FirstNode();
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   ASSERT_TRUE(manager->OnMotion({}).ok());
   ASSERT_EQ(camera->FramesTaken(), 1);
 
@@ -627,6 +730,7 @@ TEST_F(CaptureSession, ARetakeOfTheCellBeingFiredAtAbandonsThatBurst) {
   burst.frameCount = 4;
   const NodeId node = FirstNode();
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   ASSERT_TRUE(manager->OnMotion({}).ok());
   const int64_t held = store->Budget().value.heapUsedBytes;
   ASSERT_GT(held, 0);
@@ -646,6 +750,7 @@ TEST_F(CaptureSession, EndingMidBurstRollsItBackRatherThanBankingAHalfBurst) {
   const NodeId node = FirstNode();
   const int64_t before = store->Budget().value.heapUsedBytes;
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   ASSERT_TRUE(manager->OnMotion({}).ok());
   ASSERT_GT(store->Budget().value.heapUsedBytes, before);
 
@@ -673,6 +778,7 @@ TEST_F(CaptureSession, ACellWhoseBurstIsStillInFlightIsNotCountedAsCovered) {
   burst.frameCount = 3;
   const NodeId node = FirstNode();
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   ASSERT_TRUE(manager->OnMotion({}).ok());
   ASSERT_EQ(camera->FramesTaken(), 1) << "the burst did not take a frame";
 
@@ -710,6 +816,7 @@ TEST_F(CaptureSession, AFrameOfferedDuringABurstSurvivesThatBurstRollingBack) {
   BurstSpec burst;
   burst.frameCount = 2;
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below reaches the camera
   ASSERT_TRUE(camera->StopPreview().ok());   // the next peek fails, abandoning the burst
   EXPECT_FALSE(manager->OnMotion({}).ok());
 
@@ -774,6 +881,7 @@ TEST_F(CaptureSession, AnUnlockThatFailsIsReportedRatherThanSwallowed) {
   burst.frameCount = 2;
   const NodeId node = FirstNode();
   ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   camera->FailUnlock(true);
 
   ASSERT_TRUE(manager->OnMotion({}).ok());
@@ -884,8 +992,12 @@ TEST_F(CaptureSession, ABurstTakesNoFramesFasterThanTheCameraCanMakeThem) {
   BurstSpec burst;
   burst.frameCount = 3;
   burst.intervalMs = 0;  // "as fast as you can", which is the camera's business to answer
+  burst.settleMs = 0;    // and no convergence time either: what is under test is the interval
   ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
 
+  // Past the settle, which the camera's rate floors for a different reason (ADR 0032) — from
+  // here on every wait is the interval's.
+  clock.AdvanceMs(34);
   ASSERT_TRUE(manager->OnMotion({}).ok());
   ASSERT_EQ(camera->FramesTaken(), 1);
   // Four ticks inside the camera's 33.3 ms period, at about the rate the capture loop runs.
@@ -912,9 +1024,11 @@ TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
   BurstSpec burst;
   burst.frameCount = 3;
   burst.intervalMs = 0;
+  burst.settleMs = 0;
   ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
 
-  // Two ticks with the clock standing still. The tick rate is the only floor left.
+  // Two ticks with the clock standing still. The tick rate is the only floor left — for the
+  // settle before the first frame as much as for the interval after it.
   ASSERT_TRUE(manager->OnMotion({}).ok());
   ASSERT_TRUE(manager->OnMotion({}).ok());
   EXPECT_EQ(camera->FramesTaken(), 2);
@@ -1202,6 +1316,7 @@ TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaulte
   // then abandoned rather than completed.
   ASSERT_TRUE(real.RequestRetake(node, /*replace=*/false).ok());
   ASSERT_TRUE(real.ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);   // past the settle, so the tick below takes a frame
   ASSERT_TRUE(real.OnMotion({}).ok());
   clock.AdvanceMs(burst.intervalMs);
   ASSERT_TRUE(real.OnMotion({}).ok());

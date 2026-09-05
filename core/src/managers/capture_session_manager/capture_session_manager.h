@@ -67,6 +67,10 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
   // spec asked for and what the camera says it can deliver.
   int64_t BurstIntervalNs() const;
+  // How long the armed burst waits after arming before its first frame, in nanoseconds, on the
+  // same two floors — a different quantity from the interval, and the camera's rate bounds it for
+  // a different reason (ADR 0032).
+  int64_t BurstSettleNs() const;
   // Takes at most one frame for the armed burst. Reports whether the burst finished on this tick,
   // so OnMotion can say CellDone exactly once.
   Result<bool> AdvanceBurst();
@@ -119,7 +123,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   std::set<uint64_t> burst_owned_;
 
   // What the camera said it can deliver when it was opened, in frames per second; 0 when the
-  // platform will not say. It is a floor on the burst interval and nothing else reads it.
+  // platform will not say. It is a floor on a burst's waits — the interval between its frames and
+  // the settle before its first — and nothing else reads it.
   double max_burst_fps_ = 0;
 
   // The burst in flight, if any. It is session state and it lives here for the same reason the
@@ -135,7 +140,11 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // boundary: OfferFrame appends to the same vector, so a frame the caller still owned could land
   // past the mark and be forgotten by a rollback that had no business touching it.
   std::vector<Candidate> pending_;
-  int64_t last_frame_ns_ = 0;
+  // When the next frame of the armed burst is due. Arming sets it a settle ahead and each frame
+  // taken sets it an interval ahead, so the one comparison in AdvanceBurst serves both waits —
+  // and there is no moment at which the deadline has to be inferred from a frame that has not
+  // been taken yet, which is what the old "last frame" reading needed a backdated clock for.
+  int64_t next_frame_ns_ = 0;
 
   uint64_t next_session_ = 1;
   uint64_t next_candidate_ = 1;
