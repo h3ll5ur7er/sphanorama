@@ -42,6 +42,8 @@ step "generated files not stale"  python3 tools/contract_gen.py --check
 step "size budget checker tests"  python3 tools/test_size_budget.py
 step "no-browser checker tests"   python3 tools/test_no_browser_check.py
 step "no browser assumptions"     python3 tools/no_browser_check.py
+step "marker checker tests"       python3 tools/test_conflict_marker_check.py
+step "no conflict markers"        python3 tools/conflict_marker_check.py
 
 echo "== native =="
 step "native configure"  cmake --preset native-debug
