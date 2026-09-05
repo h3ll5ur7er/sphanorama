@@ -39,6 +39,20 @@ export const PREVIEW_MAX_EDGE = 128;
  */
 type Answered<T> = { readonly ok: true; readonly value: T } | { readonly ok: false };
 
+/**
+ * A call to the core that answers rather than throws.
+ *
+ * Every call this panel makes crosses a `postMessage`, and `remote-core`'s `die()` rejects every
+ * call in flight and every call after it once the worker is gone — a worker script that 404s, a
+ * throw at its top level, a reply that cannot be read. An unhandled rejection here would leave the
+ * strip with no rows, no heading and no message, which is worse than showing the wrong thing: the
+ * user is told nothing at all. A rejection is the same news as `{ok: false}` and is told the same
+ * way.
+ */
+function answering<T>(call: Promise<Answered<T>>): Promise<Answered<T>> {
+  return call.then(undefined, () => ({ ok: false } as const));
+}
+
 export interface ReviewCore {
   candidates(node: NodeId): Promise<Answered<Candidate[]>>;
   candidatePreview(
@@ -146,6 +160,11 @@ export function createReviewPanel(
   // as long as the user stayed on it.
   let previewsFor: NodeId | null = null;
   const previews = new Map<CandidateId, FramePreview>();
+  // How many picks this panel has sent. A write that has been overtaken by a later one stands
+  // down instead of refreshing: its refresh would read a core the newer write is about to change,
+  // paying a round trip to paint something already out of date. It is a count rather than an
+  // assumption about arrival order, so it holds whichever order the two answers come back in.
+  let writes = 0;
 
   /**
    * Fills in the strip's pictures, one candidate at a time.
@@ -163,7 +182,8 @@ export function createReviewPanel(
         paint(canvas, held);
         continue;
       }
-      const answered = await core.candidatePreview(node, candidate, PREVIEW_MAX_EDGE);
+      const answered = await answering(
+        core.candidatePreview(node, candidate, PREVIEW_MAX_EDGE));
       // A cell the user has left. Nothing is drawn and nothing is remembered: the ticket is
       // checked before the cache is written, so a late answer cannot seed the cell that replaced
       // it with another cell's frames.
@@ -183,14 +203,11 @@ export function createReviewPanel(
   async function open(node: NodeId): Promise<void> {
     opened = node;
     const ticket = ++latest;
-    if (previewsFor !== node) {
-      previews.clear();
-      previewsFor = node;
-    }
     // Asked together, because they are one question with two halves — what is here, and which of
     // it is in force — and asking them in sequence would put a second round trip in front of the
     // first row of pixels for no reason.
-    const [answered, recorded] = await Promise.all([core.candidates(node), core.selection(node)]);
+    const [answered, recorded] = await Promise.all(
+      [answering(core.candidates(node)), answering(core.selection(node))]);
     // A cell the user has already left. Returning without touching the DOM leaves the strip
     // showing what was asked for most recently, which is the only cell the rest of the panel
     // claims to be showing.
@@ -201,13 +218,23 @@ export function createReviewPanel(
       return;
     }
 
-    // A read that failed is no override, because the ranking's own pick is what the build uses
-    // when none applies. Zero — the core's answer for "nobody has chosen here" — is passed
-    // straight through rather than translated: it is an identity no candidate can have, so
-    // `candidateStrip` lands it in the same place as a choice whose candidate a retake forgot,
-    // which is where it belongs. Checking for it here would be a branch that cannot change an
-    // answer.
-    const entries = candidateStrip(answered.value, recorded.ok ? recorded.value : null);
+    // Dropped here rather than before the await, so a tap that is superseded before it ever
+    // paints does not take the thumbnails of the cell still on screen with it. Clearing up there
+    // costs the ~350 ms of spill faulting below to fetch back pictures the page never stopped
+    // needing, for a render that was cancelled two lines ago.
+    if (previewsFor !== node) {
+      previews.clear();
+      previewsFor = node;
+    }
+
+    // Zero — the core's answer for "nobody has chosen here" — is passed straight through rather
+    // than translated: it is an identity no candidate can have, so `candidateStrip` lands it in
+    // the same place as a choice whose candidate a retake forgot, which is where it belongs.
+    // A read that *failed* is not that answer and is not folded into it: nothing is marked in
+    // force, and the heading below says why. Showing the ranking's pick as though it were what
+    // the build will use would be the screen disagreeing with the build without a word anywhere,
+    // which is the failure the read-back exists to end (ADR 0040).
+    const entries = candidateStrip(answered.value, recorded.ok ? recorded.value : 'unreadable');
     // Pruned to what the strip is about to show. Clearing on a *change* of cell is not enough on
     // its own: a retake gives this same cell new identities and the old ones never come back, so
     // their pictures would be held for as long as the user stays here — 48 KB each, growing with
@@ -215,9 +242,12 @@ export function createReviewPanel(
     for (const candidate of previews.keys()) {
       if (!entries.some((entry) => entry.candidate === candidate)) previews.delete(candidate);
     }
-    elements.stripHeading.textContent = entries.length === 0
+    const counted = entries.length === 0
       ? 'Nothing captured here yet.'
       : `${entries.length} candidate${entries.length === 1 ? '' : 's'}, best first.`;
+    elements.stripHeading.textContent = recorded.ok || entries.length === 0
+      ? counted
+      : `${counted} Which one is in force could not be read.`;
 
     const rows = new Map<CandidateId, HTMLCanvasElement>();
     for (const entry of entries) {
@@ -239,25 +269,27 @@ export function createReviewPanel(
       button.append(thumbnail, label);
       button.addEventListener('click', () => {
         void (async () => {
-          await core.setSelection(node, entry.candidate);
-          // Nothing is remembered here. Re-opening asks the core what is recorded, so a refused
-          // write leaves the previous choice in force without this having to know that it was
-          // refused — and what the strip shows is what the build will use, rather than a second
-          // copy of it kept on this side that a reload would forget.
+          const mine = ++writes;
+          // A rejection is not an outcome this has to tell apart. Nothing is remembered here:
+          // re-opening asks the core what is recorded, so a write that was refused — or one that
+          // never reached a worker at all — leaves the previous choice in force without this
+          // having to know which happened, and what the strip shows is what the build will use
+          // rather than a second copy kept on this side that a reload would forget.
+          await core.setSelection(node, entry.candidate).catch(() => undefined);
+
+          // Two guards, answering two different questions, and neither is the render ticket: a
+          // ticket belongs to one render, and two picks made in one render carry the same one.
           //
-          // Re-opened so the strip shows what is now in force — but only while this cell is still
-          // the one on screen. SetSelection crosses the worker too, so the user can have opened
-          // another cell in the meantime, and re-opening then would haul them back.
+          // `opened` is the last cell *asked for*, which is not the cell currently painted — that
+          // lags it by a round trip. Asked-for is deliberately the question. A write that lands
+          // while the user is already on their way to another cell must not refresh, because a
+          // refresh takes the newest ticket and would paint this cell over the one they are going
+          // to. The strip they are walking away from does go briefly stale, and it corrects itself
+          // the moment they come back, because coming back reads the core rather than a copy.
           //
-          // `opened` rather than the ticket, and the difference is not pedantic. A ticket belongs
-          // to one *render*, and two quick picks both carry the render they were drawn in: the
-          // first write to land refreshes and bumps the ticket, and the second then finds its own
-          // stale and returns — leaving the strip showing the earlier pick while the core holds
-          // the later one. That is the screen disagreeing with the build, which is the failure
-          // this whole read-back exists to end. What a write needs to know is whether its cell is
-          // still on screen, and `opened` is that question; the ticket inside `open` still settles
-          // which of two refreshes paints.
-          if (opened !== node) return;
+          // `writes` is whether this pick is still the newest. Without it two quick picks cost two
+          // refreshes, the first of them reading a core the second is about to change.
+          if (opened !== node || mine !== writes) return;
           await open(node);
         })();
       });

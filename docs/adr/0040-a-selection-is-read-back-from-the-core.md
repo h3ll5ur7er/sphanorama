@@ -53,37 +53,63 @@ setting a pick does not read and rewrite its neighbours.
 
 ## Consequences
 
-- **The strip shows what the build will use.** Not a copy of it kept on the client, which is the
-  only version that can drift.
+- **The strip shows what the build will use.** Not a copy of it kept on the client, which was the
+  version most able to drift — and the only one whose drift nothing would ever correct. Copies do
+  remain further down: `DocumentHost` answers reads from a resident map and commits to IndexedDB
+  behind a 250 ms timer (ADR 0014), so the store and the disk disagree for up to that long, and
+  for longer if a write fails. That copy is one layer's own business and it converges; the panel's
+  did not, because nothing ever told it what had actually been recorded.
 - **A refused write needs no undo.** The panel re-opens the cell after recording, and re-opening
   asks the core; a write that never landed leaves the previous answer standing without the client
   having to know it was refused. The branch that used to record only on success is gone, along with
   the map it wrote to.
-- **That refresh is gated on the cell being open, not on the render it was clicked in.** A ticket
+- **That refresh is gated on two things, and the render ticket is neither of them.** A ticket
   belongs to one render, and two quick picks both carry the render they were drawn in: the first
   write to land refreshes and bumps the ticket, and the second finds its own stale and returns —
   leaving the strip showing the earlier pick while the core holds the later one, which is precisely
-  the disagreement this ADR exists to end. What a write needs to know is whether its cell is still
-  on screen. The ticket inside `open` still settles which of two refreshes paints; the two guards
-  answer different questions and both are needed.
+  the disagreement this ADR exists to end.
+
+  The first gate is `opened`, the last cell *asked for*. Not the cell painted, which lags it by a
+  round trip — and asked-for is the question on purpose: a write landing while the user is already
+  on their way elsewhere must not refresh, because a refresh takes the newest ticket and would
+  paint the cell they left over the one they are going to. The strip they are walking away from
+  does go briefly stale, and it corrects itself when they come back, because coming back reads the
+  core rather than a copy.
+
+  The second is a per-cell write count, so only the newest pick refreshes. Without it, N quick
+  picks cost 2N reads, and each refresh but the last reads a core a later write is about to change.
+  Being a count rather than an assumption about arrival order, it also holds whichever way round
+  the two answers come back.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth
   optimising against.
-- **A corrupt selection document fails rather than answering zero**, and the review strip shows the
-  automatic pick either way — the failure is for whoever reads the logs, not for the screen. Saying
-  "nobody chose here" about a document that says something unreadable would be inventing an answer.
+- **A corrupt selection document fails rather than answering zero.** Saying "nobody chose here"
+  about a document that says something unreadable would be inventing an answer.
+
+  And the failure is for the screen, because there is nowhere else for it to go: no `ILogger` is
+  wired into anything the core builds, and the panel's `Answered<T>` drops the status by design so
+  that `value` cannot be touched on the failing branch. So the strip marks *nothing* in force and
+  its heading says which one is in force could not be read. It keeps its rows — they were read
+  fine, and picking again is how a user repairs the document that failed — but it does not offer
+  the ranking's pick as though that were what the build will use. That fold is available and it is
+  wrong: it is the screen disagreeing with the build without a word anywhere, which is the thing
+  this ADR exists to end, and the client is the last place it could still happen after the core
+  stopped doing it.
 - **So does a read that failed for any reason other than absence.** Absence is the sentinel and a
   failure is not absence. Every `IProjectStoreAccess` today refuses a missing document with
   `NotFound` and has no other way to fail, but the contract allows one, and folding a storage error
   into "nobody has chosen here" would show the ranking's pick for a cell whose override could not
   be read — without a word anywhere. Only `NotFound` maps to zero.
 
-  That is the third correction of the same kind on this decision, and the pattern is the point: a
+  That is the third correction of the same kind on this decision, and a fourth followed: a
   sentinel is a value that means something *because* nothing else does, so every place that can
   produce it by accident has to be closed. The writer could produce one (refused now), the reader
-  accepted an argument that could only ever produce one (refused now), and the reader turned every
-  failure into one (narrowed now). None of the three was visible from the decision itself.
+  accepted an argument that could only ever produce one (refused now), the reader turned every
+  failure into one (narrowed now) — and then the *client* did the fold the core had just stopped
+  doing, mapping a failed read onto the same screen as an answer of zero (marked unreadable now).
+  None of the four was visible from the decision itself, and the last one is the instructive one:
+  closing a fold in the producer does not close it, because the consumer can put it back.
 - **Reading a selection cannot enumerate them.** `IProjectStoreAccess` reads a document by key and
   has no listing, so a caller wanting every override in a project must ask cell by cell. Nothing
   needs that today — the strip opens one cell at a time. The build will, and when it does the

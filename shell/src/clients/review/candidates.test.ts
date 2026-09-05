@@ -53,8 +53,32 @@ describe('candidateStrip', () => {
     expect(strip[0].isInForce).toBe(true);
   });
 
+  it('treats the zero the core answers for an unchosen cell as no choice at all', () => {
+    // `GetSelection` answers `Ok(0)` for "nobody has chosen here" (ADR 0040) and the panel passes
+    // it straight through rather than translating it, so this file is where it has to land in the
+    // right place. Zero is an identity no candidate can have, so it takes the same fallback as a
+    // selection whose candidate a retake forgot — which is only true as long as nothing here
+    // treats a number as a choice merely because it is a number.
+    const strip = candidateStrip(ranked, 0 as CandidateId);
+    expect(strip[0].isInForce).toBe(true);
+    expect(strip.filter((entry) => entry.isInForce)).toHaveLength(1);
+  });
+
+  it('marks nothing in force when the recorded selection could not be read', () => {
+    // Not the same as nobody having chosen. Falling back to the ranking would say "this is what
+    // the build will use" about a cell whose override nobody could read — the screen disagreeing
+    // with the build, silently, which is the failure ADR 0040 exists to end. The panel says so in
+    // the heading; what this file owes is not to mark a row.
+    const strip = candidateStrip(ranked, 'unreadable');
+    expect(strip.map((entry) => entry.candidate)).toEqual([7, 3, 9]);
+    expect(strip.filter((entry) => entry.isInForce)).toHaveLength(0);
+    // The automatic pick is still named. It is a fact about the ranking, which was read fine.
+    expect(strip[0].isAutomaticPick).toBe(true);
+  });
+
   it('is empty rather than broken for a cell nobody has captured', () => {
     expect(candidateStrip([], null)).toEqual([]);
     expect(candidateStrip([], 7 as CandidateId)).toEqual([]);
+    expect(candidateStrip([], 'unreadable')).toEqual([]);
   });
 });

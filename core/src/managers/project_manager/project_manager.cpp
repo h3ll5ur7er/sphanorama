@@ -121,6 +121,14 @@ Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node)
   uint64_t chosen = 0;
   const auto* const end = text.data() + text.size();
   const auto parsed = std::from_chars(text.data(), end, chosen);
+
+  // Three clauses answering three questions — did it parse, was all of it a number, is the number
+  // a legal identity — and no input makes the first of them the deciding one: `from_chars` leaves
+  // `chosen` untouched when it fails, and `chosen` starts at zero, so the third catches whatever
+  // the first would have. That overlap is deliberate rather than dead. The third is a rule about
+  // *content* and would still be needed if the parse could not fail; the first is what makes the
+  // zero initialiser not load-bearing, and dropping it would leave the refusal of an overflowing
+  // document resting on a standard guarantee about a variable nobody assigned.
   if (parsed.ec != std::errc{} || parsed.ptr != end || chosen == 0) {
     return Err<CandidateId>(StatusCode::Internal, kComponent,
                             "this project's selection for that cell is not a candidate identity");

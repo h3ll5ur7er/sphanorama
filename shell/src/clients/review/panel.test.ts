@@ -84,8 +84,16 @@ function deferredCore() {
   let writesLand = true;
   let selectionReadable = true;
   const writes: Array<() => void> = [];
+  // How many times the panel asked for a cell's list. A refresh that never happened is invisible
+  // in the DOM when the core's answer has not changed, so the count is what tells the two apart.
+  const candidateCalls: number[] = [];
+  // A core whose calls reject rather than answer, as `remote-core`'s `die()` makes every call do
+  // once the worker is gone.
+  let reads: 'answer' | 'reject' = 'answer';
   const core: ReviewCore = {
-    candidates: (node: NodeId) => new Promise((resolve) => {
+    candidates: (node: NodeId) => new Promise((resolve, reject) => {
+      candidateCalls.push(node as number);
+      if (reads === 'reject') { reject(new Error('the worker is gone')); return; }
       const staged = queued.get(node as number);
       if (staged !== undefined) {
         queued.delete(node as number);
@@ -113,14 +121,19 @@ function deferredCore() {
         resolve({ ok: writesLand });
       });
     }),
-    selection: (node: NodeId) => Promise.resolve(
-      selectionReadable
-        ? { ok: true as const, value: (recorded.get(node as number) ?? 0) as CandidateId }
-        : { ok: false as const }),
+    selection: (node: NodeId) => (reads === 'reject'
+      ? Promise.reject(new Error('the worker is gone'))
+      : Promise.resolve(
+        selectionReadable
+          ? { ok: true as const, value: (recorded.get(node as number) ?? 0) as CandidateId }
+          : { ok: false as const })),
   };
   return {
     core,
     previewCalls,
+    candidateCalls,
+    /** Make every call reject, as a dead worker does. */
+    killWorker() { reads = 'reject'; },
     /** What the core already has recorded, as a reload would find it. */
     record(node: number, candidate: number) { recorded.set(node, candidate); },
     /** Make the next writes fail, as a core that refuses would. */
@@ -361,6 +374,31 @@ describe('opening a cell', () => {
     expect(previewCalls.map((call) => call.candidate)).toEqual([10, 20, 10]);
   });
 
+  it('keeps them when a tap for another cell is superseded before it paints', async () => {
+    // The cache is dropped for the cell that is *painted*, not for every cell that is asked for.
+    // A dot tapped and thought better of never replaces the strip — the render is cancelled at the
+    // ticket check — so throwing away the thumbnails on the way in spends the ~350 ms of spill
+    // faulting the cache exists to avoid, to fetch back pictures the page never stopped showing.
+    const { core, answer, previewCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await first;
+
+    // Cell 2 asked for and then abandoned: its answer never arrives, and cell 1 is asked for
+    // again before it could have.
+    void panel.open(2 as NodeId);
+    const again = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await again;
+
+    expect(previewCalls.map((call) => call.candidate)).toEqual([10, 11]);
+  });
+
   it('drops the pictures of candidates a retake replaced', async () => {
     // A retake gives a cell new candidates, and the old identities never come back. Clearing only
     // when *another* cell is opened leaves those thumbnails held for as long as the user stays on
@@ -417,7 +455,7 @@ describe('opening a cell', () => {
     // Nothing is remembered on this side, so a refused write needs no undo: re-opening asks the
     // core, and the core still holds what it held. The strip shows what the build will use rather
     // than what the user last touched.
-    const { core, answer, record, refuseWrites, recorded } = deferredCore();
+    const { core, answer, record, refuseWrites, recorded, candidateCalls } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
     record(1, 11);
@@ -436,12 +474,19 @@ describe('opening a cell', () => {
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['false', 'true']);
+    // And it is the core that said so, rather than a strip nobody touched. Asserting the state
+    // alone would pass just as well against a panel that never refreshed at all, which is the one
+    // other way to leave the previous pick standing — and the wrong one, because the next thing
+    // it would do with a write the core *took* is show the old answer.
+    expect(candidateCalls).toEqual([1, 1]);
   });
 
-  it('falls back to the ranking when the selection cannot be read', async () => {
-    // A read that fails is not a cell nobody has chosen for, but the strip has the same thing to
-    // show for both: the ranking's own pick is what the build uses when no override applies, and
-    // showing nothing in force would say the cell has no frame.
+  it('says so, and marks nothing in force, when the selection cannot be read', async () => {
+    // A read that failed is not a cell nobody has chosen for, and folding the two together is
+    // exactly the silence ADR 0040 exists to end: the strip would say the ranking's pick is what
+    // the build will use, about a cell whose override could not be read, with no word anywhere.
+    // The rows stay — they were read fine, and picking again is how a user repairs the document
+    // this failed on — but none of them claims to be in force, and the heading says why.
     const { core, answer, record, refuseReads } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
@@ -456,7 +501,63 @@ describe('opening a cell', () => {
 
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
-    expect(pressed).toEqual(['true', 'false']);
+    expect(pressed).toEqual(['false', 'false']);
+    expect(ui.stripHeading.textContent).toContain('2 candidates, best first.');
+    expect(ui.stripHeading.textContent).toContain('could not be read');
+  });
+
+  it('coalesces two quick picks into one refresh', async () => {
+    // Every refresh is two round trips through the worker, and the earlier of two reads a core
+    // the later write is about to change — a trip paid to paint something already out of date.
+    // Only the newest write refreshes. This is a count rather than an assumption about which
+    // answer comes back first, so it holds whichever order they arrive in.
+    const { core, answer, recorded, candidateCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const buttons = [...ui.strip.querySelectorAll('button')] as HTMLButtonElement[];
+    buttons[0].click();
+    buttons[1].click();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+    await recorded();
+
+    // The open, and one refresh — not two.
+    expect(candidateCalls).toEqual([1, 1]);
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed).toEqual(['false', 'true']);
+  });
+
+  it('says the cell could not be read when the worker is gone, rather than going quiet', async () => {
+    // `remote-core`'s `die()` rejects every call in flight and every call after it. A rejection
+    // that nobody catches leaves the strip with no rows, no heading and no message — the user is
+    // told nothing at all, which is worse than being told the wrong thing. The reads are two now,
+    // so there are two ways in; both come out here.
+    const { core, killWorker } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const rejections: unknown[] = [];
+    const noticed = (event: PromiseRejectionEvent) => rejections.push(event.reason);
+    window.addEventListener('unhandledrejection', noticed);
+    killWorker();
+
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    await panel.open(1 as NodeId);
+    // Enough turns for a rejection nobody handled to have been reported.
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    window.removeEventListener('unhandledrejection', noticed);
+
+    expect(ui.stripHeading.textContent).toBe('That cell could not be read.');
+    expect(ui.strip.querySelectorAll('button')).toHaveLength(0);
+    expect(rejections).toEqual([]);
   });
 
   it('shows the later of two quick picks, not whichever refresh ran first', async () => {
@@ -483,8 +584,11 @@ describe('opening a cell', () => {
       buttons().findIndex((button) => button.getAttribute('aria-pressed') === 'true');
 
     // Two picks from the same strip, in flight together: the second one is what the user meant.
-    buttons()[1].click();
+    // The *second* candidate, deliberately — index 0 is what `candidateStrip` marks in force when
+    // there is no selection at all, so a panel that had stopped asking the core and gone back to
+    // the ranking would satisfy the assertion below without holding anything.
     buttons()[0].click();
+    buttons()[1].click();
     expect(writesInFlight()).toBe(2);
 
     // Released one at a time, and settled in between. Releasing both at once would let the
@@ -495,7 +599,7 @@ describe('opening a cell', () => {
     answer(1, [candidate(10, 1), candidate(11, 1)]);
     await recorded();
 
-    expect(pressedIndex()).toBe(0);
+    expect(pressedIndex()).toBe(1);
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {

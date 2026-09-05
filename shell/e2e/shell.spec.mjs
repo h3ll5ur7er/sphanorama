@@ -35,13 +35,22 @@ async function serve() {
  * runner that window is wide enough to fail a test, which is how this was found: one job, one
  * assertion, "the page has not grabbed a frame yet".
  *
- * The same condition the grabber itself checks, so this waits for the thing that actually has to
- * be true rather than for a length of time.
+ * The same condition the grabber itself checks (`preview-frame.ts`'s `createFrameGrabber`, both
+ * guards), so this waits for the thing that actually has to be true rather than for a length of
+ * time.
+ *
+ * It is usually satisfied the moment it is asked: this runner has the video at `readyState 4` and
+ * its full size by the time `#stage` says `capturing`, so the wait returns in single-digit
+ * milliseconds and no assertion here depends on it. That is what it is for. `srcObject` is
+ * assigned several worker round trips before the stage text changes, so the ordering is not
+ * guaranteed by anything, and the failure it prevents — `CameraUnavailable`, the page has not
+ * grabbed a frame yet — is one CI has actually produced on a branch that touched none of this.
  */
 async function viewfinderIsLive(page) {
   await page.waitForFunction(() => {
     const video = document.querySelector('video');
-    return video !== null && video.readyState >= 2 && video.videoWidth > 0;
+    return video !== null && video.readyState >= 2
+      && video.videoWidth > 0 && video.videoHeight > 0;
   }, null, { timeout: 15000 });
 }
 
@@ -289,7 +298,13 @@ test('a pick survives the tab that made it', async ({ page }) => {
     await buttons.nth(last).click();
     await expect.poll(pressedIndex, { timeout: 15000 }).toBe(last);
 
-    // Durability is eventual by design (ADR 0014), and a reload does not wait for a flush timer.
+    // Durability is eventual by design (ADR 0014) — the host coalesces writes behind a 250 ms
+    // timer — and a reload does not wait for that timer. This is the same call `main.ts` makes
+    // from its `pagehide` and `visibilitychange` handlers, which is how a real tab gets here;
+    // driving it directly keeps the barrier deterministic instead of racing the timer, at the
+    // cost of not covering that wiring. On a runner fast enough for the timer to have fired
+    // already the assertion below survives without it, which is exactly why it stays: what it
+    // rules out is a flake on a slower one, not a wrong answer on this one.
     await page.evaluate(() => window.sphanoramaHost.flush());
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
