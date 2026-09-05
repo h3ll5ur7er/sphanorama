@@ -167,6 +167,7 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
  */
 let motionIsRunning = false;
 
+
 /**
  * Enabling has to happen inside a user gesture: iOS rejects the motion permission request
  * otherwise, and does so in a way indistinguishable from a decline.
@@ -308,7 +309,13 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean,
 async function pickUp(core: SphanoramaCore, project: ProjectId): Promise<ProjectId | null> {
   const resumed = await core.captureSession.resume(project);
   if (resumed.ok) return project;
-  stage.textContent = describeResumeRefusal(resumed.status);
+  const refusal = describeResumeRefusal(resumed.status);
+  stage.textContent = refusal.message;
+  // Put back up, or not, by the same judgement that wrote the sentence — a button that disagrees
+  // with the line above it is worse than either. A refusal another attempt could clear leaves the
+  // offer pressable; one only a new build can change takes it away, so the user is not invited to
+  // press a thing that will fail identically every time (ADR 0039).
+  resumeButton.hidden = !refusal.offerAgain;
   newCaptureButton.hidden = false;
   return null;
 }
@@ -360,6 +367,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // Enforced here rather than at each caller because there are four of them and the invariant is
   // about the loop, not about any one path into it.
   newCaptureButton.hidden = true;
+  // And the resume offer with it, for exactly the same reason: a refused resume can put that
+  // button back (ADR 0039), and a capture started from the button beside it would otherwise leave
+  // a live offer to start a second loop over the session already running.
+  resumeButton.hidden = true;
 
   const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
@@ -697,7 +708,28 @@ async function main() {
       ? 'core ready — enable the camera to continue'
       : 'core ready — resume the last capture, or enable the camera to start a new one';
     enableButton.addEventListener('click', () => { void enable(core, null); });
-    resumeButton.addEventListener('click', () => { void enable(core, resume); });
+    resumeButton.addEventListener('click', () => {
+      if (resume === null) return;
+      // Disabled while the attempt runs rather than hidden by it, the same way the fresh-start
+      // button is: `pickUp` decides whether this offer survives its own refusal, and hiding on
+      // the way in would take that decision away from it.
+      resumeButton.disabled = true;
+      // A refused resume can put this button back (ADR 0039), and by then `enable` has usually
+      // run: the camera is open, the motion permission has been answered, and the gesture that
+      // did both is long spent. So a second press retries the session and nothing else — asking
+      // for a camera already in hand is at best a wasted round trip and at worst a second
+      // permission story.
+      //
+      // Read off the stream the page is holding rather than a flag beside it, because the two
+      // would drift and the drift is reachable: `Resume` opens the camera and can still fail
+      // after it, in `StartTracking`, and that failure closes the camera on the way out. The page
+      // learns through `onCloseCamera` and stops the tracks. A flag saying "enabled" would still
+      // say so, and the retry would begin a session against a camera nobody is holding.
+      const attempt = cameraStream !== null
+        ? beginSession(core, motionIsRunning, resume)
+        : enable(core, resume);
+      void attempt.finally(() => { resumeButton.disabled = false; });
+    });
     // The way out of a refused resume. Disabled while the attempt runs rather than hidden by it:
     // `beginSession` can return having started nothing — a project that could not be created is
     // the one path that does — and hiding on the way in would take away the only thing left to
