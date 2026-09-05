@@ -33,6 +33,10 @@ jobs:
         run: python3 tools/test_no_browser_check.py
       - name: no browser assumptions in the core
         run: python3 tools/no_browser_check.py
+      - name: conflict marker checker tests
+        run: python3 tools/test_conflict_marker_check.py
+      - name: no conflict markers left behind
+        run: python3 tools/conflict_marker_check.py
 
   native:
     name: native build and tests
