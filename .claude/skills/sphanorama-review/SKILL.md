@@ -69,6 +69,14 @@ posts**, saying what it looked at and found clean: a review nobody can see is in
 from one nobody ran, and "these files, this lens, nothing" is a fact worth having on the record
 when the same question comes up in three months.
 
+**The posted review is the deliverable. What a reviewer hands back to the caller is a receipt for
+it, not a substitute.** A reviewer that ends with its findings written out beautifully in a
+transcript and nothing on the pull request has not reviewed anything, however good the findings
+are — this happened on the first run of this skill, with one lens out of three, and the whole
+trail for one commit's reasoning had to be reconstructed and published afterwards by hand. So:
+submit the review *before* writing the summary, and make the last line of the summary the review's
+URL. A summary with no URL in it is a reviewer reporting that it did not finish.
+
 Every comment ends with the attribution footer, so a reader knows what wrote it:
 
 ```
@@ -93,6 +101,9 @@ For every finding:
 
 And once at the end: **what was looked at and found clean.** A review that lists only problems
 cannot be told apart from one that stopped early.
+
+And the URL of the submitted review, as the last line. See "Publishing the review": the summary is
+the receipt, and this is what it is a receipt for.
 
 ## The lenses
 
