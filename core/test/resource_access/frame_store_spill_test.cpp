@@ -280,6 +280,21 @@ TEST(FrameStoreWithoutASink, RefusesToSpillRatherThanRelabelling) {
   EXPECT_NE(residency.value, Residency::Spilled);
 }
 
+TEST(FrameStoreWithoutASink, HasNoGenerationRatherThanAnInventedOne) {
+  // Zero is the answer, and it is a real one: a store with nowhere to spill has no pixels that can
+  // outlive it, so there is no capture here for another project's document to be matched against
+  // wrongly. A document written against this store records zero and matches zero when it comes
+  // back — on a desktop, or a browser with no origin private file system.
+  //
+  // Refusing instead would take resume away from every such host for a hazard they do not have.
+  // Inventing a token would be worse: it would say this tier holds a capture, and the frames it
+  // named would be refused by `Adopt` anyway, one layer further from the reason.
+  MemoryFrameStoreAccess store{kFrameBytes * 2};
+  auto generation = store.TierGeneration();
+  ASSERT_TRUE(generation.ok()) << generation.status.detail;
+  EXPECT_EQ(generation.value, 0u);
+}
+
 // ------------------------------------------------------- saying why the store ran out
 //
 // A refused spill and a capture genuinely too large for the device both end at the same place: an

@@ -320,6 +320,120 @@ describe('a spill tier that outlives the tab', () => {
   });
 });
 
+describe('the tier saying which capture it holds', () => {
+  // The frames in this file belong to one capture, and the identities on them start again at 1 in
+  // every session — so a session document from another project names frames that are down here
+  // under those names and are not its. The core cannot see that document to invalidate it. What
+  // it can do is compare what the document says the tier was against what the tier says now, and
+  // this is the half that has to be true across a reload (ADR 0035).
+
+  it('says the same thing while the tier is used, and something else once it is emptied', () => {
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+
+    const before = host.generation();
+    expect(Number.isSafeInteger(before)).toBe(true);
+    expect(before).toBeGreaterThan(0);
+
+    // Spilling, reading and dropping are what a capture does all day. None of them is a new
+    // capture, so a document written after any of them still describes this tier.
+    host.write(1, frame(0xa1));
+    host.read(1, new Uint8Array(16));
+    host.drop(1);
+    expect(host.generation()).toBe(before);
+
+    // A clear is the one thing that changes whose pixels these are.
+    expect(host.clear()).toBe(true);
+    expect(host.generation()).not.toBe(before);
+    expect(Number.isSafeInteger(host.generation())).toBe(true);
+  });
+
+  it('comes back with the same answer after a reload', () => {
+    // The property the whole check rests on: the token lives in the index, not in the process. A
+    // host that minted one at startup would answer differently on every reload, and the session
+    // document written a moment before the tab died would never match again.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    const said = before.generation();
+    before.close();
+
+    expect(createSpillHost(file, index).generation()).toBe(said);
+  });
+
+  it('carries the new one across a reload too, once a capture has started over', () => {
+    // The half that catches the bug. After a clear the tier is a different capture's, and the
+    // reload that finds it has to be told so — otherwise the document from before the clear
+    // matches, and every frame it names resolves to the new capture's pixels.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    before.write(1, frame(0xa1));
+    const stale = before.generation();
+    expect(before.clear()).toBe(true);
+    before.write(1, frame(0xb2));
+    const fresh = before.generation();
+    before.close();
+
+    const after = createSpillHost(file, index);
+    expect(after.generation()).toBe(fresh);
+    expect(after.generation()).not.toBe(stale);
+  });
+
+  it('mints one nothing has seen before when there is no index to read', () => {
+    // Minted rather than counted, and this is why. An unreadable index starts the tier empty
+    // rather than throwing (ADR 0030) — a tab killed mid-write, a quota gone between the frame
+    // and the index — and a counter would have to restart from where it cannot know. Restarting
+    // at one would reissue an epoch some surviving document still names, which is the same shape
+    // of failure one level up.
+    const first = createSpillHost(fakeFile(), fakeFile()).generation();
+    const second = createSpillHost(fakeFile(), fakeFile()).generation();
+    expect(second).not.toBe(first);
+
+    const file = fakeFile();
+    const index = fakeFile();
+    const wrote = createSpillHost(file, index);
+    wrote.write(1, frame(0xa1));
+    const said = wrote.generation();
+    index.truncate(0);
+    index.write(new TextEncoder().encode('{ not an index at all'), 0);
+    expect(createSpillHost(file, index).generation()).not.toBe(said);
+  });
+
+  it('has nowhere to keep one when the browser gave it no index file', () => {
+    // A tier with no index cannot be resumed anyway — the map from identity to offset went with
+    // the tab. Saying so with a token of its own is what makes a document from a previous session
+    // refuse to match, rather than matching a tier that has forgotten where everything is.
+    const file = fakeFile();
+    const first = createSpillHost(file).generation();
+    expect(first).toBeGreaterThan(0);
+    expect(createSpillHost(file).generation()).not.toBe(first);
+  });
+
+  it('keeps saying what it said when a clear is refused', () => {
+    // A refused clear is a clear that did not happen, in this process and on the disk: the frames
+    // are still down here under the names their document gives them. A token that had moved on
+    // would refuse the resume of a capture that is sitting there intact.
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+    host.write(1, frame(0xa1));
+    const before = host.generation();
+
+    file.throwTruncates(true);
+    expect(host.clear()).toBe(false);
+    expect(host.generation()).toBe(before);
+
+    // And on the disk, which is where the next session will read it.
+    file.throwTruncates(false);
+    expect(createSpillHost(file, index).generation()).toBe(before);
+  });
+});
+
 describe('the spill host', () => {
   it('reads back exactly what was written, for several frames at once', () => {
     // The whole job. A sink that returned the wrong frame's bytes would produce a panorama with

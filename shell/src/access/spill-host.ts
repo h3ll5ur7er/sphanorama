@@ -54,6 +54,21 @@ export interface SpillHost {
    * "did not write".
    */
   clear(): boolean;
+  /**
+   * Which capture the frames in here belong to, as an opaque token.
+   *
+   * The store above restarts its frame identities at 1 in every session and this file does not
+   * restart at all, so "frame 1" names a different frame in each capture the tier has held. A
+   * session document records what this said when its frames were written, and a resume that reads
+   * a different answer knows those pixels are gone — which is the only way to catch it, because a
+   * fault-in of somebody else's frame 1 succeeds, at the right length, with no error anywhere
+   * (ADR 0035).
+   *
+   * Minted fresh on every clear and whenever there is no index to read one out of, rather than
+   * counted up. The index is a file that can be lost, and a counter restarting from 1 after
+   * losing it would hand back an epoch some surviving document still names.
+   */
+  generation(): number;
   close(): void;
 }
 
@@ -77,12 +92,18 @@ interface Slot {
  */
 interface StoredIndex {
   v: number;
+  // Which capture the slots below belong to. Written here because this is the tier's own state
+  // and the only part of it that outlives the process (ADR 0035).
+  g: number;
   end: number;
   slots: [number, number, number][];   // frame, offset, length
   free: [number, number[]][];          // length, offsets
 }
 
-const INDEX_VERSION = 1;
+// Bumped to 2 when the generation arrived. An index without one cannot say which capture it is
+// holding, and there is nothing to infer that from — so a version-1 index is refused like any
+// other unreadable one, and the tier starts empty under a token of its own.
+const INDEX_VERSION = 2;
 
 // What a plausible index cannot exceed. A full sphere is twenty-eight cells of five frames, and
 // each entry is a few dozen bytes of JSON — kilobytes, not megabytes. The length comes off a file
@@ -90,23 +111,48 @@ const INDEX_VERSION = 1;
 // allocate; past this, the file is broken rather than large.
 const INDEX_CEILING = 8 * 1024 * 1024;
 
+/**
+ * A token for the capture the tier is holding, unrelated to the last one.
+ *
+ * 52 bits out of `crypto.getRandomValues`, plus one: it has to be a whole number a JSON document
+ * can carry and a double can hold exactly, because it crosses to the core as one — and it has to
+ * be non-zero, since zero is what a store with no spill tier at all reports.
+ */
+function mintGeneration(): number {
+  const bits = new Uint32Array(2);
+  crypto.getRandomValues(bits);
+  return (bits[0] % 2 ** 20) * 2 ** 32 + bits[1] + 1;
+}
+
 /** A byte position or length as the file can actually hold one: whole, and not negative. */
 function whole(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** What the tier turns out to hold: where the file ends, and whose frames are in it. */
+interface Recovered {
+  end: number;
+  generation: number;
+}
+
+// A tier nothing could be read out of. Empty, and under a token of its own — which is what stops
+// a document from before the loss matching the capture that is about to be written here.
+function fresh(): Recovered {
+  return { end: 0, generation: mintGeneration() };
+}
+
 function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
-                   free: Map<number, number[]>): number {
-  if (!index) return 0;
+                   free: Map<number, number[]>): Recovered {
+  if (!index) return fresh();
   let text: string;
   try {
     const size = index.size();
-    if (size <= 0 || size > INDEX_CEILING) return 0;
+    if (size <= 0 || size > INDEX_CEILING) return fresh();
     const bytes = new Uint8Array(size);
-    if (index.read(bytes, 0) !== size) return 0;
+    if (index.read(bytes, 0) !== size) return fresh();
     text = new TextDecoder().decode(bytes);
   } catch {
-    return 0;
+    return fresh();
   }
 
   // Anything unreadable starts the tier empty rather than throwing. This runs while the worker is
@@ -114,13 +160,16 @@ function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
   // the frame and the index — losing the map costs a resume, and throwing costs the session.
   try {
     const parsed = JSON.parse(text) as StoredIndex;
-    if (parsed?.v !== INDEX_VERSION || !Array.isArray(parsed.slots)) return 0;
+    if (parsed?.v !== INDEX_VERSION || !Array.isArray(parsed.slots)) return fresh();
     // Whole numbers throughout, not merely finite ones. A byte offset is not a quantity that can
     // be 12.5, and nothing downstream would say so: `Uint8Array` and the sync handle both
     // truncate silently, so a fractional offset out of a corrupt-but-parseable index addresses a
     // real byte range — just not the one the frame is in, and the read reports success.
-    if (!whole(parsed.end)) return 0;
-    const giveUp = () => { slots.clear(); free.clear(); return 0; };
+    if (!whole(parsed.end)) return fresh();
+    // The token is held to the same standard, and to one more: zero is the answer of a store with
+    // no tier at all, so an index carrying it is corrupt rather than modest.
+    if (!whole(parsed.g) || parsed.g === 0) return fresh();
+    const giveUp = (): Recovered => { slots.clear(); free.clear(); return fresh(); };
     for (const entry of parsed.slots) {
       if (!Array.isArray(entry) || entry.length !== 3) return giveUp();
       const [frame, offset, length] = entry;
@@ -149,11 +198,11 @@ function readIndex(index: SpillFile | undefined, slots: Map<number, Slot>,
     // nothing else.
     let end = parsed.end;
     for (const slot of slots.values()) end = Math.max(end, slot.offset + slot.length);
-    return end;
+    return { end, generation: parsed.g };
   } catch {
     slots.clear();
     free.clear();
-    return 0;
+    return fresh();
   }
 }
 
@@ -167,7 +216,12 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
   // allocator that recovered the offsets and started `end` at zero would hand the resumed
   // session's first spill the space a restored frame is sitting in, and the read would still
   // succeed — with the wrong pixels.
-  let end = readIndex(index, slots, free);
+  const recovered = readIndex(index, slots, free);
+  let end = recovered.end;
+  // Whose frames these are. It comes off the disk with the slots, because a token minted at
+  // startup would be a different one every reload — and the session document written a moment
+  // before the tab went away would then match nothing.
+  let generation = recovered.generation;
 
   // Whether the index on disk now says what it was handed. Separated from `persist` because the
   // two callers want opposite things from a failure: an ordinary write can carry on without its
@@ -193,6 +247,7 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
 
   const held = (): StoredIndex => ({
     v: INDEX_VERSION,
+    g: generation,
     end,
     slots: [...slots].map(([frame, slot]) => [frame, slot.offset, slot.length]),
     free: [...free].map(([length, offsets]) => [length, [...offsets]]),
@@ -290,7 +345,13 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // cannot swallow it — reporting success over an index still naming the old frames leaves
       // the next session recovering slots into a file this one is about to refill from offset
       // zero, which is the right length of the wrong bytes and the whole failure being fixed here.
-      if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) {
+      //
+      // A token for the capture that is about to be written here, minted before anything is
+      // touched and adopted only once everything has been. The frames that follow are a different
+      // capture's, and the emptied index has to say so on the disk before the file it describes
+      // stops matching it — same ordering, same reason, as the empty index going first.
+      const next = mintGeneration();
+      if (!writeIndex({ v: INDEX_VERSION, g: next, end: 0, slots: [], free: [] })) {
         // Refusing here is not the same as having touched nothing, which is what this said
         // before and it was wrong. `writeIndex` empties the index on a short write *on purpose*:
         // what survives a partial write is a prefix of a JSON document, no prefix of one parses,
@@ -327,8 +388,14 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // The high-water mark goes back with them. Keeping it would leave the new capture writing
       // past the space it just reclaimed, which is the disk cost of every sphere ever abandoned.
       end = 0;
+      // And this is where the tier becomes the new capture's. Only here, because every path above
+      // returns false with the old frames still named by the old token — `held()` is what puts
+      // that index back, and it has to describe the capture this call failed to discard.
+      generation = next;
       return true;
     },
+
+    generation: () => generation,
 
     close() {
       try {

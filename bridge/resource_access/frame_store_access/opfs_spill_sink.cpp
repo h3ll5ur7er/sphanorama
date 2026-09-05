@@ -49,6 +49,16 @@ EM_JS(int32_t, host_spill_clear, (), {
   return Module.sphSpill.clear() ? 1 : 0;
 });
 
+EM_JS(double, host_spill_generation, (), {
+  // A negative answer means "cannot say", which is not the same as any token — the same
+  // half-updated page the clear above guards against, a cached worker script beside a fresh
+  // .wasm. Zero would be the wrong sentinel: that is what a host with no spill tier at all
+  // reports, and a session document written against this one could then be matched to it later.
+  if (!Module.sphSpill || typeof Module.sphSpill.generation !== 'function') return -1;
+  var said = Module.sphSpill.generation();
+  return typeof said === 'number' && Number.isSafeInteger(said) && said > 0 ? said : -1;
+});
+
 }  // namespace
 
 bool OpfsSpillSink::Available() { return host_spill_available() != 0; }
@@ -83,6 +93,21 @@ Status OpfsSpillSink::Clear() {
     return Fail(StatusCode::Internal, kComponent, "the spill file could not be emptied");
   }
   return Status::Ok();
+}
+
+Result<uint64_t> OpfsSpillSink::Generation() {
+  // The token crosses as a double, like the frame ids above and for the same reason: it is a
+  // JavaScript number. It is minted with 52 bits so that it is exact on the way through, and the
+  // host refuses to hand over anything that is not.
+  const double said = host_spill_generation();
+  if (said < 0) {
+    // Refused rather than substituted. Any number invented here would be one a session document
+    // could be written against and later matched to — the failure the token exists to remove,
+    // reached by the component that was supposed to prevent it.
+    return Err<uint64_t>(StatusCode::Unsupported, kComponent,
+                         "this spill host cannot say which capture it is holding");
+  }
+  return Ok(static_cast<uint64_t>(said));
 }
 
 Status OpfsSpillSink::Drop(uint64_t frame) {
