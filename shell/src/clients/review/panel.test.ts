@@ -103,10 +103,11 @@ function deferredCore() {
       pending.set(node as number, (value) => resolve({ ok: true, value }));
     }),
     candidatePreview: (node: NodeId, candidate: CandidateId, maxEdge: number) =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
         previewCalls.push({
           node: node as number, candidate: candidate as number, maxEdge,
         });
+        if (reads === 'reject') { reject(new Error('the worker is gone')); return; }
         const answer: Answered<FramePreview> = gone.has(candidate as number)
           ? { ok: false }
           : { ok: true, value: preview(candidate as number) };
@@ -128,6 +129,15 @@ function deferredCore() {
           ? { ok: true as const, value: (recorded.get(node as number) ?? 0) as CandidateId }
           : { ok: false as const })),
   };
+  async function releaseWrite(index: number): Promise<void> {
+    const [release] = writes.splice(index, 1);
+    if (release === undefined) throw new Error(`no selection is in flight at ${index}`);
+    release();
+    // Enough turns for the click handler to resume and for the open() it may then await to run
+    // its own continuation.
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+  }
+
   return {
     core,
     previewCalls,
@@ -157,14 +167,16 @@ function deferredCore() {
     /** How many writes are waiting to be let through. */
     writesInFlight() { return writes.length; },
     /** Lets the oldest in-flight SetSelection through, and waits for what it set off to settle. */
-    async recorded() {
-      const release = writes.shift();
-      if (release === undefined) throw new Error('no selection is in flight');
-      release();
-      // Enough turns for the click handler to resume and for the open() it may then await to run
-      // its own continuation.
-      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
-    },
+    async recorded() { await releaseWrite(0); },
+    /**
+     * Lets one in-flight SetSelection through by position, oldest first.
+     *
+     * Releasing out of order is the whole point of having this: the worker happens to answer in
+     * the order it was asked today, and the panel deliberately does not assume so. A fake that
+     * could only ever release the oldest would agree with the panel's comments while quietly
+     * testing the opposite.
+     */
+    recordedAt: releaseWrite,
   };
 }
 
@@ -502,8 +514,10 @@ describe('opening a cell', () => {
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['false', 'false']);
-    expect(ui.stripHeading.textContent).toContain('2 candidates, best first.');
-    expect(ui.stripHeading.textContent).toContain('could not be read');
+    // Exact, because this sentence is the whole of what "says so" means here, and two fragments
+    // leave everything between them free — including a sentence that inverts the meaning.
+    expect(ui.stripHeading.textContent)
+      .toBe('2 candidates, best first. Which one is in force could not be read.');
   });
 
   it('coalesces two quick picks into one refresh', async () => {
@@ -537,27 +551,63 @@ describe('opening a cell', () => {
 
   it('says the cell could not be read when the worker is gone, rather than going quiet', async () => {
     // `remote-core`'s `die()` rejects every call in flight and every call after it. A rejection
-    // that nobody catches leaves the strip with no rows, no heading and no message — the user is
-    // told nothing at all, which is worse than being told the wrong thing. The reads are two now,
-    // so there are two ways in; both come out here.
+    // that nobody catches takes `open()` with it: no rows, no heading, no message — the user is
+    // told nothing at all, which is worse than being told the wrong thing. Both reads can do it,
+    // and `await panel.open(...)` below is what would carry either one out of the panel, so this
+    // test bites through its own await rather than through any listener.
     const { core, killWorker } = deferredCore();
     const { paint } = recordingPainter();
     const ui = elements();
-    const rejections: unknown[] = [];
-    const noticed = (event: PromiseRejectionEvent) => rejections.push(event.reason);
-    window.addEventListener('unhandledrejection', noticed);
     killWorker();
 
     const panel = createReviewPanel(ui, core, paint);
     panel.show(plan, coverage);
     await panel.open(1 as NodeId);
-    // Enough turns for a rejection nobody handled to have been reported.
-    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
-    window.removeEventListener('unhandledrejection', noticed);
 
     expect(ui.stripHeading.textContent).toBe('That cell could not be read.');
     expect(ui.strip.querySelectorAll('button')).toHaveLength(0);
-    expect(rejections).toEqual([]);
+  });
+
+  it('keeps the rows it drew when the worker dies partway through the pictures', async () => {
+    // The third way in, and the likeliest: `fillPreviews` is eight sequential round trips where
+    // the pair above is one, so a worker that dies mid-strip dies here. Without the same guard the
+    // rejection escapes the loop, escapes `open()`, and lands in the `void` behind a dot's click —
+    // leaving the rows that were drawn stuck on `pending` with nothing said. The interesting state
+    // is the partial one: rows yes, pictures no, panel still coherent.
+    const { core, answer, killWorker } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    // After the candidate list has been answered and before its pictures are asked for.
+    killWorker();
+    await opening;
+
+    expect(ui.stripHeading.textContent).toBe('2 candidates, best first.');
+    expect(ui.strip.querySelectorAll('button')).toHaveLength(2);
+    expect([...ui.strip.querySelectorAll('canvas')].map((c) => c.dataset.preview))
+      .toEqual(['missing', 'missing']);
+  });
+
+  it('says only that nothing is captured when an empty cell also cannot be read', async () => {
+    // No row to mark, so no in-force question to answer: the note would be about a choice that
+    // could not exist. Reachable in life — an uncaptured cell whose selection document read fails
+    // — so the guard is right and the fake is given what it needs to reach it.
+    const { core, answer, refuseReads } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    refuseReads();
+
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+    const opening = panel.open(1 as NodeId);
+    answer(1, []);
+    await opening;
+
+    expect(ui.stripHeading.textContent).toBe('Nothing captured here yet.');
   });
 
   it('shows the later of two quick picks, not whichever refresh ran first', async () => {
@@ -600,6 +650,69 @@ describe('opening a cell', () => {
     await recorded();
 
     expect(pressedIndex()).toBe(1);
+  });
+
+  it('shows what the core holds when two picks for one cell land out of order', async () => {
+    // The worker answers in the order it was asked *today*, and this panel's comments refuse to
+    // rely on that — so the guard that decides which write refreshes must not rely on it either.
+    // Released newest-first, the core ends up holding the *older* pick, and the strip has to agree
+    // with the core rather than with whichever write happened to be issued last.
+    const { core, answer, recordedAt, writesInFlight } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const buttons = [...ui.strip.querySelectorAll('button')] as HTMLButtonElement[];
+    buttons[0].click();   // candidate 10, issued first
+    buttons[1].click();   // candidate 11, issued second
+    expect(writesInFlight()).toBe(2);
+
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recordedAt(1);  // the later pick lands first: the core holds 11
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recordedAt(0);  // the earlier pick lands last: the core holds 10
+
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed).toEqual(['true', 'false']);
+  });
+
+  it('refreshes a cell you came back to while its pick was still in flight', async () => {
+    // A write outliving a trip to another cell. On the way back `opened` names this cell again, so
+    // the only thing that can suppress the refresh is the count — and a count shared with the
+    // other cell's pick would suppress it, leaving the strip showing the ranking's own choice
+    // while the core holds the user's.
+    const { core, answer, recordedAt } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await first;
+    [...ui.strip.querySelectorAll('button')][1].click();   // cell 1 → 11, left in flight
+
+    const second = panel.open(2 as NodeId);
+    answer(2, [candidate(20, 2), candidate(21, 2)]);
+    await second;
+    [...ui.strip.querySelectorAll('button')][0].click();   // cell 2 → 20, also in flight
+
+    const back = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await back;
+
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recordedAt(0);   // cell 1's write lands, and cell 1 is what is on screen
+
+    const pressed = [...ui.strip.querySelectorAll('button')]
+      .map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed).toEqual(['false', 'true']);
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {

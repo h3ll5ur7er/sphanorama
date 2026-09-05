@@ -45,12 +45,22 @@ type Answered<T> = { readonly ok: true; readonly value: T } | { readonly ok: fal
  * Every call this panel makes crosses a `postMessage`, and `remote-core`'s `die()` rejects every
  * call in flight and every call after it once the worker is gone — a worker script that 404s, a
  * throw at its top level, a reply that cannot be read. An unhandled rejection here would leave the
- * strip with no rows, no heading and no message, which is worse than showing the wrong thing: the
- * user is told nothing at all. A rejection is the same news as `{ok: false}` and is told the same
- * way.
+ * strip without the rows it was about to draw and without a word about why; on any open but the
+ * first it would leave the *previous* cell's rows standing under the new cell's identity, which is
+ * worse still. A rejection is the same news as `{ok: false}` and is told the same way.
+ *
+ * The reason goes to the console, because the screen cannot carry it. Only three things reject
+ * here and one of them is a version skew — `facade.ts` throws "the bundle and the core disagree"
+ * by name, precisely so it will not surface as a silent empty result somewhere else. Folding it
+ * into a heading that says the *document* could not be read would make this that somewhere else,
+ * and the strip's advice for that heading, pick again, cannot repair a stale bundle. `worker.ts`
+ * already reports its own unhandled failures this way.
  */
 function answering<T>(call: Promise<Answered<T>>): Promise<Answered<T>> {
-  return call.then(undefined, () => ({ ok: false } as const));
+  return call.then(undefined, (reason: unknown) => {
+    console.error('sphanorama review: a call to the core did not answer', reason);
+    return { ok: false } as const;
+  });
 }
 
 export interface ReviewCore {
@@ -160,11 +170,21 @@ export function createReviewPanel(
   // as long as the user stayed on it.
   let previewsFor: NodeId | null = null;
   const previews = new Map<CandidateId, FramePreview>();
-  // How many picks this panel has sent. A write that has been overtaken by a later one stands
-  // down instead of refreshing: its refresh would read a core the newer write is about to change,
-  // paying a round trip to paint something already out of date. It is a count rather than an
-  // assumption about arrival order, so it holds whichever order the two answers come back in.
-  let writes = 0;
+  // How many picks are still in flight for each cell. The last of them to *land* refreshes, and
+  // the ones before it stand down: their refresh would read a core that another write is about to
+  // change, paying a round trip to paint something already out of date.
+  //
+  // Outstanding rather than newest, and that distinction is the whole of it. "Am I the newest pick
+  // issued" is only the same question as "is the core finished changing" while answers come back
+  // in the order they were asked — which this panel does not get to assume, and said so two
+  // comments ago while relying on it. Released the other way round, the newest write refreshes off
+  // a core an older one is still about to overwrite, and the older one then stands down: the strip
+  // keeps a pick the core does not hold, until the user leaves the cell and comes back. Counting
+  // what is outstanding asks the question that actually decides it, in any order.
+  //
+  // Per cell, because it is a fact about the cell. One counter shared by the panel would let a
+  // pick in another cell stand down this cell's own.
+  const outstanding = new Map<NodeId, number>();
 
   /**
    * Fills in the strip's pictures, one candidate at a time.
@@ -269,7 +289,7 @@ export function createReviewPanel(
       button.append(thumbnail, label);
       button.addEventListener('click', () => {
         void (async () => {
-          const mine = ++writes;
+          outstanding.set(node, (outstanding.get(node) ?? 0) + 1);
           // A rejection is not an outcome this has to tell apart. Nothing is remembered here:
           // re-opening asks the core what is recorded, so a write that was refused — or one that
           // never reached a worker at all — leaves the previous choice in force without this
@@ -287,9 +307,12 @@ export function createReviewPanel(
           // to. The strip they are walking away from does go briefly stale, and it corrects itself
           // the moment they come back, because coming back reads the core rather than a copy.
           //
-          // `writes` is whether this pick is still the newest. Without it two quick picks cost two
-          // refreshes, the first of them reading a core the second is about to change.
-          if (opened !== node || mine !== writes) return;
+          // `left` is whether this cell has any pick still in flight. Without it two quick picks
+          // cost two refreshes, the first of them reading a core the second is about to change.
+          const left = (outstanding.get(node) ?? 1) - 1;
+          if (left === 0) outstanding.delete(node);
+          else outstanding.set(node, left);
+          if (opened !== node || left > 0) return;
           await open(node);
         })();
       });

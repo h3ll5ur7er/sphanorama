@@ -76,10 +76,24 @@ setting a pick does not read and rewrite its neighbours.
   does go briefly stale, and it corrects itself when they come back, because coming back reads the
   core rather than a copy.
 
-  The second is a per-cell write count, so only the newest pick refreshes. Without it, N quick
-  picks cost 2N reads, and each refresh but the last reads a core a later write is about to change.
-  Being a count rather than an assumption about arrival order, it also holds whichever way round
-  the two answers come back.
+  The second is a count, per cell, of the picks still in flight: the last of them to **land**
+  refreshes. Without it, N quick picks cost 2N reads, and each refresh but the last reads a core a
+  later write is about to change.
+
+  Outstanding rather than newest, and the first attempt got that wrong in a way worth recording.
+  It counted picks *issued* and refreshed on the newest, which is the same question only while
+  answers come back in the order they were asked — an assumption the panel's own comments refuse
+  to make, in a comment that claimed to be free of it. Released the other way round, the newest
+  write refreshes off a core an older one is about to overwrite, and the older one then stands
+  down: the strip keeps a pick the core does not hold until the user leaves the cell and comes
+  back. That is this ADR's own failure, reintroduced by the guard added to make it cheaper. Per
+  cell for the same reason it is per cell everywhere else here: one counter shared by the panel
+  lets a pick in another cell stand down this one's.
+
+  The general shape is worth more than the fix: a guard justified by refusing an assumption has to
+  be checked against the case where the assumption fails, and the test fake has to be able to
+  produce that case. This one could only ever release writes oldest-first, so every test in the
+  file agreed with the assumption the guard was written to reject.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth
@@ -89,7 +103,10 @@ setting a pick does not read and rewrite its neighbours.
 
   And the failure is for the screen, because there is nowhere else for it to go: no `ILogger` is
   wired into anything the core builds, and the panel's `Answered<T>` drops the status by design so
-  that `value` cannot be touched on the failing branch. So the strip marks *nothing* in force and
+  that `value` cannot be touched on the failing branch. A *rejection* — a dead worker, or a bundle
+  whose core has no such method — has nowhere at all, so its reason goes to the console: the
+  heading blames the document, and a version skew is not the document's fault, nor something
+  picking again can repair. So the strip marks *nothing* in force and
   its heading says which one is in force could not be read. It keeps its rows — they were read
   fine, and picking again is how a user repairs the document that failed — but it does not offer
   the ranking's pick as though that were what the build will use. That fold is available and it is

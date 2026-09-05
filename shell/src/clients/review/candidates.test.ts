@@ -22,14 +22,14 @@ describe('candidateStrip', () => {
   it('names the first as the automatic pick, because the core ranked it there', () => {
     // The client does not decide what "best" means — that is the quality engine's, and the strip
     // would be re-deriving it from scores if it sorted here.
-    const strip = candidateStrip(ranked, null);
+    const strip = candidateStrip(ranked, 0 as CandidateId);
     expect(strip.map((entry) => entry.candidate)).toEqual([7, 3, 9]);
     expect(strip[0].isAutomaticPick).toBe(true);
     expect(strip.filter((entry) => entry.isAutomaticPick)).toHaveLength(1);
   });
 
   it('shows the automatic pick as the one in force when nobody has chosen', () => {
-    const strip = candidateStrip(ranked, null);
+    const strip = candidateStrip(ranked, 0 as CandidateId);
     expect(strip[0].isInForce).toBe(true);
     expect(strip.filter((entry) => entry.isInForce)).toHaveLength(1);
   });
@@ -51,6 +51,22 @@ describe('candidateStrip', () => {
     // showing the one the core would use.
     const strip = candidateStrip(ranked, 404 as CandidateId);
     expect(strip[0].isInForce).toBe(true);
+  });
+
+  it('keeps zero meaning "nobody has chosen" even against a candidate that claims that id', () => {
+    // The sentinel's safety cannot rest on an invariant two layers away. No candidate can have id
+    // 0 in the core — counters start at 1 — but the wire lets one through: `IsRepresentableId` is
+    // deliberately true for zero. Were this a membership test, such a candidate would match and
+    // the sentinel would flip from "nobody has chosen" to "*this* row is in force" — a wrong mark
+    // rather than a missing one, in the client whose only job is that mark.
+    const withZero = [candidate(0, 0.9), candidate(3, 0.5)];
+    const strip = candidateStrip(withZero, 0 as CandidateId);
+    expect(strip[0].isInForce).toBe(true);      // the ranking's own pick, which happens to be it
+    expect(strip[0].isAutomaticPick).toBe(true);
+    // And it is in force *as the ranking's pick*: put it second and nothing selects it.
+    const reversed = candidateStrip([candidate(3, 0.5), candidate(0, 0.9)], 0 as CandidateId);
+    expect(reversed[0].isInForce).toBe(true);
+    expect(reversed[1].isInForce).toBe(false);
   });
 
   it('treats the zero the core answers for an unchosen cell as no choice at all', () => {
@@ -77,7 +93,7 @@ describe('candidateStrip', () => {
   });
 
   it('is empty rather than broken for a cell nobody has captured', () => {
-    expect(candidateStrip([], null)).toEqual([]);
+    expect(candidateStrip([], 0 as CandidateId)).toEqual([]);
     expect(candidateStrip([], 7 as CandidateId)).toEqual([]);
     expect(candidateStrip([], 'unreadable')).toEqual([]);
   });

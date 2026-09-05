@@ -139,6 +139,12 @@ TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
   wire::Reader absent = never.reader();
   ASSERT_EQ(ReadStatus(absent).code, StatusCode::Ok);
   EXPECT_EQ(absent.GetF64(), 0.0);
+  // The reader is asked whether it read anything, which on this leg is the whole assertion.
+  // `StatusCode::Ok` is zero and a failed `wire::Reader` answers zero to everything, so both lines
+  // above are also satisfied by a response of no bytes at all — on the one leg where zero is the
+  // value under test rather than an incidental one. `wire.h` states this protocol: check `ok()`
+  // once at the end rather than after every read.
+  EXPECT_TRUE(absent.ok()) << "a zero read out of a failed reader is not an answer of zero";
 
   wire::Writer pick;
   pick.PutF64(project);
@@ -152,6 +158,7 @@ TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
   wire::Reader read = asked.reader();
   ASSERT_EQ(ReadStatus(read).code, StatusCode::Ok);
   EXPECT_EQ(read.GetF64(), 7.0);
+  EXPECT_TRUE(read.ok());
 
   // And a cell the writer refuses is refused rather than answered, so the two ends cannot be made
   // to agree on a value neither of them considers an identity.

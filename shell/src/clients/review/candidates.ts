@@ -13,15 +13,21 @@ import type { Candidate, CandidateId } from '../../../../contracts/ts/contracts'
 /**
  * What the core answered when asked which candidate a cell has recorded.
  *
- * An identity, `null` for a caller with no number to pass, or `unreadable` when the read itself
- * failed and there is therefore no answer to honour.
+ * An identity, or `unreadable` when the read itself failed and there is therefore no answer to
+ * honour. Those are the only two things the core can say, so they are the only two this takes —
+ * a case nothing can produce is a case that later acquires a second meaning.
  *
- * Zero needs no case of its own. It is an identity no candidate can have and it is the core's
- * word for "nobody has chosen here" (ADR 0040), so it falls through the `ranked.some` below into
- * the ranking, alongside a selection whose candidate a retake forgot — which is where it belongs,
- * because the build does the same thing with both.
+ * Zero is an identity, and it is the core's word for "nobody has chosen here" (ADR 0040). It gets
+ * a case of its own below rather than being left to fall through the membership test, because
+ * falling through is correct only while no candidate can have id 0. That is true of the core, and
+ * it is deliberately *not* enforced at the wire, where `IsRepresentableId(0.0)` is true. Should
+ * such a candidate ever arrive, the membership test would match it and the sentinel would flip
+ * from "nobody has chosen" to "*this* row is in force" — a wrong mark rather than a missing one,
+ * in the client whose only job is that mark. ADR 0040's own list of corrections is about exactly
+ * this: a sentinel is safe where every place that can produce it by accident is closed, and
+ * trusting an invariant owned two layers away is not closing it.
  */
-export type Recorded = CandidateId | null | 'unreadable';
+export type Recorded = CandidateId | 'unreadable';
 
 export interface StripEntry {
   candidate: CandidateId;
@@ -47,9 +53,11 @@ export interface StripEntry {
  */
 function honouredId(
   ranked: readonly Candidate[], selected: Recorded): CandidateId | undefined {
-
   if (selected === 'unreadable') return undefined;
-  if (selected !== null && ranked.some((c) => c.id === selected)) return selected;
+  // Zero has a case of its own rather than falling through the membership test below, so that it
+  // stays "nobody has chosen" even if a candidate with id 0 ever reaches this client.
+  if (selected === 0) return ranked[0]?.id;
+  if (ranked.some((c) => c.id === selected)) return selected;
   return ranked[0]?.id;
 }
 
