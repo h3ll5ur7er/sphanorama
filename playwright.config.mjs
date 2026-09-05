@@ -18,8 +18,11 @@ export default defineConfig({
   // matches these globs against absolute paths: the bare pattern also matches every test inside a
   // worktree, whose own path contains `.claude/`. That reads as "No tests found" from inside one
   // — a whole suite skipped, loudly enough to fail the gate but only after wasting the run.
-  // Joined to this directory, it means the `.claude` beside this config and nothing else, so a
-  // worktree ignores its own (absent) one and runs its tests.
+  //
+  // Anchoring is what fixes it, not absence: `.claude/` is tracked in this repository — the
+  // engineering skill lives there — so a worktree has one of its own. What it does not have is a
+  // `worktrees/` inside it, and more to the point, a worktree's tests sit at `<worktree>/shell/e2e`
+  // rather than under `<worktree>/.claude`, so the anchored pattern does not reach them.
   //
   // Nothing in CI has a worktree, since CI clones fresh, which is why this belongs in the file
   // rather than in somebody's memory.
