@@ -154,14 +154,11 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
   // succeed — with the wrong pixels.
   let end = readIndex(index, slots, free);
 
-  const persist = (): void => {
-    if (!index) return;
-    const stored: StoredIndex = {
-      v: INDEX_VERSION,
-      end,
-      slots: [...slots].map(([frame, slot]) => [frame, slot.offset, slot.length]),
-      free: [...free].map(([length, offsets]) => [length, [...offsets]]),
-    };
+  // Whether the index on disk now says what it was handed. Separated from `persist` because the
+  // two callers want opposite things from a failure: an ordinary write can carry on without its
+  // index, and a clear cannot.
+  const writeIndex = (stored: StoredIndex): boolean => {
+    if (!index) return true;   // no index file: nothing that can fall out of step
     try {
       const bytes = new TextEncoder().encode(JSON.stringify(stored));
       index.truncate(bytes.length);
@@ -171,12 +168,26 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
         // anyway. Emptying it outright is the difference between that being true by construction
         // and true because of the shape of JSON.
         index.truncate(0);
+        return false;
       }
     } catch {
-      // The frames are written and readable in this session either way. What a failure here costs
-      // is the next one's resume, and there is nobody on this path to tell: the store has already
-      // been told its frame is safe, which it is.
+      return false;
     }
+    return true;
+  };
+
+  const held = (): StoredIndex => ({
+    v: INDEX_VERSION,
+    end,
+    slots: [...slots].map(([frame, slot]) => [frame, slot.offset, slot.length]),
+    free: [...free].map(([length, offsets]) => [length, [...offsets]]),
+  });
+
+  const persist = (): void => {
+    // Deliberately ignored. The frames are written and readable in this session either way. What
+    // a failure here costs is the next one's resume, and there is nobody on this path to tell:
+    // the store has already been told its frame is safe, which it is.
+    void writeIndex(held());
   };
 
   const release = (slot: Slot): void => {
@@ -259,10 +270,19 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
     },
 
     clear() {
-      // The file first and the map second, so a truncate that throws leaves this host still able
-      // to find every frame it could find before. The reverse order would forget them and then
-      // fail, which is the one state the caller cannot recover from: it would be told the tier is
-      // untouched while this host had already lost the only map to it.
+      // The index first, and this is the one place it goes first. `persist` swallows its failures
+      // and should: an ordinary write has put the frame on disk whatever the index says. A clear
+      // cannot swallow it — reporting success over an index still naming the old frames leaves
+      // the next session recovering slots into a file this one is about to refill from offset
+      // zero, which is the right length of the wrong bytes and the whole failure being fixed here.
+      //
+      // Refusing before anything is touched is what makes "refused" and "unchanged" the same
+      // state, which is what the store above relies on to decline a session cleanly.
+      if (!writeIndex({ v: INDEX_VERSION, end: 0, slots: [], free: [] })) return false;
+
+      // And if *this* dies, the index above already names nothing: the bytes are orphaned rather
+      // than mislabelled, which is the recoverable half. In-memory the map is untouched, so this
+      // session can still find every frame it could find before.
       try {
         file.truncate(0);
       } catch {
@@ -273,7 +293,6 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // The high-water mark goes back with them. Keeping it would leave the new capture writing
       // past the space it just reclaimed, which is the disk cost of every sphere ever abandoned.
       end = 0;
-      persist();
       return true;
     },
 

@@ -481,6 +481,60 @@ describe('the spill host', () => {
     expect(after.read(1, new Uint8Array(16))).toBe(false);
   });
 
+  it('refuses without touching anything when the index cannot be written', () => {
+    // `persist` swallows its failures, and for an ordinary write that is right: the frame is on
+    // disk and readable either way, so what a failed index costs is the *next* session's resume.
+    // A clear cannot swallow it. Reporting success with the old index still on disk leaves that
+    // next session recovering slots that name a file this one is about to refill from offset zero
+    // — the right length of the wrong bytes, which is the failure this whole change exists for.
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+    host.write(1, frame(0xa1));
+    const before = file.bytes().slice();
+    index.throwTruncates(true);
+
+    expect(host.clear()).toBe(false);
+
+    expect(file.bytes()).toEqual(before);
+    const into = new Uint8Array(16);
+    expect(host.read(1, into)).toBe(true);
+    expect(into.every((b) => b === 0xa1)).toBe(true);
+  });
+
+  it('empties the index before the frames, so neither can be left naming the other', () => {
+    // Ordering, and it is the opposite of the one inside a successful clear. There the file goes
+    // first so a failure leaves this host still able to find its frames. Across a *reload* the
+    // index is the only thing that can name them, so it goes first: a clear that dies halfway
+    // then leaves an index naming nothing, and orphaned bytes nobody can ask for are recoverable
+    // in a way that bytes somebody can ask for by the wrong name are not.
+    const file = fakeFile();
+    const index = fakeFile();
+    const host = createSpillHost(file, index);
+    host.write(1, frame(0xa1));
+    file.throwTruncates(true);
+
+    expect(host.clear()).toBe(false);
+
+    // This session is unharmed — its map is in memory and the file was never touched.
+    expect(host.read(1, new Uint8Array(16))).toBe(true);
+
+    // The next one finds nothing rather than finding frame 1 wherever the new capture put it.
+    file.throwTruncates(false);
+    const after = createSpillHost(file, index);
+    after.write(9, frame(0xc3));
+    expect(after.read(1, new Uint8Array(16))).toBe(false);
+  });
+
+  it('clears fine on a browser that gave it no index file at all', () => {
+    // There is nothing to keep in step, so there is nothing to refuse over. A clear that reported
+    // failure here would stop every session on such a browser from beginning.
+    const host = createSpillHost(fakeFile());
+    host.write(1, frame(0xa1));
+    expect(host.clear()).toBe(true);
+    expect(host.read(1, new Uint8Array(16))).toBe(false);
+  });
+
   it('says so when the file will not let go, rather than forgetting anyway', () => {
     // The store's Clear refuses when this does, and keeps its entries — so a session declines to
     // begin instead of capturing over a sphere that is still down here. A host that reported

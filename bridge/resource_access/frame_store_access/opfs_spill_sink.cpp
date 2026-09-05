@@ -39,7 +39,13 @@ EM_JS(int32_t, host_spill_drop, (double frame), {
 });
 
 EM_JS(int32_t, host_spill_clear, (), {
-  if (!Module.sphSpill) return 0;
+  // The method, not just the host. `clear` is the only call here newer than the host itself, so
+  // it is the only one a half-updated page can be missing — a service worker serving a cached
+  // worker script beside a fresh .wasm, which is a combination this repo already has a test
+  // about. Calling straight through would throw out of an EM_JS with no C++ frame to catch it and
+  // abort the module, where returning 0 refuses the clear and lets Begin decline the session,
+  // which is the outcome the refusal path was written for.
+  if (!Module.sphSpill || typeof Module.sphSpill.clear !== 'function') return 0;
   return Module.sphSpill.clear() ? 1 : 0;
 });
 
