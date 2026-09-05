@@ -392,6 +392,46 @@ constraints landed. A fifth of every burst was going in the bin on the device th
 locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
+### Open: what the capture button promises
+
+Not a bug report and not a patch — a decision that has never been made, with one thing under it
+that is wrong whichever way the decision goes.
+
+**What it does today.** `#capture` is enabled the moment a plan exists, and pressing it arms a
+burst at `targetNode`, which is whatever cell guidance named on the last tick. It is pressable
+while guidance says `TooFast`, `CellDone` or `SphereDone`; nothing stops a second press while a
+burst is already firing; and because `targetNode` is rewritten every tick, the cell captured is
+the one under the reticle *when the press lands*, not the one the user was looking at when they
+decided to press.
+
+**The part that is wrong regardless.** `armAt` writes three messages — `arming failed: <reason>`,
+the thrown-cause variant, and `capturing without <lock> lock` — and all three go to `#guidance`.
+That element is `aria-hidden="true"` (correctly: the loop rewrites it every frame, and a live
+region rewritten at 60 Hz is unusable), and the loop's own `describeGuidance` overwrites it on the
+next tick that has samples, which is every tick a phone in a hand produces. So the button's
+outcomes are hidden from assistive technology by design and from everyone else by accident. The
+one that matters most is `capturing without exposure lock`: that is a real quality cost — ADR 0031
+exists because of it — announced for about sixteen milliseconds.
+
+`#stage` is the `aria-live="polite"` element and is the right register for these, but it also
+carries the session line the end-to-end suite asserts on, so moving them there is not free.
+
+**The decision.** Three readings, and they differ in what a press means when the aim is bad:
+
+1. *Arm now, whatever the state.* Simplest, and what the code does. The user is the judge of when
+   the shot is good; a refusal from the core is the only thing that stops it.
+2. *Arm when the aim is good enough.* The press is a request, and the burst fires on the first
+   tick guidance would allow it. Removes the "captured the wrong cell" window, and makes the
+   button a promise the app can keep rather than one it might refuse.
+3. *The button is an override.* Capture is otherwise automatic; the button exists to force a cell
+   the planner would skip. This is the reading ADR 0004's retake flow implies, and nothing in the
+   page says it.
+
+My recommendation is (2) with the button disabled outside `Seek`/`HoldStill`, because it is the
+only one where pressing does what the label says. But it changes what a user's press means, so it
+is not mine to take: the answer decides whether `targetNode` should be latched at press time, and
+whether the button needs a pending state at all.
+
 ---
 
 ## Phase 2 — Stitching
