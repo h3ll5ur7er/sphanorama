@@ -38,6 +38,17 @@ EM_JS(int32_t, host_spill_drop, (double frame), {
   return Module.sphSpill.drop(frame) ? 1 : 0;
 });
 
+EM_JS(int32_t, host_spill_clear, (), {
+  // The method, not just the host. `clear` is the only call here newer than the host itself, so
+  // it is the only one a half-updated page can be missing — a service worker serving a cached
+  // worker script beside a fresh .wasm, which is a combination this repo already has a test
+  // about. Calling straight through would throw out of an EM_JS with no C++ frame to catch it and
+  // abort the module, where returning 0 refuses the clear and lets Begin decline the session,
+  // which is the outcome the refusal path was written for.
+  if (!Module.sphSpill || typeof Module.sphSpill.clear !== 'function') return 0;
+  return Module.sphSpill.clear() ? 1 : 0;
+});
+
 }  // namespace
 
 bool OpfsSpillSink::Available() { return host_spill_available() != 0; }
@@ -60,6 +71,16 @@ Status OpfsSpillSink::Read(uint64_t frame, std::span<uint8_t> bytes) {
   if (host_spill_read(static_cast<double>(frame), bytes.data(),
                       static_cast<int32_t>(bytes.size())) == 0) {
     return Fail(StatusCode::Internal, kComponent, "the spilled frame could not be read back");
+  }
+  return Status::Ok();
+}
+
+Status OpfsSpillSink::Clear() {
+  if (host_spill_clear() == 0) {
+    // A refusal here stops a session from beginning, which is the point: the frames still down
+    // there belong to a sphere whose document may still name them, and a capture that started
+    // anyway would issue their identities to its own frames.
+    return Fail(StatusCode::Internal, kComponent, "the spill file could not be emptied");
   }
   return Status::Ok();
 }

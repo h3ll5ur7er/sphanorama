@@ -1348,6 +1348,103 @@ class ResumedSession : public CaptureSession {
   FakeSpillSink sink;
 };
 
+TEST_F(ResumedSession, ANewSessionEmptiesTheSpillTier) {
+  // Frame identities restart at 1 in every process, and the tier does not (ADR 0030). A capture
+  // that began against a tier still holding the last one's frames would hand its own frame 1 the
+  // slot an abandoned frame 1 is sitting in — and the free list would hand it back later to a
+  // read that succeeds. Emptying it at Begin is what keeps the identities this store is about to
+  // issue unclaimed.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  ASSERT_GT(sink.HeldCount(), 0u) << "the arrangement never spilled anything to empty";
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
+
+  EXPECT_EQ(sink.HeldCount(), 0u) << "the new capture began on top of the old one's frames";
+}
+
+TEST_F(ResumedSession, ResumingLeavesTheSpillTierAlone) {
+  // The other half, and the one that makes the first half safe to write: a resume is the reason
+  // the tier survives a reload at all, so a store that emptied it on the way in would destroy
+  // exactly the frames it was opened to recover. `Clears()` rather than `HeldCount()`, because a
+  // clear that ran and found nothing looks identical from the outside — and it is the call, not
+  // its effect, that would be the bug here.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  const int clearsAfterCapture = sink.Clears();
+  const size_t heldAfterCapture = sink.HeldCount();
+  ASSERT_GT(heldAfterCapture, 0u);
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  EXPECT_EQ(sink.Clears(), clearsAfterCapture) << "the resume emptied the tier it came back for";
+  EXPECT_EQ(sink.HeldCount(), heldAfterCapture);
+}
+
+TEST_F(ResumedSession, AnAbandonedSphereCannotBeHalfResumed) {
+  // The pair, end to end, and the property that actually matters to somebody holding the phone:
+  // after starting over, the old capture is gone in *both* respects. Begin empties the tier and
+  // its Checkpoint replaces the project's session document in the same call, so there is no
+  // moment at which the paperwork names frames the tier no longer has.
+  //
+  // This is the case the scope note in docs/06-roadmap.md is about — one unfinished sphere,
+  // resumed by the person standing in the same spot. Two projects are a different question, and
+  // an open one: this manager cannot see another project's document to invalidate it, so a
+  // document belonging to some *other* project would still name identities a later capture
+  // reissues. Recorded in the roadmap rather than solved here.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
+  const NodeId node = second.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(second.End().ok());
+
+  auto third_store = NewStore();
+  FakeCameraAccess third_camera(third_store);
+  CaptureSessionManager third(planner, pose, quality, third_camera, *sensor, *third_store,
+                              *projects, clock);
+  ASSERT_TRUE(third.Resume(kProject).ok());
+
+  // Empty, not the old sphere's candidates: what came back describes the capture that started
+  // over. A resume that produced the abandoned cell here would be pointing at pixels the Begin
+  // above threw away.
+  auto restored = third.Candidates(node);
+  ASSERT_TRUE(restored.ok()) << restored.status.detail;
+  EXPECT_TRUE(restored.value.empty()) << "the abandoned sphere came back without its pixels";
+
+  // And the pixels went with the paperwork. Without this the test passes on the document alone —
+  // Begin's Checkpoint replaces it either way — while the tier quietly keeps every frame of every
+  // sphere the phone has ever abandoned. That is the disk half, and nothing else asserts it.
+  EXPECT_EQ(sink.HeldCount(), 0u) << "the abandoned sphere's frames are still on the disk";
+}
+
 TEST_F(ResumedSession, BringsBackTheCandidatesAndTheBytesBehindThem) {
   // The reload case, and the last code-shaped item in Phase 1's exit criterion. A call comes in
   // mid-capture and the tab is evicted; coming back has to find the cells already captured *and*
@@ -1500,9 +1597,10 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   }
 }
 
-// A store that takes a stated number of frames back and then refuses. Everything else is the
-// real store's: what is under test is what the *manager* does with a refusal partway through, and
-// a hand-written stub would have had to reimplement the tiering to get there.
+// A store that takes a stated number of frames back and then refuses, and that can be told to
+// refuse a clear outright. Everything else is the real store's: what is under test is what the
+// *manager* does with a refusal partway through, and a hand-written stub would have had to
+// reimplement the tiering to get there.
 class StubbornStore final : public IFrameStoreAccess {
  public:
   StubbornStore(std::shared_ptr<IFrameStoreAccess> inner, int adoptions)
@@ -1524,10 +1622,72 @@ class StubbornStore final : public IFrameStoreAccess {
     return inner_->Adopt(frame);
   }
 
+  Status Clear() override {
+    ++clears_;
+    if (refuse_clear_) return Fail(StatusCode::Internal, "test", "the tier will not empty");
+    return inner_->Clear();
+  }
+
+  void RefuseClear(bool refuse) { refuse_clear_ = refuse; }
+  int Clears() const { return clears_; }
+
  private:
   std::shared_ptr<IFrameStoreAccess> inner_;
   int adoptions_;
+  bool refuse_clear_ = false;
+  int clears_ = 0;
 };
+
+// Placed with the other resume machinery because it is the same fixture's arrangement, but the
+// subject is Begin: what happens when the tier a new capture is about to reuse will not let go.
+TEST_F(ResumedSession, ASessionDoesNotBeginOnATierThatWillNotEmpty) {
+  // The direction of the failure is the decision, and it is the opposite of the usual one. Almost
+  // everywhere else here a degraded device is carried — no sensor means vision-only, no sink means
+  // no spill. Not this: beginning anyway would put the new capture's frames on top of a sphere
+  // that is still on disk and still named by a document, under the identities that document
+  // carries. Declining is recoverable; capturing over it is not.
+  auto inner = NewStore();
+  StubbornStore stubborn(inner, 0);
+  FakeCameraAccess camera(inner);
+  CaptureSessionManager manager(planner, pose, quality, camera, *sensor, stubborn, *projects,
+                                clock);
+  stubborn.RefuseClear(true);
+
+  EXPECT_FALSE(manager.Begin(kProject, Spec()).ok());
+
+  // And the camera goes back. The lens has to be read before the plan can be made, so this
+  // refusal is reachable only with the camera already open — and an indicator left lit for a
+  // session that never started is the user watching the app watch them.
+  EXPECT_FALSE(camera.IsOpen()) << "the refused Begin left the camera open";
+
+  // Not half-begun either: the manager has no session, so the next attempt is a first attempt.
+  EXPECT_FALSE(manager.GetPlan().ok());
+  stubborn.RefuseClear(false);
+  EXPECT_TRUE(manager.Begin(kProject, Spec()).ok());
+}
+
+TEST_F(ResumedSession, ASessionThatCannotBePlannedLeavesTheTierAlone) {
+  // Ordering, stated as a test because it is invisible from the outside once it is right. The
+  // clear is the one irreversible thing Begin does, so it goes after everything that can refuse:
+  // a Begin that emptied the tier and *then* failed to plan would have destroyed a capture on its
+  // way to doing nothing at all.
+  auto inner = NewStore();
+  StubbornStore stubborn(inner, 0);
+  FakeCameraAccess camera(inner);
+
+  CapturePlanSpec impossible = Spec();
+  // An overlap of 1 is a step of zero degrees — infinitely many cells — and the rings planner
+  // refuses it. It has to be a *real* planner: the fixture's null one plans anything, so nothing
+  // would refuse and the assertion below would pass against a Begin that clears first. And it has
+  // to be this field rather than the field of view, which Begin substitutes from the camera when
+  // the spec leaves it unset — the first arrangement here did that and began perfectly happily.
+  impossible.overlapTarget = 1.0;
+  RingsCoveragePlannerEngine rings;
+  CaptureSessionManager planned(rings, pose, quality, camera, *sensor, stubborn, *projects, clock);
+  EXPECT_FALSE(planned.Begin(kProject, impossible).ok());
+
+  EXPECT_EQ(stubborn.Clears(), 0) << "the tier was emptied for a session that never started";
+}
 
 bool second_store_pin(IFrameStoreAccess& store, const FrameRef& frame) {
   auto pinned = store.Pin(frame);

@@ -250,15 +250,25 @@ build. What is left:
   `IFrameStoreAccess::Adopt`, so a restored candidate can still be pinned (ADR 0029). Underneath
   it the OPFS tier survives a reload too: a fixed preferred name and a sibling index carrying the
   frame-to-offset map, with a tier of its own for any session that cannot take that pair, which is
-  the property ADR 0020 added (ADR 0030). Two things remain, **in this order**: a `Begin` that
-  empties the tier and a `Resume` that does not — frame identities restart at 1, so without it a
-  new capture overwrites the frames an old project's document still names — and then the page's
-  own resume flow. Scope, decided
+  the property ADR 0020 added (ADR 0030). The first of the two things that remained is **done**:
+  `Begin` empties the tier and `Resume` does not (ADR 0034), so a new capture no longer issues
+  identities the tier is already holding frames under, and abandoned spheres stop accumulating on
+  disk. What is left is the page's own resume flow — a button, and something that knows a project
+  has a session to come back to. Scope, decided
   with the maintainer rather than assumed: in practice there is never more than one unfinished
   sphere, because resuming means standing in the same spot again. The case worth building for is
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the tier is cleared when a *new* session begins rather than at worker startup, which is what
   lets a reload find its frames still there.
+- **A tier generation, so another project's document cannot outlive its pixels.** The gap ADR 0034
+  leaves open, and it is narrow but silent. `Begin` empties the tier and the new capture reissues
+  identities from 1, so a session document belonging to a *different* project still names frames
+  that now hold someone else's pixels — and the fault-in cannot catch it, because the bytes are
+  really there and really the right length. The same-project case is closed, since `Begin`'s
+  `Checkpoint` replaces that project's document in the same call; this is the two-unfinished-spheres
+  case the scope note above says does not arise in practice. The fix is an epoch the tier bumps on
+  every clear, recorded in the session document and checked by `Resume`. It wants an ADR: where the
+  generation lives, and whether a stale document is refused or offered as coverage without pixels.
 - **A cap on candidates per cell.** Found on the iPhone, and the numbers are exact. Motion was
   unavailable there, so guidance never advanced and five bursts landed on one cell: 25 candidates
   of 1280×960×4 = 123 MB, against a ceiling of 128 MB — Safari does not report

@@ -19,6 +19,7 @@ class FakeSpillSink final : public ISpillSink {
   Status Write(uint64_t frame, std::span<const uint8_t> bytes) override;
   Status Read(uint64_t frame, std::span<uint8_t> bytes) override;
   Status Drop(uint64_t frame) override;
+  Status Clear() override;
 
   // Test affordances.
   bool Holds(uint64_t frame) const { return held_.count(frame) != 0; }
@@ -34,6 +35,12 @@ class FakeSpillSink final : public ISpillSink {
   }
   void FailReads(bool fail) { fail_reads_ = fail; }
   void FailDrops(bool fail) { fail_drops_ = fail; }
+  void FailClears(bool fail) { fail_clears_ = fail; }
+  // How many frames are still down here. `Holds` answers about one frame; a clear is about all of
+  // them, and a test that only checked the frame it knew about could not tell a sink that dropped
+  // everything from one that dropped the entry it was asked about last.
+  size_t HeldCount() const { return held_.size(); }
+  int Clears() const { return clears_; }
 
  private:
   std::map<uint64_t, std::vector<uint8_t>> held_;
@@ -43,6 +50,8 @@ class FakeSpillSink final : public ISpillSink {
   std::string write_refusal_ = "no room to spill this frame";
   bool fail_reads_ = false;
   bool fail_drops_ = false;
+  int clears_ = 0;
+  bool fail_clears_ = false;
 };
 
 }  // namespace sphanorama
