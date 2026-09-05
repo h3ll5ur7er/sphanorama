@@ -98,7 +98,10 @@ def tracked_files(root: Path) -> list[str]:
     result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    return sorted(name for name in result.stdout.split("\0") if name)
+    # Deduplicated, because `--cached` lists a path once per stage while a merge is unresolved —
+    # base, ours, theirs. That is exactly when this check runs, so without it every marker in a
+    # conflicted file is reported three times, in the output somebody is reading to find them.
+    return sorted({name for name in result.stdout.split("\0") if name})
 
 
 def check(root: Path) -> list[Marker]:

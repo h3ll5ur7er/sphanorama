@@ -163,6 +163,31 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         self.assertEqual([m.path for m in self.markers()],
                          [".claude/skills/sphanorama-engineering/SKILL.md"])
 
+    def test_a_file_in_conflict_is_counted_once(self):
+        # During an unresolved merge `git ls-files` emits the conflicted path once per stage —
+        # base, ours, theirs — so the file arrives three times and every marker in it was reported
+        # three times. Which is precisely when this check runs and precisely when its output most
+        # needs to be readable: the merge that left the markers has not been finished yet.
+        root = self.repo.root
+        run = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True, text=True)
+        run("git", "config", "user.email", "t@example.invalid")
+        run("git", "config", "user.name", "t")
+        self.repo.write("docs/a.md", "base\n")
+        run("git", "add", "docs/a.md")
+        run("git", "commit", "-qm", "base")
+        run("git", "checkout", "-qb", "other")
+        self.repo.write("docs/a.md", "theirs\n")
+        run("git", "commit", "-qam", "theirs")
+        run("git", "checkout", "-q", "-")
+        self.repo.write("docs/a.md", "ours\n")
+        run("git", "commit", "-qam", "ours")
+        subprocess.run(["git", "merge", "other"], cwd=root, capture_output=True, text=True)
+
+        # Three markers in the file, each once — not nine.
+        found = self.markers()
+        self.assertEqual(len(found), 3)
+        self.assertEqual(sorted(m.line for m in found), [1, 3, 5])
+
     def test_a_file_staged_but_not_yet_committed_counts(self):
         # `--cached --others` is the set that can become a commit, which is the set that matters.
         # A marker is caught before it is committed or not at all.
