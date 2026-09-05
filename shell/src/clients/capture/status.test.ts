@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { err, ok } from '../../access/result';
-import { describeFailure, describeLocks, formatCapabilities } from './status';
+import {
+  describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
+} from './status';
 
 describe('describeFailure', () => {
   it('tells a user who declined the camera what to do about it', () => {
@@ -142,5 +144,29 @@ describe('what the camera let the burst lock', () => {
     // sentence to offer. An empty tail would read as the row having nothing to say.
     expect(describeLocks(all, err('CameraUnavailable', 'CameraAccess')))
       .toContain('CameraUnavailable');
+  });
+});
+
+describe('a tick that failed', () => {
+  it('keeps the reason the component gave, not only the code', () => {
+    // An iPhone reported `FrameStoreExhausted` and nothing else, and the store had said which of
+    // two opposite problems it was: a sphere too large for the device, or a sink that refused a
+    // write. One means capture less and the other means free some disk.
+    expect(describeGuidanceFailure({
+      code: 'FrameStoreExhausted',
+      component: 'FrameStoreAccess',
+      detail: 'allocation would exceed the heap ceiling, and the spill sink last refused a frame',
+    })).toContain('spill sink last refused');
+  });
+
+  it('still names the code, which is the part that is the same everywhere', () => {
+    expect(describeGuidanceFailure({
+      code: 'FrameStoreExhausted', component: 'FrameStoreAccess', detail: 'no room',
+    })).toContain('FrameStoreExhausted');
+  });
+
+  it('says just the code when there was nothing else to say', () => {
+    const line = describeGuidanceFailure({ code: 'Internal', component: 'X', detail: '' });
+    expect(line).toBe('Internal');
   });
 });

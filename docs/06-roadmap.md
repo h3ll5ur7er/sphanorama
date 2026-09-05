@@ -259,10 +259,25 @@ build. What is left:
   "a call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the tier is cleared when a *new* session begins rather than at worker startup, which is what
   lets a reload find its frames still there.
+- **A cap on candidates per cell.** Found on the iPhone, and the numbers are exact. Motion was
+  unavailable there, so guidance never advanced and five bursts landed on one cell: 25 candidates
+  of 1280×960×4 = 123 MB, against a ceiling of 128 MB — Safari does not report
+  `navigator.deviceMemory`, so the store takes the stated fallback (ADR 0023). Ranking is what
+  tips it over, because scoring a cell reads every candidate's pixels and faults the whole
+  accumulated set back into the heap at once. Cooling had done its job; the set simply came back.
+
+  The Pixel never reached it because each cell got exactly one burst. It is reachable there too,
+  by retaking a cell enough times. The fix is a policy question rather than a bug — keep the best
+  N after each ranking, or rank incrementally — so it wants deciding rather than patching, and it
+  needs an ADR either way.
 - **Peak memory per device class.** Never measured. The frame store's ceiling is probed from
   `navigator.deviceMemory` (ADR 0023) but nothing records what a real capture actually costs.
-- **An iPhone.** Blocked on hardware, not code: the maintainer has an Android only. The exit
-  criterion names both, and this half cannot be closed here.
+- **An iPhone.** *Run.* iOS 18 Safari, 1280×960, 32 cells planned. Two things worked that were
+  not certain to: the OPFS spill tier opened (no "no spill tier" in the capabilities line, so
+  Safari's synchronous access handles are there), and the white balance lock took — the only one
+  of the three that camera offers. Two did not, and both are fixed or filed below. The exit
+  criterion also wants a completed sphere and a peak-memory number from it, and neither exists
+  yet on that device.
 
 Two known gaps in the phase's own list, both contract-shaped: the review strip shows what the core
 knows about a candidate rather than the frame itself, and a recorded selection cannot be read back.
