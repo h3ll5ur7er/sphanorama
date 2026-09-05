@@ -88,12 +88,15 @@ Result<FramePreview> BoxFramePreviewEngine::Reduce(const FrameRef& frame, int32_
   // large the allocation really is; trusting the handle reads off the end of it, which is a crash
   // on a good day and somebody else's pixels on a bad one.
   //
-  // `stride * height` rather than the last row's end, deliberately. With the stride sane it is
-  // the stricter of the two — it asks for the trailing padding of the final row, which every
-  // allocation this store makes actually has — and on a bounds check the stricter side is the
-  // safe one.
-  const int64_t needed = stride * frame.height;
-  if (needed <= 0 || static_cast<size_t>(needed) > pinned.value.size()) {
+  // What is required is `stride * height` — the whole of every row including the last one's
+  // padding, which is the stricter reading and the safe side of a bounds check. It is *asked* by
+  // division, because the multiplication is the very thing a hostile handle reaches for: both
+  // dimensions are `int32_t`, so the largest of each derives a stride of 8.6e9 and multiplies it
+  // by 2.1e9 — about 1.8e19, past where an `int64_t` stops, and signed overflow is undefined
+  // before the check that exists to catch this can run at all. `a * b <= c` and `a <= c / b` are
+  // the same statement for positive integers, and only one of them can overflow.
+  const int64_t available = static_cast<int64_t>(pinned.value.size());
+  if (stride > available / frame.height) {
     return Err<FramePreview>(StatusCode::FailedPrecondition, kComponent,
                              "this frame holds fewer bytes than its handle describes");
   }

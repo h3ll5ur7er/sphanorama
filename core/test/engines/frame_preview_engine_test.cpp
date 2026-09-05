@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -306,6 +307,37 @@ TEST_F(FramePreviewEngine, AHandleWhoseStrideIsLessThanARowIsRefused) {
 
   // And the honest handle still reduces, so this cannot pass by refusing everything.
   EXPECT_TRUE(engine.Reduce(real, 8).ok());
+}
+
+TEST_F(FramePreviewEngine, AHandleClaimingImpossibleDimensionsIsRefusedWithoutOverflowing) {
+  // The span check used to multiply before it compared. `width` and `height` are `int32_t`, so a
+  // handle claiming the largest of each derives a stride of 8.6e9 bytes and multiplies it by a
+  // height of 2.1e9 — about 1.8e19, against an `int64_t` that stops at 9.2e18. Signed overflow is
+  // undefined, and it happened *before* the bounds check that exists to catch exactly this kind
+  // of handle.
+  //
+  // Division cannot overflow, so the comparison is made that way round instead of guarded. The
+  // sanitizer build is what would fail on the old arithmetic; this asserts the answer as well, so
+  // it means something in the ordinary build too.
+  const FrameRef real = Flat(8, 8, Rgb{1, 2, 3});
+
+  FrameRef enormous = real;
+  enormous.width = std::numeric_limits<int32_t>::max();
+  enormous.height = std::numeric_limits<int32_t>::max();
+  enormous.stride = 0;   // derived from the width, which is where the size comes from
+  auto refused = engine.Reduce(enormous, 8);
+  EXPECT_FALSE(refused.ok()) << "a frame claiming 2^31 pixels a side was believed";
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+
+  // And again with the stride stated rather than derived, since that is the other way in.
+  FrameRef wide = real;
+  wide.height = std::numeric_limits<int32_t>::max();
+  wide.stride = std::numeric_limits<int32_t>::max();
+  auto alsoRefused = engine.Reduce(wide, 8);
+  EXPECT_FALSE(alsoRefused.ok());
+  EXPECT_EQ(alsoRefused.status.code, StatusCode::FailedPrecondition);
+
+  EXPECT_TRUE(engine.Reduce(real, 8).ok()) << "the honest handle stopped working";
 }
 
 }  // namespace
