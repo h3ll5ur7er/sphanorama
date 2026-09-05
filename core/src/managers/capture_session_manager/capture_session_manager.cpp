@@ -933,9 +933,14 @@ Result<FramePreview> CaptureSessionManager::CandidatePreview(NodeId node, Candid
   // and left open. Here the moment is exact: the reduced copy exists, and nothing wants the frame
   // again. Restoring what was found rather than imposing a tier is what keeps this safe for an
   // offered frame, whose residency is the caller's business and not this manager's.
-  const Residency before = frames_.ResidencyOf(found->frame).value;
+  //
+  // Asked as a Result rather than for its value, because a `Result`'s value on a failure is
+  // whatever `T{}` is — here `HeapPinned`, the first enumerator, which happens to mean "do not
+  // restore" and would silently become "always demote" if anyone reordered the enum. A store that
+  // cannot say where a frame is gets nothing done to it, which is the answer either way.
+  const auto before = frames_.ResidencyOf(found->frame);
   auto reduced = preview_.Reduce(found->frame, maxEdge);
-  if (before == Residency::Spilled) {
+  if (before.ok() && before.value == Residency::Spilled) {
     // Discarded for the same reason `Cool` discards one: by here the preview has either been
     // produced or failed, and a store that cannot take the frame back leaves it exactly where it
     // is — readable, in the heap, and accounted for.
