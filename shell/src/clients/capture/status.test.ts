@@ -93,9 +93,16 @@ describe('Unsupported is not always about the camera', () => {
 describe('what the camera let the burst lock', () => {
   const none = { exposure: false, whiteBalance: false, focus: false };
   const all = { exposure: true, whiteBalance: true, focus: true };
+  // What `getCapabilities` said, which is a separate question from what the track then did.
+  const listed = {
+    exposure: ['continuous', 'manual'],
+    whiteBalance: ['continuous', 'manual'],
+    focus: ['continuous', 'manual'],
+  };
+  const unlisted = { exposure: null, whiteBalance: null, focus: null };
 
   it('names the locks that are actually holding', () => {
-    expect(describeLocks(all, ok(all))).toBe('exposure · white balance · focus');
+    expect(describeLocks(all, ok(all), listed)).toBe('exposure · white balance · focus');
   });
 
   it('says outright when the camera offers no manual modes at all', () => {
@@ -103,7 +110,9 @@ describe('what the camera let the burst lock', () => {
     // to move for the whole ~320 ms a burst spans — so a burst's frames can differ by more than
     // the scene does, and the sharpness spread across a cell is the camera hunting rather than
     // anything selection did. Without it that spread is unattributable.
-    expect(describeLocks(none, ok(none))).toMatch(/no manual modes/i);
+    expect(describeLocks(none, ok(none), {
+      exposure: ['continuous'], whiteBalance: ['continuous'], focus: ['continuous'],
+    })).toMatch(/no manual modes/i);
   });
 
   it('separates a lock that was refused from one that was never asked for', () => {
@@ -113,17 +122,81 @@ describe('what the camera let the burst lock', () => {
     const asked = { exposure: true, whiteBalance: false, focus: true };
     const got = { exposure: true, whiteBalance: false, focus: false };
 
-    const line = describeLocks(asked, ok(got));
+    const line = describeLocks(asked, ok(got), listed);
     expect(line).toContain('exposure');
     expect(line).toMatch(/focus refused/i);
     expect(line).not.toMatch(/white balance refused/i);
+  });
+
+  it('names what the camera does offer when it refuses a lock', () => {
+    // Two rounds of guessing at one Pixel got us `exposure refused` and no way to tell whether
+    // the camera had a manual mode it would not take, or none to take. It listed one: this is
+    // the camera contradicting itself, which is the case ADR 0022's read-back exists for.
+    const line = describeLocks({ exposure: true, whiteBalance: false, focus: false },
+      ok(none), { ...unlisted, exposure: ['continuous', 'manual'] });
+
+    expect(line).toMatch(/exposure refused/i);
+    expect(line).toContain('continuous, manual');
+  });
+
+  it('says a camera that lists only continuous has nothing to give', () => {
+    // The other reading of the same refusal, and the one that ends the search: nothing was
+    // withheld, there is no lock here to be had.
+    const line = describeLocks({ exposure: true, whiteBalance: false, focus: false },
+      ok(none), { ...unlisted, exposure: ['continuous'] });
+
+    expect(line).toMatch(/exposure refused/i);
+    expect(line).toContain('continuous');
+    expect(line).not.toContain('manual');
+  });
+
+  it('does not pass off a browser that said nothing as a camera that offers nothing', () => {
+    // Safari reports no enumerations at all, and Chromium omits these three keys. A row that
+    // rendered that silence as "offers continuous" would be inventing the evidence.
+    const line = describeLocks({ exposure: true, whiteBalance: false, focus: false },
+      ok(none), unlisted);
+
+    expect(line).toMatch(/exposure refused/i);
+    expect(line).toMatch(/not reported/i);
+    expect(line).not.toContain('continuous');
+  });
+
+  it('leaves a lock that is holding to speak for itself', () => {
+    // The row is read at a glance between cells. What a held lock could have been is not a
+    // question anybody has while it holds.
+    const line = describeLocks(all, ok({ exposure: true, whiteBalance: true, focus: false }),
+      listed);
+
+    expect(line).toContain('exposure · white balance');
+    expect(line).toMatch(/focus refused \(/);
+    expect(line.match(/\(/g)).toHaveLength(1);
+  });
+
+  it('will not claim a camera has no manual modes when nothing was reported', () => {
+    // The same collapse one line down. With every lock absent and no lists to read, "this camera
+    // offers no manual modes" is a conclusion drawn from silence — and it is the sentence that
+    // sends the next reader off to bracket for a camera nobody ever asked.
+    const line = describeLocks(none, ok(none), unlisted);
+
+    expect(line).not.toMatch(/offers no manual modes/i);
+    expect(line).toMatch(/not report/i);
+  });
+
+  it('reports per control when the browser answered for some of them', () => {
+    // A browser that fills in one key and not another. Neither blanket sentence is true, so the
+    // row says which is which rather than picking whichever is closer.
+    const line = describeLocks(none, ok(none),
+      { exposure: ['continuous'], whiteBalance: null, focus: ['continuous'] });
+
+    expect(line).toContain('exposure offers continuous');
+    expect(line).toMatch(/white balance not reported/i);
   });
 
   it('says when the camera took a lock nothing asked it for', () => {
     // Not hypothetical: `advanced` constraints are best-effort, and a camera is free to settle on
     // manual for its own reasons. The burst is told what actually holds, so the line has to be
     // the same truth and not a copy of the request.
-    expect(describeLocks(none, ok({ exposure: true, whiteBalance: false, focus: false })))
+    expect(describeLocks(none, ok({ exposure: true, whiteBalance: false, focus: false }), listed))
       .toContain('exposure');
   });
 
@@ -132,7 +205,8 @@ describe('what the camera let the burst lock', () => {
     // a stream that ended. Rendering that as all-false makes this row say the camera has no
     // manual modes, which is the one sentence it exists to make trustworthy: it is the reading
     // that sends the next person after bracketing in Phase 2, for a camera that was never asked.
-    const line = describeLocks(all, err('CameraUnavailable', 'CameraAccess', 'no camera open'));
+    const line = describeLocks(all, err('CameraUnavailable', 'CameraAccess', 'no camera open'),
+      unlisted);
 
     expect(line).not.toMatch(/no manual modes/i);
     expect(line).not.toMatch(/refused/i);
@@ -142,7 +216,7 @@ describe('what the camera let the burst lock', () => {
   it('falls back to the code when the failure carried no words', () => {
     // Every status has a code; detail is optional and empty for anything that failed without a
     // sentence to offer. An empty tail would read as the row having nothing to say.
-    expect(describeLocks(all, err('CameraUnavailable', 'CameraAccess')))
+    expect(describeLocks(all, err('CameraUnavailable', 'CameraAccess'), unlisted))
       .toContain('CameraUnavailable');
   });
 });

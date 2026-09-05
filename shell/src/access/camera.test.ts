@@ -199,16 +199,27 @@ function fakeTrack(options: {
   refuses?: (set: Record<string, unknown>) => boolean;
   /** Settings the camera reports before anything is asked of it. */
   initial?: Record<string, unknown>;
+  /** A track with no `getCapabilities` at all — Safari has none. */
+  omitCapabilitiesApi?: boolean;
+  /** A `getCapabilities` that throws instead of answering. */
+  capabilitiesThrow?: string;
 } = {}) {
   const applied: unknown[] = [];
   let settings: Record<string, unknown> = { width: 1920, height: 1080, ...options.initial };
   const track = {
     applied,
     getSettings: () => settings,
-    getCapabilities: () => options.capabilities ?? {
-      exposureMode: ['continuous', 'manual'],
-      whiteBalanceMode: ['continuous', 'manual'],
-      focusMode: ['continuous', 'manual'],
+    getCapabilities: () => {
+      if (options.capabilitiesThrow) {
+        const error = new Error('no capabilities for you');
+        error.name = options.capabilitiesThrow;
+        throw error;
+      }
+      return options.capabilities ?? {
+        exposureMode: ['continuous', 'manual'],
+        whiteBalanceMode: ['continuous', 'manual'],
+        focusMode: ['continuous', 'manual'],
+      };
     },
     async applyConstraints(constraints: unknown) {
       applied.push(constraints);
@@ -224,6 +235,9 @@ function fakeTrack(options: {
     },
     stop: vi.fn(),
   };
+  // Deleted rather than left undefined, because the adapter has to survive the property simply
+  // not being there — which is the shape a browser without the API actually has.
+  if (options.omitCapabilitiesApi) delete (track as { getCapabilities?: unknown }).getCapabilities;
   return track;
 }
 
@@ -280,6 +294,102 @@ describe('reporting which locks the camera has', () => {
     const opened = await camera.open({ preferRearCamera: true });
 
     if (opened.ok) expect(opened.value.supportsExposureLock).toBe(false);
+  });
+});
+
+describe('what the camera says it offers', () => {
+  // Read once when the camera opens and reported, never used to decide what to ask for: browsers
+  // under-report, so a negotiation gated on this list would give a browser that lists nothing no
+  // locks at all. The two tests at the end of the next block are what hold that line.
+  it('reports the modes the track lists, control by control', async () => {
+    // Three different lists on purpose. With one list repeated, an adapter that read
+    // `focusMode` into all three would pass.
+    const track = fakeTrack({ capabilities: {
+      exposureMode: ['continuous', 'manual'],
+      whiteBalanceMode: ['continuous'],
+      focusMode: ['manual', 'single-shot'],
+    } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    expect(camera.offeredModes()).toEqual({
+      exposure: ['continuous', 'manual'],
+      whiteBalance: ['continuous'],
+      focus: ['manual', 'single-shot'],
+    });
+  });
+
+  it('separates a camera that offers only continuous from a browser that said nothing', async () => {
+    // The whole point of asking. "Only continuous" is the camera answering; a missing key is the
+    // browser declining to, and a row that renders them the same way is how a refusal ends up
+    // meaning nothing — which is what sent us guessing at a Pixel twice.
+    const track = fakeTrack({ capabilities: { exposureMode: ['continuous'] } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    expect(camera.offeredModes().exposure).toEqual(['continuous']);
+    expect(camera.offeredModes().focus).toBeNull();
+  });
+
+  it('reports nothing, and still opens, where there is no getCapabilities at all', async () => {
+    // Safari. The camera works; the question about it is what cannot be put.
+    const track = fakeTrack({ omitCapabilitiesApi: true });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+
+    expect(opened.ok).toBe(true);
+    expect(camera.offeredModes())
+      .toEqual({ exposure: null, whiteBalance: null, focus: null });
+  });
+
+  it('survives a getCapabilities that throws, rather than failing the open', async () => {
+    // A working camera reported as unavailable is the worst of the three outcomes: the app is
+    // dead for a device whose only fault is that it would not answer a question asked for a
+    // status line.
+    const track = fakeTrack({ capabilitiesThrow: 'InvalidStateError' });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+
+    expect(opened.ok).toBe(true);
+    if (opened.ok) expect(opened.value.maxWidth).toBe(1920);
+    expect(camera.offeredModes())
+      .toEqual({ exposure: null, whiteBalance: null, focus: null });
+  });
+
+  it('treats a key that is not a list of modes as nothing reported', async () => {
+    // `getCapabilities` is a dictionary the browser fills in as it likes, and a key present with
+    // something else in it says no more about the camera than an absent one does.
+    const track = fakeTrack({ capabilities: { exposureMode: 'manual' } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    expect(camera.offeredModes().exposure).toBeNull();
+  });
+
+  it('says nothing before a camera is open, and again once it closes', async () => {
+    // A list belongs to a track. Left standing after close it would describe a camera that is no
+    // longer running, on the next row rendered.
+    const camera = createCameraAccess(mediaWith(fakeTrack()) as never);
+    expect(camera.offeredModes().exposure).toBeNull();
+
+    await camera.open({ preferRearCamera: true });
+    expect(camera.offeredModes().exposure).toEqual(['continuous', 'manual']);
+
+    await camera.close();
+    expect(camera.offeredModes().exposure).toBeNull();
+  });
+
+  it('replaces the list when another camera is opened', async () => {
+    // Same reason a refusal is not carried across an open: what a camera offers is a fact about
+    // that camera.
+    const first = fakeTrack();
+    const second = fakeTrack({ capabilities: { exposureMode: ['continuous'] } });
+    const camera = createCameraAccess(mediaHanding([first, second]) as never);
+
+    await camera.open({ preferRearCamera: true });
+    await camera.open({ preferRearCamera: true });
+
+    expect(camera.offeredModes().exposure).toEqual(['continuous']);
   });
 });
 
@@ -460,6 +570,47 @@ describe('applying the locks', () => {
 
     expect(locked.ok).toBe(true);
     if (locked.ok) expect(locked.value.exposure).toBe(true);
+  });
+
+  it('asks for a mode the capabilities never advertised', async () => {
+    // Capabilities are an observation, not a gate. Browsers under-report: a device may take a
+    // constraint it never listed, and this camera does exactly that. Skipping what was not
+    // advertised would cost this lock, and would cost every lock on a browser that lists nothing.
+    const track = fakeTrack({ capabilities: { exposureMode: ['continuous'] } });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: true, whiteBalance: false, focus: false });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) expect(locked.value.exposure).toBe(true);
+    expect(JSON.stringify(track.applied)).toContain('"exposureMode":"manual"');
+  });
+
+  it('negotiates unchanged for a camera that reports no capabilities at all', async () => {
+    // The iPhone: no lists to read, and a white balance lock that holds anyway. Asserted as the
+    // whole sequence rather than an outcome, because the regression to guard against is one that
+    // quietly asks for *less* — and a camera that gives its lock on the fallback still gives it
+    // whether or not the first ask happened.
+    const track = fakeTrack({
+      omitCapabilitiesApi: true,
+      refuses: (set) => set.whiteBalanceMode === 'manual',
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const locked = await camera.setLocks({ exposure: false, whiteBalance: true, focus: false });
+
+    expect(locked.ok).toBe(true);
+    if (locked.ok) {
+      expect(locked.value).toEqual({ exposure: false, whiteBalance: true, focus: false });
+    }
+    expect(track.applied).toEqual([
+      { advanced: [{ exposureMode: 'continuous' }] },
+      { advanced: [{ whiteBalanceMode: 'manual' }] },
+      { advanced: [{ whiteBalanceMode: 'single-shot' }] },
+      { advanced: [{ focusMode: 'continuous' }] },
+    ]);
   });
 
   it('refuses when no camera is open, rather than reporting locks it cannot have', async () => {

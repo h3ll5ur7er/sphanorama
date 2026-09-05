@@ -296,6 +296,15 @@ negotiation is fixed — one constraint set per lock rather than all three in on
 offered alongside `manual`, and `single-shot` as a fallback (ADR 0031). Whether it
 now holds on that camera is the next thing a screenshot answers.
 
+And if it still does not, the same screenshot now says what the camera claims to offer: a refusal
+is written against the mode list the track reported, so `exposure refused (offers continuous,
+manual)` — a camera contradicting itself — is legible from `exposure refused (offers continuous)`,
+which is a camera with no lock to give, and from `exposure refused (not reported)`, which is a
+browser that would not answer. Reported only, never used to decide what to ask for: browsers
+under-report, and the iPhone's one working lock cannot be told apart today from a lock that camera
+was simply already sitting in — which is the same collapse, and the second thing that screenshot
+now answers (ADR 0033).
+
 ---
 
 ## Phase 2 — Stitching

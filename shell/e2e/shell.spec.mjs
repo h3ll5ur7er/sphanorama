@@ -307,10 +307,11 @@ test('says why motion is unavailable rather than only that it is', async ({ brow
 });
 
 test('a burst locks the camera when the camera can be locked', async ({ browser }) => {
-  // Chromium's fake device has no manual exposure mode, so the plain capture test exercises the
-  // degraded path — locks unsupported, burst fires anyway. This is the other half (ADR 0022): a
-  // track that *does* offer manual modes, so the locks are asked for, confirmed by reading the
-  // settings back, and the burst arms holding them.
+  // Chromium's fake device lists `manual` for exposure and focus and no whiteBalanceMode at all,
+  // and it *starts* in manual — so it grants those two before anything is asked. This patches in
+  // a track that grants all three and, more to the point, honours the request rather than having
+  // been there already: locks asked for, confirmed by reading the settings back, and the burst
+  // armed holding them (ADR 0022).
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -572,8 +573,10 @@ test('the page says which locks the burst actually got', async ({ page }) => {
   // 1186, 1180, 459, 458, 458 — two frames from one regime and three from another — with nothing
   // on screen to say whether that was the camera hunting or the selection policy.
   //
-  // Chromium's fake camera has no manual modes, which is the interesting case: it is what a
-  // device with nothing locked has to look like.
+  // Chromium's fake camera lists `["manual", "continuous"]` for exposure and for focus, and
+  // nothing for white balance — measured, against the pinned browser this suite runs. So it holds
+  // two of the three, and the row is the two it holds. White balance is not named at all: it was
+  // never asked for, which is a different fact from a refusal and reads differently on purpose.
   const server = await serve();
   try {
     await page.goto(server.appUrl);
@@ -587,7 +590,88 @@ test('the page says which locks the burst actually got', async ({ page }) => {
 
     await page.locator('#capture').click();
     await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
-    await expect(page.locator('#locks')).toContainText(/no manual modes|exposure|focus/i);
+    await expect(page.locator('#locks')).toHaveText('exposure · focus');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a refused lock says what the camera does offer', async ({ page }) => {
+  // The Pixel row — `focus · exposure refused` — and the reason it was worth extending: it says a
+  // lock did not take, and nothing about whether there was one to be had. This camera advertises
+  // three exposure modes and then will not leave continuous, which is a camera contradicting
+  // itself; the alternative reading, a camera with nothing to give, now looks different on screen
+  // (ADR 0033).
+  await page.addInitScript(() => {
+    const settings = MediaStreamTrack.prototype.getSettings;
+    let settled = {};
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return {
+        exposureMode: ['continuous', 'manual', 'single-shot'],
+        focusMode: ['continuous', 'manual'],
+      };
+    };
+    // Whatever is asked, the exposure stays where it is — which is what `applyConstraints`
+    // resolving and the mode not moving looks like from the page (ADR 0022).
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled, exposureMode: 'continuous' };
+    };
+    MediaStreamTrack.prototype.applyConstraints = async function (constraints) {
+      for (const asked of constraints?.advanced ?? []) {
+        if ('exposureMode' in asked) continue;
+        settled = { ...settled, ...asked };
+      }
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await page.locator('#panel-toggle').click();
+
+    await page.locator('#capture').click();
+    await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
+    await expect(page.locator('#locks'))
+      .toHaveText('focus · exposure refused (offers continuous, manual, single-shot)');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a browser that will not say is not reported as a camera with nothing to give', async ({ page }) => {
+  // A browser that answers nothing: `getCapabilities` is optional and a track may simply not have
+  // it. Every lock is then unasked and unheld, which is exactly what a camera with no manual modes
+  // looks like from here — and the row used to say so, out loud, about a camera nobody had
+  // managed to ask (ADR 0033).
+  //
+  // The settings are stubbed as well as the capabilities, and that is the point of the stub
+  // rather than a convenience: Chromium's fake device *starts* in manual and reports so, and a
+  // browser that answers no question about its camera while the camera sits in a mode it was
+  // never asked for is not a device that exists. What is being modelled is a camera adapting
+  // freely and a browser with nothing to say about it, which is the pair this branch is for.
+  await page.addInitScript(() => {
+    delete MediaStreamTrack.prototype.getCapabilities;
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), exposureMode: 'continuous', focusMode: 'continuous' };
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await page.locator('#panel-toggle').click();
+
+    await page.locator('#capture').click();
+    await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
+    await expect(page.locator('#locks')).toHaveText(/does not report/i);
+    await expect(page.locator('#locks')).not.toHaveText(/no manual modes/i);
   } finally {
     await server.close();
   }

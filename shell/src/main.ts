@@ -408,7 +408,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // granted and had nowhere to say it, which left the one question a burst's numbers raise —
       // is the camera free to re-expose and refocus between these frames? — unanswerable from a
       // screenshot.
-      locksOut.textContent = describeLocks(wanted, held);
+      // With what the track said it offers, read off the adapter rather than remembered here: it
+      // belongs to the open camera, and a row explaining this refusal with the last camera's
+      // lists would be worse than one that explained nothing (ADR 0033).
+      locksOut.textContent = describeLocks(wanted, held, camera.offeredModes());
 
       armedNow = await core.captureSession.armBurst(node, {
         frameCount: 5, intervalMs: 80,
