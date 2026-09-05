@@ -1229,6 +1229,12 @@ test('a resume the core refuses says why and still lets a new capture start', as
     await expect(page.locator('#stage')).toContainText('this build cannot read');
     await expect(page.locator('#stage')).not.toContainText('https');
 
+    // And the offer is gone. Nothing this user can press changes which build is running, so an
+    // offer left up is one that fails identically every time (ADR 0039). `enable` had already
+    // hidden it on the way in, so what this pins is that the refusal did not put it back — which
+    // is exactly what the other refusal below does.
+    await expect(page.locator('#resume')).toHaveJSProperty('hidden', true);
+
     // And not stranded: a new sphere from here, on the camera the refused resume already opened.
     await expect(page.locator('#new-capture')).toBeVisible();
     await page.locator('#new-capture').click();
@@ -1244,6 +1250,104 @@ test('a resume the core refuses says why and still lets a new capture start', as
     // fail: `beginSession` folds the panel this button sits in, so it is invisible either way and
     // the assertion passed with nothing hiding it at all.
     await expect(page.locator('#new-capture')).toHaveJSProperty('hidden', true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a resume refused by the tier stays on offer, and goes when a capture starts', async ({ page }) => {
+  // The other half of ADR 0039. A tier mismatch says this tier is not the one those frames went
+  // into, which is not the same as saying they are gone: a session that fell back to a tier of its
+  // own (ADR 0030) says exactly this while its pixels are still on disk, and the next run that
+  // gets the resident pair resumes them. So the offer survives its own refusal here, where it did
+  // not for a document shape this build cannot read.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // A real session document, written by the manager at the cell it just committed, and then one
+    // line of it changed. The shape stays valid — that is the point: this has to refuse at the
+    // tier comparison rather than at the parse, which is the refusal the other test covers.
+    const project = await page.evaluate(async () => {
+      await window.sphanoramaHost.flush();
+      const listed = await window.sphanoramaCore.project.list();
+      const withSession = listed.ok ? listed.value.filter((p) => p.hasSession) : [];
+      return withSession.length === 1 ? withSession[0].id : null;
+    });
+    expect(project).not.toBeNull();
+
+    const rewritten = await page.evaluate(async (id) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('sphanorama', 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const key = `${id}/session`;
+      const document = await new Promise((resolve, reject) => {
+        const request = db.transaction('documents').objectStore('documents').get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      if (typeof document !== 'string' || !/^tier \d+$/m.test(document)) return null;
+      const changed = document.replace(/^tier \d+$/m, 'tier 999999999');
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put(changed, key);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+      return changed;
+    }, project);
+    // Asserted rather than assumed: a document whose tier line this did not find would resume
+    // perfectly well, and every expectation below would then be about the wrong thing.
+    expect(rewritten).toContain('tier 999999999');
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeVisible();
+
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('spill tier', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('try again');
+    // Still there, and pressable. `enable` hid it on the way in and the refusal put it back.
+    await expect(page.locator('#resume')).toBeVisible();
+    await expect(page.locator('#resume')).toBeEnabled();
+
+    // And pressing it again really does try again. The camera the first press opened is still
+    // held, which is the fact that sends the second press straight at the session rather than
+    // back through `enable` — asserted rather than assumed, because the branch is chosen by it.
+    expect(await page.evaluate(() => document.querySelector('video').srcObject !== null)).toBe(true);
+    // Counted from here, because "retries the session rather than the enabling" is a claim about
+    // what the second press does *not* do. Both branches end at the same refusal on screen, so
+    // the only thing that tells them apart is whether the camera was asked for a second time.
+    await page.evaluate(() => {
+      window.__cameraOpens = 0;
+      const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = (...args) => {
+        window.__cameraOpens += 1;
+        return real(...args);
+      };
+    });
+    // The stage is cleared first because the second refusal reads exactly like the first, so an
+    // assertion on that sentence would pass against a button whose handler did nothing at all.
+    await page.evaluate(() => { document.getElementById('stage').textContent = 'cleared'; });
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('spill tier', { timeout: 15000 });
+    expect(await page.evaluate(() => window.__cameraOpens)).toBe(0);
+
+    // Until something starts. A live offer beside a running capture is a second render loop over
+    // the same session one press away, which is the invariant `pump` holds for both buttons.
+    await expect(page.locator('#new-capture')).toBeVisible();
+    await page.locator('#new-capture').click();
+    await expect(page.locator('#stage')).toContainText(/capturing.*cells planned/,
+                                                       { timeout: 15000 });
+    await expect(page.locator('#resume')).toHaveJSProperty('hidden', true);
   } finally {
     await server.close();
   }

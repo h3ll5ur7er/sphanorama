@@ -47,26 +47,66 @@ describe('resumableProject', () => {
 });
 
 describe('describeResumeRefusal', () => {
+  const unreadable = {
+    code: 'Unsupported' as const,
+    component: 'CaptureSessionManager',
+    detail: "this project's session document is from a shape this build cannot read",
+  };
+  const wrongTier = {
+    code: 'FailedPrecondition' as const,
+    component: 'CaptureSessionManager',
+    detail: "this project's session was captured into a spill tier this device no longer holds",
+  };
+
   it('says what the core said rather than a sentence about https', () => {
     // `Unsupported` is the core's word for "this build does not read that shape" and the camera
     // adapter's word for "this page is not on a secure origin". A refusal rewritten into the
     // second would send someone after a certificate for a document that simply cannot be parsed.
-    const message = describeResumeRefusal({
-      code: 'Unsupported',
-      component: 'CaptureSessionManager',
-      detail: "this project's session document is from a shape this build cannot read",
-    });
+    const { message } = describeResumeRefusal(unreadable);
     expect(message).toContain('shape this build cannot read');
     expect(message).not.toMatch(/https/i);
   });
 
   it('names the resume, so the reason is not read as a failure of whatever comes next', () => {
-    const message = describeResumeRefusal({
+    const { message } = describeResumeRefusal({
       code: 'FrameStoreExhausted', component: 'MemoryFrameStoreAccess', detail: 'no room',
     });
     expect(message).toMatch(/resume/i);
     // And still the sentence the shell already gives that code, rather than a second wording of
     // it that would drift from the first.
     expect(message).toMatch(/memory for frames/i);
+  });
+
+  it('keeps the offer up for a refusal another attempt could clear', () => {
+    // A tier mismatch is a statement about *this* tier rather than about those frames: a session
+    // that could not take the resident pair and fell back to a tier of its own (ADR 0030) says
+    // exactly this while its pixels are still on disk. Withdrawing the offer would make a device
+    // that is momentarily wrong look like a capture that is gone.
+    const refusal = describeResumeRefusal(wrongTier);
+    expect(refusal.offerAgain).toBe(true);
+    expect(refusal.message).toMatch(/try again/i);
+  });
+
+  it('takes the offer down for a refusal only a new build can change', () => {
+    // Nothing the user can do in this tab reads a document shape this build does not know, so an
+    // offer left up is one that fails identically every time it is pressed. It is withdrawn for
+    // this tab and no longer, which is the whole reason the page decides it rather than the core:
+    // a remembered refusal that outlived the build would suppress the offer in the one version
+    // that could finally honour it.
+    const refusal = describeResumeRefusal(unreadable);
+    expect(refusal.offerAgain).toBe(false);
+    expect(refusal.message).not.toMatch(/try again/i);
+    // And says the capture is still there. `Resume` keeps the document it cannot parse, so the
+    // sentence that ends the offer must not read as "your sphere was thrown away".
+    expect(refusal.message).toMatch(/kept/i);
+  });
+
+  it('reads the code rather than the component to decide whether pressing again helps', () => {
+    // The camera adapter's `Unsupported` is the secure-origin one, which a second press does not
+    // fix either — the origin is the page's own. Classifying by component would make this the
+    // exception, and the exception would be wrong.
+    expect(describeResumeRefusal({
+      code: 'Unsupported', component: 'CameraAccess', detail: 'insecure origin',
+    }).offerAgain).toBe(false);
   });
 });

@@ -275,15 +275,31 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   `Resume`, which refuses a document that names another one and keeps it (ADR 0035). A host with no
   spill tier at all answers zero, which is a token like any other and matches the documents written
   against it, so a desktop and a browser without OPFS still resume what they can.
-- **What a refused resume should do to the offer.** ADR 0035 expected that when the page's resume
-  flow arrived, what it would need was "a project that stops being offered rather than a document
-  that has been destroyed". The flow landed alongside it and does neither: it offers, refuses, and
-  says why, leaving a new capture one press away. That may well be right — a mismatch is a
-  statement about *this* tier, and a session that fell back to a tier of its own says exactly that
-  about a resident tier still holding its frames, so the same document can resume on the next run
-  that gets the resident pair. But the two ADRs were written in parallel and never reconciled on
-  it, so it is an open question rather than a settled one: should a refusal that is *not* about the
-  tier — a document shape this build cannot read — stop the offer, while a tier mismatch leaves it?
+- **What a refused resume does to the offer — settled.** ADR 0035 expected that when the page's
+  resume flow arrived, what it would need was "a project that stops being offered rather than a
+  document that has been destroyed". The flow landed alongside it and did neither, and the two ADRs
+  were never reconciled on it. They are now, and the answer is close to 0035's instinct but scoped
+  differently (ADR 0039): the offer survives every refusal except `Unsupported`, and the withdrawal
+  lives in the tab that saw it rather than anywhere durable.
+
+  The split is between a refusal about *this attempt* and one about *this build*. A tier this
+  device does not currently hold, a store that would not take the frames back, a camera another tab
+  is using — those can answer differently on the next press, and a capture still on disk must not
+  be made to look gone. `Unsupported` is the core's word for "this build does not read that", and
+  no press changes which build is running, so the offer goes rather than inviting a press that
+  fails identically every time.
+
+  What makes it a decision rather than a detail is the second half. Writing the refusal down is the
+  obvious implementation and it is wrong in exactly the case it exists for: the only thing that
+  turns an unreadable document into a readable one is a new version of the app, and a flag in
+  `localStorage` or in the project store would survive the update and suppress the offer in the
+  first build able to honour it. Held in the DOM it cannot — the tab is gone by then and the offer
+  is rebuilt from `hasSession`. The price is that a permanently unreadable document is offered once
+  per load, which costs a document read and a sentence and can neither start a capture nor lose
+  data. Two consequences came with it: `pump` now hides the resume offer as well as the fresh-start
+  button, since the page can reach a state with both live and either would start a render loop; and
+  a second press retries the session rather than the enabling, because by then the camera is open
+  and the gesture that opened it is spent.
 - **A cap on candidates per cell.** Found on the iPhone, and the numbers are exact. Motion was
   unavailable there, so guidance never advanced and five bursts landed on one cell: 25 candidates
   of 1280×960×4 = 123 MB, against a ceiling of 128 MB — Safari does not report
