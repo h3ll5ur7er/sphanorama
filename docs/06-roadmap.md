@@ -247,7 +247,10 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   would use something else. `GetSelection` closes it, and the panel now keeps nothing of its own:
   a zero candidate is the core's answer for "nobody has chosen here", which is a success rather
   than a `NotFound`, because a client that folded the two together would make a project it cannot
-  read look like one nobody has edited (ADR 0040).
+  read look like one nobody has edited (ADR 0040). The strip keeps that distinction rather than
+  spending it: a cell whose recorded pick could not be read shows its candidates with *none* of
+  them claimed to be in force, and says so, because offering the ranking's pick there would be the
+  screen disagreeing with the build without a word anywhere.
 
 **Exit:** a full 360×180 capture on a mid-range Android and an iPhone completes without an OOM,
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
