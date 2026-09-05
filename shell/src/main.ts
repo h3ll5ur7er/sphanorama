@@ -265,7 +265,7 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
  * With `resume` set the project already exists and so does its session: the manager reads what it
  * wrote, replans from the spec and lens the document carries, and hands the frames it names back
  * to the store (ADR 0029). Nothing is created, and in particular no `begin` — that would empty
- * the spill tier holding the very frames being come back for (ADR 0034).
+ * the spill tier holding the very frames the resume is reaching for (ADR 0034).
  */
 async function beginSession(core: SphanoramaCore, motionRunning: boolean,
                             resume: ProjectId | null) {
@@ -683,9 +683,9 @@ async function main() {
       sphanoramaCapture: () =>
         (targetNode === null ? undefined : captureCell?.(targetNode)) ?? Promise.resolve(false),
     });
-    // Asked before anything is offered, and answered without touching the camera: a session that
-    // can be come back to is a fact about a project, and finding it out by *trying* would start
-    // the very capture the user has not chosen yet (ADR 0036).
+    // Asked before anything is offered, and answered without touching the camera: whether a
+    // project has a session to return to is a fact about the project, and finding it out by
+    // *trying* would start the very capture the user has not chosen yet (ADR 0036).
     const resume = resumableProject(await reportFacade(core));
     resumeButton.hidden = resume === null;
     stage.textContent = resume === null
