@@ -284,17 +284,22 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   that gets the resident pair. But the two ADRs were written in parallel and never reconciled on
   it, so it is an open question rather than a settled one: should a refusal that is *not* about the
   tier — a document shape this build cannot read — stop the offer, while a tier mismatch leaves it?
-- **A cap on candidates per cell.** Found on the iPhone, and the numbers are exact. Motion was
-  unavailable there, so guidance never advanced and five bursts landed on one cell: 25 candidates
-  of 1280×960×4 = 123 MB, against a ceiling of 128 MB — Safari does not report
+- **A cap on candidates per cell — done.** Found on the iPhone, and the numbers were exact. Motion
+  was unavailable there, so guidance never advanced and five bursts landed on one cell: 25
+  candidates of 1280×960×4 = 123 MB, against a ceiling of 128 MB — Safari does not report
   `navigator.deviceMemory`, so the store takes the stated fallback (ADR 0023). Ranking is what
-  tips it over, because scoring a cell reads every candidate's pixels and faults the whole
+  tipped it over, because scoring a cell reads every candidate's pixels and faults the whole
   accumulated set back into the heap at once. Cooling had done its job; the set simply came back.
 
-  The Pixel never reached it because each cell got exactly one burst. It is reachable there too,
-  by retaking a cell enough times. The fix is a policy question rather than a bug — keep the best
-  N after each ranking, or rank incrementally — so it wants deciding rather than patching, and it
-  needs an ADR either way.
+  A cell now keeps the best eight and forgets the frames of the rest, so a retake competes without
+  the ranking growing with it: eight kept plus a burst of five is thirteen frames, 64 MB on that
+  phone, half its ceiling (ADR 0037). A frame the caller offered is never forgotten — it is theirs,
+  and they still hold the handle — so a cell can still exceed the cap by being offered more frames
+  than it, which is the caller's arithmetic to do.
+
+  The number is stated rather than derived from the store's own ceiling, which is the weaker half
+  of the decision and is argued in the ADR: what would change it is a device where thirteen frames
+  is too many, and the arithmetic to redo it sits beside the constant.
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.

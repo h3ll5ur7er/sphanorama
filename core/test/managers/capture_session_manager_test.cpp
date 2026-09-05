@@ -1152,6 +1152,158 @@ TEST_F(CaptureSession, ASessionCanBeBegunAgainAfterEnding) {
 
 // ------------------------------------------------------------------- under memory pressure
 //
+// Ranks by identity, newest first, whatever order the cell happens to be in.
+//
+// `ReversedQualityEngine` reverses the *current* vector, so a candidate's place oscillates as the
+// cell is reordered — an offered frame sank to the back after one burst and came back to the
+// middle after the next. That is fine for asserting that ranking happened and useless for
+// asserting what a trim reaches for, which needs a candidate to stay at the bottom.
+class NewestFirstQualityEngine final : public IFrameQualityEngine {
+ public:
+  Result<QualityScore> Score(const FrameRef&, const PoseSample&, const NodeContext&) override {
+    return Ok(QualityScore{});
+  }
+
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate> candidates,
+                                        const SelectionPolicy&) override {
+    std::vector<CandidateId> ranked;
+    ranked.reserve(candidates.size());
+    for (const Candidate& candidate : candidates) ranked.push_back(candidate.id);
+    std::sort(ranked.begin(), ranked.end(), [](CandidateId a, CandidateId b) {
+      return a.value > b.value;
+    });
+    return Ok(std::move(ranked));
+  }
+};
+
+// A cell that keeps every frame ever shot at it is a cell that cannot be ranked: scoring reads
+// every candidate's pixels, so ranking faults the whole accumulated set back into the heap at
+// once. On an iPhone that arrived as 25 candidates of 1280x960x4 — 123 MB against a 128 MB
+// ceiling — after five bursts landed on one cell.
+class CaptureSessionRetakes : public CaptureSession {
+ protected:
+  // Newest first, by identity rather than by position, so a candidate that ranks last stays
+  // last however often the cell is reordered. Which frames a trim keeps and which it reaches for
+  // is then a fact the test can state.
+  NewestFirstQualityEngine newestFirst;
+
+  std::unique_ptr<CaptureSessionManager> Rebuilt() {
+    return std::make_unique<CaptureSessionManager>(planner, pose, newestFirst, *camera, *sensor,
+                                                   *store, *projects, clock);
+  }
+};
+
+TEST_F(CaptureSessionRetakes, ACellStopsGrowingOnceItHasEnoughToChooseFrom) {
+  // Retakes are the point of the feature, so they accumulate into the same cell and the best of
+  // everything shot wins. What they must not do is accumulate without end.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  for (int retake = 0; retake < 4; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  // The property rather than the number. What the cap is set to is the manager's business and
+  // asserting the constant back at it would prove only that the constant is the constant; what
+  // has to hold is that twenty frames shot at one cell do not all stay in it.
+  EXPECT_LT(kept.value.size(), 20u) << "twenty frames were shot at one cell and it kept them all";
+  EXPECT_GE(kept.value.size(), 5u) << "a cell has to keep enough of a burst to choose from";
+
+  // And stops there: two more retakes must not move it, or the bound is a slower growth rather
+  // than a bound.
+  const size_t settled = kept.value.size();
+  for (int retake = 0; retake < 2; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "later retake " << retake;
+  }
+  EXPECT_EQ(manager->Candidates(node).value.size(), settled);
+}
+
+TEST_F(CaptureSessionRetakes, WhatACellStopsKeepingItAlsoStopsHolding) {
+  // The half that matters. Dropping a candidate from the vector and leaving its frame in the
+  // store would bound the paperwork and not the memory, which is the entire complaint: the
+  // pixels are what the ranking faults back in.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  const std::vector<Candidate> first = manager->Candidates(node).value;
+  ASSERT_EQ(first.size(), 5u);
+
+  // Every frame of the next burst outranks every frame of this one, so these are the ones
+  // that go.
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok());
+  ASSERT_LT(kept.value.size(), 10u) << "ten frames, and the cell dropped none of them";
+
+  int forgotten = 0;
+  for (const Candidate& was : first) {
+    const bool still = std::any_of(kept.value.begin(), kept.value.end(),
+                                   [&was](const Candidate& now) {
+                                     return now.id.value == was.id.value;
+                                   });
+    if (still) continue;
+    ++forgotten;
+    EXPECT_EQ(store->ResidencyOf(was.frame).status.code, StatusCode::NotFound)
+        << "candidate " << was.id.value << " left the cell but its frame stayed in the store";
+  }
+  EXPECT_EQ(static_cast<size_t>(forgotten), 10 - kept.value.size())
+      << "every candidate that left the cell should have been counted here";
+  EXPECT_GT(forgotten, 0) << "the arrangement dropped nothing, so it asserted nothing";
+}
+
+TEST_F(CaptureSessionRetakes, ABurstOnItsOwnIsLeftAlone) {
+  // The cap is a ceiling, not a quota. A cell that has been shot once holds what it was shot.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+
+  EXPECT_EQ(manager->Candidates(node).value.size(), 5u);
+}
+
+TEST_F(CaptureSessionRetakes, AFrameSomebodyElseOwnsIsNeverTrimmed) {
+  // `Cool` already refuses to touch an offered frame, because changing the residency of a
+  // borrowed handle is a surprise the borrower cannot expect. Forgetting one outright is the
+  // same mistake with nothing left to recover — the caller still holds the handle, and the
+  // bytes under it would be gone.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_EQ(manager->OfferFrame(node, imported.value, PoseSample{}).value, FrameVerdict::Accepted);
+
+  // Offered first, so it has the lowest identity and every burst frame outranks it for good.
+  // It sits at the bottom of the cell, which is exactly where a trim reaches — and the only
+  // thing that saves it is that this manager did not take it.
+  BurstSpec burst;
+  burst.frameCount = 5;
+  for (int retake = 0; retake < 3; ++retake) {
+    ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok()) << "retake " << retake;
+  }
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok());
+  EXPECT_TRUE(std::any_of(kept.value.begin(), kept.value.end(), [&](const Candidate& candidate) {
+    return candidate.frame.id.value == imported.value.id.value;
+  })) << "the offered frame was trimmed out of the cell";
+  EXPECT_TRUE(store->ResidencyOf(imported.value).ok())
+      << "the caller's frame was forgotten out from under it";
+}
+
 // A sphere of bursts does not fit in a phone's frame store — that is the premise the whole spill
 // tier exists for, and the fixture above cannot reach it: its ceiling holds a thousand of the
 // fake camera's tiny frames and its store has nowhere to spill to. This one has a sink and a

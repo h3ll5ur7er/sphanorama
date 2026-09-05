@@ -41,3 +41,4 @@ and the alternative we rejected and why.
 | [0034](0034-a-new-capture-empties-the-tier-a-resumed-one-does-not.md) | A new capture empties the spill tier; a resumed one does not |
 | [0035](0035-the-tier-says-which-capture-it-is-holding.md) | The spill tier carries a token saying which capture it holds; the session document records it and `Resume` refuses a document that names another |
 | [0036](0036-a-resumable-capture-is-visible-in-the-project-listing.md) | `ProjectSummary` carries `hasSession`, so the page can offer a resume without attempting one |
+| [0037](0037-a-cell-keeps-only-what-it-can-still-rank.md) | A cell keeps the best eight candidates and forgets the rest, because ranking faults the whole cell back into the heap |

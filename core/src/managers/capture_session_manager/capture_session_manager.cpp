@@ -231,6 +231,22 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
 // once — a cell with two entries carrying the same id has two frames as far as everything
 // downstream can tell, so the strip would show both in force and cooling and forgetting would
 // each run twice over one frame.
+// How many candidates a cell is worth keeping, and the reason it is a number at all.
+//
+// Ranking reads every candidate's pixels, so it faults the whole of a cell back into the heap at
+// once — cooling gives the bytes back and the next ranking takes them again. A cell that grows
+// with every retake therefore has a ranking that grows with it, and on an iPhone that arrived as
+// 25 candidates of 1280x960x4: 123 MB against the 128 MB the store falls back to when Safari
+// declines to report `navigator.deviceMemory` (ADR 0023). Cooling had done its job. The set
+// simply came back.
+//
+// The peak is what is kept plus the burst being ranked into it. At eight and a default burst of
+// five that is thirteen frames — 64 MB on that same phone, half the ceiling, with the rest left
+// for the preview frame the page keeps resident and the one being scored. Eight also leaves a
+// retake genuinely competing rather than merely replacing: five new frames ranked against eight
+// kept can win some places without taking all of them (ADR 0037).
+constexpr size_t kMostCandidatesPerCell = 8;
+
 void Reorder(std::vector<Candidate>& cell, const std::vector<CandidateId>& order) {
   std::vector<Candidate> ranked;
   ranked.reserve(cell.size());
@@ -770,6 +786,36 @@ void CaptureSessionManager::Cool(const std::vector<Candidate>& candidates) {
   }
 }
 
+void CaptureSessionManager::Trim(std::vector<Candidate>& cell) {
+  if (cell.size() <= kMostCandidatesPerCell) return;
+
+  // Best-first by the time this runs, so the surplus is the tail. Walked rather than truncated,
+  // because what may go is not simply "everything past the cut": an offered frame belongs to the
+  // caller, who still holds the handle, and forgetting it would take the bytes out from under
+  // somebody who has every right to read them. `Cool` declines to change their residency for the
+  // same reason; this declines to end them.
+  //
+  // So a cell can still exceed the cap, by being offered more frames than it. That is the
+  // caller's arithmetic to do — it allocated them and it owns them — and a manager that deleted
+  // them to keep its own number tidy would be answering a question nobody asked it.
+  std::vector<Candidate> kept;
+  kept.reserve(cell.size());
+  for (Candidate& candidate : cell) {
+    const bool ours = burst_owned_.count(candidate.id.value) != 0;
+    if (kept.size() < kMostCandidatesPerCell || !ours) {
+      kept.push_back(candidate);
+      continue;
+    }
+    // Forgotten rather than cooled: a candidate nothing will rank again is not evidence, and
+    // leaving it spilled would bound the cell and not the disk. Not reported, for the reason
+    // every cleanup here is not — the cell is captured, and a store that will not let go of a
+    // frame is a diagnostic about the store rather than about this capture.
+    (void)frames_.Forget(candidate.frame);
+    burst_owned_.erase(candidate.id.value);
+  }
+  cell.swap(kept);
+}
+
 Result<bool> CaptureSessionManager::AdvanceBurst() {
   const int64_t now = clock_.MonotonicNs();
   // One deadline for both waits, because from here they are the same question: the settle set it
@@ -842,6 +888,11 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // and cooling them is now its business. Disarm is what does it, on this path and every other.
   for (const auto& taken : pending_) burst_owned_.insert(taken.id.value);
 
+  // After the ownership above, which is what tells a trim which frames are its to end. A cell
+  // that kept every retake would have a ranking that grows with it, and ranking is what faults
+  // the whole set back into the heap (ADR 0037).
+  Trim(cell);
+
   // Committed, so the rollback is off the table: Disarm keeps the frames and only unlocks. If the
   // unlock fails the cell is still captured and the caller is told anyway, because a camera left
   // locked is not something to discover later.
@@ -885,6 +936,9 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
     return ranked.status;
   }
   Reorder(cell, ranked.value);
+  // An offer can push a burst's frame below the cut, so the cell is trimmed here too. The frame
+  // just offered is not this manager's to end and Trim knows it.
+  Trim(cell);
   return Ok(FrameVerdict::Accepted);
 }
 
