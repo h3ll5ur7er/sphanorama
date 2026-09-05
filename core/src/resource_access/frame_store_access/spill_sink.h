@@ -35,6 +35,19 @@ class ISpillSink {
   // Idempotent. The store calls it when a spilled frame is forgotten, and a sink that has already
   // lost the frame has nothing to report — the outcome the caller wanted is the outcome it has.
   virtual Status Drop(uint64_t frame) = 0;
+
+  // Drops everything, without being told what everything is.
+  //
+  // The fourth call, and it does not break the no-listing rule above: the store still never asks
+  // what is down here, it says that none of it is wanted any more. A listing would be the other
+  // thing — the sink telling the store what it holds — and that is what would make the store's
+  // map the second copy of a truth the sink already had.
+  //
+  // It exists because a sink outlives the process that filled it (ADR 0030) while frame
+  // identities restart at 1 in the next one, so the identities the store is about to issue are
+  // already taken down here. Dropping them one at a time is not open to a store that has just
+  // started and knows of no frames at all.
+  virtual Status Clear() = 0;
 };
 
 }  // namespace sphanorama

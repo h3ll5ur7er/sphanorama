@@ -39,4 +39,14 @@ Status FakeSpillSink::Drop(uint64_t frame) {
   return Status::Ok();
 }
 
+Status FakeSpillSink::Clear() {
+  // Refused before the erase, for the same reason Drop is: the store's answer to a tier that will
+  // not let go is to keep its entries, and a fake that emptied itself anyway would make the
+  // store's refusal path untestable — every assertion after it would pass for the wrong reason.
+  if (fail_clears_) return Fail(StatusCode::Internal, kComponent, "the handle would not empty");
+  ++clears_;
+  held_.clear();
+  return Status::Ok();
+}
+
 }  // namespace sphanorama

@@ -283,6 +283,30 @@ Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
   return Status::Ok();
 }
 
+Status MemoryFrameStoreAccess::Clear() {
+  // Both refusals come before anything is dropped, so a refused clear is a clear that did not
+  // happen rather than one that got halfway. The caller's next move — Begin declining to start a
+  // session — is only safe if "refused" and "unchanged" are the same state.
+  for (const auto& held : entries_) {
+    if (held.second.pins > 0) {
+      return Fail(StatusCode::FailedPrecondition, kComponent,
+                  "a frame is still pinned; the mapping Pin promised outlives this call");
+    }
+  }
+  if (spill_ != nullptr) {
+    // Asked of the sink even when this store has spilled nothing, which is the whole point: the
+    // frames that make a clear necessary belong to a process that is gone, and this store has
+    // never heard of them. A sink that has nothing to drop reports success.
+    if (auto cleared = spill_->Clear(); !cleared.ok()) return cleared;
+  }
+  entries_.clear();
+  heap_used_ = 0;
+  spilled_ = 0;
+  // next_id_ deliberately stays where it is; see the contract.
+  spill_refusal_.reset();
+  return Status::Ok();
+}
+
 Status MemoryFrameStoreAccess::Forget(const FrameRef& frame) {
   Entry* entry = Find(frame);
   if (entry == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such frame");
