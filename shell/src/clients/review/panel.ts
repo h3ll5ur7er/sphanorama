@@ -245,12 +245,19 @@ export function createReviewPanel(
           // refused — and what the strip shows is what the build will use, rather than a second
           // copy of it kept on this side that a reload would forget.
           //
-          // Re-opened so the strip shows what is now in force — but only while this strip is
-          // still the one on screen. SetSelection crosses the worker too, so the user can have
-          // opened another cell in the meantime, and re-opening then hauls them back: `opened` is
-          // set before the await inside open(), so the map's pressed dot moves the instant the
-          // late refresh starts, before any answer has even come back for it.
-          if (ticket !== latest) return;
+          // Re-opened so the strip shows what is now in force — but only while this cell is still
+          // the one on screen. SetSelection crosses the worker too, so the user can have opened
+          // another cell in the meantime, and re-opening then would haul them back.
+          //
+          // `opened` rather than the ticket, and the difference is not pedantic. A ticket belongs
+          // to one *render*, and two quick picks both carry the render they were drawn in: the
+          // first write to land refreshes and bumps the ticket, and the second then finds its own
+          // stale and returns — leaving the strip showing the earlier pick while the core holds
+          // the later one. That is the screen disagreeing with the build, which is the failure
+          // this whole read-back exists to end. What a write needs to know is whether its cell is
+          // still on screen, and `opened` is that question; the ticket inside `open` still settles
+          // which of two refreshes paints.
+          if (opened !== node) return;
           await open(node);
         })();
       });

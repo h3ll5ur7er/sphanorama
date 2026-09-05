@@ -59,6 +59,13 @@ setting a pick does not read and rewrite its neighbours.
   asks the core; a write that never landed leaves the previous answer standing without the client
   having to know it was refused. The branch that used to record only on success is gone, along with
   the map it wrote to.
+- **That refresh is gated on the cell being open, not on the render it was clicked in.** A ticket
+  belongs to one render, and two quick picks both carry the render they were drawn in: the first
+  write to land refreshes and bumps the ticket, and the second finds its own stale and returns —
+  leaving the strip showing the earlier pick while the core holds the later one, which is precisely
+  the disagreement this ADR exists to end. What a write needs to know is whether its cell is still
+  on screen. The ticket inside `open` still settles which of two refreshes paints; the two guards
+  answer different questions and both are needed.
 - **One more round trip per cell opened**, issued alongside the candidate list rather than after it,
   so it costs a `Promise.all` rather than a second wait. Against ~71 µs for a facade call
   (ADR 0019) and the eight preview reads the same open already makes, it is not a number worth

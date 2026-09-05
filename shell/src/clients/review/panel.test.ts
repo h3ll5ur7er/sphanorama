@@ -83,7 +83,7 @@ function deferredCore() {
   const recorded = new Map<number, number>();
   let writesLand = true;
   let selectionReadable = true;
-  let recording: (() => void) | null = null;
+  const writes: Array<() => void> = [];
   const core: ReviewCore = {
     candidates: (node: NodeId) => new Promise((resolve) => {
       const staged = queued.get(node as number);
@@ -106,12 +106,12 @@ function deferredCore() {
         else resolve(answer);
       }),
     setSelection: (node: NodeId, candidate: CandidateId) => new Promise((resolve) => {
-      recording = () => {
+      writes.push(() => {
         // The core is what remembers, which is the whole point of the change: the panel keeps no
         // copy, so a write that never lands leaves the previous answer standing.
         if (writesLand) recorded.set(node as number, candidate as number);
         resolve({ ok: writesLand });
-      };
+      });
     }),
     selection: (node: NodeId) => Promise.resolve(
       selectionReadable
@@ -141,11 +141,12 @@ function deferredCore() {
       pending.delete(node);
       release(candidates);
     },
-    /** Lets the in-flight SetSelection through, and waits for what it set off to settle. */
+    /** How many writes are waiting to be let through. */
+    writesInFlight() { return writes.length; },
+    /** Lets the oldest in-flight SetSelection through, and waits for what it set off to settle. */
     async recorded() {
-      if (recording === null) throw new Error('no selection is in flight');
-      const release = recording;
-      recording = null;
+      const release = writes.shift();
+      if (release === undefined) throw new Error('no selection is in flight');
       release();
       // Enough turns for the click handler to resume and for the open() it may then await to run
       // its own continuation.
@@ -456,6 +457,45 @@ describe('opening a cell', () => {
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['true', 'false']);
+  });
+
+  it('shows the later of two quick picks, not whichever refresh ran first', async () => {
+    // Both clicks come from one render, so both carry that render's ticket. The first write to
+    // land refreshes the strip and bumps the ticket; the second then finds its own ticket stale
+    // and returns without refreshing — leaving the strip showing the earlier pick while the core
+    // holds the later one. The screen and the build disagree, which is the exact failure this
+    // whole change was made to end.
+    //
+    // The ticket is the wrong question here. It guards *this render* against a late answer for a
+    // different one; what a write needs to know is whether the cell is still on screen.
+    const { core, answer, recorded, writesInFlight } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const opening = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await opening;
+
+    const buttons = () => [...ui.strip.querySelectorAll('button')];
+    const pressedIndex = () =>
+      buttons().findIndex((button) => button.getAttribute('aria-pressed') === 'true');
+
+    // Two picks from the same strip, in flight together: the second one is what the user meant.
+    buttons()[1].click();
+    buttons()[0].click();
+    expect(writesInFlight()).toBe(2);
+
+    // Released one at a time, and settled in between. Releasing both at once would let the
+    // second write land before the first refresh read anything, and the assertion would pass
+    // against the bug.
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await recorded();
+
+    expect(pressedIndex()).toBe(0);
   });
 
   it('still draws the cell you asked for when the replies are in order', async () => {
