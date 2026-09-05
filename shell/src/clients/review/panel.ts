@@ -58,19 +58,6 @@ export interface ReviewCore {
 export type PaintPreview = (canvas: HTMLCanvasElement, preview: FramePreview) => void;
 
 /**
- * The real painter: RGBA8 straight into an `ImageData` and onto the canvas.
- *
- * No decode step anywhere, which is why the core hands back raw pixels rather than an encoded
- * image — there is no codec on this path and adding one to draw a thumbnail would be a lot of
- * bytes of JavaScript to save a few hundred kilobytes of transfer (ADR 0038).
- *
- * The pixels are copied into a clamped array rather than viewed through one. A view would be free
- * and it is not available: `ImageData` will not take a buffer that might be shared, and the
- * decoded bytes are a subarray of whatever buffer the response arrived in — an ordinary one
- * today, a `SharedArrayBuffer` in the threaded build (ADR 0011). At a long edge of 128 the copy
- * is 48 KB, which is the size the reduction was chosen to make not worth optimising.
- */
-/**
  * Whether a preview's pixels are the shape its dimensions claim.
  *
  * `ImageData` throws on a mismatch, and a throw here would take the rest of the strip with it —
@@ -90,6 +77,19 @@ export function previewIsDrawable(preview: FramePreview): boolean {
     && preview.pixels.length === preview.width * preview.height * 4;
 }
 
+/**
+ * The real painter: RGBA8 straight into an `ImageData` and onto the canvas.
+ *
+ * No decode step anywhere, which is why the core hands back raw pixels rather than an encoded
+ * image — there is no codec on this path and adding one to draw a thumbnail would be a lot of
+ * bytes of JavaScript to save a few hundred kilobytes of transfer (ADR 0038).
+ *
+ * The pixels are copied into a clamped array rather than viewed through one. A view would be free
+ * and it is not available: `ImageData` will not take a buffer that might be shared, and the
+ * decoded bytes are a subarray of whatever buffer the response arrived in — an ordinary one
+ * today, a `SharedArrayBuffer` in the threaded build (ADR 0011). At a long edge of 128 the copy
+ * is 48 KB, which is the size the reduction was chosen to make not worth optimising.
+ */
 export const paintPreviewOnCanvas: PaintPreview = (canvas, preview) => {
   // Before the context, so that a preview which could never be drawn says so rather than being
   // reported as a canvas this browser would not give one for. They are different problems and
@@ -139,9 +139,13 @@ export function createReviewPanel(
   // The open cell's previews, so that recording a pick does not read its pixels again. Refreshing
   // the strip re-opens the cell, and every preview it asks for again faults a spilled frame back
   // into the heap and sends it away afterwards — around 350 ms of file work for a cell of eight,
-  // to redraw pictures the page is already holding. Dropped the moment another cell is opened:
+  // to redraw pictures the page is already holding.
+  //
+  // Bounded two ways, because one is not enough. It is dropped when another cell is opened —
   // holding every cell's thumbnails would be the review client's own version of the memory
-  // problem the reduction exists to solve.
+  // problem the reduction exists to solve — and pruned to the strip on every open, because a
+  // retake gives *this* cell new identities and the ones it replaced would otherwise be held for
+  // as long as the user stayed on it.
   let previewsFor: NodeId | null = null;
   const previews = new Map<CandidateId, FramePreview>();
 
@@ -197,6 +201,13 @@ export function createReviewPanel(
     }
 
     const entries = candidateStrip(answered.value, chosen.get(node) ?? null);
+    // Pruned to what the strip is about to show. Clearing on a *change* of cell is not enough on
+    // its own: a retake gives this same cell new identities and the old ones never come back, so
+    // their pictures would be held for as long as the user stays here — 48 KB each, growing with
+    // every retake, in the client whose whole reason for reducing was to stop holding frames.
+    for (const candidate of previews.keys()) {
+      if (!entries.some((entry) => entry.candidate === candidate)) previews.delete(candidate);
+    }
     elements.stripHeading.textContent = entries.length === 0
       ? 'Nothing captured here yet.'
       : `${entries.length} candidate${entries.length === 1 ? '' : 's'}, best first.`;

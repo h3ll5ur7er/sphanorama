@@ -285,5 +285,28 @@ TEST_F(FramePreviewEngine, AFrameThinnerThanOneBlockIsNotReadPastItsEdge) {
   }
 }
 
+TEST_F(FramePreviewEngine, AHandleWhoseStrideIsLessThanARowIsRefused) {
+  // The span check compares `stride * height` against the bytes that arrived, and a handle that
+  // understates its stride slips underneath it: the product is small, the check passes, and the
+  // reads still index by `x * 4` across the full width. A frame claiming a 64-pixel row in a
+  // 4-byte stride passes a 32-byte requirement and then reads 283 bytes into a 256-byte
+  // allocation.
+  //
+  // A stride is bytes-per-row and cannot be less than a row. Saying so is what closes it, and it
+  // is worth closing rather than making the arithmetic cleverer: a `FrameRef` is a plain value a
+  // caller passes in, and after a reload it comes from a document that could say anything.
+  const FrameRef real = Flat(8, 8, Rgb{10, 20, 30});
+
+  FrameRef lying = real;
+  lying.width = 64;      // four rows' worth of pixels claimed
+  lying.stride = 4;      // in one pixel's worth of bytes
+  auto refused = engine.Reduce(lying, 8);
+  EXPECT_FALSE(refused.ok()) << "a handle that understates its stride was believed";
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+
+  // And the honest handle still reduces, so this cannot pass by refusing everything.
+  EXPECT_TRUE(engine.Reduce(real, 8).ok());
+}
+
 }  // namespace
 }  // namespace sphanorama

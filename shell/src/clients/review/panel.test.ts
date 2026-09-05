@@ -328,6 +328,35 @@ describe('opening a cell', () => {
     expect(previewCalls.map((call) => call.candidate)).toEqual([10, 20, 10]);
   });
 
+  it('drops the pictures of candidates a retake replaced', async () => {
+    // A retake gives a cell new candidates, and the old identities never come back. Clearing only
+    // when *another* cell is opened leaves those thumbnails held for as long as the user stays on
+    // this one — 48 KB each, growing with every retake, in the client whose whole reason for
+    // reducing was to stop holding frames. So the cache is pruned to what the strip is actually
+    // showing on every open.
+    const { core, answer, previewCalls } = deferredCore();
+    const { paint } = recordingPainter();
+    const ui = elements();
+    const panel = createReviewPanel(ui, core, paint);
+    panel.show(plan, coverage);
+
+    const first = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await first;
+
+    // The same cell, retaken: different identities, none of the old ones.
+    const retaken = panel.open(1 as NodeId);
+    answer(1, [candidate(12, 1), candidate(13, 1)]);
+    await retaken;
+
+    // And back to what it was, which is the only way to ask whether 10 and 11 were still held.
+    const restored = panel.open(1 as NodeId);
+    answer(1, [candidate(10, 1), candidate(11, 1)]);
+    await restored;
+
+    expect(previewCalls.map((call) => call.candidate)).toEqual([10, 11, 12, 13, 10, 11]);
+  });
+
   it('still draws the cell you asked for when the replies are in order', async () => {
     const { core, answer } = deferredCore();
     const { paint } = recordingPainter();

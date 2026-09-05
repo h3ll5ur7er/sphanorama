@@ -73,10 +73,25 @@ Result<FramePreview> BoxFramePreviewEngine::Reduce(const FrameRef& frame, int32_
       static_cast<int64_t>(frame.width) * std::max(BytesPerPixel(frame.format), 1);
   const int64_t stride = frame.stride > 0 ? frame.stride : derived;
 
+  // A stride is bytes per row, so it cannot be less than a row. Checked before the span, because
+  // it is what makes the span check mean anything: `stride * height` is small when the stride is
+  // understated, so a handle claiming a wide row in a narrow stride satisfies a requirement of a
+  // few dozen bytes and then reads across the full width anyway. Sixty-four pixels claimed in a
+  // four-byte stride passes a 32-byte requirement and reads 283 bytes into a 256-byte frame.
+  if (stride < derived) {
+    return Err<FramePreview>(StatusCode::FailedPrecondition, kComponent,
+                             "this frame's stride is narrower than one row of its own width");
+  }
+
   // The handle's dimensions are checked against the bytes that actually arrived. A `FrameRef` is
   // a plain value the caller passes in and the store's entry is the only thing that knows how
   // large the allocation really is; trusting the handle reads off the end of it, which is a crash
   // on a good day and somebody else's pixels on a bad one.
+  //
+  // `stride * height` rather than the last row's end, deliberately. With the stride sane it is
+  // the stricter of the two — it asks for the trailing padding of the final row, which every
+  // allocation this store makes actually has — and on a bounds check the stricter side is the
+  // safe one.
   const int64_t needed = stride * frame.height;
   if (needed <= 0 || static_cast<size_t>(needed) > pinned.value.size()) {
     return Err<FramePreview>(StatusCode::FailedPrecondition, kComponent,
