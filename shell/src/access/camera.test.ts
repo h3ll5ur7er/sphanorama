@@ -379,6 +379,37 @@ describe('what the camera says it offers', () => {
     expect(camera.offeredModes().exposure).toBeNull();
   });
 
+  it('hands out a report a caller cannot write to', async () => {
+    // The lists are `readonly string[]` to TypeScript and were an ordinary object at runtime, so
+    // the accessor handed a caller the adapter's own state to do as it liked with. Frozen rather
+    // than copied: the row is rendered on the capture tick, so a defensive copy would be garbage
+    // per frame to defend against something that happens per camera.
+    const camera = createCameraAccess(mediaWith(fakeTrack()) as never);
+    await camera.open({ preferRearCamera: true });
+
+    const modes = camera.offeredModes();
+    // Modules are strict mode, so a write to a frozen object throws rather than being ignored —
+    // which is the behaviour worth having: a caller doing this has a bug and should hear about it.
+    expect(() => { (modes as { exposure: unknown }).exposure = ['nonsense']; }).toThrow();
+    expect(() => { (modes.exposure as string[]).push('nonsense'); }).toThrow();
+
+    expect(camera.offeredModes().exposure).toEqual(['continuous', 'manual']);
+  });
+
+  it('does not let a caller poison the silence the next camera starts from', async () => {
+    // The sharp end of it, and the reason freezing the lists alone is not enough. Before a camera
+    // opens and after one closes the accessor hands back a single module-level value shared by
+    // every camera this page will ever open — so one write to it is not a corrupted row, it is
+    // every row after it, for the life of the tab.
+    const camera = createCameraAccess(mediaWith(fakeTrack({ capabilities: {} })) as never);
+
+    const silence = camera.offeredModes();
+    expect(() => { (silence as { exposure: unknown }).exposure = ['manual']; }).toThrow();
+
+    await camera.open({ preferRearCamera: true });
+    expect(camera.offeredModes().exposure).toBeNull();
+  });
+
   it('replaces the list when another camera is opened', async () => {
     // Same reason a refusal is not carried across an open: what a camera offers is a fact about
     // that camera.

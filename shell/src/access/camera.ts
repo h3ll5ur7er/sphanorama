@@ -62,7 +62,10 @@ export interface LockModes {
   focus: readonly string[] | null;
 }
 
-const NOTHING_REPORTED: LockModes = { exposure: null, whiteBalance: null, focus: null };
+// Frozen because it is shared. Every camera that reports nothing hands back this same value, so
+// one write to it is not one corrupted row — it is every row for the life of the tab.
+const NOTHING_REPORTED: LockModes =
+  Object.freeze({ exposure: null, whiteBalance: null, focus: null });
 
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
@@ -77,7 +80,9 @@ export interface CameraAccess {
    */
   setLocks(wanted: LockState): Promise<Result<LockState>>;
   /**
-   * The mode lists the open track reported, for a refusal to be read against.
+   * The mode lists the open track reported, for a refusal to be read against. Frozen: it is the
+   * adapter's own state, handed out to be read.
+   *
    *
    * Separate from `open`'s capabilities rather than a field on them, because those cross to the
    * core as `CameraCapabilities` and this does not: the contract has no place for a list of
@@ -116,7 +121,7 @@ function offersManual(modes: unknown): boolean {
  * camera that an absent key does not.
  */
 function reportedModes(modes: unknown): readonly string[] | null {
-  return Array.isArray(modes) ? modes.map(String) : null;
+  return Array.isArray(modes) ? Object.freeze(modes.map(String)) : null;
 }
 
 const MODE_OF: Record<keyof LockState, string> = {
@@ -242,11 +247,15 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
         } catch {
           // Nothing reported, which is exactly what an absent API means too.
         }
-        offered = {
+        // Frozen, not copied on the way out. `readonly` is a compile-time promise and the
+        // accessor hands this to a caller as an ordinary object; the row is rendered on the
+        // capture tick, so a defensive copy per call would be garbage per frame to defend
+        // against something that can only happen per camera. This makes the promise real once.
+        offered = Object.freeze({
           exposure: reportedModes(capabilities.exposureMode),
           whiteBalance: reportedModes(capabilities.whiteBalanceMode),
           focus: reportedModes(capabilities.focusMode),
-        };
+        });
         return ok({
           maxWidth: settings.width ?? 0,
           maxHeight: settings.height ?? 0,
