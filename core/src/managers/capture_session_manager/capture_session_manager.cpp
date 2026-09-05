@@ -106,6 +106,15 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
     }
   }
 
+  // Nothing may be left over on a line once this build has read what it knows about. A trailing
+  // field is a document from a shape this one does not have, and the version gate is the only
+  // sanctioned way to read one of those — taking the prefix that fits is how a session comes back
+  // missing whatever the extra field was there to say.
+  const auto exhausted = [](std::istringstream& in) {
+    std::string extra;
+    return !(in >> extra);
+  };
+
   bool sawSession = false, sawLens = false, sawSpec = false;
   while (std::getline(lines, line)) {
     if (line.empty()) continue;
@@ -118,9 +127,11 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
       // starts at 1. A document carrying one is one this build cannot honour, and restoring it
       // would seat the session under a name nothing can legitimately hold.
       if (out.session == 0 || out.nextCandidate == 0) return false;
+      if (!exhausted(in)) return false;
       sawSession = true;
     } else if (tag == "lens") {
       if (!(in >> out.lens.width >> out.lens.height)) return false;
+      if (!exhausted(in)) return false;
       sawLens = true;
     } else if (tag == "spec") {
       int coverPoles = 0;
@@ -131,6 +142,7 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
       }
       if (!ReadEnum(in, 4, out.spec.motion)) return false;
       out.spec.coverPoles = coverPoles != 0;
+      if (!exhausted(in)) return false;
       sawSpec = true;
     } else if (tag == "candidate") {
       Candidate candidate;
@@ -160,6 +172,7 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
           || !candidate.frame.buffer.valid()) {
         return false;
       }
+      if (!exhausted(in)) return false;
       candidate.pose.visuallyCorrected = corrected != 0;
       out.candidates.push_back(candidate);
     } else {
@@ -169,7 +182,18 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
       return false;
     }
   }
-  return sawSession && sawLens && sawSpec;
+  if (!(sawSession && sawLens && sawSpec)) return false;
+
+  // The candidates win where the two disagree, for the same reason the spill index's slots beat
+  // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
+  // behind them — a write torn between the candidate lines and the session line — would have the
+  // next burst issue ids naming frames the cell is already holding, and a cell with two
+  // candidates under one id has two frames as far as everything downstream can tell. Raised
+  // rather than refused, because nothing is lost by raising it and a capture is lost by refusing.
+  for (const Candidate& candidate : out.candidates) {
+    out.nextCandidate = std::max(out.nextCandidate, candidate.id.value + 1);
+  }
+  return true;
 }
 
 // Puts a cell's candidates into the order the quality engine named.

@@ -70,6 +70,14 @@ load and says so.
 - **`IProjectManager` shrinks.** One fewer method, and no second Resume for a caller to pick
   wrongly between. `List` still reports `nodesSatisfied`, which is what a project picker needs to
   show an unfinished sphere.
+- **The candidates win where the document disagrees with itself.** A line carrying more fields
+  than this build reads is refused, because taking the prefix that fits is how a session comes
+  back missing whatever the extra field was there to say. But the candidate counter is *raised*
+  rather than refused when it has fallen behind the ids in the same document — a torn write, with
+  the candidate lines newer than the session line. Only the candidates are acted on, so a stale
+  counter would have the next burst mint ids naming frames the cell already holds; nothing is lost
+  by raising it and a capture is lost by refusing it. The spill index resolves its own
+  high-water mark against its slots the same way, for the same reason (ADR 0030).
 - **A failed resume leaves the frames it took, and can simply be tried again.** The store outlives
   the attempt — it lives as long as the worker — so a retry meets its own adoptions and accepts
   them. Adopting over a *live* frame is still refused: two different frames under one identity is

@@ -1661,7 +1661,8 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
 
 // Replaces the nth whitespace-separated field of the first line with this tag, so a test can
 // corrupt one number in a session document and leave the rest of it exactly as written.
-std::string ZeroField(const std::string& document, const std::string& tag, size_t field) {
+std::string SetField(const std::string& document, const std::string& tag, size_t field,
+                     const std::string& value) {
   std::istringstream lines(document);
   std::string line;
   std::string out;
@@ -1671,7 +1672,7 @@ std::string ZeroField(const std::string& document, const std::string& tag, size_
       std::istringstream in(line);
       std::vector<std::string> fields;
       for (std::string token; in >> token;) fields.push_back(token);
-      if (field < fields.size()) fields[field] = "0";
+      if (field < fields.size()) fields[field] = value;
       line.clear();
       for (size_t i = 0; i < fields.size(); ++i) line += (i == 0 ? "" : " ") + fields[i];
       done = true;
@@ -1703,7 +1704,7 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
       {"candidate", 1}, {"candidate", 2}, {"candidate", 3}, {"candidate", 4},
   };
   for (const auto& [tag, field] : identities) {
-    const std::string tampered = ZeroField(written.value, tag, field);
+    const std::string tampered = SetField(written.value, tag, field, "0");
     ASSERT_NE(tampered, written.value) << tag << " field " << field << " was not found";
     ASSERT_TRUE(projects->WriteDocument(kProject, "session", tampered).ok());
 
@@ -1714,6 +1715,80 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
     EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
   }
+}
+
+TEST_F(ResumedSession, RefusesALineCarryingMoreThanItShould) {
+  // All-or-nothing means the whole line, not the prefix of it this build happens to understand.
+  // A line with a field on the end is a document from a shape this one does not have — the
+  // version gate is the only sanctioned way to read one of those, and reading the part that fits
+  // is how a session comes back missing whatever the extra field was there to say.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  for (const std::string& tag : {std::string("session"), std::string("lens"),
+                                 std::string("spec"), std::string("candidate")}) {
+    std::string tampered;
+    for (std::istringstream lines(written.value); std::getline(lines, tampered);) {
+      if (tampered.rfind(tag + " ", 0) == 0) break;
+    }
+    ASSERT_FALSE(tampered.empty()) << tag;
+    const std::string extended =
+        std::string(written.value).replace(written.value.find(tampered), tampered.size(),
+                                           tampered + " 7");
+    ASSERT_TRUE(projects->WriteDocument(kProject, "session", extended).ok());
+
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, camera, *sensor, *store_with_sink,
+                                  *projects, clock);
+    EXPECT_FALSE(attempt.Resume(kProject).ok()) << "a trailing field on the " << tag << " line";
+  }
+}
+
+TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
+  // The counter and the candidates are two statements about the same session, and only the
+  // candidates are acted on. A counter that has fallen behind them — a write torn between the
+  // candidate lines and the session line — would have the next burst issue ids that name frames
+  // the cell is already holding, and a cell with two candidates under one id has two frames as
+  // far as everything downstream can tell.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  const std::vector<Candidate> before = first.Candidates(node).value;
+  ASSERT_FALSE(before.empty());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+  ASSERT_TRUE(projects->WriteDocument(
+      kProject, "session", SetField(written.value, "session", 2, "1")).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, second_camera, *sensor, *second_store,
+                               *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  ASSERT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
+
+  std::set<uint64_t> seen;
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_TRUE(seen.insert(candidate.id.value).second)
+        << "candidate " << candidate.id.value << " was issued twice";
+  }
+  // And the restored ones are still there rather than having been written over.
+  EXPECT_GT(second.Candidates(node).value.size(), before.size());
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
