@@ -286,7 +286,7 @@ TYPED_TEST(FrameStoreAccessContract, ClearIsRefusedWhileAFrameIsPinned) {
   EXPECT_TRUE(this->store->Clear().ok());
 }
 
-TYPED_TEST(FrameStoreAccessContract, AClearTheTierRefusesFailsWithTheStoreIntact) {
+TYPED_TEST(FrameStoreAccessContract, ClearIsRefusedWithTheStoreIntactWhenTheTierWillNotEmpty) {
   // The direction of this failure is the decision. Dropping the map anyway would leave the tier
   // holding bytes nothing can name and the next capture writing over them — silently. Refusing
   // means a session declines to begin on a device whose tier is stuck, which is loud, recoverable
