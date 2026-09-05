@@ -13,7 +13,7 @@
 import { createCaptureHost } from '../access/capture-host';
 import { createDocumentHost, type DocumentHost } from '../access/document-host';
 import { createIndexedDbStore } from '../access/indexeddb-store';
-import { createSpillHost, openSpillFile, type SpillHost } from '../access/spill-host';
+import { createSpillHost, openSpillTier, type SpillHost } from '../access/spill-host';
 import { loadCoreRuntime, type CoreRuntime } from './core';
 import type { FromWorker, ToWorker } from './protocol';
 
@@ -49,7 +49,8 @@ async function boot(seq: number, coreUrl: string): Promise<void> {
   // whether this is installed and hands the store a sink or not (ADR 0020), so a sphere on such a
   // browser is capped at what fits in RAM rather than told that spilling freed memory.
   try {
-    spill = createSpillHost(await openSpillFile());
+    const tier = await openSpillTier();
+    spill = createSpillHost(tier.frames, tier.index);
   } catch (cause) {
     spill = null;
     console.warn('sphanorama worker: no spill tier —', String(cause));

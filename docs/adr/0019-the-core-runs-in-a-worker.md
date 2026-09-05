@@ -113,7 +113,7 @@ not isolated.
 - **The spill tier is reachable but nothing reaches for it.** `Demote` writes through the sink and
   `Pin` faults back in — against `FakeSpillSink`, in the native suite. What a real browser proves
   is narrower and worth stating exactly, because the temptation is to round it up: the end-to-end
-  suite asserts that `openSpillFile()` succeeded, so a real `createSyncAccessHandle` opened. The
+  suite asserts that `openSpillTier()` succeeded, so a real `createSyncAccessHandle` opened. The
   page-side allocator is tested against a fake `SpillFile`. **Nothing exercises the allocator over
   a real handle**, so whether `write`/`read` at an offset behave there as the fake does is
   assumed. Closing that needs either a test-only entry point in the shipped bundle or a device —
