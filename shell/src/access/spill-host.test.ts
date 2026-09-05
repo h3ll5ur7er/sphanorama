@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSpillHost, openSpillTier, type SpillFile } from './spill-host';
 
 /** A spill file in memory. The allocator is what is under test; the syscalls are the browser's. */
-function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(): Uint8Array } {
+function fakeFile(options: { shortWrites?: boolean } = {}):
+    SpillFile & { bytes(): Uint8Array; failWrites(fail: boolean): void;
+                  throwWrites(fail: boolean): void } {
   let buffer = new Uint8Array(0);
+  let short = options.shortWrites === true;
+  let throws = false;
   const grow = (size: number) => {
     if (size <= buffer.length) return;
     const next = new Uint8Array(size);
@@ -13,7 +17,15 @@ function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(
   };
   return {
     write(bytes, at) {
-      if (options.shortWrites) return bytes.length - 1;
+      // The other way a sync handle refuses: `write` is allowed to throw, and does when the
+      // handle has gone away under it.
+      if (throws) throw new Error('the handle is gone');
+      if (short) {
+        // Partially, the way a quota running out mid-write does: the bytes that fit are on disk.
+        grow(at + bytes.length - 1);
+        buffer.set(bytes.subarray(0, bytes.length - 1), at);
+        return bytes.length - 1;
+      }
       grow(at + bytes.length);
       buffer.set(bytes, at);
       return bytes.length;
@@ -30,6 +42,8 @@ function fakeFile(options: { shortWrites?: boolean } = {}): SpillFile & { bytes(
     size: () => buffer.length,
     close() {},
     bytes: () => buffer,
+    failWrites: (fail: boolean) => { short = fail; },
+    throwWrites: (fail: boolean) => { throws = fail; },
   };
 }
 
@@ -154,6 +168,44 @@ describe('a spill tier that outlives the tab', () => {
     expect(asked).toBeLessThan(64 * 1024 * 1024);
     // And it is a working tier, just an empty one.
     expect(host.write(1, frame(0xa1))).toBe(true);
+  });
+
+  it('does not leave a reload pointing at a frame a failed rewrite half-destroyed', () => {
+    // A rewrite of the same size lands in the same place — that is the free list working. So a
+    // write that fails partway has already overwritten the frame that was there, and the code
+    // handles it by forgetting the frame entirely. That was sound while the map lived only in
+    // this process: nothing could ask for it again, because the store keeps a frame it could not
+    // spill in the heap. A durable index is exactly something that asks again, so a failure has
+    // to reach the index too — or the next session reads that slot and gets half of each frame,
+    // and reports success.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    expect(before.write(1, frame(0xa1))).toBe(true);
+    file.failWrites(true);
+    expect(before.write(1, frame(0xb2))).toBe(false);
+    before.close();
+
+    const after = createSpillHost(file, index);
+    expect(after.read(1, new Uint8Array(16))).toBe(false);
+  });
+
+  it('does the same when the rewrite threw rather than fell short', () => {
+    // The same hole by the other door. A sync handle may throw instead of returning a short
+    // count — the file went away under the worker — and a frame forgotten in memory but still
+    // named on disk is the same corrupt read next session either way.
+    const file = fakeFile();
+    const index = fakeFile();
+
+    const before = createSpillHost(file, index);
+    expect(before.write(1, frame(0xa1))).toBe(true);
+    file.throwWrites(true);
+    expect(before.write(1, frame(0xb2))).toBe(false);
+    before.close();
+
+    const after = createSpillHost(file, index);
+    expect(after.read(1, new Uint8Array(16))).toBe(false);
   });
 
   it('starts empty rather than throwing when the index makes no sense', () => {

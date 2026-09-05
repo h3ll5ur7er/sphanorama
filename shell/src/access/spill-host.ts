@@ -198,14 +198,21 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       try {
         if (file.write(bytes, slot.offset) !== bytes.length) {
           // A quota exhausted mid-write is how this fails on a real device. The slot goes back on
-          // the free list and the frame stays unknown — including its previous copy, which the
-          // failed write has already partly overwritten and which nothing would ever ask for
-          // again anyway, because the store keeps a frame it could not spill in the heap.
+          // the free list and the frame stays unknown — including its previous copy, which a
+          // same-size rewrite has already partly overwritten, since the free list is exact-fit
+          // and hands the same offset straight back.
+          //
+          // Written down as well, which is the part a durable index changes. Nothing in *this*
+          // session would ask for that frame again — the store keeps one it could not spill in
+          // the heap — but a reload asks, and an index still naming the old slot would answer it
+          // out of bytes that are now half of each frame, and report success.
           release(slot);
+          persist();
           return false;
         }
       } catch {
         release(slot);
+        persist();
         return false;
       }
       slots.set(frame, slot);

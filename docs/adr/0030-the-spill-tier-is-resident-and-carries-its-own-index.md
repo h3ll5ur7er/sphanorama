@@ -47,6 +47,14 @@ two statements about the same file, and only a slot is ever acted on — a read 
 it names. So the mark is raised to cover every slot on the way in. One that had fallen behind
 would hand the next spill space a restored frame is sitting in, and that read would still succeed.
 
+**A failed write reaches the index too.** A rewrite of the same size lands in the same place —
+that is the exact-fit free list working — so a write that fails partway has already overwritten
+the frame that was there, and the allocator's answer is to forget that frame entirely. That was
+sound while the map lived only in the process: nothing could ask for it again, because the store
+keeps a frame it could not spill in the heap. A durable index is precisely something that asks
+again, so the forgetting has to be written down; otherwise the next session reads that slot, gets
+half of each frame, and reports success.
+
 **An unreadable index starts the tier empty rather than throwing.** This runs while the worker is
 booting, and the file is on a phone: a tab killed mid-write, a quota exhausted between the frame
 and the index. Losing the map costs a resume; throwing costs the session.
