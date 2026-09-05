@@ -102,8 +102,17 @@ Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node)
   }
   // An absent document is the ordinary case — most cells are never overridden — so it answers
   // zero rather than failing. The contract says why that is not `NotFound`.
+  //
+  // `NotFound` and nothing else, because absence is the sentinel and a failure is not absence.
+  // Every store today refuses a missing document exactly this way and has no other way to fail,
+  // but the contract allows one — and folding a storage error into "nobody has chosen here" would
+  // show the ranking's pick for a cell whose override could not be read, which is the screen
+  // quietly disagreeing with the build, without a word anywhere.
   auto document = store_.ReadDocument(project, SelectionKey(node));
-  if (!document.ok()) return Ok(CandidateId{0});
+  if (!document.ok()) {
+    if (document.status.code == StatusCode::NotFound) return Ok(CandidateId{0});
+    return document.status;
+  }
 
   // Parsed rather than trusted. This manager wrote it, but it went through a store that outlives
   // the process and can be edited by anything with the origin's storage — and `stoull` on a

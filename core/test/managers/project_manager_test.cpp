@@ -3,6 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "managers/project_manager/project_manager.h"
 #include "support/fake_export_access.h"
@@ -10,6 +13,34 @@
 
 namespace sphanorama {
 namespace {
+
+// A store that answers a named document with a failure of the test's choosing.
+//
+// Every implementation of `IProjectStoreAccess` today refuses a missing document with `NotFound`
+// and has no other way to fail, so the one case that matters here — a read that failed for some
+// *other* reason — is not reachable against a real one. It is reachable through the contract, and
+// a reader that folds every failure into "nobody has chosen here" would answer the ranking's pick
+// to a storage error and say nothing to anybody.
+class UnreadableProjectStoreAccess final : public IProjectStoreAccess {
+ public:
+  UnreadableProjectStoreAccess(IProjectStoreAccess& real, std::string key, StatusCode code)
+      : real_(real), key_(std::move(key)), code_(code) {}
+
+  Result<std::vector<ProjectId>> ListProjects() override { return real_.ListProjects(); }
+  Result<std::string> ReadDocument(ProjectId project, std::string_view key) override {
+    if (key == key_) return Err<std::string>(code_, "test", "this document will not come back");
+    return real_.ReadDocument(project, key);
+  }
+  Status WriteDocument(ProjectId project, std::string_view key, std::string_view value) override {
+    return real_.WriteDocument(project, key, value);
+  }
+  Status DeleteProject(ProjectId project) override { return real_.DeleteProject(project); }
+
+ private:
+  IProjectStoreAccess& real_;
+  std::string key_;
+  StatusCode code_;
+};
 
 class Projects : public ::testing::Test {
  protected:
@@ -139,6 +170,27 @@ TEST_F(Projects, AskingAboutAnUnsetCellIsACallerMistakeRatherThanAnEmptyAnswer) 
   // A real cell with nothing recorded still answers zero, so this cannot pass by refusing every
   // cell that has not been chosen for.
   auto empty = manager->GetSelection(created.value, NodeId{9});
+  EXPECT_TRUE(empty.ok()) << empty.status.detail;
+  EXPECT_EQ(empty.value.value, 0u);
+}
+
+TEST_F(Projects, AReadThatFailedIsNotACellNobodyHasChosenFor) {
+  // Absence is the sentinel; a failure is not absence. Folding every refusal into zero would show
+  // the ranking's pick for a cell whose override could not be read — the screen quietly
+  // disagreeing with the build, which is the failure this whole call exists to end — and it would
+  // do it without a word in the logs.
+  auto created = manager->Create("kitchen");
+  ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
+
+  UnreadableProjectStoreAccess broken{store, "selection/3", StatusCode::Internal};
+  ProjectManager reader{broken};
+  auto chosen = reader.GetSelection(created.value, NodeId{3});
+  EXPECT_FALSE(chosen.ok()) << "a store that could not answer was read as an unchosen cell";
+  EXPECT_EQ(chosen.status.code, StatusCode::Internal);
+
+  // And a genuinely missing document still answers zero through the same store, so this cannot
+  // pass by refusing every read.
+  auto empty = reader.GetSelection(created.value, NodeId{4});
   EXPECT_TRUE(empty.ok()) << empty.status.detail;
   EXPECT_EQ(empty.value.value, 0u);
 }

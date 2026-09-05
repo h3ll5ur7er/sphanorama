@@ -73,6 +73,17 @@ setting a pick does not read and rewrite its neighbours.
 - **A corrupt selection document fails rather than answering zero**, and the review strip shows the
   automatic pick either way — the failure is for whoever reads the logs, not for the screen. Saying
   "nobody chose here" about a document that says something unreadable would be inventing an answer.
+- **So does a read that failed for any reason other than absence.** Absence is the sentinel and a
+  failure is not absence. Every `IProjectStoreAccess` today refuses a missing document with
+  `NotFound` and has no other way to fail, but the contract allows one, and folding a storage error
+  into "nobody has chosen here" would show the ranking's pick for a cell whose override could not
+  be read — without a word anywhere. Only `NotFound` maps to zero.
+
+  That is the third correction of the same kind on this decision, and the pattern is the point: a
+  sentinel is a value that means something *because* nothing else does, so every place that can
+  produce it by accident has to be closed. The writer could produce one (refused now), the reader
+  accepted an argument that could only ever produce one (refused now), and the reader turned every
+  failure into one (narrowed now). None of the three was visible from the decision itself.
 - **Reading a selection cannot enumerate them.** `IProjectStoreAccess` reads a document by key and
   has no listing, so a caller wanting every override in a project must ask cell by cell. Nothing
   needs that today — the strip opens one cell at a time. The build will, and when it does the
