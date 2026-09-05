@@ -16,7 +16,7 @@ import { flattenImuSamples, stopCameraStream } from './access/capture-host';
 import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
 import {
-  describeFailure, describeLocks, formatCapabilities,
+  describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
 } from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
@@ -169,6 +169,14 @@ async function enable(core: SphanoramaCore) {
   // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — measured through
   // the whole app, 44 cells planned rather than 32, a third more of the sphere to shoot for a
   // frame that sees less of it.
+  // Started before the camera is awaited, and awaited after it. iOS grants motion only during a
+  // transient user activation, and the camera prompt is exactly the kind of await that spends
+  // one — so asking afterwards is asking a gesture that has already ended, which iOS rejects
+  // unread. That is an iPhone reporting `motion unavailable` in every orientation forever, with
+  // no way to aim at a cell. The adapter was already careful not to spend the activation between
+  // its own two requests; this is the same care one level out.
+  const startingMotion = motion.start(60);
+
   const opened = await camera.open({
     preferRearCamera: true,
     preferredWidth: GRAB_MAX_EDGE,
@@ -196,7 +204,7 @@ async function enable(core: SphanoramaCore) {
 
   const capability = await motion.capabilities();
   if (capability.ok) remote.setMotion(capability.value);
-  const started = await motion.start(60);
+  const started = await startingMotion;
   if (started.ok) {
     reportMotionSource(capability.ok ? capability.value : 'unknown');
   } else {
@@ -204,7 +212,13 @@ async function enable(core: SphanoramaCore) {
     // manager puts PoseEngine into vision-only mode and no other component learns the difference
     // (docs/03 UC-4). Declining motion on iOS is the common way to land here.
     remote.setMotion('None');
-    motionState.textContent = 'unavailable';
+    // With the reason, not just the word. A declined grant, a gesture that had already expired
+    // and a device with no sensors at all printed the same thing here, and the status that tells
+    // them apart was being dropped on the floor — which is what made an iPhone reading
+    // unreadable. The row that reports a *running* source has carried its reason since ADR 0025;
+    // this is the branch that did not.
+    motionState.textContent =
+      `unavailable · ${started.status.detail || started.status.code}`;
     // Only overwrite the stage line if the camera did not already claim it: two failures at once
     // should not hide the first one.
     if (opened.ok) stage.textContent = describeFailure(started.status);
@@ -523,7 +537,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // a failed tick is one that produced no pose — leaving the last set on screen would draw
         // a confident answer over a line that says guidance has stopped working.
         overlay.show({ rings: [], arrow: null });
-        guidanceOut.textContent = `guidance failed: ${guided.status.code}`;
+        guidanceOut.textContent = `guidance failed: ${describeGuidanceFailure(guided.status)}`;
       }
     }
 

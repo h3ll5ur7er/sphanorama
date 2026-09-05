@@ -227,6 +227,85 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
   }
 });
 
+test('asks iOS for motion before it goes anywhere near the camera', async ({ browser }) => {
+  // Reported from an iPhone: `motion unavailable`, in every orientation, forever. iOS grants
+  // DeviceOrientationEvent only during a transient user activation, and awaiting a permission
+  // prompt spends it — so a motion request made after `getUserMedia` is refused unread, and the
+  // phone can never aim itself. The adapter was already careful not to spend the activation
+  // between its own two requests; the activation was gone before it was called at all.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    window.__asked = [];
+    // An iPhone has no Generic Sensor API, which is the whole reason it reaches the gated
+    // orientation event at all. Leaving Chromium's in place would take the ungated path and test
+    // nothing about iOS.
+    delete window.AbsoluteOrientationSensor;
+    const media = navigator.mediaDevices;
+    const real = media.getUserMedia.bind(media);
+    media.getUserMedia = (constraints) => {
+      window.__asked.push('camera');
+      return real(constraints);
+    };
+    // The iOS gate, which Chromium does not have. Recording when it is *called* rather than when
+    // it resolves is the whole point: what iOS checks is whether the gesture was still live at
+    // the moment of the call.
+    window.DeviceOrientationEvent.requestPermission = async () => {
+      window.__asked.push('motion');
+      return 'granted';
+    };
+    window.DeviceMotionEvent.requestPermission = async () => {
+      window.__asked.push('rates');
+      return 'granted';
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+
+    const asked = await page.evaluate(() => window.__asked);
+    expect(asked).toContain('motion');
+    expect(asked.indexOf('motion')).toBeLessThan(asked.indexOf('camera'));
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('says why motion is unavailable rather than only that it is', async ({ browser }) => {
+  // One word for every cause is what made the iPhone reading unreadable: a declined grant, a
+  // gesture that had expired and a device with no sensors all printed `unavailable`, and the
+  // status that told them apart was thrown away at this line. The `locks` row learned this
+  // lesson already (ADR 0022).
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // No Generic Sensor API, and a gate that rejects rather than declines — which is what iOS
+    // does when the call did not follow a user gesture. `start` fails outright here, and that is
+    // the path that had only one word for every cause.
+    delete window.AbsoluteOrientationSensor;
+    window.DeviceOrientationEvent.requestPermission = async () => {
+      throw new Error('requestPermission requires a user gesture');
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    await expect(page.locator('#motion-state')).toContainText(/gesture/i, { timeout: 15000 });
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a burst locks the camera when the camera can be locked', async ({ browser }) => {
   // Chromium's fake device has no manual exposure mode, so the plain capture test exercises the
   // degraded path — locks unsupported, burst fires anyway. This is the other half (ADR 0022): a
@@ -820,7 +899,11 @@ test('a phone with no motion sensors still captures', async ({ browser }) => {
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
 
-    await expect(page.locator('#motion-state')).toHaveText('unavailable');
+    // Unavailable *and why*, which for this device is the honest answer that it has none. The
+    // exact-text assertion this replaced was pinning the very thing that made an iPhone reading
+    // unreadable: one word for a declined grant, an expired gesture and a phone with no sensors.
+    await expect(page.locator('#motion-state')).toContainText('unavailable');
+    await expect(page.locator('#motion-state')).toContainText(/no motion sensors/i);
     await expect(page.locator('#stage')).toContainText(/capturing without motion/, {
       timeout: 15000,
     });

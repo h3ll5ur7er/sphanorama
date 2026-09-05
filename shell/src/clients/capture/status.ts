@@ -41,6 +41,22 @@ export function describeFailure(status: Status): string {
   return MESSAGES[status.code] ?? (status.detail || `${status.component} failed (${status.code}).`);
 }
 
+/**
+ * A failed tick, for the line under the reticle.
+ *
+ * The code alone is what an iPhone reported when its frame store ran out — `FrameStoreExhausted`
+ * and nothing else — and the store had in fact said which of two opposite problems it was: a
+ * sphere too large for the device, or a spill sink that refused a write and left the heap holding
+ * what it hoped to give back (ADR 0023). One is "capture less", the other is "free some disk",
+ * and the sentence that told them apart was being dropped at the call site.
+ *
+ * The code stays because it is short, greppable, and the same word the logs use; the detail joins
+ * it when the component had one to give.
+ */
+export function describeGuidanceFailure(status: Status): string {
+  return status.detail ? `${status.code} — ${status.detail}` : status.code;
+}
+
 export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean): string {
   const parts: string[] = [];
   parts.push(capabilities.threads
