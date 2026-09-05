@@ -1,6 +1,6 @@
 ---
 name: sphanorama-review
-description: Review a change to this repository by spawning reviewer subagents, one per lens, and reconciling what they report. Use before merging any branch, in place of an external review bot. Also use when asked to review a diff, a PR, or a branch here, or when a change is finished and needs scrutiny it cannot give itself.
+description: Review a change to this repository by spawning reviewer subagents, one per lens, each publishing its findings to the pull request, then answering them there. Use on every PR before merging, in place of an external review bot. Also use when asked to review a diff, a PR, or a branch here, or when a change is finished and needs scrutiny it cannot give itself.
 ---
 
 # Reviewing a change
