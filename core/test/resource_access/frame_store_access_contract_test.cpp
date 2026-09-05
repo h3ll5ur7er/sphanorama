@@ -146,6 +146,29 @@ TYPED_TEST(FrameStoreAccessContract, AdoptsAFrameSpilledByAStoreThatIsGone) {
   EXPECT_TRUE(revived->Release(frame).ok());
 }
 
+TYPED_TEST(FrameStoreAccessContract, AdoptingAnIdentityThatIsNotOneIsRefused) {
+  // Zero is not an identity: `Id::valid()` is `value != 0`, and every counter here starts at 1.
+  // A store that took one would hold an entry nothing can legitimately name, and step its own
+  // counter from a number that should never have existed — after which every later question
+  // about what it holds has a wrong answer in it.
+  auto frame = this->Allocate();
+  this->Fill(frame, 0x11);
+  ASSERT_TRUE(this->store->Demote(frame, Residency::Spilled).ok());
+
+  std::unique_ptr<IFrameStoreAccess> revived = TypeParam::Create(&this->sink);
+
+  FrameRef nameless = frame;
+  nameless.id = FrameId{0};
+  EXPECT_EQ(revived->Adopt(nameless).code, StatusCode::InvalidArgument);
+
+  FrameRef bufferless = frame;
+  bufferless.buffer = BufferId{0};
+  EXPECT_EQ(revived->Adopt(bufferless).code, StatusCode::InvalidArgument);
+
+  // And the refusals left nothing behind: the real frame still adopts.
+  EXPECT_TRUE(revived->Adopt(frame).ok());
+}
+
 TYPED_TEST(FrameStoreAccessContract, AdoptingOverALiveFrameIsRefused) {
   // Two *different* frames under one identity is a store that hands the wrong pixels to whoever
   // asks second. This one is resident and was allocated here; the document's frame of the same

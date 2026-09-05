@@ -229,6 +229,16 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
 }
 
 Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
+  // The identity is the caller's here, which is what makes checking it this store's job. Zero is
+  // not one — `Id::valid()` is `value != 0`, and every counter in this codebase starts at 1 — so
+  // taking it would leave an entry nothing can legitimately name and step `next_id_` from a
+  // number that should never have existed, after which every later question about what this
+  // store holds has a wrong answer in it.
+  if (!frame.id.valid() || !frame.buffer.valid()) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "a frame with no identity cannot be adopted");
+  }
+
   // A store with nowhere to spill has nowhere a frame could have come *from* either, and a frame
   // adopted into one could never be pinned. Refusing here says so while the caller still has the
   // document in hand, rather than at a fault-in that reads as a lost frame.
