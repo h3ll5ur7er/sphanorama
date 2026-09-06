@@ -31,9 +31,15 @@ constexpr int64_t kDwellNs = 2'000'000'000;
 //
 // Three hundred milliseconds, and the number comes from the client rather than from an intuition
 // about one. `pump` asks for guidance on every animation frame and, when no sample has arrived,
-// at least every 250 ms — a heartbeat it keeps deliberately, so the reticle stays live on a still
-// phone. So a running loop ticks inside 250 ms by construction and a suspended one does not tick
-// at all, and a bound just above the heartbeat separates them with nothing in between.
+// on the first frame after 250 ms — a heartbeat it keeps deliberately, so the reticle stays live
+// on a still phone. That is a floor rather than a ceiling: the tick that follows it costs a frame
+// and a worker round trip, so a running loop's quiet gap is 250 ms *plus* those, and this bound
+// sits above the floor rather than above every possible tick. What it separates cleanly is a loop
+// that is running at all from one that is suspended for seconds, which is the failure below.
+//
+// Nothing ties this constant to the shell's 250 ms, and nothing can: they are on opposite sides of
+// the boundary and the core must not read a client's cadence. A client that ticked far more slowly
+// would want a larger number here, and would find this comment.
 //
 // A first draft said half a second and justified it as "far longer than any tick", which was an
 // invented figure: the shipped loop's own guarantee is the heartbeat, and 500 ms is twice it.

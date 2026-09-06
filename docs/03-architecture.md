@@ -166,7 +166,9 @@ estimate. Its loop is:
 - `OfferFrame(frame, pose)` → asks `FrameQualityEngine` to score it, decides whether it joins the
   cell's candidate set (and whether the burst continues), asks `CoveragePlannerEngine` whether the
   cell is now satisfied, persists through `IFrameStoreAccess`/`IProjectStoreAccess`.
-- `RequestRetake(nodeId)` → clears or supplements a cell's candidates and re-arms that reticle.
+- `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
+  frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
+  Additively it marks nothing a client can act on in this build; see UC-2 and the contract.
 - `CandidatePreview(node, candidate, maxEdge)` → asks `FramePreviewEngine` for a reduced copy of
   one candidate's frame, and puts the frame back in the tier it found it in. This is the only call
   in the contracts that answers with pixels, and the reduction is why: a review client needs to
@@ -342,9 +344,9 @@ sequenceDiagram
   M2->>E: DetectGhosts(candidates per node)
   E-->>M2: GhostMap{node, region, confidence}
   M2-->>U: highlighted regions on the sphere
-  U->>M1: RequestRetake(nodeId)
-  M1-->>U: reticle re-armed
-  Note over U,M1: UC-1 runs again for that cell only —<br/>the user must aim at it again before ArmBurst will take a burst (ADR 0041)
+  U->>M1: RequestRetake(nodeId, replace: true)
+  M1-->>U: the cell is emptied of every frame the store will let go of
+  Note over U,M1: UC-1 runs again for that cell only — the dwell fires it (ADR 0043),<br/>and the user must aim at it again before ArmBurst will take a burst (ADR 0041)
   U->>M2: Invalidate(buildId, [nodeId])
   M2->>M2: recompute dirty sub-graph only
   M2-->>U: BuildProgress → updated tiles
@@ -400,7 +402,8 @@ capability — but **no planner reads it**, so the claim that `CoveragePlannerEn
 looser acceptance tolerance has never been true. The cone is whatever the client asked for.
 
 One rule per question survives this, which is the other half of what it bought. `Locate` names the
-cell the camera is inside; `ArmBurst` enforces that cone unconditionally; the dwell fires. Zero
+cell the camera is inside; `ArmBurst` refuses a burst on two counts — nothing has measured where
+the camera is pointing, or what was measured is outside that cone; the dwell fires. Zero
 `PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
 and a stream carrying angular rates with no attitude in them never anchors at all — and it means
 "no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.
@@ -412,7 +415,10 @@ roll, which is presentation rather than a second copy of the rule.
 At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
 `hasSession`. If there is one it offers a resume beside the ordinary enable; both are the same user
 gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed,
-it opens the camera, pushes the lens to the host, and calls `CaptureSessionManager.Resume(project)`
+it establishes the motion capability first — a device reporting none is turned away before
+`getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
+(ADR 0044) — then opens the camera, pushes the lens to the host, and calls
+`CaptureSessionManager.Resume(project)`
 instead of `Create` plus `Begin` — the manager reads the document it wrote, replans from the spec
 and lens that document carries, and hands the frames it names back to the store, so the cells
 already captured keep counting (ADR 0029).
@@ -421,3 +427,9 @@ A client sequencing two managers, and the boundary is what keeps it honest: the 
 whether to offer, the second is the only thing that hands back a session. A refusal from the second
 — a document this build cannot read, a plan the stored spec no longer produces, frames the tier
 lost — goes on screen through `describeFailure`, and a new capture stays one press away.
+
+Except where nothing a press could do would change the answer, and then the offer goes with it.
+`Unsupported` waits for a new build and `SensorUnavailable` waits for a reload, so leaving either
+on screen would invite a press that fails identically (ADR 0039, narrowed by ADR 0044). The
+capture itself is untouched in both cases — the refusals happen before the document is read — so
+what goes is the offer, not the sphere.

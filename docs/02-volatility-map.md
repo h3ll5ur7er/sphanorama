@@ -18,8 +18,6 @@ wrong place.
 | V3 | **What a saved project is and how its lifecycle runs** — resume, versioning, export targets | Product features, platform sharing APIs | `ProjectManager` |
 | V4 | **How the sphere is tessellated and coverage is judged** — ring/FoV layout vs geodesic, overlap targets, hole detection, which cell needs a retake | Lens FoV, capture strategy research, quality bar | `CoveragePlannerEngine` |
 | V5 | **How orientation is estimated** — complementary vs Madgwick vs EKF fusion, gyro-only, vision-only | Device sensor quality, browser API availability | `PoseEngine` |
-
-Sensor *absence* moved out of V5 and into V1 with ADR 0044. It was V5's while the engine could absorb it — vision-only mode, and nothing above needed to know. It is not an estimation strategy any more but a decision about whether to open a session at all, which is V1's, and `CaptureSessionManager::RequireMotion` is where it lives. `PoseMode::VisionOnly` stays in the contract for the day `RegistrationEngine` can carry one, at which point it comes back to V5.
 | V6 | **What makes a frame "the best of the burst"** — sharpness metric, motion-blur estimate, exposure agreement, mover-content penalty, user override | Algorithm research; this is the feature most likely to be tuned | `FrameQualityEngine` |
 | V7 | **How frames are aligned** — ORB/AKAZE/SIFT, matcher, RANSAC model (homography vs pure rotation), sensor-prior weighting, global refinement | Algorithm research, speed/quality tiers | `RegistrationEngine` |
 | V8 | **How pixels become one image** — exposure compensation, seam finding, ghost masking, blend (feather/multiband), projection (equirect/cubemap), resampling | Algorithm research and output format | `CompositionEngine` |
@@ -31,6 +29,8 @@ Sensor *absence* moved out of V5 and into V1 with ADR 0044. It was V5's while th
 | V14 | **Where heavy math executes** — scalar C++, WASM SIMD, WASM threads, WebGPU compute | Device capability | `IComputeDeviceAccess` |
 | V15 | **How a result leaves the device** — download, Web Share, File System Access, clipboard | Platform APIs | `IExportAccess` |
 | V16 | **How a stored frame is made small enough to look at** — the reduction factor, the filter, the pixel format it lands in | The surface doing the reviewing, and what a crossing costs | `FramePreviewEngine` |
+
+Sensor *absence* moved out of V5 and into V1 with ADR 0044. It was V5's while the engine could absorb it — vision-only mode, and nothing above needed to know. It is not an estimation strategy any more but a decision about whether to open a session at all, which is V1's, and `CaptureSessionManager::RequireMotion` is where it lives. `PoseMode::VisionOnly` stays in the contract for the day `RegistrationEngine` can carry one, at which point it comes back to V5.
 
 ## 2.2 Axes deliberately *not* given their own component
 

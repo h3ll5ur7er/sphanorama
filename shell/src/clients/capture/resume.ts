@@ -48,6 +48,17 @@ export interface ResumeRefusal {
   message: string;
   /** Whether to put the resume offer back up, so a second press is possible. */
   offerAgain: boolean;
+  /**
+   * Whether starting a *different* capture could work, which is not the same question.
+   *
+   * Most refusals are about this project — a document this build cannot read, frames the tier
+   * lost — and a fresh sphere is unaffected, so the way out stays on offer. `SensorUnavailable`
+   * is about the device: nothing on this page load can capture anything, so offering a new
+   * capture invites a press that fails exactly as the resume just did. That was the case the
+   * "two dead buttons" reasoning was written for and did not cover, because only the resume
+   * offer was ever taken down.
+   */
+  offerFresh: boolean;
 }
 
 /**
@@ -86,11 +97,15 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
   // buttons under a sentence that had just said to change a setting and reload. What makes the
   // capture readable again is the reload, which rebuilds the offer from `hasSession` anyway.
   const stuck = status.code === 'Unsupported' || status.code === 'SensorUnavailable';
+  // Only this one says nothing else can start either. `Unsupported` is a fact about the stored
+  // document, so a new sphere is untouched by it and the way out stays on offer.
+  const deviceCannotCapture = status.code === 'SensorUnavailable';
   const next = status.code === 'Unsupported'
     ? 'this version cannot pick it up — the capture is kept for one that can'
-    : status.code === 'SensorUnavailable'
+    : deviceCannotCapture
       ? 'the capture is kept until this device can place its frames'
       : 'try again, or start a new one';
   return { message: `Could not resume that capture — ${describeFailure(status)} · ${next}`,
-           offerAgain: !stuck };
+           offerAgain: !stuck,
+           offerFresh: !deviceCannotCapture };
 }

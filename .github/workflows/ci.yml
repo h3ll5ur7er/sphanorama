@@ -37,6 +37,10 @@ jobs:
         run: python3 tools/test_conflict_marker_check.py
       - name: no conflict markers left behind
         run: python3 tools/conflict_marker_check.py
+      - name: table checker tests
+        run: python3 tools/test_markdown_table_check.py
+      - name: no markdown table broken open
+        run: python3 tools/markdown_table_check.py
 
   native:
     name: native build and tests

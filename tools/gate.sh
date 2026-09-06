@@ -44,6 +44,8 @@ step "no-browser checker tests"   python3 tools/test_no_browser_check.py
 step "no browser assumptions"     python3 tools/no_browser_check.py
 step "marker checker tests"       python3 tools/test_conflict_marker_check.py
 step "no conflict markers"        python3 tools/conflict_marker_check.py
+step "table checker tests"        python3 tools/test_markdown_table_check.py
+step "no broken tables"           python3 tools/markdown_table_check.py
 
 echo "== native =="
 step "native configure"  cmake --preset native-debug

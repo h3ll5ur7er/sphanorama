@@ -87,6 +87,22 @@ required and what is missing.**
   hole rather than a live one, and it is recorded here rather than closed: closing it means
   deciding how long a session waits before it gives up, which is a product question this ADR
   should not answer on the way past. `docs/06-roadmap.md` carries it.
+- **A refused resume withdraws its offer, which narrows ADR 0039.** That ADR decided the offer
+  survives every refusal but `Unsupported`, on the reasoning that most refusals are about *this
+  attempt* and could answer differently on the next press. `SensorUnavailable` cannot: the host is
+  told the motion capability once, inside `enable`, so a second press re-runs the same refusal
+  against the same answer — two live controls under a sentence telling the user to change a
+  setting and reload. It joins `Unsupported` on the withdrawing side for a different reason than
+  0039 gave for that one, and the difference is worth keeping: `Unsupported` waits for a new
+  build, this waits for a reload.
+- **The dwell's per-tick credit is bounded, at 300 ms.** Not obviously this ADR's business, and it
+  is: with no shutter the dwell is the only way a burst starts, so anything that can make one
+  mature wrongly is now a way to fire a burst nobody asked for — and adding the whole interval
+  since the previous tick did exactly that on a tab returning from the background. The number is
+  not free-standing either. It sits just above `pump`'s 250 ms heartbeat, which is the shipped
+  loop's own guarantee that it is still running; a core constant tied to a client's cadence is a
+  coupling worth writing down rather than leaving in a comment, and what would change it is a
+  client that ticks more slowly.
 - **A replay client is unaffected**, because a recorded log carries orientation — but only once it
   is wired to a port that says so. The native runtime composes `NullMotionSensorAccess`, which
   answers `None`, so every native `Begin` now refuses: `bridge/test/facade_test.cpp` records

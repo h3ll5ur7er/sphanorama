@@ -564,7 +564,11 @@ async function pickUp(core: SphanoramaCore, project: ProjectId): Promise<Project
   // offer pressable; one only a new build can change takes it away, so the user is not invited to
   // press a thing that will fail identically every time (ADR 0039).
   resumeButton.hidden = !refusal.offerAgain;
-  newCaptureButton.hidden = false;
+  // And the way out, on the same judgement rather than unconditionally — which it was, so a
+  // device that cannot capture at all withdrew the resume offer and then put up a fresh-start
+  // button that failed in exactly the same way. One dead button instead of two is not the rule
+  // this was reaching for.
+  newCaptureButton.hidden = !refusal.offerFresh;
   return null;
 }
 

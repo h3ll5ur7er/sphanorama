@@ -878,8 +878,12 @@ TEST_F(CaptureSession, ANewSessionDoesNotInheritTheLastOnesDwell) {
   sample.timestampNs = clock.MonotonicNs();
   auto opening = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
   ASSERT_TRUE(opening.ok()) << opening.status.detail;
-  EXPECT_NE(opening.value.action, GuidanceAction::Fire)
-      << "a burst fired on the first tick of a capture nobody had started aiming yet";
+  // The fraction, not the action, and the difference is worth stating rather than asserting both
+  // and calling it thorough. With the credit bound in place one tick can never bank more than a
+  // seventh of a dwell, so `Fire` on the opening tick is unreachable whatever this session
+  // inherited — the assertion naming the harm cannot report it any more, and a reviewer showed
+  // that deleting `End`'s reset fails only the line below. What is left to measure is the
+  // inheritance itself: a session that opens part-served has taken something that was not its.
   EXPECT_EQ(opening.value.heldFraction, 0.0)
       << "the new session opened with the last one's dwell already part-served";
 }
@@ -2278,9 +2282,12 @@ TEST_F(CaptureSessionRetakes, ADiscardedFrameTheStoreWouldNotLetGoOfKeepsItsCand
   // cell dropped the last handle to bytes the store was still accounting for: an orphan nothing
   // can name, free, checkpoint or resume.
   //
-  // Not an exotic path. `OpfsSpillSink::Drop` answers `Internal` on a real device, and `Cool` has
-  // already demoted a committed candidate to the sink by the time a retake reaches it — so this
-  // is the ordinary shape of a retake on a phone, not a fault injection.
+  // Arranged with a pin, which is `Forget`'s own documented refusal: `Pin` promises its span until
+  // `Release`, so the store will not erase the entry underneath one. An earlier version of this
+  // comment blamed `OpfsSpillSink::Drop` and was wrong on both platforms — the browser host's
+  // `drop` answers true on every path, and natively `Forget` reaches no sink at all. `Discard`
+  // retracted that sentence in round 4 and this one kept it, which is the same failure this
+  // branch keeps producing: the correction reached the code and not the test beside it.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
   const NodeId node = AimedNode(*manager);
@@ -2331,6 +2338,37 @@ TEST_F(CaptureSessionRetakes, ADiscardedFrameTheStoreWouldNotLetGoOfKeepsItsCand
   EXPECT_EQ(candidateLines, 1)
       << "the kept candidate was not checkpointed, so the frame it holds is one no later session "
          "can name, cool, trim or free";
+}
+
+TEST_F(CaptureSessionRetakes, AStuckCandidateLeavesOnTheRetakeAfterTheStoreLetsGo) {
+  // "The cell stays covered until a later retake succeeds" is what the contract promises, and a
+  // reviewer found nothing testing the second half: a `Discard` that kept a stuck candidate and
+  // never tried it again passed the whole suite. That is not a smaller bug than the orphan — it
+  // is the ADR 0044 dead end by another door, a cell permanently covered, never a hole again, so
+  // the dwell can never mature on it and its frame is never freed.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = AimedNode(*manager);
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  const Candidate stuck = manager->Candidates(node).value.front();
+  ASSERT_TRUE(store->Pin(stuck.frame).ok());
+
+  ASSERT_TRUE(manager->RequestRetake(node, true).ok());
+  ASSERT_EQ(manager->Candidates(node).value.size(), 1u) << "the fixture expects one left behind";
+
+  // The pin goes — the caller finished reading, the burst that held it ended — and the next
+  // retake is the one that has to notice.
+  ASSERT_TRUE(store->Release(stuck.frame).ok());
+  ASSERT_TRUE(manager->RequestRetake(node, true).ok());
+
+  EXPECT_TRUE(manager->Candidates(node).value.empty())
+      << "a candidate the store would now let go of was still being kept, so the cell is covered "
+         "for the life of the session and nothing can ever re-shoot it";
+  EXPECT_EQ(store->ResidencyOf(stuck.frame).status.code, StatusCode::NotFound)
+      << "the frame outlived the candidate that named it";
 }
 
 TEST_F(CaptureSessionRetakes, AFrameTheStoreWouldNotLetGoOfKeepsItsCandidate) {

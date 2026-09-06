@@ -5,6 +5,13 @@
 > anchored the pose — is gone, because the device it existed for is refused at `Begin`. What
 > replaced it is a second condition rather than none: a burst is refused both when nothing has
 > measured where the camera is pointing and when what was measured is outside the cell's cone.
+>
+> The other half of this ADR's decision is gone rather than narrowed, and it said it was recorded
+> here and nowhere else: **"the page offers a capture only on `HoldStill`, through one predicate
+> (`canCapture`)"**. There is no predicate and no offer — the dwell fires every burst (ADR 0043)
+> and the button it gated was deleted by 0044. What survives of that half is its intent, in the
+> core: `HoldStill` is still exactly the condition a burst arms on, and it is the manager that
+> checks it now rather than a client that anticipates it.
 
 ## Context
 

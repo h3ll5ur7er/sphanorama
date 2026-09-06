@@ -67,8 +67,14 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
     //
     // Being *asked for*, not started, and the difference became reachable when the dwell learned
     // to retry: an arm can be refused, and then this line has said "capturing" about a burst that
-    // never began. It is one frame of optimism on a page that corrects itself on the next tick —
-    // the alternative is a word for "about to, probably", which is worse to read and no truer.
+    // never began.
+    //
+    // How long it says it is not one tick, which a first version of this comment claimed. `Fire`
+    // goes through `sayForAWhile` in the page, so the line is held for 1200 ms, and what actually
+    // replaces it is the arm's own refusal — up to the three seconds a lock write is allowed. So
+    // the honest description is a sentence that is briefly ahead of itself and is corrected by the
+    // failure rather than by the next frame. Kept anyway: the alternative is a word for "about
+    // to, probably", which is worse to read and no truer.
     case 'Fire':
       return `${cell} · capturing · ${progress}`;
     default:

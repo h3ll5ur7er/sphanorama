@@ -295,8 +295,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   resume flow arrived, what it would need was "a project that stops being offered rather than a
   document that has been destroyed". The flow landed alongside it and did neither, and the two ADRs
   were never reconciled on it. They are now, and the answer is close to 0035's instinct but scoped
-  differently (ADR 0039): the offer survives every refusal except `Unsupported`, and the withdrawal
-  lives in the tab that saw it rather than anywhere durable.
+  differently (ADR 0039): the offer survives every refusal except `Unsupported` — and, since
+  ADR 0044, `SensorUnavailable` — and the withdrawal lives in the tab that saw it rather than
+  anywhere durable.
 
   The split is between a refusal about *this attempt* and one about *this build*. A tier this
   device does not currently hold, a store that would not take the frames back, a camera another tab
@@ -346,7 +347,8 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   (ADR 0044).
 
   The second path went with it, which is most of the change: `ArmBurst` enforces the cone
-  unconditionally, `StartTracking` always selects `PoseMode::Fused`, `canCapture` and `#capture`
+  on two counts rather than one — nothing measured, then outside the cone —
+  `StartTracking` always selects `PoseMode::Fused`, `canCapture` and `#capture`
   are gone entirely — the dwell fires every burst and there is no second way — and `beginSession`
   has no "without motion" line to write. Zero `PoseSample.confidence` still exists and now means
   only "no reading yet": a session's first ticks, and a stream carrying rates with no attitude.
@@ -393,6 +395,19 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   `beginSession`, `pickUp` and `pump` all write, and each of those paths wants a test. That is a
   change to the page's state machine and belongs in a branch of its own rather than inside one
   about motion sensors.
+- **A second guard, for the other thing the gate could not see.** A note explaining one axis of
+  the volatility map was inserted between two of its rows. A markdown table ends at the first
+  blank line, so eleven rows — every engine, resource access and owner from V6 to V16 — stopped
+  being a table and rendered as literal pipe text. Nothing about the source looks wrong; only the
+  page is broken, and only from the gap down. Five review rounds read the paragraph's prose and
+  none rendered the page.
+
+  `tools/markdown_table_check.py` runs beside the conflict-marker checker and on the same
+  argument: documentation is a deliverable (ADR 0007), and a table that stops halfway is worse
+  than an out-of-date one because it does not read as damage — it reads as a shorter table. It
+  compares column counts rather than merely finding pipes, so a diagram drawn with pipes is not a
+  finding, and its own first version missed the very document that prompted it until its tests
+  said so. **Done.**
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.
@@ -475,8 +490,8 @@ would let a burst fire blind). So during a freeze the field is not stale, it is 
 has to notice that nobody is asking, decide how old is too old, and say so on screen — a frozen
 reticle with no explanation is what a user gets today. It outlived the dwell trigger it was written
 to precede: ADR 0043 landed, so a capture now reaches this state without anybody pressing anything,
-and ADR 0044's dwell credit bounds what a resumed loop can bank rather than what a frozen one
-reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
+and the dwell's credit bound limits what a resumed loop can bank rather than saying anything about
+what a frozen one reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
 
 ---
 

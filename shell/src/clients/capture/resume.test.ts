@@ -101,6 +101,19 @@ describe('describeResumeRefusal', () => {
     // And the capture is still there. `Resume` refuses before it touches the document, so the
     // sentence that ends the offer must not read as "your sphere was thrown away".
     expect(refusal.message).toMatch(/kept/i);
+    // And neither is a fresh capture on offer, which is the half the first version of this missed:
+    // the refusal is about the device rather than the document, so `Begin` fails exactly as
+    // `Resume` just did and a way out that leads nowhere is one dead button instead of two.
+    expect(refusal.offerFresh).toBe(false);
+  });
+
+  it('still offers a fresh capture for a refusal that is only about this document', () => {
+    // The distinction `offerFresh` exists for. Nothing a press can do makes this build read that
+    // document — so the resume offer goes — but a new sphere on the same device is untouched, and
+    // taking that away too would strand a user who has a working camera and a working sensor.
+    const refusal = describeResumeRefusal(unreadable);
+    expect(refusal.offerAgain).toBe(false);
+    expect(refusal.offerFresh).toBe(true);
   });
 
   it('takes the offer down for a refusal only a new build can change', () => {
