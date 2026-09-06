@@ -1333,18 +1333,9 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
-test('the shutter is offered exactly when guidance says hold still', async ({ page }) => {
-  // The only browser-level assertion that the aim gate is a gate.
-  //
-  // Thirteen tests wait for `#capture` to become *enabled*, and none of them ever asserts it is
-  // disabled — so `canCapture` could read `action !== 'Seek'`, or drop the check entirely, and the
-  // whole suite would stay green. That was measured, not supposed: a reviewer made exactly that
-  // substitution and every browser test passed.
-  //
-  // Asserted as an invariant over a sweep rather than at one hand-picked attitude, because which
-  // attitudes fall between cones is a property of the tessellation and would have to be rewritten
-  // the day the plan changes. What must hold at every attitude is that the offer and the reason
-  // for it agree.
+test('holding a cell fires a burst with nobody pressing anything', async ({ page }) => {
+  // ADR 0043, end to end: the core counts the dwell, reports it on the guidance the page already
+  // reads, and the page arms on `Fire`. Nothing here presses anything.
   const server = await serve();
   try {
     await page.goto(server.appUrl);
@@ -1356,65 +1347,79 @@ test('the shutter is offered exactly when guidance says hold still', async ({ pa
     });
     await viewfinderIsLive(page);
 
-    const seen = new Set();
-    for (let alpha = 0; alpha < 360; alpha += 7) {
-      await page.evaluate((a) => {
+    // One attitude, held. The dwell only counts ticks a sample arrived on, so the samples have to
+    // keep coming — which is what a phone in a hand does, and what a phone on a table does not.
+    const hold = async () => {
+      await page.evaluate(() => {
         window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
-          alpha: a, beta: 90, gamma: 0,
+          alpha: 0, beta: 90, gamma: 0,
         }));
-      }, alpha);
-      // One frame, so the pump has run against the attitude just dispatched.
-      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+      });
+      await page.waitForTimeout(50);
+    };
+    await hold();
+    await expect(page.locator('#guidance')).toContainText(/hold still/, { timeout: 15000 });
+    // And no shutter, because there is an aim: the dwell is what fires here.
+    await expect(page.locator('#capture')).toBeHidden();
 
-      const state = await page.evaluate(() => ({
-        guidance: document.querySelector('#guidance').textContent ?? '',
-        disabled: document.querySelector('#capture').disabled,
+    // Held, and watched while it is held. The ring has to be sampled *during* the hold rather than
+    // after it: the dwell only advances on ticks a sample arrives on, so a poll that dispatches
+    // nothing watches a dwell that is not running — which is how the first version of this test
+    // failed, waiting fifteen seconds for a ring that had every reason to stay empty.
+    const offsets = [];
+    let fired = false;
+    for (let i = 0; i < 120 && !fired; i += 1) {
+      await hold();
+      const seen = await page.evaluate(() => ({
+        offset: (() => {
+          const fill =
+            document.querySelector('#cell-layer .cell-ring[data-target="true"] .ring-fill');
+          return fill === null ? -1 : Number.parseFloat(fill.style.strokeDashoffset);
+        })(),
+        guidance: document.getElementById('guidance').textContent ?? '',
       }));
-      const holdingStill = state.guidance.includes('hold still');
-      seen.add(holdingStill);
-      expect(state.disabled, `alpha ${alpha}: "${state.guidance}"`).toBe(!holdingStill);
+      offsets.push(seen.offset);
+      fired = /captured|cell done|capturing/i.test(seen.guidance);
     }
 
-    // Both halves of the invariant were actually reached; a sweep that only ever saw one of them
-    // would assert nothing. This is the arrangement checking its own premise.
-    expect(seen.has(true), 'the sweep never aimed at a cell').toBe(true);
-    expect(seen.has(false), 'the sweep never aimed away from every cell').toBe(true);
+    // A burst, with nobody pressing anything.
+    expect(fired).toBe(true);
+    await expect.poll(() => countCandidates(page), { timeout: 30000 }).toBe(5);
 
-    // And then the state the sweep alone cannot reach, which is the one that matters.
-    //
-    // On a fresh capture the only two actions are `Seek` and `HoldStill`, so the sweep above
-    // cannot tell `=== 'HoldStill'` from `!== 'Seek'` — verified by running that exact sabotage
-    // against it, which passed. `AlreadyCaptured` is where the two differ: the camera is inside a
-    // captured cell's cone, the core would take the burst, and the page declines because
-    // re-shooting a finished cell is a deliberate act (ADR 0041). Nothing else in the suite ever
-    // reaches it, because every other test captures once and stops.
-    let held = null;
-    for (let alpha = 0; alpha < 360 && held === null; alpha += 7) {
-      await page.evaluate((a) => {
-        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
-          alpha: a, beta: 90, gamma: 0,
-        }));
-      }, alpha);
-      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
-      const line = await page.evaluate(() => document.querySelector('#guidance').textContent ?? '');
-      if (line.includes('hold still')) held = alpha;
-    }
-    expect(held, 'never found an attitude inside a cell').not.toBeNull();
+    // And the ring told the user it was coming. A part-drawn arc — neither empty nor full — is the
+    // whole of what `heldFraction` buys: the number the core counted, on screen, before it fired.
+    const partial = offsets.filter((offset) => offset > 0.5 && offset < 56);
+    expect(partial.length, `offsets seen: ${offsets.join(', ')}`).toBeGreaterThan(0);
+  } finally {
+    await server.close();
+  }
+});
 
+test('with no aim to hold, the button is the whole shutter', async ({ page }) => {
+  // The one device the dwell cannot serve: no aim to hold, and `Stability` refuses a batch with no
+  // samples rather than answering "still", so nothing can mature a dwell. The button survives there
+  // and nowhere else (ADR 0043) — and on the viewfinder rather than inside the panel, which folds
+  // itself once a capture starts.
+  //
+  // This runner is that device until an orientation event is dispatched, which is why none is.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    await expect(page.locator('#capture')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('#capture')).toBeEnabled();
-    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
-    // Keep the phone exactly where it was, so the cell that just filled is the cell under the
-    // reticle — the resting state ADR 0041 named `AlreadyCaptured`.
-    await expect.poll(async () => {
-      await page.evaluate((a) => {
-        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
-          alpha: a, beta: 90, gamma: 0,
-        }));
-      }, held);
-      return page.evaluate(() => document.querySelector('#guidance').textContent ?? '');
-    }, { timeout: 20000 }).toContain('already captured');
+    // Outside the panel, so folding the panel cannot take it away. Asserted through the DOM rather
+    // than by looking at it, because "visible" is exactly what a folded panel's contents are not.
+    expect(await page.evaluate(
+      () => document.getElementById('capture').closest('#panel') === null)).toBe(true);
 
-    await expect(page.locator('#capture')).toBeDisabled();
+    await page.locator('#capture').click();
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    await expect.poll(() => countCandidates(page), { timeout: 30000 }).toBe(5);
   } finally {
     await server.close();
   }

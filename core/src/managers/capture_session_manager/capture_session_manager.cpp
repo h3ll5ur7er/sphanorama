@@ -11,6 +11,14 @@
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+
+// How long the camera has to be held on a cell before a burst fires by itself.
+//
+// About two seconds: long enough that a phone swinging past a cell does not trip it, short enough
+// that a sphere of thirty-two cells is not a chore. A starting point rather than a measurement —
+// the same standing as the pose engine's rate thresholds — and a config key's worth of tuning once
+// there are real captures to tune against (ADR 0043).
+constexpr int64_t kDwellNs = 2'000'000'000;
 constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
@@ -674,6 +682,44 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     // AdvanceBurst abandons the burst itself on the way out, so this needs no guard of its own.
     SPH_TRY(const bool completed, AdvanceBurst());
     guidance.action = completed ? GuidanceAction::CellDone : GuidanceAction::Firing;
+  }
+
+  // The dwell, last, so it sees the action a burst in flight has already overwritten (ADR 0043).
+  //
+  // Counted here rather than in a client because a client cannot count it correctly. It has to
+  // restart when the *cell* changes even though the action does not — a slow pan along a row holds
+  // `HoldStill` continuously while the target moves under it, and a dwell keyed on the action alone
+  // accumulates across three cells and fires into whichever one it lands on, which is the shape of
+  // the bug ADR 0041 exists to stop. And it must not run over a stretch no pose arrived in: a page
+  // reading `performance.now()` cannot tell a still phone from a stalled sensor, and firing on the
+  // second is firing at a cell the phone may have left.
+  const int64_t now = clock_.MonotonicNs();
+  const bool held = guidance.action == GuidanceAction::HoldStill;
+  const bool sameCell = dwell_node_.has_value() && dwell_node_->value == guidance.targetNode.value;
+  if (!held || !sameCell) {
+    // Nothing to hold on, or something else to hold on. Either way this is a new dwell.
+    dwell_ns_ = 0;
+    dwell_fired_ = false;
+    dwell_node_ = held ? std::optional<NodeId>(guidance.targetNode) : std::nullopt;
+  } else if (!batch.empty()) {
+    // Only a tick that carried a sample adds time. The mark moves on every tick either way, so a
+    // stalled stretch is skipped rather than banked and charged to the next sample.
+    //
+    // `batch`, not `samples`: a client that pushes passes them and a client that pulls does not,
+    // and the browser is the second kind — it drains its own event buffer into the resident port
+    // and calls this with nothing. Asking `samples` made the dwell dead in the only client there
+    // is, while every native test passed because they all push. The e2e is what found it.
+    dwell_ns_ += now - dwell_marked_ns_;
+  }
+  dwell_marked_ns_ = now;
+  if (held) {
+    guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
+    if (dwell_ns_ >= kDwellNs && !dwell_fired_) {
+      // An edge, once per dwell. The client arms on it; the manager cannot arm for itself, because
+      // a burst is paced by the client's ticks over a frame the client keeps resident (ADR 0018).
+      guidance.action = GuidanceAction::Fire;
+      dwell_fired_ = true;
+    }
   }
   return Ok(guidance);
 }

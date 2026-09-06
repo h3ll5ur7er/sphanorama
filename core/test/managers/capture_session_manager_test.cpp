@@ -658,6 +658,119 @@ class BlindClaimingPlannerEngine final : public ICoveragePlannerEngine {
   NullCoveragePlannerEngine inner_;
 };
 
+// One tick with a sample in it, which is what makes the manager re-integrate the pose and is
+// therefore what the dwell counts. An empty batch is a tick on which nothing arrived.
+CaptureGuidance Tick(ICaptureSessionManager& manager) {
+  const ImuSample sample{};
+  auto guided = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
+  EXPECT_TRUE(guided.ok()) << guided.status.detail;
+  return guided.ok() ? guided.value : CaptureGuidance{};
+}
+
+TEST_F(CaptureSession, HoldingOnACellFiresABurstWithoutAnyonePressingAnything) {
+  // ADR 0043. The dwell is counted here, reported on the guidance the client already reads, and
+  // acted on by the client — which is the only thing that can arm, because a burst is paced by the
+  // client's ticks (ADR 0018).
+  Begin();
+
+  auto first = Tick(*manager);
+  ASSERT_EQ(first.action, GuidanceAction::HoldStill);
+  EXPECT_DOUBLE_EQ(first.heldFraction, 0.0) << "the first tick has served no time yet";
+
+  // Holding, but not long enough: the fraction climbs and the action stays `HoldStill`.
+  clock.AdvanceNs(1'000'000'000);
+  auto part = Tick(*manager);
+  EXPECT_EQ(part.action, GuidanceAction::HoldStill);
+  EXPECT_GT(part.heldFraction, 0.0);
+  EXPECT_LT(part.heldFraction, 1.0);
+
+  // And past it: one tick says `Fire`, with the ring full.
+  clock.AdvanceNs(1'500'000'000);
+  auto fires = Tick(*manager);
+  EXPECT_EQ(fires.action, GuidanceAction::Fire);
+  EXPECT_DOUBLE_EQ(fires.heldFraction, 1.0);
+
+  // Once, not on every tick after. `Fire` is an edge — a client that armed on it would otherwise
+  // arm again on the next frame, and `ArmBurst` would refuse with a burst already in flight.
+  clock.AdvanceNs(100'000'000);
+  EXPECT_NE(Tick(*manager).action, GuidanceAction::Fire);
+}
+
+TEST_F(CaptureSession, TheDwellStartsAgainWhenTheCellChangesEvenIfTheActionDoesNot) {
+  // The reset condition a client counting elapsed time gets wrong. A slow pan along a row holds
+  // `HoldStill` continuously while the target moves under it, so a dwell keyed on the action alone
+  // accumulates across three cells and fires into whichever one it lands on — the shape of the bug
+  // ADR 0041 exists to stop.
+  //
+  // The rings planner, because the fixture's null one has a single cell at identity and there is no
+  // elsewhere to aim at.
+  RingsCoveragePlannerEngine rings;
+  AimablePoseEngine aiming;
+  CaptureSessionManager aimed(rings, aiming, quality, preview, *camera, *sensor, *store, *projects,
+                              clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  ASSERT_TRUE(aimed.Begin(kProject, spec).ok());
+  auto plan = aimed.GetPlan();
+  ASSERT_TRUE(plan.ok());
+
+  auto opening = Tick(aimed);
+  ASSERT_EQ(opening.action, GuidanceAction::HoldStill) << "the camera starts on a cell";
+  clock.AdvanceNs(1'900'000'000);
+  auto nearly = Tick(aimed);
+  ASSERT_EQ(nearly.action, GuidanceAction::HoldStill);
+  ASSERT_GT(nearly.heldFraction, 0.5) << "the fixture needs the dwell nearly served";
+
+  // A different cell, and guidance still says hold still — it is inside a cone, just another one.
+  const CoverageNode* elsewhere = nullptr;
+  for (const auto& node : plan.value.nodes) {
+    if (node.id.value != nearly.targetNode.value) { elsewhere = &node; break; }
+  }
+  ASSERT_NE(elsewhere, nullptr) << "the fixture needs more than one cell";
+  clock.AdvanceNs(200'000'000);
+  TurnTo(aimed, aiming, elsewhere->targetOrientation);
+  auto moved = Tick(aimed);
+  ASSERT_NE(moved.targetNode.value, nearly.targetNode.value) << "the fixture needs a new cell";
+  ASSERT_EQ(moved.action, GuidanceAction::HoldStill) << "and the action must not be what changed";
+  EXPECT_LT(moved.heldFraction, nearly.heldFraction)
+      << "time served on one cell is not time served on the next";
+
+  // And the total would have been past the dwell had it carried over: 1.9 s plus 0.2 s plus this
+  // one. Nothing fires.
+  clock.AdvanceNs(200'000'000);
+  EXPECT_NE(Tick(aimed).action, GuidanceAction::Fire);
+}
+
+TEST_F(CaptureSession, ADwellDoesNotRunOnATickNoPoseArrivedFor) {
+  // The reason this is the manager's and not the page's. `performance.now()` keeps moving when the
+  // sensor stops delivering, so a client counting elapsed time matures its dwell on guidance about
+  // a cell the phone may have left — and fires into it. Here the clock jumps a long way with no
+  // sample behind it, and the dwell does not move.
+  Begin();
+  Tick(*manager);
+
+  clock.AdvanceNs(10'000'000'000);
+  auto stalled = manager->OnMotion({});
+  ASSERT_TRUE(stalled.ok()) << stalled.status.detail;
+  EXPECT_NE(stalled.value.action, GuidanceAction::Fire)
+      << "ten seconds of wall clock with no pose behind it is not ten seconds of aiming";
+  EXPECT_DOUBLE_EQ(stalled.value.heldFraction, 0.0);
+
+  // And a *pulled* sample counts, which is the half every test in this file used to miss. A client
+  // that pushes passes its samples; a client that pulls calls with nothing and the manager drains
+  // the port — and the browser is the second kind. A dwell that asked the argument rather than the
+  // batch was dead in the only client there is while every test here passed.
+  sensor->Enqueue(ImuSample{});
+  clock.AdvanceNs(500'000'000);
+  auto pulled = manager->OnMotion({});
+  ASSERT_TRUE(pulled.ok()) << pulled.status.detail;
+  EXPECT_GT(pulled.value.heldFraction, 0.0) << "a drained sample is a sample";
+}
+
 TEST_F(CaptureSession, WhetherThereIsAnAimIsTheManagersAnswerRatherThanTheEngines) {
   // Three places derive "is there an aim" from `PoseSample.confidence`: each planner engine, to
   // choose between aiming and covering; `ArmBurst`, to decide whether to enforce an acceptance
