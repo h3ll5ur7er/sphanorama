@@ -115,8 +115,17 @@ let cameraStream: MediaStream | null = null;
 // throwing away *which* locks they were. The row's whole job is to answer "was the camera free to
 // re-expose between these frames?", and a bare "released" answers it for nobody.
 let lastLocksLine = '';
-function sayLocksReleased(row: Element) {
-  row.textContent = lastLocksLine === '' ? 'no burst has run yet' : `${lastLocksLine} · released`;
+// Painted from what the write *resolved with*, not from having queued it.
+//
+// Both callers fire and forget, so saying "released" on the next line asserted a state of the track
+// the track had not reached — and with a bounded chain it might reach it three seconds later, or
+// not at all. Waiting for the answer costs nothing here (the burst is over) and makes the row true
+// rather than intended, which is the one thing this row is for.
+function showLocksReleased(row: Element, done: Awaited<ReturnType<typeof camera.setLocks>>) {
+  const had = lastLocksLine === '' ? 'no burst has run yet' : lastLocksLine;
+  row.textContent = done.ok
+    ? (lastLocksLine === '' ? had : `${lastLocksLine} · released`)
+    : `${had} · release refused — ${done.status.detail || done.status.code}`;
 }
 let lockWrites: Promise<unknown> = Promise.resolve();
 // How long a single lock write may take before the chain gives up waiting for it.
@@ -597,14 +606,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // fix.
     const unlock = () => {
       remote.setLocks({ exposure: false, whiteBalance: false, focus: false });
-      void writeLocks({ exposure: false, whiteBalance: false, focus: false });
+      void writeLocks({ exposure: false, whiteBalance: false, focus: false })
+        .then((done) => showLocksReleased(locksOut, done));
       // And the row stops claiming them. It reads off the last successful *request*, so after a
       // refused arm it went on listing "exposure · white balance · focus" over a track that was
       // back to metering — the one row whose whole job is to be trustworthy about that. What it
       // must not do is forget *which* locks: "released" alone answers nothing, and a first attempt
       // that wrote it wholesale took out the row a browser test reads the camera's offered modes
       // from.
-      sayLocksReleased(locksOut);
     };
 
     let held: Awaited<ReturnType<typeof camera.setLocks>>;
@@ -893,16 +902,20 @@ async function main() {
     remote.onCloseCamera(() => {
       stopCameraStream(cameraStream);
       cameraStream = null;
+      // The row described a track that no longer exists, and it is module scope so nothing else
+      // would have cleared it — a second session's first refusal would have quoted the first
+      // session's locks.
+      lastLocksLine = '';
     });
 
     // The core is done with the burst and wants the camera metering again. Only this side holds
     // the track, and nothing waits for it: the burst is already over (ADR 0022).
     remote.onReleaseLocks(() => {
-      void writeLocks({ exposure: false, whiteBalance: false, focus: false });
       // The row says what the *last burst* got, and the burst is over — so it went on listing locks
       // the track had just given back. It was made truthful after a refused arm and left stale
       // after every successful one, which is the more common path by far.
-      sayLocksReleased(locksOut);
+      void writeLocks({ exposure: false, whiteBalance: false, focus: false })
+        .then((done) => showLocksReleased(locksOut, done));
     });
 
     // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the
