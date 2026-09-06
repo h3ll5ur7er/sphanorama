@@ -392,6 +392,34 @@ constraints landed. A fifth of every burst was going in the bin on the device th
 locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
+
+### Measured and not a defect: the arrow that "only moves when pointing down"
+
+Reported from a phone alongside the three-cells-from-one-spot bug, and written down because the
+obvious reading of it is wrong and somebody would otherwise measure it twice.
+
+**The bearing arithmetic is correct.** It combines both axes: with the phone level, a cell 30° left
+and 30° up gives a bearing of 319.1°, one 30° right and 30° up gives 40.9°, and one straight up
+gives 0°. Nothing is pinned to an axis and nothing is swapped.
+
+**What produces the symptom is the visibility rule, and it is deliberate.** The arrow is raised only
+when the cell being aimed at is *not in the picture* — if the ring is on screen, the ring is the
+guidance. With a level phone against a real tessellation, one or two cells are on screen at all
+times, so the arrow is simply absent. Tilt down, the whole ring leaves the field of view, the arrow
+appears, and its bearing tracks smoothly (measured: 0.0 → 14.0 → 27.2 → 346.0 as the phone pans).
+"Only moves while pointing down" is the arrow only *existing* while pointing down.
+
+**One sub-case does look stuck, and it is also correct.** When the arrow is visible and the target
+sits at the camera's own elevation, the bearing is exactly ±90° and does not rotate as the phone
+pans — because the direction to turn genuinely does not change. The distance does, and the arrow
+carries it as a number beside the glyph. Rotating there would be inventing a direction.
+
+**What was actually broken is what the arrow pointed at.** Under the old rule, capturing the cell in
+front of you moved the target to a neighbour under a still phone, so the reticle and the arrow
+jumped for reasons no user could see. ADR 0041 fixes that. If the arrow still reads wrong once aim
+decides the target, the change wanted is a design one — showing a direction even when a ring is
+visible, say — not a correction to the arithmetic.
+
 ---
 
 ## Phase 2 — Stitching
