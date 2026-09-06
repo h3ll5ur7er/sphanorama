@@ -12,8 +12,16 @@ import type { LockReport } from '../../bridge/protocol';
 const MESSAGES: Partial<Record<Status['code'], string>> = {
   SensorPermissionDenied:
     'Camera or motion permission was declined. Allow access in your browser settings, then reload.',
+  // What a user of a device with no motion sensor sees, and the only thing they see: the session
+  // is refused before the camera is even asked for (ADR 0044). It has to carry three things —
+  // that this is a requirement rather than a fault, what the requirement is, and the one thing
+  // that is worth trying — because for an iPhone user who declined the motion prompt it is a
+  // choice they made and can unmake, and nothing else on the page will tell them so.
   SensorUnavailable:
-    'This device reports no motion sensors. Capture will fall back to visual tracking.',
+    'Capture needs motion sensors, and this browser reports none. If you declined the motion '
+    + 'permission, allow it in your browser settings and reload. Otherwise this device cannot '
+    + 'tell which way it is pointing, and a sphere captured on it would have no way to know '
+    + 'where its photos belong.',
   CameraUnavailable:
     'No usable camera. Another tab of this app, or another app, may be holding it — '
     + 'close them and reload. Otherwise this device has no camera facing that way.',

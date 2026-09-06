@@ -114,6 +114,3 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
  * `position: absolute` do not compete — but the arrow next door taught this file that a hidden
  * element with author layout is a bug waiting to be re-found, and stating it costs one line.
  */
-#capture { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
-  align-self: auto; z-index: 3; background: rgba(13, 21, 20, .72); backdrop-filter: blur(6px); }
-#capture[hidden] { display: none; }

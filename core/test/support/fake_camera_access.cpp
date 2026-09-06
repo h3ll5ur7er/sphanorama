@@ -21,7 +21,13 @@ FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
 }
 
 Result<CameraCapabilities> FakeCameraAccess::Open(const CameraOpenSpec&) {
+  // Counted before the refusal, because the count is about what was asked of the device rather
+  // than what it gave back: a refused open has already raised the prompt.
   ++opens_;
+  if (fail_open_) {
+    return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent,
+                                   "no usable camera");
+  }
   open_ = true;
   return Ok(capabilities_);
 }

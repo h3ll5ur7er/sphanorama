@@ -17,7 +17,7 @@ wrong place.
 | V2 | **How a panorama is built** — pipeline order, which stages run, quality/speed tiers, incremental vs full rebuild | Device class, user's "fast preview vs final render" choice | `PanoramaBuildManager` |
 | V3 | **What a saved project is and how its lifecycle runs** — resume, versioning, export targets | Product features, platform sharing APIs | `ProjectManager` |
 | V4 | **How the sphere is tessellated and coverage is judged** — ring/FoV layout vs geodesic, overlap targets, hole detection, which cell needs a retake | Lens FoV, capture strategy research, quality bar | `CoveragePlannerEngine` |
-| V5 | **How orientation is estimated** — complementary vs Madgwick vs EKF fusion, gyro-only, vision-only, sensor-absent | Device sensor quality, browser API availability, iOS permission denial | `PoseEngine` |
+| V5 | **How orientation is estimated** — complementary vs Madgwick vs EKF fusion, gyro-only, vision-only | Device sensor quality, browser API availability | `PoseEngine` |
 | V6 | **What makes a frame "the best of the burst"** — sharpness metric, motion-blur estimate, exposure agreement, mover-content penalty, user override | Algorithm research; this is the feature most likely to be tuned | `FrameQualityEngine` |
 | V7 | **How frames are aligned** — ORB/AKAZE/SIFT, matcher, RANSAC model (homography vs pure rotation), sensor-prior weighting, global refinement | Algorithm research, speed/quality tiers | `RegistrationEngine` |
 | V8 | **How pixels become one image** — exposure compensation, seam finding, ghost masking, blend (feather/multiband), projection (equirect/cubemap), resampling | Algorithm research and output format | `CompositionEngine` |

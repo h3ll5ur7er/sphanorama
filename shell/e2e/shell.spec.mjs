@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { startServer } from '../../tools/static_server.mjs';
 import { GRAB_MAX_EDGE } from '../src/access/preview-frame.ts';
 import { PREVIEW_MAX_EDGE } from '../src/clients/review/panel.ts';
+import { quaternionFromDeviceOrientation } from '../src/access/orientation.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = resolve(repoRoot, 'dist');
@@ -28,8 +29,8 @@ async function serve() {
 /**
  * Waits for the viewfinder to be delivering frames, which is not the same as being able to aim.
  *
- * `#capture` becomes enabled when guidance says `HoldStill` — a fact about where the camera is
- * pointing, not about whether it is producing frames. The grabber refuses a video with no data or no dimensions and the loop only grabs at all
+ * Guidance says `HoldStill` once the camera is inside a cell's cone — a fact about where the
+ * camera is pointing, not about whether it is producing frames. The grabber refuses a video with no data or no dimensions and the loop only grabs at all
  * once a burst is armed, so a burst armed before the first frame arrives spends its whole settle
  * (ADR 0032) waiting for one that is not there and then fails with `CameraUnavailable`. On a loaded
  * runner that window is wide enough to fail a test, which is how this was found: one job, one
@@ -63,6 +64,103 @@ async function countCandidates(page) {
     }
     return total;
   });
+}
+
+const RAD_TO_DEG = 180 / Math.PI;
+
+/**
+ * The device-orientation triple that would make the viewfinder look along `target`.
+ *
+ * The inverse of the adapter's own conversion, and it exists so a test can point the phone at a
+ * cell the plan actually has instead of guessing angles until one sticks. `toCoreFrame` composes
+ * `EARTH_TO_CORE ⊗ device ⊗ screen`; `screen.orientation.angle` is 0 on this runner, so the
+ * device attitude is `EARTH_TO_CORE⁻¹ ⊗ target` and what is left is reading intrinsic Z-X'-Y''
+ * angles back out of it — the same decomposition `DeviceOrientationEvent` is defined by.
+ *
+ * The caller checks the result against the real conversion rather than trusting this, which is
+ * what keeps a wrong sign here from becoming a fifteen-second timeout somewhere else.
+ */
+function deviceOrientationLookingAt(target) {
+  // EARTH_TO_CORE⁻¹ ⊗ target. Written out because importing a quaternion library to conjugate one
+  // constant is more machinery than the constant.
+  const h = Math.SQRT1_2;
+  const q = {
+    w: h * (target.w - target.x),
+    x: h * (target.w + target.x),
+    y: h * (target.y - target.z),
+    z: h * (target.y + target.z),
+  };
+
+  // The rotation matrix entries the decomposition needs, from R = Rz(alpha) Rx(beta) Ry(gamma).
+  const m01 = 2 * (q.x * q.y - q.w * q.z);
+  const m11 = 1 - 2 * (q.x * q.x + q.z * q.z);
+  const m20 = 2 * (q.x * q.z - q.w * q.y);
+  const m21 = 2 * (q.y * q.z + q.w * q.x);
+  const m22 = 1 - 2 * (q.x * q.x + q.y * q.y);
+
+  const beta = Math.asin(Math.max(-1, Math.min(1, m21)));
+  return {
+    alpha: Math.atan2(-m01, m11) * RAD_TO_DEG,
+    beta: beta * RAD_TO_DEG,
+    gamma: Math.atan2(-m20, m22) * RAD_TO_DEG,
+  };
+}
+
+/**
+ * Points the phone at a cell that still needs shooting, and waits for the core to agree.
+ *
+ * This replaces waiting for `#capture` to become enabled, which is what most of this suite used
+ * as its "the app is ready to capture" signal until ADR 0044 took the button away. That signal
+ * had always been a slightly dishonest one: it went enabled because this runner reports *no*
+ * orientation until a test dispatches one, so every assertion under it ran the sensorless path —
+ * the one path the app no longer has.
+ *
+ * One event, not a stream, and that is deliberate: an attitude anchors the pose and guidance
+ * starts naming the cell the camera is inside, while the dwell stays at zero because it only
+ * advances on ticks a sample arrived on (ADR 0043). So a test that wants to arm a burst itself
+ * still can, and only a test that keeps dispatching gets one fired for it.
+ *
+ * The cell is read from the plan the core made and the candidates it holds, so calling this again
+ * after a burst aims at a different cell rather than back at the one just filled.
+ */
+async function aimAtACell(page) {
+  // The listener has to be installed before an event can reach it, and it is installed several
+  // worker round trips after `#stage` says the session started. Without this wait the dispatch
+  // below lands in an empty room and the assertion that follows waits out its whole timeout.
+  await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+    timeout: 15000,
+  });
+
+  const target = await page.evaluate(async () => {
+    const plan = await window.sphanoramaCore.captureSession.getPlan();
+    if (!plan.ok) return null;
+    for (const node of plan.value.nodes) {
+      const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+      if (got.ok && got.value.length === 0) {
+        return { id: node.id, orientation: node.targetOrientation };
+      }
+    }
+    return null;
+  });
+  expect(target, 'the plan has no cell left to aim at').not.toBeNull();
+
+  const { alpha, beta, gamma } = deviceOrientationLookingAt(target.orientation);
+  // Checked against the adapter's own conversion, not assumed. A sign error in the inverse would
+  // otherwise show up as whichever assertion came next timing out, fifteen seconds later and in
+  // a test about something else entirely.
+  const round = quaternionFromDeviceOrientation(alpha, beta, gamma, 0);
+  const dot = round.w * target.orientation.w + round.x * target.orientation.x
+    + round.y * target.orientation.y + round.z * target.orientation.z;
+  expect(Math.abs(dot), `aimed at ${JSON.stringify(target.orientation)}`).toBeGreaterThan(0.9999);
+
+  await page.evaluate(({ alpha: a, beta: b, gamma: g }) => {
+    window.dispatchEvent(new DeviceOrientationEvent('deviceorientation',
+      { alpha: a, beta: b, gamma: g }));
+  }, { alpha, beta, gamma });
+  await expect(page.locator('#guidance')).toContainText(/hold still/, { timeout: 15000 });
+  // The angles come back with the cell so a caller can keep dispatching the same attitude — which
+  // is what maturing a dwell takes, since it only advances on ticks a sample arrived on.
+  return { id: target.id, alpha, beta, gamma };
 }
 
 async function viewfinderIsLive(page) {
@@ -247,7 +345,7 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
 
     // Through the client's own hook rather than the core directly: arming outside the capture
     // loop is the mistake ADR 0018 warned about, so the test must not be able to make it either.
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     const armed = await page.evaluate(() => window.sphanoramaCapture());
     expect(armed).toBe(true);
@@ -290,7 +388,7 @@ test('a pick survives the tab that made it', async ({ page }) => {
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
@@ -349,7 +447,7 @@ test('the review strip shows the frames, not just their scores', async ({ page }
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, {
@@ -424,7 +522,7 @@ test('a sphere from before the last capture cannot come back as this one', async
 
     // A cell, so the session has frames in the tier and a document that names them. Cooling
     // spills a committed cell (ADR 0023), which is what puts them in the OPFS file at all.
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
@@ -440,25 +538,36 @@ test('a sphere from before the last capture cannot come back as this one', async
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
 
-    // The same tier, so the resume runs the whole way and stops at the camera — which nothing on
-    // this fresh page has opened yet. Every earlier step had to pass to get here: the document was
-    // written (so the tier answered when it was checkpointed), it parsed, its token matched the
-    // one the index came back with, and the store took every frame it names. A resume refused at
-    // the tier would say FailedPrecondition instead, and one whose checkpoint never wrote a
-    // document would say NotFound.
-    const sameTier = await page.evaluate(
+    // Nothing on this fresh page has enabled anything, so the core has been told no camera and no
+    // motion capability. Since ADR 0044 the sensor is what a resume establishes first, and this
+    // is the only thing it can say — worth asserting rather than skipping past, because it is
+    // also the answer a real device with no sensors gets.
+    const beforeEnabling = await page.evaluate(
       (id) => window.sphanoramaCore.captureSession.resume(id), first);
-    expect(sameTier.ok).toBe(false);
-    expect(sameTier.status.code).toBe('CameraUnavailable');
+    expect(beforeEnabling.ok).toBe(false);
+    expect(beforeEnabling.status.code).toBe('SensorUnavailable');
+
+    // Then the same tier, through the offer the page makes, which starts motion and opens a
+    // camera on the way. It succeeds — and a success is a stronger statement than the refusal
+    // this used to assert, because every stage had to pass to reach it: the document was written
+    // (so the tier answered when it was checkpointed), it parsed, its token matched the one the
+    // index came back with, and the store took back every frame it names.
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
 
     // And now a different sphere is started on this device, which empties the tier (ADR 0034) and
-    // fills it again from identity 1.
+    // fills it again from identity 1. Through a second reload and the enable button rather than
+    // through the core: `enable` hides itself once it has run, and a `begin` driven straight
+    // through the facade would have to open a camera the resume above is already holding.
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
 
     const afterAnotherCapture = await page.evaluate(async (id) => {
       // Ended first, or the refusal below would be the one about a session already being in
-      // progress — the same status code for an entirely different reason.
+      // progress — the same status code for an entirely different reason. Ending closes the
+      // camera, which costs nothing here: the tier is checked long before one is opened.
       await window.sphanoramaCore.captureSession.end();
       return window.sphanoramaCore.captureSession.resume(id);
     }, first);
@@ -583,7 +692,7 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
@@ -642,24 +751,34 @@ test('a camera that dies while the page is still enabling does not start a captu
     // And no session behind it. `capturing` is what `beginSession` writes, and it is the word the
     // page had no business saying.
     await expect(page.locator('#stage')).not.toContainText('capturing');
-    await expect(page.locator('#capture')).toBeDisabled();
+    // And nothing can be armed. This used to read the shutter's `disabled` attribute; with the
+    // button gone (ADR 0044) the same claim is made against the path the dwell arms through,
+    // which is the one that would actually have to refuse.
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
   } finally {
     await server.close();
     await context.close();
   }
 });
 
-test('the shutter stays taken from the press until the burst is over', async ({ browser }) => {
-  // The press disabled the button and the next guidance tick put it back, because that line knew
-  // only what guidance said and nothing about the arm the press had started. Nothing was armed
-  // twice — `armAt` refuses a second arm while one is in flight — so what the second press got was
-  // silence. A button offered while an arm is in flight lies about what pressing it does.
+test('a held cell fires one burst, not one per tick', async ({ browser }) => {
+  // What is left of `the shutter stays taken from the press until the burst is over` once the
+  // shutter is gone (ADR 0044). That test watched the button for a window in which a second press
+  // would have been accepted; the window it was about is still there, and now nothing but the
+  // core closes it — the dwell latches when it fires, `armAt` refuses a second arm while one is
+  // in flight, and a burst in flight overwrites the action guidance reports, so the dwell resets
+  // rather than continuing to mature underneath it.
   //
-  // The window is the time between the press and the core reporting `Firing`, and on a camera that
-  // takes the locks instantly it is a few frames: traced on this runner as `capturing` at 38 ms,
-  // with the button never observably back. So the camera here is slowed to open the window on
-  // purpose, rather than the test hoping to land in it — a first draft passed under its own
-  // sabotage for exactly that reason.
+  // Three guards for one property, and they are not independent — which is worth writing down,
+  // because the obvious sentence here ("break any one and the phone re-arms") is false and was
+  // measured to be. Unlatching `dwell_fired_` changes nothing: a burst in flight overwrites the
+  // action, so the dwell resets rather than maturing again, and any extra `Fire` before the arm
+  // lands is refused by `armAt`. What this test isolates is the third: making `Locate` answer
+  // `HoldStill` on a cell it has already captured fires a second burst into it, and the count
+  // below comes back 8 — the per-cell cap (ADR 0037), which is what ten frames become.
+  //
+  // The camera is slowed on purpose, as it was here before: on one that takes the locks instantly
+  // the window is a few frames and the test would be hoping to land in it rather than opening it.
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -673,8 +792,8 @@ test('the shutter stays taken from the press until the burst is over', async ({ 
       return { ...settings.call(this), ...settled };
     };
     // 300 ms per constraint set, three of them: about a second of arming, well inside the three
-    // the page allows one write, and long enough that a shutter put back by a guidance tick is
-    // observable for many frames rather than for none.
+    // the page allows one write, and long enough that a dwell left running underneath it would
+    // mature again many frames before the burst ends.
     MediaStreamTrack.prototype.applyConstraints = function (constraints) {
       return new Promise((resolve) => setTimeout(() => {
         for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
@@ -689,29 +808,35 @@ test('the shutter stays taken from the press until the burst is over', async ({ 
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    const aim = await aimAtACell(page);
     await viewfinderIsLive(page);
 
-    // Sampled from inside the page, every animation frame, so the polling is not at the mercy of
-    // the driver's round trip.
-    const everEnabled = await page.evaluate(async () => {
-      const button = document.getElementById('capture');
-      const guidance = document.getElementById('guidance');
-      button.click();
-      let enabledAt = null;
-      const started = performance.now();
-      while (performance.now() - started < 4000) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        if (!button.disabled && enabledAt === null) enabledAt = performance.now() - started;
-        if (/captured|cell done/i.test(guidance.textContent)) break;
-      }
-      return enabledAt;
-    });
-    // Null, not "some number after the burst": the claim is that there is no window at all.
-    expect(everEnabled).toBeNull();
-    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 30000 });
-    // And offered again once it is over, so this cannot pass by disabling the shutter for good.
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 30000 });
+    // Held, without pause, right through the burst the hold starts and well past the end of it.
+    // The hold has to continue while the burst runs: the dwell only advances on ticks a sample
+    // arrived on, so a test that stopped dispatching would be watching a dwell that had stopped
+    // for a reason of its own.
+    let sawFiring = false;
+    for (let i = 0; i < 200; i += 1) {
+      await page.evaluate(({ a, b, g }) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation',
+          { alpha: a, beta: b, gamma: g }));
+      }, { a: aim.alpha, b: aim.beta, g: aim.gamma });
+      await page.waitForTimeout(50);
+      const text = await page.locator('#guidance').textContent();
+      if (/capturing/i.test(text)) sawFiring = true;
+      if (sawFiring && /already captured/i.test(text)) break;
+    }
+    expect(sawFiring, 'the hold never fired a burst at all').toBe(true);
+
+    // One burst, and this is the whole assertion: five candidates in the cell that was held, not
+    // ten. Read from the cell by name rather than summed, so a second burst that landed somewhere
+    // else would fail the count below instead of hiding in this one.
+    const inCell = await page.evaluate(async (id) => {
+      const got = await window.sphanoramaCore.captureSession.candidates(id);
+      return got.ok ? got.value.length : -1;
+    }, aim.id);
+    expect(inCell).toBe(5);
+    expect(await countCandidates(page)).toBe(5);
   } finally {
     await server.close();
     await context.close();
@@ -753,7 +878,7 @@ test('a session ended mid-burst still says which locks that burst had', async ({
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     // Fired and not awaited, so the session can be ended while the burst is still filling.
@@ -791,7 +916,7 @@ test('a camera taken away mid-session takes the capture loop with it', async ({ 
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     await page.evaluate(() => {
@@ -807,7 +932,6 @@ test('a camera taken away mid-session takes the capture loop with it', async ({ 
     // half second after it is armed, so a count taken straight away agrees with an armed burst.
     await page.waitForTimeout(4000);
     expect(await countCandidates(page)).toBe(0);
-    await expect(page.locator('#capture')).toBeDisabled();
     await expect(page.locator('#stage')).toContainText(/taken away/i);
   } finally {
     await server.close();
@@ -849,7 +973,7 @@ test('a slow camera spends its lock budget on the track, not in the queue', asyn
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     // Three in a row, because the failure is cumulative: the first one always worked and it was
@@ -858,7 +982,7 @@ test('a slow camera spends its lock budget on the track, not in the queue', asyn
       expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
       await expect(page.locator('#guidance'))
         .toContainText(/captured|cell done/i, { timeout: 30000 });
-      await expect(page.locator('#capture')).toBeEnabled({ timeout: 30000 });
+      await aimAtACell(page);
     }
     await expect(page.locator('#locks')).not.toContainText(/did not answer/i);
   } finally {
@@ -905,7 +1029,7 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     // Pressed, then the lens is taken 100 ms later — inside the second the lock writes take.
@@ -925,7 +1049,6 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
     expect(await countCandidates(page)).toBe(0);
     // And the page is still saying the camera is gone rather than reporting a capture over it.
     await expect(page.locator('#stage')).toContainText(/taken away/i);
-    await expect(page.locator('#capture')).toBeDisabled();
     // Including the locks row, which the refusal's own release paints a second later. It must not
     // end at "no burst has run yet" — the camera really did take and give back three locks, and
     // that string is the row claiming nothing ever ran.
@@ -990,7 +1113,7 @@ test('a camera taken away while the arm is in the core says so, and keeps saying
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     const armed = await page.evaluate(async () => {
@@ -1065,7 +1188,7 @@ test('a lock write that answers late leaves the row explaining the refusal', asy
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
@@ -1111,7 +1234,7 @@ test('a camera that will not answer a lock request does not get a burst', async 
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
     // Refused, and no pixels banked. Before this, the timeout was manufactured into the same
@@ -1176,11 +1299,15 @@ test('a manager failure crosses the boundary as a status, not a crash', async ({
       };
     });
     expect(outcome.refusedCode).toBe('InvalidArgument');
-    // The camera port is real now, and nothing on this page opened a camera: the plan is sized
-    // from the lens, so the session refuses rather than planning against an invented one.
-    expect(outcome.startedCode).toBe('CameraUnavailable');
-    expect(outcome.startedDetail).toContain('camera');
-    // And a session for a project nobody created never gets as far as the camera.
+    // Both ports are real now and nothing on this page has enabled either: no camera is open, and
+    // the host has not been told a motion capability, so it answers `None`. Since ADR 0044 that
+    // is the first refusal `Begin` reaches — it establishes the sensor before it asks for a
+    // camera, so a session that cannot start never raises the permission prompt.
+    expect(outcome.startedCode).toBe('SensorUnavailable');
+    expect(outcome.startedDetail).toContain('motion');
+    // And a session for a project nobody created never gets as far as either. That check is still
+    // first: a `Begin` naming a project that does not exist would otherwise leave a titleless one
+    // in the user's list.
     expect(outcome.orphanedCode).toBe('NotFound');
   } finally {
     await server.close();
@@ -1359,8 +1486,12 @@ test('holding a cell fires a burst with nobody pressing anything', async ({ page
     };
     await hold();
     await expect(page.locator('#guidance')).toContainText(/hold still/, { timeout: 15000 });
-    // And no shutter, because there is an aim: the dwell is what fires here.
-    await expect(page.locator('#capture')).toBeHidden();
+    // And no shutter anywhere on the page, because the dwell is the only way a burst starts now
+    // (ADR 0044). Asserted as absence rather than as a hidden element: a `toBeHidden` on a
+    // control that no longer exists passes for the wrong reason, and would go on passing if
+    // somebody put a disabled one back.
+    expect(await page.evaluate(() => document.querySelectorAll('button').length > 0)).toBe(true);
+    expect(await page.evaluate(() => document.getElementById('capture'))).toBe(null);
 
     // Held, and watched while it is held. The ring has to be sampled *during* the hold rather than
     // after it: the dwell only advances on ticks a sample arrives on, so a poll that dispatches
@@ -1395,36 +1526,6 @@ test('holding a cell fires a burst with nobody pressing anything', async ({ page
   }
 });
 
-test('with no aim to hold, the button is the whole shutter', async ({ page }) => {
-  // The one device the dwell cannot serve: no aim to hold, and `Stability` refuses a batch with no
-  // samples rather than answering "still", so nothing can mature a dwell. The button survives there
-  // and nowhere else (ADR 0043) — and on the viewfinder rather than inside the panel, which folds
-  // itself once a capture starts.
-  //
-  // This runner is that device until an orientation event is dispatched, which is why none is.
-  const server = await serve();
-  try {
-    await page.goto(server.appUrl);
-    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
-    await page.locator('#enable').click();
-    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
-    await viewfinderIsLive(page);
-
-    await expect(page.locator('#capture')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled();
-    // Outside the panel, so folding the panel cannot take it away. Asserted through the DOM rather
-    // than by looking at it, because "visible" is exactly what a folded panel's contents are not.
-    expect(await page.evaluate(
-      () => document.getElementById('capture').closest('#panel') === null)).toBe(true);
-
-    await page.locator('#capture').click();
-    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
-    await expect.poll(() => countCandidates(page), { timeout: 30000 }).toBe(5);
-  } finally {
-    await server.close();
-  }
-});
-
 test('the page says which locks the burst actually got', async ({ page }) => {
   // The question a burst's numbers raise and the strip could not answer: is the camera free to
   // re-expose and refocus between these five frames? On a Pixel one cell's candidates scored
@@ -1446,7 +1547,9 @@ test('the page says which locks the burst actually got', async ({ page }) => {
     // Nothing said yet: this is about a burst, and none has been fired.
     await expect(page.locator('#locks')).toHaveText('—');
 
-    await page.locator('#capture').click();
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
     await expect(page.locator('#locks')).toHaveText('exposure · focus');
   } finally {
@@ -1490,7 +1593,9 @@ test('a refused lock says what the camera does offer', async ({ page }) => {
     await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
     await page.locator('#panel-toggle').click();
 
-    await page.locator('#capture').click();
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
     await expect(page.locator('#locks'))
       .toHaveText('focus · exposure refused (offers continuous, manual, single-shot)');
@@ -1526,7 +1631,9 @@ test('a browser that will not say is not reported as a camera with nothing to gi
     await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
     await page.locator('#panel-toggle').click();
 
-    await page.locator('#capture').click();
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
     await expect(page.locator('#locks')).toHaveText(/does not report/i);
     await expect(page.locator('#locks')).not.toHaveText(/no manual modes/i);
@@ -1547,15 +1654,14 @@ test('the ring fills when its cell finishes, without waiting for another sample'
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
 
-    // One sample, so there is an attitude to place markers against, then none after the burst.
-    await page.evaluate(() => {
-      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
-        alpha: 0, beta: 90, gamma: 0,
-      }));
-    });
+    // One sample and no more — which is what `aimAtACell` dispatches, and the whole arrangement
+    // this test needs: nothing arrives after the burst, so the tick that reports the cell done is
+    // the last tick there will ever be. A second dispatch here would be a second chance to redraw
+    // and would quietly remove the thing under test.
+    //
     // Waited for, not assumed. The sample has to be drained, folded into the pose and drawn
     // before the burst starts, or there are no rings for the burst to fill and the poll below
     // times out on a page that was only slow. Rings existing does not weaken what this is about:
@@ -1822,16 +1928,26 @@ test('a sensor that dies mid-session says so instead of going quiet', async ({ b
   }
 });
 
-test('a phone with no motion sensors still captures', async ({ browser }) => {
-  // Declining motion on iOS lands here, and so does any desktop without sensors. The core treats
-  // it as a supported configuration — PoseEngine switches to vision-only (docs/03 UC-4) — so a
-  // client that refused to start a session would be inventing a restriction the core does not
-  // have.
+test('a phone with no motion sensors is told what is required and what is missing',
+  async ({ browser }) => {
+  // Declining motion on iOS lands here, and so does any desktop without sensors. This test used
+  // to be called `a phone with no motion sensors still captures` and asserted the opposite: the
+  // core treated the device as a supported configuration, the pose went vision-only, and the page
+  // started a session that said "capturing without motion — 32 cells planned, aim by hand".
+  //
+  // It did capture. What it produced was a folder of pictures with a plan's worth of guessed
+  // labels: nothing anywhere verified that a cell's frames came from that cell's direction, and
+  // the failure was invisible until a build stage this repo does not have yet. ADR 0044 refuses
+  // it instead, and the message is the whole deliverable — it has to say that motion is required,
+  // that this browser reports none, and the one thing worth trying, because for a user who
+  // declined the prompt this is a choice they can unmake and nothing else on the page says so.
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
-    // Both APIs, because the adapter now has two sources and a device with neither is the case
-    // being described. Leaving the sensor behind would test a phone that still has one.
+    // All three, because `detect()` reads all three: `DeviceMotionEvent` with either orientation
+    // source is `GyroAccel`, either orientation source alone is `OrientationOnly`, and only the
+    // absence of every one of them is `None`. Leaving one behind would test a phone that still
+    // has a sensor.
     delete window.AbsoluteOrientationSensor;
     delete window.DeviceOrientationEvent;
     delete window.DeviceMotionEvent;
@@ -1847,14 +1963,23 @@ test('a phone with no motion sensors still captures', async ({ browser }) => {
     // unreadable: one word for a declined grant, an expired gesture and a phone with no sensors.
     await expect(page.locator('#motion-state')).toContainText('unavailable');
     await expect(page.locator('#motion-state')).toContainText(/no motion sensors/i);
-    await expect(page.locator('#stage')).toContainText(/capturing without motion/, {
-      timeout: 15000,
-    });
-    const plan = await page.evaluate(async () => {
+
+    // And the sentence a person reads, on the line every other failure is reported on. Three
+    // claims, asserted separately so a message that quietly loses one of them fails here.
+    const stage = page.locator('#stage');
+    await expect(stage).toContainText(/motion sensors/i, { timeout: 15000 });
+    await expect(stage).toContainText(/needs/i);
+    await expect(stage).toContainText(/settings/i);
+    // Not the status code and not the component's own words.
+    await expect(stage).not.toContainText('SensorUnavailable');
+    // And no session behind it. Both halves: the word `beginSession` writes when one started, and
+    // the plan the core would be holding if one had.
+    await expect(stage).not.toContainText('capturing');
+    const planned = await page.evaluate(async () => {
       const got = await window.sphanoramaCore.captureSession.getPlan();
       return got.ok ? got.value.nodes.length : 0;
     });
-    expect(plan).toBeGreaterThan(8);
+    expect(planned).toBe(0);
   } finally {
     await server.close();
     await context.close();
@@ -1936,7 +2061,7 @@ test('a capture interrupted by a reload is offered back with its cells', async (
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
 
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
@@ -2035,7 +2160,7 @@ test('a resume the core refuses says why and still lets a new capture start', as
     await page.locator('#new-capture').click();
     await expect(page.locator('#stage')).toContainText(/capturing.*cells planned/,
                                                        { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
 
     // And gone once that capture is running. It is the only thing on screen that starts a render
     // loop, so leaving it pressable would let a second one run over the same session — two sets
@@ -2062,7 +2187,7 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await aimAtACell(page);
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });

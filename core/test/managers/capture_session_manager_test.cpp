@@ -299,25 +299,97 @@ TEST_F(CaptureSession, ArmingACellTheCameraIsNotAimedAtIsRefused) {
   EXPECT_TRUE(aimed.ArmBurst(here->id, burst).ok());
 }
 
-TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
-  // UC-4: sensor absence is a supported configuration and no other component learns the
-  // difference (docs/03). The aim rule nearly broke that promise. With no sensor the pose engine
-  // reports an orientation nothing measured — identity, forever — so exactly one cell would ever
-  // be inside a cone, the other thirty-one would be refused, and the capture would stop after the
-  // first with nothing on screen saying why.
+TEST_F(CaptureSession, ABeginWithNoMotionSensorIsRefusedWithoutTouchingTheCamera) {
+  // ADR 0044. The device that ADR 0042 made a supported configuration is now refused, and this
+  // is the test that used to assert the opposite — it was called
+  // `APhoneWithNoMotionSensorCanStillArmEveryCell`, and everything it proved was true. What
+  // changed is not the mechanism but what such a capture is worth: cells fill in coverage order
+  // with whatever the user happened to be pointing at, and nothing anywhere verifies the two
+  // agree. A folder of pictures with a plan's worth of guessed labels is worse than a sentence
+  // saying what is missing.
   //
-  // `confidence` is the contract's own word for this: zero means the orientation was not
-  // estimated, and a caller reading it "is reading a value nothing produced". An aim check against
-  // a number nobody produced is not a check, so there is nothing to enforce and the burst is
-  // allowed. The user of a sensorless phone aims by eye, which is what vision-only means.
-  // The shipped pose engine, not the fixture's null one. `NullPoseEngine` reports confidence zero
-  // whatever it is handed, so a test using it asserts the gate is open without ever asking whether
-  // the *real* engine would have said the pose was measured — it would pass with the sensor
-  // present, which is not the claim in the name.
+  // Before the camera, and that is half the point. `Open` is what lights the indicator and raises
+  // the permission prompt, so a session that cannot start has no business asking for one on its
+  // way to saying so. `Opens()` rather than `IsOpen()`: a path that opened and then closed on its
+  // way out has already done both.
   FakeMotionSensorAccess blind(MotionCapability::None);
+  CaptureSessionManager manager(planner, pose, quality, preview, *camera, blind, *store,
+                                *projects, clock);
+
+  auto begun = manager.Begin(kProject, Spec());
+  EXPECT_EQ(begun.status.code, StatusCode::SensorUnavailable);
+  EXPECT_EQ(camera->Opens(), 0) << "the camera was asked for on behalf of a session that could "
+                                   "not start";
+}
+
+// A sensor that cannot answer at all, which is not the same port state as one answering `None`.
+// The browser adapter produces it when the capability probe itself throws.
+class SpeechlessMotionSensorAccess final : public IMotionSensorAccess {
+ public:
+  Result<MotionCapability> Capabilities() override {
+    return Err<MotionCapability>(StatusCode::Internal, "test", "cannot say");
+  }
+  Status Start(int32_t) override { return Status::Ok(); }
+  Result<int32_t> Drain(std::span<ImuSample>) override { return Ok(0); }
+  Status Stop() override { return Status::Ok(); }
+};
+
+TEST_F(CaptureSession, ASensorThatCannotSayWhatItHasIsNotGoodEnoughToBeginOn) {
+  // Two different failures, one answer. `Begin` used to read a failed probe as `None` and carry
+  // on into a vision-only session, which was defensible while `None` was a configuration it could
+  // serve; now that `None` is a refusal, treating a probe failure as anything softer would let a
+  // capture start on a device nobody established has a sensor at all.
+  //
+  // The detail is asserted, not just the code, and that is the whole test. A first draft checked
+  // the code alone and could not fail: a failed `Result` carries a value-initialised value, which
+  // for this enum is `None`, so deleting this branch entirely left the *next* one refusing with
+  // the same code. Two different facts about the device — it says it has none, and it could not
+  // say — reaching a log as one sentence is the failure this exists to stop.
+  SpeechlessMotionSensorAccess speechless;
+  CaptureSessionManager manager(planner, pose, quality, preview, *camera, speechless, *store,
+                                *projects, clock);
+
+  auto begun = manager.Begin(kProject, Spec());
+  EXPECT_EQ(begun.status.code, StatusCode::SensorUnavailable);
+  EXPECT_NE(begun.status.detail.find("could not say"), std::string::npos)
+      << "a sensor that could not answer was reported as one answering 'none': "
+      << begun.status.detail;
+  EXPECT_NE(begun.status.detail.find("cannot say"), std::string::npos)
+      << "the port's own reason was dropped: " << begun.status.detail;
+  EXPECT_EQ(camera->Opens(), 0);
+}
+
+TEST_F(CaptureSession, ACameraThatRefusesToOpenIsWhatBeginReports) {
+  // The order the two refusals come in, from the other side. `Begin` establishes the sensor first
+  // (ADR 0044), and a manager that stopped there would swallow every camera failure behind a
+  // sentence about motion — so this arranges a device that has motion and no usable camera, which
+  // is what another app holding it looks like, and asserts the camera's own answer comes back.
+  //
+  // It exists because ADR 0044 took this branch's only other coverage away: the facade suite used
+  // to reach it, since the native runtime wires a null camera *and* a null motion port, and the
+  // sensor check now answers first there.
+  camera->FailOpen(true);
+
+  auto begun = manager->Begin(kProject, Spec());
+  EXPECT_EQ(begun.status.code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(camera->Opens(), 1) << "the camera was never asked, so this proves nothing about it";
+}
+
+TEST_F(CaptureSession, ArmingIsRefusedWhileNothingHasAnchoredThePose) {
+  // The other half of ADR 0044, and the line it deletes. `ArmBurst` used to skip its cone check
+  // whenever `confidence` was zero — it looked in order to decline to have an opinion, so that a
+  // sensorless phone could still reach every cell of its own plan. With that phone refused at
+  // `Begin`, zero confidence means something narrower and entirely transient: no reading has
+  // anchored the orientation *yet*. The pose is sitting at the identity it was born with, which
+  // is a direction nobody chose, and arming against it files real pixels under a cell picked by
+  // an accident of initialisation.
+  //
+  // The shipped pose engine, not the fixture's null one, and no samples: `NullPoseEngine` reports
+  // confidence zero whatever it is handed, so a test using it would assert this gate against an
+  // engine that cannot leave the state under test.
   RingsCoveragePlannerEngine rings;
   OrientationPoseEngine tracking;
-  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, blind, *store,
+  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   CapturePlanSpec spec;
   spec.horizontalFovDeg = 66.0;
@@ -330,9 +402,8 @@ TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
   ASSERT_TRUE(plan.ok());
   ASSERT_GT(plan.value.nodes.size(), 8u);
 
-  // The cell furthest from where the pose claims to be looking: the one the aim rule would refuse
-  // hardest if it were enforced against an orientation nobody measured. One arm rather than a
-  // loop, because a burst in flight refuses the next for a different reason entirely.
+  // The cell furthest from where the unmeasured pose claims to be looking — the one the old
+  // exemption armed happily and the cone refuses hardest.
   constexpr double kRadToDeg = 57.29577951308232;
   const CoverageNode* furthest = &plan.value.nodes.front();
   double worst = 0.0;
@@ -347,58 +418,49 @@ TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
   ASSERT_GT(worst, 90.0) << "the fixture expects a cell on the far side of the sphere";
 
   // A tick carrying a sample that reports nothing — no attitude, no measured rate — which is what
-  // a page hands over when its orientation listener fires and the platform filled nothing in. It
-  // must not count as an observation. It used to: `Integrate` marked the state observed for any
-  // sample at all, so one of these took the manager from arming every cell to refusing thirty-one
-  // of thirty-two, on an orientation still sitting at identity. Ticking here rather than not is
-  // the whole point — without it this test never reaches the code the fix is in.
+  // a page hands over when its orientation listener fires and the platform filled nothing in.
+  // Ticking rather than not is deliberate: it is the state in which the manager has heard from
+  // the sensor and still knows nothing about where the phone is pointing, and it must not read
+  // that as permission.
   const ImuSample nothing{};
   ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&nothing, 1)).ok());
 
   BurstSpec burst;
   burst.frameCount = 2;
   burst.intervalMs = 10;
-  EXPECT_TRUE(manager.ArmBurst(furthest->id, burst).ok())
-      << "a phone with no sensor could not arm the far side of its own plan";
+  EXPECT_EQ(manager.ArmBurst(furthest->id, burst).code, StatusCode::FailedPrecondition)
+      << "a burst was armed at a cell nothing had measured the camera against";
 }
 
-TEST_F(CaptureSession, APhoneWithNoMotionSensorIsSentOnToTheNextCellAfterItCapturesOne) {
-  // The other half of UC-4, and the one a sabotage of the aim rule does not catch: arming every
-  // cell is no use if guidance only ever names one of them.
+TEST_F(CaptureSession, ARateOnlyStreamNeverMaturesADwell) {
+  // The one path by which a session with a real sensor still spends its life at zero confidence,
+  // and the reason the unaimed branch in `Locate` survives ADR 0044 rather than being deleted
+  // with the rest of the second path. A stream carrying angular velocity and no attitude anchors
+  // nothing: the pose dead-reckons away from the identity it was born with, so it *moves* while
+  // remaining a direction nobody measured.
   //
-  // With no sensor the pose is identity for the life of the session. If the planner preferred the
-  // cell under that identity, the first burst would fill it and every tick afterwards would answer
-  // `AlreadyCaptured` about the same cell — thirty-one cells unreachable not because arming was
-  // refused but because nothing ever pointed at them. ADR 0042 is why it does not: with no aim,
-  // coverage decides alone and the target moves on.
-  FakeMotionSensorAccess blind(MotionCapability::None);
+  // If guidance read that as an aim, `HoldStill` would arrive, the dwell would mature two seconds
+  // later, and a burst would fire into whichever cell the arbitrary origin happened to drift
+  // through — the failure ADR 0041 exists to stop, reached from the other end. This pins the
+  // guard rather than driving it: it passes before ADR 0044 and after, which is the point.
   RingsCoveragePlannerEngine rings;
   OrientationPoseEngine tracking;
-  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, blind, *store,
+  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
-  CapturePlanSpec spec;
-  spec.horizontalFovDeg = 66.0;
-  spec.verticalFovDeg = 50.0;
-  spec.overlapTarget = 0.30;
-  spec.acceptanceConeDeg = 5.0;
-  spec.coverPoles = true;
-  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
 
-  auto first = manager.OnMotion({});
-  ASSERT_TRUE(first.ok()) << first.status.detail;
-  const NodeId shot = first.value.targetNode;
-
-  BurstSpec burst;
-  burst.frameCount = 2;
-  burst.intervalMs = 10;
-  ASSERT_TRUE(FireBurstOn(manager, clock, shot, burst).ok());
-
-  auto next = manager.OnMotion({});
-  ASSERT_TRUE(next.ok()) << next.status.detail;
-  EXPECT_NE(next.value.targetNode.value, shot.value)
-      << "a sensorless capture was sent back to the cell it had just filled, so the other "
-         "thirty-one were unreachable";
-  EXPECT_EQ(next.value.action, GuidanceAction::Seek);
+  // Well past the two-second dwell, in samples that carry a rate and nothing else.
+  sensor->EnqueueSpin(300, 10'000'000, 0.05);
+  for (int tick = 0; tick < 300; ++tick) {
+    auto guidance = manager.OnMotion({});
+    ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+    EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+        << "a stream that anchored nothing was read as an aim on tick " << tick;
+    EXPECT_NE(guidance.value.action, GuidanceAction::Fire)
+        << "a dwell matured on a pose nothing had measured, on tick " << tick;
+    EXPECT_FALSE(guidance.value.aimKnown);
+    clock.AdvanceMs(10);
+  }
 }
 
 TEST_F(CaptureSession, OnMotionPullsFromTheSensorWhenTheClientHasNothingToPush) {
@@ -2456,6 +2518,38 @@ class ResumedSession : public CaptureSession {
 
   FakeSpillSink sink;
 };
+
+TEST_F(ResumedSession, AResumeOnADeviceWithNoMotionSensorIsRefusedWithoutTouchingTheCamera) {
+  // ADR 0044 applies to the second door as well as the first, and a resume is where it is easiest
+  // to miss: the capability is read from the device rather than from the document — a sphere says
+  // which sphere it is, never what the phone it came back on can sense — so a session begun on a
+  // phone with a sensor can be resumed on one without, or on the same phone after the user
+  // declined the permission this time.
+  //
+  // Refused before `Open`, like `Begin`, and this fixture's camera counts asks rather than state.
+  auto store_with_sink = NewStore();
+  FakeCameraAccess first_camera(store_with_sink);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor,
+                              *store_with_sink, *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  FakeMotionSensorAccess blind(MotionCapability::None);
+  FakeCameraAccess second_camera(store_with_sink);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, blind,
+                               *store_with_sink, *projects, clock);
+
+  EXPECT_EQ(second.Resume(kProject).status.code, StatusCode::SensorUnavailable);
+  EXPECT_EQ(second_camera.Opens(), 0);
+
+  // And the capture is still there to be resumed on a device that can. A refusal that had taken
+  // the document or the frames with it would turn "not on this phone" into "not ever".
+  FakeCameraAccess third_camera(store_with_sink);
+  CaptureSessionManager third(planner, pose, quality, preview, third_camera, *sensor,
+                              *store_with_sink, *projects, clock);
+  EXPECT_TRUE(third.Resume(kProject).ok());
+}
 
 TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
   // The two halves of ADR 0036 meeting: this manager writes the session document, and

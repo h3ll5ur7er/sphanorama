@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CaptureGuidance, CoverageState, NodeId } from '../../../../contracts/ts/contracts';
 import {
-  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, canCapture, describeGuidance, reticleRadius,
+  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, describeGuidance, reticleRadius,
   unwrapDegrees,
 } from './guidance';
 
@@ -72,10 +72,12 @@ describe('describeGuidance', () => {
   });
 
   it('leaves the angle out when there was no aim to measure it from', () => {
-    // A phone with no motion sensor reports identity for the whole session, so `angularErrorDeg`
-    // comes back 0 for whichever cell happens to sit straight ahead. `cell 13 · 0° off` reads as
-    // "perfectly aimed" at a cell the app cannot locate — and it sat next to a reticle deliberately
-    // parked wide open, so the line and the ring said opposite things.
+    // Before a session's first reading arrives the pose is the identity it was born with, so
+    // `angularErrorDeg` comes back 0 for whichever cell happens to sit straight ahead. `cell 13 ·
+    // 0° off` reads as "perfectly aimed" at a cell the app cannot locate — and it sits next to a
+    // reticle deliberately parked wide open, so the line and the ring said opposite things. The
+    // window is short now that a device with no sensor is refused outright (ADR 0044); it is not
+    // empty, and a stream carrying rates with no attitude never leaves it.
     const blind = describeGuidance(
       guidance({ action: 'Seek', angularErrorDeg: 0, aimKnown: false }), coverage());
     expect(blind).not.toContain('off');
@@ -126,50 +128,5 @@ describe('unwrapDegrees', () => {
 
   it('is stable when nothing moved', () => {
     expect(unwrapDegrees(540, 180)).toBe(540);
-  });
-});
-
-describe('canCapture', () => {
-  const BLIND = false;
-  const at = (action: CaptureGuidance['action'], aimKnown = true): CaptureGuidance => ({
-    targetNode: 3 as NodeId,
-    angularErrorDeg: 0,
-    rollErrorDeg: 0,
-    stability: 1,
-    action,
-    aimKnown,
-    heldFraction: 0,
-  });
-
-  it('offers nothing at all where there is an aim, whatever guidance says', () => {
-    // Since ADR 0043 the dwell fires the burst, so with an aim there is no shutter to gate. Every
-    // action, including the one this used to be the whole rule for: a button beside an automatic
-    // trigger is two ways to do one thing, and the one the finger reaches for moves the phone it is
-    // supposed to be holding still.
-    for (const action of
-      ['HoldStill', 'Seek', 'AlreadyCaptured', 'Firing', 'CellDone', 'SphereDone', 'TooFast',
-       'Fire'] as const) {
-      expect(canCapture(at(action)), action).toBe(false);
-    }
-  });
-
-  // UC-4. A phone that declined motion, or has none, reports identity for the whole session, so
-  // the core never says `HoldStill` — it targets by coverage instead and says `Seek` (ADR 0042).
-  // A gate written only for the aimed case offered one cell of thirty-two and then nothing.
-  it('offers the cell coverage named when there is no aim to check', () => {
-    expect(canCapture(at('Seek', BLIND))).toBe(true);
-  });
-
-  it('still offers nothing blind while a burst runs or the sphere is finished', () => {
-    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast', 'Fire'] as const) {
-      expect(canCapture(at(action, BLIND)), action).toBe(false);
-    }
-  });
-
-  it('does not invent an aimed action blind', () => {
-    // `HoldStill` cannot arrive without a measured pose, so a gate that accepted it blind would be
-    // claiming the camera is inside a cone nobody measured.
-    expect(canCapture(at('HoldStill', BLIND))).toBe(false);
-    expect(canCapture(at('AlreadyCaptured', BLIND))).toBe(false);
   });
 });

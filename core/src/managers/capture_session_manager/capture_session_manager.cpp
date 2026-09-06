@@ -368,6 +368,11 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     return Err<SessionId>(StatusCode::NotFound, kComponent, "no such project");
   }
 
+  // Before the camera, and that ordering is load-bearing rather than tidy: `Open` is what lights
+  // the indicator and raises the permission prompt, so a session that cannot start must not ask
+  // for one on its way to saying so (ADR 0044). It is also the cheapest refusal available here.
+  SPH_TRY(const MotionCapability motion, RequireMotion());
+
   // The lens decides the tessellation, so the camera is opened before the plan is made rather
   // than when the first burst fires.
   auto opened = camera_.Open(CameraOpenSpec{});
@@ -385,8 +390,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
   max_burst_fps_ = opened.value.maxBurstFps;
 
-  auto capability = sensor_.Capabilities();
-  resolved.motion = capability.ok() ? capability.value : MotionCapability::None;
+  resolved.motion = motion;
 
   // Everything from here can fail with the camera already open, because the lens has to be read
   // before the plan can be made. Returning without closing it leaves the indicator lit for a
@@ -433,14 +437,37 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   return Ok(session_);
 }
 
+Result<MotionCapability> CaptureSessionManager::RequireMotion() {
+  // ADR 0044. A capture needs a motion sensor, and this is the one place either door checks for
+  // one. Without it the pose is the identity it was born with for the life of the session, and
+  // every cell the plan names gets filled with whatever the user happened to be pointing at —
+  // sharp frames, real scores, and a label nobody measured. That is not a worse sphere, it is a
+  // sphere with no evidence in it, and it stays invisible until a build stage this repo does not
+  // have yet. A sentence saying what is missing costs the user nothing by comparison.
+  //
+  // A probe that fails is refused alongside one that answers `None`: both mean nothing has
+  // established that this device can sense which way it is pointing, and only the detail
+  // distinguishes them for a log.
+  auto capability = sensor_.Capabilities();
+  if (!capability.ok()) {
+    return Err<MotionCapability>(StatusCode::SensorUnavailable, kComponent,
+                                 "this device could not say whether it has motion sensors: "
+                                     + capability.status.detail);
+  }
+  if (capability.value == MotionCapability::None) {
+    return Err<MotionCapability>(StatusCode::SensorUnavailable, kComponent,
+                                 "this device reports no motion sensors, and a capture cannot "
+                                 "place its frames without one");
+  }
+  return capability;
+}
+
 Result<PoseState> CaptureSessionManager::StartTracking(MotionCapability motion) {
-  // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
-  // vision-only and no other component learns the difference (docs/03 UC-4) — with one exception,
-  // in ArmBurst, which looks in order to decline to have an opinion. See the comment there: it is
-  // what keeps every cell armable on such a device, so the behaviour this sentence promises
-  // survives even though the sentence is no longer literally true.
-  const PoseMode mode = motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
-  auto initial = pose_.Initial(mode, motion);
+  // Always fused, because there is always something to fuse: `RequireMotion` has already turned
+  // away every caller that had no sensor (ADR 0044). `PoseMode::VisionOnly` stays in the contract
+  // — it is what a vision-only capture would select the day `RegistrationEngine` can carry one —
+  // and nothing selects it today, which is a fact about this build rather than about the enum.
+  auto initial = pose_.Initial(PoseMode::Fused, motion);
   if (!initial.ok()) {
     (void)camera_.Close();
     return initial.status;
@@ -474,6 +501,12 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     return Err<SessionId>(StatusCode::Unsupported, kComponent,
                           "this project's session document is from a shape this build cannot read");
   }
+
+  // The live capability rather than the stored one, and before anything with a side effect: the
+  // document says which sphere is being captured, never what the device it came back on can
+  // sense. A sphere begun on a phone with a sensor can be resumed on one without, or on the same
+  // phone after the user declined the prompt this time (ADR 0044).
+  SPH_TRY(const MotionCapability motion, RequireMotion());
 
   // Before the plan, the frames and the camera, because it is the cheapest thing that can refuse
   // and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
@@ -548,10 +581,7 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   if (!opened.ok()) return opened.status;
   max_burst_fps_ = opened.value.maxBurstFps;
 
-  // The live capability rather than the stored one: the document says which sphere is being
-  // captured, never what the device it came back on can sense.
-  auto capability = sensor_.Capabilities();
-  auto initialPose = StartTracking(capability.ok() ? capability.value : MotionCapability::None);
+  auto initialPose = StartTracking(motion);
   if (!initialPose.ok()) return initialPose.status;
 
   plan_ = std::move(plan.value);
@@ -656,15 +686,14 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
 
   // Derived here as well as inside the engine, and this is the copy a client reads.
   //
-  // Not distrust of the engine: the engine needs the answer for itself, to choose between aiming
-  // and covering, and `ArmBurst` derives it a third time to decide whether to enforce a cone. The
-  // three have to agree, and there is exactly one source they can all agree on — `confidence`,
-  // which is the contract's own word for whether the orientation was estimated at all. What this
-  // line removes is the possibility of a *published* answer that disagrees with the one the
-  // refusal uses: an engine leaving the field at its default puts the page in blind mode on a
-  // phone that has a sensor, and every capture it then offers is refused by this manager for a
-  // reason the page has already decided cannot apply. `stability` and `targetNode` are patched
-  // here for the same reason.
+  // Not distrust of the engine: the engine needs the answer for itself, to choose between naming
+  // the cell the camera is inside and waiting for a reading, and the two have to agree with what
+  // the page is told. There is exactly one source they can agree on — `confidence`, the
+  // contract's own word for whether anything ever anchored the orientation. What this line
+  // removes is the possibility of a *published* answer that disagrees with the one the engine
+  // used: a planner leaving the field at its default would park the page's reticle at its widest
+  // and stop it correcting for roll on a phone whose pose is perfectly well measured. `stability`
+  // and `targetNode` are patched here for the same reason.
   guidance.aimKnown = pose_state_.pose.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
@@ -768,28 +797,19 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // The same cone the planner guides with, so "the reticle is closed" and "this will arm" are the
   // same condition rather than two that nearly agree.
   //
-  // Only where there is an aim to check. `confidence` is the contract's own word for whether the
-  // orientation was estimated at all, and zero means nothing produced it — a phone that declined
-  // the motion sensor, or one that has none, tracks vision-only and reports identity forever.
-  // Enforcing a cone against that number would refuse every cell but the one that happens to sit
-  // straight ahead, so a sensorless capture would stop after its first burst with nothing on
-  // screen saying why — measured on the shipped composition as one cell armable of thirty-two.
-  // Sensor absence is a supported configuration (docs/03 UC-4), and this line is the one place
-  // that learns of it: it looks in order to decline to have an opinion, so what UC-4 promises —
-  // every cell still reachable — holds. Such a user aims by eye, which is what vision-only means.
-  //
-  // One signal, and it is the contract's: `PoseSample.confidence` of zero means no reading has ever
-  // anchored the orientation. `PoseState::observed` was tested alongside it for a while and is the
-  // wrong second conjunct — it means "a sample arrived", which a rate-only stream satisfies while
-  // reporting confidence zero, so the pair is not two ways of saying one thing. Which flag carries
-  // which fact is the engine's business (`observed`, `absolute` and `anchored` are three of them),
-  // and the manager holds no opinion of its own about any of them: it reads the one number the
-  // contract publishes.
-  const bool measured = pose_state_.pose.confidence > 0.0;
+  // Unconditionally, which it was not. This check used to stand down whenever
+  // `PoseSample.confidence` was zero — the contract's word for "no reading has ever anchored this
+  // orientation" — so that a phone with no motion sensor could still reach every cell of its own
+  // plan, aiming by eye. ADR 0044 refuses that phone at `Begin` instead, and what is left of zero
+  // confidence is narrow and transient: the ticks before a session's first reading arrives, and a
+  // stream that carries rates with no attitude in them. In both the pose is the identity it was
+  // born with, dead-reckoned or not — a direction nobody chose — and arming against it files real
+  // pixels under a cell picked by an accident of initialisation. There is nothing to check, so
+  // there is nothing to allow.
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
-  if (measured && offBy > aimed->acceptanceConeDeg) {
+  if (offBy > aimed->acceptanceConeDeg) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");
   }

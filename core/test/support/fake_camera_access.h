@@ -49,6 +49,11 @@ class FakeCameraAccess final : public ICameraAccess {
    * about is the one a store that has just started produces.
    */
   void FillFrom(uint8_t value) { next_fill_ = value; }
+  /**
+   * Makes opening fail, which is the ordinary outcome of another app holding the camera or of a
+   * user declining the prompt. The ask is still counted: a refused open has raised the prompt.
+   */
+  void FailOpen(bool fail) { fail_open_ = fail; }
   /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
   void FailUnlock(bool fail) { fail_unlock_ = fail; }
   /** Makes closing fail, which is what leaves a camera both open and possibly still locked. */
@@ -60,6 +65,7 @@ class FakeCameraAccess final : public ICameraAccess {
   bool open_ = false;
   bool previewing_ = false;
   bool exposure_locked_ = false;
+  bool fail_open_ = false;
   bool fail_unlock_ = false;
   bool fail_close_ = false;
   int frames_taken_ = 0;

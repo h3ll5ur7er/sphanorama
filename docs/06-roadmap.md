@@ -332,6 +332,32 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   The number is stated rather than derived from the store's own ceiling, which is the weaker half
   of the decision and is argued in the ADR: what would change it is a device where thirteen frames
   is too many, and the arithmetic to redo it sits beside the constant.
+- **A capture needs a motion sensor — decided, and the degraded path is gone.** ADR 0042 made a
+  phone with no orientation a supported configuration: guidance targeted by coverage, `ArmBurst`
+  declined to enforce a cone it had nothing to measure, and the user aimed by eye. It worked, and
+  it took three rounds of review across three layers to make it work.
+
+  What it produced is the reason it is gone. Cells filled in coverage order with whatever the
+  camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
+  with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
+  `RegistrationEngine` is what would make the labels true and it is null; getting there is far
+  future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
+  opens a camera, and the user gets a sentence saying what is required and what is missing
+  (ADR 0044).
+
+  The second path went with it, which is most of the change: `ArmBurst` enforces the cone
+  unconditionally, `StartTracking` always selects `PoseMode::Fused`, `canCapture` and `#capture`
+  are gone entirely — the dwell fires every burst and there is no second way — and `beginSession`
+  has no "without motion" line to write. Zero `PoseSample.confidence` still exists and now means
+  only "no reading yet": a session's first ticks, and a stream carrying rates with no attitude.
+  `Locate` keeps its unaimed branch for exactly that, which was worth catching — deleting it, as
+  the ADR's first draft said to, would have let a rate-only stream mature a dwell against an
+  unmeasured identity and fire a burst at a cell nobody pointed at.
+
+  It cost the browser suite its arrangement, and that was overdue: this runner reports no
+  orientation until a test dispatches one, so every capture test in it had been running the
+  sensorless path. They now aim at a cell of the plan the core actually made, through the inverse
+  of the adapter's own conversion, checked against that conversion rather than assumed.
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.
@@ -457,7 +483,10 @@ measurably faster than a full one (target: an order of magnitude).
   CPU path retained as the correctness reference (a differential test asserts they agree).
 - Threaded feature extraction and blending; single-threaded path verified in CI.
 - PWA polish: installable, fully offline, share-target export, background-safe builds.
-- Degraded modes: no-sensor capture, no-SAB capture, low-memory device profile.
+- Degraded modes: no-SAB capture, low-memory device profile. **Not** no-sensor capture — that is
+  refused rather than degraded (ADR 0044), and what would reopen it is a registration engine
+  good enough to place a live stream of frames without any external reference, which is a
+  Phase 3 question at the earliest.
 
 **Exit:** a stated build-time target met on a mid-range device with WebGPU, the CPU path within a
 stated factor of it, and the app fully functional offline after first load.

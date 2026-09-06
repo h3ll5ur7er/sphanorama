@@ -353,8 +353,8 @@ The client sequences the two managers; they never call each other.
 A retake marks the cell and nothing more. The burst that fills it goes through `ArmBurst` like any
 other and is refused while the camera is aimed somewhere else (ADR 0041), so a retake is an
 instruction to go back and re-shoot rather than a shutter that fires where the phone happens to be
-pointing — which is the failure that rule exists to stop. On a device with no motion sensor there
-is no aim to check and the retake behaves as it always did.
+pointing — which is the failure that rule exists to stop. There is always an aim to check: a
+session cannot begin on a device with no motion sensor (ADR 0044).
 
 ### UC-3 · Pick a different frame from the burst by hand
 
@@ -368,30 +368,34 @@ mechanism, two features. That is the payoff of modelling the build as a graph.
 
 ### UC-4 · No motion sensors (permission denied on iOS)
 
-`IMotionSensorAccess.Capabilities()` reports `none`. `CaptureSessionManager` configures
-`PoseEngine` in vision-only mode, where orientation comes from frame-to-frame tracking seeded by
-`RegistrationEngine` output rather than from integration — **which does not exist yet**:
-`RegistrationEngine` is null, so the pose stays at identity for the life of the session and such a
-capture is genuinely blind. Cells fill in coverage order and nothing verifies the pixels match the
-direction they are filed under; that is the honest state of UC-4 and only a real registration engine
-changes it.
+`IMotionSensorAccess.Capabilities()` reports `none`, or fails to answer. `CaptureSessionManager`
+refuses: `Begin` and `Resume` return `SensorUnavailable`, before either opens a camera, and the
+page turns that into a sentence saying what is required and what is missing (ADR 0044).
 
-`CapturePlanSpec` carries a `motion` field, and the manager reads it to choose the pose mode — but
-**no planner does**, so the claim that `CoveragePlannerEngine` switches to a looser acceptance
-tolerance has never been true. The cone is
-whatever the client asked for, sensor or no sensor. What *is* true is that guidance stops preferring
-the cell under an orientation nobody measured and targets by coverage instead (ADR 0042), which is
-what keeps a blind capture moving from cell to cell.
+It used to capture. `PoseEngine` went into vision-only mode, guidance targeted by coverage instead
+of by aim, `ArmBurst` declined to enforce a cone it had nothing to measure against, and the user
+aimed by eye. All of that worked. What it produced was the problem: cells filled in coverage order
+with whatever the camera happened to be pointing at, nothing anywhere verified that a cell's frames
+came from that cell's direction, and the failure was invisible until a build stage this repo does
+not have yet. Vision-only orientation is what would make those labels true — frame-to-frame
+tracking seeded by `RegistrationEngine` — and `RegistrationEngine` is null. Until it is not, the
+honest answer is a message rather than a sphere.
 
-Three places learn that sensors were absent, and all three are there to
-give the same answer as if it had not: `ArmBurst`'s aim check applies only to a pose that was
-actually measured (a non-zero `PoseSample.confidence`), so a device that reports identity forever can
-still arm every cell rather than the one that happens to sit straight ahead (ADR 0041); and `Locate`
-prefers the cell the camera is inside only when there is an aim to prefer (ADR 0042); and the page
-reads the `aimKnown` those two produce, because a client has to make the same decision and cannot
-derive it. Apart from those the volatility is contained in V5 — and the third one is the honest
-cost of the first two: once the core answers differently, something has to tell the client so, and
-that is a component learning the difference however carefully it is worded.
+`PoseMode::VisionOnly` stays in the contract and nothing selects it. It is what such a capture
+would run in the day the registration engine can carry one; ADR 0044 is the record of why nothing
+reaches it today.
+
+`CapturePlanSpec` still carries a `motion` field and the manager still fills it from the live
+capability — but **no planner reads it**, so the claim that `CoveragePlannerEngine` switches to a
+looser acceptance tolerance has never been true. The cone is whatever the client asked for.
+
+One rule per question survives this, which is the other half of what it bought. `Locate` names the
+cell the camera is inside; `ArmBurst` enforces that cone unconditionally; the dwell fires. Zero
+`PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
+and a stream carrying angular rates with no attitude in them never anchors at all — and it means
+"no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.
+The page reads the `aimKnown` the planner publishes to park its reticle and stop correcting for
+roll, which is presentation rather than a second copy of the rule.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 

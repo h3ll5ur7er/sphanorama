@@ -194,9 +194,16 @@ TEST(Facade, TheDetailExplainsWhyRatherThanRepeatingTheCode) {
   EXPECT_FALSE(ReadStatus(in).detail.empty());
 }
 
-TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACamera) {
-  // The camera lives in JavaScript and nothing on this side opened one. The session refuses with
-  // a reason rather than producing empty frames, which is the whole argument for null over stub.
+TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutASensor) {
+  // Both ports this session needs live in JavaScript and neither is here: the runtime's defaults
+  // are `NullMotionSensorAccess` and no camera at all. It refuses with a reason rather than
+  // producing empty frames, which is the whole argument for null over stub.
+  //
+  // The reason is the sensor's, and until ADR 0044 it was the camera's. `Begin` now establishes
+  // that the device can sense which way it is pointing before it asks for a camera, so on this
+  // harness the camera branch is no longer reachable — the null motion port answers `None` and
+  // stops there. That branch is not lost: `CaptureSession` exercises a camera that refuses
+  // against a sensor that does not, which is the arrangement a browser actually produces.
   wire::Writer titled;
   titled.PutString("a project to capture into");
   Response created = Call("ProjectManager.create", titled.bytes());
@@ -213,7 +220,7 @@ TEST(Facade, StartingACaptureSessionFailsHonestlyWithoutACamera) {
   Response response = Call("CaptureSessionManager.begin", args.bytes());
   wire::Reader in = response.reader();
   const Status status = ReadStatus(in);
-  EXPECT_EQ(status.code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(status.code, StatusCode::SensorUnavailable);
 }
 
 TEST(Facade, ATruncatedStructArgumentIsReportedAsAStatusNotAnEmptyBuffer) {

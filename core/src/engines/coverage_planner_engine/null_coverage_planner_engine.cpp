@@ -45,10 +45,19 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& curr
   // sequence does not change when V4 lands.
   const Vec3 looking = Direction(current.orientation);
 
-  // Whether there is an aim to prefer at all. Zero confidence is the contract's word for "nothing
-  // estimated this", and a phone with no motion sensor reports identity for the whole session —
-  // so the aim rule below would name whichever cell sits at identity every single tick, and a
-  // capture could never move off it. With no aim, coverage decides alone (ADR 0042).
+  // Whether there is an aim to prefer at all. Zero confidence is the contract's word for "no
+  // reading has ever anchored this orientation", which leaves the pose at the identity it was
+  // born with — a direction nobody chose. Naming the cell that happens to sit there would put the
+  // reticle on it every tick until a reading arrives, and on a stream carrying rates with no
+  // attitude in it, forever: the pose would drift off identity without ever being *about*
+  // anything, and a dwell keyed on `HoldStill` would mature into a burst at a cell nobody
+  // pointed at.
+  //
+  // This branch used to describe a device — a phone with no motion sensor, which ADR 0042 made a
+  // supported configuration and coverage guided alone. That device is refused at `Begin` now
+  // (ADR 0044), so what is left here is a session's opening ticks and a stream that anchors
+  // nothing: not a way to capture, a wait. Guidance seeks until there is something to be inside
+  // of.
   const bool aimed = current.confidence > 0.0;
 
   // Coverage has an opinion only once something has been evaluated. An empty state is no
@@ -98,7 +107,9 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& curr
   if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
-  // Said out loud, because a client gates on it too and cannot derive it (ADR 0042).
+  // Said out loud, because a client reads it and cannot derive it: the page parks the reticle at
+  // its widest and stops correcting for roll while it is false, and neither is a number it can
+  // work out from an orientation it never sees.
   guidance.aimKnown = aimed;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg =

@@ -19,7 +19,7 @@ import {
   describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
 } from './clients/capture/status';
 import {
-  canCapture, describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
+  describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
   RETICLE_MAX_RADIUS,
 } from './clients/capture/guidance';
 import { describeResumeRefusal, resumableProject } from './clients/capture/resume';
@@ -74,7 +74,6 @@ const facadeOut = el('facade');
 el('build').textContent =
   typeof __SPHANORAMA_BUILD__ === 'string' ? __SPHANORAMA_BUILD__ : 'unknown';
 const enableButton = el<HTMLButtonElement>('enable');
-const captureButton = el<HTMLButtonElement>('capture');
 // The two halves of coming back to a capture: the offer, shown at load when the listing says
 // there is a session to resume, and the way out when that resume is refused (ADR 0036).
 const resumeButton = el<HTMLButtonElement>('resume');
@@ -409,9 +408,15 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   if (started.ok) {
     reportMotionSource(capability.ok ? capability.value : 'unknown');
   } else {
-    // The core is told None, and that is a supported configuration rather than a failure: the
-    // manager puts PoseEngine into vision-only mode and no other component learns the difference
-    // (docs/03 UC-4). Declining motion on iOS is the common way to land here.
+    // The core is told None, and since ADR 0044 that is what refuses the session: a capture with
+    // no way to know which direction a frame came from produces a plan's worth of guessed labels,
+    // so the manager declines rather than degrading. Declining motion on iOS is the common way to
+    // land here, and `startFresh` puts the manager's refusal on the stage line — which is the
+    // sentence that tells such a user it was a choice they can unmake.
+    //
+    // Reported honestly rather than hopefully: the sensor did not start, whatever
+    // `capabilities()` said a moment earlier, and telling the core otherwise would start a
+    // session that cannot see.
     remote.setMotion('None');
     // With the reason, not just the word. A declined grant, a gesture that had already expired
     // and a device with no sensors at all printed the same thing here, and the status that tells
@@ -420,19 +425,20 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     // this is the branch that did not.
     motionState.textContent =
       `unavailable · ${started.status.detail || started.status.code}`;
-    // The stage line is deliberately left alone. It used to carry this failure too, which was
-    // wrong twice: `describeFailure` tells the user to change a permission and reload, and there
-    // is nothing to fix — capture without motion is a supported configuration the very next line
-    // goes on to start. It was also invisible, because every path through `beginSession` writes
-    // the stage, and `beginSession` runs whenever the camera opened, which is the only case this
-    // branch wrote it in at all. The reason belongs on the motion row, and is on it.
+    // The stage line is still left alone here, and now for a different reason: `beginSession`
+    // runs next and the manager's own refusal is what writes it (ADR 0044). Two sentences about
+    // the same missing sensor, one of them this branch's guess at the cause, would be worse than
+    // the one the core actually failed with. The detail belongs on the motion row, and is on it.
   }
 
   enableButton.hidden = true;
   resumeButton.hidden = true;
   motionIsRunning = started.ok;
-  // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
-  // without it would turn a supported degraded mode into a dead end.
+  // The camera is what this page needs before it can offer anything; the sensor is checked by the
+  // manager, inside `beginSession`, because that is where the rule lives (ADR 0044). Checking it
+  // here as well would be a second copy of a decision the core makes — and the one place it would
+  // pay for itself, arriving before the camera prompt, is already covered: `Begin` refuses before
+  // it opens a camera of its own.
   //
   // Asked of the stream rather than of `opened.ok`, because they answer different questions.
   // `opened.ok` is a fact about a call that has already returned; two awaits sit between it and
@@ -475,10 +481,12 @@ async function beginSession(core: SphanoramaCore, motionRunning: boolean,
     return;
   }
 
+  // No "without motion" variant any more, and it is unreachable rather than merely unwanted: a
+  // sensor that did not start has the core told `None`, and a session begun or resumed on that
+  // is refused before this line runs (ADR 0044). What the user gets instead is the manager's
+  // refusal, on this same line, from `startFresh` or `pickUp`.
   const opening = resume === null ? 'capturing' : 'resumed';
-  stage.textContent = motionRunning
-    ? `${opening} — ${plan.value.nodes.length} cells planned`
-    : `${opening} without motion — ${plan.value.nodes.length} cells planned, aim by hand`;
+  stage.textContent = `${opening} — ${plan.value.nodes.length} cells planned`;
   // Folded once the session is under way. From here the picture is the interface, and the panel
   // was covering nearly two thirds of it.
   openPanel(false);
@@ -922,7 +930,6 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // flag *and* a call-ordering fix after it was measured putting a ring back one millisecond
       // later; this early return copied the clear and neither protection.
       guidanceFailed = true;
-      captureButton.disabled = true;
       overlay.show({ rings: [], arrow: null });
       guidanceOut.textContent = 'the camera was taken away';
       stage.textContent = 'the camera was taken away — reload to start again';
@@ -1027,23 +1034,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // And not only what guidance says. This line knew nothing about the arm the press had
         // just started, so the very next tick put the shutter back: measured at 41 ms after a
         // press, enabled again for 352 of the 393 ms before the core first reported `Firing`. The
-        // second press inside that window was refused by `armAt`'s own guard, which is what made
-        // it invisible — nothing was armed twice, and nothing said why the press did nothing.
-        // A button offered while an arm is in flight is a button that lies about what pressing it
-        // does.
-        // Hidden, not merely disabled, wherever there is an aim: with one, the dwell fires the
-        // burst and a disabled button beside an automatic trigger is a control that never becomes
-        // pressable, which reads as broken rather than as absent (ADR 0043). It survives on the one
-        // device that can never reach `Fire` — no aim to hold and no stability to measure — and
-        // there it is the whole shutter.
-        captureButton.hidden = guidance.aimKnown;
-        captureButton.disabled = !canCapture(guidance) || arming || armed || firing;
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
         // says. With no aim, `angularErrorDeg` is measured from an unmeasured identity — it comes
         // back 0.00 for whichever cell happens to sit straight ahead, and the ring drew itself
-        // fully closed and `locked` on a phone that has no idea where it is. Parked wide open
-        // instead: honest, and it matches what the guidance line says (ADR 0042).
+        // fully closed and `locked` on a pose nothing had measured. Parked wide open instead:
+        // honest, and it matches what the guidance line says. Since ADR 0044 this is a session's
+        // opening ticks rather than a whole device, but it is still the first thing a user sees.
         const radius = guidance.aimKnown
           ? reticleRadius(guidance.angularErrorDeg, cone)
           : RETICLE_MAX_RADIUS;
@@ -1112,11 +1109,6 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         armed = false;
         // What stops the repaint `refreshCoverage` would otherwise do at the end of this branch.
         guidanceFailed = true;
-        // And nothing is offered. A failed tick produced no guidance, so there is no cell to
-        // capture and no aim to have checked — leaving the shutter enabled meant a press that
-        // cycled the camera's locks and changed nothing on screen, under a line saying guidance
-        // had failed.
-        captureButton.disabled = true;
         // And the markers go with it. They describe where the cells are *relative to a pose*, and
         // a failed tick is one that produced no pose — leaving the last set on screen would draw
         // a confident answer over a line that says guidance has stopped working.
@@ -1250,17 +1242,6 @@ async function main() {
       newCaptureButton.disabled = true;
       void beginSession(core, motionIsRunning, null)
         .finally(() => { newCaptureButton.disabled = false; });
-    });
-    captureButton.addEventListener('click', () => {
-      // Disabled on the press rather than on the tick that notices the burst.
-      //
-      // `armAt` refuses a second arm while one is in flight, which is what stopped a double tap
-      // from stripping a live burst's locks — but it refuses *silently*, and the button stayed
-      // live for a measured 120 ms while it did. A press that visibly does nothing is the same
-      // report as a press that breaks something. The pump owns the state from the next tick on.
-      if (targetNode === null) return;
-      captureButton.disabled = true;
-      void captureCell?.(targetNode);
     });
   } catch (cause) {
     // Three things can fail now rather than one — the worker starts, the module loads inside it,
