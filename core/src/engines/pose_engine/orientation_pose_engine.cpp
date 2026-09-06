@@ -153,10 +153,19 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
       // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
       //
-      // The clamp is what makes it safe for any gap rather than merely for realistic ones. A
-      // single observation may move the offset by at most the whole rate error it saw, so the
-      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the
-      // capture loop does with its timestamps.
+      // A single observation may move the offset by at most the whole rate error it saw, so the
+      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the capture
+      // loop does with its timestamps. That is a property of the expression below rather than of a
+      // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
+      // gap) and is under 1 at every gap, because past the time constant the denominator grows with
+      // `seconds` while `share` is already saturating at 1.
+      //
+      // It was a clamped expression until a reviewer removed the clamp and found the whole suite
+      // still green — including the ten-gap sweep written for exactly this invariant. The clamp had
+      // been load-bearing when the divisor was `kBiasSeconds` alone, where the factor really did
+      // pass 1; `std::max` took the job away from it and the comment went on crediting it. A guard
+      // that cannot fire reads as the thing keeping you safe, which is worse than no guard: the
+      // next person to change the divisor would trust it.
       //
       // No stillness detector, and none needed: what accumulates here is the part of the error
       // that keeps pointing the same way. Noise does not, and cancels. A device that is really
@@ -172,7 +181,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // behaviour identical — under one time constant the window is the time constant — and makes
       // a long gap charge at most the rate error it actually saw, which is what the paragraph
       // above has always said it does.
-      const double charge = std::min(share / std::max(kBiasSeconds, seconds), 1.0);
+      const double charge = share / std::max(kBiasSeconds, seconds);
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;

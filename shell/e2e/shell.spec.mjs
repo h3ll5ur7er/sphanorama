@@ -46,6 +46,25 @@ async function serve() {
  * guaranteed by anything, and the failure it prevents — `CameraUnavailable`, the page has not
  * grabbed a frame yet — is one CI has actually produced on a branch that touched none of this.
  */
+/**
+ * Every candidate the session holds, across every cell.
+ *
+ * Summed rather than short-circuited on the first non-empty cell: "did this capture bank anything
+ * at all" is the question both callers are asking, and a loop that returns the first cell's count
+ * answers a narrower one.
+ */
+async function countCandidates(page) {
+  return page.evaluate(async () => {
+    const plan = await window.sphanoramaCore.captureSession.getPlan();
+    let total = 0;
+    for (const node of plan.value.nodes) {
+      const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+      if (got.ok) total += got.value.length;
+    }
+    return total;
+  });
+}
+
 async function viewfinderIsLive(page) {
   await page.waitForFunction(() => {
     const video = document.querySelector('video');
@@ -593,35 +612,197 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
   }
 });
 
-test('a camera taken away mid-session stops being a camera in hand', async ({ page }) => {
-  // The core is not the only thing that can end a capture. Permission revoked from the browser's
-  // own UI, another app taking the lens, an incoming call: the track ends and nobody is told.
-  // `onCloseCamera` was the page's only route to noticing, and it fires when the *core* asks —
-  // so what this leaves behind is a MediaStream that is still non-null with every track dead,
-  // which the resume button reads as "a camera is in hand" and begins a session against.
+test('a camera that dies while the page is still enabling does not start a capture', async ({ browser }) => {
+  // `opened.ok` is a fact about a call that has already returned. Two awaits sit between it and
+  // the decision to begin — the motion capability and the sensor start — and a track that ends
+  // inside that window used to leave the page announcing "capturing — 32 cells planned", panel
+  // folded and shutter enabled, with `#camera-state` saying the camera had been taken away, all
+  // on screen at once.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Handed back already dead, which is the harder half of the same case: the `ended` event has
+    // fired before anything could listen for it, so only asking the track its `readyState` finds
+    // this. `stop()` puts a track into `ended` synchronously.
+    const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (...args) => {
+      const stream = await real(...args);
+      for (const track of stream.getTracks()) track.stop();
+      return stream;
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+
+    await expect(page.locator('#stage')).toContainText(/taken away/i, { timeout: 15000 });
+    // And no session behind it. `capturing` is what `beginSession` writes, and it is the word the
+    // page had no business saying.
+    await expect(page.locator('#stage')).not.toContainText('capturing');
+    await expect(page.locator('#capture')).toBeDisabled();
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('the shutter stays taken from the press until the burst is over', async ({ browser }) => {
+  // The press disabled the button and the next guidance tick put it back, because that line knew
+  // only what guidance said and nothing about the arm the press had started. Nothing was armed
+  // twice — `armAt` refuses a second arm while one is in flight — so what the second press got was
+  // silence. A button offered while an arm is in flight lies about what pressing it does.
   //
-  // The readout is the observable half of the same handler that nulls the stream: they are set
-  // together, so a row that still quotes the camera's dimensions is a page that still believes it
-  // is holding one.
+  // The window is the time between the press and the core reporting `Firing`, and on a camera that
+  // takes the locks instantly it is a few frames: traced on this runner as `capturing` at 38 ms,
+  // with the button never observably back. So the camera here is slowed to open the window on
+  // purpose, rather than the test hoping to land in it — a first draft passed under its own
+  // sabotage for exactly that reason.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    // 300 ms per constraint set, three of them: about a second of arming, well inside the three
+    // the page allows one write, and long enough that a shutter put back by a guidance tick is
+    // observable for many frames rather than for none.
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 300));
+    };
+  });
+
   const server = await serve();
   try {
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#enable').click();
     await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
-    // A real size first, so the assertion below is a change rather than a state it started in.
-    await expect(page.locator('#camera-state')).toHaveText(/^\d+×\d+$/, { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
 
-    // What the platform does when the camera is taken: `ended` on the track, with no call into
-    // anything the page owns.
+    // Sampled from inside the page, every animation frame, so the polling is not at the mercy of
+    // the driver's round trip.
+    const everEnabled = await page.evaluate(async () => {
+      const button = document.getElementById('capture');
+      const guidance = document.getElementById('guidance');
+      button.click();
+      let enabledAt = null;
+      const started = performance.now();
+      while (performance.now() - started < 4000) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (!button.disabled && enabledAt === null) enabledAt = performance.now() - started;
+        if (/captured|cell done/i.test(guidance.textContent)) break;
+      }
+      return enabledAt;
+    });
+    // Null, not "some number after the burst": the claim is that there is no window at all.
+    expect(everEnabled).toBeNull();
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 30000 });
+    // And offered again once it is over, so this cannot pass by disabling the shutter for good.
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 30000 });
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a camera taken away mid-session takes the capture loop with it', async ({ page }) => {
+  // A `<video>` keeps `readyState 4` and its dimensions after its track ends, so both of the
+  // frame grabber's guards pass and every grab returns a copy of the last frame the camera
+  // produced. A burst armed after the camera was taken banked five of them: sharp, well scored,
+  // all of the same instant, filed under a cell. That is ADR 0041's wrong pixels reached from the
+  // other end, and it is undetectable downstream in exactly the same way.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
     await page.evaluate(() => {
       const stream = document.querySelector('video').srcObject;
       for (const track of stream.getTracks()) track.dispatchEvent(new Event('ended'));
     });
-
     await expect(page.locator('#camera-state')).toHaveText('taken away', { timeout: 15000 });
+
+    // Refused, through the same path the button takes.
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
+    // And nothing banked. This is the assertion the finding is about: before it, this came back 5.
+    // Late, for the same reason as the lock-timeout test above: a burst banks its frames over the
+    // half second after it is armed, so a count taken straight away agrees with an armed burst.
+    await page.waitForTimeout(4000);
+    expect(await countCandidates(page)).toBe(0);
+    await expect(page.locator('#capture')).toBeDisabled();
+    await expect(page.locator('#stage')).toContainText(/taken away/i);
   } finally {
     await server.close();
+  }
+});
+
+test('a slow camera spends its lock budget on the track, not in the queue', async ({ browser }) => {
+  // The 3 s bound on a lock write used to start when the write joined the chain rather than when
+  // it reached the track, and every refusal queued a release behind the write it had given up on
+  // — so the queue grew by one write per failure. On a camera taking 700 ms per constraint the
+  // first burst succeeded and every burst after it was refused at 3 s intervals, most of that
+  // spent waiting, while the track answered fourteen constraints back to back without an idle
+  // moment. One cell per session, blamed on a camera that was answering everything it was asked.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    // Slow, and never silent: 700 ms per constraint set, which is a 6x outlier over the 120 ms
+    // this codebase has measured and well inside the 3 s the page allows one write.
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 700));
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Three in a row, because the failure is cumulative: the first one always worked and it was
+    // the second and third that were refused by a queue the first one had lengthened.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+      await expect(page.locator('#guidance'))
+        .toContainText(/captured|cell done/i, { timeout: 30000 });
+      await expect(page.locator('#capture')).toBeEnabled({ timeout: 30000 });
+    }
+    await expect(page.locator('#locks')).not.toContainText(/did not answer/i);
+  } finally {
+    await server.close();
+    await context.close();
   }
 });
 
@@ -661,14 +842,14 @@ test('a camera that will not answer a lock request does not get a burst', async 
     // it — so this returned true and a cell was filled from a burst nobody could explain.
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
     await expect(page.locator('#locks')).toContainText(/did not answer/i, { timeout: 15000 });
-    const captured = await page.evaluate(async () => {
-      const plan = await window.sphanoramaCore.captureSession.getPlan();
-      for (const node of plan.value.nodes) {
-        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
-        if (got.ok && got.value.length > 0) return got.value.length;
-      }
-      return 0;
-    });
+    // Counted late, and that is the whole of this assertion.
+    //
+    // A burst does not bank anything at the moment it is armed: five frames at 80 ms with a 150 ms
+    // settle take about half a second, one per tick. Read straight after the arm, the count is 0
+    // whether the burst was armed or refused — a reviewer removed the refusal, dropped this test's
+    // two sibling assertions, and watched this one pass. With the wait it comes back 5.
+    await page.waitForTimeout(4000);
+    const captured = await countCandidates(page);
     expect(captured).toBe(0);
   } finally {
     await server.close();

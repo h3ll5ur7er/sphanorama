@@ -739,6 +739,22 @@ TEST(NullCoveragePlanner, SaysTheSameFourThingsAboutAimAndCoverageTheRealOneDoes
   auto finished = engine.Locate(Aiming(Quat{}), plan, AllDoneBut(plan, {}));
   ASSERT_TRUE(finished.ok());
   EXPECT_EQ(finished.value.action, GuidanceAction::SphereDone);
+
+  // And the fifth thing, which is not an action: whether there was an aim to speak of. Asserted
+  // here for the same reason as the four above — this engine is unreachable from the browser, so
+  // nothing else can catch it. Forcing `aimKnown` true left the whole suite green while the rings
+  // engine's copy of the same line failed thirteen browser tests, which is exactly the asymmetry
+  // that lets a null implementation drift away from the real one.
+  EXPECT_TRUE(fresh.value.aimKnown);
+  PoseSample unaimed;
+  unaimed.confidence = 0.0;
+  auto blind = engine.Locate(unaimed, plan, CoverageState{});
+  ASSERT_TRUE(blind.ok());
+  EXPECT_FALSE(blind.value.aimKnown);
+  // And with no aim, coverage decides alone (ADR 0042): the nearest missing cell rather than
+  // whatever sits at identity, and never `HoldStill` — a page gating its shutter on that would
+  // offer nothing for ever.
+  EXPECT_EQ(blind.value.action, GuidanceAction::Seek);
 }
 
 }  // namespace

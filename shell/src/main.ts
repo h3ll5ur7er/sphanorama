@@ -97,6 +97,37 @@ const motion = createMotionSensorAccess(window);
 // worker the core runs in, so the host asks and the page stops (ADR 0019).
 let cameraStream: MediaStream | null = null;
 
+/**
+ * Whether there is a camera in hand *now*.
+ *
+ * Asked of the tracks rather than of the reference, because a `MediaStream` whose tracks have all
+ * ended is still a perfectly good `MediaStream` object. `cameraStream !== null` was the page's
+ * test for this and it answers a different question — "was one ever opened?" — which is the same
+ * shape of mistake as reading a capability where a sample was wanted.
+ *
+ * It also does not depend on the `ended` event having been delivered. The listener below is what
+ * *reports* the loss; this is what *knows* it, so a track that was already dead when `open`
+ * returned is caught too, and the two cannot fall out of step because there is only one fact.
+ */
+function cameraHeld(): boolean {
+  return cameraStream !== null
+    && cameraStream.getTracks().some((track) => track.readyState === 'live');
+}
+
+/**
+ * Whether the camera went away *without* the core asking for it.
+ *
+ * Not the same fact as `!cameraHeld()`, which is also true after an orderly `End` — the core
+ * closes the camera on its way out, and a session that has finished is not a session that lost
+ * its camera. The capture loop needs the narrower one: an unexpected loss has to stop it, while a
+ * closed session must fall through to the ordinary failing-tick path, which already says the right
+ * thing and clears the right things. Conflating them made a session end announce "the camera was
+ * taken away" and swallow the guidance failure, which an existing browser test caught.
+ *
+ * The reason is recorded because nothing else records it; the *state* is still read off the tracks.
+ */
+let cameraTakenAway = false;
+
 // Every write to the camera's lock state, in the order it was asked for.
 //
 // `applyConstraints` takes as long as it takes, and three callers write here: an arm, the release
@@ -169,13 +200,27 @@ function writeLocks(
   // So the chain is built from the real promise and only the answer is raced. A stuck write still
   // delays everything behind it, and that is correct: a camera that has not answered has not
   // answered, and guessing the order it will finish in is what produced the bug above.
-  const settled = lockWrites.then(() => camera.setLocks(wanted));
+  //
+  // The clock starts when this write reaches the track, not when it joins the queue. Started at
+  // enqueue, the budget was spent waiting for the writes in front — and each refusal queued a
+  // release of its own behind the write it had given up on, so the queue grew by one write per
+  // failure. Measured on a camera taking 700 ms per constraint: the first burst succeeded, the
+  // second was refused after 3007 ms of which 2463 were spent in the queue, and every burst after
+  // it failed the same way at 3 s intervals while the track answered fourteen constraints back to
+  // back without an idle moment. One cell per session, blamed on a camera that was answering
+  // everything it was asked.
+  let reached: () => void;
+  const reaches = new Promise<void>((resolve) => { reached = resolve; });
+  const settled = lockWrites.then(() => {
+    reached();
+    return camera.setLocks(wanted);
+  });
   lockWrites = settled.catch(() => undefined);
   return Promise.race([
     settled.then((done): LockWrite => ({ answered: true, done })),
-    new Promise<LockWrite>((resolve) => {
+    reaches.then(() => new Promise<LockWrite>((resolve) => {
       setTimeout(() => resolve({ answered: false }), LOCK_WRITE_TIMEOUT_MS);
-    }),
+    })),
   ]);
 }
 
@@ -298,6 +343,8 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     // cannot reach a MediaStream itself.
     const stream = camera.stream();
     cameraStream = stream;
+    // A fresh camera is not a lost one, whatever the last one did.
+    cameraTakenAway = false;
     // A camera can also go away without anyone asking. Permission revoked from the browser's own
     // UI, another app taking the lens, a phone call: the track ends, and until this existed the
     // page never learned. `onCloseCamera` is the *core's* route and it was the only one, so what
@@ -309,11 +356,18 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     // `camera.open` stops the previous tracks itself, so the old stream's `ended` arrives *after*
     // a new one is in hand, and clearing then would throw away the live camera on the strength of
     // the dead one's news.
+    // What *reports* the loss. What *knows* it is `cameraHeld`, which reads the tracks — so this
+    // does not clear `cameraStream`, and clearing it would be unobservable: every reader now asks
+    // the tracks, and a reference to a stream of dead tracks answers the same as no reference at
+    // all. A reviewer proved the point from the other side, by deleting the clears this used to do
+    // and finding the whole suite still green.
+    //
+    // `stopCameraStream` is not bookkeeping and stays: a stream can lose one track and keep another
+    // lit, and the camera indicator staying on is its own bug report.
     const forgetCamera = () => {
       if (stream === null || cameraStream !== stream) return;
       stopCameraStream(stream);
-      cameraStream = null;
-      lastLocksLine = '';
+      cameraTakenAway = true;
       cameraState.textContent = 'taken away';
     };
     for (const track of stream?.getTracks() ?? []) track.addEventListener('ended', forgetCamera);
@@ -358,7 +412,20 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   motionIsRunning = started.ok;
   // The camera is what a session needs; motion only makes aiming easier. Refusing to capture
   // without it would turn a supported degraded mode into a dead end.
-  if (opened.ok) await beginSession(core, started.ok, resume);
+  //
+  // Asked of the stream rather than of `opened.ok`, because they answer different questions.
+  // `opened.ok` is a fact about a call that has already returned; two awaits sit between it and
+  // here — the motion capability and the sensor start — and a track that ends inside that window
+  // runs `forgetCamera` and nulls the stream. The page then began a session against a camera
+  // nobody was holding: "capturing — 32 cells planned", the panel folded, the shutter enabled,
+  // and `#camera-state` saying the camera had been taken away, all on screen at once.
+  const stillHeld = opened.ok && cameraHeld();
+  if (opened.ok && !stillHeld) {
+    stage.textContent = 'the camera was taken away before the capture could start';
+  }
+  if (stillHeld) await beginSession(core, started.ok, resume);
+  // Still pumped, so the sensor readout stays live and the reason stays on screen — the same
+  // thing a camera that never opened gets, because from here it is the same situation.
   else if (started.ok) pump(core, null, true, null);
 }
 
@@ -615,6 +682,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   };
 
   const armOnce = async (node: NodeId) => {
+    if (cameraLost()) {
+      // Reachable without the loop: the end-to-end hook calls `captureCell` straight, and so did
+      // the button before the loop learned to stop. A burst armed here would take five copies of
+      // the `<video>`'s frozen last frame, which passes both of the grabber's guards.
+      sayForAWhile('the camera was taken away — not capturing');
+      return false;
+    }
     // Applied and confirmed *before* arming, which is the whole ordering requirement (ADR 0022):
     // the burst's first frame arrives on the very next tick, and the core reads the lock state
     // through a synchronous port that cannot wait for applyConstraints.
@@ -741,7 +815,36 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // NotFound against a plan that does not exist, which reads as a bug rather than as "no session".
   if (plan !== null) captureCell = armAt;
 
+  // Whether this loop's camera was taken away under it.
+  //
+  // The narrower fact, not `!cameraHeld()` — see `cameraTakenAway`. An orderly `End` also leaves
+  // no camera, and that must reach the ordinary failing-tick branch below rather than this one;
+  // the first version of this check used the broad fact and made a session end announce "the
+  // camera was taken away" while swallowing the guidance failure.
+  //
+  // The `plan !== null` half is what makes it about a session at all: this loop also runs with no
+  // camera from the start, for a phone that has motion and nothing else, and there having no
+  // camera is the ordinary state rather than a loss.
+  const cameraLost = () => plan !== null && cameraTakenAway;
+
   const step = async () => {
+    if (cameraLost()) {
+      // The camera going away used to leave this loop running, and a burst armed after it banked
+      // five candidates: the `<video>` keeps `readyState 4` and its dimensions after its track
+      // ends, so both of the grabber's guards pass and every frame is a copy of the last one the
+      // camera produced. Five sharp, well-scored frames of the same instant, filed under a cell —
+      // the same undetectable-afterwards failure as ADR 0041's wrong pixels, from the other end.
+      //
+      // So the loop stops rather than degrades. A burst in flight stops with it, because
+      // `AdvanceBurst` runs on this tick and on nothing else (ADR 0018) — no further tick means no
+      // further candidate. The reticle and the markers go, because they describe where to point a
+      // camera that is not there.
+      captureButton.disabled = true;
+      overlay.show({ rings: [], arrow: null });
+      guidanceOut.textContent = 'the camera was taken away';
+      stage.textContent = 'the camera was taken away — reload to start again';
+      return;
+    }
     const drained = await motion.drain(32);
     const samples = drained.ok ? drained.value : [];
 
@@ -836,7 +939,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // No `captureCell === null` here: this whole block is inside `plan !== null`, and
         // `captureCell` is assigned exactly when a plan exists. The disjunct could never be true —
         // a guard implied by the one above it, which reads as defence and is not.
-        captureButton.disabled = !canCapture(guidance);
+        //
+        // And not only what guidance says. This line knew nothing about the arm the press had
+        // just started, so the very next tick put the shutter back: measured at 41 ms after a
+        // press, enabled again for 352 of the 393 ms before the core first reported `Firing`. The
+        // second press inside that window was refused by `armAt`'s own guard, which is what made
+        // it invisible — nothing was armed twice, and nothing said why the press did nothing.
+        // A button offered while an arm is in flight is a button that lies about what pressing it
+        // does.
+        captureButton.disabled = !canCapture(guidance) || arming || armed || firing;
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
         // says. With no aim, `angularErrorDeg` is measured from an unmeasured identity — it comes
@@ -1028,7 +1139,7 @@ async function main() {
       // after it, in `StartTracking`, and that failure closes the camera on the way out. The page
       // learns through `onCloseCamera` and stops the tracks. A flag saying "enabled" would still
       // say so, and the retry would begin a session against a camera nobody is holding.
-      const attempt = cameraStream !== null
+      const attempt = cameraHeld()
         ? beginSession(core, motionIsRunning, resume)
         : enable(core, resume);
       void attempt.finally(() => { resumeButton.disabled = false; });
