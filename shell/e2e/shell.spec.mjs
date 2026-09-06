@@ -593,6 +593,89 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
   }
 });
 
+test('a camera taken away mid-session stops being a camera in hand', async ({ page }) => {
+  // The core is not the only thing that can end a capture. Permission revoked from the browser's
+  // own UI, another app taking the lens, an incoming call: the track ends and nobody is told.
+  // `onCloseCamera` was the page's only route to noticing, and it fires when the *core* asks —
+  // so what this leaves behind is a MediaStream that is still non-null with every track dead,
+  // which the resume button reads as "a camera is in hand" and begins a session against.
+  //
+  // The readout is the observable half of the same handler that nulls the stream: they are set
+  // together, so a row that still quotes the camera's dimensions is a page that still believes it
+  // is holding one.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    // A real size first, so the assertion below is a change rather than a state it started in.
+    await expect(page.locator('#camera-state')).toHaveText(/^\d+×\d+$/, { timeout: 15000 });
+
+    // What the platform does when the camera is taken: `ended` on the track, with no call into
+    // anything the page owns.
+    await page.evaluate(() => {
+      const stream = document.querySelector('video').srcObject;
+      for (const track of stream.getTracks()) track.dispatchEvent(new Event('ended'));
+    });
+
+    await expect(page.locator('#camera-state')).toHaveText('taken away', { timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
+test('a camera that will not answer a lock request does not get a burst', async ({ browser }) => {
+  // The chain behind `writeLocks` deliberately does not cancel a write it has stopped waiting for
+  // — a cancelled one could be overtaken by the release queued behind it and end a session with
+  // the camera locked. So a write the caller gave up on still reaches the track, and on a camera
+  // that answers late it reaches it *during* the burst that would otherwise have been armed here:
+  // five frames straddling an exposure and focus change, which is the failure ADR 0022 exists to
+  // prevent, with the core told no locks were held and the row calling it a refusal.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    // Late rather than dead: it resolves, well past the three seconds the page waits. A track that
+    // never settles at all would prove less — the interesting case is the one where the write does
+    // eventually land, because that is the one that can land inside a burst.
+    MediaStreamTrack.prototype.applyConstraints = function () {
+      return new Promise((resolve) => setTimeout(resolve, 30000));
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Refused, and no pixels banked. Before this, the timeout was manufactured into the same
+    // `{ok: false, CameraUnavailable}` a camera that *says no* produces, and arming went ahead on
+    // it — so this returned true and a cell was filled from a burst nobody could explain.
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
+    await expect(page.locator('#locks')).toContainText(/did not answer/i, { timeout: 15000 });
+    const captured = await page.evaluate(async () => {
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      for (const node of plan.value.nodes) {
+        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+        if (got.ok && got.value.length > 0) return got.value.length;
+      }
+      return 0;
+    });
+    expect(captured).toBe(0);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('calls a manager through the generated facade', async ({ page }) => {
   // The round trip end to end in a real browser: encode arguments, dispatch across the C ABI,
   // decode a Result. The unit tests cover each half against a fake; this is the only place both

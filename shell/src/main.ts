@@ -115,14 +115,35 @@ let cameraStream: MediaStream | null = null;
 // throwing away *which* locks they were. The row's whole job is to answer "was the camera free to
 // re-expose between these frames?", and a bare "released" answers it for nobody.
 let lastLocksLine = '';
+/**
+ * What a caller of `writeLocks` gets back: the camera's answer, or the fact that there was not one.
+ *
+ * The two used to be the same value. A write that timed out was manufactured into
+ * `{ok: false, CameraUnavailable}` — the same shape a camera that *says no* produces — and every
+ * caller downstream then treated "the track has not answered" as "the track refused". They are not
+ * the same fact and the difference is the whole of ADR 0022: a refusal is a known state of the
+ * camera, and a timeout is no state at all. Firing a burst over the second is firing over an
+ * exposure that may change halfway through it, which is exactly what locks exist to prevent.
+ */
+type LockWrite =
+  | { answered: true; done: Awaited<ReturnType<typeof camera.setLocks>> }
+  | { answered: false };
+
 // Painted from what the write *resolved with*, not from having queued it.
 //
 // Both callers fire and forget, so saying "released" on the next line asserted a state of the track
 // the track had not reached — and with a bounded chain it might reach it three seconds later, or
 // not at all. Waiting for the answer costs nothing here (the burst is over) and makes the row true
 // rather than intended, which is the one thing this row is for.
-function showLocksReleased(row: Element, done: Awaited<ReturnType<typeof camera.setLocks>>) {
+function showLocksReleased(row: Element, write: LockWrite) {
   const had = lastLocksLine === '' ? 'no burst has run yet' : lastLocksLine;
+  if (!write.answered) {
+    // Not "released", because nothing has said so. The write is still on the chain and will land
+    // when the track gets to it; what this row must not do is report an outcome it has not seen.
+    row.textContent = `${had} · release not answered`;
+    return;
+  }
+  const done = write.done;
   row.textContent = done.ok
     ? (lastLocksLine === '' ? had : `${lastLocksLine} · released`)
     : `${had} · release refused — ${done.status.detail || done.status.code}`;
@@ -136,7 +157,9 @@ let lockWrites: Promise<unknown> = Promise.resolve();
 // write, `arming` stays true and no burst can ever be armed again. A slow camera merely arrives
 // late; this is what stops a stuck one from being permanent.
 const LOCK_WRITE_TIMEOUT_MS = 3000;
-function writeLocks(wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean }) {
+function writeLocks(
+  wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean },
+): Promise<LockWrite> {
   // The *caller* stops waiting after the timeout; the chain does not. Those are different things
   // and conflating them is worse than having no timeout at all: if the queue advanced on the race,
   // a stuck write would be overtaken by the release queued behind it, the release would reach the
@@ -149,14 +172,9 @@ function writeLocks(wanted: { exposure: boolean; whiteBalance: boolean; focus: b
   const settled = lockWrites.then(() => camera.setLocks(wanted));
   lockWrites = settled.catch(() => undefined);
   return Promise.race([
-    settled,
-    new Promise<Awaited<ReturnType<typeof camera.setLocks>>>((resolve) => {
-      setTimeout(() => resolve({
-        ok: false,
-        status: {
-          code: 'CameraUnavailable', component: 'camera', detail: 'the camera did not answer',
-        },
-      } as Awaited<ReturnType<typeof camera.setLocks>>), LOCK_WRITE_TIMEOUT_MS);
+    settled.then((done): LockWrite => ({ answered: true, done })),
+    new Promise<LockWrite>((resolve) => {
+      setTimeout(() => resolve({ answered: false }), LOCK_WRITE_TIMEOUT_MS);
     }),
   ]);
 }
@@ -278,7 +296,27 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     lensLocks = opened.value;
     // Held here so the core can ask for it to be stopped: Close is a synchronous port call and
     // cannot reach a MediaStream itself.
-    cameraStream = camera.stream();
+    const stream = camera.stream();
+    cameraStream = stream;
+    // A camera can also go away without anyone asking. Permission revoked from the browser's own
+    // UI, another app taking the lens, a phone call: the track ends, and until this existed the
+    // page never learned. `onCloseCamera` is the *core's* route and it was the only one, so what
+    // was left behind was a non-null `MediaStream` with every track dead — which the resume button
+    // reads as "a camera is in hand" and begins a session against, and a `#locks` row still
+    // quoting a track that no longer exists.
+    //
+    // Guarded on identity rather than run unconditionally, because a stream can outlive its turn:
+    // `camera.open` stops the previous tracks itself, so the old stream's `ended` arrives *after*
+    // a new one is in hand, and clearing then would throw away the live camera on the strength of
+    // the dead one's news.
+    const forgetCamera = () => {
+      if (stream === null || cameraStream !== stream) return;
+      stopCameraStream(stream);
+      cameraStream = null;
+      lastLocksLine = '';
+      cameraState.textContent = 'taken away';
+    };
+    for (const track of stream?.getTracks() ?? []) track.addEventListener('ended', forgetCamera);
     cameraState.textContent = `${opened.value.maxWidth}×${opened.value.maxHeight}`;
     viewfinder.srcObject = camera.stream();
   } else {
@@ -607,7 +645,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     const unlock = () => {
       remote.setLocks({ exposure: false, whiteBalance: false, focus: false });
       void writeLocks({ exposure: false, whiteBalance: false, focus: false })
-        .then((done) => showLocksReleased(locksOut, done));
+        .then((write) => showLocksReleased(locksOut, write));
       // And the row stops claiming them. It reads off the last successful *request*, so after a
       // refused arm it went on listing "exposure · white balance · focus" over a track that was
       // back to metering — the one row whose whole job is to be trustworthy about that. What it
@@ -619,7 +657,31 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     let held: Awaited<ReturnType<typeof camera.setLocks>>;
     let armedNow;
     try {
-      held = await writeLocks(wanted);
+      const write = await writeLocks(wanted);
+      if (!write.answered) {
+        // No burst over a camera in an unknown state.
+        //
+        // The chain deliberately does not cancel the write — a cancelled one could be overtaken by
+        // the release behind it and end a session locked — so a write this caller has given up on
+        // is still going to reach the track, and on a merely slow camera it reaches it *during*
+        // the burst that would be armed here. The five frames would then straddle an exposure and
+        // focus change, which is the physical failure ADR 0022 exists to prevent, and nothing
+        // downstream could explain it: the core would have been told no locks were held and the
+        // row would have called it a refusal.
+        //
+        // Refusing costs one burst on a camera that answers late, and the retry works as soon as
+        // the chain drains. Arming costs the burst anyway — quietly, and with pixels banked.
+        //
+        // `unlock` is what makes the camera agree with what it tells the core: the
+        // release it queues sits behind the abandoned write, so whatever that write does to the
+        // track is undone the moment the track is reachable again.
+        unlock();
+        lastLocksLine = 'the camera did not answer the lock request';
+        locksOut.textContent = lastLocksLine;
+        sayForAWhile('the camera is not answering — not capturing');
+        return false;
+      }
+      held = write.done;
       // A camera that cannot lock still captures. What must not happen is the *core* believing a
       // lock is held when it is not, and pushing the confirmed state is what prevents that.
       const settled = held.ok
@@ -840,17 +902,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // what turned a stranded lock into a permanently stranded one.
         firing = false;
         armed = false;
-        // Coverage is re-read even though the tick failed, because a tick can fail *after* the
-        // burst it was advancing has already committed: `AdvanceBurst` banks the cell and then
-        // releases the locks, and a track that refuses to drop them turns the whole call into a
-        // failure. The cell is captured, the core says so, and `CellDone` was never emitted — this
-        // line is the only thing that redraws the map or moves the progress count, so without this
-        // the page shows a stale count and a hole where a captured cell is, for the rest of the
-        // session. Reading coverage is cheap and cannot make anything worse.
-        // After the clear below, never before it: `refreshCoverage` repaints the markers, and it
-        // is asynchronous, so a refresh started here landed *after* `overlay.show({rings: []})`
-        // and put a ring back under a line saying guidance had stopped working. Measured as
-        // `n:0` at t=683 and `n:1` at t=684.
+        // What stops the repaint `refreshCoverage` would otherwise do at the end of this branch.
         guidanceFailed = true;
         // And nothing is offered. A failed tick produced no guidance, so there is no cell to
         // capture and no aim to have checked — leaving the shutter enabled meant a press that
@@ -862,11 +914,18 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // a confident answer over a line that says guidance has stopped working.
         overlay.show({ rings: [], arrow: null });
         guidanceOut.textContent = `guidance failed: ${describeGuidanceFailure(guided.status)}`;
-        // Coverage is still worth re-reading — a tick can fail *after* the burst it was advancing
-        // committed, because releasing the locks is the last thing a filled burst does and a
-        // refused release turns the whole call into a failure. `CellDone` is never emitted on that
-        // path and it is the only thing that moves the map. `guidanceFailed` is what stops the
-        // repaint it would otherwise do.
+        // Coverage is re-read even though the tick failed, because a tick can fail *after* the
+        // burst it was advancing has already committed: `AdvanceBurst` banks the cell and then
+        // releases the locks, and a track that refuses to drop them turns the whole call into a
+        // failure. The cell is captured, the core says so, and `CellDone` was never emitted — this
+        // line is the only thing that redraws the map or moves the progress count, so without it
+        // the page shows a stale count and a hole where a captured cell is, for the rest of the
+        // session. Reading coverage is cheap and cannot make anything worse.
+        //
+        // Last in the branch, after the clear above and never before it: `refreshCoverage` repaints
+        // the markers and is asynchronous, so a refresh started earlier landed *after*
+        // `overlay.show({rings: []})` and put a ring back under a line saying guidance had stopped
+        // working. Measured as `n:0` at t=683 and `n:1` at t=684.
         void refreshCoverage();
       }
     }
@@ -918,7 +977,7 @@ async function main() {
       // the track had just given back. It was made truthful after a refused arm and left stale
       // after every successful one, which is the more common path by far.
       void writeLocks({ exposure: false, whiteBalance: false, focus: false })
-        .then((done) => showLocksReleased(locksOut, done));
+        .then((write) => showLocksReleased(locksOut, write));
     });
 
     // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the
