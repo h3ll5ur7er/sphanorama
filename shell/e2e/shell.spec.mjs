@@ -755,8 +755,12 @@ test('a camera that dies while the page is still enabling does not start a captu
     // to read the shutter's `disabled` attribute, and the obvious replacement — that
     // `window.sphanoramaCapture()` answers false — is satisfied by a default: it returns false on
     // a page that has done nothing at all, because the hook has no target cell to arm until a
-    // plan exists. It would have passed if `enable` had never run. `getPlan` refuses unless a
-    // session was actually begun, which is the fact this test is about.
+    // plan exists. It would have passed if `enable` had never run.
+    //
+    // `getPlan` refuses unless a session is active, which is the fact this test is about — and it
+    // is worth being exact, because the obvious stronger claim is false: this does not prove no
+    // session was ever begun, only that none is open now. What makes it enough here is that
+    // `enable` is the only path that begins one and it never reached `beginSession`.
     const planned = await page.evaluate(async () => {
       const got = await window.sphanoramaCore.captureSession.getPlan();
       return got.ok ? got.value.nodes.length : -1;
@@ -772,17 +776,21 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
   // What is left of `the shutter stays taken from the press until the burst is over` once the
   // shutter is gone (ADR 0044). That test watched the button for a window in which a second press
   // would have been accepted; the window it was about is still there, and now nothing but the
-  // core closes it — the dwell latches when it fires, `armAt` refuses a second arm while one is
-  // in flight, and a burst in flight overwrites the action guidance reports, so the dwell resets
-  // rather than continuing to mature underneath it.
+  // core closes it — the dwell's counter restarts when it fires and needs a whole two seconds
+  // again, `armAt` refuses a second arm while one is in flight, and a burst in flight overwrites
+  // the action guidance reports, so the dwell resets rather than continuing to mature underneath
+  // it.
   //
   // Three guards for one property, and they are not independent — which is worth writing down,
   // because the obvious sentence here ("break any one and the phone re-arms") is false and was
-  // measured to be. Unlatching `dwell_fired_` changes nothing: a burst in flight overwrites the
-  // action, so the dwell resets rather than maturing again, and any extra `Fire` before the arm
-  // lands is refused by `armAt`. What this test isolates is the third: making `Locate` answer
-  // `HoldStill` on a cell it has already captured fires a second burst into it, and the count
-  // below comes back 8 — the per-cell cap (ADR 0037), which is what ten frames become.
+  // measured to be. Removing the counter's restart changes nothing here: a burst in flight
+  // overwrites the action, so the dwell resets rather than maturing again, and any extra `Fire`
+  // before the arm lands is refused by `armAt`. (That restart is not decoration — it is what lets
+  // a `Fire` nobody could act on come round again, which `AFireNobodyActedOnComesRoundAgain...`
+  // covers — it just cannot be what this test measures.) What this one isolates is the third
+  // guard: making `Locate` answer `HoldStill` on a cell it has already captured fires a second
+  // burst into it, and the count below comes back 8 — the per-cell cap (ADR 0037), which is what
+  // ten frames become.
   //
   // The camera is slowed on purpose, as it was here before: on one that takes the locks instantly
   // the window is a few frames and the test would be hoping to land in it rather than opening it.
@@ -1992,20 +2000,93 @@ test('a phone with no motion sensors is told what is required and what is missin
     // And no session behind it. Both halves: the word `beginSession` writes when one started, and
     // the plan the core would be holding if one had.
     await expect(stage).not.toContainText('capturing');
+    // `-1` for "refused", not `0`: a plan with no cells and no plan at all are different answers,
+    // and only one of them is what a refused session leaves behind. The sibling assertion in
+    // `a camera that dies while the page is still enabling...` uses the same sentinel for the
+    // same reason.
     const planned = await page.evaluate(async () => {
       const got = await window.sphanoramaCore.captureSession.getPlan();
-      return got.ok ? got.value.nodes.length : 0;
+      return got.ok ? got.value.nodes.length : -1;
     });
-    expect(planned).toBe(0);
+    expect(planned).toBe(-1);
 
     // And the camera was never asked for. A user who cannot capture must not be made to answer a
     // permission prompt on the way to being told so, which is the ordering ADR 0044 exists to get
     // right and the one the page — not the core — is the only place that can honour: `enable`
     // calls `getUserMedia` before the core is reached at all.
     expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
+
+    // And nothing left to press. Both offers go rather than going grey: no press changes the
+    // answer, and a live control under a sentence that says to change a setting and reload is the
+    // same two-dead-buttons failure the resume path was fixed for one commit earlier.
+    await expect(page.locator('#enable')).toBeHidden();
+    await expect(page.locator('#resume')).toBeHidden();
+    await expect(page.locator('#new-capture')).toBeHidden();
   } finally {
     await server.close();
     await context.close();
+  }
+});
+
+test('a stored capture is offered back and then withdrawn on a device that cannot place frames',
+  async ({ page }) => {
+  // The resume half of ADR 0044, and the case that made the first version of the page's guard
+  // wrong. `enable` is the one path a resume takes too, so the no-sensor branch returns before
+  // `pickUp` runs — which means `describeResumeRefusal`'s own `SensorUnavailable` handling, added
+  // in the same commit, is never reached here. The branch has to withdraw the offer itself, and
+  // the first draft only re-enabled it: a live `#resume` under a sentence saying to change a
+  // setting and reload, which is the two-dead-buttons failure that helper exists to prevent.
+  //
+  // One page throughout, because the session document has to survive into the sensorless load:
+  // `addInitScript` applies from the next navigation, so the capture happens first and the
+  // sensors are taken away across the reload.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    await page.evaluate(() => window.sphanoramaHost.flush());
+
+    await page.addInitScript(() => {
+      delete window.AbsoluteOrientationSensor;
+      delete window.DeviceOrientationEvent;
+      delete window.DeviceMotionEvent;
+      window.__cameraAsked = 0;
+      const media = navigator.mediaDevices;
+      const real = media.getUserMedia.bind(media);
+      media.getUserMedia = (constraints) => {
+        window.__cameraAsked += 1;
+        return real(constraints);
+      };
+    });
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    // Offered, because whether a project has a session to come back to is a fact about the
+    // project and is read without touching a sensor or a camera (ADR 0036).
+    await expect(page.locator('#resume')).toBeVisible({ timeout: 15000 });
+    await page.locator('#resume').click();
+
+    // And withdrawn, with the reason, and without a camera prompt on the way.
+    await expect(page.locator('#stage')).toContainText(/motion sensors/i, { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeHidden();
+    await expect(page.locator('#enable')).toBeHidden();
+    expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
+
+    // The capture is still there. A refusal that took the document with it would turn "not on
+    // this device" into "not ever".
+    const stillThere = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      return listed.ok && listed.value.some((p) => p.hasSession);
+    });
+    expect(stillThere).toBe(true);
+  } finally {
+    await server.close();
   }
 });
 

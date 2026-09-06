@@ -588,13 +588,19 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{stored.session};
+  // The stored spec, whole, including `motion` — and that last part was briefly "fixed" and is
+  // deliberately back. A review round called the stored capability stale, since `Resume` decides
+  // on the live one; the answer is that it is not a record of this device, it is an input the
+  // sphere was planned with. `Resume` replans from exactly these bytes, so overwriting a field of
+  // them with something the phone in hand reports makes the tessellation device-dependent — and
+  // node ids are indices into a particular tessellation, so the next resume on a different phone
+  // would file every restored candidate under a different cell. That is the failure this whole
+  // line exists to prevent, seeded one field at a time.
+  //
+  // No planner reads `motion` today (`docs/03-architecture.md` says so, and says it has never
+  // been true that one does), so the overwrite was harmless in this build. It would not have
+  // stayed harmless, and a defect that waits for a feature is the expensive kind.
   resolved_spec_ = stored.spec;
-  // The one field of the stored spec that describes the *device* rather than the sphere, put back
-  // to what this device actually reports. Everything else here is the tessellation's own input
-  // and has to be the stored one, or a resume replans a different sphere. `Checkpoint` writes
-  // `resolved_spec_` out again on the next committed cell, so leaving the stored capability in
-  // place would republish a fact about a phone that may not be this one.
-  resolved_spec_.motion = motion;
   lens_ = stored.lens;
   candidates_.clear();
   burst_owned_.clear();
@@ -740,7 +746,6 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   if (!held || !sameCell) {
     // Nothing to hold on, or something else to hold on. Either way this is a new dwell.
     dwell_ns_ = 0;
-    dwell_fired_ = false;
     dwell_node_ = held ? std::optional<NodeId>(guidance.targetNode) : std::nullopt;
   } else if (!batch.empty()) {
     // Only a tick that carried a sample adds time. The mark moves on every tick either way, so a
@@ -755,11 +760,26 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   dwell_marked_ns_ = now;
   if (held) {
     guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
-    if (dwell_ns_ >= kDwellNs && !dwell_fired_) {
-      // An edge, once per dwell. The client arms on it; the manager cannot arm for itself, because
-      // a burst is paced by the client's ticks over a frame the client keeps resident (ADR 0018).
+    if (dwell_ns_ >= kDwellNs) {
+      // An edge, and the counter restarts rather than latching. The client arms on this; the
+      // manager cannot arm for itself, because a burst is paced by the client's ticks over a
+      // frame the client keeps resident (ADR 0018).
+      //
+      // Restarting is what makes it possible to try again, and that matters more since ADR 0044
+      // than it did when this was written: the shutter used to be the way out of a `Fire` the
+      // client could not act on, and there is no shutter. A refused arm — a lock write that timed
+      // out, a camera busy for an instant — used to strand the capture with the ring full, the
+      // line still saying "hold still", and nothing that would ever fire again; measured at
+      // twenty seconds of holding one cell for zero candidates, escapable only by looking away
+      // and back. Now the dwell simply runs again.
+      //
+      // A whole dwell rather than the next tick, because a client that is merely slow must not
+      // collect a second arm on top of the one in flight; two seconds is far longer than any
+      // round trip this app makes. And a burst that *does* start overwrites the action above, so
+      // `held` goes false and the dwell resets on its own — the retry cannot double-fire one that
+      // took. A latched flag was tried first and did the first half of this without the second.
       guidance.action = GuidanceAction::Fire;
-      dwell_fired_ = true;
+      dwell_ns_ = 0;
     }
   }
   return Ok(guidance);

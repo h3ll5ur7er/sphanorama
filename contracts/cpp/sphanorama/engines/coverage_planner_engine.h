@@ -47,9 +47,14 @@ class ICoveragePlannerEngine {
   // the life of a session and captured by eye (ADR 0042). It now describes a *moment*: such a
   // device is refused at `ICaptureSessionManager::Begin` (ADR 0044), and what is left is a
   // session's opening ticks, before its first reading arrives, and a stream carrying angular
-  // rates with no attitude in them, which never anchors at all. An engine that ignored
-  // `confidence` would let the second of those mature a dwell and fire a burst at a cell nobody
-  // pointed at, which is the failure ADR 0041 exists to stop.
+  // rates with no attitude in them, which never anchors at all.
+  //
+  // An engine that ignored `confidence` would name a cell as held on an orientation nobody chose.
+  // `ICaptureSessionManager::ArmBurst` refuses such a burst on its own account, so the reticle
+  // would close on a cell that then would not arm — a capture that looks ready and does nothing,
+  // which is worse to diagnose than one that says it is seeking. Two guards for one fact is the
+  // arrangement here on purpose: this one is what the user sees, and the manager's is what the
+  // frames depend on.
   //
   // An empty state means no information rather than nothing missing: at the start of a session
   // nothing has been captured and nothing is a hole, and reading that as a finished sphere would

@@ -177,7 +177,6 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   std::optional<NodeId> dwell_node_;
   // Whether `Fire` has already been reported for this dwell. It is an edge: a client arms on it,
   // and reporting it again on the next tick would arm a second burst into a refusal.
-  bool dwell_fired_ = false;
 
   uint64_t next_session_ = 1;
   uint64_t next_candidate_ = 1;

@@ -80,6 +80,13 @@ required and what is missing.**
 - **Roughly two hundred lines of second-path reasoning come out**, along with the tests that pinned
   them. The ADRs stay: 0042's reasoning was correct and its measurements are the evidence for this
   decision, which is why it is superseded rather than deleted.
+- **A session can begin and never be able to capture, on a stream that carries rates and never an
+  attitude.** Nothing anchors the pose, so `Locate` never says `HoldStill`, the dwell never
+  matures, and the dwell is the only thing that arms a burst. The shipped browser adapter cannot
+  produce such a stream — every sample it emits carries an attitude — so this is a contract-level
+  hole rather than a live one, and it is recorded here rather than closed: closing it means
+  deciding how long a session waits before it gives up, which is a product question this ADR
+  should not answer on the way past. `docs/06-roadmap.md` carries it.
 - **A replay client is unaffected**, because a recorded log carries orientation — but only once it
   is wired to a port that says so. The native runtime composes `NullMotionSensorAccess`, which
   answers `None`, so every native `Begin` now refuses: `bridge/test/facade_test.cpp` records

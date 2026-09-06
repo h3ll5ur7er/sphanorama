@@ -649,9 +649,13 @@ export interface CaptureSessionManager {
    * born with, which is a direction nobody chose, so there is nothing to check and nothing to
    * allow — arming then would file real pixels under a cell picked by an accident of
    * initialisation.
-   * So a client may wait for guidance to say `HoldStill`: that action means "inside this cell's
-   * cone and this cell still wants shooting", which is precisely the condition this arms on, and
-   * it now always arrives on a session that exists.
+   * So a client may wait for guidance to say `HoldStill`, which means "inside this cell's cone
+   * and this cell still wants shooting" — precisely the condition this arms on. What it must not
+   * assume is that the action always comes: it needs an anchored pose, so a stream that carries
+   * rates and never an attitude produces a session that begins and can never arm. The shipped
+   * browser adapter cannot produce one (every sample it emits carries an attitude), and a port
+   * that can owes its user a way to say so. Nothing in this build watches for it; the roadmap
+   * carries it.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
@@ -701,6 +705,13 @@ export interface CaptureSessionManager {
    * only way a sensorless device could retake at all. That device is refused at `Begin` now
    * (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
    * taken there or not at all.
+   * With `replace` false, that burst has nothing to fire it in this build, and the honest place
+   * to say so is here. Keeping the evidence leaves the cell covered, `Locate` answers
+   * `AlreadyCaptured` rather than `HoldStill` for a covered cell, and the dwell that arms every
+   * burst since ADR 0043 only matures on `HoldStill` — so an additive retake marks nothing a
+   * client can act on. `replace` true empties the cell, which makes it a hole again and puts it
+   * back in the dwell's way. The retake flow that closes this is Phase 3 (`docs/06-roadmap.md`);
+   * until then this call aborts a burst in flight and, additively, does nothing else.
    */
   requestRetake(node: NodeId, replace: boolean): Promise<Result<void>>;
   end(): Promise<Result<void>>;
@@ -805,8 +816,12 @@ export interface MotionSensorAccess {
    * What motion data *this session* can get, which is not the same as what the hardware has.
    * A device with a gyroscope whose permission the user declined answers `None`, and so does one
    * with no sensors at all — because the caller's question is whether a capture can know which
-   * way the camera is pointing, and both answer it the same way. `Start`'s status is where the
-   * two are told apart, and the shell puts that reason on its motion row (ADR 0025).
+   * way the camera is pointing, and both answer it the same way.
+   * No implementation of *this* contract tells the two apart, and a caller must not expect one
+   * to: `Start` reports that it could not start, not why the platform said no. The distinction
+   * survives one level out, in the adapter that owns the platform call — the shell's own motion
+   * port keeps the reason and puts it on the motion row (ADR 0025), which is what made an iPhone
+   * reading legible. By the time it reaches here it has been collapsed on purpose.
    * The distinction stopped being cosmetic with ADR 0044: `ICaptureSessionManager::Begin` refuses
    * a session on `None`, so a port answering it about hardware while the session was in fact
    * available would refuse a capture that could have run.

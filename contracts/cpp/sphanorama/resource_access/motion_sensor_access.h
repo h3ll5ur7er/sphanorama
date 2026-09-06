@@ -18,8 +18,13 @@ class IMotionSensorAccess {
   //
   // A device with a gyroscope whose permission the user declined answers `None`, and so does one
   // with no sensors at all — because the caller's question is whether a capture can know which
-  // way the camera is pointing, and both answer it the same way. `Start`'s status is where the
-  // two are told apart, and the shell puts that reason on its motion row (ADR 0025).
+  // way the camera is pointing, and both answer it the same way.
+  //
+  // No implementation of *this* contract tells the two apart, and a caller must not expect one
+  // to: `Start` reports that it could not start, not why the platform said no. The distinction
+  // survives one level out, in the adapter that owns the platform call — the shell's own motion
+  // port keeps the reason and puts it on the motion row (ADR 0025), which is what made an iPhone
+  // reading legible. By the time it reaches here it has been collapsed on purpose.
   //
   // The distinction stopped being cosmetic with ADR 0044: `ICaptureSessionManager::Begin` refuses
   // a session on `None`, so a port answering it about hardware while the session was in fact

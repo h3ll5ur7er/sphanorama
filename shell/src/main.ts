@@ -331,20 +331,40 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   //
   // Safe to await here, unlike everything below it. `capabilities()` is feature detection — it
   // resolves in a microtask and asks the platform for nothing — so it cannot spend the transient
-  // activation the motion grant below depends on. Awaiting the grant itself here would.
+  // activation the motion grant depends on. Awaiting the grant itself here would.
+  //
+  // And the grant is requested *above* the await rather than below it, which costs nothing and
+  // removes the argument entirely: this is the first `await` ever placed before it, the claim
+  // above is about a spec detail no test in this suite can settle (Chromium has no
+  // `requestPermission`), and being wrong means an iPhone that can never aim. `start` refuses a
+  // device with no sensors on its own first line, so issuing it before the check below is not a
+  // request made on behalf of a session that cannot start.
+  const startingMotion = motion.start(60);
   const detected = await motion.capabilities();
   if (detected.ok && detected.value === 'None') {
     // The same row, and the same shape of sentence, a failed `start` writes: unavailable, and
     // why. One word for every cause is what made an iPhone reading unreadable (ADR 0025).
     motionState.textContent = 'unavailable · no motion sensors on this device';
-    // The core's own words for the same refusal, so a user who reaches it this way and a caller
-    // who reaches it through the facade are told the same thing.
+    // One sentence for one refusal, wherever it is discovered. `describeFailure` maps the *code*
+    // and this page is the one that found it, so the component is this page's port rather than
+    // the manager's: manufacturing a status in somebody else's name to get their wording would
+    // be a lie that only happens to read correctly, and the code is what carries the agreement.
     stage.textContent = describeFailure({
-      code: 'SensorUnavailable', component: 'CaptureSessionManager',
-      detail: 'this device reports no motion sensors',
+      code: 'SensorUnavailable', component: 'MotionSensorAccess',
+      detail: 'no motion sensors on this device',
     });
-    enableButton.disabled = false;
-    resumeButton.disabled = resume === null;
+    // Both offers withdrawn, not merely re-enabled — which is what this first wrote, and it was
+    // the very failure the resume path had just been fixed for: `describeResumeRefusal` takes the
+    // offer down on a `SensorUnavailable`, and this branch returns before that helper is ever
+    // reached, so a sensorless device kept a live `#resume` and a live `#enable` under a sentence
+    // telling the user to change a setting and reload. Two dead controls.
+    //
+    // Withdrawn rather than disabled for the same reason it is withdrawn there: nothing a press
+    // can do changes the answer. This branch is only the *no sensors at all* cause — a declined
+    // grant still reports a capability here and fails later in `start`, where the resume helper
+    // handles it — and no sensor appears without a reload, which is what the message asks for.
+    enableButton.hidden = true;
+    resumeButton.hidden = true;
     return;
   }
 
@@ -360,13 +380,13 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — measured through
   // the whole app, 44 cells planned rather than 32, a third more of the sphere to shoot for a
   // frame that sees less of it.
-  // Started before the camera is awaited, and awaited after it. iOS grants motion only during a
-  // transient user activation, and the camera prompt is exactly the kind of await that spends
-  // one — so asking afterwards is asking a gesture that has already ended, which iOS rejects
-  // unread. That is an iPhone reporting `motion unavailable` in every orientation forever, with
-  // no way to aim at a cell. The adapter was already careful not to spend the activation between
-  // its own two requests; this is the same care one level out.
-  const startingMotion = motion.start(60);
+  // The motion grant was started at the top of this function, before the sensor check and before
+  // this camera request, and is awaited after both. iOS grants motion only during a transient
+  // user activation, and the camera prompt is exactly the kind of await that spends one — so
+  // asking afterwards is asking a gesture that has already ended, which iOS rejects unread. That
+  // is an iPhone reporting `motion unavailable` in every orientation forever, with no way to aim
+  // at a cell. The adapter is careful not to spend the activation between its own two requests;
+  // this is the same care one level out.
 
   const opened = await camera.open({
     preferRearCamera: true,
@@ -463,11 +483,11 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.hidden = true;
   resumeButton.hidden = true;
   motionIsRunning = started.ok;
-  // The camera is what this page needs before it can offer anything; the sensor is checked by the
-  // manager, inside `beginSession`, because that is where the rule lives (ADR 0044). Checking it
-  // here as well would be a second copy of a decision the core makes — and the one place it would
-  // pay for itself, arriving before the camera prompt, is already covered: `Begin` refuses before
-  // it opens a camera of its own.
+  // The sensor was checked at the top of this function and the manager checks it again inside
+  // `beginSession`, which is where the rule lives (ADR 0044). Two checks rather than one because
+  // they answer different questions: the core's is the rule, and the page's is about *when* to
+  // ask, which the core cannot decide from behind a synchronous port — its camera is this page's,
+  // already open by the time `Begin` runs.
   //
   // Asked of the stream rather than of `opened.ok`, because they answer different questions.
   // `opened.ok` is a fact about a call that has already returned; two awaits sit between it and

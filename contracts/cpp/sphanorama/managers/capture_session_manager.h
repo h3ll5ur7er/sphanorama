@@ -82,9 +82,13 @@ class ICaptureSessionManager {
   // allow — arming then would file real pixels under a cell picked by an accident of
   // initialisation.
   //
-  // So a client may wait for guidance to say `HoldStill`: that action means "inside this cell's
-  // cone and this cell still wants shooting", which is precisely the condition this arms on, and
-  // it now always arrives on a session that exists.
+  // So a client may wait for guidance to say `HoldStill`, which means "inside this cell's cone
+  // and this cell still wants shooting" — precisely the condition this arms on. What it must not
+  // assume is that the action always comes: it needs an anchored pose, so a stream that carries
+  // rates and never an attitude produces a session that begins and can never arm. The shipped
+  // browser adapter cannot produce one (every sample it emits carries an attitude), and a port
+  // that can owes its user a way to say so. Nothing in this build watches for it; the roadmap
+  // carries it.
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
@@ -140,6 +144,14 @@ class ICaptureSessionManager {
   // only way a sensorless device could retake at all. That device is refused at `Begin` now
   // (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
   // taken there or not at all.
+  //
+  // With `replace` false, that burst has nothing to fire it in this build, and the honest place
+  // to say so is here. Keeping the evidence leaves the cell covered, `Locate` answers
+  // `AlreadyCaptured` rather than `HoldStill` for a covered cell, and the dwell that arms every
+  // burst since ADR 0043 only matures on `HoldStill` — so an additive retake marks nothing a
+  // client can act on. `replace` true empties the cell, which makes it a hole again and puts it
+  // back in the dwell's way. The retake flow that closes this is Phase 3 (`docs/06-roadmap.md`);
+  // until then this call aborts a burst in flight and, additively, does nothing else.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

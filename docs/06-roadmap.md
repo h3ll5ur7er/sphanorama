@@ -358,6 +358,19 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   orientation until a test dispatches one, so every capture test in it had been running the
   sensorless path. They now aim at a cell of the plan the core actually made, through the inverse
   of the adapter's own conversion, checked against that conversion rather than assumed.
+- **A session that begins and can never capture — open, and recorded rather than closed.** ADR
+  0044 refuses a capture where `Capabilities()` says `None`, which is the whole of what a device
+  can be asked before a session starts. It does not cover a port that reports a capability and
+  then delivers a stream carrying angular rates with no attitude in it: nothing anchors the pose,
+  `Locate` never says `HoldStill`, the dwell never matures, and since ADR 0043 the dwell is the
+  only thing that arms a burst. The reticle sits parked and the user is told nothing.
+
+  Not reachable from the shipped page — the browser adapter builds every sample from an
+  orientation event, so every sample carries an attitude — which is why this is written down
+  rather than fixed in the same breath. What would close it is a decision this repo has not
+  needed to make: how long a session waits for its first reading before saying so, and whether
+  that sentence comes from the manager or the page. `ARateOnlyStreamNeverMaturesADwell` pins the
+  half that is settled, which is that such a stream must never be mistaken for an aim.
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.

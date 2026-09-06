@@ -380,63 +380,6 @@ TEST_F(CaptureSession, ACameraThatRefusesToOpenIsWhatBeginReports) {
   EXPECT_EQ(camera->Opens(), 1) << "the camera was never asked, so this proves nothing about it";
 }
 
-TEST_F(CaptureSession, ArmingIsRefusedWhileNothingHasAnchoredThePose) {
-  // The other half of ADR 0044, and the line it deletes. `ArmBurst` used to skip its cone check
-  // whenever `confidence` was zero — it looked in order to decline to have an opinion, so that a
-  // sensorless phone could still reach every cell of its own plan. With that phone refused at
-  // `Begin`, zero confidence means something narrower and entirely transient: no reading has
-  // anchored the orientation *yet*. The pose is sitting at the identity it was born with, which
-  // is a direction nobody chose, and arming against it files real pixels under a cell picked by
-  // an accident of initialisation.
-  //
-  // The shipped pose engine, not the fixture's null one, and no samples: `NullPoseEngine` reports
-  // confidence zero whatever it is handed, so a test using it would assert this gate against an
-  // engine that cannot leave the state under test.
-  RingsCoveragePlannerEngine rings;
-  OrientationPoseEngine tracking;
-  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, *sensor, *store,
-                                *projects, clock);
-  CapturePlanSpec spec;
-  spec.horizontalFovDeg = 66.0;
-  spec.verticalFovDeg = 50.0;
-  spec.overlapTarget = 0.30;
-  spec.acceptanceConeDeg = 5.0;
-  spec.coverPoles = true;
-  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
-  auto plan = manager.GetPlan();
-  ASSERT_TRUE(plan.ok());
-  ASSERT_GT(plan.value.nodes.size(), 8u);
-
-  // The cell furthest from where the unmeasured pose claims to be looking — the one the old
-  // exemption armed happily and the cone refuses hardest.
-  constexpr double kRadToDeg = 57.29577951308232;
-  const CoverageNode* furthest = &plan.value.nodes.front();
-  double worst = 0.0;
-  for (const auto& node : plan.value.nodes) {
-    const double offBy =
-        AngleBetweenDirections(Direction(Quat{}), Direction(node.targetOrientation)) * kRadToDeg;
-    if (offBy > worst) {
-      worst = offBy;
-      furthest = &node;
-    }
-  }
-  ASSERT_GT(worst, 90.0) << "the fixture expects a cell on the far side of the sphere";
-
-  // A tick carrying a sample that reports nothing — no attitude, no measured rate — which is what
-  // a page hands over when its orientation listener fires and the platform filled nothing in.
-  // Ticking rather than not is deliberate: it is the state in which the manager has heard from
-  // the sensor and still knows nothing about where the phone is pointing, and it must not read
-  // that as permission.
-  const ImuSample nothing{};
-  ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&nothing, 1)).ok());
-
-  BurstSpec burst;
-  burst.frameCount = 2;
-  burst.intervalMs = 10;
-  EXPECT_EQ(manager.ArmBurst(furthest->id, burst).code, StatusCode::FailedPrecondition)
-      << "a burst was armed at a cell nothing had measured the camera against";
-}
-
 TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
   // The hole the test above cannot see, and it is the whole rule rather than an edge of it.
   //
@@ -450,6 +393,13 @@ TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
   //
   // So there are two conditions and the cone is only the second. First: something has to have
   // measured where the camera is pointing at all.
+  //
+  // This replaced `ArmingIsRefusedWhileNothingHasAnchoredThePose`, which armed the cell *furthest*
+  // from identity and was written for the same rule. Once the confidence guard existed that test
+  // could no longer fail on its own account: 90 degrees against a 5-degree cone is refused by the
+  // cone alone, so it needed both guards broken at once to notice anything, and the cone half is
+  // already covered by `ArmingACellTheCameraIsNotAimedAtIsRefused` against a pose that *was*
+  // measured. Two tests that fail only together are one test with extra steps.
   RingsCoveragePlannerEngine rings;
   OrientationPoseEngine tracking;
   CaptureSessionManager manager(rings, tracking, quality, preview, *camera, *sensor, *store,
@@ -846,6 +796,53 @@ TEST_F(CaptureSession, HoldingOnACellFiresABurstWithoutAnyonePressingAnything) {
   // arm again on the next frame, and `ArmBurst` would refuse with a burst already in flight.
   clock.AdvanceNs(100'000'000);
   EXPECT_NE(Tick(*manager).action, GuidanceAction::Fire);
+}
+
+TEST_F(CaptureSession, AFireNobodyActedOnComesRoundAgainWhileTheCellIsStillHeld) {
+  // The dead end the capture button used to cover, found by a reviewer and reproduced in a real
+  // browser: hold a cell, the dwell reports `Fire`, the client's arm is refused — a lock write
+  // that timed out, a camera busy for a moment — and `Fire` never comes again. It is an edge, and
+  // the latch that made it one had no expiry. Measured before this: twenty seconds of holding one
+  // cell after a refused arm produced zero candidates, under a full progress ring and a line
+  // still saying "hold still". Looking away and back was the only way out, and nobody would guess
+  // it. Until ADR 0044 the shutter was the way out; there is no shutter now, so the trigger has
+  // to be able to try again.
+  //
+  // A second full dwell rather than an immediate retry: a client that is simply slow to answer
+  // must not collect a second arm on top of the one in flight, and two seconds is longer than any
+  // round trip this app makes. Once a burst does start the action stops being `HoldStill` and the
+  // dwell resets on its own, so nothing here can double-fire a burst that took.
+  Begin();
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+
+  const auto tickPast = [&](int64_t ms) {
+    ImuSample sample;
+    sample.timestampNs = clock.MonotonicNs();
+    sample.hasOrientation = true;
+    auto guidance = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+    clock.AdvanceMs(ms);
+    return guidance;
+  };
+
+  bool firedOnce = false;
+  for (int tick = 0; tick < 30 && !firedOnce; ++tick) {
+    auto guidance = tickPast(100);
+    ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+    ASSERT_EQ(guidance.value.targetNode.value, node.value);
+    firedOnce = guidance.value.action == GuidanceAction::Fire;
+  }
+  ASSERT_TRUE(firedOnce) << "the dwell never fired at all, so this proves nothing about a retry";
+
+  // Nobody arms. That is the whole arrangement: the client saw `Fire` and could not act on it.
+  bool firedAgain = false;
+  for (int tick = 0; tick < 40 && !firedAgain; ++tick) {
+    auto guidance = tickPast(100);
+    ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+    firedAgain = guidance.value.action == GuidanceAction::Fire;
+  }
+  EXPECT_TRUE(firedAgain)
+      << "a Fire nobody acted on was never offered again, so a refused arm strands the capture";
 }
 
 TEST_F(CaptureSession, TheDwellStartsAgainWhenTheCellChangesEvenIfTheActionDoesNot) {
