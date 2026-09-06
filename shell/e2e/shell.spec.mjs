@@ -783,14 +783,19 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
   //
   // Three guards for one property, and they are not independent — which is worth writing down,
   // because the obvious sentence here ("break any one and the phone re-arms") is false and was
-  // measured to be. Removing the counter's restart changes nothing here: a burst in flight
-  // overwrites the action, so the dwell resets rather than maturing again, and any extra `Fire`
-  // before the arm lands is refused by `armAt`. (That restart is not decoration — it is what lets
-  // a `Fire` nobody could act on come round again, which `AFireNobodyActedOnComesRoundAgain...`
-  // covers — it just cannot be what this test measures.) What this one isolates is the third
-  // guard: making `Locate` answer `HoldStill` on a cell it has already captured fires a second
-  // burst into it, and the count below comes back 8 — the per-cell cap (ADR 0037), which is what
-  // ten frames become.
+  // measured to be, twice.
+  //
+  // Neither of the two core-side guards is what this test measures. Removing the counter's
+  // restart changes nothing here, and neither does letting the dwell keep serving while a burst
+  // is in flight: this runner's burst finishes in about 1.4 seconds and the dwell needs two, so
+  // the second `Fire` never arrives before the cell is captured and the question stops being
+  // asked. Both are pinned natively instead, where a burst can be paced long enough to outlast a
+  // dwell — `AFireNobodyActedOnComesRoundAgainWhileTheCellIsStillHeld` and
+  // `ABurstInFlightDoesNotServeTheDwellThatFiredIt`.
+  //
+  // What this one isolates is the coverage rule: making `Locate` answer `HoldStill` on a cell it
+  // has already captured fires a second burst into it, and the count below comes back 8 — the
+  // per-cell cap (ADR 0037), which is what ten frames become.
   //
   // The camera is slowed on purpose, as it was here before: on one that takes the locks instantly
   // the window is a few frames and the test would be hoping to land in it rather than opening it.
@@ -2016,12 +2021,16 @@ test('a phone with no motion sensors is told what is required and what is missin
     // calls `getUserMedia` before the core is reached at all.
     expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
 
-    // And nothing left to press. Both offers go rather than going grey: no press changes the
+    // And nothing left to press. The offer goes rather than going grey: no press changes the
     // answer, and a live control under a sentence that says to change a setting and reload is the
     // same two-dead-buttons failure the resume path was fixed for one commit earlier.
+    //
+    // Only `#enable` is asserted here, and that is the point of the restraint. This page has no
+    // stored capture, so `#resume` and `#new-capture` ship hidden and would pass a `toBeHidden`
+    // whatever the code did — a reviewer showed that reverting `resumeButton.hidden` left those
+    // two green. The resume offer is asserted where it can be false, in
+    // `a stored capture is offered back and then withdrawn...` below.
     await expect(page.locator('#enable')).toBeHidden();
-    await expect(page.locator('#resume')).toBeHidden();
-    await expect(page.locator('#new-capture')).toBeHidden();
   } finally {
     await server.close();
     await context.close();

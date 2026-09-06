@@ -63,6 +63,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
    * cannot say (ADR 0044).
    */
   Result<MotionCapability> RequireMotion();
+  /** Clears the dwell, so no session inherits one another session counted. */
+  void ResetDwell();
   bool HasNode(NodeId node) const;
   /** The cell by id, or null. Callers that need the cone rather than merely its existence. */
   const CoverageNode* FindNode(NodeId node) const;
@@ -175,8 +177,6 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   int64_t dwell_ns_ = 0;
   int64_t dwell_marked_ns_ = 0;
   std::optional<NodeId> dwell_node_;
-  // Whether `Fire` has already been reported for this dwell. It is an edge: a client arms on it,
-  // and reporting it again on the next tick would arm a second burst into a refusal.
 
   uint64_t next_session_ = 1;
   uint64_t next_candidate_ = 1;

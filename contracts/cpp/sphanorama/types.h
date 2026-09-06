@@ -299,10 +299,18 @@ struct BurstSpec {
 enum class GuidanceAction : uint8_t {
   Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured, Fire
 };
-// `Fire` is an *edge*, like `CellDone` and unlike `AlreadyCaptured`: it is reported on the one tick
-// the dwell completes, and a client arms a burst on it exactly as it would have on a press. The
-// manager cannot arm for itself — a burst is paced by the client's ticks over a preview frame the
-// client keeps resident (ADR 0018) — so the decision is here and the call is the client's.
+// `Fire` is an *edge*, like `CellDone` and unlike `AlreadyCaptured`: it is reported on the tick a
+// dwell completes and not on the ticks either side, and a client arms a burst on it exactly as it
+// would have on a press. The manager cannot arm for itself — a burst is paced by the client's
+// ticks over a preview frame the client keeps resident (ADR 0018) — so the decision is here and
+// the call is the client's.
+//
+// An edge, but not a once-per-cell one, and the difference is a client's to handle. A `Fire` the
+// client could not act on — a lock write that timed out, a camera busy for an instant — is
+// offered again after another full dwell, because since ADR 0044 there is no shutter to fall back
+// on and a refused arm otherwise strands the capture with the ring full and nothing that will
+// ever fire again. A client that arms on every `Fire` is doing the right thing: a burst that
+// starts changes the action, so no second `Fire` follows one that took.
 //
 // Appended, because the wire carries this enum as an index (ADR 0043).
 

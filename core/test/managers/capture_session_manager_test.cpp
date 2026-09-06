@@ -769,6 +769,27 @@ CaptureGuidance Tick(ICaptureSessionManager& manager) {
   return guided.ok() ? guided.value : CaptureGuidance{};
 }
 
+// Ticks a stretch of held time the way a running client does: a frame at a time, rather than one
+// tick with the clock jumped to the far end of it.
+//
+// The difference started mattering when the dwell stopped banking intervals no tick covered — a
+// suspended tab used to come back and fire on its first frame, having banked however long the
+// user was away. A test that advanced a second and ticked once was the same shape as that bug,
+// and passed only because nothing distinguished them. This is what the phone actually does.
+CaptureGuidance Hold(ICaptureSessionManager& manager, ManualClock& clock, int64_t ms) {
+  CaptureGuidance last{};
+  for (int64_t served = 0; served < ms; served += 16) {
+    clock.AdvanceMs(16);
+    last = Tick(manager);
+    // Stops on `Fire`, because a client does: it arms, and the dwell's counter restarts under it.
+    // Ticking past the edge and returning the last frame instead would report whatever had
+    // accumulated *since* the fire, which is how the first version of this helper turned a served
+    // dwell into a fraction of a quarter.
+    if (last.action == GuidanceAction::Fire) break;
+  }
+  return last;
+}
+
 TEST_F(CaptureSession, HoldingOnACellFiresABurstWithoutAnyonePressingAnything) {
   // ADR 0043. The dwell is counted here, reported on the guidance the client already reads, and
   // acted on by the client — which is the only thing that can arm, because a burst is paced by the
@@ -780,15 +801,13 @@ TEST_F(CaptureSession, HoldingOnACellFiresABurstWithoutAnyonePressingAnything) {
   EXPECT_DOUBLE_EQ(first.heldFraction, 0.0) << "the first tick has served no time yet";
 
   // Holding, but not long enough: the fraction climbs and the action stays `HoldStill`.
-  clock.AdvanceNs(1'000'000'000);
-  auto part = Tick(*manager);
+  auto part = Hold(*manager, clock, 1'000);
   EXPECT_EQ(part.action, GuidanceAction::HoldStill);
   EXPECT_GT(part.heldFraction, 0.0);
   EXPECT_LT(part.heldFraction, 1.0);
 
-  // And past it: one tick says `Fire`, with the ring full.
-  clock.AdvanceNs(1'500'000'000);
-  auto fires = Tick(*manager);
+  // And past it: a tick says `Fire`, with the ring full.
+  auto fires = Hold(*manager, clock, 1'500);
   EXPECT_EQ(fires.action, GuidanceAction::Fire);
   EXPECT_DOUBLE_EQ(fires.heldFraction, 1.0);
 
@@ -796,6 +815,73 @@ TEST_F(CaptureSession, HoldingOnACellFiresABurstWithoutAnyonePressingAnything) {
   // arm again on the next frame, and `ArmBurst` would refuse with a burst already in flight.
   clock.AdvanceNs(100'000'000);
   EXPECT_NE(Tick(*manager).action, GuidanceAction::Fire);
+}
+
+TEST_F(CaptureSession, ADwellDoesNotBankTimeNobodyWasTicking) {
+  // A backgrounded tab, which is the arrangement a reviewer measured. The render loop suspends,
+  // so `OnMotion` is not called at all; when the tab comes back the first tick carries a buffered
+  // sample and an interval of however long the user was away. The dwell added the whole gap and
+  // fired on that first frame — a burst at whatever the stale pose was pointing at, which is the
+  // failure ADR 0041 exists to stop, reached without anybody holding anything.
+  //
+  // The existing guard is about the wrong thing by one step: `!batch.empty()` asks whether *this*
+  // tick carried a sample, not whether the interval it is about to bank was covered by ticks. The
+  // mark moves on every tick, so a stretch with no ticks at all is invisible to it.
+  Begin();
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  const auto tick = [&]() {
+    sample.timestampNs = clock.MonotonicNs();
+    return manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+  };
+
+  auto first = tick();
+  ASSERT_TRUE(first.ok()) << first.status.detail;
+  ASSERT_EQ(first.value.action, GuidanceAction::HoldStill)
+      << "the fixture expects the camera to be holding a cell, or this measures nothing";
+
+  // Away for half a minute, and nothing ticks while it is.
+  clock.AdvanceMs(30'000);
+
+  auto back = tick();
+  ASSERT_TRUE(back.ok()) << back.status.detail;
+  EXPECT_NE(back.value.action, GuidanceAction::Fire)
+      << "thirty seconds nobody was ticking through were banked as a dwell";
+  EXPECT_LT(back.value.heldFraction, 0.5)
+      << "the ring jumped most of the way round on the tick a suspended loop resumed";
+}
+
+TEST_F(CaptureSession, ANewSessionDoesNotInheritTheLastOnesDwell) {
+  // Dwell state was never session-scoped, and until the latch went that was hidden: `Fire` set a
+  // flag that was only cleared when the held cell changed, which happened to suppress a dwell
+  // carried across a session boundary. Removing the latch — to let a refused arm try again —
+  // removed that accident with it.
+  //
+  // Node ids are indices into a tessellation, so a stale `dwell_node_` matches the new session's
+  // target by construction rather than by luck. What is left over is a cell and a timestamp, and
+  // the first tick of the next capture adds every nanosecond since.
+  Begin();
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  sample.timestampNs = clock.MonotonicNs();
+  ASSERT_TRUE(manager->OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+  ASSERT_TRUE(manager->End().ok());
+
+  // A minute between captures: the user put the phone down, then started a new sphere.
+  clock.AdvanceMs(60'000);
+
+  Begin();
+  sample.timestampNs = clock.MonotonicNs();
+  auto opening = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+  ASSERT_TRUE(opening.ok()) << opening.status.detail;
+  EXPECT_NE(opening.value.action, GuidanceAction::Fire)
+      << "a burst fired on the first tick of a capture nobody had started aiming yet";
+  EXPECT_EQ(opening.value.heldFraction, 0.0)
+      << "the new session opened with the last one's dwell already part-served";
 }
 
 TEST_F(CaptureSession, AFireNobodyActedOnComesRoundAgainWhileTheCellIsStillHeld) {
@@ -835,15 +921,61 @@ TEST_F(CaptureSession, AFireNobodyActedOnComesRoundAgainWhileTheCellIsStillHeld)
   ASSERT_TRUE(firedOnce) << "the dwell never fired at all, so this proves nothing about a retry";
 
   // Nobody arms. That is the whole arrangement: the client saw `Fire` and could not act on it.
+  //
+  // The interval is asserted as well as the fact, because "it comes round again" alone is
+  // satisfied by any retry at all — a reviewer showed that a three-hundred-millisecond one passed
+  // every test in the repo. A whole dwell is the claim the comment in `OnMotion` makes, and it is
+  // the load-bearing half: a retry shorter than a worker round trip would offer a second arm
+  // while the first is still crossing, and the client's own guard would then be the only thing
+  // between the user and two bursts into one cell.
+  int64_t untilAgain = 0;
   bool firedAgain = false;
-  for (int tick = 0; tick < 40 && !firedAgain; ++tick) {
+  for (int tick = 0; tick < 60 && !firedAgain; ++tick) {
     auto guidance = tickPast(100);
     ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+    untilAgain += 100;
     firedAgain = guidance.value.action == GuidanceAction::Fire;
   }
   EXPECT_TRUE(firedAgain)
       << "a Fire nobody acted on was never offered again, so a refused arm strands the capture";
+  EXPECT_GE(untilAgain, 1'900)
+      << "the retry came round after " << untilAgain << "ms, inside the round trip an arm takes";
 }
+
+TEST_F(CaptureSession, ABurstInFlightDoesNotServeTheDwellThatFiredIt) {
+  // The guard the browser suite claims to rest on and does not reach: while a burst is in flight
+  // the action is `Firing`, so `held` is false and the dwell resets rather than continuing under
+  // it. Widening `held` to include `Firing` leaves the whole browser suite green — a reviewer
+  // measured it — because a burst there finishes in about 1.4 seconds and the restarted counter
+  // needs two, so the second `Fire` never arrives before the cell is captured and the question
+  // stops being asked.
+  //
+  // Here the burst is paced long enough to outlast a dwell, which is the arrangement that makes
+  // the guard observable at all: five frames at 600 ms is three seconds of flight, and if the
+  // dwell went on serving underneath it the manager would report `Fire` into a burst it is
+  // already running.
+  Begin();
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+  const NodeId node = manager->GetPlan().value.nodes.front().id;
+
+  BurstSpec burst;
+  burst.frameCount = 5;
+  burst.intervalMs = 600;
+  ASSERT_TRUE(manager->ArmBurst(node, burst).ok());
+  clock.AdvanceMs(burst.settleMs);
+
+  bool done = false;
+  for (int tick = 0; tick < 60 && !done; ++tick) {
+    auto guidance = Tick(*manager);
+    EXPECT_NE(guidance.action, GuidanceAction::Fire)
+        << "the dwell went on serving under a burst it had already fired, on tick " << tick;
+    done = guidance.action == GuidanceAction::CellDone;
+    clock.AdvanceMs(200);
+  }
+  EXPECT_TRUE(done) << "the burst never finished, so this measured nothing";
+}
+
+
 
 TEST_F(CaptureSession, TheDwellStartsAgainWhenTheCellChangesEvenIfTheActionDoesNot) {
   // The reset condition a client counting elapsed time gets wrong. A slow pan along a row holds
@@ -869,8 +1001,10 @@ TEST_F(CaptureSession, TheDwellStartsAgainWhenTheCellChangesEvenIfTheActionDoesN
 
   auto opening = Tick(aimed);
   ASSERT_EQ(opening.action, GuidanceAction::HoldStill) << "the camera starts on a cell";
-  clock.AdvanceNs(1'900'000'000);
-  auto nearly = Tick(aimed);
+  // Held frame by frame rather than by jumping the clock, because the dwell stopped banking
+  // intervals no tick covered — a single tick 1.9 seconds later is the shape of a suspended tab
+  // and now counts as one, which is the point of that change.
+  auto nearly = Hold(aimed, clock, 1'900);
   ASSERT_EQ(nearly.action, GuidanceAction::HoldStill);
   ASSERT_GT(nearly.heldFraction, 0.5) << "the fixture needs the dwell nearly served";
 
@@ -880,7 +1014,7 @@ TEST_F(CaptureSession, TheDwellStartsAgainWhenTheCellChangesEvenIfTheActionDoesN
     if (node.id.value != nearly.targetNode.value) { elsewhere = &node; break; }
   }
   ASSERT_NE(elsewhere, nullptr) << "the fixture needs more than one cell";
-  clock.AdvanceNs(200'000'000);
+  clock.AdvanceMs(16);
   TurnTo(aimed, aiming, elsewhere->targetOrientation);
   auto moved = Tick(aimed);
   ASSERT_NE(moved.targetNode.value, nearly.targetNode.value) << "the fixture needs a new cell";
@@ -2098,6 +2232,48 @@ TEST_F(CaptureSessionRetakes, TheCapCountsFramesRatherThanOwnership) {
   EXPECT_EQ(displaced, 1) << "exactly one candidate should have made room for the offered frame";
 }
 
+TEST_F(CaptureSessionRetakes, ADiscardedFrameTheStoreWouldNotLetGoOfKeepsItsCandidateToo) {
+  // The same rule as the trim below, in the other place that forgets. `Discard` — which is what a
+  // replacing retake runs — called `Forget` and threw the status away, then cleared the vector.
+  // A refused `Forget` leaves the entry in place and goes on charging the budget, so clearing the
+  // cell dropped the last handle to bytes the store was still accounting for: an orphan nothing
+  // can name, free, checkpoint or resume.
+  //
+  // Not an exotic path. `OpfsSpillSink::Drop` answers `Internal` on a real device, and `Cool` has
+  // already demoted a committed candidate to the sink by the time a retake reaches it — so this
+  // is the ordinary shape of a retake on a phone, not a fault injection.
+  auto manager = Rebuilt();
+  ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
+  const NodeId node = AimedNode(*manager);
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(FireBurstOn(*manager, clock, node, burst).ok());
+  const std::vector<Candidate> before = manager->Candidates(node).value;
+  ASSERT_FALSE(before.empty());
+
+  // Pinned, which is the store's own documented refusal: `Pin` promises its span until `Release`,
+  // so erasing the entry underneath it would be a use-after-free.
+  const Candidate& stuck = before.front();
+  ASSERT_TRUE(store->Pin(stuck.frame).ok());
+
+  ASSERT_TRUE(manager->RequestRetake(node, true).ok());
+
+  auto kept = manager->Candidates(node);
+  ASSERT_TRUE(kept.ok()) << kept.status.detail;
+  EXPECT_TRUE(std::any_of(kept.value.begin(), kept.value.end(), [&](const Candidate& now) {
+    return now.id.value == stuck.id.value;
+  })) << "a discarded candidate was dropped although its frame could not be forgotten, so the "
+         "bytes are charged to a capture with no handle left to them";
+  EXPECT_TRUE(store->ResidencyOf(stuck.frame).ok())
+      << "the store should still be holding the frame it refused to let go of";
+
+  // And everything it *could* forget is gone, so this is a rule about refusals rather than a
+  // retake that stopped discarding.
+  EXPECT_EQ(kept.value.size(), 1u)
+      << "the candidates whose frames were forgotten should have left the cell";
+}
+
 TEST_F(CaptureSessionRetakes, AFrameTheStoreWouldNotLetGoOfKeepsItsCandidate) {
   // `Forget` can refuse, and when it does the entry stays and the budget goes on accounting for
   // it — the store says so itself, because its callers are expected to still hold the frame.
@@ -2636,6 +2812,62 @@ TEST_F(ResumedSession, AResumeOnADeviceWithNoMotionSensorIsRefusedWithoutTouchin
   CaptureSessionManager third(planner, pose, quality, preview, third_camera, *sensor,
                               *store_with_sink, *projects, clock);
   EXPECT_TRUE(third.Resume(kProject).ok());
+}
+
+TEST_F(ResumedSession, AResumeCheckpointsTheSphereItReplannedRatherThanTheDeviceItCameBackOn) {
+  // `CapturePlanSpec.motion` is filled from the live capability at `Begin` and stored, and a
+  // review round called the stored value stale because `Resume` decides on the live one instead.
+  // A fix that put the live capability back into `resolved_spec_` was written, and reverted once
+  // it became clear what it meant: `Resume` replans from exactly these bytes, so a spec field that
+  // follows the device makes the tessellation follow the device — and node ids are indices into a
+  // tessellation, so the resume after that would file every restored candidate under a different
+  // cell. The field is not a record of this phone; it is an input the sphere was planned with.
+  //
+  // Both versions passed all 511 tests, which is why this exists. Nothing reads `motion` back
+  // today (`docs/03-architecture.md` says no planner does), so behaviour cannot tell them apart —
+  // but the document can, and the document is where the damage would be.
+  auto store_with_sink = NewStore();
+  FakeCameraAccess first_camera(store_with_sink);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor,
+                              *store_with_sink, *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  const auto storedMotion = [&]() -> int {
+    auto document = projects->ReadDocument(kProject, "session");
+    EXPECT_TRUE(document.ok()) << document.status.detail;
+    if (!document.ok()) return -1;
+    // The `spec` line's last field, which is where `EncodeSession` puts the capability.
+    std::istringstream lines(document.value);
+    for (std::string line; std::getline(lines, line);) {
+      if (line.rfind("spec ", 0) != 0) continue;
+      std::istringstream fields(line);
+      std::string word, last;
+      while (fields >> word) last = word;
+      return std::stoi(last);
+    }
+    ADD_FAILURE() << "the session document has no spec line";
+    return -1;
+  };
+  const int begun = storedMotion();
+  ASSERT_EQ(begun, static_cast<int>(MotionCapability::GyroAccel))
+      << "the fixture expects the capability its sensor reports";
+
+  // Back on a device that senses more than the one it started on, and it captures another cell —
+  // so `Checkpoint` runs and rewrites the document from `resolved_spec_`.
+  FakeMotionSensorAccess richer(MotionCapability::GyroAccelMag);
+  FakeCameraAccess second_camera(store_with_sink);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, richer,
+                               *store_with_sink, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  ASSERT_TRUE(
+      FireBurstOn(second, clock, second.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(second.End().ok());
+
+  EXPECT_EQ(storedMotion(), begun)
+      << "the document now records the phone that resumed the capture rather than the sphere that "
+         "was planned, so the next resume would replan from a different spec";
 }
 
 TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {

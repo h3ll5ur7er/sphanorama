@@ -19,6 +19,25 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // the same standing as the pose engine's rate thresholds — and a config key's worth of tuning once
 // there are real captures to tune against (ADR 0043).
 constexpr int64_t kDwellNs = 2'000'000'000;
+// The most one tick may add to a dwell, whatever the clock says passed since the last one.
+//
+// The dwell is meant to measure "the camera was held here", and it approximates that by adding
+// the interval between ticks that carried samples. The approximation breaks where there were no
+// ticks at all: a backgrounded tab suspends the render loop, and the first tick after it returns
+// carries a buffered sample and an interval of however long the user was away. Thirty seconds
+// banked in one go is a full dwell several times over, so a burst fires on the frame the tab
+// comes back — at whatever the stale pose says, which is the failure ADR 0041 exists to stop.
+//
+// Half a second is far longer than any tick this app makes — the loop runs on animation frames
+// and each one drains, pushes and takes one guidance round trip over the worker, measured in
+// tens of milliseconds even on a loaded phone — and far shorter than a stall, which is seconds.
+// So a running loop never meets this bound and a suspended one always does.
+//
+// Bounded rather than refused outright, because neither extreme is honest. Whether the camera was
+// held through a gap no tick covered is simply unknown: crediting all of it is a guess, and
+// crediting none of it under-counts real elapsed time on a tick that was merely late. A bound
+// keeps the ordinary case exact and makes the unknown case cost almost nothing.
+constexpr int64_t kMaxDwellCreditNs = 500'000'000;
 constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
@@ -342,13 +361,30 @@ std::vector<Candidate> CaptureSessionManager::AllCandidates() const {
 void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
   // Releasing is not optional housekeeping: a full sphere of bursts is around 15 GB, so a
   // replace-retake that leaked would exhaust the device inside one session.
+  //
+  // A refusal keeps the candidate, exactly as `Trim` keeps one — and for the same reason, which
+  // this had not learned. `Forget` leaves its entry in place when it says no and goes on charging
+  // the budget for those bytes; `OpfsSpillSink::Drop` answers `Internal` on a real device, and a
+  // committed candidate has already been demoted to the sink by `Cool`, so this is the ordinary
+  // path rather than an exotic one. Clearing the vector anyway threw away the last handle to a
+  // frame the store was still accounting for: an orphan nothing can name, free, checkpoint or
+  // resume. Keeping it means the cell still shows a frame the user asked to discard, which is
+  // honest — the bytes are still there — and the next retake tries again.
+  //
+  // `NotFound` is not a refusal: the store is not holding it, so there is nothing left to keep a
+  // handle to and the candidate would be a row pointing at nothing.
+  std::vector<Candidate> stuck;
   for (const auto& candidate : candidates) {
-    (void)frames_.Forget(candidate.frame);
+    const Status forgotten = frames_.Forget(candidate.frame);
+    if (!forgotten.ok() && forgotten.code != StatusCode::NotFound) {
+      stuck.push_back(candidate);
+      continue;
+    }
     // Forgotten, so no longer this manager's to cool. Left behind, the ids would accumulate for
     // the length of a session that retook a lot of cells and mean nothing.
     burst_owned_.erase(candidate.id.value);
   }
-  candidates.clear();
+  candidates.swap(stuck);
 }
 
 Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CapturePlanSpec& spec) {
@@ -433,6 +469,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   lens_ = lens;
   pose_state_ = initialPose.value;
   active_ = true;
+  ResetDwell();
   Checkpoint();
   return Ok(session_);
 }
@@ -616,7 +653,20 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;
   active_ = true;
+  ResetDwell();
   return Ok(session_);
+}
+
+void CaptureSessionManager::ResetDwell() {
+  // A dwell belongs to the session that counted it. Nothing used to clear this, and the latch
+  // that `Fire` used to set hid it: a session that ended mid-dwell left `dwell_node_` naming a
+  // cell and `dwell_marked_ns_` naming a moment, and the next session's first tick added every
+  // nanosecond since. Node ids are indices into a tessellation, so the stale cell matches the new
+  // session's target by construction rather than by luck — a burst on the first tick of a capture
+  // nobody had started aiming yet.
+  dwell_ns_ = 0;
+  dwell_node_ = std::nullopt;
+  dwell_marked_ns_ = clock_.MonotonicNs();
 }
 
 void CaptureSessionManager::Checkpoint() const {
@@ -755,7 +805,7 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     // and the browser is the second kind — it drains its own event buffer into the resident port
     // and calls this with nothing. Asking `samples` made the dwell dead in the only client there
     // is, while every native test passed because they all push. The e2e is what found it.
-    dwell_ns_ += now - dwell_marked_ns_;
+    dwell_ns_ += std::min(now - dwell_marked_ns_, kMaxDwellCreditNs);
   }
   dwell_marked_ns_ = now;
   if (held) {
@@ -1277,6 +1327,9 @@ Status CaptureSessionManager::End() {
   candidates_.clear();
   burst_owned_.clear();
   plan_ = CapturePlan{};
+  // Beside the rest of this session's state, and belt to `Begin`'s braces: whichever of the two
+  // runs first, no dwell survives into a session that did not count it.
+  ResetDwell();
 
   // The session is over regardless — every field above is cleared before this returns, so there
   // is nothing here for a caller to retry. What is left worth reporting is the camera, and only
