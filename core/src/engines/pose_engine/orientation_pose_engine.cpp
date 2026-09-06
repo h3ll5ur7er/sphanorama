@@ -96,11 +96,19 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // a gyroscope that is not there would only add lag to the one signal there is, which is why
     // every platform reporting an attitude alone behaves exactly as it did before this existed.
     const bool fusing = Measured(sample);
-    const bool advanced = state.observed && sample.timestampNs > state.pose.timestampNs;
+    // Two questions, and they were one flag. `elapsed` is whether there is an interval to integrate
+    // a rate over — a clock, which the first sample of any stream sets whether or not it estimated
+    // anything. `predictable` is whether there is an *estimate* worth predicting forward and
+    // correcting back from, which is a stronger thing: dead reckoning can start from the identity,
+    // and a complementary filter cannot, because it would blend the first real reading with a guess
+    // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
+    // leaves the pose most of a turn from a reading it should simply have taken.
+    const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
+    const bool predictable = state.estimated && elapsed;
     const double seconds =
-        advanced ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
+        elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
 
-    if (sample.hasOrientation && !(fusing && advanced)) {
+    if (sample.hasOrientation && !(fusing && predictable)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
@@ -148,13 +156,16 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
-      state.estimated = true;
-    } else if (advanced && fusing) {
+      // No `estimated` here, and that is provable rather than an omission: this branch is reached
+      // only when `predictable` held, and `predictable` requires `state.estimated`. A write that
+      // cannot be the thing that sets a flag is a line no test can hold — deleting it left the
+      // whole suite green, which is how it was found.
+    } else if (elapsed && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
       // answer.
       //
-      // Gated on the same flag as the fusion, and the gate is not decorative: a sample with
+      // Gated on a measured rate, and the gate is not decorative: a sample with
       // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so
       // subtracting a learned offset from it and integrating the result would turn "nothing was
       // reported" into a rotation backwards at the offset's own rate. A sample that reports

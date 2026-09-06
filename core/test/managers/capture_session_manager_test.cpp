@@ -101,6 +101,11 @@ class AimablePoseEngine final : public IPoseEngine {
     state.pose.orientation = looking_;
     state.pose.confidence = 1.0;
     state.observed = true;
+    // All four, because they are one claim and a fake that sets three of them is describing a
+    // state the real engine cannot produce. `estimated` is what confidence is derived from
+    // (ADR 0042); leaving it false while claiming confidence 1.0 is exactly the incoherence the
+    // split was made to stop.
+    state.estimated = true;
     state.absolute = true;
   }
 
@@ -518,6 +523,7 @@ class UnintegrablePoseEngine final : public IPoseEngine {
     auto state = inner_.Initial(mode, capability);
     if (state.ok()) {
       state.value.observed = true;
+      state.value.estimated = true;
       state.value.absolute = true;
       state.value.pose.confidence = 1.0;
     }

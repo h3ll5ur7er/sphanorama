@@ -253,6 +253,86 @@ TEST(PoseEngine, TheFirstRateOnlySampleHasNothingToIntegrateOverAndEstimatesNoth
   EXPECT_GT(AngleBetween(turning.value.pose.orientation, Quat{}), 0.1);
 }
 
+TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorrectTowards) {
+  // The complementary filter has two modes and picks between them on whether there is an estimate
+  // worth predicting from: with one, it predicts forward and takes a fraction of the way back to
+  // the reading; without one, it takes the reading whole. Choosing wrongly is not a small error —
+  // the correction share is `1 - exp(-dt/0.1)`, so at a 16 ms gap it moves about 15% of the way
+  // and the pose sits most of a turn away from a reading it should simply have accepted.
+  //
+  // The blank sample is what exposed it: it establishes the clock without estimating anything, and
+  // an engine that took "a sample arrived" as "there is an estimate to predict from" then treated
+  // the *first real reading* as a correction to an identity nobody had measured.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample nothing;
+  nothing.timestampNs = 1'000'000;
+
+  auto quiet = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
+  ASSERT_TRUE(quiet.ok());
+
+  // A real fused reading 16 ms later: an attitude *and* a measured rate, which is the shape that
+  // selects the predict-and-correct branch when there is something to predict from.
+  ImuSample reading = Oriented(17'000'000, 30.0, 0.0);
+  reading.hasAngularVelocity = true;
+
+  auto after = engine.Integrate(quiet.value, std::span<const ImuSample>(&reading, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, reading.orientation) * kRadToDeg, 0.0, 1e-9)
+      << "the first reading of a session is ground truth, not a correction to an unmeasured guess";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 1.0);
+}
+
+TEST(PoseEngine, EveryPathThatMovesTheOrientationSaysItEstimatedSomething) {
+  // `estimated` is what `confidence` is derived from, and confidence is what `ArmBurst` and
+  // `Locate` branch on — so a path that moves the pose and forgets to set it reports a real
+  // orientation as "nothing produced this", and a sensorless device's rules apply to a phone that
+  // knows exactly where it is pointing. Two of the three write sites had nothing holding them:
+  // deleting either left the whole suite green.
+  OrientationPoseEngine engine;
+
+  // The fusion path: an attitude and a rate, arriving after an estimate already exists.
+  {
+    auto state = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    ImuSample first = Oriented(0, 10.0, 0.0);
+    auto seeded = engine.Integrate(state.value, std::span<const ImuSample>(&first, 1));
+    ASSERT_TRUE(seeded.ok());
+    ASSERT_TRUE(seeded.value.estimated);
+
+    ImuSample fused = Oriented(16'000'000, 12.0, 0.0);
+    fused.hasAngularVelocity = true;
+    fused.angularVelocity = Vec3{0.0, 0.1, 0.0};
+    auto corrected = engine.Integrate(seeded.value, std::span<const ImuSample>(&fused, 1));
+    ASSERT_TRUE(corrected.ok());
+    EXPECT_TRUE(corrected.value.estimated) << "the predict-and-correct path estimated an orientation";
+    EXPECT_DOUBLE_EQ(corrected.value.pose.confidence, 1.0);
+  }
+
+  // The dead-reckoning path, and the guard inside it. A rate that actually turns the device sets
+  // the flag; the flag belongs *inside* that guard, because a rate of zero after the bias is
+  // removed moves nothing and a state that has never been moved is not an estimate.
+  {
+    auto state = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    const std::vector<ImuSample> turning{Spinning(0, 0.5), Spinning(200'000'000, 0.5)};
+    auto moved = engine.Integrate(state.value, turning);
+    ASSERT_TRUE(moved.ok());
+    EXPECT_TRUE(moved.value.estimated);
+    EXPECT_DOUBLE_EQ(moved.value.pose.confidence, 0.5) << "integrated, so not absolute";
+    EXPECT_GT(AngleBetween(moved.value.pose.orientation, Quat{}) * kRadToDeg, 1.0);
+
+    const std::vector<ImuSample> still{Spinning(0, 0.0), Spinning(200'000'000, 0.0)};
+    auto unmoved = engine.Integrate(state.value, still);
+    ASSERT_TRUE(unmoved.ok());
+    EXPECT_FALSE(unmoved.value.estimated)
+        << "a rate of zero turns nothing, so nothing has estimated where the camera points";
+    EXPECT_DOUBLE_EQ(unmoved.value.pose.confidence, 0.0);
+  }
+}
+
 TEST(PoseEngine, AFreshStateHasSeenNothing) {
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);

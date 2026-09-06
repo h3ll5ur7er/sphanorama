@@ -70,6 +70,22 @@ describe('describeGuidance', () => {
     expect(text).not.toContain('off');
   });
 
+  it('leaves the angle out when there was no aim to measure it from', () => {
+    // A phone with no motion sensor reports identity for the whole session, so `angularErrorDeg`
+    // comes back 0 for whichever cell happens to sit straight ahead. `cell 13 · 0° off` reads as
+    // "perfectly aimed" at a cell the app cannot locate — and it sat next to a reticle deliberately
+    // parked wide open, so the line and the ring said opposite things.
+    const blind = describeGuidance(
+      guidance({ action: 'Seek', angularErrorDeg: 0, aimKnown: false }), coverage());
+    expect(blind).not.toContain('off');
+    expect(blind).toContain('cell 7');
+    expect(blind).toContain('5/32');
+
+    // And it is still there when there is an aim, because that is the number a user steers by.
+    expect(describeGuidance(guidance({ action: 'Seek', angularErrorDeg: 12 }), coverage()))
+      .toContain('12° off');
+  });
+
   it('reports too-fast motion instead of an aim the user cannot act on', () => {
     // Angular error is meaningless while the phone is whipping around; telling the user to slow
     // down is the only instruction that helps.

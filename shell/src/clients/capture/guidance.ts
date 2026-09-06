@@ -61,7 +61,11 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
     case 'AlreadyCaptured':
       return `${cell} · already captured · ${progress}`;
     default:
-      return `${cell} · ${off} · ${progress}`;
+      // The angle only means something when the orientation it was measured from does. With no aim
+      // it is computed against an unmeasured identity — it comes back `0° off` for whichever cell
+      // sits straight ahead — and printing it beside a deliberately parked reticle told the user
+      // they were perfectly aimed at a cell the app cannot locate.
+      return guidance.aimKnown ? `${cell} · ${off} · ${progress}` : `${cell} · ${progress}`;
   }
 }
 

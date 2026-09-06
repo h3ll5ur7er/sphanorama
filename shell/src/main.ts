@@ -128,17 +128,28 @@ let lockWrites: Promise<unknown> = Promise.resolve();
 // late; this is what stops a stuck one from being permanent.
 const LOCK_WRITE_TIMEOUT_MS = 3000;
 function writeLocks(wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean }) {
-  const next = lockWrites.then(() => Promise.race([
-    camera.setLocks(wanted),
+  // The *caller* stops waiting after the timeout; the chain does not. Those are different things
+  // and conflating them is worse than having no timeout at all: if the queue advanced on the race,
+  // a stuck write would be overtaken by the release queued behind it, the release would reach the
+  // track first, and the stuck one would land afterwards — ending a session with the camera locked,
+  // which is the failure the ordering exists to prevent.
+  //
+  // So the chain is built from the real promise and only the answer is raced. A stuck write still
+  // delays everything behind it, and that is correct: a camera that has not answered has not
+  // answered, and guessing the order it will finish in is what produced the bug above.
+  const settled = lockWrites.then(() => camera.setLocks(wanted));
+  lockWrites = settled.catch(() => undefined);
+  return Promise.race([
+    settled,
     new Promise<Awaited<ReturnType<typeof camera.setLocks>>>((resolve) => {
       setTimeout(() => resolve({
         ok: false,
-        status: { code: 'CameraUnavailable', component: 'camera', detail: 'the camera did not answer' },
+        status: {
+          code: 'CameraUnavailable', component: 'camera', detail: 'the camera did not answer',
+        },
       } as Awaited<ReturnType<typeof camera.setLocks>>), LOCK_WRITE_TIMEOUT_MS);
     }),
-  ]));
-  lockWrites = next.catch(() => undefined);
-  return next;
+  ]);
 }
 
 /** The page's end of the worker: what it pushes across, and the one thing the worker asks back. */
@@ -745,6 +756,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // `AlreadyCaptured` is deliberately not offered *yet*: aiming at a captured cell is how a
         // re-capture will be asked for, and that wants the trigger PR #44 is about rather than a
         // button that silently re-shoots whatever the reticle rests on.
+        //
+        // This narrows the refusal; it does not make it unreachable, and the difference matters.
+        // `aimKnown` is read from a guidance answer and `ArmBurst` re-reads the pose when the arm
+        // arrives, so a press that crosses the tick where the first sample lands is offered under
+        // one rule and judged under the next. That is a real `FailedPrecondition`, which is why
+        // the refusal is still reported rather than treated as impossible.
         captureButton.disabled = captureCell === null || !canCapture(guidance);
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
@@ -773,8 +790,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // is true for one tick, so a hold that suppressed them would not delay the news, it would
         // delete it. It did: `capturing without … lock` swallowed the `CellDone` that followed it
         // and eight browser tests waiting for "captured" went red.
+        // `Firing` belongs here despite being about an event: the manager reports it on *every*
+        // tick of a burst, about thirty-three of them, so treating it as news let it bypass the
+        // hold and wipe `capturing without … lock` after a measured 33 ms — which is the one
+        // message the hold was introduced for. "Event" means true for one tick, and `Firing` is
+        // not.
         const routine = guidance.action === 'Seek' || guidance.action === 'HoldStill'
-          || guidance.action === 'AlreadyCaptured';
+          || guidance.action === 'AlreadyCaptured' || guidance.action === 'Firing';
         const line = describeGuidance(guidance, {
           nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [],
           underOverlapped: [],
