@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CaptureGuidance, CoverageState, NodeId } from '../../../../contracts/ts/contracts';
 import {
-  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, describeGuidance, reticleRadius, unwrapDegrees,
+  RETICLE_LOCKED_RADIUS, RETICLE_MAX_RADIUS, canCapture, describeGuidance, reticleRadius,
+  unwrapDegrees,
 } from './guidance';
 
 const guidance = (over: Partial<CaptureGuidance> = {}): CaptureGuidance => ({
@@ -96,5 +97,37 @@ describe('unwrapDegrees', () => {
 
   it('is stable when nothing moved', () => {
     expect(unwrapDegrees(540, 180)).toBe(540);
+  });
+});
+
+describe('canCapture', () => {
+  const at = (action: CaptureGuidance['action']): CaptureGuidance => ({
+    targetNode: 3 as NodeId,
+    angularErrorDeg: 0,
+    rollErrorDeg: 0,
+    stability: 1,
+    action,
+  });
+
+  it('offers a capture on the one action that means "inside a cone and still needed"', () => {
+    expect(canCapture(at('HoldStill'))).toBe(true);
+  });
+
+  it('offers nothing while the camera is aimed at no cell', () => {
+    // The case the whole rule exists for: `ArmBurst` refuses here, so offering would be offering a
+    // refusal.
+    expect(canCapture(at('Seek'))).toBe(false);
+  });
+
+  it('offers nothing on a cell that is already captured', () => {
+    // Inside a cone, so the core would accept it — this is the page declining rather than the core
+    // refusing. Re-shooting a finished cell is a deliberate act and belongs to the retake flow.
+    expect(canCapture(at('AlreadyCaptured'))).toBe(false);
+  });
+
+  it('offers nothing during a burst, on the tick one finishes, or once the sphere is done', () => {
+    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast'] as const) {
+      expect(canCapture(at(action)), action).toBe(false);
+    }
   });
 });

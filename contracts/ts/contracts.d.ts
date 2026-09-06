@@ -239,8 +239,16 @@ export interface BurstSpec {
   lockFocus: boolean;
 }
 
-/** ---------------------------------------------------------------- guidance */
-export type GuidanceAction = 'Seek' | 'HoldStill' | 'Firing' | 'CellDone' | 'SphereDone' | 'TooFast';
+/**
+ * ---------------------------------------------------------------- guidance
+ * What the user should do about the cell guidance is naming.
+ * `CellDone` is an *edge*: the manager emits it on the one tick a burst fills, and callers act on
+ * it once. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
+ * already holds a capture, and it is true on every tick the phone stays there. They were briefly
+ * the same value, which turned a once-per-cell refresh into one per animation frame.
+ * Appended rather than inserted: the wire carries the index.
+ */
+export type GuidanceAction = 'Seek' | 'HoldStill' | 'Firing' | 'CellDone' | 'SphereDone' | 'TooFast' | 'AlreadyCaptured';
 
 export interface CaptureGuidance {
   targetNode: NodeId;
@@ -539,6 +547,11 @@ export interface CaptureSessionManager {
    * on this call are what the camera has to converge to. Under that floor the camera's own frame
    * period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
    * frame period the latest frame is one the camera produced before the locks landed.
+   * Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
+   * acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+   * burst records whatever the camera is looking at and the node is only a name to file it under,
+   * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
+   * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */

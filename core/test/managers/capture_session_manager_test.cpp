@@ -54,13 +54,86 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
   return Fail(StatusCode::Internal, "test", "the burst never finished");
 }
 
+// A pose engine a test can aim.
+//
+// `NullPoseEngine` pins the orientation to identity on every integrate, so with it the camera is
+// permanently looking straight ahead and no test can say "now the phone is pointing over there".
+// That was survivable while nothing read the pose; it stopped being survivable when arming a
+// burst started requiring the camera to be aimed at the cell, because the interesting cases —
+// arming at a cell that is elsewhere, drifting off a cell mid-burst — are all about where the
+// camera is looking.
+class AimablePoseEngine final : public IPoseEngine {
+ public:
+  void LookAt(const Quat& orientation) { looking_ = orientation; }
+
+  Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
+    auto state = inner_.Initial(mode, capability);
+    if (state.ok()) Aim(state.value);
+    return state;
+  }
+  Result<PoseState> Integrate(const PoseState& prior,
+                              std::span<const ImuSample> samples) override {
+    auto state = inner_.Integrate(prior, samples);
+    if (state.ok()) Aim(state.value);
+    return state;
+  }
+  Result<PoseSample> Correct(const FrameRef& current, const FrameRef& reference,
+                             const PoseSample& prior) override {
+    return inner_.Correct(current, reference, prior);
+  }
+  Result<double> Stability(std::span<const ImuSample> samples) override {
+    return inner_.Stability(samples);
+  }
+
+ private:
+  // All three fields, because they are one claim. `NullPoseEngine` reports an unobserved identity
+  // at confidence zero — "nothing produced this" — and callers are entitled to act on it:
+  // `ArmBurst` skips its aim check against an orientation nobody measured, which is what keeps a
+  // sensorless phone able to capture. A test that says where the camera is looking is asserting a
+  // measurement, so it has to report one, or it is testing the sensorless path while believing it
+  // is testing aim.
+  //
+  // Observed from `Initial` onwards, and that is not a shortcut: a phone with an absolute
+  // orientation sensor has a reading before any rate sample arrives, which is exactly the device
+  // this stands in for.
+  void Aim(PoseState& state) const {
+    state.pose.orientation = looking_;
+    state.pose.confidence = 1.0;
+    state.observed = true;
+    state.absolute = true;
+  }
+
+  NullPoseEngine inner_;
+  Quat looking_{};
+};
+
+// Turns the camera to face a cell, and makes the manager notice.
+//
+// `LookAt` alone changes nothing the manager can see: the pose is only re-integrated when a sample
+// arrives, so a test that aims without ticking is still pointing wherever it began. One empty
+// sample is enough to make the batch non-empty and run the integrate.
+void TurnTo(ICaptureSessionManager& manager, AimablePoseEngine& aiming, const Quat& orientation) {
+  aiming.LookAt(orientation);
+  const ImuSample sample{};
+  auto guidance = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
+  EXPECT_TRUE(guidance.ok()) << guidance.status.detail;
+}
+
 // The cell the camera is looking at, which since the aim rule is the only one a burst may be armed
 // against. Asked rather than assumed: `plan.nodes.front()` is the first cell of the first ring and
 // has no reason to be the one under the camera, so a test whose subject is not aim takes whichever
 // cell guidance names.
 NodeId AimedNode(ICaptureSessionManager& manager) {
   auto guidance = manager.OnMotion({});
-  EXPECT_TRUE(guidance.ok()) << guidance.status.detail;
+  if (!guidance.ok()) {
+    ADD_FAILURE() << "there is no aimed cell, guidance was refused: " << guidance.status.detail;
+    return NodeId{};
+  }
+  // Inside a cone, not merely nearest. `Seek` names the closest cell that is still missing while
+  // the camera is aimed at none of them, and a burst armed at that one would be refused — so a
+  // helper that promises an armable cell has to say so here rather than 900 lines away in whatever
+  // test happened to ask.
+  EXPECT_NE(guidance.value.action, GuidanceAction::Seek) << "the camera is aimed at no cell";
   return guidance.value.targetNode;
 }
 
@@ -177,7 +250,9 @@ TEST_F(CaptureSession, ArmingACellTheCameraIsNotAimedAtIsRefused) {
   // identity and every direction is inside it — there is no elsewhere to aim at.
   constexpr double kRadToDeg = 57.29577951308232;
   RingsCoveragePlannerEngine rings;
-  CaptureSessionManager aimed(rings, pose, quality, preview, *camera, *sensor, *store, *projects,
+  // A measured pose, because the rule under test only applies to one — see `AimablePoseEngine`.
+  AimablePoseEngine aiming;
+  CaptureSessionManager aimed(rings, aiming, quality, preview, *camera, *sensor, *store, *projects,
                               clock);
   CapturePlanSpec spec;
   spec.horizontalFovDeg = 66.0;
@@ -208,6 +283,55 @@ TEST_F(CaptureSession, ArmingACellTheCameraIsNotAimedAtIsRefused) {
   // And the cell it *is* aimed at still arms, so this is a rule about aim rather than a manager
   // that stopped arming.
   EXPECT_TRUE(aimed.ArmBurst(here->id, burst).ok());
+}
+
+TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
+  // UC-4: sensor absence is a supported configuration and no other component learns the
+  // difference (docs/03). The aim rule nearly broke that promise. With no sensor the pose engine
+  // reports an orientation nothing measured — identity, forever — so exactly one cell would ever
+  // be inside a cone, the other thirty-one would be refused, and the capture would stop after the
+  // first with nothing on screen saying why.
+  //
+  // `confidence` is the contract's own word for this: zero means the orientation was not
+  // estimated, and a caller reading it "is reading a value nothing produced". An aim check against
+  // a number nobody produced is not a check, so there is nothing to enforce and the burst is
+  // allowed. The user of a sensorless phone aims by eye, which is what vision-only means.
+  FakeMotionSensorAccess blind(MotionCapability::None);
+  RingsCoveragePlannerEngine rings;
+  CaptureSessionManager manager(rings, pose, quality, preview, *camera, blind, *store, *projects,
+                                clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
+  auto plan = manager.GetPlan();
+  ASSERT_TRUE(plan.ok());
+  ASSERT_GT(plan.value.nodes.size(), 8u);
+
+  // The cell furthest from where the pose claims to be looking: the one the aim rule would refuse
+  // hardest if it were enforced against an orientation nobody measured. One arm rather than a
+  // loop, because a burst in flight refuses the next for a different reason entirely.
+  constexpr double kRadToDeg = 57.29577951308232;
+  const CoverageNode* furthest = &plan.value.nodes.front();
+  double worst = 0.0;
+  for (const auto& node : plan.value.nodes) {
+    const double offBy =
+        AngleBetweenDirections(Direction(Quat{}), Direction(node.targetOrientation)) * kRadToDeg;
+    if (offBy > worst) {
+      worst = offBy;
+      furthest = &node;
+    }
+  }
+  ASSERT_GT(worst, 90.0) << "the fixture expects a cell on the far side of the sphere";
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 10;
+  EXPECT_TRUE(manager.ArmBurst(furthest->id, burst).ok())
+      << "a phone with no sensor could not arm the far side of its own plan";
 }
 
 TEST_F(CaptureSession, OnMotionPullsFromTheSensorWhenTheClientHasNothingToPush) {
@@ -322,54 +446,6 @@ TEST_F(CaptureSession, OnMotionWithNoSamplesIsNotAnError) {
 // Hands back a starting state and then refuses to integrate, so a tick can fail on the pose
 // rather than on the planner. Both are early returns from OnMotion and they are separate lines;
 // testing one and assuming the other is how the second stays broken.
-// A pose engine a test can aim.
-//
-// `NullPoseEngine` pins the orientation to identity on every integrate, so with it the camera is
-// permanently looking straight ahead and no test can say "now the phone is pointing over there".
-// That was survivable while nothing read the pose; it stopped being survivable when arming a
-// burst started requiring the camera to be aimed at the cell, because the interesting cases —
-// arming at a cell that is elsewhere, drifting off a cell mid-burst — are all about where the
-// camera is looking.
-class AimablePoseEngine final : public IPoseEngine {
- public:
-  void LookAt(const Quat& orientation) { looking_ = orientation; }
-
-  Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
-    auto state = inner_.Initial(mode, capability);
-    if (state.ok()) state.value.pose.orientation = looking_;
-    return state;
-  }
-  Result<PoseState> Integrate(const PoseState& prior,
-                              std::span<const ImuSample> samples) override {
-    auto state = inner_.Integrate(prior, samples);
-    if (state.ok()) state.value.pose.orientation = looking_;
-    return state;
-  }
-  Result<PoseSample> Correct(const FrameRef& current, const FrameRef& reference,
-                             const PoseSample& prior) override {
-    return inner_.Correct(current, reference, prior);
-  }
-  Result<double> Stability(std::span<const ImuSample> samples) override {
-    return inner_.Stability(samples);
-  }
-
- private:
-  NullPoseEngine inner_;
-  Quat looking_{};
-};
-
-// Turns the camera to face a cell, and makes the manager notice.
-//
-// `LookAt` alone changes nothing the manager can see: the pose is only re-integrated when a sample
-// arrives, so a test that aims without ticking is still pointing wherever it began. One empty
-// sample is enough to make the batch non-empty and run the integrate.
-void TurnTo(ICaptureSessionManager& manager, AimablePoseEngine& aiming, const Quat& orientation) {
-  aiming.LookAt(orientation);
-  const ImuSample sample{};
-  auto guidance = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
-  EXPECT_TRUE(guidance.ok()) << guidance.status.detail;
-}
-
 class UnintegrablePoseEngine final : public IPoseEngine {
  public:
   Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
@@ -815,21 +891,32 @@ TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   auto aimed = real.OnMotion({});
   ASSERT_TRUE(aimed.ok()) << aimed.status.detail;
   const NodeId armedAt = aimed.value.targetNode;
+  const auto& home = *std::find_if(nodes.begin(), nodes.end(), [&](const CoverageNode& n) {
+    return n.id.value == armedAt.value;
+  });
+
+  const auto& drifted = *std::find_if(nodes.begin(), nodes.end(), [&](const CoverageNode& n) {
+    return n.id.value != armedAt.value;
+  });
+
+  // The drift is staged before the burst as well as during it, and asserted, because that is the
+  // only thing separating this test from one that cannot fail: `LookAt` alone changes nothing the
+  // manager can see, so a version that aimed without ticking left the camera where it started and
+  // "the armed cell" and "the nearest cell" were the same answer again — the exact degeneracy the
+  // comment above records having already been fixed once. If this first assertion stops holding,
+  // the one at the end is measuring nothing.
+  TurnTo(real, aiming, drifted.targetOrientation);
+  auto retargeted = real.OnMotion({});
+  ASSERT_TRUE(retargeted.ok()) << retargeted.status.detail;
+  ASSERT_EQ(retargeted.value.targetNode.value, drifted.id.value)
+      << "guidance does not follow the camera, so this test cannot see a drift";
+  TurnTo(real, aiming, home.targetOrientation);
 
   BurstSpec burst;
   burst.frameCount = 3;
   ASSERT_TRUE(real.ArmBurst(armedAt, burst).ok());
 
-  NodeId elsewhere = armedAt;
-  for (const auto& node : nodes) {
-    if (node.id.value != armedAt.value) { elsewhere = node.id; break; }
-  }
-  ASSERT_NE(elsewhere.value, armedAt.value);
-  const auto& drifted = *std::find_if(nodes.begin(), nodes.end(), [&](const CoverageNode& n) {
-    return n.id.value == elsewhere.value;
-  });
-  aiming.LookAt(drifted.targetOrientation);
-
+  TurnTo(real, aiming, drifted.targetOrientation);
   auto firing = real.OnMotion({});
   ASSERT_TRUE(firing.ok()) << firing.status.detail;
   EXPECT_EQ(firing.value.targetNode.value, armedAt.value);

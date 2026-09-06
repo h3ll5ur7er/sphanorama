@@ -50,6 +50,12 @@ class ICaptureSessionManager {
   // on this call are what the camera has to converge to. Under that floor the camera's own frame
   // period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
   // frame period the latest frame is one the camera produced before the locks landed.
+  //
+  // Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
+  // acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+  // burst records whatever the camera is looking at and the node is only a name to file it under,
+  // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
+  // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.

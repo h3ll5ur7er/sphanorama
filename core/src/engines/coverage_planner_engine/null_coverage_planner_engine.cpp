@@ -101,7 +101,7 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
       nothingMissing ? GuidanceAction::SphereDone
       : inside == nullptr ? GuidanceAction::Seek
       : (!informed || missing(inside->id)) ? GuidanceAction::HoldStill
-                                           : GuidanceAction::CellDone;
+                                           : GuidanceAction::AlreadyCaptured;
   return Ok(guidance);
 }
 

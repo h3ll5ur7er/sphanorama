@@ -19,7 +19,7 @@ import {
   describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
 } from './clients/capture/status';
 import {
-  describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
+  canCapture, describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
 } from './clients/capture/guidance';
 import { describeResumeRefusal, resumableProject } from './clients/capture/resume';
 import { describeAttitude } from './clients/capture/attitude';
@@ -479,6 +479,20 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // are a click handler and the end-to-end hook, neither of which awaits — so an exception
     // escaping is an unhandled rejection rather than anything a user could see, and a dead
     // worker or a track that vanished mid-gesture is exactly when that happens.
+    // Everything the locks were applied for is off, so the camera goes back to metering.
+    //
+    // The core cannot do this one. `Disarm` is what releases the locks, and it returns early when
+    // no burst is in flight — which is precisely the state a refused arm leaves behind. Until the
+    // aim rule there was no refusal a user could actually reach (the burst spec is a constant, the
+    // cell always exists, and the button is disabled while one is firing), so the ordering was
+    // harmless; now a user pointing slightly off a cell can hit it, and what they would be left
+    // with is a viewfinder frozen at one exposure and focus that pointing somewhere else does not
+    // fix.
+    const unlock = () => {
+      remote.setLocks({ exposure: false, whiteBalance: false, focus: false });
+      void camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+    };
+
     let held: Awaited<ReturnType<typeof camera.setLocks>>;
     let armedNow;
     try {
@@ -515,6 +529,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     } catch (cause) {
       guidanceOut.textContent =
         `arming failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      unlock();
       return false;
     }
     if (armedNow.ok) {
@@ -529,7 +544,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       }
       return true;
     }
-    guidanceOut.textContent = `arming failed: ${armedNow.status.code}`;
+    unlock();
+    // The detail as well as the code. `FailedPrecondition` alone reads the same for "a burst is
+    // already in flight" and "the camera is not aimed at that cell", and only one of those is
+    // something the person holding the phone can do anything about.
+    guidanceOut.textContent =
+      `arming failed: ${armedNow.status.code} — ${armedNow.status.detail}`;
     return false;
   };
   // Only with a plan: this loop also runs on the paths where capture could not start, so the
@@ -603,10 +623,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // the same thing. `HoldStill` is precisely "inside the cone", which is precisely the
         // condition the core arms on.
         //
-        // `CellDone` is deliberately not offered *yet*: aiming at a captured cell is how a
-        // re-capture will be asked for, and until there is a way to see that a cell is already
-        // captured, a button that silently re-shoots it is worse than one that waits.
-        captureButton.disabled = captureCell === null || guidance.action !== 'HoldStill';
+        // `AlreadyCaptured` is deliberately not offered *yet*: aiming at a captured cell is how a
+        // re-capture will be asked for, and that wants the trigger PR #44 is about rather than a
+        // button that silently re-shoots whatever the reticle rests on.
+        captureButton.disabled = captureCell === null || !canCapture(guidance);
         const cone = cones.get(targetNode as number) ?? 0;
         const radius = reticleRadius(guidance.angularErrorDeg, cone);
         reticle.setAttribute('r', radius.toFixed(1));

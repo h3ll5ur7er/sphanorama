@@ -28,8 +28,8 @@ async function serve() {
 /**
  * Waits for the viewfinder to be delivering frames, which is not the same as being able to aim.
  *
- * `#capture` becomes enabled when guidance has named a cell — a fact about the plan, not about the
- * camera. The grabber refuses a video with no data or no dimensions and the loop only grabs at all
+ * `#capture` becomes enabled when guidance says `HoldStill` — a fact about where the camera is
+ * pointing, not about whether it is producing frames. The grabber refuses a video with no data or no dimensions and the loop only grabs at all
  * once a burst is armed, so a burst armed before the first frame arrives spends its whole settle
  * (ADR 0032) waiting for one that is not there and then fails with `CameraUnavailable`. On a loaded
  * runner that window is wide enough to fail a test, which is how this was found: one job, one

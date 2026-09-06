@@ -365,8 +365,11 @@ mechanism, two features. That is the payoff of modelling the build as a graph.
 `IMotionSensorAccess.Capabilities()` reports `none`. `CaptureSessionManager` configures
 `PoseEngine` in vision-only mode, where orientation comes from frame-to-frame tracking seeded by
 `RegistrationEngine` output rather than from integration. `CoveragePlannerEngine` switches to a
-looser acceptance tolerance. No other component learns that sensors were absent — the volatility
-is contained in V5 plus one flag in the plan spec.
+looser acceptance tolerance. One line elsewhere learns that sensors were absent, and it is there to
+give the same answer as if it had not: `ArmBurst`'s aim check applies only to a pose that was
+actually measured (`PoseState::observed` and a non-zero `PoseSample.confidence`), so a device that
+reports identity forever can still arm every cell rather than the one that happens to sit straight
+ahead (ADR 0041). Apart from that the volatility is contained in V5 plus one flag in the plan spec.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 

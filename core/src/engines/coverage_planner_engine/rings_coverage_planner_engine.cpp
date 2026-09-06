@@ -188,7 +188,7 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const Quat& current,
   // asking for whichever cell the phone happened to be nearest.
   //
   // Inside a cone, the action is the whole difference between a cell worth shooting and one
-  // already shot: `HoldStill` asks for a capture, `CellDone` says there is nothing owed here. A
+  // already shot: `HoldStill` asks for a capture, `AlreadyCaptured` says nothing is owed here. A
   // client is free to offer a re-capture on the second — that is what makes one possible at all —
   // but nothing tells the user to make one. An uninformed coverage state means nothing has been
   // evaluated yet, which is not the same as nothing being needed.
@@ -196,7 +196,7 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const Quat& current,
       nothingMissing ? GuidanceAction::SphereDone
       : inside == nullptr ? GuidanceAction::Seek
       : (!informed || missing(inside->id)) ? GuidanceAction::HoldStill
-                                           : GuidanceAction::CellDone;
+                                           : GuidanceAction::AlreadyCaptured;
   return Ok(guidance);
 }
 

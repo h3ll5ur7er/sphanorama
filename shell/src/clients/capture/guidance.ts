@@ -56,7 +56,33 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
       return `${cell} · capturing · ${progress}`;
     case 'CellDone':
       return `${cell} · captured · ${progress}`;
+    // Resting on a cell that is already shot. Worded so it does not read as an instruction: the
+    // user is free to shoot it again, and nothing here asks them to.
+    case 'AlreadyCaptured':
+      return `${cell} · already captured · ${progress}`;
     default:
       return `${cell} · ${off} · ${progress}`;
   }
+}
+
+/**
+ * Whether a burst may be armed at the cell guidance is naming.
+ *
+ * The one condition, in one place. `ArmBurst` refuses a cell the camera is not aimed at (ADR
+ * 0041), and the page offers a capture only where that refusal cannot fire — so what a user is
+ * offered and what the core will accept are the same rule rather than two that nearly agree, and a
+ * refusal becomes a backstop instead of the way the rule is discovered.
+ *
+ * `HoldStill` is the only action that says both halves at once: the camera is inside a cell's
+ * acceptance cone, and that cell still needs shooting. `AlreadyCaptured` is inside a cone too, and
+ * a re-capture there is a deliberate act — it belongs to the retake flow rather than to the
+ * shutter, which is why it is not offered here.
+ *
+ * It lives here rather than inline in the pump because it is the predicate a dwell trigger will
+ * fire on when one replaces the button, and because inline it had no test at all: the browser
+ * suite only ever waits for the button to *become* enabled, so `!== 'Seek'` would have passed
+ * every assertion in the repo.
+ */
+export function canCapture(guidance: CaptureGuidance): boolean {
+  return guidance.action === 'HoldStill';
 }

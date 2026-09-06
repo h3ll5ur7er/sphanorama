@@ -14,10 +14,15 @@ class ICoveragePlannerEngine {
 
   // Which cell should the user go to from here, and how far off are they?
   //
-  // Takes the coverage state because "nearest" is not the question a person is asking — they want
-  // the nearest cell they still *need*. Answering with the nearest cell of any kind aims someone
-  // at a cell they have already captured and tells them to hold still, which from behind a phone
-  // is indistinguishable from working. Coverage arrives as Evaluate's answer rather than as the
+  // Aim first, then coverage. A camera resting inside a cell's acceptance cone is pointing at
+  // that cell, and that is the cell to name — captured or not, because a target that moved out
+  // from under a still phone is how three presses at one spot filled three cells (ADR 0041,
+  // superseding ADR 0027's rule). Outside every cone there is nothing to hold on, so the nearest
+  // cell the user still *needs* is the answer and the capture keeps moving.
+  //
+  // What the coverage state buys is then the *action* rather than the target: `HoldStill` on a
+  // cell that wants shooting, `AlreadyCaptured` on one that does not, so nobody is told to
+  // photograph what they already have. Coverage arrives as Evaluate's answer rather than as the
   // candidates, so what counts as covered is defined in exactly one place.
   //
   // An empty state means no information rather than nothing missing: at the start of a session

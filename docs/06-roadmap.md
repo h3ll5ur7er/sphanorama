@@ -392,6 +392,20 @@ constraints landed. A fifth of every burst was going in the bin on the device th
 locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
+**Open: the pose has no age, and one refusal now depends on it.** `CaptureSessionManager` refreshes
+`pose_state_` only on a tick that carried samples, so a sensor that dies mid-session freezes it —
+and the page's pump only asks for guidance when there are samples, or a burst is running, so a dead
+sensor freezes the whole loop on its last good value. Everything downstream then agrees with each
+other and with nothing real: the reticle sits on a cell the camera has left, and `ArmBurst`'s aim
+check (ADR 0041) *permits* a burst against it, which is that ADR's own failure reached through a
+stale pose instead of a stale target. Nothing detects it. `PoseSample.timestampNs` is in the
+sensor's time base and `IClock::MonotonicNs` is in the manager's, so the fix is not a subtraction:
+it needs one owner for "when did the pose last mean anything", a decision about how old is too old,
+and something on screen for the case — a frozen reticle with no explanation is what a user gets
+today. `guidance.stability` is the only freshness-adjacent number the manager computes and it is
+advisory. Worth doing before the dwell trigger lands, since a trigger that fires on its own will
+reach this state without anybody pressing anything.
+
 ---
 
 ## Phase 2 — Stitching

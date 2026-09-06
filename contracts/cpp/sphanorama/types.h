@@ -263,7 +263,17 @@ struct BurstSpec {
 };
 
 // ---------------------------------------------------------------- guidance
-enum class GuidanceAction : uint8_t { Seek, HoldStill, Firing, CellDone, SphereDone, TooFast };
+// What the user should do about the cell guidance is naming.
+//
+// `CellDone` is an *edge*: the manager emits it on the one tick a burst fills, and callers act on
+// it once. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
+// already holds a capture, and it is true on every tick the phone stays there. They were briefly
+// the same value, which turned a once-per-cell refresh into one per animation frame.
+//
+// Appended rather than inserted: the wire carries the index.
+enum class GuidanceAction : uint8_t {
+  Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured
+};
 
 struct CaptureGuidance {
   NodeId targetNode;
