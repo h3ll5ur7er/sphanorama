@@ -160,9 +160,11 @@ struct PoseSample {
   // whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
   // that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
   //
-  // Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
-  // cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
-  // for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+  // Callers act on the zero rather than on the number's size: `Locate` prefers the cell the camera
+  // is inside only for an anchored pose, and names no cell as held otherwise (ADR 0041).
+  // `ArmBurst` used to stand its cone check down on a zero and no longer does — there is nothing
+  // to check against an identity nobody chose, so there is nothing to allow (ADR 0044). Above
+  // zero, 1.0 is an absolute reading and 0.5 is dead reckoning
   // *from* one — drifting away from a direction somebody measured, which is worth aiming with and
   // an unanchored integration is not.
   //
@@ -312,12 +314,17 @@ struct CaptureGuidance {
   GuidanceAction action = GuidanceAction::Seek;
   // Whether the orientation this answer was computed from was a measurement at all.
   //
-  // It is here because a client has to make the same decision the planner just made and has no
-  // other way to know it made it. With no aim, `Locate` targets by coverage and never says
-  // `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
-  // on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
-  // is wrong for every tick before the first sample arrives, which is what turned twelve browser
-  // tests red when the page tried.
+  // It is here because a client has to know which of two answers it is reading and has no other
+  // way to find out. With no aim, `angularErrorDeg` is measured from an identity nobody chose and
+  // comes back near zero for whichever cell happens to sit there — so a page that drew its
+  // reticle from it would show a closed ring on a pose nothing had measured, and a horizon rolled
+  // against nothing. It parks both instead.
+  //
+  // Guessing from "the sensor started" is not the same fact: it is wrong for every tick before
+  // the first sample arrives, which is what turned twelve browser tests red when the page tried.
+  //
+  // It used to gate a shutter as well, on a device that captured without an aim at all. That
+  // device is refused now (ADR 0044) and the shutter is gone with it; this field is presentation.
   //
   // Appended rather than inserted, because field order is wire order.
   bool aimKnown = false;
@@ -436,9 +443,10 @@ struct PoseState {
   // own failure reached through the other door. A rate says how fast the device is turning and
   // nothing about where it started.
   //
-  // Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
-  // an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
-  // keeps a phone with no motion sensor able to capture at all.
+  // Callers act on this through `PoseSample.confidence`, which is derived from it: `Locate`
+  // prefers aim only for an anchored pose (ADR 0041). What that buys is no longer a sensorless
+  // capture — that is refused (ADR 0044) — but a session whose first ticks, and whose rate-only
+  // streams, cannot be mistaken for an aim and fire a burst at a cell nobody pointed at.
   bool anchored = false;
   // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
   // is derived from this, so it has to survive between calls.

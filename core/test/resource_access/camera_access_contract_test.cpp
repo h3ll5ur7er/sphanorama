@@ -8,6 +8,7 @@
 
 #include "sphanorama/resource_access/camera_access.h"
 #include "support/fake_camera_access.h"
+#include "resource_access/camera_access/null_camera_access.h"
 
 namespace sphanorama {
 namespace {
@@ -77,6 +78,28 @@ TYPED_TEST(CameraAccessContract, ClosingReturnsTheCameraToItsInitialState) {
 }
 
 // Not part of the shared suite: only the fake exposes what the session asked it to do.
+// The null camera's refusals, which nothing else asserts any more.
+//
+// They had exactly one test: the facade suite's `StartingACaptureSessionFailsHonestlyWithoutACamera`,
+// which drove `CaptureSessionManager::begin` through the native runtime and got `CameraUnavailable`
+// back from this port. ADR 0044 put a sensor check in front of that call, so the same test now
+// stops at `SensorUnavailable` and never reaches a camera at all — and a null port whose refusals
+// nothing checks is one that can start answering `Ok` with an empty struct without anything going
+// red. That is the failure null-over-stub exists to prevent, so the coverage moves here rather
+// than disappearing.
+TEST(NullCamera, RefusesEveryCallWithAReasonRatherThanAnEmptyAnswer) {
+  NullCameraAccess camera;
+
+  auto opened = camera.Open(CameraOpenSpec{});
+  EXPECT_FALSE(opened.ok());
+  EXPECT_EQ(opened.status.code, StatusCode::CameraUnavailable);
+  EXPECT_FALSE(opened.status.detail.empty()) << "a refusal with no reason is not an explanation";
+
+  EXPECT_EQ(camera.StartPreview().code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(camera.PeekPreviewFrame().status.code, StatusCode::CameraUnavailable);
+  EXPECT_EQ(camera.SetLocks(true, true, true).code, StatusCode::CameraUnavailable);
+}
+
 TEST(FakeCamera, RecordsThatTheSessionLockedExposureForABurst) {
   FakeCameraAccess camera;
   ASSERT_TRUE(camera.Open(CameraOpenSpec{}).ok());

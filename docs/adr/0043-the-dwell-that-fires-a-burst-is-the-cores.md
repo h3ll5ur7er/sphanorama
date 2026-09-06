@@ -1,5 +1,10 @@
 # ADR 0043 — The dwell that fires a burst is the core's, and the page only obeys it
 
+> **Completed by [ADR 0044](0044-a-capture-needs-a-motion-sensor.md).** The dwell is unchanged.
+> Two of the consequences recorded below are not: `canCapture` and the `#capture` button were kept
+> here for the one device that could never reach `Fire`, and that device is now refused outright,
+> so both are deleted. The dwell is the only way a burst starts.
+
 ## Context
 
 ADR/PR #44 settled what the capture button promises by deleting it: a burst fires by itself once

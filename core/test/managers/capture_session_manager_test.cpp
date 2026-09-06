@@ -308,10 +308,15 @@ TEST_F(CaptureSession, ABeginWithNoMotionSensorIsRefusedWithoutTouchingTheCamera
   // agree. A folder of pictures with a plan's worth of guessed labels is worse than a sentence
   // saying what is missing.
   //
-  // Before the camera, and that is half the point. `Open` is what lights the indicator and raises
-  // the permission prompt, so a session that cannot start has no business asking for one on its
-  // way to saying so. `Opens()` rather than `IsOpen()`: a path that opened and then closed on its
-  // way out has already done both.
+  // Before the camera, and that is half the point — but only the manager's half. `ICameraAccess`
+  // is where a native or bench runtime opens a lens, so this pins the order the manager asks its
+  // two ports in. It does not pin what a *browser* user experiences: there the page opens the
+  // camera itself and this port only reports what it got, so the prompt happens several awaits
+  // before `Begin` is reached. That ordering is the page's to keep and is asserted in the browser
+  // suite, by counting `getUserMedia` calls (ADR 0044).
+  //
+  // `Opens()` rather than `IsOpen()`: a path that opened and then closed on its way out has
+  // already done both.
   FakeMotionSensorAccess blind(MotionCapability::None);
   CaptureSessionManager manager(planner, pose, quality, preview, *camera, blind, *store,
                                 *projects, clock);
@@ -432,6 +437,66 @@ TEST_F(CaptureSession, ArmingIsRefusedWhileNothingHasAnchoredThePose) {
       << "a burst was armed at a cell nothing had measured the camera against";
 }
 
+TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
+  // The hole the test above cannot see, and it is the whole rule rather than an edge of it.
+  //
+  // `ArmingIsRefusedWhileNothingHasAnchoredThePose` arms the cell *furthest* from identity, so it
+  // measures a 90-degree error against a five-degree cone — which a cone check passes or fails on
+  // regardless of whether anything anchored the pose. The interesting cell is the other one: with
+  // no reading, the orientation sits at the identity it was born with, and for whichever node
+  // happens to sit there `offBy` is exactly 0.0. A cone check alone therefore *accepts* it, and a
+  // burst files real pixels under a cell picked by an accident of initialisation — the failure
+  // ADR 0044 is about, surviving inside the change that was supposed to remove it.
+  //
+  // So there are two conditions and the cone is only the second. First: something has to have
+  // measured where the camera is pointing at all.
+  RingsCoveragePlannerEngine rings;
+  OrientationPoseEngine tracking;
+  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, *sensor, *store,
+                                *projects, clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
+  auto plan = manager.GetPlan();
+  ASSERT_TRUE(plan.ok());
+
+  constexpr double kRadToDeg = 57.29577951308232;
+  const CoverageNode* atIdentity = nullptr;
+  double closest = 0.0;
+  for (const auto& node : plan.value.nodes) {
+    const double offBy =
+        AngleBetweenDirections(Direction(Quat{}), Direction(node.targetOrientation)) * kRadToDeg;
+    if (atIdentity == nullptr || offBy < closest) {
+      closest = offBy;
+      atIdentity = &node;
+    }
+  }
+  ASSERT_NE(atIdentity, nullptr);
+  ASSERT_LE(closest, atIdentity->acceptanceConeDeg)
+      << "the fixture expects a cell inside its own cone of the identity, which is what makes "
+         "this test about anything";
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 10;
+  EXPECT_EQ(manager.ArmBurst(atIdentity->id, burst).code, StatusCode::FailedPrecondition)
+      << "the cell sitting at an orientation nobody measured was armed, " << closest
+      << " degrees from an identity nothing chose";
+
+  // And it arms once a reading anchors the pose there, so this is a rule about measurement rather
+  // than a manager that stopped arming its first cell.
+  ImuSample reading;
+  reading.timestampNs = 1'000'000;
+  reading.hasOrientation = true;
+  reading.orientation = atIdentity->targetOrientation;
+  ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&reading, 1)).ok());
+  EXPECT_TRUE(manager.ArmBurst(atIdentity->id, burst).ok());
+}
+
 TEST_F(CaptureSession, ARateOnlyStreamNeverMaturesADwell) {
   // The one path by which a session with a real sensor still spends its life at zero confidence,
   // and the reason the unaimed branch in `Locate` survives ADR 0044 rather than being deleted
@@ -449,9 +514,34 @@ TEST_F(CaptureSession, ARateOnlyStreamNeverMaturesADwell) {
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
 
-  // Well past the two-second dwell, in samples that carry a rate and nothing else.
-  sensor->EnqueueSpin(300, 10'000'000, 0.05);
-  for (int tick = 0; tick < 300; ++tick) {
+  // Fed a few samples per tick rather than all at once, and this is the arrangement rather than a
+  // detail. `OnMotion` drains up to 64 samples in one go and the dwell only advances on a tick a
+  // sample arrived on — so three hundred samples enqueued up front are gone in five ticks, and
+  // the dwell has about fifty milliseconds to work with against a two-second threshold. Under
+  // that arrangement the `Fire` assertion below could not have failed however broken the guard
+  // was, which is exactly what a reviewer found. Here the samples last as long as the clock does.
+  //
+  // Timestamps written out rather than taken from `EnqueueSpin`, which restarts at zero on every
+  // call: a stream that goes backwards is not integrated at all, and the pose would sit still for
+  // a reason that has nothing to do with what this is about.
+  constexpr int64_t kStepNs = 10'000'000;
+  constexpr int kTicks = 240;          // 2.4 s of clock, comfortably past the two-second dwell
+  int64_t stamp = 0;
+  for (int tick = 0; tick < kTicks; ++tick) {
+    for (int i = 0; i < 4; ++i) {
+      ImuSample sample;
+      stamp += kStepNs;
+      sample.timestampNs = stamp;
+      // A measured rate of zero: a phone held still, with a gyroscope saying so. That is the
+      // dangerous shape rather than a turning one — a spin drifts out of whichever cone it
+      // started in and ends the dwell for a reason that has nothing to do with this rule, while
+      // a still phone sits in one indefinitely. Zero is a real rate, which is why
+      // `hasAngularVelocity` exists (ADR 0025); what it never does is say where the phone is
+      // pointing, so nothing here anchors the orientation.
+      sample.angularVelocity = Vec3{0.0, 0.0, 0.0};
+      sample.hasAngularVelocity = true;
+      sensor->Enqueue(sample);
+    }
     auto guidance = manager.OnMotion({});
     ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
     EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)

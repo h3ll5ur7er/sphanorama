@@ -14,6 +14,17 @@ class ICaptureSessionManager {
  public:
   virtual ~ICaptureSessionManager() = default;
 
+  // Opens a capture session on a project that already exists.
+  //
+  // Refused with `SensorUnavailable` when `IMotionSensorAccess::Capabilities()` reports `None` or
+  // cannot answer, and refused *before* a camera is opened. A capture places every frame by the
+  // direction the phone was pointing, and a device that cannot sense one produces cells labelled
+  // with directions nobody measured — a failure invisible until a build, so it is refused at the
+  // door instead (ADR 0044). A client whose own platform can answer that question earlier should:
+  // this call is the rule, not the only place to be polite about it.
+  //
+  // Refused with `NotFound` when the project does not exist, which is checked first: beginning
+  // against an id nobody created would leave a titleless project in the user's list.
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -26,6 +37,11 @@ class ICaptureSessionManager {
   // The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
   // particular sphere, so replanning from whatever lens is in front of the phone now would file
   // every restored candidate under a different cell.
+  //
+  // The motion capability is not stored, and this reads the live one: a document says which
+  // sphere is being captured, never what the device it comes back on can sense. So this is
+  // refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
+  // began the capture if the user declined the permission this time (ADR 0044).
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;
@@ -57,11 +73,18 @@ class ICaptureSessionManager {
   // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
   // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
   //
-  // **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
-  // zero, which is what a phone with no motion sensor reports for the life of a session — there is
-  // no direction to measure a cone against, and every cell arms. A client on such a device will
-  // never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
-  // capture, because it never will (ADR 0042).
+  // **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
+  // stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
+  // could reach every cell of its own plan by eye. Such a phone is now refused at `Begin`, and
+  // what is left of zero confidence is transient: the ticks before a session's first reading, and
+  // a stream carrying rates with no attitude in them. In both the pose is the identity it was
+  // born with, which is a direction nobody chose, so there is nothing to check and nothing to
+  // allow — arming then would file real pixels under a cell picked by an accident of
+  // initialisation.
+  //
+  // So a client may wait for guidance to say `HoldStill`: that action means "inside this cell's
+  // cone and this cell still wants shooting", which is precisely the condition this arms on, and
+  // it now always arrives on a session that exists.
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
@@ -112,13 +135,11 @@ class ICaptureSessionManager {
   // point, since a retake that captured from wherever the phone happened to be pointing is the bug
   // ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
   //
-  // **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
-  // anchored there is no direction to measure a cone against, so the burst after a retake arms
-  // wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
-  // device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
-  // commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
-  // states a precondition without its exemption tells a client to wait for something that will
-  // never happen.
+  // **Without exemption, and this paragraph used to carry one.** It said the burst after a retake
+  // arms wherever the phone is pointing when the pose was never anchored, because that was the
+  // only way a sensorless device could retake at all. That device is refused at `Begin` now
+  // (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
+  // taken there or not at all.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

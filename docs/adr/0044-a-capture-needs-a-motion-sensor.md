@@ -29,14 +29,28 @@ reverse. Twice a fix was correct for the phone with a sensor and wrong for the o
 required and what is missing.**
 
 - `ICaptureSessionManager::Begin` and `::Resume` refuse with `SensorUnavailable` when
-  `IMotionSensorAccess::Capabilities()` reports `None`, before the camera is opened — asking for
-  camera permission for a session that cannot start is the wrong order to fail in.
+  `IMotionSensorAccess::Capabilities()` reports `None` **or cannot answer**, before the manager
+  opens a camera — asking for camera permission for a session that cannot start is the wrong
+  order to fail in.
+- **The page asks the same question before it calls `getUserMedia`.** The manager's ordering is
+  not enough on its own and saying otherwise was wrong: the core's camera *is* the page's, opened
+  by `enable` several awaits before `Begin` is reached, so a refusal that arrives only from the
+  core arrives after the prompt. The page's check is what a person actually experiences, and it
+  is a client being polite about *when* to ask rather than a second copy of the rule. A user who
+  declines the motion prompt on iOS is the one case where the camera prompt still comes first,
+  and that ordering is forced: both grants have to be requested inside one user gesture, and
+  awaiting the motion answer before asking for the camera would spend it.
 - `ICoveragePlannerEngine::Locate` keeps its unaimed branch, and it stops meaning what ADR 0042
   made it mean. Zero confidence is no longer a *device*; it is a session whose first reading has
   not arrived, or a stream carrying rates with no attitude in them. There is nothing to be inside
   of, so guidance seeks and no cell is named as held. What goes is the claim that this is a mode
   somebody can finish a sphere in.
-- `ArmBurst` loses its exemption and always enforces the acceptance cone.
+- `ArmBurst` loses its exemption. It refuses on two conditions now, and the cone is the second:
+  first something has to have measured where the camera is pointing at all. Enforcing the cone
+  alone is not the same rule and was the first draft of this change — an unanchored pose sits at
+  the identity it was born with, so the node that happens to sit *there* is 0° away and a cone
+  check accepts it. That is one cell of the plan filled with pixels an accident of initialisation
+  chose, which is this ADR's own failure surviving inside the change that removed it.
 - The page loses `#capture` entirely, which completes the decision recorded on PR #44: the dwell
   fires every burst, and there is no second way.
 - What the user gets instead is a sentence: this needs motion access, here is what is missing, and
@@ -57,15 +71,21 @@ required and what is missing.**
   burst at a cell nobody pointed at. That is the bug ADR 0041 exists to stop, arriving through
   the door this ADR was opening.
 - **`PoseSample.confidence` still starts at zero** — the first ticks of a session arrive before the
-  first sample — so the reticle still parks and guidance still says it is waiting. What is gone is
-  the case where it *stays* zero for the life of a session.
+  first sample — so the reticle still parks wide open, the horizon stops being corrected, and
+  guidance names a cell without an angle beside it. What is gone is the case where it *stays* zero
+  for the life of a session.
 - **`PoseMode::VisionOnly` is now unreachable from this manager.** It stays in the contract: it is
   what a vision-only capture would use the day `RegistrationEngine` can carry one, and this ADR is
   the record of why nothing selects it today.
 - **Roughly two hundred lines of second-path reasoning come out**, along with the tests that pinned
   them. The ADRs stay: 0042's reasoning was correct and its measurements are the evidence for this
   decision, which is why it is superseded rather than deleted.
-- **The bench and any replay client are unaffected**, because a recorded log carries orientation.
+- **A replay client is unaffected**, because a recorded log carries orientation — but only once it
+  is wired to a port that says so. The native runtime composes `NullMotionSensorAccess`, which
+  answers `None`, so every native `Begin` now refuses: `bridge/test/facade_test.cpp` records
+  exactly that, and a bench built on the same runtime will need a motion port before it can open
+  a session at all. That is the cost of putting the rule in the manager rather than in a client,
+  and it is the right side to pay it on.
 
 ## Rejected alternative
 
@@ -77,7 +97,6 @@ has spent more than a user who was told at the start.
 
 **Refuse in the page rather than the manager.** The page knows the capability and could decline
 before calling. Rejected because a manager whose only defence is its client has no defence —
-`Begin` is a contract call and the shell is not its only possible caller. And a second check in
-the page would buy nothing: the manager's own runs before `camera_.Open`, so the refusal already
-arrives before the permission prompt. The page's job here is to say it well, not to say it
-first.
+`Begin` is a contract call and the shell is not its only possible caller. The page checks *as
+well*, and the decision above says why: without it the camera prompt comes first, because the
+camera the manager guards is one the page has already opened.

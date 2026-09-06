@@ -56,13 +56,13 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   //
   // The motion capability is the live one on both paths, including a resume: a stored session
   // says which sphere is being captured, never what the device it comes back on can sense.
+  Result<PoseState> StartTracking(MotionCapability motion);
   /**
    * What both doors check before anything else: this device can sense which way it is pointing.
    * Answers the capability on success and `SensorUnavailable` when the sensor reports none or
    * cannot say (ADR 0044).
    */
   Result<MotionCapability> RequireMotion();
-  Result<PoseState> StartTracking(MotionCapability motion);
   bool HasNode(NodeId node) const;
   /** The cell by id, or null. Callers that need the cone rather than merely its existence. */
   const CoverageNode* FindNode(NodeId node) const;

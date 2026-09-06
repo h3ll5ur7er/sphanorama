@@ -319,6 +319,35 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.disabled = true;
   resumeButton.disabled = true;
 
+  // Before anything else, and before the camera in particular. A capture needs a motion sensor
+  // and the core refuses without one (ADR 0044) — but the core's refusal comes back *after* this
+  // function has already called `getUserMedia`, which is the prompt. A user with no sensors would
+  // be asked for their camera and then told the session cannot start, which is the worst order to
+  // ask a question in and is the ordering ADR 0044 says this rule exists to get right.
+  //
+  // Not a second copy of the rule: `Begin` and `Resume` still refuse on their own, against the
+  // capability the host reports rather than against this. This is the client being polite about
+  // *when* to ask, which the core cannot do from behind a synchronous port.
+  //
+  // Safe to await here, unlike everything below it. `capabilities()` is feature detection — it
+  // resolves in a microtask and asks the platform for nothing — so it cannot spend the transient
+  // activation the motion grant below depends on. Awaiting the grant itself here would.
+  const detected = await motion.capabilities();
+  if (detected.ok && detected.value === 'None') {
+    // The same row, and the same shape of sentence, a failed `start` writes: unavailable, and
+    // why. One word for every cause is what made an iPhone reading unreadable (ADR 0025).
+    motionState.textContent = 'unavailable · no motion sensors on this device';
+    // The core's own words for the same refusal, so a user who reaches it this way and a caller
+    // who reaches it through the facade are told the same thing.
+    stage.textContent = describeFailure({
+      code: 'SensorUnavailable', component: 'CaptureSessionManager',
+      detail: 'this device reports no motion sensors',
+    });
+    enableButton.disabled = false;
+    resumeButton.disabled = resume === null;
+    return;
+  }
+
   // Asked for, because a camera that is not asked answers with the browser's default rather than
   // its own best — 640x480 in Chromium, a quarter of the pixels the grabber's cap already budgets
   // for. So the ask is that cap: the frame the core stores is the frame the camera was opened to
@@ -1011,29 +1040,6 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // after the burst had finished.
         if (guidance.action !== 'Seek') armed = false;
         targetNode = guidance.targetNode;
-        // Offered only when a capture would actually be taken. The core refuses to arm a burst
-        // against a cell the camera is not aimed at — a burst records what the camera sees, so
-        // arming elsewhere files this direction's pixels under another cell's name — and a button
-        // that reports "arming failed" for a rule the reticle already shows is a worse way to say
-        // the same thing. `HoldStill` is precisely "inside the cone", which is precisely the
-        // condition the core arms on.
-        //
-        // `AlreadyCaptured` is deliberately not offered *yet*: aiming at a captured cell is how a
-        // re-capture will be asked for, and that wants the trigger PR #44 is about rather than a
-        // button that silently re-shoots whatever the reticle rests on.
-        //
-        // This narrows the refusal; it does not make it unreachable, and the difference matters.
-        // `aimKnown` is read from a guidance answer and `ArmBurst` re-reads the pose when the arm
-        // arrives, so a press that crosses the tick where the first sample lands is offered under
-        // one rule and judged under the next. That is a real `FailedPrecondition`, which is why
-        // the refusal is still reported rather than treated as impossible.
-        // No `captureCell === null` here: this whole block is inside `plan !== null`, and
-        // `captureCell` is assigned exactly when a plan exists. The disjunct could never be true —
-        // a guard implied by the one above it, which reads as defence and is not.
-        //
-        // And not only what guidance says. This line knew nothing about the arm the press had
-        // just started, so the very next tick put the shutter back: measured at 41 ms after a
-        // press, enabled again for 352 of the 393 ms before the core first reported `Firing`. The
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
         // says. With no aim, `angularErrorDeg` is measured from an unmeasured identity — it comes

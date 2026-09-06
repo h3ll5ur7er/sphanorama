@@ -588,6 +588,12 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   project_ = project;
   session_ = SessionId{stored.session};
   resolved_spec_ = stored.spec;
+  // The one field of the stored spec that describes the *device* rather than the sphere, put back
+  // to what this device actually reports. Everything else here is the tessellation's own input
+  // and has to be the stored one, or a resume replans a different sphere. `Checkpoint` writes
+  // `resolved_spec_` out again on the next committed cell, so leaving the stored capability in
+  // place would republish a fact about a phone that may not be this one.
+  resolved_spec_.motion = motion;
   lens_ = stored.lens;
   candidates_.clear();
   burst_owned_.clear();
@@ -686,14 +692,19 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
 
   // Derived here as well as inside the engine, and this is the copy a client reads.
   //
-  // Not distrust of the engine: the engine needs the answer for itself, to choose between naming
-  // the cell the camera is inside and waiting for a reading, and the two have to agree with what
-  // the page is told. There is exactly one source they can agree on — `confidence`, the
+  // Not distrust of the engine. Three readers derive the same fact and all three must agree:
+  // `Locate` chooses between naming the cell the camera is inside and waiting for a reading,
+  // `ArmBurst` refuses what nothing has measured, and the page parks its reticle and stops
+  // correcting for roll. There is exactly one source they can agree on — `confidence`, the
   // contract's own word for whether anything ever anchored the orientation. What this line
-  // removes is the possibility of a *published* answer that disagrees with the one the engine
-  // used: a planner leaving the field at its default would park the page's reticle at its widest
-  // and stop it correcting for roll on a phone whose pose is perfectly well measured. `stability`
-  // and `targetNode` are patched here for the same reason.
+  // removes is a *published* answer disagreeing with the one the refusal uses: a planner leaving
+  // the field at its default would park the page's reticle on a phone whose pose is perfectly
+  // well measured, and every burst the dwell then fired would look to the user like a control
+  // that had stopped working.
+  //
+  // `stability` below and `targetNode` in the burst block are written here for reasons of their
+  // own, not this one: the first because only this call holds the batch to estimate it from, the
+  // second because a burst in flight is filed under the cell it was armed at.
   guidance.aimKnown = pose_state_.pose.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
@@ -788,24 +799,36 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // A burst records whatever the camera sees; the node is only a name to file it under. Arming
   // against a cell somewhere else therefore stores a good picture in the wrong place, which is
   // undetectable afterwards — the frames are sharp, the scores are real, and the stitch is wrong.
-  // Nothing checked it. A client can check most of it — the page has always held every cell's cone
-  // and gets the angular error every tick, and it now gates its own shutter on exactly that — but
-  // not the last part: the reticle can retarget between the moment a user decides to press and the
-  // moment the press lands, which is a race no caller can win from outside. That is why the check
-  // is here as well as there.
+  // Nothing checked it. A client can see most of it — the page holds every cell's cone and gets
+  // the angular error every tick, which is what closes the reticle — but seeing is not checking,
+  // and since ADR 0043 the client does not decide at all: the core counts the dwell and reports
+  // `Fire`, and the page arms on it. The gap this closes is the one between the tick that said
+  // `Fire` and the arm arriving back over the worker, in which the phone has moved.
   //
   // The same cone the planner guides with, so "the reticle is closed" and "this will arm" are the
   // same condition rather than two that nearly agree.
   //
-  // Unconditionally, which it was not. This check used to stand down whenever
-  // `PoseSample.confidence` was zero — the contract's word for "no reading has ever anchored this
-  // orientation" — so that a phone with no motion sensor could still reach every cell of its own
-  // plan, aiming by eye. ADR 0044 refuses that phone at `Begin` instead, and what is left of zero
-  // confidence is narrow and transient: the ticks before a session's first reading arrives, and a
-  // stream that carries rates with no attitude in them. In both the pose is the identity it was
-  // born with, dead-reckoned or not — a direction nobody chose — and arming against it files real
-  // pixels under a cell picked by an accident of initialisation. There is nothing to check, so
-  // there is nothing to allow.
+  // Two conditions, and the cone is only the second.
+  //
+  // Something has to have measured where the camera is pointing at all. This check used to stand
+  // down on a zero `PoseSample.confidence` — the contract's word for "no reading has ever
+  // anchored this orientation" — so that a phone with no motion sensor could reach every cell of
+  // its own plan by eye. ADR 0044 refuses that phone at `Begin` instead, and the first draft of
+  // this change concluded that the cone could therefore be enforced unconditionally and the
+  // confidence read deleted.
+  //
+  // That was wrong by exactly one cell, and a review caught it. An unanchored pose sits at the
+  // identity it was born with, so for whichever node happens to sit *there* `offBy` is 0.0 and a
+  // cone check accepts — filing real pixels under a cell picked by an accident of initialisation,
+  // which is the failure this ADR exists to remove, surviving inside the change that removed it.
+  // What is left of zero confidence is transient (a session's opening ticks, and a stream
+  // carrying rates with no attitude) and it is still a direction nobody chose. There is nothing
+  // to check, so there is nothing to allow — including the cell the accident points at.
+  if (!(pose_state_.pose.confidence > 0.0)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "nothing has measured where the camera is pointing yet");
+  }
+
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;

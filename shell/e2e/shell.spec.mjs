@@ -751,10 +751,17 @@ test('a camera that dies while the page is still enabling does not start a captu
     // And no session behind it. `capturing` is what `beginSession` writes, and it is the word the
     // page had no business saying.
     await expect(page.locator('#stage')).not.toContainText('capturing');
-    // And nothing can be armed. This used to read the shutter's `disabled` attribute; with the
-    // button gone (ADR 0044) the same claim is made against the path the dwell arms through,
-    // which is the one that would actually have to refuse.
-    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
+    // And no session behind it, asserted against the core rather than against the page. This used
+    // to read the shutter's `disabled` attribute, and the obvious replacement — that
+    // `window.sphanoramaCapture()` answers false — is satisfied by a default: it returns false on
+    // a page that has done nothing at all, because the hook has no target cell to arm until a
+    // plan exists. It would have passed if `enable` had never run. `getPlan` refuses unless a
+    // session was actually begun, which is the fact this test is about.
+    const planned = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.getPlan();
+      return got.ok ? got.value.nodes.length : -1;
+    });
+    expect(planned).toBe(-1);
   } finally {
     await server.close();
     await context.close();
@@ -1951,6 +1958,16 @@ test('a phone with no motion sensors is told what is required and what is missin
     delete window.AbsoluteOrientationSensor;
     delete window.DeviceOrientationEvent;
     delete window.DeviceMotionEvent;
+    // Counted, because the order these two questions are asked in is half of ADR 0044. The core
+    // refuses before it opens a camera of its own — but the core's camera is this page's, already
+    // opened, so the ordering that reaches a person is this one.
+    window.__cameraAsked = 0;
+    const media = navigator.mediaDevices;
+    const real = media.getUserMedia.bind(media);
+    media.getUserMedia = (constraints) => {
+      window.__cameraAsked += 1;
+      return real(constraints);
+    };
   });
   const server = await serve();
   try {
@@ -1980,6 +1997,12 @@ test('a phone with no motion sensors is told what is required and what is missin
       return got.ok ? got.value.nodes.length : 0;
     });
     expect(planned).toBe(0);
+
+    // And the camera was never asked for. A user who cannot capture must not be made to answer a
+    // permission prompt on the way to being told so, which is the ordering ADR 0044 exists to get
+    // right and the one the page — not the core — is the only place that can honour: `enable`
+    // calls `getUserMedia` before the core is reached at all.
+    expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
   } finally {
     await server.close();
     await context.close();

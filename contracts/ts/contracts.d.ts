@@ -121,9 +121,11 @@ export interface PoseSample {
    * and says nothing whatever about where that was. A stream of rates alone reports zero for its
    * whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
    * that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
-   * Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
-   * cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
-   * for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+   * Callers act on the zero rather than on the number's size: `Locate` prefers the cell the camera
+   * is inside only for an anchored pose, and names no cell as held otherwise (ADR 0041).
+   * `ArmBurst` used to stand its cone check down on a zero and no longer does — there is nothing
+   * to check against an identity nobody chose, so there is nothing to allow (ADR 0044). Above
+   * zero, 1.0 is an absolute reading and 0.5 is dead reckoning
    * *from* one — drifting away from a direction somebody measured, which is worth aiming with and
    * an unanchored integration is not.
    * The old gloss said zero meant nothing had moved the orientation. An engine written against it
@@ -280,12 +282,15 @@ export interface CaptureGuidance {
   action: GuidanceAction;
   /**
    * Whether the orientation this answer was computed from was a measurement at all.
-   * It is here because a client has to make the same decision the planner just made and has no
-   * other way to know it made it. With no aim, `Locate` targets by coverage and never says
-   * `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
-   * on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
-   * is wrong for every tick before the first sample arrives, which is what turned twelve browser
-   * tests red when the page tried.
+   * It is here because a client has to know which of two answers it is reading and has no other
+   * way to find out. With no aim, `angularErrorDeg` is measured from an identity nobody chose and
+   * comes back near zero for whichever cell happens to sit there — so a page that drew its
+   * reticle from it would show a closed ring on a pose nothing had measured, and a horizon rolled
+   * against nothing. It parks both instead.
+   * Guessing from "the sensor started" is not the same fact: it is wrong for every tick before
+   * the first sample arrives, which is what turned twelve browser tests red when the page tried.
+   * It used to gate a shutter as well, on a device that captured without an aim at all. That
+   * device is refused now (ADR 0044) and the shutter is gone with it; this field is presentation.
    * Appended rather than inserted, because field order is wire order.
    */
   aimKnown: boolean;
@@ -412,9 +417,10 @@ export interface PoseState {
    * against it: zero of thirty-two cells armable on the shipped tessellation, which is ADR 0042's
    * own failure reached through the other door. A rate says how fast the device is turning and
    * nothing about where it started.
-   * Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
-   * an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
-   * keeps a phone with no motion sensor able to capture at all.
+   * Callers act on this through `PoseSample.confidence`, which is derived from it: `Locate`
+   * prefers aim only for an anchored pose (ADR 0041). What that buys is no longer a sensorless
+   * capture — that is refused (ADR 0044) — but a session whose first ticks, and whose rate-only
+   * streams, cannot be mistaken for an aim and fire a burst at a cell nobody pointed at.
    */
   anchored: boolean;
   /**
@@ -582,6 +588,17 @@ export interface ExportSpec {
  * where a reticle sits (V4), or how bytes are stored (V11).
  */
 export interface CaptureSessionManager {
+  /**
+   * Opens a capture session on a project that already exists.
+   * Refused with `SensorUnavailable` when `IMotionSensorAccess::Capabilities()` reports `None` or
+   * cannot answer, and refused *before* a camera is opened. A capture places every frame by the
+   * direction the phone was pointing, and a device that cannot sense one produces cells labelled
+   * with directions nobody measured — a failure invisible until a build, so it is refused at the
+   * door instead (ADR 0044). A client whose own platform can answer that question earlier should:
+   * this call is the rule, not the only place to be polite about it.
+   * Refused with `NotFound` when the project does not exist, which is checked first: beginning
+   * against an id nobody created would leave a titleless project in the user's list.
+   */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
    * Picks a session back up from what was written down about it.
@@ -593,6 +610,10 @@ export interface CaptureSessionManager {
    * The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
    * particular sphere, so replanning from whatever lens is in front of the phone now would file
    * every restored candidate under a different cell.
+   * The motion capability is not stored, and this reads the live one: a document says which
+   * sphere is being captured, never what the device it comes back on can sense. So this is
+   * refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
+   * began the capture if the user declined the permission this time (ADR 0044).
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -620,11 +641,17 @@ export interface CaptureSessionManager {
    * burst records whatever the camera is looking at and the node is only a name to file it under,
    * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
    * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
-   * **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
-   * zero, which is what a phone with no motion sensor reports for the life of a session — there is
-   * no direction to measure a cone against, and every cell arms. A client on such a device will
-   * never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
-   * capture, because it never will (ADR 0042).
+   * **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
+   * stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
+   * could reach every cell of its own plan by eye. Such a phone is now refused at `Begin`, and
+   * what is left of zero confidence is transient: the ticks before a session's first reading, and
+   * a stream carrying rates with no attitude in them. In both the pose is the identity it was
+   * born with, which is a direction nobody chose, so there is nothing to check and nothing to
+   * allow — arming then would file real pixels under a cell picked by an accident of
+   * initialisation.
+   * So a client may wait for guidance to say `HoldStill`: that action means "inside this cell's
+   * cone and this cell still wants shooting", which is precisely the condition this arms on, and
+   * it now always arrives on a session that exists.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
@@ -669,13 +696,11 @@ export interface CaptureSessionManager {
    * a retake asks the user to point at the cell again before anything is recorded — which is the
    * point, since a retake that captured from wherever the phone happened to be pointing is the bug
    * ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
-   * **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
-   * anchored there is no direction to measure a cone against, so the burst after a retake arms
-   * wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
-   * device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
-   * commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
-   * states a precondition without its exemption tells a client to wait for something that will
-   * never happen.
+   * **Without exemption, and this paragraph used to carry one.** It said the burst after a retake
+   * arms wherever the phone is pointing when the pose was never anchored, because that was the
+   * only way a sensorless device could retake at all. That device is refused at `Begin` now
+   * (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
+   * taken there or not at all.
    */
   requestRetake(node: NodeId, replace: boolean): Promise<Result<void>>;
   end(): Promise<Result<void>>;

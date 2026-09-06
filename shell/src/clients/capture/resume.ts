@@ -58,7 +58,8 @@ export interface ResumeRefusal {
  * What is added is the subject — the same status arriving from a resume and from a fresh capture
  * means different things to do next, and the line has to say which one just failed.
  *
- * The offer comes back for every refusal except `Unsupported`, and the asymmetry is the answer to
+ * The offer comes back for every refusal except `Unsupported` and `SensorUnavailable`, and the
+ * asymmetry is the answer to
  * the question ADR 0035 and ADR 0036 left between them (ADR 0039). Most refusals are statements
  * about this attempt: a tier this device does not currently hold, a store that would not take the
  * frames back, a camera another tab has. Those can be different on the next press or the next
@@ -78,10 +79,18 @@ export interface ResumeRefusal {
  * the document simply resumes it.
  */
 export function describeResumeRefusal(status: Status): ResumeRefusal {
-  const offerAgain = status.code !== 'Unsupported';
-  const next = offerAgain
-    ? 'try again, or start a new one'
-    : 'this version cannot pick it up — the capture is kept for one that can';
+  // `SensorUnavailable` joined `Unsupported` on the withdrawing side with ADR 0044, and for the
+  // same reason rather than a similar one: nothing a press can do changes it. The host is told
+  // the motion capability inside `enable`, once, and a second press of either button re-runs the
+  // same refusal against the same answer — so "try again, or start a new one" offered two dead
+  // buttons under a sentence that had just said to change a setting and reload. What makes the
+  // capture readable again is the reload, which rebuilds the offer from `hasSession` anyway.
+  const stuck = status.code === 'Unsupported' || status.code === 'SensorUnavailable';
+  const next = status.code === 'Unsupported'
+    ? 'this version cannot pick it up — the capture is kept for one that can'
+    : status.code === 'SensorUnavailable'
+      ? 'the capture is kept until this device can place its frames'
+      : 'try again, or start a new one';
   return { message: `Could not resume that capture — ${describeFailure(status)} · ${next}`,
-           offerAgain };
+           offerAgain: !stuck };
 }

@@ -37,13 +37,19 @@ class ICoveragePlannerEngine {
   // candidates, so what counts as covered is defined in exactly one place.
   //
   // **A whole `PoseSample` rather than the orientation alone, because the rule above is only
-  // valid when there is an aim** (ADR 0042). `confidence` is zero when nothing estimated the
-  // orientation — a phone with no motion sensor tracks vision-only and reports identity for the
-  // life of the session — and preferring the cell "under the camera" then means preferring
-  // whichever cell happens to sit at identity, for ever. So with no aim there is nothing to put
-  // first, and coverage decides alone: the nearest cell still missing, which is ADR 0027's rule
-  // and is what keeps such a capture moving from cell to cell. An engine that ignored
-  // `confidence` would leave a sensorless user re-shooting one cell of thirty-two.
+  // valid when there is an aim.** `confidence` is zero when no reading has ever anchored the
+  // orientation, which leaves it at the identity it was born with — a direction nobody chose — so
+  // preferring the cell "under the camera" would mean preferring whichever cell happens to sit
+  // there. With no aim there is nothing to be inside of: no node is named as held, no `HoldStill`
+  // is reported, and the target falls back to the nearest cell still missing (ADR 0027's rule).
+  //
+  // This used to describe a *device* — a phone with no motion sensor, which reported identity for
+  // the life of a session and captured by eye (ADR 0042). It now describes a *moment*: such a
+  // device is refused at `ICaptureSessionManager::Begin` (ADR 0044), and what is left is a
+  // session's opening ticks, before its first reading arrives, and a stream carrying angular
+  // rates with no attitude in them, which never anchors at all. An engine that ignored
+  // `confidence` would let the second of those mature a dwell and fire a burst at a cell nobody
+  // pointed at, which is the failure ADR 0041 exists to stop.
   //
   // An empty state means no information rather than nothing missing: at the start of a session
   // nothing has been captured and nothing is a hole, and reading that as a finished sphere would

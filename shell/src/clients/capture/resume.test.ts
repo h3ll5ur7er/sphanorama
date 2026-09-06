@@ -87,6 +87,22 @@ describe('describeResumeRefusal', () => {
     expect(refusal.message).toMatch(/try again/i);
   });
 
+  it('takes the offer down when this device cannot place the frames at all', () => {
+    // ADR 0044. A resume needs a motion sensor and the host is told the capability once, inside
+    // `enable`, so a second press of either button re-runs the same refusal against the same
+    // answer — two dead controls under a sentence that had just said to change a setting and
+    // reload. What clears it is the reload, which rebuilds the offer from `hasSession` anyway.
+    const refusal = describeResumeRefusal({
+      code: 'SensorUnavailable', component: 'CaptureSessionManager',
+      detail: 'this device reports no motion sensors',
+    });
+    expect(refusal.offerAgain).toBe(false);
+    expect(refusal.message).not.toMatch(/try again/i);
+    // And the capture is still there. `Resume` refuses before it touches the document, so the
+    // sentence that ends the offer must not read as "your sphere was thrown away".
+    expect(refusal.message).toMatch(/kept/i);
+  });
+
   it('takes the offer down for a refusal only a new build can change', () => {
     // Nothing the user can do in this tab reads a document shape this build does not know, so an
     // offer left up is one that fails identically every time it is pressed. It is withdrawn for

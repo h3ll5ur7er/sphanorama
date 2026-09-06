@@ -1,5 +1,11 @@
 # ADR 0041 — Aim decides which cell a burst belongs to
 
+> **Narrowed by [ADR 0044](0044-a-capture-needs-a-motion-sensor.md).** The rule stands and is
+> now unconditional: `ArmBurst`'s one exemption — standing its cone check down where nothing had
+> anchored the pose — is gone, because the device it existed for is refused at `Begin`. What
+> replaced it is a second condition rather than none: a burst is refused both when nothing has
+> measured where the camera is pointing and when what was measured is outside the cell's cone.
+
 ## Context
 
 Reported from a phone: point at a cell, press capture three times without moving, and the capture
