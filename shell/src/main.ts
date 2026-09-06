@@ -910,7 +910,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // camera that is not there.
       // Same flag the guidance-failure branch sets, and for the same reason: `refreshCoverage` is
       // asynchronous, so one already in flight would land after the clear below and repaint the
-      // rings, the arrow and the map under a line saying the camera is gone. That branch got the
+      // rings and the arrow under a line saying the camera is gone. Not the map: `refreshCoverage`
+      // calls `review.show` outside the flag's reach, deliberately — the sibling branch calls it
+      // *for* the map — and a cell dot filling in late is late rather than false, unlike a marker,
+      // which claims a direction relative to a pose that no longer exists. That branch got the
       // flag *and* a call-ordering fix after it was measured putting a ring back one millisecond
       // later; this early return copied the clear and neither protection.
       guidanceFailed = true;

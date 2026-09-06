@@ -937,6 +937,85 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
   }
 });
 
+test('a camera taken away while the arm is in the core says so, and keeps saying it', async ({ browser }) => {
+  // The window after `armBurst` is sent and before it answers. The check before it covers the lock
+  // write; this covers the round trip after it, and the reason it matters is not the arm — there is
+  // no page route to `Disarm`, so a burst armed here stays armed whatever anything returns — but
+  // the *message*. Everything `armOnce` says after this point goes to `#guidance` through
+  // `sayForAWhile`, which writes it directly, and the loop has already taken its terminal return:
+  // nothing will ever overwrite it. "capturing without focus lock", or an arming refusal telling
+  // the user to re-aim, becomes the page's last word for the life of the tab, under a stage line
+  // telling them to reload.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 100));
+    };
+    // The arm's round trip, held open for a second so the camera can be taken *inside* it. Delaying
+    // the request rather than the reply, because the request is the message this side can hold —
+    // and holding it delays the whole trip, which is what the window is made of. A dispatch timed
+    // against the lock writes instead would be a guess at when they finished.
+    const post = Worker.prototype.postMessage;
+    window.__armPosted = false;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.armBurst') {
+        window.__armPosted = true;
+        setTimeout(() => {
+          if (transfer === undefined) post.call(this, message);
+          else post.call(this, message, transfer);
+        }, 1000);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    const armed = await page.evaluate(async () => {
+      const capturing = window.sphanoramaCapture();
+      // Waited for rather than timed: the arm is posted only once the lock writes have answered,
+      // so this is the moment the third window opens.
+      while (!window.__armPosted) await new Promise((r) => setTimeout(r, 10));
+      const stream = document.querySelector('video').srcObject;
+      for (const track of stream.getTracks()) track.dispatchEvent(new Event('ended'));
+      return capturing;
+    });
+    expect(armed).toBe(false);
+
+    // And the page's last word is the true one, two seconds after everything has settled.
+    await expect(page.locator('#stage')).toContainText(/taken away/i, { timeout: 15000 });
+    await page.waitForTimeout(2000);
+    await expect(page.locator('#guidance')).not.toContainText(/capturing without/i);
+    await expect(page.locator('#guidance')).not.toContainText(/not aimed at that cell/i);
+    await expect(page.locator('#guidance')).toContainText(/taken away/i);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a lock write that answers late leaves the row explaining the refusal', async ({ browser }) => {
   // `unlock()` snapshots the locks row to say what its release is a release *of*, and this branch
   // queued the release one statement before writing its own record — so the snapshot was the
