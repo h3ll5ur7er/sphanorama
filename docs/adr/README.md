@@ -45,3 +45,4 @@ and the alternative we rejected and why.
 | [0038](0038-a-frame-leaves-the-core-reduced-and-a-new-engine-reduces-it.md) | A frame leaves the core reduced to a preview, and a new engine (V16) is what reduces it |
 | [0039](0039-a-refused-resume-keeps-its-offer-unless-only-a-build-could-change-it.md) | A refused resume keeps its offer unless only a new build could change the answer; the withdrawal lives in the tab and is never written down |
 | [0040](0040-a-selection-is-read-back-from-the-core.md) | `IProjectManager` gains `GetSelection`, so the review strip shows the recorded pick rather than a copy of its own writes |
+| [0041](0041-aim-decides-which-cell-a-burst-belongs-to.md) | Guidance names the cell the camera is inside, captured or not, and `ArmBurst` refuses one it is not aimed at |

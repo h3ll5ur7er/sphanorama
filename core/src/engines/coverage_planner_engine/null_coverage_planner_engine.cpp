@@ -53,38 +53,55 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
                        [id](NodeId hole) { return hole.value == id.value; });
   };
 
-  double best = 0.0;
   const auto nearestOf = [&](bool onlyMissing) -> const CoverageNode* {
     const CoverageNode* found = nullptr;
+    double closest = 0.0;
     for (const auto& node : plan.nodes) {
       if (onlyMissing && !missing(node.id)) continue;
       const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
-      if (found == nullptr || angle < best) {
-        best = angle;
+      if (found == nullptr || angle < closest) {
+        closest = angle;
         found = &node;
       }
     }
     return found;
   };
 
+  // Aim beats coverage, exactly as the rings engine decides it — see the reasoning there. The two
+  // have to agree: this is the engine the manager's tests run against, so a guidance rule that
+  // differed here would make those tests assert something the shipped path does not do.
+  const CoverageNode* inside = nullptr;
+  double insideAngle = 0.0;
+  for (const auto& node : plan.nodes) {
+    const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
+    if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
+    if (inside == nullptr || angle < insideAngle) {
+      insideAngle = angle;
+      inside = &node;
+    }
+  }
+
   // Only what is still needed, when that is known. Falling back to the whole plan is not merely
   // defensive: a holes list naming cells this plan does not contain would otherwise leave nothing
   // to aim at, and an odd target beats refusing to guide at all.
-  const CoverageNode* nearest = informed ? nearestOf(true) : nullptr;
-  const bool nothingMissing = informed && nearest == nullptr;
+  const CoverageNode* stillMissing = informed ? nearestOf(true) : nullptr;
+  const bool nothingMissing = informed && stillMissing == nullptr;
+  const CoverageNode* nearest = inside != nullptr ? inside : stillMissing;
   if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
   guidance.targetNode = nearest->id;
-  guidance.angularErrorDeg = best * kRadToDeg;
+  guidance.angularErrorDeg =
+      AngleBetweenDirections(looking, Direction(nearest->targetOrientation)) * kRadToDeg;
   guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
   // A finished sphere still names a cell and an error, because the fields are read either way —
   // but it says so, which nothing in this engine ever did before, so a completed capture went on
   // asking for whichever cell the phone happened to be nearest.
-  guidance.action = nothingMissing ? GuidanceAction::SphereDone
-                    : guidance.angularErrorDeg <= nearest->acceptanceConeDeg
-                        ? GuidanceAction::HoldStill
-                        : GuidanceAction::Seek;
+  guidance.action =
+      nothingMissing ? GuidanceAction::SphereDone
+      : inside == nullptr ? GuidanceAction::Seek
+      : (!informed || missing(inside->id)) ? GuidanceAction::HoldStill
+                                           : GuidanceAction::CellDone;
   return Ok(guidance);
 }
 

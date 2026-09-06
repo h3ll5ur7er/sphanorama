@@ -596,9 +596,17 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // after the burst had finished.
         if (guidance.action !== 'Seek') armed = false;
         targetNode = guidance.targetNode;
-        // Enabled from the first answer rather than when the loop starts: before guidance has
-        // named a cell there is no target to capture at all.
-        captureButton.disabled = captureCell === null;
+        // Offered only when a capture would actually be taken. The core refuses to arm a burst
+        // against a cell the camera is not aimed at — a burst records what the camera sees, so
+        // arming elsewhere files this direction's pixels under another cell's name — and a button
+        // that reports "arming failed" for a rule the reticle already shows is a worse way to say
+        // the same thing. `HoldStill` is precisely "inside the cone", which is precisely the
+        // condition the core arms on.
+        //
+        // `CellDone` is deliberately not offered *yet*: aiming at a captured cell is how a
+        // re-capture will be asked for, and until there is a way to see that a cell is already
+        // captured, a button that silently re-shoots it is worse than one that waits.
+        captureButton.disabled = captureCell === null || guidance.action !== 'HoldStill';
         const cone = cones.get(targetNode as number) ?? 0;
         const radius = reticleRadius(guidance.angularErrorDeg, cone);
         reticle.setAttribute('r', radius.toFixed(1));

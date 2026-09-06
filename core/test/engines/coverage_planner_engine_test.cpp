@@ -263,6 +263,13 @@ TEST(CoveragePlanner, NoDirectionIsFurtherFromACellThanAFieldOfView) {
   }
 }
 
+// An attitude nudged off a cell by more than its acceptance cone, so the camera is aimed at no
+// cell at all. Guidance behaves differently inside a cone and outside every one of them, and a
+// test about seeking has to stand outside or it is testing the other rule.
+Quat NudgedOffTarget(const Quat& from, double degrees) {
+  return Multiply(from, FromAxisAngle(Vec3{0.0, 1.0, 0.0}, degrees / kRadToDeg));
+}
+
 // Everything captured except the named cells, which is what a session part-way through looks like.
 CoverageState AllDoneBut(const CapturePlan& plan, std::vector<uint64_t> missing) {
   CoverageState state;
@@ -275,11 +282,17 @@ CoverageState AllDoneBut(const CapturePlan& plan, std::vector<uint64_t> missing)
   return state;
 }
 
-TEST(CoveragePlanner, LocateAimsAtACellThatIsStillMissing) {
-  // Aiming straight at a cell that is already captured used to name that cell and say "hold
-  // still", which is an instruction to stand still and photograph what you already have. A person
-  // reading only the angular error cannot tell the difference, and on a phone that is the whole
-  // interface.
+TEST(CoveragePlanner, LocateNamesTheCellTheCameraIsInsideEvenWhenItIsCaptured) {
+  // The cell you are pointing at is the cell guidance names, captured or not. This reverses an
+  // earlier rule — skip a captured cell and name the nearest missing one — which was right about
+  // its own concern and wrong about the one that matters more on a phone. Standing still and
+  // pressing capture three times filled the cell in front of you and then two neighbours, because
+  // the target moved out from under a phone that had not moved; and since a burst records
+  // whatever the camera sees, those two neighbours were filled with this cell's pixels.
+  //
+  // What the old rule was protecting is kept by the *action*, not by the target: it refuses to say
+  // "hold still" at a cell there is no reason to re-shoot. It says the cell is done and lets the
+  // user decide, which is what makes a deliberate re-capture possible at all.
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   const CoverageNode& aimedAt = plan.nodes.front();
@@ -288,9 +301,39 @@ TEST(CoveragePlanner, LocateAimsAtACellThatIsStillMissing) {
   auto guidance = planner.Locate(aimedAt.targetOrientation, plan,
                                  AllDoneBut(plan, {missing.id.value}));
   ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::CellDone);
+  EXPECT_LE(guidance.value.angularErrorDeg, aimedAt.acceptanceConeDeg);
+}
+
+TEST(CoveragePlanner, LocateSendsYouOnWhenYouAreAimedAtNoCellAtAll) {
+  // The other half of the rule above, and the one that keeps a capture moving: outside every
+  // acceptance cone there is no cell to hold on, so the nearest *missing* one is the answer.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+  const CoverageNode& missing = plan.nodes.back();
+  const Quat between = NudgedOffTarget(aimedAt.targetOrientation, 20.0);
+
+  auto guidance = planner.Locate(between, plan, AllDoneBut(plan, {missing.id.value}));
+  ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.targetNode.value, missing.id.value);
   EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
-  EXPECT_GT(guidance.value.angularErrorDeg, 0.0);
+}
+
+TEST(CoveragePlanner, LocateSaysHoldStillOnACellThatStillNeedsShooting) {
+  // Inside a cone and the cell is a hole: this is the one case that asks for a capture, and it is
+  // what the eventual dwell trigger will fire on. Told apart from the captured case above by the
+  // action alone, since both name the cell under the reticle.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+
+  auto guidance = planner.Locate(aimedAt.targetOrientation, plan,
+                                 AllDoneBut(plan, {aimedAt.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
 }
 
 TEST(CoveragePlanner, LocateStillPicksTheNearestOfTheCellsThatAreMissing) {
@@ -302,13 +345,15 @@ TEST(CoveragePlanner, LocateStillPicksTheNearestOfTheCellsThatAreMissing) {
   const CoverageNode& here = plan.nodes[0];
   const CoverageNode& near = plan.nodes[1];
   const CoverageNode& far = plan.nodes[plan.nodes.size() / 2];
+  // From outside every cone, so this is the seeking rule rather than the aimed-at-a-cell one.
+  const Quat looking = NudgedOffTarget(here.targetOrientation, 20.0);
 
-  auto guidance = planner.Locate(here.targetOrientation, plan,
+  auto guidance = planner.Locate(looking, plan,
                                  AllDoneBut(plan, {near.id.value, far.id.value}));
   ASSERT_TRUE(guidance.ok());
-  const double toNear = AngleBetweenDirections(Direction(here.targetOrientation),
+  const double toNear = AngleBetweenDirections(Direction(looking),
                                                Direction(near.targetOrientation));
-  const double toFar = AngleBetweenDirections(Direction(here.targetOrientation),
+  const double toFar = AngleBetweenDirections(Direction(looking),
                                               Direction(far.targetOrientation));
   ASSERT_LT(toNear, toFar) << "the fixture picked two cells that are not ordered as assumed";
   EXPECT_EQ(guidance.value.targetNode.value, near.id.value);

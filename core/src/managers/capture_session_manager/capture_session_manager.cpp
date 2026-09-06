@@ -6,9 +6,12 @@
 #include <sstream>
 #include <string>
 
+#include "utilities/quaternion.h"
+
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
 //
@@ -311,8 +314,13 @@ Status CaptureSessionManager::RequireSession() const {
 }
 
 bool CaptureSessionManager::HasNode(NodeId node) const {
-  return std::any_of(plan_.nodes.begin(), plan_.nodes.end(),
-                     [&](const CoverageNode& n) { return n.id.value == node.value; });
+  return FindNode(node) != nullptr;
+}
+
+const CoverageNode* CaptureSessionManager::FindNode(NodeId node) const {
+  const auto found = std::find_if(plan_.nodes.begin(), plan_.nodes.end(),
+                                  [&](const CoverageNode& n) { return n.id.value == node.value; });
+  return found == plan_.nodes.end() ? nullptr : &*found;
 }
 
 std::vector<Candidate> CaptureSessionManager::AllCandidates() const {
@@ -677,6 +685,25 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // has not committed, and a second arm would strand both. One burst at a time is also all a
     // single camera can honestly serve.
     return Fail(StatusCode::FailedPrecondition, kComponent, "a burst is already in flight");
+  }
+
+  // The camera has to be looking at the cell it is about to fill.
+  //
+  // A burst records whatever the camera sees; the node is only a name to file it under. Arming
+  // against a cell somewhere else therefore stores a good picture in the wrong place, which is
+  // undetectable afterwards — the frames are sharp, the scores are real, and the stitch is wrong.
+  // Nothing checked this, and a client had no way to: the reticle can retarget between the moment
+  // a user decides to press and the moment the press lands.
+  //
+  // The same cone the planner guides with, so "the reticle is closed" and "this will arm" are the
+  // same condition rather than two that nearly agree.
+  const CoverageNode* aimed = FindNode(node);
+  const double offBy =
+      AngleBetweenDirections(Direction(pose_state_.pose.orientation),
+                             Direction(aimed->targetOrientation)) * kRadToDeg;
+  if (offBy > aimed->acceptanceConeDeg) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the camera is not aimed at that cell");
   }
 
   // Every frame in a burst must share an exposure, or selection compares brightness rather than

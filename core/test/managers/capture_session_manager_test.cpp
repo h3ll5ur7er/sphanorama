@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "support/fake_motion_sensor_access.h"
 #include "support/fake_spill_sink.h"
 #include "support/fake_project_store_access.h"
+#include "utilities/quaternion.h"
 #include "utilities/clock.h"
 
 namespace sphanorama {
@@ -50,6 +52,16 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
     clock.AdvanceMs(burst.intervalMs);
   }
   return Fail(StatusCode::Internal, "test", "the burst never finished");
+}
+
+// The cell the camera is looking at, which since the aim rule is the only one a burst may be armed
+// against. Asked rather than assumed: `plan.nodes.front()` is the first cell of the first ring and
+// has no reason to be the one under the camera, so a test whose subject is not aim takes whichever
+// cell guidance names.
+NodeId AimedNode(ICaptureSessionManager& manager) {
+  auto guidance = manager.OnMotion({});
+  EXPECT_TRUE(guidance.ok()) << guidance.status.detail;
+  return guidance.value.targetNode;
 }
 
 // A preview engine that refuses, for the manager tests that are not about previews.
@@ -152,6 +164,50 @@ TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   // Refused before the camera is touched: a permission prompt for a session that cannot start is
   // the worst possible order to do these in.
   EXPECT_FALSE(camera->IsOpen());
+}
+
+TEST_F(CaptureSession, ArmingACellTheCameraIsNotAimedAtIsRefused) {
+  // A burst records whatever the camera is looking at. Arming one against a cell the camera is
+  // *not* looking at therefore files this direction's pixels under that cell's name — not a bad
+  // picture, a good picture in the wrong place, which nothing downstream can detect and the strip
+  // will happily score. It came up on a phone: three presses without moving filled the cell in
+  // front and two neighbours, and the neighbours held the first cell's frames.
+  //
+  // The rings planner rather than the fixture's null one, because that has a single cell at
+  // identity and every direction is inside it — there is no elsewhere to aim at.
+  constexpr double kRadToDeg = 57.29577951308232;
+  RingsCoveragePlannerEngine rings;
+  CaptureSessionManager aimed(rings, pose, quality, preview, *camera, *sensor, *store, *projects,
+                              clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  ASSERT_TRUE(aimed.Begin(kProject, spec).ok());
+  auto plan = aimed.GetPlan();
+  ASSERT_TRUE(plan.ok());
+
+  // Nothing has been integrated, so the camera looks straight ahead. Split the plan on that.
+  const CoverageNode* here = nullptr;
+  const CoverageNode* elsewhere = nullptr;
+  for (const auto& node : plan.value.nodes) {
+    const double offBy =
+        AngleBetweenDirections(Direction(Quat{}), Direction(node.targetOrientation)) * kRadToDeg;
+    if (offBy <= node.acceptanceConeDeg && here == nullptr) here = &node;
+    if (offBy > node.acceptanceConeDeg + 30.0 && elsewhere == nullptr) elsewhere = &node;
+  }
+  ASSERT_NE(here, nullptr) << "the fixture expects a cell straight ahead";
+  ASSERT_NE(elsewhere, nullptr) << "the fixture expects a cell well off to one side";
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 10;
+  EXPECT_EQ(aimed.ArmBurst(elsewhere->id, burst).code, StatusCode::FailedPrecondition);
+  // And the cell it *is* aimed at still arms, so this is a rule about aim rather than a manager
+  // that stopped arming.
+  EXPECT_TRUE(aimed.ArmBurst(here->id, burst).ok());
 }
 
 TEST_F(CaptureSession, OnMotionPullsFromTheSensorWhenTheClientHasNothingToPush) {
@@ -266,6 +322,54 @@ TEST_F(CaptureSession, OnMotionWithNoSamplesIsNotAnError) {
 // Hands back a starting state and then refuses to integrate, so a tick can fail on the pose
 // rather than on the planner. Both are early returns from OnMotion and they are separate lines;
 // testing one and assuming the other is how the second stays broken.
+// A pose engine a test can aim.
+//
+// `NullPoseEngine` pins the orientation to identity on every integrate, so with it the camera is
+// permanently looking straight ahead and no test can say "now the phone is pointing over there".
+// That was survivable while nothing read the pose; it stopped being survivable when arming a
+// burst started requiring the camera to be aimed at the cell, because the interesting cases —
+// arming at a cell that is elsewhere, drifting off a cell mid-burst — are all about where the
+// camera is looking.
+class AimablePoseEngine final : public IPoseEngine {
+ public:
+  void LookAt(const Quat& orientation) { looking_ = orientation; }
+
+  Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
+    auto state = inner_.Initial(mode, capability);
+    if (state.ok()) state.value.pose.orientation = looking_;
+    return state;
+  }
+  Result<PoseState> Integrate(const PoseState& prior,
+                              std::span<const ImuSample> samples) override {
+    auto state = inner_.Integrate(prior, samples);
+    if (state.ok()) state.value.pose.orientation = looking_;
+    return state;
+  }
+  Result<PoseSample> Correct(const FrameRef& current, const FrameRef& reference,
+                             const PoseSample& prior) override {
+    return inner_.Correct(current, reference, prior);
+  }
+  Result<double> Stability(std::span<const ImuSample> samples) override {
+    return inner_.Stability(samples);
+  }
+
+ private:
+  NullPoseEngine inner_;
+  Quat looking_{};
+};
+
+// Turns the camera to face a cell, and makes the manager notice.
+//
+// `LookAt` alone changes nothing the manager can see: the pose is only re-integrated when a sample
+// arrives, so a test that aims without ticking is still pointing wherever it began. One empty
+// sample is enough to make the batch non-empty and run the integrate.
+void TurnTo(ICaptureSessionManager& manager, AimablePoseEngine& aiming, const Quat& orientation) {
+  aiming.LookAt(orientation);
+  const ImuSample sample{};
+  auto guidance = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
+  EXPECT_TRUE(guidance.ok()) << guidance.status.detail;
+}
+
 class UnintegrablePoseEngine final : public IPoseEngine {
  public:
   Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
@@ -344,7 +448,7 @@ TEST_F(CaptureSession, ABurstThatCannotBeRankedIsRolledBackToo) {
   CaptureSessionManager manager(planner, pose, unrankable, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   const int64_t before = store->Budget().value.heapUsedBytes;
   BurstSpec burst;
@@ -397,7 +501,7 @@ TEST_F(CaptureSession, AFailedScoreDoesNotBecomeACandidateWithAZeroScore) {
   CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   BurstSpec burst;
   burst.frameCount = 3;
@@ -417,7 +521,7 @@ TEST_F(CaptureSession, AFailedBurstReleasesTheFramesItAlreadyTook) {
   CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   const int64_t before = store->Budget().value.heapUsedBytes;
   BurstSpec burst;
@@ -432,7 +536,7 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   CaptureSessionManager manager(planner, pose, refusing, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
   ASSERT_TRUE(frame.ok());
@@ -694,7 +798,8 @@ TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   // being fired at" and "the nearest cell" are the same answer and the assertion cannot fail —
   // which it did not, until a deliberate sabotage of the line under test failed to turn it red.
   RingsCoveragePlannerEngine rings;
-  CaptureSessionManager real(rings, pose, quality, preview, *camera, *sensor, *store, *projects,
+  AimablePoseEngine aiming;
+  CaptureSessionManager real(rings, aiming, quality, preview, *camera, *sensor, *store, *projects,
                              clock);
   CapturePlanSpec spec = Spec();
   spec.horizontalFovDeg = 66.0;
@@ -703,22 +808,31 @@ TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   const std::vector<CoverageNode> nodes = real.GetPlan().value.nodes;
   ASSERT_GT(nodes.size(), 8u);
 
+  // Armed at the cell the camera is on, because that is now the only cell it may be armed at, and
+  // then the phone drifts. Drift after arming is the case this test was always about — arming
+  // somewhere else was a way of staging it that the aim rule has since made impossible, and a
+  // worse one, since no user can arm a cell they are not pointing at.
   auto aimed = real.OnMotion({});
   ASSERT_TRUE(aimed.ok()) << aimed.status.detail;
-  const NodeId nearest = aimed.value.targetNode;
-
-  NodeId elsewhere = nearest;
-  for (const auto& node : nodes) {
-    if (node.id.value != nearest.value) { elsewhere = node.id; break; }
-  }
-  ASSERT_NE(elsewhere.value, nearest.value);
+  const NodeId armedAt = aimed.value.targetNode;
 
   BurstSpec burst;
   burst.frameCount = 3;
-  ASSERT_TRUE(real.ArmBurst(elsewhere, burst).ok());
+  ASSERT_TRUE(real.ArmBurst(armedAt, burst).ok());
+
+  NodeId elsewhere = armedAt;
+  for (const auto& node : nodes) {
+    if (node.id.value != armedAt.value) { elsewhere = node.id; break; }
+  }
+  ASSERT_NE(elsewhere.value, armedAt.value);
+  const auto& drifted = *std::find_if(nodes.begin(), nodes.end(), [&](const CoverageNode& n) {
+    return n.id.value == elsewhere.value;
+  });
+  aiming.LookAt(drifted.targetOrientation);
+
   auto firing = real.OnMotion({});
   ASSERT_TRUE(firing.ok()) << firing.status.detail;
-  EXPECT_EQ(firing.value.targetNode.value, elsewhere.value);
+  EXPECT_EQ(firing.value.targetNode.value, armedAt.value);
   EXPECT_EQ(firing.value.action, GuidanceAction::Firing);
 }
 
@@ -860,6 +974,8 @@ TEST_F(CaptureSession, ATickThatFailsBeforeTheBurstStillGivesTheLocksBack) {
   CaptureSessionManager manager(unlocatable, pose, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  // Asked of the plan rather than of guidance, because this planner refuses to locate — there is
+  // nothing to ask. Its plan is the null one, a single cell straight ahead, so the camera is on it.
   const NodeId node = manager.GetPlan().value.nodes.front().id;
 
   BurstSpec burst;
@@ -882,7 +998,7 @@ TEST_F(CaptureSession, ATickWhosePoseFailsAlsoGivesTheLocksBack) {
   CaptureSessionManager manager(planner, unintegrable, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   BurstSpec burst;
   burst.frameCount = 3;
@@ -930,7 +1046,7 @@ TEST_F(CaptureSession, ATickThatFailsWhileTheUnlockAlsoFailsReportsBothRatherTha
   CaptureSessionManager manager(planner, unintegrable, quality, preview, *camera, *sensor, *store,
                                 *projects, clock);
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(manager);
 
   BurstSpec burst;
   burst.frameCount = 3;
@@ -1185,7 +1301,7 @@ TEST_F(CaptureSession, APreviewShowsTheFrameACandidateNames) {
   CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
                                *projects, clock);
   ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
-  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(viewer);
   ASSERT_TRUE(FireBurstOn(viewer, clock, node, BurstSpec{}).ok());
   const std::vector<Candidate> ranked = viewer.Candidates(node).value;
   ASSERT_FALSE(ranked.empty());
@@ -1210,7 +1326,7 @@ TEST_F(CaptureSession, APreviewOfACandidateTheCellNoLongerHoldsIsNotFound) {
   CaptureSessionManager viewer(planner, pose, quality, reducer, *camera, *sensor, *store,
                                *projects, clock);
   ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
-  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(viewer);
   ASSERT_TRUE(FireBurstOn(viewer, clock, node, BurstSpec{}).ok());
   const CandidateId stale = viewer.Candidates(node).value.front().id;
 
@@ -1322,7 +1438,7 @@ TEST_F(CaptureSessionRetakes, ACellStopsGrowingOnceItHasEnoughToChooseFrom) {
   // everything shot wins. What they must not do is accumulate without end.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1353,7 +1469,7 @@ TEST_F(CaptureSessionRetakes, WhatACellStopsKeepingItAlsoStopsHolding) {
   // pixels are what the ranking faults back in.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1388,7 +1504,7 @@ TEST_F(CaptureSessionRetakes, ABurstOnItsOwnIsLeftAlone) {
   // The cap is a ceiling, not a quota. A cell that has been shot once holds what it was shot.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1408,7 +1524,7 @@ TEST_F(CaptureSessionRetakes, WhatTheRankingDidNotNameIsNotWhatItCalledWorst) {
   // before ADR 0037 rather than a new one, and `Allocate`'s refusal is still underneath it.
   auto manager = RebuiltForgetful();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1467,7 +1583,7 @@ TEST_F(CaptureSessionRetakes, TheCapCountsFramesRatherThanOwnership) {
   // frame into a cell already at the cap does not make the cell bigger.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1515,7 +1631,7 @@ TEST_F(CaptureSessionRetakes, AFrameTheStoreWouldNotLetGoOfKeepsItsCandidate) {
   // end a frame keeps the candidate instead, and the next one tries again.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1561,7 +1677,7 @@ TEST_F(CaptureSessionRetakes, AFrameTheStoreNoLongerHasLosesItsCandidateAnyway) 
   // leave, because every later trim would get the same answer.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   BurstSpec burst;
   burst.frameCount = 5;
@@ -1593,7 +1709,7 @@ TEST_F(CaptureSessionRetakes, AFrameSomebodyElseOwnsIsNeverTrimmed) {
   // bytes under it would be gone.
   auto manager = Rebuilt();
   ASSERT_TRUE(manager->Begin(kProject, Spec()).ok());
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
   ASSERT_TRUE(imported.ok());
@@ -1639,7 +1755,7 @@ class CaptureSessionUnderPressure : public ::testing::Test {
     sensor = std::make_unique<FakeMotionSensorAccess>();
     projects = std::make_unique<FakeProjectStoreAccess>();
     (void)projects->WriteDocument(kProject, "title", "test project");
-    manager = std::make_unique<CaptureSessionManager>(rings, pose, quality, preview, *camera,
+    manager = std::make_unique<CaptureSessionManager>(rings, aiming, quality, preview, *camera,
                                                       *sensor, *store, *projects, clock);
   }
 
@@ -1661,7 +1777,7 @@ class CaptureSessionUnderPressure : public ::testing::Test {
   // Declared before the store so it outlives the store that holds a pointer to it.
   FakeSpillSink sink;
   RingsCoveragePlannerEngine rings;
-  NullPoseEngine pose;
+  AimablePoseEngine aiming;   // several cells to shoot, so the camera has to be able to turn
   NullFrameQualityEngine quality;
   RefusingFramePreviewEngine preview;
   std::shared_ptr<MemoryFrameStoreAccess> store;
@@ -1679,7 +1795,7 @@ TEST_F(CaptureSessionUnderPressure, ACapturedCellsFramesLeaveTheHeap) {
   Begin();
   BurstSpec burst;
   burst.frameCount = 3;
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
   ASSERT_TRUE(FireBurst(node, burst).ok());
 
   const std::vector<Candidate> captured = manager->Candidates(node).value;
@@ -1706,6 +1822,9 @@ TEST_F(CaptureSessionUnderPressure, ASphereLargerThanTheCeilingIsStillCaptured) 
 
   int64_t captured = 0;
   for (size_t cell = 0; cell < 6; ++cell) {
+    // Turned to face each cell before shooting it, because a burst may only be armed at the cell
+    // the camera is on. Six cells is six places to stand, which is what capturing a sphere is.
+    TurnTo(*manager, aiming, nodes[cell].targetOrientation);
     const Status fired = FireBurst(nodes[cell].id, burst);
     ASSERT_TRUE(fired.ok()) << "cell " << cell << ": " << fired.detail;
     captured += kPreviewFrameBytes * burst.frameCount;
@@ -1725,7 +1844,7 @@ TEST_F(CaptureSessionUnderPressure, ASinkThatRefusesTheWriteDoesNotCostTheCell) 
   Begin();
   BurstSpec burst;
   burst.frameCount = 3;
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
   ASSERT_TRUE(FireBurst(node, burst).ok());
 
   EXPECT_EQ(manager->Candidates(node).value.size(), 3u);
@@ -1741,7 +1860,7 @@ TEST_F(CaptureSessionUnderPressure, AnOfferedFrameIsNotCooledByALaterBurst) {
   // The manager's own comment on `pending_` says exactly this about a rollback mark. The same
   // vector, the same reason, one line further down.
   Begin();
-  const NodeId node = manager->GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(*manager);
 
   auto borrowed = store->Allocate(8, 8, PixelFormat::RGBA8);
   ASSERT_TRUE(borrowed.ok());
@@ -1770,12 +1889,12 @@ TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesASpilledFrameSpilled) {
   // opens three cells has filled a phone's heap by browsing. The moment is knowable exactly — the
   // reduced copy exists — and the session is what knows it, which is the same split as `Cool`.
   BoxFramePreviewEngine reducer{*store};
-  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, *store, *projects,
+  CaptureSessionManager viewer(rings, aiming, quality, reducer, *camera, *sensor, *store, *projects,
                                clock);
   ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
-  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(viewer);
   ASSERT_TRUE(FireBurstOn(viewer, clock, node, burst).ok());
 
   const std::vector<Candidate> captured = viewer.Candidates(node).value;
@@ -1799,12 +1918,12 @@ TEST_F(CaptureSessionUnderPressure, ReadingAPreviewPutsAFrameBackInTheTierItCame
   // mechanism exists to stop, in the one case nothing here can see.
   RecordingFrameStoreAccess recording{*store};
   BoxFramePreviewEngine reducer{recording};
-  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, recording,
+  CaptureSessionManager viewer(rings, aiming, quality, reducer, *camera, *sensor, recording,
                                *projects, clock);
   ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 2;
-  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(viewer);
   ASSERT_TRUE(FireBurstOn(viewer, clock, node, burst).ok());
   const std::vector<Candidate> captured = viewer.Candidates(node).value;
   ASSERT_FALSE(captured.empty());
@@ -1827,10 +1946,10 @@ TEST_F(CaptureSessionUnderPressure, ReadingAPreviewLeavesAResidentFrameResident)
   // holding to a sink they do not know exists. What this restores is the residency it found, not
   // a residency it prefers.
   BoxFramePreviewEngine reducer{*store};
-  CaptureSessionManager viewer(rings, pose, quality, reducer, *camera, *sensor, *store, *projects,
+  CaptureSessionManager viewer(rings, aiming, quality, reducer, *camera, *sensor, *store, *projects,
                                clock);
   ASSERT_TRUE(viewer.Begin(kProject, Spec()).ok());
-  const NodeId node = viewer.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(viewer);
 
   auto borrowed = store->Allocate(8, 8, PixelFormat::RGBA8);
   ASSERT_TRUE(borrowed.ok());
@@ -1851,12 +1970,12 @@ TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaulte
   // session. Which is the allocation failure the whole policy exists to prevent, arriving by the
   // one path that skips the policy.
   SharpnessFrameQualityEngine sharp{*store};
-  CaptureSessionManager real(rings, pose, sharp, preview, *camera, *sensor, *store, *projects,
+  CaptureSessionManager real(rings, aiming, sharp, preview, *camera, *sensor, *store, *projects,
                              clock);
   ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
-  const NodeId node = real.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(real);
   ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
   ASSERT_EQ(store->Budget().value.heapUsedBytes, 0);
 
@@ -1884,12 +2003,12 @@ TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHea
   // quietly lossy: siblings that cannot be read are skipped rather than reported, so a broken
   // fault-in would show up as exposure agreement silently computed against nothing.
   SharpnessFrameQualityEngine sharp{*store};
-  CaptureSessionManager real(rings, pose, sharp, preview, *camera, *sensor, *store, *projects,
+  CaptureSessionManager real(rings, aiming, sharp, preview, *camera, *sensor, *store, *projects,
                              clock);
   ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
   BurstSpec burst;
   burst.frameCount = 3;
-  const NodeId node = real.GetPlan().value.nodes.front().id;
+  const NodeId node = AimedNode(real);
   ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
 
   ASSERT_TRUE(real.RequestRetake(node, /*replace=*/false).ok());

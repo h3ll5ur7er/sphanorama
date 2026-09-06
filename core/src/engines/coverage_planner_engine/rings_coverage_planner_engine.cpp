@@ -133,38 +133,70 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const Quat& current,
                        [id](NodeId hole) { return hole.value == id.value; });
   };
 
-  double best = 0.0;
   const auto nearestOf = [&](bool onlyMissing) -> const CoverageNode* {
     const CoverageNode* found = nullptr;
+    double closest = 0.0;
     for (const auto& node : plan.nodes) {
       if (onlyMissing && !missing(node.id)) continue;
       const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
-      if (found == nullptr || angle < best) {
-        best = angle;
+      if (found == nullptr || angle < closest) {
+        closest = angle;
         found = &node;
       }
     }
     return found;
   };
 
+  // The cell the camera is *inside*, whatever coverage thinks of it. Aim beats coverage here, and
+  // that reverses an earlier rule worth stating rather than quietly dropping.
+  //
+  // Skipping a captured cell and naming the nearest missing one reads well until the phone stops
+  // moving: capture the cell in front of you and the target jumps to a neighbour under a camera
+  // that has not turned, so the next press captures a cell nobody is aimed at — and since a burst
+  // records whatever the camera sees, it fills that neighbour with this cell's pixels. Three
+  // presses at one spot filled three cells, two of them wrong. What the old rule was protecting —
+  // never telling someone to re-shoot what they already have — belongs to the *action* below, not
+  // to which cell is named.
+  const CoverageNode* inside = nullptr;
+  double insideAngle = 0.0;
+  for (const auto& node : plan.nodes) {
+    const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
+    if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
+    if (inside == nullptr || angle < insideAngle) {
+      insideAngle = angle;
+      inside = &node;
+    }
+  }
+
   // Only what is still needed, when that is known. Falling back to the whole plan is not merely
   // defensive: a holes list naming cells this plan does not contain would otherwise leave nothing
   // to aim at, and an odd target beats refusing to guide at all.
-  const CoverageNode* nearest = informed ? nearestOf(true) : nullptr;
-  const bool nothingMissing = informed && nearest == nullptr;
+  const CoverageNode* stillMissing = informed ? nearestOf(true) : nullptr;
+  const bool nothingMissing = informed && stillMissing == nullptr;
+  const CoverageNode* nearest = inside != nullptr ? inside : stillMissing;
   if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
   guidance.targetNode = nearest->id;
-  guidance.angularErrorDeg = best * kRadToDeg;
+  // Measured against the cell that was named, rather than carried out of whichever search found
+  // it. Two searches ran and only one of them decided.
+  guidance.angularErrorDeg =
+      AngleBetweenDirections(looking, Direction(nearest->targetOrientation)) * kRadToDeg;
   guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
   // A finished sphere still names a cell and an error, because the fields are read either way —
   // but it says so, which nothing in this engine ever did before, so a completed capture went on
   // asking for whichever cell the phone happened to be nearest.
-  guidance.action = nothingMissing ? GuidanceAction::SphereDone
-                    : guidance.angularErrorDeg <= nearest->acceptanceConeDeg
-                        ? GuidanceAction::HoldStill
-                        : GuidanceAction::Seek;
+  //
+  // Inside a cone, the action is the whole difference between a cell worth shooting and one
+  // already shot: `HoldStill` asks for a capture, `CellDone` says there is nothing owed here. A
+  // client is free to offer a re-capture on the second — that is what makes one possible at all —
+  // but nothing tells the user to make one. An uninformed coverage state means nothing has been
+  // evaluated yet, which is not the same as nothing being needed.
+  guidance.action =
+      nothingMissing ? GuidanceAction::SphereDone
+      : inside == nullptr ? GuidanceAction::Seek
+      : (!informed || missing(inside->id)) ? GuidanceAction::HoldStill
+                                           : GuidanceAction::CellDone;
   return Ok(guidance);
 }
 
