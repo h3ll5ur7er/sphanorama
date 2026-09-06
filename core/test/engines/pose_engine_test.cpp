@@ -333,6 +333,51 @@ TEST(PoseEngine, EveryPathThatMovesTheOrientationSaysItEstimatedSomething) {
   }
 }
 
+TEST(PoseEngine, ASampleThatDidNotAdvanceTheClockIsTakenWholeRatherThanBlendedOverZeroSeconds) {
+  // Timestamps are a platform's to supply, and a platform can repeat one or hand back an older one
+  // — a stream resuming after a background, two adapters interleaving, a device whose clock steps.
+  // `elapsed` is a strict `>`, so both cases give it false, and the question is whether the
+  // branches underneath are the right ones when there is no interval.
+  //
+  // They are, and this pins it: with no elapsed time there is nothing to have predicted over, so an
+  // attitude is ground truth and a rate integrates nothing. The failure it guards against is the
+  // arithmetic one — `seconds` of zero drives `share = 1 - exp(0) = 0`, which as a blend weight
+  // would keep the *prediction* and discard the reading entirely.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample first = Oriented(1'000'000'000, 10.0, 0.0);
+  first.hasAngularVelocity = true;
+  auto seeded = engine.Integrate(initial.value, std::span<const ImuSample>(&first, 1));
+  ASSERT_TRUE(seeded.ok());
+
+  // The same instant again, with a different attitude: taken whole.
+  ImuSample repeated = Oriented(1'000'000'000, 40.0, 0.0);
+  repeated.hasAngularVelocity = true;
+  auto same = engine.Integrate(seeded.value, std::span<const ImuSample>(&repeated, 1));
+  ASSERT_TRUE(same.ok());
+  EXPECT_NEAR(AngleBetween(same.value.pose.orientation, repeated.orientation) * kRadToDeg, 0.0, 1e-9)
+      << "a repeated timestamp has no interval, so there is nothing to correct across";
+
+  // And a timestamp *behind* the state's: likewise, rather than an interval of negative seconds.
+  ImuSample backwards = Oriented(500'000'000, 70.0, 0.0);
+  backwards.hasAngularVelocity = true;
+  auto older = engine.Integrate(same.value, std::span<const ImuSample>(&backwards, 1));
+  ASSERT_TRUE(older.ok());
+  EXPECT_NEAR(AngleBetween(older.value.pose.orientation, backwards.orientation) * kRadToDeg, 0.0,
+              1e-9)
+      << "a backwards timestamp must not integrate a negative interval";
+
+  // A rate-only sample that does not advance the clock moves nothing at all, rather than turning
+  // the device by a rate multiplied by zero — or by a negative.
+  ImuSample stale = Spinning(200'000'000, 1.0);
+  auto unmoved = engine.Integrate(older.value, std::span<const ImuSample>(&stale, 1));
+  ASSERT_TRUE(unmoved.ok());
+  EXPECT_NEAR(AngleBetween(unmoved.value.pose.orientation, older.value.pose.orientation) * kRadToDeg,
+              0.0, 1e-9);
+}
+
 TEST(PoseEngine, AFreshStateHasSeenNothing) {
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
