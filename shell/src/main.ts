@@ -166,8 +166,20 @@ type LockWrite =
 // the track had not reached — and with a bounded chain it might reach it three seconds later, or
 // not at all. Waiting for the answer costs nothing here (the burst is over) and makes the row true
 // rather than intended, which is the one thing this row is for.
-function showLocksReleased(row: Element, write: LockWrite) {
-  const had = lastLocksLine === '' ? 'no burst has run yet' : lastLocksLine;
+//
+// `had` is passed in rather than read off `lastLocksLine` here, because by the time this runs the
+// variable may have been cleared by something else. `End()` disarms and *then* closes the camera,
+// so an ordinary session end with a burst in flight queued a release, ran `onCloseCamera`'s clear,
+// and painted the row as "no burst has run yet" about a burst that had just released its locks.
+// The empty string means two things — nothing has run, and the record was discarded — and only the
+// caller knows which one it was holding when it asked.
+function showLocksReleased(row: Element, write: LockWrite, had: string) {
+  if (had === '') {
+    // Nothing to be a release *of*. Saying "released" here would be the row's only line about a
+    // burst that never ran.
+    row.textContent = 'no burst has run yet';
+    return;
+  }
   if (!write.answered) {
     // Not "released", because nothing has said so. The write is still on the chain and will land
     // when the track gets to it; what this row must not do is report an outcome it has not seen.
@@ -176,7 +188,7 @@ function showLocksReleased(row: Element, write: LockWrite) {
   }
   const done = write.done;
   row.textContent = done.ok
-    ? (lastLocksLine === '' ? had : `${lastLocksLine} · released`)
+    ? `${had} · released`
     : `${had} · release refused — ${done.status.detail || done.status.code}`;
 }
 let lockWrites: Promise<unknown> = Promise.resolve();
@@ -718,8 +730,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // fix.
     const unlock = () => {
       remote.setLocks({ exposure: false, whiteBalance: false, focus: false });
+      const had = lastLocksLine;
       void writeLocks({ exposure: false, whiteBalance: false, focus: false })
-        .then((write) => showLocksReleased(locksOut, write));
+        .then((write) => showLocksReleased(locksOut, write, had));
       // And the row stops claiming them. It reads off the last successful *request*, so after a
       // refused arm it went on listing "exposure · white balance · focus" over a track that was
       // back to metering — the one row whose whole job is to be trustworthy about that. What it
@@ -1087,8 +1100,9 @@ async function main() {
       // The row says what the *last burst* got, and the burst is over — so it went on listing locks
       // the track had just given back. It was made truthful after a refused arm and left stale
       // after every successful one, which is the more common path by far.
+      const had = lastLocksLine;
       void writeLocks({ exposure: false, whiteBalance: false, focus: false })
-        .then((write) => showLocksReleased(locksOut, write));
+        .then((write) => showLocksReleased(locksOut, write, had));
     });
 
     // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the

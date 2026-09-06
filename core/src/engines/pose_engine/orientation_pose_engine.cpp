@@ -104,11 +104,12 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
     // leaves the pose most of a turn from a reading it should simply have taken.
     const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
-    // `absolute`, not `estimated`. A prediction is only worth blending against a reading when it
-    // descends from a reading: dead reckoning also sets `estimated`, so a stream opening with
-    // rate-only samples reached the first attitude holding an estimate integrated from the identity
-    // it was born with — a direction nobody chose — and correcting a fraction of the way towards
-    // the first real reading kept most of that arbitrary origin. Third route to the same 25.5°.
+    // `absolute`, not "something moved it". A prediction is only worth blending against a reading
+    // when it descends from a reading: dead reckoning moves the orientation too, so a stream
+    // opening with rate-only samples reached the first attitude holding an estimate integrated
+    // from the identity it was born with — a direction nobody chose — and correcting a fraction of
+    // the way towards the first real reading kept most of that arbitrary origin. Third route to
+    // the same 25.5°.
     //
     // It narrows the branch rather than disabling it: `absolute` is set by both attitude branches,
     // so once a stream is anchored the filter runs normally, and it goes false only where the
@@ -122,7 +123,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
       state.absolute = true;
-      state.estimated = true;
+      state.anchored = true;
     } else if (sample.hasOrientation) {
       // Predict where the gyroscope says the device now points, then take part of the way back to
       // where the reading says it does. The prediction carries the fast motion the reading is too
@@ -185,10 +186,19 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
-      // No `estimated` here, and that is provable rather than an omission: this branch is reached
-      // only when `predictable` held, and `predictable` requires `state.estimated`. A write that
-      // cannot be the thing that sets a flag is a line no test can hold — deleting it left the
-      // whole suite green, which is how it was found.
+      // Anchored here as well as in the branch above, because both are branches that fold in a
+      // reading and that is what anchoring is.
+      //
+      // It was briefly absent, on a proof that had gone stale under my own hand: the argument was
+      // that this branch is reached only when `predictable` held and `predictable` requires the
+      // flag — true when `predictable` was `state.estimated && elapsed`, and false since it became
+      // `state.absolute && elapsed` one round later. Deleting the line left the suite green
+      // because every caller in this repository reaches here with both flags set, which is an
+      // invariant nothing states and nothing asserts — and `Integrate`'s prior is a caller's
+      // value, not this engine's. A prior with `absolute` and not `anchored` ran the whole
+      // complementary filter, moved 4.6 degrees from a real reading, and came back at confidence
+      // zero: the contract's word for "nothing estimated this".
+      state.anchored = true;
     } else if (elapsed && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
@@ -202,7 +212,11 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const Vec3 rate = Subtract(sample.angularVelocity, state.gyroBias);
       if (Magnitude(rate) > 1e-9) {
         state.pose.orientation = Turned(state.pose.orientation, rate, seconds);
-        state.estimated = true;
+        // No anchor here, and that is the point of the flag. Integrating a rate says how far the
+        // device has turned and nothing about where it started, so a stream that has never carried
+        // an attitude is turning away from an identity nobody chose. `anchored` stays false, the
+        // confidence below stays zero, and every rule that asks "is there an aim" gets the honest
+        // answer for the whole stream rather than for its first sample only.
         // Dead reckoning from here on. Leaving the flag set would keep reporting an integrated
         // pose with the confidence of a measured one, and the drift would be invisible.
         state.absolute = false;
@@ -215,16 +229,20 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // is charged as though the device had really been turning for it.
     state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
     // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
-    // *moved* anything is `estimated`, set by each branch above that did.
+    // anchored anything is `anchored`, set by the two branches above that fold in a reading.
     state.observed = true;
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;
-  // Zero until something has actually moved the orientation: a caller reading confidence 0 knows
-  // it is holding a default rather than an estimate. Keyed on `estimated` rather than on
-  // `observed`, because a sample can arrive and inform nothing — a blank one, or the first rate of
-  // a stream, which has no interval to be integrated over yet. Both used to come back at 0.5.
-  state.pose.confidence = !state.estimated ? 0.0 : (state.absolute ? 1.0 : 0.5);
+  // Zero until an absolute reading has been folded in: a caller reading confidence 0 knows it is
+  // holding a direction nobody measured, whether that is the identity the state was born with or
+  // an integration away from it.
+  //
+  // Keyed on `anchored` rather than on `observed` — a sample can arrive and inform nothing, and
+  // both used to come back at 0.5 — and rather than on "something moved it", which is the same
+  // mistake one sample later: a gyroscope-only stream moves the orientation on its second sample
+  // and has still never been told where it is pointing.
+  state.pose.confidence = !state.anchored ? 0.0 : (state.absolute ? 1.0 : 0.5);
   return Ok(state);
 }
 

@@ -63,11 +63,17 @@ that device, and it is the only signal such a capture has that anything moved.
   in that file would have been exercising the sensorless path while reading as though it exercised
   the normal one. `UnintegrablePoseEngine` needed the same treatment for the same reason: its point
   is a failing integrate, not an unmeasured pose.
-- **`observed` now means a sample moved the estimate.** `OrientationPoseEngine::Integrate` marked
-  the state observed for any sample at all, so one carrying neither an attitude nor a measured rate
-  left the orientation at identity and reported confidence 0.5 — and every rule above keys on that
-  number. The engine's own dead-reckoning branch already said "a sample that reports nothing should
-  move nothing"; this line was the exception to it.
+- **Confidence is keyed on having an anchor, not on having moved.** `OrientationPoseEngine::Integrate`
+  marked the state observed for any sample at all, so one carrying neither an attitude nor a measured
+  rate left the orientation at identity and reported confidence 0.5 — and every rule above keys on
+  that number. Splitting `observed` out fixed that for the first sample and left the same defect one
+  sample later: dead reckoning *does* move the orientation, so a gyroscope-only stream reached its
+  second sample at confidence 0.5 holding a heading integrated from an identity nobody had measured.
+  A reviewer drove it against the shipped tessellation and `ArmBurst` accepted **zero of
+  thirty-two** cells, with the page in aimed mode because `aimKnown` was true — this ADR's own
+  failure, reached through the other door. The flag now asks whether the orientation *descends from
+  a reading* (`PoseState::anchored`, set by the two branches that fold one in and never cleared), so
+  dead reckoning after a reading is still 0.5 and dead reckoning from nowhere is 0.
 - **A phone with a sensor is unaffected.** Confidence is above zero from the first real sample, so
   the aim rule applies exactly as ADR 0041 describes.
 - **The blind capture is still blind.** Cells fill in coverage order and the pixels are whatever the

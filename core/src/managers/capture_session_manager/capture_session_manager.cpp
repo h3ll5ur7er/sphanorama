@@ -646,6 +646,19 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
 
+  // Derived here as well as inside the engine, and this is the copy a client reads.
+  //
+  // Not distrust of the engine: the engine needs the answer for itself, to choose between aiming
+  // and covering, and `ArmBurst` derives it a third time to decide whether to enforce a cone. The
+  // three have to agree, and there is exactly one source they can all agree on — `confidence`,
+  // which is the contract's own word for whether the orientation was estimated at all. What this
+  // line removes is the possibility of a *published* answer that disagrees with the one the
+  // refusal uses: an engine leaving the field at its default puts the page in blind mode on a
+  // phone that has a sensor, and every capture it then offers is refused by this manager for a
+  // reason the page has already decided cannot apply. `stability` and `targetNode` are patched
+  // here for the same reason.
+  guidance.aimKnown = pose_state_.pose.confidence > 0.0;
+
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(batch); stability.ok()) {
     guidance.stability = stability.value;

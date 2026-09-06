@@ -369,20 +369,28 @@ export interface PoseState {
    * Whether any sample has arrived at all. It is what the elapsed time between samples is measured
    * from, so the first sample of a stream sets it whether or not it moved anything — a rate has no
    * orientation in it until there is an interval to integrate it over.
-   * It is *not* the answer to "is this orientation a measurement": that is `estimated` below, and
+   * It is *not* the answer to "is this orientation a measurement": that is `anchored` below, and
    * `PoseSample.confidence` is what callers should read. The two were one flag, and the first
    * rate-only sample of a stream then reported an integrated pose before anything was integrated.
    */
   observed: boolean;
   /**
-   * Whether the orientation came from something measured, rather than being the identity the state
-   * started at. Confidence is derived from this, so it has to survive between calls.
-   * Distinguishes "identity because nothing has moved it" from "identity because the device really
-   * is level and facing north" — a distinction callers act on: `ArmBurst` enforces the acceptance
-   * cone only against a measured pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042),
-   * which is what keeps a phone with no motion sensor able to capture at all.
+   * Whether this orientation descends from an absolute reading — not whether something moved it.
+   * Set the first time an attitude is folded in and never cleared, so it survives the stretches
+   * where `absolute` goes false: dead reckoning after a reading is still an estimate *of a
+   * direction somebody measured*, which is what confidence 0.5 means.
+   * The distinction is the whole of ADR 0042 and it is not the one this field was first written
+   * with. It used to mean "something moved the orientation", which dead reckoning also does — so a
+   * gyroscope-only stream integrating away from the identity it was born with reported confidence
+   * 0.5 for a heading nobody had ever measured, and `ArmBurst` then enforced the acceptance cone
+   * against it: zero of thirty-two cells armable on the shipped tessellation, which is ADR 0042's
+   * own failure reached through the other door. A rate says how fast the device is turning and
+   * nothing about where it started.
+   * Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
+   * an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
+   * keeps a phone with no motion sensor able to capture at all.
    */
-  estimated: boolean;
+  anchored: boolean;
   /**
    * Whether the pose came from an absolute reading rather than from integrating rates. Confidence
    * is derived from this, so it has to survive between calls.

@@ -197,7 +197,7 @@ TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
 
   auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
   ASSERT_TRUE(after.ok());
-  EXPECT_FALSE(after.value.estimated) << "an empty sample estimates nothing";
+  EXPECT_FALSE(after.value.anchored) << "an empty sample estimates nothing";
   EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0)
       << "confidence is derived from `estimated`, so it has to follow it down";
   // `observed` is true, and that is right: a sample arrived, and the next one's elapsed time is
@@ -210,11 +210,11 @@ TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
   ImuSample real = Oriented(2'000'000, 30.0, 0.0);
   auto seen = engine.Integrate(after.value, std::span<const ImuSample>(&real, 1));
   ASSERT_TRUE(seen.ok());
-  EXPECT_TRUE(seen.value.estimated);
+  EXPECT_TRUE(seen.value.anchored);
   EXPECT_DOUBLE_EQ(seen.value.pose.confidence, 1.0);
 }
 
-TEST(PoseEngine, TheFirstRateOnlySampleHasNothingToIntegrateOverAndEstimatesNothing) {
+TEST(PoseEngine, ARateOnlyStreamTurnsTheOrientationAndStillReportsNoAim) {
   // A gyroscope reports a rate, and a rate only becomes an orientation when there is an elapsed
   // time to integrate it over — which the first sample of a stream does not have. Every branch in
   // `Integrate` knows that: dead reckoning is gated on `advanced`, so the first rate-only sample
@@ -235,22 +235,30 @@ TEST(PoseEngine, TheFirstRateOnlySampleHasNothingToIntegrateOverAndEstimatesNoth
 
   auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&first, 1));
   ASSERT_TRUE(after.ok());
-  EXPECT_FALSE(after.value.estimated)
+  EXPECT_FALSE(after.value.anchored)
       << "the first rate has no elapsed time to turn into an orientation";
   EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0);
   // Arrived, though — which is exactly what the second sample measures its interval against.
   EXPECT_TRUE(after.value.observed);
   EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
 
-  // The second one does have a gap, so the stream starts tracking — this refuses a sample that
+  // The second one does have a gap, so the stream starts turning — this refuses a sample that
   // could not have informed anything, not the gyroscope.
+  //
+  // And it still reports no aim, which is the half this test used to get wrong. Fixing the first
+  // sample only moved the same defect one sample along: the orientation is now several degrees
+  // from the identity and nobody has ever said where the identity was pointing, so a confidence of
+  // 0.5 here would put an unmeasured heading behind the acceptance cone exactly as before —
+  // measured on the shipped tessellation at zero of thirty-two cells armable, with the page in
+  // aimed mode because `aimKnown` was true.
   ImuSample second = first;
   second.timestampNs = 1'020'000'000;
   auto turning = engine.Integrate(after.value, std::span<const ImuSample>(&second, 1));
   ASSERT_TRUE(turning.ok());
-  EXPECT_TRUE(turning.value.estimated);
-  EXPECT_DOUBLE_EQ(turning.value.pose.confidence, 0.5) << "integrated, not absolute";
-  EXPECT_GT(AngleBetween(turning.value.pose.orientation, Quat{}), 0.1);
+  EXPECT_GT(AngleBetween(turning.value.pose.orientation, Quat{}), 0.1)
+      << "the second sample does have an interval, so it turns the device";
+  EXPECT_FALSE(turning.value.anchored) << "turned, but from a direction nobody measured";
+  EXPECT_DOUBLE_EQ(turning.value.pose.confidence, 0.0);
 }
 
 TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorrectTowards) {
@@ -285,12 +293,17 @@ TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorre
   EXPECT_DOUBLE_EQ(after.value.pose.confidence, 1.0);
 }
 
-TEST(PoseEngine, EveryPathThatMovesTheOrientationSaysItEstimatedSomething) {
-  // `estimated` is what `confidence` is derived from, and confidence is what `ArmBurst` and
-  // `Locate` branch on — so a path that moves the pose and forgets to set it reports a real
-  // orientation as "nothing produced this", and a sensorless device's rules apply to a phone that
-  // knows exactly where it is pointing. Two of the three write sites had nothing holding them:
-  // deleting either left the whole suite green.
+TEST(PoseEngine, EveryPathThatFoldsInAReadingAnchorsAndNoOtherPathDoes) {
+  // `anchored` is what `confidence` is derived from, and confidence is what `ArmBurst` and
+  // `Locate` branch on — so this is the flag that decides whether a device is treated as knowing
+  // where it points. It has to answer "does this orientation descend from a reading?", which is
+  // not the same question as "has anything moved it": integrating a rate moves the orientation and
+  // says nothing about where it started.
+  //
+  // Both halves are asserted here because both have been wrong. A reading path that forgets to
+  // anchor reports a real orientation as "nothing produced this"; a dead-reckoning path that
+  // anchors puts a heading nobody measured behind confidence 0.5, and `ArmBurst` then enforces the
+  // acceptance cone against it — zero of thirty-two cells armable on the shipped tessellation.
   OrientationPoseEngine engine;
 
   // The fusion path: an attitude and a rate, arriving after an estimate already exists.
@@ -300,36 +313,69 @@ TEST(PoseEngine, EveryPathThatMovesTheOrientationSaysItEstimatedSomething) {
     ImuSample first = Oriented(0, 10.0, 0.0);
     auto seeded = engine.Integrate(state.value, std::span<const ImuSample>(&first, 1));
     ASSERT_TRUE(seeded.ok());
-    ASSERT_TRUE(seeded.value.estimated);
+    ASSERT_TRUE(seeded.value.anchored);
 
     ImuSample fused = Oriented(16'000'000, 12.0, 0.0);
     fused.hasAngularVelocity = true;
     fused.angularVelocity = Vec3{0.0, 0.1, 0.0};
     auto corrected = engine.Integrate(seeded.value, std::span<const ImuSample>(&fused, 1));
     ASSERT_TRUE(corrected.ok());
-    EXPECT_TRUE(corrected.value.estimated) << "the predict-and-correct path estimated an orientation";
+    EXPECT_TRUE(corrected.value.anchored) << "the predict-and-correct path folded in a reading";
     EXPECT_DOUBLE_EQ(corrected.value.pose.confidence, 1.0);
   }
 
-  // The dead-reckoning path, and the guard inside it. A rate that actually turns the device sets
-  // the flag; the flag belongs *inside* that guard, because a rate of zero after the bias is
-  // removed moves nothing and a state that has never been moved is not an estimate.
+  // A prior that is `absolute` without being `anchored` — which no caller in this repository
+  // produces, and `Integrate`'s prior is a caller's value rather than this engine's. The fusion
+  // branch has to anchor for itself rather than inherit it, and it briefly did not: the deletion
+  // was justified by `predictable` requiring the flag, which stopped being true when `predictable`
+  // was rekeyed onto `absolute`. Without the write this comes back at confidence zero for a pose
+  // the filter has just moved several degrees towards a real reading.
+  {
+    auto state = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    PoseState prior = state.value;
+    prior.observed = true;
+    prior.absolute = true;
+    prior.anchored = false;
+    prior.pose.timestampNs = 0;
+
+    ImuSample fused = Oriented(16'000'000, 12.0, 0.0);
+    fused.hasAngularVelocity = true;
+    fused.angularVelocity = Vec3{0.0, 0.1, 0.0};
+    auto corrected = engine.Integrate(prior, std::span<const ImuSample>(&fused, 1));
+    ASSERT_TRUE(corrected.ok());
+    EXPECT_TRUE(corrected.value.anchored) << "a reading was folded in on this call";
+    EXPECT_DOUBLE_EQ(corrected.value.pose.confidence, 1.0);
+  }
+
+  // The dead-reckoning path, which moves the orientation and must *not* anchor. A gyroscope says
+  // how fast the device is turning; a stream that has never carried an attitude is turning away
+  // from the identity it was born with, which is a direction nobody chose.
   {
     auto state = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
     ASSERT_TRUE(state.ok());
     const std::vector<ImuSample> turning{Spinning(0, 0.5), Spinning(200'000'000, 0.5)};
     auto moved = engine.Integrate(state.value, turning);
     ASSERT_TRUE(moved.ok());
-    EXPECT_TRUE(moved.value.estimated);
-    EXPECT_DOUBLE_EQ(moved.value.pose.confidence, 0.5) << "integrated, so not absolute";
-    EXPECT_GT(AngleBetween(moved.value.pose.orientation, Quat{}) * kRadToDeg, 1.0);
+    EXPECT_GT(AngleBetween(moved.value.pose.orientation, Quat{}) * kRadToDeg, 1.0)
+        << "the fixture needs the orientation to have actually moved";
+    EXPECT_FALSE(moved.value.anchored)
+        << "integrating a rate says how far, never from where";
+    EXPECT_DOUBLE_EQ(moved.value.pose.confidence, 0.0);
 
-    const std::vector<ImuSample> still{Spinning(0, 0.0), Spinning(200'000'000, 0.0)};
-    auto unmoved = engine.Integrate(state.value, still);
-    ASSERT_TRUE(unmoved.ok());
-    EXPECT_FALSE(unmoved.value.estimated)
-        << "a rate of zero turns nothing, so nothing has estimated where the camera points";
-    EXPECT_DOUBLE_EQ(unmoved.value.pose.confidence, 0.0);
+    // And once a reading arrives, the same stream is anchored for good — including through the
+    // dead-reckoning stretches after it, which is what confidence 0.5 is for.
+    ImuSample reading = Oriented(400'000'000, 10.0, 0.0);
+    auto read = engine.Integrate(moved.value, std::span<const ImuSample>(&reading, 1));
+    ASSERT_TRUE(read.ok());
+    ASSERT_TRUE(read.value.anchored);
+    EXPECT_DOUBLE_EQ(read.value.pose.confidence, 1.0);
+
+    const std::vector<ImuSample> drifting{Spinning(600'000'000, 0.5)};
+    auto reckoned = engine.Integrate(read.value, drifting);
+    ASSERT_TRUE(reckoned.ok());
+    EXPECT_TRUE(reckoned.value.anchored) << "an anchor is not lost by integrating away from it";
+    EXPECT_DOUBLE_EQ(reckoned.value.pose.confidence, 0.5) << "integrated, so not absolute";
   }
 }
 
@@ -394,14 +440,13 @@ TEST(PoseEngine, ASampleThatDidNotAdvanceTheClockIsTakenWholeRatherThanBlendedOv
 }
 
 TEST(PoseEngine, TheFirstAbsoluteReadingIsGroundTruthEvenAfterDeadReckoningFromNowhere) {
-  // The third route to the same 25.5°, and the reason the flag had to mean something narrower
-  // again. Dead reckoning sets `estimated`, so a stream that opens with rate-only samples arrives
-  // at the first attitude with an estimate — and it is an estimate of *nothing*: integrated from
-  // the identity the state was born with, which is a direction nobody chose. Correcting a fraction
-  // of the way towards the first real reading keeps most of that arbitrary origin.
+  // The third route to the same 25.5°. A stream that opens with rate-only samples arrives at the
+  // first attitude holding an orientation integrated from the identity the state was born with,
+  // which is a direction nobody chose — and correcting a fraction of the way towards the first
+  // real reading would keep most of that arbitrary origin.
   //
   // A prediction is only worth blending against a reading when it descends from a reading. That is
-  // `absolute`, and it is why `predictable` asks for it rather than for `estimated`.
+  // `absolute`, and it is why `predictable` asks for it rather than for "something moved this".
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
   ASSERT_TRUE(initial.ok());
@@ -409,8 +454,10 @@ TEST(PoseEngine, TheFirstAbsoluteReadingIsGroundTruthEvenAfterDeadReckoningFromN
   const std::vector<ImuSample> spinning{Spinning(0, 0.7), Spinning(300'000'000, 0.7)};
   auto reckoned = engine.Integrate(initial.value, spinning);
   ASSERT_TRUE(reckoned.ok());
-  ASSERT_TRUE(reckoned.value.estimated) << "the fixture needs an estimate to exist";
+  ASSERT_GT(AngleBetween(reckoned.value.pose.orientation, Quat{}) * kRadToDeg, 1.0)
+      << "the fixture needs the orientation to have been moved by dead reckoning";
   ASSERT_FALSE(reckoned.value.absolute) << "and for it to be a dead-reckoned one";
+  ASSERT_FALSE(reckoned.value.anchored) << "and for it to descend from no reading at all";
 
   ImuSample reading = Oriented(316'000'000, 30.0, 0.0);
   reading.hasAngularVelocity = true;

@@ -718,6 +718,67 @@ test('the shutter stays taken from the press until the burst is over', async ({ 
   }
 });
 
+test('a session ended mid-burst still says which locks that burst had', async ({ browser }) => {
+  // `#locks` reads "no burst has run yet" from an empty `lastLocksLine`, and `onCloseCamera` writes
+  // that same empty string to mean "the record was discarded". Two writers, one reading — and
+  // `End()` runs them in the order that collides: it disarms first, which queues the release, and
+  // closes second, which clears the line before the release resolves and paints. The row then
+  // reports "no burst has run yet" about a burst whose locks it had just given back.
+  //
+  // The camera is slowed so a burst is genuinely in flight when the session ends, which is the
+  // arrangement the collision needs; on an instant camera the burst is over before `end()` lands.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 300));
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Fired and not awaited, so the session can be ended while the burst is still filling.
+    await page.evaluate(() => { window.__capturing = window.sphanoramaCapture(); });
+    await expect(page.locator('#locks')).not.toHaveText('—', { timeout: 15000 });
+    const held = await page.locator('#locks').textContent();
+    expect(held).toMatch(/exposure|focus|white balance|does not report/i);
+
+    await page.evaluate(async () => { await window.sphanoramaCore.captureSession.end(); });
+
+    // Waited for the release to actually land before judging the row, because the clear happens
+    // *while* the release is in flight: for the first second the row still shows the arm's line and
+    // a negative assertion passes against the defect. Measured under sabotage as the arm line at
+    // +300 ms and "no burst has run yet" from +900 ms on.
+    await expect(page.locator('#locks')).toContainText('released', { timeout: 15000 });
+    // And now: whatever else it says, it must not claim nothing has run. "no burst has run yet" is
+    // the row forgetting a burst it had already described a second earlier.
+    await expect(page.locator('#locks')).not.toContainText('no burst has run yet');
+    await expect(page.locator('#locks')).toContainText(held.split(' · ')[0]);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a camera taken away mid-session takes the capture loop with it', async ({ page }) => {
   // A `<video>` keeps `readyState 4` and its dimensions after its track ends, so both of the
   // frame grabber's guards pass and every grab returns a copy of the last frame the camera

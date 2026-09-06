@@ -102,10 +102,10 @@ class AimablePoseEngine final : public IPoseEngine {
     state.pose.confidence = 1.0;
     state.observed = true;
     // All four, because they are one claim and a fake that sets three of them is describing a
-    // state the real engine cannot produce. `estimated` is what confidence is derived from
+    // state the real engine cannot produce. `anchored` is what confidence is derived from
     // (ADR 0042); leaving it false while claiming confidence 1.0 is exactly the incoherence the
     // split was made to stop.
-    state.estimated = true;
+    state.anchored = true;
     state.absolute = true;
   }
 
@@ -523,7 +523,7 @@ class UnintegrablePoseEngine final : public IPoseEngine {
     auto state = inner_.Initial(mode, capability);
     if (state.ok()) {
       state.value.observed = true;
-      state.value.estimated = true;
+      state.value.anchored = true;
       state.value.absolute = true;
       state.value.pose.confidence = 1.0;
     }
@@ -632,6 +632,52 @@ class RefusingCoveragePlannerEngine final : public ICoveragePlannerEngine {
     return Err<std::vector<NodeId>>(StatusCode::Unsupported, "test", "cannot suggest");
   }
 };
+
+// A planner that gets `aimKnown` wrong, which is the one thing the manager must not pass through.
+class BlindClaimingPlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    return inner_.Plan(spec, lens);
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    auto guidance = inner_.Locate(current, plan, coverage);
+    if (guidance.ok()) guidance.value.aimKnown = false;
+    return guidance;
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> taken) override {
+    return inner_.Evaluate(plan, taken);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& coverage,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, coverage, ghosts);
+  }
+
+ private:
+  NullCoveragePlannerEngine inner_;
+};
+
+TEST_F(CaptureSession, WhetherThereIsAnAimIsTheManagersAnswerRatherThanTheEngines) {
+  // Three places derive "is there an aim" from `PoseSample.confidence`: each planner engine, to
+  // choose between aiming and covering; `ArmBurst`, to decide whether to enforce an acceptance
+  // cone; and the guidance the page reads, to decide whether to offer a capture at all. They have
+  // one source and they must not be able to disagree about it.
+  //
+  // What an engine's wrong answer would do is not a cosmetic mismatch: `aimKnown` false puts the
+  // page in the sensorless mode, where it offers a capture without waiting for `HoldStill` — and
+  // `ArmBurst`, deriving the fact for itself, then enforces the cone and refuses. Every press
+  // refused, for a reason the page has already concluded cannot apply.
+  BlindClaimingPlannerEngine lying;
+  CaptureSessionManager manager(lying, pose, quality, preview, *camera, *sensor, *store, *projects,
+                                clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+
+  auto guided = manager.OnMotion({});
+  ASSERT_TRUE(guided.ok()) << guided.status.detail;
+  EXPECT_TRUE(guided.value.aimKnown)
+      << "the pose engine reports a measured pose, so the published answer says so";
+}
 
 TEST_F(CaptureSession, AFailedPlanClosesTheCameraItOpened) {
   // The lens has to be read before the plan can be made, so a planning failure happens with the
