@@ -452,13 +452,22 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // ADR 0041 records a reviewer catching on the sibling branch, reintroduced by the fix for a
   // dropped read. A refused read is worth retrying; it is not worth asking sixty times a second.
   let coverageRetryAtMs = 0;
+  // Whether one is already in flight. The throttle alone does not stop a *slow* refusal from
+  // being asked again every frame, because it was armed when the answer came back rather than
+  // when the call went out — measured at 58 calls in five seconds against a 300 ms refusal, about
+  // eighteen of them overlapping, which is the same storm the throttle was added to end.
+  let coverageInFlight = false;
   const COVERAGE_RETRY_MS = 1000;
   const refreshCoverage = async () => {
     if (review === null || plan === null) return;
+    if (coverageInFlight) return;
+    coverageInFlight = true;
+    // Armed here, not on the answer: the interval is between *asks*.
+    coverageRetryAtMs = performance.now() + COVERAGE_RETRY_MS;
     const state = await core.captureSession.coverage().catch(() => null);
+    coverageInFlight = false;
     if (state === null || !state.ok) {
       coverageStale = true;
-      coverageRetryAtMs = performance.now() + COVERAGE_RETRY_MS;
       return;
     }
     coverageStale = false;
@@ -596,6 +605,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // succeed on a later one.
     if (motionRunning) reportMotionSource(undefined, drained.ok ? '' : drained.status.detail);
 
+    // The coverage retry lives out here, not inside the guidance block below.
+    //
+    // That block is gated on a sample having arrived (or a burst running), and a phone with no
+    // motion sensor produces neither — which is exactly the device whose one refused read this
+    // retry exists to recover from. Measured inside the block: coverage calls stayed at two across
+    // five seconds with `cell 13 · captured · 0/32 done` frozen on screen, which is the permanence
+    // the retry was written to remove, still there.
+    if (coverageStale && performance.now() >= coverageRetryAtMs) void refreshCoverage();
+
     // Only when there is something new to fold in, plus once at the start so the reticle has a
     // position before the first sample arrives. An empty batch cannot change the pose, so it
     // cannot change the guidance — and a facade round trip per frame for an answer that cannot
@@ -652,10 +670,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // which cells are done — two answers to that question is how the strip ended up in an
         // order nothing had chosen.
         paintOverlay();
-        if (guidance.action === 'CellDone'
-            || (coverageStale && performance.now() >= coverageRetryAtMs)) {
-          void refreshCoverage();
-        }
+        if (guidance.action === 'CellDone') void refreshCoverage();
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
         // before it returns — so a failure means the burst really is gone and the camera's locks

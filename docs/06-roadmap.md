@@ -441,9 +441,11 @@ were plausible:
 bearing is ±90° and does not rotate as the phone pans, because the direction to turn does not
 change. The distance does, and the arrow carries it as a number. The exact statement is about the
 camera frame rather than about elevation in general: it holds at the horizon and degrades away from
-it. With camera and target both at 15° elevation, the bearing reads 87.4°, 83.9°, 75.5°, 58.0° and
-18.7° at azimuth offsets of −20°, −45°, −90°, −135° and −170° — sampled points, not an even pan, and
-quoted that way because "across a pan" implied a sweep nobody ran.
+it. With camera and target both at 15° elevation, the bearing reads 83.9°, 75.5°, 58.0° and 18.7° at
+azimuth offsets of −45°, −90°, −135° and −170° — sampled points, not an even pan, and quoted that way
+because "across a pan" implied a sweep nobody ran. (A fifth reading at −20° was quoted here and has
+been dropped: at that offset the target is *on screen*, so `planOverlay` returns no arrow at all and
+87.4° is a bearing nothing ever draws. The exact ±90° case is the horizon, which reads 90.0.)
 
 **What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
 front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
@@ -468,10 +470,19 @@ is a claim that needs the measurement to be of the thing reported.
 
 **A note on how these were measured.** The browser-derived figures here were first taken in a
 checkout whose staged `sphanorama-core.wasm` had been built from the sibling branch — the trap the
-engineering skill warns about, walked into while investigating. It changes none of the conclusions
-(the arrow fix is pure CSS, and both branches' targeting rules coincide on a fresh capture, which is
-the state every arrow measurement is taken in), and it is recorded because the next person measuring
-here should rebuild the core for *this* branch first. `tools/gate.sh` is the only thing that does.
+engineering skill warns about, walked into while investigating it, and then walked into a second
+time while fixing the test that caught it.
+
+It changes the arrow conclusions not at all: that fix is pure CSS, and the hidden-arrow measurements
+are taken on a fresh capture, where both branches' targeting rules name the same cell because nothing
+is captured yet. It *could* have changed the "roughly a third" figure, which is sampled over random
+coverage states and is therefore the one measurement that depends on which targeting rule is in the
+core — an earlier version of this note claimed every arrow measurement was taken on a fresh capture,
+which was not true of that one. It has since been reproduced independently at 33.5% against this
+branch's own core, which is the same "roughly a third".
+
+Recorded because the next person measuring here should rebuild the core for *this* branch first.
+`tools/gate.sh` is the only thing that does it as part of a run.
 
 **A note on the ADR numbers here.** This branch references ADR 0041 and ADR 0042, which live on the
 `claude/aim-decides-the-cell` branch and not yet on `main`. The two changes are a pair — that branch

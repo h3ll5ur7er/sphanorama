@@ -840,20 +840,29 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
     // and the arrow is correctly raised at none of 2664 attitudes.
     //
     // Capturing a cell is what creates the state: guidance then sends the user to a cell that is
-    // still missing, and turning away from it puts that cell out of the picture.
+    // still missing, and from where the capture was taken that cell is out of the picture.
+    //
+    // Level and facing forward, named rather than left wherever the sweep above finished, so the
+    // assertion below is about a stated attitude instead of the loop's last value.
+    const home = 0;
+    await turn(home);
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 
-    let raised = false;
-    for (const beta of [90, 60, 120, 30, 150]) {
-      for (let alpha = 0; alpha < 360 && !raised; alpha += 15) {
-        await turn(alpha, beta);
-        raised = await page.locator('#target-arrow').isVisible();
-      }
-      if (raised) break;
-    }
-    expect(raised, 'the arrow can never appear, so nothing above proves it hides').toBe(true);
+    // Back to where the capture was taken, and assert directly rather than sweeping for a hit.
+    //
+    // The sweep this replaced probed 120 attitudes and exactly one of them raised the arrow — the
+    // first, which is this one. The other 119 could never be the iteration that passed, so it read
+    // as a hunt and was a single coincidence wearing a loop. Worse, each step turned the phone with
+    // one animation frame while guidance is a worker round trip, so a slower machine would have
+    // been sampling attitudes the core had not answered for yet.
+    //
+    // The state is principled and does not need hunting for: capturing the cell you are on sends
+    // guidance to a cell that is still missing, and from here that cell is out of the picture —
+    // which is precisely when the arrow is for.
+    await turn(home);
+    await expect(page.locator('#target-arrow')).toBeVisible();
 
     // When it is up it points somewhere and says how far, rather than being an empty box.
     const shown = await page.evaluate(() => ({
