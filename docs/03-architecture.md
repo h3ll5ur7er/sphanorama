@@ -383,12 +383,15 @@ whatever the client asked for, sensor or no sensor. What *is* true is that guida
 the cell under an orientation nobody measured and targets by coverage instead (ADR 0042), which is
 what keeps a blind capture moving from cell to cell.
 
-Two lines elsewhere learn that sensors were absent, and both are there to
+Three places learn that sensors were absent, and all three are there to
 give the same answer as if it had not: `ArmBurst`'s aim check applies only to a pose that was
 actually measured (a non-zero `PoseSample.confidence`), so a device that reports identity forever can
 still arm every cell rather than the one that happens to sit straight ahead (ADR 0041); and `Locate`
-prefers the cell the camera is inside only when there is an aim to prefer (ADR 0042). Apart from
-those the volatility is contained in V5.
+prefers the cell the camera is inside only when there is an aim to prefer (ADR 0042); and the page
+reads the `aimKnown` those two produce, because a client has to make the same decision and cannot
+derive it. Apart from those the volatility is contained in V5 — and the third one is the honest
+cost of the first two: once the core answers differently, something has to tell the client so, and
+that is a component learning the difference however carefully it is worded.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 

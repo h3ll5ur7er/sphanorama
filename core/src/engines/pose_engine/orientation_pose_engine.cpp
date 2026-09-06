@@ -105,6 +105,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
       state.absolute = true;
+      state.estimated = true;
     } else if (sample.hasOrientation) {
       // Predict where the gyroscope says the device now points, then take part of the way back to
       // where the reading says it does. The prediction carries the fast motion the reading is too
@@ -147,6 +148,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
+      state.estimated = true;
     } else if (advanced && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
@@ -160,29 +162,24 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const Vec3 rate = Subtract(sample.angularVelocity, state.gyroBias);
       if (Magnitude(rate) > 1e-9) {
         state.pose.orientation = Turned(state.pose.orientation, rate, seconds);
+        state.estimated = true;
         // Dead reckoning from here on. Leaving the flag set would keep reporting an integrated
         // pose with the confidence of a measured one, and the drift would be invisible.
         state.absolute = false;
       }
     }
     state.pose.timestampNs = sample.timestampNs;
-    // Observed means a sample moved the estimate, not that a sample arrived. Every branch above is
-    // gated on an attitude or a measured rate, for the reason the dead-reckoning branch states —
-    // "a sample that reports nothing should move nothing" — and this line was the exception to it:
-    // an empty sample left the orientation at identity and marked it seen, which is confidence 0.5
-    // on a number nobody measured.
-    //
-    // A caller is entitled to act on that. `CaptureSessionManager::ArmBurst` enforces the
-    // acceptance cone only against a measured pose, which is what keeps a phone with no motion
-    // sensor able to capture (ADR 0041); one empty sample used to take it from arming every cell
-    // to refusing thirty-one of thirty-two.
-    if (sample.hasOrientation || fusing) state.observed = true;
+    // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
+    // *moved* anything is `estimated`, set by each branch above that did.
+    state.observed = true;
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;
-  // Zero until something has actually been observed: a caller reading confidence 0 knows the
-  // orientation is a default rather than an estimate.
-  state.pose.confidence = !state.observed ? 0.0 : (state.absolute ? 1.0 : 0.5);
+  // Zero until something has actually moved the orientation: a caller reading confidence 0 knows
+  // it is holding a default rather than an estimate. Keyed on `estimated` rather than on
+  // `observed`, because a sample can arrive and inform nothing — a blank one, or the first rate of
+  // a stream, which has no interval to be integrated over yet. Both used to come back at 0.5.
+  state.pose.confidence = !state.estimated ? 0.0 : (state.absolute ? 1.0 : 0.5);
   return Ok(state);
 }
 

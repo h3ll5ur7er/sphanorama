@@ -174,7 +174,7 @@ TEST(PoseEngine, IntegratingIsPureInThePriorState) {
   EXPECT_FALSE(state.observed);
 }
 
-TEST(PoseEngine, ASampleThatReportsNothingIsNotAnObservation) {
+TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
   // A sample carrying neither an attitude nor a measured rate contributes nothing, and Integrate
   // already knows it: every branch that could move the orientation is gated on one or the other,
   // under a comment saying "a sample that reports nothing should move nothing". It moved one thing
@@ -197,9 +197,12 @@ TEST(PoseEngine, ASampleThatReportsNothingIsNotAnObservation) {
 
   auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
   ASSERT_TRUE(after.ok());
-  EXPECT_FALSE(after.value.observed) << "an empty sample is not an observation";
+  EXPECT_FALSE(after.value.estimated) << "an empty sample estimates nothing";
   EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0)
-      << "confidence is derived from observed, so it has to follow it down";
+      << "confidence is derived from `estimated`, so it has to follow it down";
+  // `observed` is true, and that is right: a sample arrived, and the next one's elapsed time is
+  // measured from it. The two facts were one flag, which is the whole finding.
+  EXPECT_TRUE(after.value.observed);
   // And the orientation really did not move, which is what makes the flag the whole finding.
   EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
 
@@ -207,8 +210,47 @@ TEST(PoseEngine, ASampleThatReportsNothingIsNotAnObservation) {
   ImuSample real = Oriented(2'000'000, 30.0, 0.0);
   auto seen = engine.Integrate(after.value, std::span<const ImuSample>(&real, 1));
   ASSERT_TRUE(seen.ok());
-  EXPECT_TRUE(seen.value.observed);
+  EXPECT_TRUE(seen.value.estimated);
   EXPECT_DOUBLE_EQ(seen.value.pose.confidence, 1.0);
+}
+
+TEST(PoseEngine, TheFirstRateOnlySampleHasNothingToIntegrateOverAndEstimatesNothing) {
+  // A gyroscope reports a rate, and a rate only becomes an orientation when there is an elapsed
+  // time to integrate it over — which the first sample of a stream does not have. Every branch in
+  // `Integrate` knows that: dead reckoning is gated on `advanced`, so the first rate-only sample
+  // moves nothing at all. It still has to establish the clock the second one measures against, and
+  // that is not the same thing as having seen where the camera points.
+  //
+  // Conflating the two put an unmeasured identity behind confidence 0.5, and every rule that keys
+  // on confidence then treats straight-ahead as a measurement: the manager enforces the acceptance
+  // cone against it and refuses thirty-one cells of thirty-two (ADR 0042).
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample first;
+  first.timestampNs = 1'000'000;
+  first.hasAngularVelocity = true;
+  first.angularVelocity = Vec3{0.0, 0.5, 0.0};
+
+  auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&first, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_FALSE(after.value.estimated)
+      << "the first rate has no elapsed time to turn into an orientation";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0);
+  // Arrived, though — which is exactly what the second sample measures its interval against.
+  EXPECT_TRUE(after.value.observed);
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
+
+  // The second one does have a gap, so the stream starts tracking — this refuses a sample that
+  // could not have informed anything, not the gyroscope.
+  ImuSample second = first;
+  second.timestampNs = 1'020'000'000;
+  auto turning = engine.Integrate(after.value, std::span<const ImuSample>(&second, 1));
+  ASSERT_TRUE(turning.ok());
+  EXPECT_TRUE(turning.value.estimated);
+  EXPECT_DOUBLE_EQ(turning.value.pose.confidence, 0.5) << "integrated, not absolute";
+  EXPECT_GT(AngleBetween(turning.value.pose.orientation, Quat{}), 0.1);
 }
 
 TEST(PoseEngine, AFreshStateHasSeenNothing) {

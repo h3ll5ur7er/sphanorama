@@ -152,7 +152,12 @@ struct PoseSample {
   int64_t timestampNs = 0;
   Quat orientation;
   Vec3 angularVelocity;
-  double confidence = 0.0;   // [0,1]
+  // How much the orientation above is worth, in [0,1]. **Zero means it was not estimated at all** —
+  // nothing has moved it off the identity it started at — and callers act on that rather than on
+  // the number's size: `ArmBurst` enforces the acceptance cone only against a measured pose, and
+  // `Locate` only prefers the cell the camera is inside for one (ADR 0041, ADR 0042). Between
+  // those, 1.0 is an absolute reading and 0.5 is dead reckoning from rates.
+  double confidence = 0.0;
   bool visuallyCorrected = false;
 };
 
@@ -373,9 +378,22 @@ struct PoseState {
   PoseMode mode = PoseMode::Fused;
   MotionCapability capability = MotionCapability::None;
   PoseSample pose;
-  // Whether any sample has been folded in at all. Distinguishes "identity because nothing has
-  // been seen" from "identity because the device is level and facing north".
+  // Whether any sample has arrived at all. It is what the elapsed time between samples is measured
+  // from, so the first sample of a stream sets it whether or not it moved anything — a rate has no
+  // orientation in it until there is an interval to integrate it over.
+  //
+  // It is *not* the answer to "is this orientation a measurement": that is `estimated` below, and
+  // `PoseSample.confidence` is what callers should read. The two were one flag, and the first
+  // rate-only sample of a stream then reported an integrated pose before anything was integrated.
   bool observed = false;
+  // Whether the orientation came from something measured, rather than being the identity the state
+  // started at. Confidence is derived from this, so it has to survive between calls.
+  //
+  // Distinguishes "identity because nothing has moved it" from "identity because the device really
+  // is level and facing north" — a distinction callers act on: `ArmBurst` enforces the acceptance
+  // cone only against a measured pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042),
+  // which is what keeps a phone with no motion sensor able to capture at all.
+  bool estimated = false;
   // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
   // is derived from this, so it has to survive between calls.
   bool absolute = false;

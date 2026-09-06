@@ -140,6 +140,23 @@ describe('round trips', () => {
     expect(decodeCapturePlan(new Reader(writer.finish())).nodes).toEqual([]);
   });
 
+  it('rejects a payload truncated inside the last field, not just inside an earlier one', () => {
+    // The existing case above drops four bytes, which lands inside `action` — so the reader fails
+    // on an i32 and never asks for the trailing `bool` at all. A `bool()` that ran off the end and
+    // answered a default `false` without recording the failure would pass every test in this file,
+    // and `false` is a meaningful value for `aimKnown`: it is what a phone with no motion sensor
+    // reports, and the page opens its shutter on it.
+    const writer = new Writer();
+    encodeCaptureGuidance(writer, {
+      targetNode: 1 as C.NodeId, angularErrorDeg: 1, rollErrorDeg: 1, stability: 1, action: 'Seek',
+      aimKnown: true,
+    });
+    const full = writer.finish();
+    const reader = new Reader(full.subarray(0, full.length - 1));
+    decodeCaptureGuidance(reader);
+    expect(reader.ok).toBe(false);
+  });
+
   it('rejects a truncated payload rather than half-decoding it', () => {
     const writer = new Writer();
     encodeCaptureGuidance(writer, {

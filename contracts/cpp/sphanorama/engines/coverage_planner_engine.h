@@ -20,8 +20,9 @@ class ICoveragePlannerEngine {
   // superseding ADR 0027's rule). Outside every cone there is nothing to hold on, so the nearest
   // cell the user still *needs* is the answer and the capture keeps moving — and where coverage
   // has no opinion at all, the nearest cell of any kind, because "needed" has no meaning yet.
-  // That third branch is not reachable through `OnMotion`, which always evaluates coverage first;
-  // a direct caller can reach it.
+  // That third branch is reached two ways: an uninformed coverage state, which `OnMotion` cannot
+  // produce because it evaluates coverage first; and a state with nothing missing, which is every
+  // tick of a finished sphere — so it is what names the cell in every `SphereDone`.
   //
   // What the coverage state buys is then the *action* rather than the target: `HoldStill` on a
   // cell that wants shooting, `AlreadyCaptured` on one that does not, so nobody is told to
