@@ -375,11 +375,13 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     // and finding the whole suite still green.
     //
     // It does not clear `lastLocksLine` either, and that needs its own reason rather than the one
-    // above — nothing derives that string from the tracks. It is read at exactly two places, both
-    // of which queue a release, and both of which need a running capture loop. The loop stops on a
-    // camera taken away, so there is no reader left in this tab; a `#locks` row still naming the
-    // dead camera's locks is frozen alongside every other row, under a stage line saying to
-    // reload. The core's own route clears it because there a session can follow.
+    // above — nothing derives that string from the tracks. The reason is not "no reader is left",
+    // which was the first answer and is wrong: an arm already in flight when the loop stops reaches
+    // `unlock()` afterwards, and `unlock` reads this line. The reason is that what it would read is
+    // the right thing to read — a release issued for a camera that has just been taken away *is* a
+    // release of the locks that camera was holding, and naming them is more use than naming
+    // nothing. The core's own route clears it because there another session can follow and would
+    // inherit the line.
     //
     // `stopCameraStream` is not bookkeeping and stays: a stream can lose one track and keep another
     // lit, and the camera indicator staying on is its own bug report.
