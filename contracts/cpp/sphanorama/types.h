@@ -266,7 +266,11 @@ struct BurstSpec {
 // What the user should do about the cell guidance is naming.
 //
 // `CellDone` is an *edge*: the manager emits it on the one tick a burst fills, and callers act on
-// it once. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
+// it once — **unless that tick fails**. Releasing the camera's locks is the last thing a filled
+// burst does, and a track that refuses returns that failure from `OnMotion`, so the cell is
+// committed and no action announces it. The failure winning is deliberate (a camera left locked is
+// the worse problem), which makes this a caller's problem: anything mirroring coverage off
+// `CellDone` has to re-read it on a failed tick too. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
 // already holds a capture, and it is true on every tick the phone stays there. They were briefly
 // the same value, which turned a once-per-cell refresh into one per animation frame.
 //
@@ -281,6 +285,17 @@ struct CaptureGuidance {
   double rollErrorDeg = 0;
   double stability = 0;          // [0,1]
   GuidanceAction action = GuidanceAction::Seek;
+  // Whether the orientation this answer was computed from was a measurement at all.
+  //
+  // It is here because a client has to make the same decision the planner just made and has no
+  // other way to know it made it. With no aim, `Locate` targets by coverage and never says
+  // `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
+  // on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
+  // is wrong for every tick before the first sample arrives, which is what turned twelve browser
+  // tests red when the page tried.
+  //
+  // Appended rather than inserted, because field order is wire order.
+  bool aimKnown = false;
 };
 
 struct CoverageState {

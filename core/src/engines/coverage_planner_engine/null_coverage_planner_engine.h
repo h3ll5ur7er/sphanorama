@@ -12,7 +12,7 @@ namespace sphanorama {
 class NullCoveragePlannerEngine final : public ICoveragePlannerEngine {
  public:
   Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override;
-  Result<CaptureGuidance> Locate(const Quat& current, const CapturePlan& plan,
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
                                  const CoverageState& coverage) override;
   Result<CoverageState> Evaluate(const CapturePlan& plan,
                                  std::span<const Candidate> candidates) override;

@@ -35,8 +35,8 @@ not. What that rule was protecting is kept by the **action** rather than by the 
 `HoldStill` on a cell that still needs shooting, `AlreadyCaptured` on one that does not.
 
 `AlreadyCaptured` is a new action rather than a reuse of `CellDone`, and the difference is not
-cosmetic. `CellDone` is an *edge* — the manager emits it on the one tick a burst fills, and its
-contract says "exactly once". Resting inside a captured cell's cone is a *level*, true on every
+cosmetic. `CellDone` is an *edge* — the contract says "`CellDone` on the tick that fills it", and
+the manager's own private header is where "exactly once" is written down. Resting inside a captured cell's cone is a *level*, true on every
 tick the phone stays there. Overloading one value for both turned the page's once-per-cell
 `refreshCoverage()` into one per animation frame, which is what a reviewer caught before this
 merged. Nothing tells the user to re-shoot what they have; the cell under the reticle is simply
@@ -87,8 +87,12 @@ re-shoots it is worse than one that waits.
   the decision belongs in one place, and it is here.
 - **When a dwell trigger replaces the button**, `HoldStill` versus `AlreadyCaptured` is what stops a
   slow pan across finished cells from re-shooting all of them. That is the shape to build against.
-- **A phone with no motion sensor still captures every cell, and one line of the manager now knows
-  it.** The gate applies only to a pose that was actually measured — `PoseState::observed` and
+- **A phone with no motion sensor can still *arm* every cell, and one line of the manager now knows
+  it.** Arming was only half of it: guidance went on naming the one cell that sits at identity, so
+  the page offered a capture for that cell and then nothing. The dead shutter had moved from the
+  core to the client rather than gone, which a reviewer measured after this bullet was first
+  written. ADR 0042 is the other half — with no aim, coverage decides the target — and the two
+  should be read together. The gate applies only to a pose that was actually measured — `PoseState::observed` and
   `PoseSample.confidence`, which is the contract's own way of saying "nothing produced this". A
   device that declined motion or has none tracks vision-only and reports identity forever, so
   enforcing a cone against that number would refuse thirty-one cells of thirty-two and then leave
@@ -125,8 +129,8 @@ the bug returns in full — the press is what latching protects, and the press i
 removed.
 
 **Gate in the client only.** The page has held every cell's `acceptanceConeDeg` since before this
-change and receives `angularErrorDeg` every tick; it already compares them to size the reticle, so
-it could disable the button with no core change at all. Rejected because a manager whose only
+change and receives `angularErrorDeg` with each guidance answer; it already compares them to size
+the reticle, so it could disable the button with no core change at all. Rejected because a manager whose only
 defence is its client has no defence: `ArmBurst` is a public contract call, the shell is not its
 only possible caller, and the failure it would let through is undetectable afterwards. The client
 gate is *also* here — that is what `canCapture` is — but as the thing that keeps the refusal off

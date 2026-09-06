@@ -96,6 +96,27 @@ const motion = createMotionSensorAccess(window);
 // worker the core runs in, so the host asks and the page stops (ADR 0019).
 let cameraStream: MediaStream | null = null;
 
+// Every write to the camera's lock state, in the order it was asked for.
+//
+// `applyConstraints` takes as long as it takes, and three callers write here: an arm, the release
+// after a refused arm, and the core's own `onReleaseLocks` at the end of a burst. None of them
+// awaited each other, so a release issued for burst 1 could land *after* burst 2 had read the
+// state back and told the core three locks were held — measured landing 80 ms into a burst the
+// core believed was locked. ADR 0022's read-back cannot catch that, because the write it would
+// have to see happens after the read.
+//
+// A chain rather than a lock: the writes are all short, order is the only thing that matters, and
+// a failed one must not stop the next (a camera that refuses a constraint is a supported outcome,
+// and the release after it is exactly when the ordering matters most). Module scope because the
+// chain has to span a session — the core's release for the last burst of one session can still be
+// in flight when the next session applies its first locks.
+let lockWrites: Promise<unknown> = Promise.resolve();
+function writeLocks(wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean }) {
+  const next = lockWrites.then(() => camera.setLocks(wanted));
+  lockWrites = next.catch(() => undefined);
+  return next;
+}
+
 /** The page's end of the worker: what it pushes across, and the one thing the worker asks back. */
 let remote: RemoteCore;
 
@@ -449,6 +470,24 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // because of the hole ADR 0018 named: the tick right after arming has no guidance yet, so
   // `firing` is still false on the one tick that most needs a frame waiting for it.
   let armed = false;
+  // Whether an arm is part-way through: the locks may be applied and the core may not have
+  // answered yet. `armed` cannot serve — it is set only once the core says yes, and the whole
+  // window this closes is the one before it does.
+  let arming = false;
+  // When the per-tick guidance line is allowed to overwrite an arming message.
+  //
+  // `#guidance` is rewritten by `describeGuidance` on every tick that carries samples, which on a
+  // phone in a hand is every animation frame — so an arming failure written into it survived a
+  // measured **four milliseconds**. Nothing owned "a message that has to outlive a frame":
+  // `#stage` and `#locks` both do, but `#stage` carries the session line the browser suite asserts
+  // on. A deadline the pump respects is the smaller change, and it makes every message `armAt`
+  // writes readable — the refusals, and `capturing without … lock`, which is a real quality cost
+  // (ADR 0031) that has been announced for one frame since it was written.
+  let guidanceHeldUntilMs = 0;
+  const sayForAWhile = (text: string) => {
+    guidanceOut.textContent = text;
+    guidanceHeldUntilMs = performance.now() + 4000;
+  };
   // Accumulated rather than taken fresh each frame, so rolling past the ±180 seam turns the
   // horizon by the two degrees the hand moved and not by the 358 the number jumped.
   let horizonDeg = 0;
@@ -461,6 +500,28 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * somewhere the loop cannot see it leaves the first frame waiting for a tick that may not come.
    */
   const armAt = async (node: NodeId) => {
+    // One arm at a time, refused before a single constraint is applied.
+    //
+    // Nothing serialised this. The click handler does not disable the button — only the pump does,
+    // and it cannot until the core has set `firing_`, which is a worker round trip plus however
+    // long `applyConstraints` takes: measured at 38 ms with an instant camera and 396 ms at
+    // 120 ms per constraint. Inside that window a second tap applied the locks again, was refused
+    // by the core with "a burst is already in flight", and then released the locks of the burst
+    // that *was* running — a plain double tap re-metering a live burst, which is the exact failure
+    // ADR 0022 exists to prevent and is undetectable in the frames afterwards.
+    //
+    // Refusing here rather than only unlocking more carefully, because applying the locks at all
+    // while a burst holds them is the mistake; there is nothing this call could do with them.
+    if (arming || armed || firing) return false;
+    arming = true;
+    try {
+      return await armOnce(node);
+    } finally {
+      arming = false;
+    }
+  };
+
+  const armOnce = async (node: NodeId) => {
     // Applied and confirmed *before* arming, which is the whole ordering requirement (ADR 0022):
     // the burst's first frame arrives on the very next tick, and the core reads the lock state
     // through a synchronous port that cannot wait for applyConstraints.
@@ -490,13 +551,17 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // fix.
     const unlock = () => {
       remote.setLocks({ exposure: false, whiteBalance: false, focus: false });
-      void camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+      void writeLocks({ exposure: false, whiteBalance: false, focus: false });
+      // And the row stops claiming them. It reads off the last successful *request*, so after a
+      // refused arm it went on listing "exposure · white balance · focus" over a track that was
+      // back to metering — the one row whose whole job is to be trustworthy about that.
+      locksOut.textContent = 'released — no burst is running';
     };
 
     let held: Awaited<ReturnType<typeof camera.setLocks>>;
     let armedNow;
     try {
-      held = await camera.setLocks(wanted);
+      held = await writeLocks(wanted);
       // A camera that cannot lock still captures. What must not happen is the *core* believing a
       // lock is held when it is not, and pushing the confirmed state is what prevents that.
       const settled = held.ok
@@ -527,8 +592,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         lockFocus: held.ok && held.value.focus,
       });
     } catch (cause) {
-      guidanceOut.textContent =
-        `arming failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      sayForAWhile(`arming failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       unlock();
       return false;
     }
@@ -540,7 +604,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       const missing = (['exposure', 'whiteBalance', 'focus'] as const)
         .filter((lock) => wanted[lock] && !(held.ok && held.value[lock]));
       if (missing.length > 0) {
-        guidanceOut.textContent = `capturing without ${missing.join(', ')} lock`;
+        sayForAWhile(`capturing without ${missing.join(', ')} lock`);
       }
       return true;
     }
@@ -604,7 +668,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       if (grabbed !== null) remote.pushFrame(grabbed);
     }
 
-    if (plan !== null && (samples.length > 0 || !guidedOnce || firing || armed)) {
+    // `!motionRunning` keeps the loop alive on a phone that has no sensor to produce samples.
+    // Without it the guard is false for ever after the first answer: coverage still moves when a
+    // burst completes, and the target with it, so a sensorless capture froze on whatever guidance
+    // said at start-up — the shutter's state included. It is a facade round trip per frame on that
+    // device, which is the price of the only signal it has.
+    if (plan !== null
+        && (samples.length > 0 || !guidedOnce || firing || armed || !motionRunning)) {
       guidedOnce = true;
       // Nothing passed: the manager drains the port, which is where the page just put them.
       const guided = await core.captureSession.onMotion([]);
@@ -637,9 +707,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // folded into the angular error until the engine started reporting it separately.
         horizonDeg = unwrapDegrees(horizonDeg, -guidance.rollErrorDeg);
         horizonGroup.setAttribute('transform', `rotate(${horizonDeg.toFixed(1)} 50 50)`);
-        guidanceOut.textContent = describeGuidance(guidance, {
-          nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [], underOverlapped: [],
-        });
+        // Unless an arming message is still holding the line — see `sayForAWhile`. The reticle,
+        // the horizon and the markers all keep updating; it is only this one sentence that waits.
+        if (performance.now() >= guidanceHeldUntilMs) {
+          guidanceOut.textContent = describeGuidance(guidance, {
+            nodesTotal, nodesSatisfied, coveredSolidAngleFraction: 0, holes: [],
+            underOverlapped: [],
+          });
+        }
         // A cell finishing is the one thing that moves coverage, so it is the one thing that
         // redraws the map — and it is also where `nodesSatisfied` starts being a real number
         // rather than the zero the guidance line has been reporting since it was written.
@@ -656,6 +731,19 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // what turned a stranded lock into a permanently stranded one.
         firing = false;
         armed = false;
+        // Coverage is re-read even though the tick failed, because a tick can fail *after* the
+        // burst it was advancing has already committed: `AdvanceBurst` banks the cell and then
+        // releases the locks, and a track that refuses to drop them turns the whole call into a
+        // failure. The cell is captured, the core says so, and `CellDone` was never emitted — this
+        // line is the only thing that redraws the map or moves the progress count, so without this
+        // the page shows a stale count and a hole where a captured cell is, for the rest of the
+        // session. Reading coverage is cheap and cannot make anything worse.
+        void refreshCoverage();
+        // And nothing is offered. A failed tick produced no guidance, so there is no cell to
+        // capture and no aim to have checked — leaving the shutter enabled meant a press that
+        // cycled the camera's locks and changed nothing on screen, under a line saying guidance
+        // had failed.
+        captureButton.disabled = true;
         // And the markers go with it. They describe where the cells are *relative to a pose*, and
         // a failed tick is one that produced no pose — leaving the last set on screen would draw
         // a confident answer over a line that says guidance has stopped working.
@@ -703,7 +791,7 @@ async function main() {
     // The core is done with the burst and wants the camera metering again. Only this side holds
     // the track, and nothing waits for it: the burst is already over (ADR 0022).
     remote.onReleaseLocks(() => {
-      void camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+      void writeLocks({ exposure: false, whiteBalance: false, focus: false });
     });
 
     // Durability on the way out. A phone backgrounds a tab without warning, and pagehide is the

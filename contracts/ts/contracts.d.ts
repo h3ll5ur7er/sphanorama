@@ -243,7 +243,11 @@ export interface BurstSpec {
  * ---------------------------------------------------------------- guidance
  * What the user should do about the cell guidance is naming.
  * `CellDone` is an *edge*: the manager emits it on the one tick a burst fills, and callers act on
- * it once. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
+ * it once — **unless that tick fails**. Releasing the camera's locks is the last thing a filled
+ * burst does, and a track that refuses returns that failure from `OnMotion`, so the cell is
+ * committed and no action announces it. The failure winning is deliberate (a camera left locked is
+ * the worse problem), which makes this a caller's problem: anything mirroring coverage off
+ * `CellDone` has to re-read it on a failed tick too. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
  * already holds a capture, and it is true on every tick the phone stays there. They were briefly
  * the same value, which turned a once-per-cell refresh into one per animation frame.
  * Appended rather than inserted: the wire carries the index.
@@ -257,6 +261,17 @@ export interface CaptureGuidance {
   /** [0,1] */
   stability: number;
   action: GuidanceAction;
+  /**
+   * Whether the orientation this answer was computed from was a measurement at all.
+   * It is here because a client has to make the same decision the planner just made and has no
+   * other way to know it made it. With no aim, `Locate` targets by coverage and never says
+   * `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
+   * on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
+   * is wrong for every tick before the first sample arrives, which is what turned twelve browser
+   * tests red when the page tried.
+   * Appended rather than inserted, because field order is wire order.
+   */
+  aimKnown: boolean;
 }
 
 export interface CoverageState {
@@ -552,6 +567,11 @@ export interface CaptureSessionManager {
    * burst records whatever the camera is looking at and the node is only a name to file it under,
    * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
    * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+   * **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
+   * zero, which is what a phone with no motion sensor reports for the life of a session — there is
+   * no direction to measure a cone against, and every cell arms. A client on such a device will
+   * never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
+   * capture, because it never will (ADR 0042).
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
@@ -591,6 +611,11 @@ export interface CaptureSessionManager {
   /**
    * Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to
    * the evidence pool rather than discard it.
+   * "Re-arms" is about the cell's state, not about a burst: the burst that follows still goes
+   * through `ArmBurst` and is still refused if the camera is not aimed at the cell (ADR 0041). So
+   * a retake asks the user to point at the cell again before anything is recorded — which is the
+   * point, since a retake that captured from wherever the phone happened to be pointing is the bug
+   * ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
    */
   requestRetake(node: NodeId, replace: boolean): Promise<Result<void>>;
   end(): Promise<Result<void>>;

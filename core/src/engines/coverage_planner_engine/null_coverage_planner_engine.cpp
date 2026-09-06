@@ -1,6 +1,7 @@
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 
 #include <algorithm>
+#include <span>
 
 #include "utilities/quaternion.h"
 
@@ -27,7 +28,7 @@ Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
   return Ok(std::move(plan));
 }
 
-Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
+Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& current,
                                                           const CapturePlan& plan,
                                                           const CoverageState& coverage) {
   if (plan.nodes.empty()) {
@@ -42,7 +43,13 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
   //
   // Trivial with one cell, but it is the shape a real tessellation needs, so the manager's
   // sequence does not change when V4 lands.
-  const Vec3 looking = Direction(current);
+  const Vec3 looking = Direction(current.orientation);
+
+  // Whether there is an aim to prefer at all. Zero confidence is the contract's word for "nothing
+  // estimated this", and a phone with no motion sensor reports identity for the whole session —
+  // so the aim rule below would name whichever cell sits at identity every single tick, and a
+  // capture could never move off it. With no aim, coverage decides alone (ADR 0042).
+  const bool aimed = current.confidence > 0.0;
 
   // Coverage has an opinion only once something has been evaluated. An empty state is no
   // information rather than nothing missing: at the start of a session nothing is captured and
@@ -72,7 +79,8 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
   // differed here would make those tests assert something the shipped path does not do.
   const CoverageNode* inside = nullptr;
   double insideAngle = 0.0;
-  for (const auto& node : plan.nodes) {
+  for (const auto& node : aimed ? std::span<const CoverageNode>(plan.nodes)
+                                : std::span<const CoverageNode>()) {
     const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
     if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
     if (inside == nullptr || angle < insideAngle) {
@@ -90,10 +98,13 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const Quat& current,
   if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
+  // Said out loud, because a client gates on it too and cannot derive it (ADR 0042).
+  guidance.aimKnown = aimed;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg =
       AngleBetweenDirections(looking, Direction(nearest->targetOrientation)) * kRadToDeg;
-  guidance.rollErrorDeg = RollBetween(current, nearest->targetOrientation) * kRadToDeg;
+  guidance.rollErrorDeg =
+      RollBetween(current.orientation, nearest->targetOrientation) * kRadToDeg;
   // A finished sphere still names a cell and an error, because the fields are read either way —
   // but it says so, which nothing in this engine ever did before, so a completed capture went on
   // asking for whichever cell the phone happened to be nearest.

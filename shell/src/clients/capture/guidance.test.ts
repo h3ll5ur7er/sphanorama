@@ -11,6 +11,7 @@ const guidance = (over: Partial<CaptureGuidance> = {}): CaptureGuidance => ({
   rollErrorDeg: 0,
   stability: 1,
   action: 'Seek',
+  aimKnown: true,
   ...over,
 });
 
@@ -58,6 +59,17 @@ describe('describeGuidance', () => {
     expect(text).toContain('5/32');
   });
 
+  it('says a cell is already captured rather than falling through to a bare angle', () => {
+    // The default arm renders `cell 7 · 0° off`, which reads as "keep aiming" at a cell that needs
+    // nothing — and `AlreadyCaptured` is the resting state of any phone left pointing at a
+    // finished cell, so it is the line a user sees most often after a capture. Deleting the case
+    // left every test green.
+    const text = describeGuidance(
+      guidance({ action: 'AlreadyCaptured', angularErrorDeg: 0 }), coverage());
+    expect(text).toContain('already captured');
+    expect(text).not.toContain('off');
+  });
+
   it('reports too-fast motion instead of an aim the user cannot act on', () => {
     // Angular error is meaningless while the phone is whipping around; telling the user to slow
     // down is the only instruction that helps.
@@ -101,12 +113,14 @@ describe('unwrapDegrees', () => {
 });
 
 describe('canCapture', () => {
-  const at = (action: CaptureGuidance['action']): CaptureGuidance => ({
+  const BLIND = false;
+  const at = (action: CaptureGuidance['action'], aimKnown = true): CaptureGuidance => ({
     targetNode: 3 as NodeId,
     angularErrorDeg: 0,
     rollErrorDeg: 0,
     stability: 1,
     action,
+    aimKnown,
   });
 
   it('offers a capture on the one action that means "inside a cone and still needed"', () => {
@@ -129,5 +143,25 @@ describe('canCapture', () => {
     for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast'] as const) {
       expect(canCapture(at(action)), action).toBe(false);
     }
+  });
+
+  // UC-4. A phone that declined motion, or has none, reports identity for the whole session, so
+  // the core never says `HoldStill` — it targets by coverage instead and says `Seek` (ADR 0042).
+  // A gate written only for the aimed case offered one cell of thirty-two and then nothing.
+  it('offers the cell coverage named when there is no aim to check', () => {
+    expect(canCapture(at('Seek', BLIND))).toBe(true);
+  });
+
+  it('still offers nothing blind while a burst runs or the sphere is finished', () => {
+    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast'] as const) {
+      expect(canCapture(at(action, BLIND)), action).toBe(false);
+    }
+  });
+
+  it('does not invent an aimed action blind', () => {
+    // `HoldStill` cannot arrive without a measured pose, so a gate that accepted it blind would be
+    // claiming the camera is inside a cone nobody measured.
+    expect(canCapture(at('HoldStill', BLIND))).toBe(false);
+    expect(canCapture(at('AlreadyCaptured', BLIND))).toBe(false);
   });
 });

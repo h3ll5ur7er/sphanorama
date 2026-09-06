@@ -15,7 +15,7 @@ import { Reader, Writer } from './wire';
 import type * as C from '../../../contracts/ts/contracts';
 
 const GOLDEN_CAPTURE_GUIDANCE =
-  '0000000000001c4000000000000029400000000000000ac0000000000000e03f01000000';
+  '0000000000001c4000000000000029400000000000000ac0000000000000e03f0100000000';
 
 // The one field kind that carries a length prefix, and the only one that carries pixels
 // (ADR 0038). A prefix the two halves disagreed about decodes into a plausible image of the wrong
@@ -38,6 +38,10 @@ describe('cross-language wire format', () => {
     expect(guidance.angularErrorDeg).toBe(12.5);
     expect(guidance.rollErrorDeg).toBe(-3.25);
     expect(guidance.stability).toBe(0.5);
+    // The trailing byte the `aimKnown` field added (ADR 0042). Asserted rather than ignored,
+    // because a golden that stops at the last field it knew about is a golden that would still
+    // pass if the two halves disagreed about everything after it.
+    expect(guidance.aimKnown).toBe(false);
     expect(guidance.action).toBe('HoldStill');
   });
 
@@ -49,6 +53,7 @@ describe('cross-language wire format', () => {
       rollErrorDeg: -3.25,
       stability: 0.5,
       action: 'HoldStill',
+      aimKnown: false,
     });
     expect(toHex(writer.finish())).toBe(GOLDEN_CAPTURE_GUIDANCE);
   });
@@ -91,6 +96,7 @@ describe('round trips', () => {
     const writer = new Writer();
     const original: C.CaptureGuidance = {
       targetNode: 3 as C.NodeId,
+      aimKnown: true,
       angularErrorDeg: 1.5,
       rollErrorDeg: 0,
       stability: 0.25,
@@ -138,6 +144,7 @@ describe('round trips', () => {
     const writer = new Writer();
     encodeCaptureGuidance(writer, {
       targetNode: 1 as C.NodeId, angularErrorDeg: 1, rollErrorDeg: 1, stability: 1, action: 'Seek',
+      aimKnown: true,
     });
     const full = writer.finish();
     const reader = new Reader(full.subarray(0, full.length - 4));

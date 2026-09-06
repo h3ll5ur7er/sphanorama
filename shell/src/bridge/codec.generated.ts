@@ -261,6 +261,7 @@ export function encodeCaptureGuidance(out: Writer, value: C.CaptureGuidance): vo
   out.f64(value.rollErrorDeg);
   out.f64(value.stability);
   out.i32(GuidanceActionValues.indexOf(value.action));
+  out.bool(value.aimKnown);
 }
 
 export function decodeCaptureGuidance(input: Reader): C.CaptureGuidance {
@@ -270,6 +271,7 @@ export function decodeCaptureGuidance(input: Reader): C.CaptureGuidance {
     rollErrorDeg: input.f64(),
     stability: input.f64(),
     action: GuidanceActionValues[input.i32()],
+    aimKnown: input.bool(),
   };
 }
 

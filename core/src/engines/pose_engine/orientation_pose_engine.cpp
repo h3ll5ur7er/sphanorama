@@ -166,7 +166,17 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       }
     }
     state.pose.timestampNs = sample.timestampNs;
-    state.observed = true;
+    // Observed means a sample moved the estimate, not that a sample arrived. Every branch above is
+    // gated on an attitude or a measured rate, for the reason the dead-reckoning branch states —
+    // "a sample that reports nothing should move nothing" — and this line was the exception to it:
+    // an empty sample left the orientation at identity and marked it seen, which is confidence 0.5
+    // on a number nobody measured.
+    //
+    // A caller is entitled to act on that. `CaptureSessionManager::ArmBurst` enforces the
+    // acceptance cone only against a measured pose, which is what keeps a phone with no motion
+    // sensor able to capture (ADR 0041); one empty sample used to take it from arming every cell
+    // to refusing thirty-one of thirty-two.
+    if (sample.hasOrientation || fusing) state.observed = true;
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;

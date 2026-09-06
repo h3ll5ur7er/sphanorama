@@ -642,7 +642,7 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   auto covered = planner_.Evaluate(plan_, AllCandidates());
   if (!covered.ok()) return Abandon(covered.status);
 
-  auto located = planner_.Locate(pose_state_.pose.orientation, plan_, covered.value);
+  auto located = planner_.Locate(pose_state_.pose, plan_, covered.value);
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
 
@@ -719,12 +719,12 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // that learns of it: it looks in order to decline to have an opinion, so what UC-4 promises —
   // every cell still reachable — holds. Such a user aims by eye, which is what vision-only means.
   //
-  // `observed` as well as `confidence`, because they answer different halves of the same question:
-  // confidence says the orientation was estimated rather than assumed, `observed` says a sample
-  // has actually been folded in. An engine entitled to report confidence from its very first
-  // state would otherwise have the manager enforcing a cone against an identity nobody has
-  // measured yet — the case the field exists to name.
-  const bool measured = pose_state_.observed && pose_state_.pose.confidence > 0.0;
+  // One signal, and it is the contract's: `PoseSample.confidence` of zero means the orientation was
+  // not estimated. `PoseState::observed` was tested alongside it and neither conjunct could be
+  // told from the other by any test — every engine derives one from the other, which is the
+  // engine's business and not a second opinion for the manager to hold. `Integrate` is where
+  // "a sample arrived" was wrongly counted as "a sample was observed", and it is fixed there.
+  const bool measured = pose_state_.pose.confidence > 0.0;
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;

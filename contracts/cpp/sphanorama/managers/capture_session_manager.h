@@ -56,6 +56,12 @@ class ICaptureSessionManager {
   // burst records whatever the camera is looking at and the node is only a name to file it under,
   // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
   // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+  //
+  // **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
+  // zero, which is what a phone with no motion sensor reports for the life of a session — there is
+  // no direction to measure a cone against, and every cell arms. A client on such a device will
+  // never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
+  // capture, because it never will (ADR 0042).
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
@@ -99,6 +105,12 @@ class ICaptureSessionManager {
 
   // Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to
   // the evidence pool rather than discard it.
+  //
+  // "Re-arms" is about the cell's state, not about a burst: the burst that follows still goes
+  // through `ArmBurst` and is still refused if the camera is not aimed at the cell (ADR 0041). So
+  // a retake asks the user to point at the cell again before anything is recorded — which is the
+  // point, since a retake that captured from wherever the phone happened to be pointing is the bug
+  // ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

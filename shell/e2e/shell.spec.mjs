@@ -792,6 +792,93 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
+test('the shutter is offered exactly when guidance says hold still', async ({ page }) => {
+  // The only browser-level assertion that the aim gate is a gate.
+  //
+  // Thirteen tests wait for `#capture` to become *enabled*, and none of them ever asserts it is
+  // disabled — so `canCapture` could read `action !== 'Seek'`, or drop the check entirely, and the
+  // whole suite would stay green. That was measured, not supposed: a reviewer made exactly that
+  // substitution and every browser test passed.
+  //
+  // Asserted as an invariant over a sweep rather than at one hand-picked attitude, because which
+  // attitudes fall between cones is a property of the tessellation and would have to be rewritten
+  // the day the plan changes. What must hold at every attitude is that the offer and the reason
+  // for it agree.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+    await viewfinderIsLive(page);
+
+    const seen = new Set();
+    for (let alpha = 0; alpha < 360; alpha += 7) {
+      await page.evaluate((a) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+          alpha: a, beta: 90, gamma: 0,
+        }));
+      }, alpha);
+      // One frame, so the pump has run against the attitude just dispatched.
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+
+      const state = await page.evaluate(() => ({
+        guidance: document.querySelector('#guidance').textContent ?? '',
+        disabled: document.querySelector('#capture').disabled,
+      }));
+      const holdingStill = state.guidance.includes('hold still');
+      seen.add(holdingStill);
+      expect(state.disabled, `alpha ${alpha}: "${state.guidance}"`).toBe(!holdingStill);
+    }
+
+    // Both halves of the invariant were actually reached; a sweep that only ever saw one of them
+    // would assert nothing. This is the arrangement checking its own premise.
+    expect(seen.has(true), 'the sweep never aimed at a cell').toBe(true);
+    expect(seen.has(false), 'the sweep never aimed away from every cell').toBe(true);
+
+    // And then the state the sweep alone cannot reach, which is the one that matters.
+    //
+    // On a fresh capture the only two actions are `Seek` and `HoldStill`, so the sweep above
+    // cannot tell `=== 'HoldStill'` from `!== 'Seek'` — verified by running that exact sabotage
+    // against it, which passed. `AlreadyCaptured` is where the two differ: the camera is inside a
+    // captured cell's cone, the core would take the burst, and the page declines because
+    // re-shooting a finished cell is a deliberate act (ADR 0041). Nothing else in the suite ever
+    // reaches it, because every other test captures once and stops.
+    let held = null;
+    for (let alpha = 0; alpha < 360 && held === null; alpha += 7) {
+      await page.evaluate((a) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+          alpha: a, beta: 90, gamma: 0,
+        }));
+      }, alpha);
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+      const line = await page.evaluate(() => document.querySelector('#guidance').textContent ?? '');
+      if (line.includes('hold still')) held = alpha;
+    }
+    expect(held, 'never found an attitude inside a cell').not.toBeNull();
+
+    await expect(page.locator('#capture')).toBeEnabled();
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    // Keep the phone exactly where it was, so the cell that just filled is the cell under the
+    // reticle — the resting state ADR 0041 named `AlreadyCaptured`.
+    await expect.poll(async () => {
+      await page.evaluate((a) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+          alpha: a, beta: 90, gamma: 0,
+        }));
+      }, held);
+      return page.evaluate(() => document.querySelector('#guidance').textContent ?? '');
+    }, { timeout: 20000 }).toContain('already captured');
+
+    await expect(page.locator('#capture')).toBeDisabled();
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which locks the burst actually got', async ({ page }) => {
   // The question a burst's numbers raise and the strip could not answer: is the camera free to
   // re-expose and refocus between these five frames? On a Pixel one cell's candidates scored

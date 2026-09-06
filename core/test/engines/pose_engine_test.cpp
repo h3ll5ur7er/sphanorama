@@ -174,6 +174,43 @@ TEST(PoseEngine, IntegratingIsPureInThePriorState) {
   EXPECT_FALSE(state.observed);
 }
 
+TEST(PoseEngine, ASampleThatReportsNothingIsNotAnObservation) {
+  // A sample carrying neither an attitude nor a measured rate contributes nothing, and Integrate
+  // already knows it: every branch that could move the orientation is gated on one or the other,
+  // under a comment saying "a sample that reports nothing should move nothing". It moved one thing
+  // anyway — `observed` — and `observed` is how a caller learns whether the orientation in its
+  // hand is a reading.
+  //
+  // What that costs is not academic. `CaptureSessionManager::ArmBurst` enforces the acceptance
+  // cone only against a pose that was measured, which is what lets a phone with no motion sensor
+  // capture at all (ADR 0041). One empty sample used to flip the state to observed with confidence
+  // 0.5 and the orientation still at identity, and the manager then refused thirty-one cells of
+  // thirty-two on the strength of a number nobody measured.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample nothing;
+  nothing.timestampNs = 1'000'000;
+  nothing.hasOrientation = false;
+  nothing.hasAngularVelocity = false;
+
+  auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_FALSE(after.value.observed) << "an empty sample is not an observation";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0)
+      << "confidence is derived from observed, so it has to follow it down";
+  // And the orientation really did not move, which is what makes the flag the whole finding.
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
+
+  // A real reading after it still lands, so this refuses an empty sample rather than the stream.
+  ImuSample real = Oriented(2'000'000, 30.0, 0.0);
+  auto seen = engine.Integrate(after.value, std::span<const ImuSample>(&real, 1));
+  ASSERT_TRUE(seen.ok());
+  EXPECT_TRUE(seen.value.observed);
+  EXPECT_DOUBLE_EQ(seen.value.pose.confidence, 1.0);
+}
+
 TEST(PoseEngine, AFreshStateHasSeenNothing) {
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);

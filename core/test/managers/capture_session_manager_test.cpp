@@ -19,6 +19,7 @@
 #include "engines/frame_quality_engine/null_frame_quality_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/pose_engine/null_pose_engine.h"
+#include "engines/pose_engine/orientation_pose_engine.h"
 #include "managers/capture_session_manager/capture_session_manager.h"
 #include "managers/project_manager/project_manager.h"
 #include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
@@ -214,7 +215,15 @@ class CaptureSession : public ::testing::Test {
   NodeId FirstNode() { return manager->GetPlan().value.nodes.front().id; }
 
   NullCoveragePlannerEngine planner;
-  NullPoseEngine pose;
+  // A phone that can say where it is pointing, looking straight ahead.
+  //
+  // `NullPoseEngine` was here, and it reports confidence zero — the contract's word for "nothing
+  // estimated this". That used to be a neutral choice; since ADR 0042 it is not, because `Locate`
+  // targets by coverage alone when there is no aim and `ArmBurst` skips its cone check. A fixture
+  // built on it is a *sensorless* device, so every test above would have been exercising the UC-4
+  // path while reading as though it exercised the normal one. Sensor absence gets one test that
+  // says so by name instead.
+  AimablePoseEngine pose;
   NullFrameQualityEngine quality;
   RefusingFramePreviewEngine preview;
   std::shared_ptr<MemoryFrameStoreAccess> store;
@@ -296,10 +305,15 @@ TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
   // estimated, and a caller reading it "is reading a value nothing produced". An aim check against
   // a number nobody produced is not a check, so there is nothing to enforce and the burst is
   // allowed. The user of a sensorless phone aims by eye, which is what vision-only means.
+  // The shipped pose engine, not the fixture's null one. `NullPoseEngine` reports confidence zero
+  // whatever it is handed, so a test using it asserts the gate is open without ever asking whether
+  // the *real* engine would have said the pose was measured — it would pass with the sensor
+  // present, which is not the claim in the name.
   FakeMotionSensorAccess blind(MotionCapability::None);
   RingsCoveragePlannerEngine rings;
-  CaptureSessionManager manager(rings, pose, quality, preview, *camera, blind, *store, *projects,
-                                clock);
+  OrientationPoseEngine tracking;
+  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, blind, *store,
+                                *projects, clock);
   CapturePlanSpec spec;
   spec.horizontalFovDeg = 66.0;
   spec.verticalFovDeg = 50.0;
@@ -327,11 +341,59 @@ TEST_F(CaptureSession, APhoneWithNoMotionSensorCanStillArmEveryCell) {
   }
   ASSERT_GT(worst, 90.0) << "the fixture expects a cell on the far side of the sphere";
 
+  // A tick carrying a sample that reports nothing — no attitude, no measured rate — which is what
+  // a page hands over when its orientation listener fires and the platform filled nothing in. It
+  // must not count as an observation. It used to: `Integrate` marked the state observed for any
+  // sample at all, so one of these took the manager from arming every cell to refusing thirty-one
+  // of thirty-two, on an orientation still sitting at identity. Ticking here rather than not is
+  // the whole point — without it this test never reaches the code the fix is in.
+  const ImuSample nothing{};
+  ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&nothing, 1)).ok());
+
   BurstSpec burst;
   burst.frameCount = 2;
   burst.intervalMs = 10;
   EXPECT_TRUE(manager.ArmBurst(furthest->id, burst).ok())
       << "a phone with no sensor could not arm the far side of its own plan";
+}
+
+TEST_F(CaptureSession, APhoneWithNoMotionSensorIsSentOnToTheNextCellAfterItCapturesOne) {
+  // The other half of UC-4, and the one a sabotage of the aim rule does not catch: arming every
+  // cell is no use if guidance only ever names one of them.
+  //
+  // With no sensor the pose is identity for the life of the session. If the planner preferred the
+  // cell under that identity, the first burst would fill it and every tick afterwards would answer
+  // `AlreadyCaptured` about the same cell — thirty-one cells unreachable not because arming was
+  // refused but because nothing ever pointed at them. ADR 0042 is why it does not: with no aim,
+  // coverage decides alone and the target moves on.
+  FakeMotionSensorAccess blind(MotionCapability::None);
+  RingsCoveragePlannerEngine rings;
+  OrientationPoseEngine tracking;
+  CaptureSessionManager manager(rings, tracking, quality, preview, *camera, blind, *store,
+                                *projects, clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
+
+  auto first = manager.OnMotion({});
+  ASSERT_TRUE(first.ok()) << first.status.detail;
+  const NodeId shot = first.value.targetNode;
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 10;
+  ASSERT_TRUE(FireBurstOn(manager, clock, shot, burst).ok());
+
+  auto next = manager.OnMotion({});
+  ASSERT_TRUE(next.ok()) << next.status.detail;
+  EXPECT_NE(next.value.targetNode.value, shot.value)
+      << "a sensorless capture was sent back to the cell it had just filled, so the other "
+         "thirty-one were unreachable";
+  EXPECT_EQ(next.value.action, GuidanceAction::Seek);
 }
 
 TEST_F(CaptureSession, OnMotionPullsFromTheSensorWhenTheClientHasNothingToPush) {
@@ -448,8 +510,18 @@ TEST_F(CaptureSession, OnMotionWithNoSamplesIsNotAnError) {
 // testing one and assuming the other is how the second stays broken.
 class UnintegrablePoseEngine final : public IPoseEngine {
  public:
+  // A phone whose sensor works and whose integrate then fails, which is what this fake is for. The
+  // starting state has to say so: built on `NullPoseEngine` it reported confidence zero, and since
+  // ADR 0042 that means "no aim", which would quietly move every test using it onto the sensorless
+  // path — testing UC-4 while reading as though it tested a failing integrate.
   Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
-    return inner_.Initial(mode, capability);
+    auto state = inner_.Initial(mode, capability);
+    if (state.ok()) {
+      state.value.observed = true;
+      state.value.absolute = true;
+      state.value.pose.confidence = 1.0;
+    }
+    return state;
   }
   Result<PoseState> Integrate(const PoseState&, std::span<const ImuSample>) override {
     return Err<PoseState>(StatusCode::ComputeUnavailable, "test", "cannot integrate");
@@ -474,7 +546,8 @@ class UnlocatablePlannerEngine final : public ICoveragePlannerEngine {
   Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
     return inner_.Plan(spec, lens);
   }
-  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&, const CoverageState&) override {
+  Result<CaptureGuidance> Locate(const PoseSample&, const CapturePlan&,
+                                 const CoverageState&) override {
     return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
   }
   Result<CoverageState> Evaluate(const CapturePlan& plan,
@@ -541,7 +614,8 @@ class RefusingCoveragePlannerEngine final : public ICoveragePlannerEngine {
   Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics&) override {
     return Err<CapturePlan>(StatusCode::Unsupported, "test", "cannot plan");
   }
-  Result<CaptureGuidance> Locate(const Quat&, const CapturePlan&, const CoverageState&) override {
+  Result<CaptureGuidance> Locate(const PoseSample&, const CapturePlan&,
+                                 const CoverageState&) override {
     return Err<CaptureGuidance>(StatusCode::Unsupported, "test", "cannot locate");
   }
   Result<CoverageState> Evaluate(const CapturePlan&, std::span<const Candidate>) override {
