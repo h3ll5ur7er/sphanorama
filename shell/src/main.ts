@@ -374,6 +374,13 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
     // all. A reviewer proved the point from the other side, by deleting the clears this used to do
     // and finding the whole suite still green.
     //
+    // It does not clear `lastLocksLine` either, and that needs its own reason rather than the one
+    // above — nothing derives that string from the tracks. It is read at exactly two places, both
+    // of which queue a release, and both of which need a running capture loop. The loop stops on a
+    // camera taken away, so there is no reader left in this tab; a `#locks` row still naming the
+    // dead camera's locks is frozen alongside every other row, under a stage line saying to
+    // reload. The core's own route clears it because there a session can follow.
+    //
     // `stopCameraStream` is not bookkeeping and stays: a stream can lose one track and keep another
     // lit, and the camera indicator staying on is its own bug report.
     const forgetCamera = () => {
