@@ -22,7 +22,14 @@ class ICoveragePlannerEngine {
   // has no opinion at all, the nearest cell of any kind, because "needed" has no meaning yet.
   // That third branch is reached two ways: an uninformed coverage state, which `OnMotion` cannot
   // produce because it evaluates coverage first; and a state with nothing missing, which is every
-  // tick of a finished sphere — so it is what names the cell in every `SphereDone`.
+  // tick of a finished sphere.
+  //
+  // It is *not* what names the cell in every `SphereDone`, and this sentence has now been wrong
+  // three times in three different ways. Aim still comes first on a finished sphere: a phone
+  // resting inside a cone gets that cell, and only a phone resting inside none of them falls
+  // through to "the nearest cell of any kind". The two answers coincide while every node carries
+  // the same `acceptanceConeDeg`, which is true of both `Plan` implementations and is not a
+  // property of `CoverageNode` — with a 1° cone on one node and 10° on another they part company.
   //
   // What the coverage state buys is then the *action* rather than the target: `HoldStill` on a
   // cell that wants shooting, `AlreadyCaptured` on one that does not, so nobody is told to

@@ -732,11 +732,13 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // that learns of it: it looks in order to decline to have an opinion, so what UC-4 promises —
   // every cell still reachable — holds. Such a user aims by eye, which is what vision-only means.
   //
-  // One signal, and it is the contract's: `PoseSample.confidence` of zero means the orientation was
-  // not estimated. `PoseState::observed` was tested alongside it and neither conjunct could be
-  // told from the other by any test — every engine derives one from the other, which is the
-  // engine's business and not a second opinion for the manager to hold. `Integrate` is where
-  // "a sample arrived" was wrongly counted as "a sample was observed", and it is fixed there.
+  // One signal, and it is the contract's: `PoseSample.confidence` of zero means no reading has ever
+  // anchored the orientation. `PoseState::observed` was tested alongside it for a while and is the
+  // wrong second conjunct — it means "a sample arrived", which a rate-only stream satisfies while
+  // reporting confidence zero, so the pair is not two ways of saying one thing. Which flag carries
+  // which fact is the engine's business (`observed`, `absolute` and `anchored` are three of them),
+  // and the manager holds no opinion of its own about any of them: it reads the one number the
+  // contract publishes.
   const bool measured = pose_state_.pose.confidence > 0.0;
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),

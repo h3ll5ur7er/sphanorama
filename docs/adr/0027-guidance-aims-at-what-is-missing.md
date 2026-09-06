@@ -7,6 +7,11 @@
 > `ArmBurst` did not check aim, the next press filled a neighbour with this cell's pixels. What
 > this ADR was protecting, never telling someone to re-shoot what they have, is now carried by the
 > *action* (`AlreadyCaptured` rather than `HoldStill`) instead of by which cell is named.
+>
+> **And restored, unchanged, wherever there is no aim** — [ADR 0042](0042-with-no-aim-coverage-decides-alone.md).
+> A pose no reading has anchored gives nothing to rest "inside a cone" of, so the target rule below
+> is the one that runs, for the whole life of a sensorless capture. The supersession is conditional
+> rather than complete, and 0042 names this ADR as what it falls back to.
 
 ## Context
 

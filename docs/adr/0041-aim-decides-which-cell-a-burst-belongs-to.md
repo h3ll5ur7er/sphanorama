@@ -92,8 +92,11 @@ re-shoots it is worse than one that waits.
   the page offered a capture for that cell and then nothing. The dead shutter had moved from the
   core to the client rather than gone, which a reviewer measured after this bullet was first
   written. ADR 0042 is the other half — with no aim, coverage decides the target — and the two
-  should be read together. The gate applies only to a pose that was actually measured — `PoseState::observed` and
-  `PoseSample.confidence`, which is the contract's own way of saying "nothing produced this". A
+  should be read together. The gate applies only to a pose that was actually anchored, and it reads
+  exactly one field to decide it: `PoseSample.confidence`, the contract's own way of saying "no
+  reading has ever anchored this". It was briefly a pair with `PoseState::observed`, which is the
+  wrong companion — that flag means "a sample arrived", which a rate-only stream satisfies at
+  confidence zero. A
   device that declined motion or has none tracks vision-only and reports identity forever, so
   enforcing a cone against that number would refuse thirty-one cells of thirty-two and then leave
   the page with nothing to offer and nothing on screen saying why — measured on the shipped
@@ -101,8 +104,8 @@ re-shoots it is worse than one that waits.
   eye, which is what vision-only means.
 
   The cost is that `docs/03-architecture.md` UC-4's *"no other component learns that sensors were
-  absent"* is no longer literally true: `ArmBurst` reads the two fields that say whether the pose
-  is a reading. What it does with that is decline to have an opinion, so the *behaviour* UC-4
+  absent"* is no longer literally true: `ArmBurst` reads the one field that says whether the pose
+  is anchored. What it does with that is decline to have an opinion, so the *behaviour* UC-4
   promises is intact — every cell remains armable — but the sentence has been narrowed rather than
   kept, and both it and the manager's own copy of it now say so.
 - **A stale pose is not caught.** The gate reads `pose_state_`, which `OnMotion` refreshes only on

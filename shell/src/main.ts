@@ -769,10 +769,32 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // `unlock` is what makes the camera agree with what it tells the core: the
         // release it queues sits behind the abandoned write, so whatever that write does to the
         // track is undone the moment the track is reachable again.
-        unlock();
+        // Recorded *before* the release is queued, not after. `unlock` snapshots `lastLocksLine`
+        // to describe what its release is a release of, so setting the line one statement later
+        // handed it the previous burst's record — or, on the first arm of a session, the empty
+        // string, so the row flipped from "the camera did not answer the lock request" to "no
+        // burst has run yet" when the release finally landed. Measured at t=7.5 s on a camera
+        // taking 1500 ms per constraint. `da58ca7`'s snapshot is right for the `End()` collision
+        // it was written for and wrong for a caller that queues its release above its own record.
         lastLocksLine = 'the camera did not answer the lock request';
         locksOut.textContent = lastLocksLine;
+        unlock();
         sayForAWhile('the camera is not answering — not capturing');
+        return false;
+      }
+      if (cameraLost()) {
+        // Asked again, because the guard at the top of this function is a fact about the moment
+        // the arm started and there is an await between them. A camera taken away mid-arm leaves
+        // `camera.setLocks` still answering — the adapter's `active` stream is cleared only by its
+        // own `close()`, which the page never calls, and `applyConstraints` on an ended track is
+        // swallowed — so the write comes back `answered` and nothing below would notice. What that
+        // arms is a burst the manager holds as firing for the life of the tab, over a loop that
+        // has already stopped, with `#locks` rewritten to describe a camera that is gone.
+        //
+        // The same latch shape as `opened.ok` in `enable`, one function up, and it wants the same
+        // answer: ask now rather than trusting a check that has aged across an await.
+        unlock();
+        sayForAWhile('the camera was taken away — not capturing');
         return false;
       }
       held = write.done;
@@ -859,6 +881,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // `AdvanceBurst` runs on this tick and on nothing else (ADR 0018) — no further tick means no
       // further candidate. The reticle and the markers go, because they describe where to point a
       // camera that is not there.
+      // Same flag the guidance-failure branch sets, and for the same reason: `refreshCoverage` is
+      // asynchronous, so one already in flight would land after the clear below and repaint the
+      // rings, the arrow and the map under a line saying the camera is gone. That branch got the
+      // flag *and* a call-ordering fix after it was measured putting a ring back one millisecond
+      // later; this early return copied the clear and neither protection.
+      guidanceFailed = true;
       captureButton.disabled = true;
       overlay.show({ rings: [], arrow: null });
       guidanceOut.textContent = 'the camera was taken away';

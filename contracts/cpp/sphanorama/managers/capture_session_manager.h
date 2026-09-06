@@ -111,6 +111,14 @@ class ICaptureSessionManager {
   // a retake asks the user to point at the cell again before anything is recorded — which is the
   // point, since a retake that captured from wherever the phone happened to be pointing is the bug
   // ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
+  //
+  // **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
+  // anchored there is no direction to measure a cone against, so the burst after a retake arms
+  // wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
+  // device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
+  // commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
+  // states a precondition without its exemption tells a client to wait for something that will
+  // never happen.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

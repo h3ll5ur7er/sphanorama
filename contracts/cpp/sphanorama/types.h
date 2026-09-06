@@ -152,11 +152,25 @@ struct PoseSample {
   int64_t timestampNs = 0;
   Quat orientation;
   Vec3 angularVelocity;
-  // How much the orientation above is worth, in [0,1]. **Zero means it was not estimated at all** —
-  // nothing has moved it off the identity it started at — and callers act on that rather than on
-  // the number's size: `ArmBurst` enforces the acceptance cone only against a measured pose, and
-  // `Locate` only prefers the cell the camera is inside for one (ADR 0041, ADR 0042). Between
-  // those, 1.0 is an absolute reading and 0.5 is dead reckoning from rates.
+  // How much the orientation above is worth, in [0,1].
+  //
+  // **Zero means no reading has ever anchored it**, which is not the same as "nothing has moved
+  // it": integrating a gyroscope's rates turns the orientation degrees away from where it started
+  // and says nothing whatever about where that was. A stream of rates alone reports zero for its
+  // whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
+  // that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
+  //
+  // Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
+  // cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
+  // for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+  // *from* one — drifting away from a direction somebody measured, which is worth aiming with and
+  // an unanchored integration is not.
+  //
+  // The old gloss said zero meant nothing had moved the orientation. An engine written against it
+  // reports 0.5 for a heading nobody measured, and every rule above then fires on it: zero of
+  // thirty-two cells armable on the shipped tessellation, with the client in aimed mode so nothing
+  // on screen says why. This sentence is what a second `IPoseEngine` is written against, so it is
+  // the sentence that has to be right.
   double confidence = 0.0;
   bool visuallyCorrected = false;
 };
