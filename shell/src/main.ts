@@ -372,6 +372,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // a live offer to start a second loop over the session already running.
   resumeButton.hidden = true;
 
+  // Cleared with `targetNode`, and for the same reason: it is module scope because the click
+  // handler and the end-to-end hook read it, and that scope decision silently made it
+  // session-spanning. It is assigned only under `plan !== null`, so a second `pump` with no plan
+  // would keep the *previous* session's `armAt` — and `captureButton.disabled = captureCell ===
+  // null` would leave the shutter offered for it.
+  captureCell = null;
   const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
@@ -652,15 +658,21 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // trigger is a device running out of memory mid-capture, which is when the loop is most
       // worth keeping.
       //
-      // Routed into the same branch a refusal takes, so a tick has one way to fail rather than two.
-      const guided = await core.captureSession.onMotion([]).catch((cause) => ({
-        ok: false as const,
-        status: {
-          code: 'Internal' as const,
-          component: 'core worker',
-          detail: cause instanceof Error ? cause.message : String(cause),
-        },
-      }));
+      // Routed into the same branch a refusal takes for everything it says on screen — but *not*
+      // for what it does to `firing` and `armed`, which is the one thing the two failures do not
+      // share. `unreached` is what tells them apart.
+      let unreached = false;
+      const guided = await core.captureSession.onMotion([]).catch((cause) => {
+        unreached = true;
+        return {
+          ok: false as const,
+          status: {
+            code: 'Internal' as const,
+            component: 'core worker',
+            detail: cause instanceof Error ? cause.message : String(cause),
+          },
+        };
+      });
       if (guided.ok) {
         const guidance = guided.value;
         firing = guidance.action === 'Firing';
@@ -695,12 +707,24 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         paintOverlay();
         if (guidance.action === 'CellDone') void refreshCoverage();
       } else {
-        // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
-        // before it returns — so a failure means the burst really is gone and the camera's locks
-        // are back. It was not always: clearing this while the manager left the burst armed is
-        // what turned a stranded lock into a permanently stranded one.
-        firing = false;
-        armed = false;
+        // Safe to stop ticking *when the manager answered*, because it disarms an armed burst on
+        // every failing tick before it returns — so a refusal means the burst really is gone and
+        // the camera's locks are back. It was not always: clearing this while the manager left the
+        // burst armed is what turned a stranded lock into a permanently stranded one.
+        //
+        // A rejection is the case that argument does not cover, and it is the case this branch
+        // most recently learned to reach. The call threw on the way in — `facade.ts` allocating
+        // the arguments, the worker gone — so the manager never ran: the burst is still armed
+        // inside the core, `pending_` still pinned, the locks still applied. Clearing here would
+        // tell the loop a burst is over that is not, and on a phone producing no motion samples it
+        // would take the last true term out of the tick gate above, so `onMotion` is never called
+        // again and the capture is dead for good: stuck at three frames of five, locks held, every
+        // further press refused. Leaving the flags is what keeps the loop asking, which is what
+        // recovers from an allocation failure that passes.
+        if (!unreached) {
+          firing = false;
+          armed = false;
+        }
         // And the markers go with it. They describe where the cells are *relative to a pose*, and
         // a failed tick is one that produced no pose — leaving the last set on screen would draw
         // a confident answer over a line that says guidance has stopped working.

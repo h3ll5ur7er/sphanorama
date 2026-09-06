@@ -864,7 +864,11 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
     // under happy-dom, which has no cascade to get wrong — so deleting both stylesheet rules left
     // the entire gate green and a captured cell pixel-identical to a hole.
     const ringColours = await page.evaluate(() => {
-      const ring = document.querySelector('#cell-layer .cell-ring[data-captured="true"]');
+      // `:not([hidden])` because a ring that has left the view keeps its element and its
+      // attributes: without it this could be satisfied by a stale hidden ring rather than by the
+      // one on screen, which is the only assertion in the suite that a captured cell *looks*
+      // captured.
+      const ring = document.querySelector('#cell-layer .cell-ring[data-captured="true"]:not([hidden])');
       if (ring === null) return null;
       return {
         fill: getComputedStyle(ring.querySelector('.ring-fill')).stroke,
@@ -1632,6 +1636,81 @@ test('a guidance call that rejects does not take the capture loop with it', asyn
     }), { timeout: 15000 }).toBe(true);
     await expect(page.locator('#cell-layer .cell-ring:not([hidden])'))
       .not.toHaveCount(0, { timeout: 15000 });
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a guidance call that rejects mid-burst does not abandon the burst', async ({ browser }) => {
+  // The other half of routing a rejection into the refusal branch, and the half that was wrong.
+  // Clearing `firing` and `armed` there rests on the manager disarming an armed burst on every
+  // failing tick — true of every answer that *reached* it, and false of a rejection, which means
+  // the call threw on the way in and the manager never ran. The burst is then still armed inside
+  // the core, its frames still pinned, its locks still applied.
+  //
+  // On a phone producing no motion samples — which is this runner, and is the supported
+  // configuration UC-4 describes — those two flags are the only true terms left in the tick gate,
+  // so clearing them stops the loop asking for guidance at all and the capture is dead for good:
+  // stuck part way through a burst, locks held, every further press refused. No orientation events
+  // are dispatched here for exactly that reason; the round-4 test drives them and so only ever
+  // exercised the case where the gate reopens by itself.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    window.__failNextGuidance = false;
+    window.__guidanceFailuresInjected = 0;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion'
+          && window.__failNextGuidance) {
+        window.__failNextGuidance = false;
+        window.__guidanceFailuresInjected += 1;
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+          data: {
+            kind: 'failed', seq: message.seq,
+            detail: "core could not allocate 64 bytes for 'CaptureSessionManager.onMotion'",
+          },
+        })), 0);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Armed, then the very next guidance call is made to reject — so the failure lands with a
+    // burst genuinely in flight, which is the state the argument is about.
+    await page.evaluate(() => {
+      window.__capturing = window.sphanoramaCapture();
+      window.__failNextGuidance = true;
+    });
+    await expect.poll(() => page.evaluate(() => window.__guidanceFailuresInjected),
+                      { timeout: 15000 }).toBe(1);
+
+    // The burst finishes anyway. Without the flags surviving the rejection this never arrives:
+    // no sample, no `firing`, no tick, no `AdvanceBurst`.
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    expect(await page.evaluate(() => window.__capturing)).toBe(true);
+    const banked = await page.evaluate(async () => {
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      let total = 0;
+      for (const node of plan.value.nodes) {
+        const got = await window.sphanoramaCore.captureSession.candidates(node.id);
+        if (got.ok) total += got.value.length;
+      }
+      return total;
+    });
+    expect(banked).toBe(5);
   } finally {
     await server.close();
     await context.close();
