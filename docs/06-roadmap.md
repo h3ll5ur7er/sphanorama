@@ -383,6 +383,16 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   for the case that was wrong — small, and worth a change of its own, because marker detection
   decides what crosses the boundary at all and a subtle change there is not something to slip
   into a PR about something else.
+- **Two capture loops from three buttons — open, and pre-existing.** `pump` says it is "the one
+  place that can promise there is only ever one", and nothing enforces that: `#new-capture` stays
+  live while `enable` runs, so a refused resume followed by a resume press and then a new-capture
+  press starts two loops. Found by a reviewer on PR #49, against ADR 0039's refused-resume flow.
+
+  Not fixed there because the honest fix is not local. One guard owning "a loop is starting or
+  running" would replace three buttons' worth of `hidden`/`disabled` bookkeeping that `enable`,
+  `beginSession`, `pickUp` and `pump` all write, and each of those paths wants a test. That is a
+  change to the page's state machine and belongs in a branch of its own rather than inside one
+  about motion sensors.
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.
