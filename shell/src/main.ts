@@ -426,10 +426,21 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * frame would be a facade round trip for an answer that cannot have moved, which is the same
    * reasoning the guidance line already follows.
    */
+  // Set when a coverage read did not land, so the next tick tries again.
+  //
+  // `CellDone` fires once per burst, and it is the only thing that asks for coverage — so a single
+  // refused read left that cell drawn as a hole and `nodesSatisfied` short by one for the rest of
+  // the session, with nothing to retry it. For ever, if it was the last cell. The answer is cheap
+  // and idempotent; not retrying it was the only thing making a transient failure permanent.
+  let coverageStale = false;
   const refreshCoverage = async () => {
     if (review === null || plan === null) return;
-    const state = await core.captureSession.coverage();
-    if (!state.ok) return;
+    const state = await core.captureSession.coverage().catch(() => null);
+    if (state === null || !state.ok) {
+      coverageStale = true;
+      return;
+    }
+    coverageStale = false;
     nodesSatisfied = state.value.nodesSatisfied;
     lastCoverage = state.value;
     review.show(plan, state.value);
@@ -620,7 +631,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // which cells are done — two answers to that question is how the strip ended up in an
         // order nothing had chosen.
         paintOverlay();
-        if (guidance.action === 'CellDone') void refreshCoverage();
+        if (guidance.action === 'CellDone' || coverageStale) void refreshCoverage();
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
         // before it returns — so a failure means the burst really is gone and the camera's locks

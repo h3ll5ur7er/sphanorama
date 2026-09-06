@@ -393,32 +393,60 @@ locking, invisibly, because the bad frame is a real candidate with a real score 
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
 
-### Measured and not a defect: the arrow that "only moves when pointing down"
+### The arrow that "only moves when pointing down" — a real defect, found the second time
 
-Reported from a phone alongside the three-cells-from-one-spot bug, and written down because the
-obvious reading of it is wrong and somebody would otherwise measure it twice.
+Reported from a phone alongside the three-cells-from-one-spot bug. Written down twice: once with
+the wrong explanation, and then corrected by review. Both halves are kept, because the wrong one is
+instructive.
 
-**The bearing arithmetic is correct.** It combines both axes: with the phone level, a cell 30° left
-and 30° up gives a bearing of 319.1°, one 30° right and 30° up gives 40.9°, and one straight up
-gives 0°. Nothing is pinned to an axis and nothing is swapped.
+**The bearing arithmetic is correct**, and this part survived checking. It combines both axes: with
+the phone level, a cell 30° left and 30° up gives a bearing of 319.1°, one 30° right and 30° up
+gives 40.9°, and one straight up gives 0°. All three reproduce against the shipped engine.
 
-**What produces the symptom is the visibility rule, and it is deliberate.** The arrow is raised only
-when the cell being aimed at is *not in the picture* — if the ring is on screen, the ring is the
-guidance. With a level phone against a real tessellation, one or two cells are on screen at all
-times, so the arrow is simply absent. Tilt down, the whole ring leaves the field of view, the arrow
-appears, and its bearing tracks smoothly (measured: 0.0 → 14.0 → 27.2 → 346.0 as the phone pans).
-"Only moves while pointing down" is the arrow only *existing* while pointing down.
+**The first explanation was that the symptom is a deliberate visibility rule** — the arrow is raised
+only when the target cell is not in the picture, a level phone always has a cell on screen, so the
+arrow is simply absent and "only moves while pointing down" is it only *existing* while pointing
+down. That was filed as "measured, not a defect". It was neither.
 
-**One sub-case does look stuck, and it is also correct.** When the arrow is visible and the target
-sits at the camera's own elevation, the bearing is exactly ±90° and does not rotate as the phone
-pans — because the direction to turn genuinely does not change. The distance does, and the arrow
-carries it as a number beside the glyph. Rotating there would be inventing a direction.
+**What is actually happening: the arrow never hides, so it freezes.** `#target-arrow` carries an
+author rule `display: grid`, and the UA stylesheet's `[hidden] { display: none }` is a lower cascade
+origin — so the painter setting `arrow.hidden = true` changed nothing that could be seen. The arrow
+is on screen at every attitude, including at page load, where a quarter of the glyph sits in the
+corner of the app. And because the painter also stops *updating* it when there is no target to point
+at, what stays on screen is its last bearing and its last distance, unchanging.
 
-**What was actually broken is what the arrow pointed at.** Under the old rule, capturing the cell in
-front of you moved the target to a neighbour under a still phone, so the reticle and the arrow
-jumped for reasons no user could see. ADR 0041 fixes that. If the arrow still reads wrong once aim
-decides the target, the change wanted is a design one — showing a direction even when a ring is
-visible, say — not a correction to the arithmetic.
+So the report was exact and the explanation inverted it: the arrow was not moving while pointing
+down and absent otherwise — it was moving while pointing down and **frozen** otherwise. Fixed by
+`#target-arrow[hidden] { display: none; }`, which outranks the rule above it on specificity, with a
+browser test that fails without it at the first assertion.
+
+**Two claims in the first write-up were also measured false**, and are worth recording because they
+were plausible:
+
+- *"one or two cells are on screen at all times, so the arrow is simply absent."* The first clause is
+  right; the second does not follow. The arrow's condition is about the **target** cell, not about
+  any cell. Over 200 capture states × 13 elevations × 24 azimuths, a level phone raises the arrow
+  39.4% of the time — more often than at 15° or 45° down, and symmetric in elevation, so nothing
+  about it distinguishes "down".
+- *"Tilt down, the whole ring leaves the field of view."* At every elevation from −90 to +90 there
+  are between one and five cell centres on screen; the view never empties, which is what a
+  sphere-covering tessellation means. On a fresh capture the arrow is raised at 0 of 2664 attitudes.
+  The intuition came from the overlay unit tests, whose plans have a single cell.
+
+**One sub-case that is genuinely correct.** When the target sits at the camera's own elevation the
+bearing is ±90° and does not rotate as the phone pans, because the direction to turn does not
+change. The distance does, and the arrow carries it as a number. The exact statement is about the
+camera frame rather than about elevation in general: it holds at the horizon and degrades smoothly
+away from it (camera and target both at 15° give 87.4 → 83.9 → 75.5 → 58.0 → 18.7 across a pan).
+
+**What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
+front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
+
+**The lesson worth keeping.** A measurement can be right and the conclusion drawn from it wrong: the
+three bearings were real, and they were used to close a report about something else entirely. The
+part nobody measured was the one the user was describing — whether the element is on the screen —
+and it took a reviewer with a browser and a `getComputedStyle` to ask. "Measured and not a defect"
+is a claim that needs the measurement to be of the thing reported.
 
 ---
 

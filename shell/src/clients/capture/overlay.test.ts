@@ -1,6 +1,10 @@
-// What the capture overlay decides to draw: a ring on every cell in view, filled if it has been
-// captured, and an arrow when the cell to go to is not in view at all. How any of it looks is
-// reviewed by eye; that it names the right cells, in the right places, with the right fill, is not.
+// What the capture overlay decides to draw: a ring on every cell in view, coloured if that cell
+// already holds a capture and filled by how far a hold has got, and an arrow when the cell to go to
+// is not in view at all. How any of it looks is reviewed by eye; that it names the right cells, in
+// the right places, with the right fill and the right captured flag, is not.
+//
+// The fill and the colour are two facts now, not one: a full ring meant "captured" until a
+// hold-still timer became the other way to fill it.
 import { describe, expect, it } from 'vitest';
 
 import { planOverlay } from './overlay';

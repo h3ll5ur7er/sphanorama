@@ -32,6 +32,10 @@ function ringElement(): HTMLElement {
 }
 
 function paintRing(host: HTMLElement, ring: RingMark): void {
+  // Which cell this element is for. The painter keys its pool by it, and writing it down is what
+  // makes that checkable from outside — a pool that handed one cell's element to another looked
+  // identical in the DOM without it, and the test that was supposed to catch it passed by accident.
+  host.dataset.node = String(ring.node);
   host.style.left = `${(ring.x * 100).toFixed(3)}%`;
   host.style.top = `${(ring.y * 100).toFixed(3)}%`;
   host.dataset.target = String(ring.isTarget);
@@ -56,22 +60,36 @@ export function createOverlayPainter(layer: HTMLElement, arrow: HTMLElement): Ov
   // Kept and reused rather than rebuilt each frame. This runs on every animation frame beside a
   // camera and a WASM core, and replacing the children thirty times a second would churn the DOM
   // for a set of markers that mostly just move a little.
-  const rings: HTMLElement[] = [];
+  //
+  // **Keyed by cell, not by position in the list.** A pool indexed by array position hands one
+  // frame's element to a different cell the next frame, as soon as the set of visible cells
+  // changes — which is every time the phone turns. The element keeps the CSS state it had, and
+  // `.ring-fill` has a transition on it, so the new cell's ring is drawn part-way through the
+  // *previous* cell's arc: measured at 40 ms after a pan, the colour had already snapped to
+  // "captured" while the arc was 72% drawn. A captured cell rendered as a partly filled ring is
+  // exactly the ambiguity this change exists to remove — a per-render slot doing a per-cell
+  // identity's job.
+  const rings = new Map<number, HTMLElement>();
 
   return {
     show(overlay) {
-      while (rings.length < overlay.rings.length) {
-        const host = ringElement();
-        rings.push(host);
-        layer.append(host);
-      }
-      overlay.rings.forEach((ring, index) => {
-        const host = rings[index];
+      const drawn = new Set<number>();
+      for (const ring of overlay.rings) {
+        const key = ring.node as number;
+        let host = rings.get(key);
+        if (host === undefined) {
+          host = ringElement();
+          rings.set(key, host);
+          layer.append(host);
+        }
         host.hidden = false;
         paintRing(host, ring);
-      });
-      for (let spare = overlay.rings.length; spare < rings.length; spare += 1) {
-        rings[spare].hidden = true;
+        drawn.add(key);
+      }
+      // A cell that is no longer in view keeps its element, hidden. The plan is fixed for a
+      // session, so the map is bounded by its cell count and never grows past it.
+      for (const [key, host] of rings) {
+        if (!drawn.has(key)) host.hidden = true;
       }
 
       arrow.hidden = overlay.arrow === null;

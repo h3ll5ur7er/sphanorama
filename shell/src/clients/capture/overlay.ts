@@ -22,10 +22,14 @@ export interface RingMark {
   /**
    * How much of the ring is drawn, from 0 to 1.
    *
-   * A fraction rather than a flag because captured-or-not is the *current* answer and not the
-   * interesting one: a hold-still timer counting toward a burst reads as a filling ring, and a
-   * fill that only ever took two values would have to be rebuilt to say so. Nothing drives a
-   * middle value yet; `holding` is where one would arrive.
+   * A fraction rather than a flag, because a hold-still timer counting toward a burst reads as a
+   * filling ring and a fill that only ever took two values would have to be rebuilt to say so.
+   * Nothing drives a middle value yet; `holding` is where one would arrive, and the dwell trigger
+   * is what will drive it.
+   *
+   * It used to say captured-or-not was "not the interesting one", which is the sentence `captured`
+   * below was added to disagree with: a full ring has two meanings and a fraction cannot carry the
+   * difference.
    */
   fill: number;
   /** Whether this is the cell guidance is sending the user to. */

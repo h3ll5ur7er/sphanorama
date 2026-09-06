@@ -792,6 +792,48 @@ test('the cells you can see are marked in the viewfinder', async ({ page }) => {
   }
 });
 
+test('the off-screen arrow is not on screen when there is nothing to point at', async ({ page }) => {
+  // The arrow is raised only when the target cell is *out of the picture*, and against a real
+  // tessellation a level phone always has a cell in view — so on a fresh capture it should never
+  // appear. It appeared always.
+  //
+  // `#target-arrow { display: grid }` is an author rule and the UA sheet's `[hidden] { display:
+  // none }` is a lower origin, so `arrow.hidden = true` changed nothing that could be seen. And
+  // because the painter also stops *updating* the arrow when there is no target to point at, what
+  // stayed on screen was its last bearing and last distance, unchanging. That is the device report
+  // — "the arrow only moves while I am pointing the phone down" — from the other side: it was
+  // frozen the rest of the time, not absent.
+  //
+  // In the browser rather than in a unit test because the defect is a cascade one: the markup and
+  // the class both say `hidden`, and only a real stylesheet in a real engine disagrees.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    // Before a capture even starts there is no target, so nothing to point at.
+    await expect(page.locator('#target-arrow')).toBeHidden();
+
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+
+    for (let alpha = 0; alpha < 360; alpha += 15) {
+      await page.evaluate((a) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+          alpha: a, beta: 90, gamma: 0,
+        }));
+      }, alpha);
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+      await expect(page.locator('#target-arrow'), `alpha ${alpha}`).toBeHidden();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which locks the burst actually got', async ({ page }) => {
   // The question a burst's numbers raise and the strip could not answer: is the camera free to
   // re-expose and refocus between these five frames? On a Pixel one cell's candidates scored
