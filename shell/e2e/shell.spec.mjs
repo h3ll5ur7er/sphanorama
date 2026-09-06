@@ -867,6 +867,117 @@ test('a slow camera spends its lock budget on the track, not in the queue', asyn
   }
 });
 
+test('a camera taken away mid-arm does not arm anything', async ({ browser }) => {
+  // The guard at the top of `armOnce` is a fact about the moment the arm started, and there is an
+  // await between it and the arming. A camera taken away in that window still answers
+  // `camera.setLocks`: the adapter's stream is closed only by its own `close()`, which the page
+  // never calls, and `applyConstraints` on an ended track rejects into a catch written to swallow
+  // exactly that — so the write comes back *answered* and every line after it proceeded.
+  //
+  // What that armed is a burst the manager holds as firing for the life of the tab, over a loop
+  // that had already stopped, with `#locks` rewritten to describe a camera that was gone and
+  // `#guidance` saying "capturing without … lock" under a stage line saying to reload.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      return { ...settings.call(this), ...settled };
+    };
+    // 300 ms per constraint opens the window by construction rather than by luck — the same
+    // arrangement the shutter test needs, and for the same reason.
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 300));
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Pressed, then the lens is taken 100 ms later — inside the second the lock writes take.
+    const armed = await page.evaluate(async () => {
+      const capturing = window.sphanoramaCapture();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const stream = document.querySelector('video').srcObject;
+      for (const track of stream.getTracks()) track.dispatchEvent(new Event('ended'));
+      return capturing;
+    });
+    expect(armed).toBe(false);
+
+    await expect(page.locator('#stage')).toContainText(/taken away/i, { timeout: 15000 });
+    // Nothing banked, counted late enough that a burst armed after the camera went would have
+    // filled by now.
+    await page.waitForTimeout(4000);
+    expect(await countCandidates(page)).toBe(0);
+    // And the page is still saying the camera is gone rather than reporting a capture over it.
+    await expect(page.locator('#stage')).toContainText(/taken away/i);
+    await expect(page.locator('#capture')).toBeDisabled();
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a lock write that answers late leaves the row explaining the refusal', async ({ browser }) => {
+  // `unlock()` snapshots the locks row to say what its release is a release *of*, and this branch
+  // queued the release one statement before writing its own record — so the snapshot was the
+  // previous burst's line, or, on the first arm of a session, the empty string. When the release
+  // finally landed it painted that over the diagnosis: "no burst has run yet", on the path where a
+  // burst was attempted and refused, deleting the only on-screen record of why.
+  //
+  // A camera that answers everything, slowly — 1500 ms per constraint — rather than one that never
+  // answers. The 30 s camera in the test above is a dead track wearing a slow one's clothes: its
+  // release needs minutes to land, so the row is still correct when the assertions run.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const modes = ['continuous', 'manual'];
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.applyConstraints = function () {
+      return new Promise((resolve) => setTimeout(resolve, 1500));
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(false);
+    await expect(page.locator('#locks')).toContainText(/did not answer/i, { timeout: 15000 });
+
+    // The release queued by the refusal lands a few seconds later. Whatever it appends, it must
+    // append it to the diagnosis rather than replace it: measured before the fix as the row
+    // flipping to "no burst has run yet" at t=7.5 s.
+    await page.waitForTimeout(8000);
+    await expect(page.locator('#locks')).toContainText(/did not answer/i);
+    await expect(page.locator('#locks')).not.toContainText('no burst has run yet');
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
 test('a camera that will not answer a lock request does not get a burst', async ({ browser }) => {
   // The chain behind `writeLocks` deliberately does not cancel a write it has stopped waiting for
   // — a cancelled one could be overtaken by the release queued behind it and end a session with
