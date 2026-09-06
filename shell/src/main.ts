@@ -585,6 +585,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // Set when a tick failed and cleared when one succeeds. The markers describe where the cells are
   // relative to a pose, and a failed tick produced none — so nothing may paint them until guidance
   // works again, including the asynchronous coverage read that failure itself starts.
+  //
+  // It stops the *markers*, not the map: `paintOverlay` is its only reader, and `refreshCoverage`
+  // goes on calling `review.show(...)`, which rebuilds every dot in `#review-map`. That is not an
+  // oversight to guard — the failing branch calls `refreshCoverage` precisely so the map catches
+  // the cell a failed tick may have banked, so the map repainting is the point. The line above
+  // used to say "nothing may paint them", which is true of the overlay and was read as covering
+  // both.
   let guidanceFailed = false;
   const paintOverlay = () => {
     if (guidanceFailed) return;
@@ -795,6 +802,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         //
         // The same latch shape as `opened.ok` in `enable`, one function up, and it wants the same
         // answer: ask now rather than trusting a check that has aged across an await.
+        // Recorded first, exactly as the branch fifteen lines above now does. This one was written
+        // in the same commit as that fix and repeated the defect it was fixing: `unlock` snapshots
+        // the row to say what its release is a release *of*, so queueing the release before writing
+        // the record hands it the previous burst's line — or, on the first arm of a session, the
+        // empty string, and the row ends terminally at "no burst has run yet" after the camera
+        // really did take and release three locks.
+        lastLocksLine = 'the camera was taken away mid-arm';
+        locksOut.textContent = lastLocksLine;
         unlock();
         sayForAWhile('the camera was taken away — not capturing');
         return false;
@@ -833,6 +848,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     } catch (cause) {
       sayForAWhile(`arming failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       unlock();
+      return false;
+    }
+    if (cameraLost()) {
+      // The third window, and it is not the harmless one I claimed on the thread. There is no page
+      // route to `Disarm` — it carries no `@facade` marker — so a burst armed here does stay armed
+      // whatever this returns, and that much of the decline was right. What was wrong is the rest:
+      // `sayForAWhile` writes `#guidance` directly and no tick follows a stopped loop, so
+      // "capturing without exposure lock" or an arming refusal becomes the page's last word for
+      // the life of the tab, over a stage line telling the user to reload.
+      sayForAWhile('the camera was taken away — not capturing');
       return false;
     }
     if (armedNow.ok) {

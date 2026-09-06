@@ -926,6 +926,11 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
     // And the page is still saying the camera is gone rather than reporting a capture over it.
     await expect(page.locator('#stage')).toContainText(/taken away/i);
     await expect(page.locator('#capture')).toBeDisabled();
+    // Including the locks row, which the refusal's own release paints a second later. It must not
+    // end at "no burst has run yet" — the camera really did take and give back three locks, and
+    // that string is the row claiming nothing ever ran.
+    await expect(page.locator('#locks')).not.toContainText('no burst has run yet');
+    await expect(page.locator('#locks')).toContainText(/taken away/i);
   } finally {
     await server.close();
     await context.close();
@@ -946,11 +951,32 @@ test('a lock write that answers late leaves the row explaining the refusal', asy
   const page = await context.newPage();
   await page.addInitScript(() => {
     const modes = ['continuous', 'manual'];
+    const settings = MediaStreamTrack.prototype.getSettings;
     MediaStreamTrack.prototype.getCapabilities = function () {
       return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
     };
+    // A camera that never *reaches* the mode it is asked for, so every key is asked in both
+    // holding modes and the write is six constraints rather than one.
+    //
+    // Stated here rather than inherited from the device, which is the whole point: Chromium's fake
+    // track already reports `manual` for exposure and focus, so a stub that echoes its settings
+    // makes `holding()` true before anything is asked and `setLocks` issues at most two
+    // constraints — inside the 3 s bound, and then the arm succeeds and this test is about nothing.
+    // A reviewer read the missing echo as the bug; the echo is what breaks it, and the honest fix
+    // is to pin the arrangement instead of depending on either default.
+    //
+    // 700 ms × 6 = 4.2 s for the arm, so the caller gives up at 3 s with the write still going;
+    // the release queued behind it is three more and lands at 6.3 s, which is when the row is
+    // judged. The first version used 1500 ms, where the release lands at 13.5 s — past where the
+    // test stopped looking, which is why it passed against the defect it was written for.
+    MediaStreamTrack.prototype.getSettings = function () {
+      return {
+        ...settings.call(this),
+        exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
+      };
+    };
     MediaStreamTrack.prototype.applyConstraints = function () {
-      return new Promise((resolve) => setTimeout(resolve, 1500));
+      return new Promise((resolve) => setTimeout(resolve, 700));
     };
   });
 
@@ -969,7 +995,7 @@ test('a lock write that answers late leaves the row explaining the refusal', asy
     // The release queued by the refusal lands a few seconds later. Whatever it appends, it must
     // append it to the diagnosis rather than replace it: measured before the fix as the row
     // flipping to "no burst has run yet" at t=7.5 s.
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(8000);   // past 6.3 s, where the release lands
     await expect(page.locator('#locks')).toContainText(/did not answer/i);
     await expect(page.locator('#locks')).not.toContainText('no burst has run yet');
   } finally {
