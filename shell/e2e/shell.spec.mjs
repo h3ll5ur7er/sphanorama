@@ -863,6 +863,11 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
     // `display: grid` one selector away. `painter.test.ts` pins the attribute reaching the DOM
     // under happy-dom, which has no cascade to get wrong — so deleting both stylesheet rules left
     // the entire gate green and a captured cell pixel-identical to a hole.
+    // Polled, because the `data-captured="true"` this selects on is written by `refreshCoverage`'s
+    // answer — a worker round trip that starts on the `CellDone` tick and lands whenever it lands.
+    // Read once, a loss reads as a CSS failure in the only cascade assertion the gate has.
+    await expect(page.locator('#cell-layer .cell-ring[data-captured="true"]:not([hidden])'))
+      .toHaveCount(1, { timeout: 15000 });
     const ringColours = await page.evaluate(() => {
       // `:not([hidden])` because a ring that has left the view keeps its element and its
       // attributes: without it this could be satisfied by a stale hidden ring rather than by the
@@ -1711,6 +1716,64 @@ test('a guidance call that rejects mid-burst does not abandon the burst', async 
       return total;
     });
     expect(banked).toBe(5);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a core that stops answering stops the loop rather than feeding it for ever', async ({ browser }) => {
+  // The other end of holding `firing`/`armed` across a rejection. Held for one, a burst survives an
+  // allocation that succeeds next time — which is the case the hold exists for. Held for every one,
+  // a worker that is gone (`remote-core`'s `dead` is never cleared, and an Emscripten `abort()`
+  // makes every later call throw) leaves the loop grabbing and transferring the preview frame at
+  // about 4.9 MB a frame for the life of the page, on the very phone whose allocation failure
+  // caused it. Before the flags were held at all, the first rejection stopped that — so an
+  // unbounded hold is a worse outcome than the bug it fixes, for the same device.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    window.__failAllGuidance = false;
+    window.__guidanceFailuresInjected = 0;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion'
+          && window.__failAllGuidance) {
+        window.__guidanceFailuresInjected += 1;
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+          data: { kind: 'failed', seq: message.seq, detail: 'the core is gone' },
+        })), 0);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // A burst in flight, so `firing`/`armed` are what keep the loop ticking — which is exactly the
+    // state in which an unbounded hold never lets go.
+    await page.evaluate(() => {
+      window.__capturing = window.sphanoramaCapture();
+      window.__failAllGuidance = true;
+    });
+
+    await expect(page.locator('#stage')).toContainText(/stopped answering/i, { timeout: 15000 });
+    await expect(page.locator('#cell-layer .cell-ring:not([hidden])')).toHaveCount(0);
+    await expect(page.locator('#capture')).toBeDisabled();
+
+    // And it really stopped: no further guidance calls after the ones it took to decide.
+    const settled = await page.evaluate(() => window.__guidanceFailuresInjected);
+    await page.waitForTimeout(1500);
+    expect(await page.evaluate(() => window.__guidanceFailuresInjected)).toBe(settled);
   } finally {
     await server.close();
     await context.close();

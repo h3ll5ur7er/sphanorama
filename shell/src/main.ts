@@ -411,7 +411,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // have redrawn may never come, since the loop only asks for guidance when a sample arrives. A
   // phone held still through the end of a burst would have watched the map fill in while the ring
   // for that very cell stayed empty.
+  // Whether this loop has reached a state it does not come back from. Read by everything that can
+  // paint, because the things that paint are asynchronous and a terminal state has no next tick to
+  // take their answer down again.
+  let loopStopped = false;
   const paintOverlay = () => {
+    if (loopStopped) return;
     if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
     overlay.show(planOverlay({
       plan, coverage: lastCoverage, attitude, targetNode,
@@ -480,6 +485,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     coverageStale = false;
     nodesSatisfied = state.value.nodesSatisfied;
     lastCoverage = state.value;
+    // Checked after the await as well as in `paintOverlay`, because this repaints the map too and
+    // that is a second drawing surface the flag has to reach.
+    if (loopStopped) return;
     review.show(plan, state.value);
     paintOverlay();
   };
@@ -490,6 +498,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // tells you where to point.
   void refreshCoverage();
   let guidedOnce = false;
+  // Consecutive ticks whose guidance call never reached the manager. See the `unreached` branch:
+  // holding `firing`/`armed` across one is what lets a burst survive a transient allocation
+  // failure, and holding them across every one is what turns a dead worker into a permanent
+  // 295 MB/s of preview frames.
+  let unreachedTicks = 0;
   // Whether the last answer said a burst was still filling. A burst advances on this tick and
   // nothing else (ADR 0018), so it has to keep running even when the sensor has gone quiet.
   let firing = false;
@@ -637,8 +650,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // Only while a burst can use one — a grab is a draw plus a readback of megabytes, and doing
     // it every frame of every session would cost that for nothing.
     if (armed || firing) {
-      const grabbed = grabFrame(viewfinder);
-      if (grabbed !== null) remote.pushFrame(grabbed);
+      // Guarded because `pushFrame` is a synchronous `postMessage` and a terminated worker throws
+      // from it. Unguarded, that throw escapes `step` before the `requestAnimationFrame` at the
+      // bottom, which is the round-4 defect — the loop ending silently — through a second door.
+      // The tick that follows will fail its guidance call and be counted with the rest.
+      try {
+        const grabbed = grabFrame(viewfinder);
+        if (grabbed !== null) remote.pushFrame(grabbed);
+      } catch {
+        // Nothing to say here that the guidance failure below will not say better.
+      }
     }
 
     if (plan !== null && (samples.length > 0 || !guidedOnce || firing || armed)) {
@@ -721,7 +742,29 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // again and the capture is dead for good: stuck at three frames of five, locks held, every
         // further press refused. Leaving the flags is what keeps the loop asking, which is what
         // recovers from an allocation failure that passes.
-        if (!unreached) {
+        if (unreached) {
+          // Held, but not for ever. A worker that is gone stays gone — `remote-core`'s `dead` is
+          // never cleared, and an Emscripten `abort()` makes every later call throw — so a rule
+          // that only ever holds the flags keeps the loop grabbing and transferring the preview
+          // frame at 4.9 MB a frame for the life of the page, on the very phone whose allocation
+          // failure caused this. Before the flags were held at all, the first rejection stopped
+          // that; the fix must not be worse than the bug for the case it was written for.
+          //
+          // Three ticks is enough to ride out an allocation that succeeds on the next attempt,
+          // which is the recoverable case this exists for. Past that the core is not answering and
+          // the session is over: the loop stops the same way it stops for a camera that was taken
+          // away, with a reason on screen instead of a silent 295 MB/s.
+          unreachedTicks += 1;
+          if (unreachedTicks >= 3) {
+            loopStopped = true;
+            captureButton.disabled = true;
+            overlay.show({ rings: [], arrow: null });
+            guidanceOut.textContent = 'the core stopped answering';
+            stage.textContent = 'the core stopped answering — reload to start again';
+            return;
+          }
+        } else {
+          unreachedTicks = 0;
           firing = false;
           armed = false;
         }
@@ -835,7 +878,20 @@ async function main() {
     const startOnce = (attempt: () => Promise<unknown>) => {
       if (sessionStarting) return;
       sessionStarting = true;
-      void attempt().finally(() => { sessionStarting = false; });
+      // Caught, because the four facade calls under here — `getPlan`, `resume`, `create`, `begin`
+      // — are awaited bare and reject exactly as `onMotion` did. A rejection unwinds past the
+      // lines that hide the buttons, `.finally` clears this flag, and `void` swallows it: a live
+      // viewfinder, no buttons, no loop, and a stage line still offering to resume. `main()`'s own
+      // try/catch covers this class at load and cannot see it behind a press.
+      void attempt()
+        .catch((cause) => {
+          stage.textContent =
+            `could not start: ${cause instanceof Error ? cause.message : String(cause)}`;
+          // Whatever was offered before the press is offered again, since nothing started.
+          enableButton.hidden = false;
+          enableButton.disabled = false;
+        })
+        .finally(() => { sessionStarting = false; });
     };
     enableButton.addEventListener('click', () => { startOnce(() => enable(core, null)); });
     resumeButton.addEventListener('click', () => {
