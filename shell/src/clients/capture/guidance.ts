@@ -57,11 +57,18 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
     case 'CellDone':
       return `${cell} · captured · ${progress}`;
     // Resting on a cell that is already shot. Worded so it does not read as an instruction: the
-    // user is free to shoot it again, and nothing here asks them to.
+    // dwell will not fire on a covered cell, so nothing here is asking for a second burst, and
+    // re-shooting one is the retake flow's business rather than something to hint at from a
+    // status line.
     case 'AlreadyCaptured':
       return `${cell} · already captured · ${progress}`;
-    // The tick the dwell completed (ADR 0043). It reads as an announcement rather than an
-    // instruction, because by the time anyone can read it the burst has been armed.
+    // The tick a dwell completed (ADR 0043). An announcement rather than an instruction — the arm
+    // goes out on this tick, so by the time anyone reads it the burst is being asked for.
+    //
+    // Being *asked for*, not started, and the difference became reachable when the dwell learned
+    // to retry: an arm can be refused, and then this line has said "capturing" about a burst that
+    // never began. It is one frame of optimism on a page that corrects itself on the next tick —
+    // the alternative is a word for "about to, probably", which is worse to read and no truer.
     case 'Fire':
       return `${cell} · capturing · ${progress}`;
     default:
