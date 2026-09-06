@@ -425,9 +425,13 @@ were plausible:
 
 - *"one or two cells are on screen at all times, so the arrow is simply absent."* The first clause is
   right; the second does not follow. The arrow's condition is about the **target** cell, not about
-  any cell. Over 200 capture states × 13 elevations × 24 azimuths, a level phone raises the arrow
-  39.4% of the time — more often than at 15° or 45° down, and symmetric in elevation, so nothing
-  about it distinguishes "down".
+  any cell. Sweeping elevations and azimuths across a few hundred randomly chosen capture states, a
+  level phone raises the arrow **roughly a third of the time** — two independent runs read 34.6%
+  and 37.5%, and a third 39.4%, which is what a figure sampled over random coverage states does.
+  The number is not the point and a single decimal place would be false precision; what matters is
+  that it is *not* near zero, and that it is symmetric in elevation, so nothing about it
+  distinguishes "down". (A reproducible version of this would have to state the capture states it
+  sampled, which is the standard the rest of this section is now held to.)
 - *"Tilt down, the whole ring leaves the field of view."* At every elevation from −90 to +90 there
   are between one and five cell centres on screen; the view never empties, which is what a
   sphere-covering tessellation means. On a fresh capture the arrow is raised at 0 of 2664 attitudes.
@@ -436,8 +440,10 @@ were plausible:
 **One sub-case that is genuinely correct.** When the target sits at the camera's own elevation the
 bearing is ±90° and does not rotate as the phone pans, because the direction to turn does not
 change. The distance does, and the arrow carries it as a number. The exact statement is about the
-camera frame rather than about elevation in general: it holds at the horizon and degrades smoothly
-away from it (camera and target both at 15° give 87.4 → 83.9 → 75.5 → 58.0 → 18.7 across a pan).
+camera frame rather than about elevation in general: it holds at the horizon and degrades away from
+it. With camera and target both at 15° elevation, the bearing reads 87.4°, 83.9°, 75.5°, 58.0° and
+18.7° at azimuth offsets of −20°, −45°, −90°, −135° and −170° — sampled points, not an even pan, and
+quoted that way because "across a pan" implied a sweep nobody ran.
 
 **What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
 front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
@@ -459,6 +465,13 @@ three bearings were real, and they were used to close a report about something e
 part nobody measured was the one the user was describing — whether the element is on the screen —
 and it took a reviewer with a browser and a `getComputedStyle` to ask. "Measured and not a defect"
 is a claim that needs the measurement to be of the thing reported.
+
+**A note on how these were measured.** The browser-derived figures here were first taken in a
+checkout whose staged `sphanorama-core.wasm` had been built from the sibling branch — the trap the
+engineering skill warns about, walked into while investigating. It changes none of the conclusions
+(the arrow fix is pure CSS, and both branches' targeting rules coincide on a fresh capture, which is
+the state every arrow measurement is taken in), and it is recorded because the next person measuring
+here should rebuild the core for *this* branch first. `tools/gate.sh` is the only thing that does.
 
 **A note on the ADR numbers here.** This branch references ADR 0041 and ADR 0042, which live on the
 `claude/aim-decides-the-cell` branch and not yet on `main`. The two changes are a pair — that branch

@@ -820,15 +820,48 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
       timeout: 15000,
     });
 
-    for (let alpha = 0; alpha < 360; alpha += 15) {
-      await page.evaluate((a) => {
+    const turn = async (alpha, beta = 90) => {
+      await page.evaluate(([a, b]) => {
         window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
-          alpha: a, beta: 90, gamma: 0,
+          alpha: a, beta: b, gamma: 0,
         }));
-      }, alpha);
+      }, [alpha, beta]);
       await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+    };
+
+    for (let alpha = 0; alpha < 360; alpha += 15) {
+      await turn(alpha);
       await expect(page.locator('#target-arrow'), `alpha ${alpha}`).toBeHidden();
     }
+
+    // And it has to be able to appear, or `display: none` on the element unconditionally — the
+    // feature deleted — would pass everything above. It did: a reviewer put that exact sabotage in
+    // and the whole suite stayed green, because on a fresh capture the target is always on screen
+    // and the arrow is correctly raised at none of 2664 attitudes.
+    //
+    // Capturing a cell is what creates the state: guidance then sends the user to a cell that is
+    // still missing, and turning away from it puts that cell out of the picture.
+    await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    let raised = false;
+    for (const beta of [90, 60, 120, 30, 150]) {
+      for (let alpha = 0; alpha < 360 && !raised; alpha += 15) {
+        await turn(alpha, beta);
+        raised = await page.locator('#target-arrow').isVisible();
+      }
+      if (raised) break;
+    }
+    expect(raised, 'the arrow can never appear, so nothing above proves it hides').toBe(true);
+
+    // When it is up it points somewhere and says how far, rather than being an empty box.
+    const shown = await page.evaluate(() => ({
+      away: document.querySelector('#target-arrow .arrow-away')?.textContent ?? '',
+      turned: document.querySelector('#target-arrow svg')?.style.transform ?? '',
+    }));
+    expect(shown.away).toMatch(/^\d+°$/);
+    expect(shown.turned).toMatch(/^rotate\(-?\d+(\.\d+)?deg\)$/);
   } finally {
     await server.close();
   }

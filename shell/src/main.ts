@@ -382,10 +382,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // Cleared with the rest of the per-capture state, which it was not.
   //
   // `targetNode` is module scope — the click handler and the end-to-end hook both read it — while
-  // `attitude` and `lastCoverage` are locals here and reset with every session. So a second
-  // capture started in the same tab began holding the *previous* session's target, and the first
-  // frame drawn before guidance answers is drawn from it. Three facts describe one capture and
-  // only two of them were per-capture.
+  // `attitude` and `lastCoverage` are locals here and reset with every session. Three facts
+  // describe one capture and only two of them were per-capture.
+  //
+  // A reviewer showed the case I claimed for it is not reachable today: `pump` runs at most once
+  // per page load, because every way into it is hidden or synchronously disabled by the time it
+  // starts, so there is no "second capture in the same tab" to inherit a stale target. The line
+  // stays because the asymmetry is the defect and the scope that caused it has not changed —
+  // `targetNode` is module scope for a reason unrelated to its lifetime, and the next thing that
+  // makes `pump` re-entrant should not have to rediscover this.
   targetNode = null;
   // The two agree whenever samples are arriving, which is whenever anyone is capturing.
   let attitude: Quat | null = null;
@@ -441,11 +446,19 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // the session, with nothing to retry it. For ever, if it was the last cell. The answer is cheap
   // and idempotent; not retrying it was the only thing making a transient failure permanent.
   let coverageStale = false;
+  // When the retry above may next fire. Without it, `coverageStale` asks on every animation frame
+  // — measured at 120 facade round trips in two seconds against a `coverage()` that refuses, about
+  // sixty of them in flight at once. That is the same once-per-cell-into-once-per-frame mistake
+  // ADR 0041 records a reviewer catching on the sibling branch, reintroduced by the fix for a
+  // dropped read. A refused read is worth retrying; it is not worth asking sixty times a second.
+  let coverageRetryAtMs = 0;
+  const COVERAGE_RETRY_MS = 1000;
   const refreshCoverage = async () => {
     if (review === null || plan === null) return;
     const state = await core.captureSession.coverage().catch(() => null);
     if (state === null || !state.ok) {
       coverageStale = true;
+      coverageRetryAtMs = performance.now() + COVERAGE_RETRY_MS;
       return;
     }
     coverageStale = false;
@@ -639,7 +652,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // which cells are done — two answers to that question is how the strip ended up in an
         // order nothing had chosen.
         paintOverlay();
-        if (guidance.action === 'CellDone' || coverageStale) void refreshCoverage();
+        if (guidance.action === 'CellDone'
+            || (coverageStale && performance.now() >= coverageRetryAtMs)) {
+          void refreshCoverage();
+        }
       } else {
         // Safe to stop ticking, because the manager disarms an armed burst on every failing tick
         // before it returns — so a failure means the burst really is gone and the camera's locks
