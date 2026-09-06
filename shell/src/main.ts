@@ -771,7 +771,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // arrives, so a press that crosses the tick where the first sample lands is offered under
         // one rule and judged under the next. That is a real `FailedPrecondition`, which is why
         // the refusal is still reported rather than treated as impossible.
-        captureButton.disabled = captureCell === null || !canCapture(guidance);
+        // No `captureCell === null` here: this whole block is inside `plan !== null`, and
+        // `captureCell` is assigned exactly when a plan exists. The disjunct could never be true —
+        // a guard implied by the one above it, which reads as defence and is not.
+        captureButton.disabled = !canCapture(guidance);
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
         // says. With no aim, `angularErrorDeg` is measured from an unmeasured identity — it comes

@@ -376,6 +376,60 @@ TEST(PoseEngine, ASampleThatDidNotAdvanceTheClockIsTakenWholeRatherThanBlendedOv
   ASSERT_TRUE(unmoved.ok());
   EXPECT_NEAR(AngleBetween(unmoved.value.pose.orientation, older.value.pose.orientation) * kRadToDeg,
               0.0, 1e-9);
+
+  // And the stale sample must not become the clock the *next* one is measured against, which is
+  // the half this test originally stopped short of. Refusing a sample's own interval and then
+  // adopting its timestamp fabricates the gap for its successor — one stale sample in a 60 Hz
+  // stream would hand the next one a window hundreds of times too long, and the bias learned over
+  // that window is charged as though the device really had been turning for it.
+  EXPECT_EQ(unmoved.value.pose.timestampNs, older.value.pose.timestampNs)
+      << "a sample too old to be integrated is too old to set the clock";
+
+  ImuSample next = Spinning(1'016'000'000, 1.0);   // 16 ms after the last *accepted* sample
+  auto resumed = engine.Integrate(unmoved.value, std::span<const ImuSample>(&next, 1));
+  ASSERT_TRUE(resumed.ok());
+  // One frame of a 1 rad/s turn is about 0.92°, not the 46° an 800 ms fabricated gap would give.
+  EXPECT_NEAR(AngleBetween(resumed.value.pose.orientation, unmoved.value.pose.orientation)
+                  * kRadToDeg, 0.9167, 0.01);
+}
+
+TEST(PoseEngine, TheFirstAbsoluteReadingIsGroundTruthEvenAfterDeadReckoningFromNowhere) {
+  // The third route to the same 25.5°, and the reason the flag had to mean something narrower
+  // again. Dead reckoning sets `estimated`, so a stream that opens with rate-only samples arrives
+  // at the first attitude with an estimate — and it is an estimate of *nothing*: integrated from
+  // the identity the state was born with, which is a direction nobody chose. Correcting a fraction
+  // of the way towards the first real reading keeps most of that arbitrary origin.
+  //
+  // A prediction is only worth blending against a reading when it descends from a reading. That is
+  // `absolute`, and it is why `predictable` asks for it rather than for `estimated`.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  const std::vector<ImuSample> spinning{Spinning(0, 0.7), Spinning(300'000'000, 0.7)};
+  auto reckoned = engine.Integrate(initial.value, spinning);
+  ASSERT_TRUE(reckoned.ok());
+  ASSERT_TRUE(reckoned.value.estimated) << "the fixture needs an estimate to exist";
+  ASSERT_FALSE(reckoned.value.absolute) << "and for it to be a dead-reckoned one";
+
+  ImuSample reading = Oriented(316'000'000, 30.0, 0.0);
+  reading.hasAngularVelocity = true;
+  auto anchored = engine.Integrate(reckoned.value, std::span<const ImuSample>(&reading, 1));
+  ASSERT_TRUE(anchored.ok());
+  EXPECT_NEAR(AngleBetween(anchored.value.pose.orientation, reading.orientation) * kRadToDeg, 0.0,
+              1e-9)
+      << "the first reading of a session is ground truth however much dead reckoning preceded it";
+  EXPECT_DOUBLE_EQ(anchored.value.pose.confidence, 1.0);
+
+  // And once anchored, the filter does its job: the next reading is corrected towards, not taken
+  // whole, so this narrows the branch rather than disabling it.
+  ImuSample later = Oriented(332'000'000, 34.0, 0.0);
+  later.hasAngularVelocity = true;
+  later.angularVelocity = Vec3{0.0, 0.7, 0.0};
+  auto blended = engine.Integrate(anchored.value, std::span<const ImuSample>(&later, 1));
+  ASSERT_TRUE(blended.ok());
+  EXPECT_GT(AngleBetween(blended.value.pose.orientation, later.orientation) * kRadToDeg, 1e-6)
+      << "an anchored estimate is still blended with the reading rather than replaced by it";
 }
 
 TEST(PoseEngine, AFreshStateHasSeenNothing) {
@@ -759,15 +813,22 @@ TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
   // an offset estimate outside [0, b]. There is no more bias available than the rate observed.
   OrientationPoseEngine engine;
   const Vec3 bias{0.0, 0.02, 0.0};
-  PoseState state = Started(engine, MotionCapability::GyroAccel);
 
-  int64_t t = 0;
-  for (int step = 0; step < 6; ++step) {
-    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
-    t += 1'000'000'000;   // a second apart: a stalled capture loop, or a backgrounded tab
+  // Swept rather than sampled, because "holds for any gap" was asserted at exactly one gap — and
+  // one second is the gap at which the recurrence factor happens to be zero, so it was the single
+  // value that could not show the divergence. At 2 s the learned offset changes sign; above it, it
+  // runs away.
+  for (const int64_t gapMs : {16, 100, 500, 1'000, 1'500, 2'000, 2'500, 3'000, 10'000, 30'000}) {
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    int64_t t = 0;
+    for (int step = 0; step < 12; ++step) {
+      state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+      t += gapMs * 1'000'000;
+    }
+    EXPECT_GE(state.gyroBias.y, 0.0) << "gap " << gapMs << " ms learned " << state.gyroBias.y;
+    EXPECT_LE(state.gyroBias.y, bias.y * 1.001)
+        << "gap " << gapMs << " ms learned " << state.gyroBias.y;
   }
-  EXPECT_GE(state.gyroBias.y, 0.0);
-  EXPECT_LE(state.gyroBias.y, bias.y * 1.001) << "learned " << state.gyroBias.y;
 }
 
 TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {

@@ -394,8 +394,10 @@ never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR
 
 **Open: the pose has no age, and one refusal now depends on it.** `CaptureSessionManager` refreshes
 `pose_state_` only on a tick that carried samples, so a sensor that dies mid-session freezes it —
-and the page's pump only asks for guidance when there are samples, or a burst is running, so a dead
-sensor freezes the whole loop on its last good value. Everything downstream then agrees with each
+and the page's pump used to ask for guidance only when there were samples or a burst was running, so
+a dead sensor froze the whole loop on its last good value. The pump now has a 250 ms heartbeat, so
+the *loop* survives — but the pose it is asking about does not, and that is the part still open:
+guidance keeps answering, from an orientation nothing has refreshed. Everything downstream then agrees with each
 other and with nothing real: the reticle sits on a cell the camera has left, and `ArmBurst`'s aim
 check (ADR 0041) *permits* a burst against it, which is that ADR's own failure reached through a
 stale pose instead of a stale target. Nothing detects it. `PoseSample.timestampNs` is in the

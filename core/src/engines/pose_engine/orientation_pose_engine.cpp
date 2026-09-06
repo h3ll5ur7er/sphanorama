@@ -104,7 +104,16 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
     // leaves the pose most of a turn from a reading it should simply have taken.
     const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
-    const bool predictable = state.estimated && elapsed;
+    // `absolute`, not `estimated`. A prediction is only worth blending against a reading when it
+    // descends from a reading: dead reckoning also sets `estimated`, so a stream opening with
+    // rate-only samples reached the first attitude holding an estimate integrated from the identity
+    // it was born with — a direction nobody chose — and correcting a fraction of the way towards
+    // the first real reading kept most of that arbitrary origin. Third route to the same 25.5°.
+    //
+    // It narrows the branch rather than disabling it: `absolute` is set by both attitude branches,
+    // so once a stream is anchored the filter runs normally, and it goes false only where the
+    // estimate really has stopped descending from a reading.
+    const bool predictable = state.absolute && elapsed;
     const double seconds =
         elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
 
@@ -152,7 +161,18 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // No stillness detector, and none needed: what accumulates here is the part of the error
       // that keeps pointing the same way. Noise does not, and cancels. A device that is really
       // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      const double charge = std::min(share / kBiasSeconds, 1.0);
+      // Divided by the *window*, not by the time constant alone. `error * share` is the rate error
+      // (the disagreement with its accumulation window divided out); charging `share / kBiasSeconds`
+      // therefore steps the offset by that rate times `seconds / kBiasSeconds`, which grows with the
+      // gap — so the clamp below bounded the step by the whole *angle* of disagreement while its
+      // comment claimed the whole rate error. The two differ by exactly that window.
+      //
+      // Measured before the fix, a still device reporting 0.02 rad/s: sign flip at a 2 s gap, and
+      // −5.48 rad/s learned across twelve samples 10 s apart. `std::max` keeps the fast-sample
+      // behaviour identical — under one time constant the window is the time constant — and makes
+      // a long gap charge at most the rate error it actually saw, which is what the paragraph
+      // above has always said it does.
+      const double charge = std::min(share / std::max(kBiasSeconds, seconds), 1.0);
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
@@ -179,7 +199,12 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
         state.absolute = false;
       }
     }
-    state.pose.timestampNs = sample.timestampNs;
+    // The clock only moves forward. A sample too old to have an interval of its own is too old to
+    // become the interval for the next one: adopting its timestamp unconditionally refused it and
+    // then fabricated a gap for its successor, so one stale sample in a 60 Hz stream handed the
+    // following sample a window hundreds of times too long — and the bias learned over that window
+    // is charged as though the device had really been turning for it.
+    state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
     // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
     // *moved* anything is `estimated`, set by each branch above that did.
     state.observed = true;
