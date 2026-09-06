@@ -392,45 +392,78 @@ constraints landed. A fifth of every burst was going in the bin on the device th
 locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
-### Open: what the capture button promises
+### Decided: there is no capture button
 
-Not a bug report and not a patch — a decision that has never been made, with one thing under it
-that is wrong whichever way the decision goes.
+Filed first as a question — what does a press promise when the aim is bad? — and answered by the
+maintainer with a larger answer than the question asked for: **there is no button at all.** A burst
+fires by itself once the camera has been held on a cell for about two seconds, and the ring already
+drawn round the reticle fills to show the wait.
 
-**What it does today.** `#capture` is enabled the moment a plan exists, and pressing it arms a
-burst at `targetNode`, which is whatever cell guidance named on the last tick. It is pressable
-while guidance says `TooFast`, `CellDone` or `SphereDone`; nothing stops a second press while a
-burst is already firing; and because `targetNode` is rewritten every tick, the cell captured is
-the one under the reticle *when the press lands*, not the one the user was looking at when they
-decided to press.
+**Why the question had no good answer.** Three readings of a press were on the table: arm now
+whatever the state (what the code did); arm only when guidance allows it; or a button that is an
+override for a cell the planner would skip. The second is the only one where pressing does what the
+label says — and taken to its conclusion it deletes the button. If the app fires only when guidance
+allows it, and guidance already knows when that is, the press contributes nothing but a finger
+moving across a phone that is supposed to be held still. It is the one gesture guaranteed to shake
+the shot it is asking for.
 
-**The part that is wrong regardless.** `armAt` writes three messages — `arming failed: <reason>`,
-the thrown-cause variant, and `capturing without <lock> lock` — and all three go to `#guidance`.
-That element is `aria-hidden="true"` (correctly: the loop rewrites it every frame, and a live
-region rewritten at 60 Hz is unusable), and the loop's own `describeGuidance` overwrites it on the
-next tick that has samples, which is every tick a phone in a hand produces. So the button's
-outcomes are hidden from assistive technology by design and from everyone else by accident. The
-one that matters most is `capturing without exposure lock`: that is a real quality cost — ADR 0031
-exists because of it — announced for about sixteen milliseconds.
+**And the button was in the wrong place anyway.** `#capture` lives inside `#panel-details`, behind
+the `#panel-toggle` disclosure — and the panel folds away once a capture is running (ADR 0028),
+which is exactly when the button is wanted. The primary action of the application is behind a
+disclosure the application itself closes. No amount of deciding what a press means fixes that; not
+having a press does.
 
-`#stage` is the `aria-live="polite"` element and is the right register for these, but it also
-carries the session line the end-to-end suite asserts on, so moving them there is not free.
+**What the trigger is.** A dwell: guidance says the camera is inside a cell's cone and that cell
+still needs shooting, continuously, for about two seconds, and then a burst is armed at that cell.
 
-**The decision.** Three readings, and they differ in what a press means when the aim is bad:
+- The condition is exactly the one PR #46 named `canCapture` — `GuidanceAction::HoldStill`, which
+  is the single action meaning both "inside a cone" and "still needed". `AlreadyCaptured` is what
+  stops a slow pan across finished cells from re-shooting all of them, and it is why that action
+  had to exist as something other than `CellDone`.
+- The dwell resets whenever the condition breaks: the camera leaves the cone (`Seek`), the cell
+  turns out to be captured (`AlreadyCaptured`), the phone is moving too fast (`TooFast`), or a
+  burst starts (`Firing`). It also has to reset when the *cell* changes while the action does not,
+  or a pan along a row of unshot cells would accumulate two seconds of dwell across three of them
+  and fire at whichever one happened to be under the reticle at the end.
+- The overlay is already wired for the display half. `OverlayInput` carries `holding`, and
+  `RingMark.fill` is driven from it, with a comment on the field saying in as many words that
+  *"a hold-still timer counting toward a burst reads as a filling ring… Nothing drives a middle
+  value yet; `holding` is where one would arrive."* This is that arrival.
 
-1. *Arm now, whatever the state.* Simplest, and what the code does. The user is the judge of when
-   the shot is good; a refusal from the core is the only thing that stops it.
-2. *Arm when the aim is good enough.* The press is a request, and the burst fires on the first
-   tick guidance would allow it. Removes the "captured the wrong cell" window, and makes the
-   button a promise the app can keep rather than one it might refuse.
-3. *The button is an override.* Capture is otherwise automatic; the button exists to force a cell
-   the planner would skip. This is the reading ADR 0004's retake flow implies, and nothing in the
-   page says it.
+**The open question is where the dwell lives**, and it wants an ADR with the implementation rather
+than a guess here. In the shell it is a timestamp beside the render loop and nothing else changes.
+In the core it is `CaptureSessionManager` counting against `IClock`, which is where the clock, the
+guidance and the refusal already are, and which would make a second client behave the same without
+reimplementing the policy. The argument against the core is that "how long before we shoot" is
+interaction policy rather than capture policy, and the manager does not otherwise decide when a
+user is ready. The argument for it is that the dwell has to survive a stalled pose — see *Open: the
+pose has no age* — and the shell cannot tell a frozen reticle from a steady one.
 
-My recommendation is (2) with the button disabled outside `Seek`/`HoldStill`, because it is the
-only one where pressing does what the label says. But it changes what a user's press means, so it
-is not mine to take: the answer decides whether `targetNode` should be latched at press time, and
-whether the button needs a pending state at all.
+**Two seconds is a starting number, not a measurement.** It has to be long enough that a pan across
+a cell does not fire and short enough that thirty-two cells is not a chore, and only a device
+session settles that. It belongs in the plan spec rather than as a constant in the page, so it can
+be tuned without a release.
+
+**One defect underneath all of this, unfixed and now worse.** `armAt` writes three messages —
+`arming failed: <code> — <detail>`, the thrown-cause variant, and `capturing without <lock> lock` —
+and all three go to `#guidance`. That element is `aria-hidden="true"` (correctly: the loop rewrites
+it every frame, and a live region rewritten at 60 Hz is unusable), and the loop's own
+`describeGuidance` overwrites it on the next tick that carries samples, which is every tick a phone
+in a hand produces. So the outcomes are hidden from assistive technology by design and from
+everyone else by accident. The one that matters most is `capturing without exposure lock`: a real
+quality cost — ADR 0031 exists because of it — announced for about sixteen milliseconds.
+
+Removing the button makes this worse rather than better. A failure after a press is at least
+correlated with a gesture the user just made; a failure after an automatic trigger has nothing to
+attach itself to, and a capture that silently does not happen is indistinguishable from one that
+has not happened yet. `#stage` is the `aria-live="polite"` element and is the right register, but
+it carries the session line the end-to-end suite asserts on, so moving them there is not free.
+Whatever lands, the dwell trigger needs somewhere to say "that did not work, and here is why".
+
+**Already done, as the interim step.** PR #46 disabled the button outside `HoldStill` and moved the
+condition into `canCapture` in `shell/src/clients/capture/guidance.ts`, precisely so the trigger has
+a tested predicate to fire on. The button stops existing when the trigger lands; `canCapture` does
+not.
 
 ---
 
