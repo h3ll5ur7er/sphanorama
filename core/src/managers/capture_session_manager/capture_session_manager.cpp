@@ -508,8 +508,9 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // phone after the user declined the prompt this time (ADR 0044).
   SPH_TRY(const MotionCapability motion, RequireMotion());
 
-  // Before the plan, the frames and the camera, because it is the cheapest thing that can refuse
-  // and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
+  // Before the plan, the frames and the camera. `RequireMotion` above is cheaper still and asks a
+  // question about the device; this is the cheapest thing that can refuse for a reason belonging
+  // to *this capture*, and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
   // a document belonging to a *different* project names frames that are now some other capture's
   // — right identities, right size, really there, and a `Pin` of them succeeds with the wrong
   // pixels. Nothing downstream of here can tell; only the tier can, and this is it asking
