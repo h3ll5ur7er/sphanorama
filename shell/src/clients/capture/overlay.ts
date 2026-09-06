@@ -13,6 +13,7 @@
  */
 import type { CapturePlan, CoverageState, NodeId, Quat } from '../../../../contracts/ts/contracts';
 import { intoViewfinder, sight, type ViewfinderFit } from './sighting';
+import { holesOf, isCovered } from '../coverage';
 
 export interface RingMark {
   node: NodeId;
@@ -105,7 +106,7 @@ export function planOverlay(input: OverlayInput): Overlay {
   const sized = lens.horizontalFovDeg > 0 && lens.verticalFovDeg > 0;
   if (!sized) return { rings: [], arrow: null };
 
-  const holes = new Set<number>(coverage.holes);
+  const holes = holesOf(coverage);
   const holding = Math.min(1, Math.max(0, input.holding ?? 0));
   const fit = input.fit;
   const place = (x: number, y: number) => (fit ? intoViewfinder(x, y, fit) : { x, y });
@@ -119,7 +120,7 @@ export function planOverlay(input: OverlayInput): Overlay {
     // Captured wins over any hold in progress: progress toward taking something is meaningless
     // once it has been taken, and a ring that emptied itself while the user lingered would read
     // as losing the frame they had just got.
-    const captured = !holes.has(node.id);
+    const captured = isCovered(holes, node.id);
 
     // The arrow is only ever about the cell being aimed at, only when it cannot be seen, and only
     // while there is anything left to do there. Guidance goes on naming a nearest node once the

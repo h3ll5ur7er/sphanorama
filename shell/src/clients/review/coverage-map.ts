@@ -9,6 +9,7 @@
  */
 import type { CapturePlan, CoverageState, NodeId } from '../../../../contracts/ts/contracts';
 import { aimOf } from '../spherical';
+import { holesOf, isCovered } from '../coverage';
 
 export interface MappedCell {
   node: NodeId;
@@ -20,7 +21,7 @@ export interface MappedCell {
 }
 
 export function mapCoverage(plan: CapturePlan, coverage: CoverageState): MappedCell[] {
-  const holes = new Set<number>(coverage.holes);
+  const holes = holesOf(coverage);
   return plan.nodes.map((node) => {
     const { azimuthDeg, elevationDeg } = aimOf(node.targetOrientation);
     return {
@@ -35,7 +36,7 @@ export function mapCoverage(plan: CapturePlan, coverage: CoverageState): MappedC
       // spacing and symmetry passed anyway — a mirror preserves both.
       x: (((180 - azimuthDeg) % 360) + 360) % 360 / 360,
       y: (90 - elevationDeg) / 180,
-      state: holes.has(node.id) ? 'hole' : 'covered',
+      state: isCovered(holes, node.id) ? 'covered' : 'hole',
     };
   });
 }

@@ -379,6 +379,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // The last attitude the sensor reported, held between ticks because a tick with no samples has
   // nothing newer. Not the pose the core fused — no contract hands that back — so during a sensor
   // gap the markers hold still while the reticle, sized from the core's own answer, keeps moving.
+  // Cleared with the rest of the per-capture state, which it was not.
+  //
+  // `targetNode` is module scope — the click handler and the end-to-end hook both read it — while
+  // `attitude` and `lastCoverage` are locals here and reset with every session. So a second
+  // capture started in the same tab began holding the *previous* session's target, and the first
+  // frame drawn before guidance answers is drawn from it. Three facts describe one capture and
+  // only two of them were per-capture.
+  targetNode = null;
   // The two agree whenever samples are arriving, which is whenever anyone is capturing.
   let attitude: Quat | null = null;
   // The coverage the map is drawn from, reused for the markers so the two renderings of one sphere

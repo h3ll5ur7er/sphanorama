@@ -442,11 +442,28 @@ away from it (camera and target both at 15° give 87.4 → 83.9 → 75.5 → 58.
 **What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
 front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
 
+**Still open, and in a shape somebody can pick up.**
+
+1. *Should the arrow appear when the target ring is already on screen?* Today it does not — the rule
+   is `isTarget && !onScreen && !captured` in `planOverlay`. With the freeze fixed, the arrow now
+   genuinely comes and goes as the target moves in and out of view, which some people will read as
+   flicker. The alternatives are: leave it (the ring is the guidance when it is visible); always
+   show it; or hold it for a moment after the target comes into view so it fades rather than blinks.
+   This is a design call and wants a device session, not an argument.
+2. *The bearing at the camera's own elevation does not rotate*, correctly, and the distance beside it
+   is the only thing that moves. Whether a glyph that holds still while the phone turns reads as
+   "correct" or "broken" is again a question for a device rather than for a test.
+
 **The lesson worth keeping.** A measurement can be right and the conclusion drawn from it wrong: the
 three bearings were real, and they were used to close a report about something else entirely. The
 part nobody measured was the one the user was describing — whether the element is on the screen —
 and it took a reviewer with a browser and a `getComputedStyle` to ask. "Measured and not a defect"
 is a claim that needs the measurement to be of the thing reported.
+
+**A note on the ADR numbers here.** This branch references ADR 0041 and ADR 0042, which live on the
+`claude/aim-decides-the-cell` branch and not yet on `main`. The two changes are a pair — that branch
+makes aim name the cell under the reticle whether or not it is captured, and this one is what lets a
+user *see* which cells those are — so this branch is written to merge after it.
 
 ---
 
