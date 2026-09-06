@@ -371,6 +371,18 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   needed to make: how long a session waits for its first reading before saying so, and whether
   that sentence comes from the manager or the page. `ARateOnlyStreamNeverMaturesADwell` pins the
   half that is settled, which is that such a stream must never be mistaken for an aim.
+- **`contract_gen` reads a sentence about the marker as the marker — open.** `tools/contract_gen.py`
+  tests `BOUNDARY_MARKER in d` against each comment line above a class, so
+  `IMotionSensorAccess`'s own "not marked `@boundary`, because this contract moves bytes through
+  the shared heap" was taken as the mark. The interface was mirrored into
+  `contracts/ts/contracts.d.ts` as a declaration nothing imports, and the line that triggered it
+  was swallowed on the way, leaving the sentences either side of it joined mid-clause.
+
+  The header is worded around it for now, so the wrong file stops shipping. The fix is to require
+  the marker to *begin* a comment's text rather than appear anywhere in it, with a generator test
+  for the case that was wrong — small, and worth a change of its own, because marker detection
+  decides what crosses the boundary at all and a subtle change there is not something to slip
+  into a PR about something else.
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.

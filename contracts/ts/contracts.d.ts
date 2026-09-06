@@ -806,34 +806,6 @@ export interface CameraAccess {
 }
 
 /**
- * V10 — where motion data comes from. Reporting MotionCapability::None is a normal outcome, not
- * an error: iOS requires a user gesture and the user may decline.
- * through marshalled values, so its TypeScript adapter is written against the shared-heap
- * protocol rather than mirroring this signature. See ADR 0009.
- */
-export interface MotionSensorAccess {
-  /**
-   * What motion data *this session* can get, which is not the same as what the hardware has.
-   * A device with a gyroscope whose permission the user declined answers `None`, and so does one
-   * with no sensors at all — because the caller's question is whether a capture can know which
-   * way the camera is pointing, and both answer it the same way.
-   * No implementation of *this* contract tells the two apart, and a caller must not expect one
-   * to: `Start` reports that it could not start, not why the platform said no. The distinction
-   * survives one level out, in the adapter that owns the platform call — the shell's own motion
-   * port keeps the reason and puts it on the motion row (ADR 0025), which is what made an iPhone
-   * reading legible. By the time it reaches here it has been collapsed on purpose.
-   * The distinction stopped being cosmetic with ADR 0044: `ICaptureSessionManager::Begin` refuses
-   * a session on `None`, so a port answering it about hardware while the session was in fact
-   * available would refuse a capture that could have run.
-   */
-  capabilities(): Promise<Result<MotionCapability>>;
-  start(requestedHz: number): Promise<Result<void>>;
-  /** Copies out of the shared ring buffer; returns how many samples were written. */
-  drain(out: ImuSample[]): Promise<Result<number>>;
-  stop(): Promise<Result<void>>;
-}
-
-/**
  * V12 — where project metadata is persisted. Documents only, never pixels: the split is what
  * makes "resume after the browser killed the tab" a metadata read plus lazy pixel faulting.
  */
