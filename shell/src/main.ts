@@ -385,12 +385,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // `attitude` and `lastCoverage` are locals here and reset with every session. Three facts
   // describe one capture and only two of them were per-capture.
   //
-  // A reviewer showed the case I claimed for it is not reachable today: `pump` runs at most once
-  // per page load, because every way into it is hidden or synchronously disabled by the time it
-  // starts, so there is no "second capture in the same tab" to inherit a stale target. The line
-  // stays because the asymmetry is the defect and the scope that caused it has not changed —
-  // `targetNode` is module scope for a reason unrelated to its lifetime, and the next thing that
-  // makes `pump` re-entrant should not have to rediscover this.
+  // A second capture in the same tab does not happen today, but the reason used to be stated
+  // wrongly here: that every way in is hidden or synchronously disabled by the time `pump` starts.
+  // Each offer disabled only *itself*, which answers "was this button pressed again?" rather than
+  // "is a session already starting?" — and a refused resume raises two offers on purpose. What
+  // actually keeps it to one is measured and incidental (see `sessionStarting`, which is now the
+  // guard that means it); this line is what makes a session that *does* start a second time start
+  // clean.
   targetNode = null;
   // The two agree whenever samples are arriving, which is whenever anyone is capturing.
   let attitude: Quat | null = null;
@@ -637,7 +638,29 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     if (plan !== null && (samples.length > 0 || !guidedOnce || firing || armed)) {
       guidedOnce = true;
       // Nothing passed: the manager drains the port, which is where the page just put them.
-      const guided = await core.captureSession.onMotion([]);
+      // Caught rather than awaited bare, because a worker-side failure does not arrive as
+      // `{ok: false}` — it arrives as a *rejection*. `worker.ts` posts `{kind: 'failed'}` for
+      // anything the call threw, `remote-core` turns that into `waiting.reject`, and the generated
+      // proxy awaits `call` with no try of its own. An unguarded await here rejects `step`, so the
+      // `requestAnimationFrame(step)` at the bottom of it never runs and the loop simply stops:
+      // no clear, no message, and the last full field of rings frozen on screen under a line still
+      // reporting the last guidance that worked. The `else` branch below exists to prevent exactly
+      // that picture, and on this failure it was the one branch that could not be reached.
+      //
+      // Not only a dead worker: `facade.ts` throws when `_malloc` returns 0, which its own comment
+      // calls a real outcome on a phone that already has a sphere of frames pinned — so the
+      // trigger is a device running out of memory mid-capture, which is when the loop is most
+      // worth keeping.
+      //
+      // Routed into the same branch a refusal takes, so a tick has one way to fail rather than two.
+      const guided = await core.captureSession.onMotion([]).catch((cause) => ({
+        ok: false as const,
+        status: {
+          code: 'Internal' as const,
+          component: 'core worker',
+          detail: cause instanceof Error ? cause.message : String(cause),
+        },
+      }));
       if (guided.ok) {
         const guidance = guided.value;
         firing = guidance.action === 'Firing';
@@ -758,37 +781,73 @@ async function main() {
     stage.textContent = resume === null
       ? 'core ready — enable the camera to continue'
       : 'core ready — resume the last capture, or enable the camera to start a new one';
-    enableButton.addEventListener('click', () => { void enable(core, null); });
+    // Whether a session is already on its way up.
+    //
+    // Each of the three offers used to disable only itself, which answers "was this button pressed
+    // again?" when the question is "is a session already starting?". They are not the same
+    // question, and the difference is reachable by design: a refused resume raises `#resume` and
+    // `#new-capture` together (ADR 0039), and `#enable` sits beside `#resume` at load. Pressing
+    // one and then the other inside the `create` or `Resume` round trip started two sessions and
+    // two render loops over one `#cell-layer` — two ring painters whose pools cannot see each
+    // other, so the first session's rings stay in the DOM with its `data-captured` and two
+    // elements end up sharing a `data-node`, and one module-scope `targetNode` shared between two
+    // plans that need not have the same cells at all.
+    //
+    // `pump` hides the buttons, and that is what stops a *third* press — but it runs after a
+    // session is already up, so it cannot retract one already in flight. This is the guard that
+    // can.
+    //
+    // **No reachable failing case today, and that is measured rather than assumed.** With this
+    // guard neutered, both routes into a second start were driven and `pump` still ran exactly
+    // once. `#enable` beside `#resume` at load: the second `enable` dies in the camera adapter,
+    // which will not open a device it is already holding, so it reaches neither branch. `#resume`
+    // beside `#new-capture` after a refusal: the refusal that raised both offers is one that
+    // refuses again, so `pickUp` does not reach `pump` on the second press either. What makes the
+    // case real rather than theoretical is ADR 0039's own reason for keeping the offer up — a
+    // refusal that *might* succeed next time — and the first such refusal to exist makes two
+    // presses two sessions. The guard is here so that day is not also the day this is discovered.
+    // It has no test for the same reason it has no failing case: a test for it could not fail.
+    let sessionStarting = false;
+    const startOnce = (attempt: () => Promise<unknown>) => {
+      if (sessionStarting) return;
+      sessionStarting = true;
+      void attempt().finally(() => { sessionStarting = false; });
+    };
+    enableButton.addEventListener('click', () => { startOnce(() => enable(core, null)); });
     resumeButton.addEventListener('click', () => {
       if (resume === null) return;
-      // Disabled while the attempt runs rather than hidden by it, the same way the fresh-start
-      // button is: `pickUp` decides whether this offer survives its own refusal, and hiding on
-      // the way in would take that decision away from it.
-      resumeButton.disabled = true;
-      // A refused resume can put this button back (ADR 0039), and by then `enable` has usually
-      // run: the camera is open, the motion permission has been answered, and the gesture that
-      // did both is long spent. So a second press retries the session and nothing else — asking
-      // for a camera already in hand is at best a wasted round trip and at worst a second
-      // permission story.
-      //
-      // Read off the stream the page is holding rather than a flag beside it, because the two
-      // would drift and the drift is reachable: `Resume` opens the camera and can still fail
-      // after it, in `StartTracking`, and that failure closes the camera on the way out. The page
-      // learns through `onCloseCamera` and stops the tracks. A flag saying "enabled" would still
-      // say so, and the retry would begin a session against a camera nobody is holding.
-      const attempt = cameraStream !== null
-        ? beginSession(core, motionIsRunning, resume)
-        : enable(core, resume);
-      void attempt.finally(() => { resumeButton.disabled = false; });
+      startOnce(() => {
+        // Disabled while the attempt runs rather than hidden by it, the same way the fresh-start
+        // button is: `pickUp` decides whether this offer survives its own refusal, and hiding on
+        // the way in would take that decision away from it.
+        resumeButton.disabled = true;
+        // A refused resume can put this button back (ADR 0039), and by then `enable` has usually
+        // run: the camera is open, the motion permission has been answered, and the gesture that
+        // did both is long spent. So a second press retries the session and nothing else — asking
+        // for a camera already in hand is at best a wasted round trip and at worst a second
+        // permission story.
+        //
+        // Read off the stream the page is holding rather than a flag beside it, because the two
+        // would drift and the drift is reachable: `Resume` opens the camera and can still fail
+        // after it, in `StartTracking`, and that failure closes the camera on the way out. The page
+        // learns through `onCloseCamera` and stops the tracks. A flag saying "enabled" would still
+        // say so, and the retry would begin a session against a camera nobody is holding.
+        const attempt = cameraStream !== null
+          ? beginSession(core, motionIsRunning, resume)
+          : enable(core, resume);
+        return attempt.finally(() => { resumeButton.disabled = false; });
+      });
     });
     // The way out of a refused resume. Disabled while the attempt runs rather than hidden by it:
     // `beginSession` can return having started nothing — a project that could not be created is
     // the one path that does — and hiding on the way in would take away the only thing left to
     // press. What hides it is `pump`, once something is actually running.
     newCaptureButton.addEventListener('click', () => {
-      newCaptureButton.disabled = true;
-      void beginSession(core, motionIsRunning, null)
-        .finally(() => { newCaptureButton.disabled = false; });
+      startOnce(() => {
+        newCaptureButton.disabled = true;
+        return beginSession(core, motionIsRunning, null)
+          .finally(() => { newCaptureButton.disabled = false; });
+      });
     });
     captureButton.addEventListener('click', () => {
       if (targetNode !== null) void captureCell?.(targetNode);

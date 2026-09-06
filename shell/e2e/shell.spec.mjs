@@ -847,8 +847,34 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
     const home = 0;
     await turn(home);
     await expect(page.locator('#capture')).toBeEnabled({ timeout: 15000 });
+    // The premise this test rests on, named rather than assumed: from here exactly one cell is in
+    // view, so capturing it puts *every* remaining hole off screen and the arrow's condition is
+    // met by construction. A runner reporting a different field of view would see two, and the
+    // assertion below would then fail accusing the arrow of a defect that was really geometry.
+    await expect(page.locator('#cell-layer .cell-ring:not([hidden])')).toHaveCount(1);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // And the cell that was just shot is drawn as captured. The one ring in view is it, so this is
+    // an assertion about a known cell rather than about whichever ring happened to be first.
+    //
+    // Read as a computed colour in a real browser, because the whole feature is a cascade: the
+    // page's own rules and the UA's compete, and this PR's other defect was a UA rule losing to a
+    // `display: grid` one selector away. `painter.test.ts` pins the attribute reaching the DOM
+    // under happy-dom, which has no cascade to get wrong — so deleting both stylesheet rules left
+    // the entire gate green and a captured cell pixel-identical to a hole.
+    const ringColours = await page.evaluate(() => {
+      const ring = document.querySelector('#cell-layer .cell-ring[data-captured="true"]');
+      if (ring === null) return null;
+      return {
+        fill: getComputedStyle(ring.querySelector('.ring-fill')).stroke,
+        track: getComputedStyle(ring.querySelector('.ring-track')).stroke,
+      };
+    });
+    // `--captured`, not `--accent`. Stated as the literal colours because that is what a person
+    // looking at the screen is comparing, and because a test that read the custom property back
+    // would pass against a rule that never applied.
+    expect(ringColours).toEqual({ fill: 'rgb(142, 224, 106)', track: 'rgb(142, 224, 106)' });
 
     // Back to where the capture was taken, and assert directly rather than sweeping for a hit.
     //
@@ -1498,6 +1524,117 @@ test('a resume the core refuses says why and still lets a new capture start', as
     await expect(page.locator('#new-capture')).toHaveJSProperty('hidden', true);
   } finally {
     await server.close();
+  }
+});
+
+test('a guidance call that rejects does not take the capture loop with it', async ({ browser }) => {
+  // `onMotion` does not answer a worker-side failure with `{ok: false}` — it answers with a
+  // rejected promise, and `step` awaited it bare. The trailing `requestAnimationFrame(step)` then
+  // never runs and the loop ends without a word: the `else` branch that clears the markers is on
+  // the resolved path, so what stays on screen is the full field of rings this PR taught the user
+  // to read, frozen, under a guidance line still reporting the last answer that worked.
+  //
+  // Not a hypothetical trigger: `facade.ts` throws when `_malloc` returns 0, which its own comment
+  // calls a real outcome on a phone that already has a sphere of frames pinned.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Injected where the worker would produce it — a `failed` reply to one `call` — rather than by
+    // breaking the core, so what is exercised is the page's handling of a rejection and nothing
+    // else. The third guidance call, so the loop is running and the failure is not the first
+    // answer the page ever gets.
+    const post = Worker.prototype.postMessage;
+    // Armed by the test rather than counted here, because the loop asks for guidance once per
+    // batch of samples and a batch is however many events landed in one animation frame. A
+    // "fail the third call" rule made the injection depend on that timing, and on a fast run
+    // there was no third call to fail.
+    window.__failNextGuidance = false;
+    window.__guidanceFailuresInjected = 0;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion'
+          && window.__failNextGuidance) {
+        window.__failNextGuidance = false;
+        window.__guidanceFailuresInjected += 1;
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+          data: {
+            kind: 'failed', seq: message.seq,
+            detail: "core could not allocate 64 bytes for 'CaptureSessionManager.onMotion'",
+          },
+        })), 0);
+        return undefined;
+      }
+      // `undefined` is not an empty transfer list to `postMessage`, it is a type error — so the
+      // two-argument call has to be reconstructed rather than forwarded blindly.
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#motion-state')).toContainText('DeviceOrientation', {
+      timeout: 15000,
+    });
+
+    // The loop asks for guidance when a sample arrives, and this runner has no sensor of its own —
+    // so the ticking is driven from here. Without it there is exactly one guidance call in a whole
+    // session and nothing to observe: measured at 1 call in 2 s on this runner, which is how this
+    // test's first draft managed to inject nothing at all.
+    const pan = async (alpha) => {
+      await page.evaluate((a) => {
+        window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+          alpha: a, beta: 90, gamma: 0,
+        }));
+      }, alpha);
+    };
+    // A normal answer first, so the failure below is not the first thing the page ever hears.
+    await pan(10);
+    await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+
+    // Every line `#guidance` shows from here on, because the recovery this test is *for* makes the
+    // failure line short-lived: the loop keeps ticking through the samples already queued, so the
+    // next successful answer overwrites it within a frame or two. Polling for the text raced that
+    // and passed one run in three — which would have read as flakiness rather than as the loop
+    // working exactly as intended.
+    await page.evaluate(() => {
+      window.__guidanceLines = [];
+      const row = document.getElementById('guidance');
+      new MutationObserver(() => window.__guidanceLines.push(row.textContent))
+        .observe(row, { childList: true, characterData: true, subtree: true });
+    });
+    await page.evaluate(() => { window.__failNextGuidance = true; });
+    for (let alpha = 20; alpha < 80; alpha += 10) {
+      await pan(alpha);
+      if (await page.evaluate(() => window.__guidanceFailuresInjected) > 0) break;
+    }
+    await expect.poll(() => page.evaluate(() => window.__guidanceFailuresInjected),
+                      { timeout: 15000 }).toBe(1);
+    // Said out loud rather than swallowed, and with the worker's own reason.
+    await expect.poll(() => page.evaluate(
+      () => window.__guidanceLines.some((line) => /guidance failed/i.test(line))),
+      { timeout: 15000 }).toBe(true);
+    expect(await page.evaluate(
+      () => window.__guidanceLines.some((line) => /could not allocate/i.test(line)))).toBe(true);
+
+    // The loop is still turning. This is the assertion the whole finding is about: a loop that had
+    // died would leave the failure line up for ever, which on screen reads exactly like a loop
+    // that recovered and then had nothing more to say — so what is asserted is a *later* line, not
+    // the absence of the failure one.
+    for (let alpha = 90; alpha < 170; alpha += 10) await pan(alpha);
+    await expect.poll(() => page.evaluate(() => {
+      const lines = window.__guidanceLines;
+      const failed = lines.findIndex((line) => /guidance failed/i.test(line));
+      return failed >= 0 && lines.slice(failed + 1).some((line) => /cell \d+/.test(line));
+    }), { timeout: 15000 }).toBe(true);
+    await expect(page.locator('#cell-layer .cell-ring:not([hidden])'))
+      .not.toHaveCount(0, { timeout: 15000 });
+  } finally {
+    await server.close();
+    await context.close();
   }
 });
 
