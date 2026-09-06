@@ -473,8 +473,10 @@ when it succeeds — and on the sample-less tick this is about, `OrientationPose
 (`FailedPrecondition` on an empty span, deliberately, because reporting stability for a dropout
 would let a burst fire blind). So during a freeze the field is not stale, it is absent. Something
 has to notice that nobody is asking, decide how old is too old, and say so on screen — a frozen
-reticle with no explanation is what a user gets today. Worth doing before the dwell trigger lands, since a trigger that fires on its own will
-reach this state without anybody pressing anything.
+reticle with no explanation is what a user gets today. It outlived the dwell trigger it was written
+to precede: ADR 0043 landed, so a capture now reaches this state without anybody pressing anything,
+and ADR 0044's dwell credit bounds what a resumed loop can bank rather than what a frozen one
+reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
 
 ---
 

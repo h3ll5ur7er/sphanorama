@@ -49,7 +49,9 @@ ceiling is read from `navigator.deviceMemory` rather than stated, so it scales w
 and the policy above it is in: `CaptureSessionManager` cools a cell the moment its burst is
 ranked, so a sphere larger than the store still captures and `Allocate`'s refusal is the backstop
 rather than the first thing a capture hits (ADR 0023). Nobody presses anything to capture: the core
-counts a two-second dwell on a held cell and arms the burst itself (ADR 0043). And a capture needs
+counts a two-second dwell on a held cell and says `Fire`, and the page arms on it — the decision is
+the core's and the call is the client's, because a burst is paced by the client's ticks (ADR 0043).
+A `Fire` nobody could act on comes round again, since there is no shutter left to fall back on. And a capture needs
 a motion sensor — without one `Begin` and `Resume` refuse before they open a camera, and the page
 says what is required and what is missing, because a sphere whose cells are labelled with
 directions nobody measured is worse than a message (ADR 0044). See `docs/06-roadmap.md`.

@@ -288,8 +288,10 @@ sequenceDiagram
   P-->>M: pose, stability
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
-  M-->>U: Guidance{node, error, "hold still"}
-  Note over U: the client applies and confirms the locks first (ADR 0022)
+  M-->>U: Guidance{node, error, "hold still", heldFraction}
+  Note over M: the dwell runs while the cell is held; about two seconds of ticks that carried samples
+  M-->>U: Guidance{node, "fire"}
+  Note over U: nobody presses anything (ADR 0043). The client applies and confirms the locks first (ADR 0022)
   U->>M: ArmBurst(node, burst)
   M->>C: SetLocks(exposure, white balance, focus)
   C-->>M: Ok, or FailedPrecondition naming the locks not held
@@ -355,6 +357,14 @@ other and is refused while the camera is aimed somewhere else (ADR 0041), so a r
 instruction to go back and re-shoot rather than a shutter that fires where the phone happens to be
 pointing — which is the failure that rule exists to stop. There is always an aim to check: a
 session cannot begin on a device with no motion sensor (ADR 0044).
+
+Only the replacing form of `RequestRetake` reaches that burst in this build, and the contract says
+so rather than leaving a reader to find out. Keeping the existing evidence leaves the cell covered,
+so guidance answers `AlreadyCaptured` and the dwell — which arms every burst since ADR 0043 — never
+matures on it. And a replacing retake empties the cell of everything the frame store will let go
+of: a frame it refuses to forget keeps its candidate, because the bytes are still charged and
+dropping the last handle to them would orphan them. The retake flow that closes the additive case
+is Phase 3.
 
 ### UC-3 · Pick a different frame from the burst by hand
 

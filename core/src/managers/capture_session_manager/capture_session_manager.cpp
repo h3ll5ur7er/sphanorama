@@ -22,22 +22,29 @@ constexpr int64_t kDwellNs = 2'000'000'000;
 // The most one tick may add to a dwell, whatever the clock says passed since the last one.
 //
 // The dwell is meant to measure "the camera was held here", and it approximates that by adding
-// the interval between ticks that carried samples. The approximation breaks where there were no
-// ticks at all: a backgrounded tab suspends the render loop, and the first tick after it returns
-// carries a buffered sample and an interval of however long the user was away. Thirty seconds
-// banked in one go is a full dwell several times over, so a burst fires on the frame the tab
-// comes back — at whatever the stale pose says, which is the failure ADR 0041 exists to stop.
+// the interval since the previous tick, on ticks that carried a sample. The approximation breaks
+// where there were no ticks at all: a backgrounded tab suspends the render loop, and the first
+// tick after it returns carries a buffered sample and an interval of however long the user was
+// away. Thirty seconds banked in one go is a full dwell several times over, so a burst fires on
+// the frame the tab comes back — the failure ADR 0041 exists to stop, reached without anybody
+// holding anything.
 //
-// Half a second is far longer than any tick this app makes — the loop runs on animation frames
-// and each one drains, pushes and takes one guidance round trip over the worker, measured in
-// tens of milliseconds even on a loaded phone — and far shorter than a stall, which is seconds.
-// So a running loop never meets this bound and a suspended one always does.
+// Three hundred milliseconds, and the number comes from the client rather than from an intuition
+// about one. `pump` asks for guidance on every animation frame and, when no sample has arrived,
+// at least every 250 ms — a heartbeat it keeps deliberately, so the reticle stays live on a still
+// phone. So a running loop ticks inside 250 ms by construction and a suspended one does not tick
+// at all, and a bound just above the heartbeat separates them with nothing in between.
+//
+// A first draft said half a second and justified it as "far longer than any tick", which was an
+// invented figure: the shipped loop's own guarantee is the heartbeat, and 500 ms is twice it.
+// The difference is not academic — the residual is what a stalled loop banks on the tick it
+// resumes, and 500 ms against a two-second dwell completes one that was already past 75%.
 //
 // Bounded rather than refused outright, because neither extreme is honest. Whether the camera was
 // held through a gap no tick covered is simply unknown: crediting all of it is a guess, and
 // crediting none of it under-counts real elapsed time on a tick that was merely late. A bound
-// keeps the ordinary case exact and makes the unknown case cost almost nothing.
-constexpr int64_t kMaxDwellCreditNs = 500'000'000;
+// keeps the ordinary case exact and makes the unknown case cost at most a seventh of a dwell.
+constexpr int64_t kMaxDwellCreditNs = 300'000'000;
 constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
@@ -364,12 +371,17 @@ void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
   //
   // A refusal keeps the candidate, exactly as `Trim` keeps one — and for the same reason, which
   // this had not learned. `Forget` leaves its entry in place when it says no and goes on charging
-  // the budget for those bytes; `OpfsSpillSink::Drop` answers `Internal` on a real device, and a
-  // committed candidate has already been demoted to the sink by `Cool`, so this is the ordinary
-  // path rather than an exotic one. Clearing the vector anyway threw away the last handle to a
-  // frame the store was still accounting for: an orphan nothing can name, free, checkpoint or
-  // resume. Keeping it means the cell still shows a frame the user asked to discard, which is
-  // honest — the bytes are still there — and the next retake tries again.
+  // the budget for those bytes, so clearing the vector threw away the last handle to a frame the
+  // store was still accounting for: an orphan nothing can name, free, checkpoint or resume.
+  // Keeping it means the cell still shows a frame the user asked to discard, which is honest —
+  // the bytes are still there — and the next retake tries again.
+  //
+  // What reaches it today is a pinned frame: `Pin` promises its span until `Release`, so the
+  // store refuses to erase the entry underneath one. An earlier version of this comment blamed
+  // `OpfsSpillSink::Drop` instead and was wrong on both platforms — the browser host's `drop`
+  // answers true on every path by contract, and natively `Forget` does not reach a sink at all.
+  // The rule stands on `Forget`'s own contract rather than on any one sink's behaviour, which is
+  // the right thing for it to stand on.
   //
   // `NotFound` is not a refusal: the store is not holding it, so there is nothing left to keep a
   // handle to and the candidate would be a row pointing at nothing.
@@ -469,7 +481,6 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   lens_ = lens;
   pose_state_ = initialPose.value;
   active_ = true;
-  ResetDwell();
   Checkpoint();
   return Ok(session_);
 }
@@ -653,15 +664,15 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;
   active_ = true;
-  ResetDwell();
   return Ok(session_);
 }
 
 void CaptureSessionManager::ResetDwell() {
-  // A dwell belongs to the session that counted it. Nothing used to clear this, and the latch
-  // that `Fire` used to set hid it: a session that ended mid-dwell left `dwell_node_` naming a
-  // cell and `dwell_marked_ns_` naming a moment, and the next session's first tick added every
-  // nanosecond since. Node ids are indices into a tessellation, so the stale cell matches the new
+  // A dwell belongs to the session that counted it. Nothing used to clear this: a session that
+  // ended mid-dwell left `dwell_node_` naming a cell and `dwell_marked_ns_` naming a moment, and
+  // the next session's first tick added every nanosecond since. The latch `Fire` used to set hid
+  // one shape of this and not the shape below — it was only ever set *after* a dwell completed,
+  // so a session ended part-way through one carried nothing to suppress it. Node ids are indices into a tessellation, so the stale cell matches the new
   // session's target by construction rather than by luck — a burst on the first tick of a capture
   // nobody had started aiming yet.
   dwell_ns_ = 0;
@@ -823,11 +834,22 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
       // twenty seconds of holding one cell for zero candidates, escapable only by looking away
       // and back. Now the dwell simply runs again.
       //
-      // A whole dwell rather than the next tick, because a client that is merely slow must not
-      // collect a second arm on top of the one in flight; two seconds is far longer than any
-      // round trip this app makes. And a burst that *does* start overwrites the action above, so
-      // `held` goes false and the dwell resets on its own — the retry cannot double-fire one that
-      // took. A latched flag was tried first and did the first half of this without the second.
+      // A whole dwell rather than the next tick, so a client that is merely slow is not pelted
+      // with offers while it answers the first. That is a bound on how often, not a promise that
+      // the previous offer has been resolved: an arm can take longer than a dwell. `armOnce` in
+      // the shipped page waits on a lock write bounded at three seconds and has been measured at
+      // 3007 ms, against a two-second dwell — so a second `Fire` really can be reported while the
+      // first arm is still crossing the worker.
+      //
+      // Which is safe, and is a division of labour rather than an oversight, because the core
+      // cannot know how long a client takes to answer and any figure here would be a guess about
+      // one. Two things hold it: `ArmBurst` refuses outright while a burst is in flight, and the
+      // page ignores a `Fire` it already has an arm out for (`armAt`'s `arming`). A client that
+      // did neither would collect a refusal rather than a second burst. The contract says so.
+      //
+      // And a burst that *does* start overwrites the action above, so `held` goes false and the
+      // dwell resets on its own — no second `Fire` follows one that took. A latched flag was
+      // tried first and did that half without allowing a retry at all.
       guidance.action = GuidanceAction::Fire;
       dwell_ns_ = 0;
     }
@@ -1327,8 +1349,18 @@ Status CaptureSessionManager::End() {
   candidates_.clear();
   burst_owned_.clear();
   plan_ = CapturePlan{};
-  // Beside the rest of this session's state, and belt to `Begin`'s braces: whichever of the two
-  // runs first, no dwell survives into a session that did not count it.
+  // Beside the rest of this session's state, and the only place that does it.
+  //
+  // `Begin` and `Resume` had one of these too, on the reasoning that a session should start clean
+  // whatever came before. A reviewer showed each of the three was individually removable with the
+  // whole suite green, which is the signal this repo treats as meaning a line is dead rather than
+  // defensive — and it is: `Begin` refuses while a session is active, `Abandon` leaves it active,
+  // and every failure path through `End` reaches this block, so ending here is the only way a
+  // session stops. Three resets meant none of them was tested.
+  //
+  // What would make this insufficient is a way to stop a session that does not come through here
+  // — a fatal `Abandon` that cleared `active_`, say. Whoever adds one adds a reset with it, and
+  // `ANewSessionDoesNotInheritTheLastOnesDwell` is what fails if they do not.
   ResetDwell();
 
   // The session is over regardless — every field above is cleared before this returns, so there

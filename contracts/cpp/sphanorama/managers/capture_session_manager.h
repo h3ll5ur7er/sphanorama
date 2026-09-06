@@ -149,9 +149,13 @@ class ICaptureSessionManager {
   // to say so is here. Keeping the evidence leaves the cell covered, `Locate` answers
   // `AlreadyCaptured` rather than `HoldStill` for a covered cell, and the dwell that arms every
   // burst since ADR 0043 only matures on `HoldStill` — so an additive retake marks nothing a
-  // client can act on. `replace` true empties the cell, which makes it a hole again and puts it
-  // back in the dwell's way. The retake flow that closes this is Phase 3 (`docs/06-roadmap.md`);
-  // until then this call aborts a burst in flight and, additively, does nothing else.
+  // client can act on. `replace` true empties the cell of everything the store will let go of,
+  // which makes it a hole again and puts it back in the dwell's way — everything, unless the
+  // store refuses to forget a frame, in which case that one candidate stays and the cell stays
+  // covered until a later retake succeeds. `Discard` keeps it deliberately: the bytes are still
+  // charged, and dropping the last handle to them would orphan them. The retake flow that closes
+  // the additive case is Phase 3 (`docs/06-roadmap.md`); until then this call aborts a burst in
+  // flight and, additively, does nothing else.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

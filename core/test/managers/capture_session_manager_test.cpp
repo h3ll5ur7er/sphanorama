@@ -940,7 +940,46 @@ TEST_F(CaptureSession, AFireNobodyActedOnComesRoundAgainWhileTheCellIsStillHeld)
       << "a Fire nobody acted on was never offered again, so a refused arm strands the capture";
   EXPECT_GE(untilAgain, 1'900)
       << "the retry came round after " << untilAgain << "ms, inside the round trip an arm takes";
+  // And the other side of it, which a reviewer found open: `>= 1900` alone is satisfied by a
+  // retry taking three dwells, and the slow half is the one a user feels — a phone held on a cell
+  // for six seconds with nothing happening is indistinguishable from the dead end this replaced.
+  // The contract says "another full dwell", so the test says one dwell rather than at least one.
+  EXPECT_LE(untilAgain, 2'600)
+      << "the retry took " << untilAgain << "ms, which is more dwells than the contract promises";
 }
+
+TEST_F(CaptureSession, OneTickCannotBankMoreThanABoundedSliceOfADwell) {
+  // `kMaxDwellCreditNs` itself, which nothing pinned: a reviewer swept it and found every value
+  // from 70 ms to 999 ms passed the suite. The two helpers tick at 16 ms and at 100 ms, so no test
+  // reached the bound from either side — and the direction that matters is the one the constant's
+  // comment argues from, a loaded phone whose ticks are slower than usual.
+  //
+  // Four hundred milliseconds between ticks is past the bound and well inside a stall, which is
+  // the case the number exists to separate: it must credit the bound and not the gap.
+  Begin();
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  const auto tick = [&]() {
+    sample.timestampNs = clock.MonotonicNs();
+    auto guided = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+    EXPECT_TRUE(guided.ok()) << guided.status.detail;
+    return guided.ok() ? guided.value : CaptureGuidance{};
+  };
+
+  ASSERT_EQ(tick().action, GuidanceAction::HoldStill) << "the fixture expects a held cell";
+  clock.AdvanceMs(400);
+  const double credited = tick().heldFraction;
+
+  // 300 ms of a two-second dwell, and asserted as a window rather than a point so the test says
+  // "the bound was applied" rather than restating the constant. A gap credited whole would read
+  // 0.2; a bound anywhere below 200 ms or above 500 ms falls outside this.
+  EXPECT_GT(credited, 0.1) << "a 400ms tick credited less than a plausible bound would";
+  EXPECT_LT(credited, 0.19) << "a 400ms tick banked the whole gap, or a bound far too generous";
+}
+
+
 
 TEST_F(CaptureSession, ABurstInFlightDoesNotServeTheDwellThatFiredIt) {
   // The guard the browser suite claims to rest on and does not reach: while a burst is in flight
@@ -2272,6 +2311,26 @@ TEST_F(CaptureSessionRetakes, ADiscardedFrameTheStoreWouldNotLetGoOfKeepsItsCand
   // retake that stopped discarding.
   EXPECT_EQ(kept.value.size(), 1u)
       << "the candidates whose frames were forgotten should have left the cell";
+
+  // Still the manager's, which is the half that makes keeping it worth anything — and the half a
+  // reviewer found unpinned: dropping only the `continue`, so a kept candidate loses its
+  // `burst_owned_` entry, passed the whole suite. Ownership is what `Checkpoint` writes down,
+  // what `Cool` demotes and what `Trim` counts against the cap, so a frame kept without it is
+  // the orphan this test is about, deferred to the next reload rather than avoided.
+  //
+  // Read through the document, because that is where the loss shows: `Checkpoint` writes only
+  // candidates this session owns.
+  ASSERT_TRUE(manager->End().ok());
+  auto document = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(document.ok()) << document.status.detail;
+  int candidateLines = 0;
+  std::istringstream lines(document.value);
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("candidate ", 0) == 0) ++candidateLines;
+  }
+  EXPECT_EQ(candidateLines, 1)
+      << "the kept candidate was not checkpointed, so the frame it holds is one no later session "
+         "can name, cool, trim or free";
 }
 
 TEST_F(CaptureSessionRetakes, AFrameTheStoreWouldNotLetGoOfKeepsItsCandidate) {
