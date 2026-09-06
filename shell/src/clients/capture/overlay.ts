@@ -30,6 +30,16 @@ export interface RingMark {
   fill: number;
   /** Whether this is the cell guidance is sending the user to. */
   isTarget: boolean;
+  /**
+   * Whether this cell already holds a capture.
+   *
+   * Separate from `fill`, which reaches 1 by two roads: a captured cell, and one the user has held
+   * the phone on long enough to fire. Those mean opposite things to somebody deciding whether to
+   * re-shoot — and since aim now names the cell under the reticle whether or not it is captured
+   * (ADR 0041), telling them apart is what makes a deliberate re-capture something a user can see
+   * themselves doing rather than guess at.
+   */
+  captured: boolean;
 }
 
 export interface ArrowMark {
@@ -127,7 +137,7 @@ export function planOverlay(input: OverlayInput): Overlay {
     if (!seen.onScreen) continue;
 
     const fill = captured ? 1 : isTarget ? holding : 0;
-    rings.push({ node: node.id, ...place(seen.x, seen.y), fill, isTarget });
+    rings.push({ node: node.id, ...place(seen.x, seen.y), fill, isTarget, captured });
   }
 
   return { rings, arrow };

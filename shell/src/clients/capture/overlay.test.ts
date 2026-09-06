@@ -109,6 +109,25 @@ describe('planOverlay', () => {
     expect(overlay.rings[0].y).toBeCloseTo(0.5, 6);
   });
 
+  it('tells a captured ring from one the user has held on, though both are full', () => {
+    // `fill` reaches 1 by two different roads: a cell that has been captured, and a cell the user
+    // has held the phone on long enough to fire. To someone deciding whether to re-shoot, those
+    // are opposite meanings, and a fraction cannot carry the difference — so the mark says which
+    // it is and the stylesheet can colour them apart.
+    const done = planOverlay({
+      plan: plan(cell(1, 0, 0)), coverage: coverage(), attitude: ahead, targetNode: 1 as NodeId,
+    });
+    expect(done.rings[0].fill).toBe(1);
+    expect(done.rings[0].captured).toBe(true);
+
+    const held = planOverlay({
+      plan: plan(cell(1, 0, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+      holding: 1,
+    });
+    expect(held.rings[0].fill).toBe(1);
+    expect(held.rings[0].captured).toBe(false);
+  });
+
   it('raises an arrow only when the cell to go to is out of sight', () => {
     const inView = planOverlay({
       plan: plan(cell(1, 0, 0)),

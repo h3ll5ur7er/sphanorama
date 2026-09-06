@@ -35,6 +35,9 @@ function paintRing(host: HTMLElement, ring: RingMark): void {
   host.style.left = `${(ring.x * 100).toFixed(3)}%`;
   host.style.top = `${(ring.y * 100).toFixed(3)}%`;
   host.dataset.target = String(ring.isTarget);
+  // Told apart in the stylesheet rather than by the fill, which says the same thing about a cell
+  // that is captured and one the user has just finished holding on.
+  host.dataset.captured = String(ring.captured);
   const fill = host.querySelector<SVGCircleElement>('.ring-fill');
   if (fill === null) return;
   // Dash the whole circumference and slide the gap: a fill of zero hides the arc entirely and a

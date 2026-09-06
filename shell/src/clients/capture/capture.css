@@ -1,4 +1,7 @@
-:root { color-scheme: dark; --ink: #e3edeb; --muted: #93a6a3; --accent: #3ecdbb; --bg: #0d1514; }
+:root { color-scheme: dark; --ink: #e3edeb; --muted: #93a6a3; --accent: #3ecdbb; --bg: #0d1514;
+  /* Captured cells, a hue away from the accent rather than a shade of it: the two states have
+     to survive a bright screen outdoors, which is where this app is used. */
+  --captured: #8ee06a; }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
   font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
@@ -51,6 +54,19 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink);
   transition: stroke-dashoffset 120ms linear; }
 /* The cell being aimed at, so the one that matters is findable among the rest. */
 .cell-ring[data-target='true'] .ring-track { opacity: .9; stroke-width: 2; }
+/*
+ * A cell that already holds a capture, told apart by colour rather than by how full it is.
+ *
+ * The fill reaches all the way round two ways — a captured cell, and one the phone has been held
+ * on long enough to fire — and until aim started naming the cell under the reticle whether or not
+ * it was captured (ADR 0041), the difference never had to be visible. It does now: re-shooting a
+ * cell is something a user chooses, and choosing it means seeing which cells are already done.
+ *
+ * Colour rather than a second glyph, so a sphere part-way through reads at a glance as a field of
+ * green with the gaps standing out, and the gaps are what the capture is about.
+ */
+.cell-ring[data-captured='true'] .ring-fill { stroke: var(--captured); opacity: .85; }
+.cell-ring[data-captured='true'] .ring-track { stroke: var(--captured); opacity: .3; }
 
 /*
  * The signpost to the cell being aimed at: out on the side it is on rather than in the middle, and
