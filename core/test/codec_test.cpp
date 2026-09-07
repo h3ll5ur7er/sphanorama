@@ -117,11 +117,16 @@ TEST(Codec, TheWireFormatIsPinnedAcrossLanguages) {
   // Left false, so the pinned bytes end in the zero byte an appended `bool` adds. The field is new
   // (ADR 0042) and this is the test that made both languages learn about it at the same time.
   guidance.aimKnown = false;
+  // Likewise left at zero, and likewise appended (ADR 0043): eight more bytes of `double` on the
+  // end. What this pin is for is exactly this — an appended field changes the payload, and it has
+  // to change identically on both sides or a browser decodes plausible nonsense.
+  guidance.heldFraction = 0.0;
 
   Writer writer;
   Encode(writer, guidance);
   EXPECT_EQ(Hex(writer.bytes()),
-            "0000000000001c4000000000000029400000000000000ac0000000000000e03f0100000000");
+            "0000000000001c4000000000000029400000000000000ac0000000000000e03f"
+            "01000000000000000000000000");
 }
 
 TEST(Codec, RoundTripsABytePayload) {

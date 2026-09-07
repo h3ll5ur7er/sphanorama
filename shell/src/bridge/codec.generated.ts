@@ -11,7 +11,7 @@ export const StatusCodeValues: C.StatusCode[] = ['Ok', 'InvalidArgument', 'NotFo
 export const MotionCapabilityValues: C.MotionCapability[] = ['None', 'OrientationOnly', 'GyroAccel', 'GyroAccelMag'];
 export const PixelFormatValues: C.PixelFormat[] = ['Unknown', 'RGBA8', 'BGRA8', 'NV12', 'I420', 'Gray8', 'EncodedJpeg'];
 export const TessellationStrategyValues: C.TessellationStrategy[] = ['Rings', 'Geodesic', 'Adaptive'];
-export const GuidanceActionValues: C.GuidanceAction[] = ['Seek', 'HoldStill', 'Firing', 'CellDone', 'SphereDone', 'TooFast', 'AlreadyCaptured'];
+export const GuidanceActionValues: C.GuidanceAction[] = ['Seek', 'HoldStill', 'Firing', 'CellDone', 'SphereDone', 'TooFast', 'AlreadyCaptured', 'Fire'];
 export const ProjectionValues: C.Projection[] = ['Equirectangular', 'Cubemap'];
 export const QualityTierValues: C.QualityTier[] = ['Preview', 'Standard', 'Maximum'];
 export const BuildStageValues: C.BuildStage[] = ['Queued', 'Features', 'PairwiseMatching', 'GlobalSolve', 'ExposureCompensation', 'GhostDetection', 'SeamFinding', 'Blending', 'Projecting', 'Complete', 'Failed'];
@@ -262,6 +262,7 @@ export function encodeCaptureGuidance(out: Writer, value: C.CaptureGuidance): vo
   out.f64(value.stability);
   out.i32(GuidanceActionValues.indexOf(value.action));
   out.bool(value.aimKnown);
+  out.f64(value.heldFraction);
 }
 
 export function decodeCaptureGuidance(input: Reader): C.CaptureGuidance {
@@ -272,6 +273,7 @@ export function decodeCaptureGuidance(input: Reader): C.CaptureGuidance {
     stability: input.f64(),
     action: GuidanceActionValues[input.i32()],
     aimKnown: input.bool(),
+    heldFraction: input.f64(),
   };
 }
 

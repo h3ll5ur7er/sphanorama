@@ -40,6 +40,13 @@
       <span class="arrow-away"></span>
     </div>
 
+    <!-- The shutter, on the viewfinder rather than in the panel — and only on the one device that
+         needs it. Where the phone can say where it is pointing, the dwell fires the burst and this
+         is hidden (ADR 0043); where it cannot, no dwell can ever mature and this is the whole
+         shutter. It used to live inside the panel, which folds itself once a capture starts
+         (ADR 0028), so the app's primary action sat behind a disclosure the app itself closed. -->
+    <button id="capture" type="button" disabled hidden>Capture this cell</button>
+
     <section id="panel">
       <h1>Sphanorama</h1>
       <!-- The panel is most of the screen, and the screen is where the markers are, so it folds
@@ -75,7 +82,6 @@
            is the case it exists for. -->
       <button id="resume" type="button" hidden>Resume the last capture</button>
       <button id="enable" type="button">Enable camera &amp; motion</button>
-      <button id="capture" type="button" disabled>Capture this cell</button>
       <!-- Shown only when a resume was refused, so the reason on the stage line is not a dead
            end: the core can honestly say no — a document this build cannot read, frames the tier
            lost — and starting over has to stay one press away when it does. -->
