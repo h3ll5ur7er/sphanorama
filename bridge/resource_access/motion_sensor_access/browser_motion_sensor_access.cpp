@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <vector>
 
+#include "sphanorama/wire.h"
+
 namespace sphanorama::bridge {
 namespace {
 
@@ -79,6 +81,16 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
   for (size_t i = 0; i < taken; ++i) {
     const double* f = flat.data() + i * kDoublesPerSample;
     ImuSample& sample = out[i];
+    // Checked before the cast, not after — by the time a non-finite or out-of-range double has
+    // been converted to `int64_t` the behaviour is already undefined, which is the same sentence
+    // `runtime.cpp` and `browser_project_store_access.cpp` carry over the same kind of line. This
+    // was the third door in `bridge/` and the only one that did not ask.
+    //
+    // Dropped rather than clamped or zeroed: a timestamp is what `OrientationPoseEngine::Integrate`
+    // measures its window with, so a made-up one is a made-up rotation. `Drain` reports how many
+    // samples it wrote, so returning fewer is an answer the contract already has a shape for,
+    // where an invented sample is not.
+    if (!wire::IsRepresentableInt64(f[0])) return Ok(static_cast<int32_t>(i));
     sample.timestampNs = static_cast<int64_t>(f[0]);
     sample.hasAngularVelocity = f[1] != 0.0;
     sample.angularVelocity = Vec3{f[2], f[3], f[4]};

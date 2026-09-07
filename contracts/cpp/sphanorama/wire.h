@@ -90,6 +90,22 @@ inline bool IsRepresentableInteger(double raw) {
          raw <= static_cast<double>(std::numeric_limits<T>::max());
 }
 
+// A signed 64-bit integer that arrived as a double, checked.
+//
+// Separate from `IsRepresentableInteger` rather than a wider instantiation of it, because the
+// bound cannot be written the same way: that predicate compares against
+// `static_cast<double>(std::numeric_limits<T>::max())`, which for `int64_t` rounds *up* to exactly
+// 2^63 — so `raw <= max` would accept a value one past the end and the conversion would still be
+// undefined. The `static_assert` there says as much; this is the treatment it points at.
+//
+// So the comparison is against the power of two itself, strictly. `INT64_MIN` is exactly
+// -2^63 and is representable, which is why the low end is inclusive and the high end is not.
+// NaN fails the `trunc` equality, and both infinities fail the range.
+inline bool IsRepresentableInt64(double raw) {
+  constexpr double kTwoToThe63 = 9223372036854775808.0;
+  return raw == std::trunc(raw) && raw >= -kTwoToThe63 && raw < kTwoToThe63;
+}
+
 class Reader {
  public:
   Reader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
@@ -143,6 +159,19 @@ class Reader {
       return 0;
     }
     return static_cast<T>(raw);
+  }
+
+  // A timestamp or a count that has to become a signed 64-bit integer, checked. See
+  // IsRepresentableInt64: the generated codec used to cast these straight from `GetF64`, because
+  // `GetInteger` refuses to instantiate for them, and a cast is the one thing a door must not do.
+  int64_t GetInt64() {
+    const double raw = GetF64();
+    if (failed_) return 0;
+    if (!IsRepresentableInt64(raw)) {
+      failed_ = true;
+      return 0;
+    }
+    return static_cast<int64_t>(raw);
   }
 
   uint64_t GetId() {

@@ -180,5 +180,47 @@ TEST(Wire, AnIdIsOnlyValidWhenItIsAWholeNonNegativeNumberInRange) {
   EXPECT_FALSE(IsRepresentableId(1e300));
 }
 
+TEST(Wire, ASignedTimestampIsOnlyValidWhenItIsAWholeNumberInsideInt64) {
+  // The third door, and the one that had no predicate. `ImuSample::timestampNs`,
+  // `PoseSample::timestampNs` and `FrameRef::timestampNs` are `int64_t`, so `GetInteger` cannot
+  // take them — `IsRepresentableInteger` static_asserts `sizeof(T) <= 4`, because a 32-bit type's
+  // bounds are exactly representable as doubles and a 64-bit one's are not. The generated codec
+  // therefore cast them straight from `GetF64()`, and so did the browser motion port reading
+  // samples out of the shared heap.
+  //
+  // The bound is `2^63` rather than `INT64_MAX`: converting `INT64_MAX` to a double rounds *up* to
+  // exactly `2^63`, so a `raw <= static_cast<double>(INT64_MAX)` test would accept a value one
+  // past the end. Strictly-less-than against the power of two is the comparison that is exact.
+  EXPECT_TRUE(IsRepresentableInt64(0.0));
+  EXPECT_TRUE(IsRepresentableInt64(-1.0));
+  EXPECT_TRUE(IsRepresentableInt64(1e18));
+  EXPECT_TRUE(IsRepresentableInt64(-9223372036854775808.0));   // -2^63, exactly INT64_MIN
+
+  EXPECT_FALSE(IsRepresentableInt64(std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(IsRepresentableInt64(std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(IsRepresentableInt64(-std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(IsRepresentableInt64(0.5));
+  EXPECT_FALSE(IsRepresentableInt64(1e300));
+  EXPECT_FALSE(IsRepresentableInt64(9223372036854775808.0));   // 2^63, one past INT64_MAX
+}
+
+TEST(Wire, AnUnrepresentableTimestampFailsTheReaderRatherThanBeingCast) {
+  for (const double raw : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), 1e300, 0.5}) {
+    wire::Writer out;
+    out.PutF64(raw);
+    wire::Reader in(out.bytes().data(), out.bytes().size());
+    const int64_t got = in.GetInt64();
+    EXPECT_FALSE(in.ok()) << "a timestamp of " << raw << " was accepted";
+    EXPECT_EQ(got, 0);
+  }
+
+  wire::Writer good;
+  good.PutF64(1'700'000'000'000'000'000.0);
+  wire::Reader in(good.bytes().data(), good.bytes().size());
+  EXPECT_EQ(in.GetInt64(), 1'700'000'000'000'000'000);
+  EXPECT_TRUE(in.ok());
+}
+
 }  // namespace
 }  // namespace sphanorama

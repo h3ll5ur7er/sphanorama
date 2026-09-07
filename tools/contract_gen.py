@@ -921,6 +921,15 @@ def emit_cpp_codec(module: Module) -> str:
             out.append("  (void)in; (void)value;")
         for field in struct.fields:
             kind = _field_wire_kind(struct, field)
+            if _canonical_cpp(field.cpp) == "int64_t":
+                # The same rule as the narrow integers below, through the one predicate that can
+                # express a 64-bit bound. `GetInteger` refuses to instantiate for `int64_t` —
+                # `IsRepresentableInteger` static_asserts `sizeof(T) <= 4`, because converting
+                # `INT64_MAX` to a double rounds up and the range test would then accept a value
+                # one past the end — so these fields were cast straight off `GetF64` instead.
+                # Every timestamp in these contracts is one of them.
+                out.append(f"  value.{field.name} = in.GetInt64();")
+                continue
             if field.cpp in NARROW_INTEGERS:
                 # Read as the integer the header declared rather than cast down from the double it
                 # crossed as. `static_cast<int32_t>` of a NaN, an infinity or a 1e300 is undefined,
