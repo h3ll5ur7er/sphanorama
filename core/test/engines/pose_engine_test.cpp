@@ -639,6 +639,58 @@ TEST(PoseEngine, DeadReckoningAfterAnAbsoluteFixDropsBackToHalfConfidence) {
   EXPECT_FALSE(guessed.value.absolute);
 }
 
+TEST(PoseEngine, AStreamThatMeasuredNothingUsableIsNotPerfectlyStill) {
+  // `Stability`'s two claim-checks, which had no test between them: a reviewer deleted each and
+  // the whole suite stayed green, then probed what the deletion buys. Both answer **1.0** —
+  // "perfectly still" — for a stream that measured nothing at all. That is the exact number the
+  // `!measured` refusal below them exists to avoid producing, arriving through the door marked
+  // "a rate was reported".
+  //
+  // `hasAngularVelocity` and `hasOrientation` are *claims* about what a platform put in the
+  // sample, not guarantees. A port can set either beside a value that is not a measurement, and
+  // `Measured`/`Attitude` are where that is checked — so a burst firing mid-swing is what a
+  // missing check here costs, on the one signal the dwell consults before it arms.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  OrientationPoseEngine engine;
+
+  {
+    // A rate that is not a number, claimed as one. `Measured` refuses it, nothing else can.
+    ImuSample claimed;
+    claimed.timestampNs = 0;
+    claimed.hasAngularVelocity = true;
+    claimed.angularVelocity = Vec3{nan, 0, 0};
+    ImuSample later = claimed;
+    later.timestampNs = 100'000'000;
+    const std::vector<ImuSample> samples{claimed, later};
+
+    auto stability = engine.Stability(samples);
+    EXPECT_FALSE(stability.ok() && stability.value > 0.9)
+        << "a rate nobody could have measured was read as a phone holding still";
+    if (!stability.ok()) {
+      EXPECT_EQ(stability.status.code, StatusCode::FailedPrecondition);
+    }
+  }
+
+  {
+    // The other door: no rates at all, and an attitude that is not a rotation. The gap between
+    // two attitudes is the fallback measurement, and it cannot be taken from this one.
+    const std::vector<ImuSample> samples{Oriented(0, 0.0, 0.0), [&] {
+      ImuSample broken;
+      broken.timestampNs = 100'000'000;
+      broken.hasOrientation = true;
+      broken.orientation = Quat{0, 0, 0, 0};
+      return broken;
+    }()};
+
+    auto stability = engine.Stability(samples);
+    EXPECT_FALSE(stability.ok() && stability.value > 0.9)
+        << "an attitude that is not a rotation was read as a phone holding still";
+    if (!stability.ok()) {
+      EXPECT_EQ(stability.status.code, StatusCode::FailedPrecondition);
+    }
+  }
+}
+
 TEST(PoseEngine, AStillDeviceIsPerfectlyStable) {
   OrientationPoseEngine engine;
   const std::vector<ImuSample> samples{Spinning(0, 0.0), Spinning(100'000'000, 0.0)};

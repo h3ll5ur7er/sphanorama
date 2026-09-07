@@ -327,8 +327,12 @@ TEST(CoveragePlanner, ACellPointingNowhereIsNeverTheOneBeingHeld) {
     for (ICoveragePlannerEngine* engine :
          {static_cast<ICoveragePlannerEngine*>(&nullEngine),
           static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
-      auto guidance = engine->Locate(Aiming(FromAzimuthElevation(90.0, 20.0)), plan,
-                                     CoverageState{});
+      // Aimed at the identity, which is where a degenerate target now resolves to. It used to be
+      // (90, 20), and that stopped testing anything once this branch hardened `Normalize(Quat)`:
+      // `Direction(Quat{0,0,0,0})` became `(0,0,-1)`, an ordinary direction 90 degrees away, so
+      // the cone refused the cell and both planners' `IsUsableRotation` guards could be deleted
+      // with all 553 native tests green. Aiming here restores the 0.0 the test is named for.
+      auto guidance = engine->Locate(Aiming(Quat{}), plan, CoverageState{});
       ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
       EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
           << "a cell that points nowhere was reported as held";

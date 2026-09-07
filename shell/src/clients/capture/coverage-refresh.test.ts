@@ -119,13 +119,22 @@ describe('the coverage refresh', () => {
       const accepted: number[] = [];
       const coverage = refresher(core, accepted);
 
+      // A refusal first, because `isDue()` reads `stale` and only an *answered* refusal sets it.
+      // Without this the loop below never calls `refresh` at all — a reviewer instrumented the
+      // first version of this test and measured 0 retries out of 300 frames, so it asserted that
+      // one read stays one read while nothing was ever in a position to make a second.
       void coverage.refresh();
-      // Five seconds of animation frames against a read that has not answered.
+      await core.answer(null);
+      expect(core.asks).toBe(1);
+
+      // Now the retry goes out and is slow. `stale` is still set — only an answer clears it — so
+      // every frame past the next interval boundary asks again, and the in-flight guard is the
+      // only thing standing there. Five seconds of animation frames crosses four of them.
       for (let frame = 0; frame < 300; frame += 1) {
         vi.advanceTimersByTime(16);
         if (coverage.isDue()) void coverage.refresh();
       }
-      expect(core.asks, 'a slow read was asked again while it was still out').toBe(1);
+      expect(core.asks, 'a slow read was asked again while it was still out').toBe(2);
     } finally {
       vi.useRealTimers();
     }

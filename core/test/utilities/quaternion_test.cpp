@@ -197,6 +197,20 @@ TEST(Vec3Maths, NormalizeIsTotal) {
   EXPECT_DOUBLE_EQ(zero.z, 0.0);
   const Vec3 unit = Normalize(Vec3{0, 3, 4});
   EXPECT_NEAR(std::sqrt(Dot(unit, unit)), 1.0, 1e-12);
+
+  // A finite length is not enough: `Dot` squares before it sums, so a component large enough
+  // overflows and the length is an infinity that `length > 1e-12` waves through. Dividing by it
+  // gives NaN wherever the component was itself infinite, and zero elsewhere — half a vector.
+  // The `isfinite` half of the guard is what makes this the origin like every other degenerate
+  // input, and a reviewer found it had no test: dropping it left all 554 green, because
+  // `AngleBetweenDirections` catches both spellings one call later.
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Vec3 unusable : {Vec3{inf, 0, 0}, Vec3{1e300, 1e300, 1e300}, Vec3{-inf, inf, 0}}) {
+    const Vec3 answered = Normalize(unusable);
+    EXPECT_DOUBLE_EQ(answered.x, 0.0);
+    EXPECT_DOUBLE_EQ(answered.y, 0.0);
+    EXPECT_DOUBLE_EQ(answered.z, 0.0);
+  }
 }
 
 TEST(AngleBetweenDirections, IgnoresLengthAndMeasuresTheAngle) {
@@ -230,11 +244,17 @@ TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinit
 //
 // **This test cannot fail on either guard alone, and that is worth stating rather than fixing.**
 // A reviewer deleted `AngleBetweenDirections`'s degeneracy check and it stayed green, because
-// `Normalize(Vec3)`'s own `length > 1e-12` gate catches the same inputs one line earlier; delete
-// that instead and this guard catches them. Two independent holders of one guarantee, so no test
-// can name which is load-bearing. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is
-// the one that pins the guard, through the input only it can reach — a `Vec3` with an infinite
-// component, which `Normalize` turns into NaN per element rather than into the origin.
+// `Normalize(Vec3)`'s own gate catches the same inputs one line earlier; delete that instead and
+// this guard catches them. Two independent holders of one guarantee, so no test can name which is
+// load-bearing here. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is the one that
+// pins `AngleBetweenDirections`'s guard: deleting it alone fails that test and nothing else.
+//
+// The *reason* it reaches the guard changed on this branch and this paragraph did not follow.
+// It used to be that `Normalize` turned an infinite component into NaN per element, which only
+// `!(Dot > 0.5)` could catch. `Normalize(Vec3)` now refuses a non-finite length outright, so the
+// same input arrives as the origin — still caught, by the same line, for a different reason.
+// `Vec3Maths.NormalizeIsTotal` pins that half; it had nothing before, which is how the stale
+// sentence survived.
 //
 // What this test is for, then, is the *guarantee* rather than a guard: that nothing arriving as a
 // quaternion can produce an unusable angle. `CaptureSessionManager::ArmBurst` no longer rests on

@@ -522,8 +522,18 @@ TEST_F(CaptureSession, ACellThatPointsNowhereCannotBeArmedFromAnywhere) {
                                   *projects, clock);
     ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
 
-    // A real, measured aim, pointed somewhere ordinary. Nothing about the *pose* is degenerate.
-    pose.LookAt(FromAzimuthElevation(37.0, 12.0));
+    // A real, measured aim, pointed at the identity. Nothing about the *pose* is degenerate — and
+    // the direction matters, which it did not when this was written.
+    //
+    // It aimed 37 degrees away, and that stopped testing anything on this branch: hardening
+    // `Normalize(Quat)` made `Direction(Quat{0,0,0,0})` answer `(0,0,-1)` — an ordinary direction —
+    // where it used to answer the degenerate `0.0` this test is named for. So the cone refused the
+    // arm at 37 degrees and the `IsUsableRotation` guard could be deleted with the suite green. A
+    // reviewer instrumented it: the refusal read "the camera is not aimed at that cell".
+    //
+    // Aiming at the identity puts the camera exactly where a degenerate target now resolves to, so
+    // `offBy` is 0.0 again and the only thing that can refuse this burst is the guard under test.
+    pose.LookAt(Quat{});
     ImuSample sample;
     sample.hasOrientation = true;
     sample.timestampNs = clock.MonotonicNs();
@@ -533,7 +543,7 @@ TEST_F(CaptureSession, ACellThatPointsNowhereCannotBeArmedFromAnywhere) {
     burst.frameCount = 2;
     const Status armed = manager.ArmBurst(manager.GetPlan().value.nodes.front().id, burst);
     EXPECT_EQ(armed.code, StatusCode::FailedPrecondition)
-        << "a burst was armed against a cell that points nowhere, from an aim 37 degrees away";
+        << "a burst was armed against a cell that points nowhere, from an aim that agrees with it";
     ASSERT_TRUE(manager.End().ok());
   }
 }
