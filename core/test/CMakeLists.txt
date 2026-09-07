@@ -38,6 +38,7 @@ add_executable(sphanorama_tests
   support/fake_motion_sensor_access.cpp
   support/fake_project_store_access.cpp
   utilities/arena_test.cpp
+  utilities/camera_model_test.cpp
   utilities/clock_test.cpp
   utilities/config_store_test.cpp
   utilities/diagnostics_test.cpp
