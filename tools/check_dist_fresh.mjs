@@ -43,7 +43,14 @@ function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']))
   return { mtime: latest, path: latestPath };
 }
 
-export default function checkDistIsFresh() {
+/**
+ * The check, against a stated root.
+ *
+ * Split out from the default export so the suite beside this file can build a whole fake
+ * repository in a temp directory and run the real thing against it, rather than re-implementing
+ * the arithmetic in a test and asserting the two agree.
+ */
+export function checkDistIsFreshIn(repoRoot) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -93,7 +100,17 @@ export default function checkDistIsFresh() {
   //
   // `core/test` and `bridge/test` are left out on purpose — they are not linked into the wasm, and
   // demanding a five-minute rebuild for a native test edit would teach people to skip this check.
+  // Both builds against the same sources. The threaded one was checked for *existence* only, which
+  // a reviewer pointed out buys less than it looks: a threaded core from before the change passes
+  // that and its two browser tests then run against a stale one, which is the whole failure this
+  // file is about, one preset over.
   const compiledCore = newest(join(coreBuild, 'sphanorama-core.wasm'));
+  const compiledThreaded = newest(
+    join(repoRoot, 'build', 'wasm-release-threaded', 'bridge', 'sphanorama-core.wasm'));
+  if (compiledThreaded.mtime > 0 && compiledThreaded.mtime < compiledCore.mtime) {
+    compiledCore.mtime = compiledThreaded.mtime;
+    compiledCore.path = compiledThreaded.path;
+  }
   if (compiledCore.mtime > 0) {
     // The build files are in the list too, and a reviewer had to point that out: a preset, a
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
@@ -148,4 +165,9 @@ export default function checkDistIsFresh() {
       'Run `npm run build` in shell/ (and read its exit status: it typechecks first and leaves\n' +
       'the previous dist in place when that fails).');
   }
+}
+
+/** Playwright's `globalSetup`: the same check, against this repository. */
+export default function checkDistIsFresh() {
+  checkDistIsFreshIn(repoRoot);
 }
