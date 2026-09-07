@@ -44,13 +44,54 @@ function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']))
 }
 
 /**
+ * Whether this Playwright invocation can run `bridge/test/*.spec.mjs`.
+ *
+ * Playwright applies its positional filters *after* `globalSetup`, so the resolved test list is not
+ * available here and `process.argv` is the only description of what was asked for. Read fail-closed:
+ * no positional filter means every spec is in scope, and only a filter that provably cannot match a
+ * bridge spec relaxes anything. A flag like `--grep` is not a positional and does not narrow this —
+ * it could select a bridge test by title.
+ *
+ * Deliberately not an environment variable the deploy sets. A flag that disables a check is a flag
+ * somebody sets once and nobody removes; deriving it from the command means the relaxation lasts
+ * exactly as long as the narrowing that earned it.
+ */
+function canReachBridgeSpecs(argv) {
+  // Only the *first* `test` is the subcommand. Filtering every occurrence would also swallow a
+  // positional filter spelled `test`, and swallowing a filter makes this answer less strict —
+  // the wrong direction for a check whose whole job is to fail closed.
+  const args = argv.slice(2);
+  const afterSubcommand = args[0] === 'test' ? args.slice(1) : args;
+  const positionals = [];
+  for (let i = 0; i < afterSubcommand.length; i += 1) {
+    const arg = afterSubcommand[i];
+    if (!arg.startsWith('-')) { positionals.push(arg); continue; }
+    // A flag taking a separate value swallows the next token, so it is not a path filter.
+    if (!arg.includes('=') && afterSubcommand[i + 1] !== undefined
+        && !afterSubcommand[i + 1].startsWith('-')) i += 1;
+  }
+  if (positionals.length === 0) return true;
+  // Playwright matches a positional against the test file's path as a substring or a regular
+  // expression. An unparseable pattern is treated as reaching, which is the fail-closed answer.
+  const bridgeSpec = 'bridge/test/module.spec.mjs';
+  return positionals.some((filter) => {
+    if (bridgeSpec.includes(filter)) return true;
+    try {
+      return new RegExp(filter).test(bridgeSpec);
+    } catch {
+      return true;
+    }
+  });
+}
+
+/**
  * The check, against a stated root.
  *
  * Split out from the default export so the suite beside this file can build a whole fake
  * repository in a temp directory and run the real thing against it, rather than re-implementing
  * the arithmetic in a test and asserting the two agree.
  */
-export function checkDistIsFreshIn(repoRoot) {
+export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -140,10 +181,20 @@ export function checkDistIsFreshIn(repoRoot) {
   // comparison and the whole C++-staleness block — is conditioned on that file existing, so its
   // absence quietly disables them too. It is checked here rather than there so the message names
   // the build to run instead of describing what could not be compared.
+  //
+  // The threaded one is required only of a run that can reach the specs loading it, and that is
+  // not a softening — it is the same rule read exactly. The demand exists because a *silent skip*
+  // is worse than a failure; a run those specs are filtered out of has no skip to be silent about.
+  // The deploy workflow is the case: it builds `wasm-release` alone, because that is the only core
+  // `stage_core.mjs` publishes and the threaded one hangs without the COOP/COEP headers Pages
+  // cannot serve (ADR 0011), and then verifies the bundle with `playwright test shell/e2e`. This
+  // check refused it and the first deployment after it landed failed — an artifact nothing in the
+  // run loads and nothing in the deploy publishes, demanded of a job that deliberately has none.
   for (const [preset, why] of [
     ['wasm-release', 'four browser tests load it directly, and every check above compares against it'],
     ['wasm-release-threaded', 'two browser tests load it directly'],
   ]) {
+    if (preset === 'wasm-release-threaded' && !canReachBridgeSpecs(argv)) continue;
     const built = join(repoRoot, 'build', preset, 'bridge', 'sphanorama-core.wasm');
     if (!existsSync(built)) {
       throw new Error(
@@ -169,5 +220,5 @@ export function checkDistIsFreshIn(repoRoot) {
 
 /** Playwright's `globalSetup`: the same check, against this repository. */
 export default function checkDistIsFresh() {
-  checkDistIsFreshIn(repoRoot);
+  checkDistIsFreshIn(repoRoot, process.argv);
 }
