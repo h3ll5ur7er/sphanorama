@@ -252,6 +252,42 @@ TEST(AngleBetweenDirections, EveryDegenerateQuaternionStillMeasuresAFiniteAngle)
   }
 }
 
+TEST(IsUsableRotation, RefusesAQuaternionWhoseNormIsNotFinite) {
+  // Every component finite and the *norm* infinite, which is the case the finiteness check was
+  // written for and cannot see: `Norm` squares before it sums, so anything above about 1.34e154
+  // overflows on the way. `inf > 1e-12` is true, so the predicate said yes and `Normalize` then
+  // divided by infinity and answered `{0,0,0,0}` — neither the input's rotation nor the identity
+  // this header promises as the fallback.
+  //
+  // What that cost, run end to end by the reviewer who found it: `Quat{0, 1e200, 0, 0}` is a 180°
+  // flip about X whose real `Direction` is `(0,0,+1)`, and what came out was `(0,0,-1)` — straight
+  // ahead. `OrientationPoseEngine::Integrate` then anchored the pose at **confidence 1.0** on a
+  // direction 180 degrees from the sample, after which `ArmBurst`'s confidence guard, the cone
+  // check (`offBy` exactly 0) and the dwell all pass.
+  //
+  // `IsUsableRotation` had no test of its own at all. The nearest one, below, feeds `Quat{1e300,…}`
+  // through `Direction` and passes because it asserts only that the *angle* comes back finite.
+  for (const Quat overflowing : {Quat{0, 1e200, 0, 0}, Quat{1e300, 1e300, 1e300, 1e300},
+                                 Quat{1e155, 0, 0, 0}, Quat{0, 0, -1e200, 0}}) {
+    EXPECT_FALSE(IsUsableRotation(overflowing))
+        << "a quaternion `Normalize` cannot use was reported usable";
+    const Quat normalized = Normalize(overflowing);
+    EXPECT_DOUBLE_EQ(normalized.w, 1.0) << "the fallback was not the identity the header promises";
+    EXPECT_DOUBLE_EQ(normalized.x, 0.0);
+    EXPECT_DOUBLE_EQ(normalized.y, 0.0);
+    EXPECT_DOUBLE_EQ(normalized.z, 0.0);
+  }
+}
+
+TEST(IsUsableRotation, AcceptsTheRotationsAPhoneActuallyProduces) {
+  // The other side of it, because a predicate that refuses everything is also wrong and would have
+  // passed the test above. A unit quaternion, an unnormalised but honest one, and the identity.
+  EXPECT_TRUE(IsUsableRotation(FromAzimuthElevation(37.0, -12.0)));
+  EXPECT_TRUE(IsUsableRotation(Quat{2, 0, 0, 0}));
+  EXPECT_TRUE(IsUsableRotation(Quat{}));
+  EXPECT_FALSE(IsUsableRotation(Quat{0, 0, 0, 0}));
+}
+
 TEST(RollBetween, IsZeroForTheSameOrientation) {
   const Quat q = FromAzimuthElevation(37.0, -12.0);
   EXPECT_NEAR(RollBetween(q, q), 0.0, 1e-12);

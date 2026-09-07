@@ -11,7 +11,9 @@ namespace sphanorama {
 // session, so a runtime wired to this port cannot open one. That is the honest outcome rather
 // than an inconvenience: nothing here can say which way a camera is pointing, and a sphere whose
 // cells are labelled with directions nobody measured is worse than the refusal. A bench that
-// wants to drive a session needs a port that replays orientation (docs/03 UC-4).
+// wants to drive a session needs a port that replays orientation — which is ADR 0044's own
+// consequence, and is where that sentence lives. (It cited `docs/03` UC-4, which says nothing of
+// the kind; a reviewer read the citation rather than trusting it.)
 class NullMotionSensorAccess final : public IMotionSensorAccess {
  public:
   Result<MotionCapability> Capabilities() override;

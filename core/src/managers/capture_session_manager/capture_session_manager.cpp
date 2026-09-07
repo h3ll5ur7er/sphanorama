@@ -737,7 +737,13 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   std::span<const ImuSample> batch = samples;
   if (samples.empty()) {
     if (auto drained = sensor_.Drain(std::span<ImuSample>(pulled)); drained.ok()) {
-      batch = std::span<const ImuSample>(pulled.data(), static_cast<size_t>(drained.value));
+      // Clamped to what was actually offered. `Drain` answers a count and the contract says it is
+      // at most the span's size, but this is a *port* — the manager distrusts `IClock`,
+      // `ICoveragePlannerEngine` and `Rank` by name a few lines either side of here, and a count
+      // it took on faith would build a span over this stack array and read past it. A reviewer
+      // noticed the inconsistency before it was anything else.
+      const int64_t count = std::clamp<int64_t>(drained.value, 0, kDrainBatch);
+      batch = std::span<const ImuSample>(pulled.data(), static_cast<size_t>(count));
     }
     // A port that cannot be pulled is not a failure. It means the client is the push kind, and
     // this call is the empty-batch case below.

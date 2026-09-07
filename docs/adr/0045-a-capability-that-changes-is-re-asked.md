@@ -109,11 +109,15 @@ reviewer found the stronger claim and it is not true: the typed suite has one en
 its whole job — and `BrowserCameraAccess` cannot either, since its body is `EM_JS` and it runs under
 wasm and nowhere else.
 
-(Twice in this file, and once in `camera_access.h`, that was written as "refuses every call". It
-does not: `StopPreview` and `Close` return `Ok`, because stopping something not running and closing
-something not open are requests already satisfied. The header was corrected in the commit that
-wrote these two, which is the shape this branch keeps producing — a correction reaching the instance
-a reviewer pointed at and not the two beside it.) So the suite says what the rule is and holds one implementation to it. The browser one is held
+(Twice in this file, once in `camera_access.h`, and once more in the contract suite's own header,
+that was written as "refuses every call". It does not: `StopPreview` and `Close` return `Ok`,
+because stopping something not running and closing something not open are requests already
+satisfied. Four instances, corrected in three passes — the header first, then this file and the
+test name, then the suite comment a *fourth* reviewer found still standing 116 lines above the test
+whose comment declares the phrase wrong. It is the clearest example this branch has of the shape it
+keeps producing: a correction reaching the instance a reviewer pointed at and not the ones beside
+it. `grep -rni "refuses every call"` is now the check, and it returns this sentence and the one
+disowning it in the test.) So the suite says what the rule is and holds one implementation to it. The browser one is held
 by the browser suite instead (see the next consequence), and the null one by its own test in the
 same file.
 

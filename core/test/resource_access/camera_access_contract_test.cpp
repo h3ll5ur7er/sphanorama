@@ -22,8 +22,10 @@ class CameraAccessContract : public ::testing::Test {
 };
 
 // One implementation, and it is a fake — which is a limit of this suite worth stating rather than
-// leaving to be discovered. `NullCameraAccess` cannot join it (it refuses every call by design, and
-// has its own test below), and the bridge's browser port cannot either: it is written in terms the
+// leaving to be discovered. `NullCameraAccess` cannot join it (refusing everything that needs a
+// camera is its whole job, and it has its own test below — which is where `StopPreview` and
+// `Close` answering `Ok` is asserted, and why this does not say "refuses every call", a phrase
+// this branch has now had to correct in four places), and the bridge's browser port cannot either: it is written in terms the
 // host provides, so it compiles and runs under the web build and nowhere else. Everything this
 // suite says about that implementation is therefore said by analogy.
 //

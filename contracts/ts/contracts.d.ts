@@ -507,6 +507,7 @@ export interface CameraCapabilities {
    * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
    * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
    * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   * 0 when the platform will not say
    */
   maxWidth: number;
   /**
@@ -514,15 +515,34 @@ export interface CameraCapabilities {
    * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
    * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
    * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   * 0 when the platform will not say
    */
   maxHeight: number;
-  /** 0 when the platform will not say */
+  /**
+   * Derived from the frame's own shape where a platform reports no angles — which is every
+   * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045).
+   * 0 when the platform will not say
+   */
   horizontalFovDeg: number;
-  /** 0 when the platform will not say */
+  /**
+   * Derived from the frame's own shape where a platform reports no angles — which is every
+   * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045).
+   * 0 when the platform will not say
+   */
   verticalFovDeg: number;
   supportsExposureLock: boolean;
   supportsFocusLock: boolean;
   supportsTorch: boolean;
+  /**
+   * Frames per second the device settled on. `CaptureSessionManager` floors a burst's interval and
+   * its settle with this (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview
+   * frame, so a burst asking for frames faster than the camera makes them fills with duplicates of
+   * one exposure, and selection then ranks a frame against copies of itself. 0 turns the floor
+   * off, which is the right answer for a platform that will not say and the wrong one for a guess.
+   * 0 when the platform will not say
+   */
   maxBurstFps: number;
 }
 

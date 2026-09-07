@@ -92,9 +92,41 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   // of the range times four bytes a pixel overflows, and signed overflow is undefined behaviour
   // rather than a wrong number something downstream could sanity-check. The frame store had this
   // exact bug in its own stride arithmetic and it is worth being consistent about.
-  const int64_t derived =
-      static_cast<int64_t>(frame.width) * std::max(BytesPerPixel(frame.format), 1);
-  const int64_t stride = frame.stride > 0 ? frame.stride : derived;
+  //
+  // One byte per pixel for the planar formats, which is what `LumaAt` reads of them: the luma
+  // plane comes first and is all this engine touches. `BytesPerPixel` answers 0 for those, hence
+  // the floor.
+  const int64_t bytesPerPixel = std::max(BytesPerPixel(frame.format), 1);
+  const int64_t rowBytes = static_cast<int64_t>(frame.width) * bytesPerPixel;
+  const int64_t stride = frame.stride > 0 ? frame.stride : rowBytes;
+
+  // **What the handle claims, against what the store actually handed over.** A `FrameRef` is a
+  // plain value the caller passes in and `Find` keys on `id` alone, so nothing upstream makes its
+  // geometry describe the allocation — the width, height and stride read above are the *caller's*
+  // account of a frame, and `Pin` returns the entry's real span regardless.
+  //
+  // Without this, every read below indexed that span with that account. Reproduced under
+  // AddressSanitizer by a reviewer: allocate 640x480 RGBA8 honestly, then score the same id
+  // claiming `{4096, 4096, stride 16384}` — `heap-buffer-overflow READ 0 bytes after a
+  // 1228800-byte region`. `wire::GetInteger` bounds the *cast* of those numbers where they cross
+  // the boundary, which is a different question from whether they describe anything.
+  //
+  // A stride below the row's own width is refused separately, and not because it reads out of
+  // bounds — it does not. Rows that overlap are not a frame anybody allocated, and what this would
+  // score is a shear of the picture rather than the picture.
+  //
+  // `OfferFrame` is the door, and no shipped caller builds a handle by hand today. The callers it
+  // was written for — a file import, a replay, a manual shutter — are exactly the ones that would,
+  // and `Candidates()` publishes every frame id to the client.
+  if (stride < rowBytes) {
+    return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                         "this frame's stride is narrower than one row of it");
+  }
+  const int64_t needed = static_cast<int64_t>(frame.height - 1) * stride + rowBytes;
+  if (needed > static_cast<int64_t>(pinned.value.size())) {
+    return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                         "this frame claims more pixels than the store is holding for it");
+  }
 
   // Box-averaged into a grid no larger than kMeasureEdge on its long side. Integer block sizes
   // rather than interpolation: this is a noise filter that happens to shrink the image, and a

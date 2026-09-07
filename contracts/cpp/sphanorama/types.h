@@ -519,16 +519,40 @@ struct SeamMap { BufferId labelBuffer; int32_t width = 0, height = 0; };
 
 // ------------------------------------------------- platform value types
 struct CameraCapabilities {
+  // **Zero means "the platform will not say", on every measured field below.** Not "zero" and not
+  // a default to improve on: an implementation that cannot answer must answer 0, and one that
+  // guesses a plausible number is worse than one that says nothing, because a caller can act on a
+  // silence and cannot detect a guess.
+  //
+  // Written here because five places in this repository cite "the contract's word for 'the
+  // platform will not say'" and, until a reviewer went looking, this file said it on one field
+  // pair — the one nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a
+  // refreshed struct answers 0 (ADR 0045), so a second implementation reading only this header
+  // had no reason to know that a guessed 30 fps silently removes ADR 0018's burst floor rather
+  // than improving on it.
+  //
+  // The booleans are outside the rule, and that is a gap rather than a decision: `false` here
+  // means "no" and "did not say" alike, and there is nowhere to record the difference. See the
+  // white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
+
   // The mode the camera actually settled on, not the largest it could reach. The coverage plan is
   // sized from these, so they have to describe the frames that will arrive: a sensor maximum the
   // preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
   // captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
-  int32_t maxWidth = 0, maxHeight = 0;
+  int32_t maxWidth = 0, maxHeight = 0;   // 0 when the platform will not say
+  // Derived from the frame's own shape where a platform reports no angles — which is every
+  // browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+  // caller that keeps one across a silent refresh keeps all four (ADR 0045).
   double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 when the platform will not say
   bool supportsExposureLock = false;
   bool supportsFocusLock = false;
   bool supportsTorch = false;
-  double maxBurstFps = 0;
+  // Frames per second the device settled on. `CaptureSessionManager` floors a burst's interval and
+  // its settle with this (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview
+  // frame, so a burst asking for frames faster than the camera makes them fills with duplicates of
+  // one exposure, and selection then ranks a frame against copies of itself. 0 turns the floor
+  // off, which is the right answer for a platform that will not say and the wrong one for a guess.
+  double maxBurstFps = 0;   // 0 when the platform will not say
 };
 
 struct CameraOpenSpec {

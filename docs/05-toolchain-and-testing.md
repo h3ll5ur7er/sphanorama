@@ -53,6 +53,21 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    look green when the build produced nothing.
 6. **Browser tests** — the shipped modules loaded in headless Chromium, served with *and* without
    COOP/COEP, which is the only way to find out what the deployment target does with them.
+   `tools/check_dist_fresh.mjs` is their precondition rather than a step of its own: Playwright's
+   `globalSetup`, refusing to run the suite against a bundle or a core older than the sources it
+   was built from. It compares both wasm presets and the glue `.js` against the C++ and the build
+   files, and it exists because two false-green sabotage runs got through — one after
+   `npm run build` had exited non-zero on a typecheck error and left the previous `dist` standing.
+7. **Conflict markers** — `tools/conflict_marker_check.py`, because a merge marker in a tracked
+   file is a file nobody finished reading.
+8. **Broken tables** — `tools/markdown_table_check.py`. A paragraph between two rows closes a
+   GitHub-flavoured table, and eleven rows of the volatility map rendered as pipe text for five
+   review rounds because everybody read the prose and nobody rendered the page.
+
+Every checker in that list has its own test suite, `check_dist_fresh` included, and `gate.sh` runs
+each of them immediately before the check it guards. The reason is in that file's own header: the
+checkers never change while you are working, which is exactly what makes a broken one the easiest
+thing not to notice.
 
 Not yet wired, and deliberately absent from CI rather than stubbed green:
 

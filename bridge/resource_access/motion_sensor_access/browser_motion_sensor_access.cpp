@@ -30,6 +30,14 @@ EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples, int32_t stri
   const host = Module.sphHost;
   if (!host || !host.motionDrain) return 0;
   const flat = host.motionDrain(maxSamples);
+  // Bounded here, before the write, rather than trusted from the host. `host_preview_copy` three
+  // functions away takes exactly this view of exactly this question — "the two are read at
+  // different moments, and a frame swapped in between would write past the end of the span" — and
+  // this one took the host's word for it, which a reviewer pointed out is the same door with the
+  // opposite answer. The page's own splice already bounds it; that is a reason for the two to
+  // agree, not for one of them to skip the check.
+  const room = maxSamples * stride;
+  if (flat.length > room) return 0;
   // HEAPF64 is read fresh: Emscripten replaces the view when memory grows, and a cached one
   // would be detached.
   Module.HEAPF64.set(flat, out >> 3);
