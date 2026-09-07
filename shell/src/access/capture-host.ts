@@ -247,6 +247,17 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
 
     cameraLocks: () => locks,
     setCameraLocks(next: LockState) {
+      // Dropped when there is no camera, for the reason `refreshCamera` is dropped: `armOnce`
+      // pushes the confirmed locks and the live capability set back to back with no `await`
+      // between them, so a race with the core's own `closeCamera` delivers *both* — and hardening
+      // one of the two leaves the other landing `{exposure: true, …}` on a host that has just
+      // cleared its camera. A lock report is a fact about a camera in exactly the way a capability
+      // refresh is.
+      //
+      // Inert today, which a reviewer traced rather than assumed: `host_camera_lock`'s only reader
+      // refuses on `host_camera_open()` first, and the next arm's own push arrives ahead of its
+      // `ArmBurst` on the same FIFO port. This is what stops it being one line away from real.
+      if (camera === null) return;
       locks = next;
     },
 
@@ -260,6 +271,11 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
         ...opened,
         ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),
       };
+      // A new camera holds no locks, and this was the odd one out: `clearCamera` and `closeCamera`
+      // both reset them and this did not, so a lock claim could outlive the camera that made it
+      // and be read against its replacement. `locks` is a fact *about* a camera (see the note on
+      // the member), so a camera arriving is a lock state arriving with it.
+      locks = NO_LOCKS;
     },
 
     refreshCamera(opened) {

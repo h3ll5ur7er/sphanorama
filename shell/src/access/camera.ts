@@ -153,6 +153,22 @@ function reportedModes(modes: unknown): readonly string[] | null {
   return Array.isArray(modes) ? Object.freeze(modes.map(String)) : null;
 }
 
+/**
+ * Whether a track is still delivering.
+ *
+ * A function rather than an inline comparison, and not only for the three callers: TypeScript
+ * narrows `readyState` to `'live'` after the first check in a scope and then calls the second one
+ * unintentional — which is exactly backwards for this property, whose whole point is that it
+ * changes under you across an `await`. Passing the track through a parameter defeats the narrowing
+ * and keeps the second check, which is the one that matters in `setLocks`.
+ *
+ * `!== 'ended'` rather than `=== 'live'`: those are the only two states a real track has, and a
+ * fake without the property at all is a test's camera rather than a dead one.
+ */
+function stillLive(track: { readyState?: string } | undefined): boolean {
+  return track !== undefined && track.readyState !== 'ended';
+}
+
 const MODE_OF: Record<keyof LockState, string> = {
   exposure: 'exposureMode',
   whiteBalance: 'whiteBalanceMode',
@@ -343,7 +359,7 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       //
       // `=== 'ended'` rather than `!== 'live'`: the only two states a track has are those, and a
       // fake without the property at all is a test's camera rather than a dead one.
-      if (!track || track.readyState === 'ended') return describe({}, {});
+      if (!track || !stillLive(track)) return describe({}, {});
       let offered: Record<string, unknown> = {};
       try {
         offered = ((track as MediaStreamTrack & {
@@ -365,26 +381,19 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       // simply ends — so a refusal explained after the camera went would have been explained with
       // the *previous* camera's lists, which ADR 0033 says outright is worse than explaining
       // nothing. Reported, never consulted, so this costs a row a sentence and nothing else.
-      const track = active?.getVideoTracks()[0];
-      return !track || track.readyState === 'ended' ? NOTHING_REPORTED : offered;
+      return stillLive(active?.getVideoTracks()[0]) ? offered : NOTHING_REPORTED;
     },
 
     async setLocks(wanted: LockState) {
       const track = active?.getVideoTracks()[0] as (MediaStreamTrack & {
         applyConstraints?(constraints: unknown): Promise<void>;
       }) | undefined;
-      // The same `ended` half `capabilities()` above needed, and here it is worse than a mixture.
-      // Measured on an ended track in Chromium: `applyConstraints` rejects, which the `ask` below
-      // swallows by design; `getSettings()` drops the geometry but *keeps the last lock's mode
-      // strings*. So the read-back that is supposed to make this call's answer true reads
-      // `exposureMode: 'manual'` off a dead track, and `setLocks({all false})` returns
-      // `ok({exposure: true, whiteBalance: false, focus: true})` — success invented from three
-      // rejections, and a lock reported held by a camera that is gone.
-      //
-      // ADR 0022's whole point is that the returned state is *observed* rather than acknowledged.
-      // Observing a corpse is not observing. A client guard catches this today on one of three
-      // paths into `writeLocks`; that is a client's job to do as well, not instead.
-      if (!track || track.readyState === 'ended') {
+      // Refused before anything is written to a track that is already dead. This is the cheap half
+      // and it is not the load-bearing one — see the read-back at the bottom of this function,
+      // which is where the guard has to be. Kept because `onReleaseLocks` reaches `writeLocks`
+      // without passing the page's own `cannotArm`, and writing constraints to a corpse to find
+      // out it is one is not a better way to learn.
+      if (!track || !stillLive(track)) {
         return err<LockState>('CameraUnavailable', COMPONENT, 'no live camera track');
       }
 
@@ -417,6 +426,23 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       // Read back rather than trust. `applyConstraints` resolving says the browser accepted the
       // request, not that the mode changed — and on the cameras where it does not, the burst
       // above would compare candidates on sharpness while the exposure moved under it.
+      //
+      // Of a track that is still alive, which is the whole of ADR 0022's rule and is where the
+      // check belongs. The guard at the top of this function is an entry check on a body that
+      // awaits between three and six `applyConstraints` calls — measured at 120 ms each here, and
+      // `writeLocks` allows a whole write three seconds — so a track that ends *inside* that
+      // window walks straight past it. A reviewer drove exactly that: a track ending on the first
+      // constraint and rejecting every one after it, with `setLocks({all false})` returning
+      // `ok({exposure: true, whiteBalance: true, focus: true})`. Every rejection is swallowed by
+      // `ask` on purpose, and an ended track keeps the last lock's mode strings in `getSettings()`
+      // — so the read-back reported three locks held by a camera that was gone, which is the
+      // invented success the entry guard was written to stop and could not.
+      //
+      // Observing a corpse is not observing.
+      if (!stillLive(track)) {
+        return err<LockState>('CameraUnavailable', COMPONENT,
+                              'the camera went away while its locks were being written');
+      }
       const settled = track.getSettings() as Record<string, unknown>;
       return ok<LockState>({
         exposure: holding(settled, 'exposure'),

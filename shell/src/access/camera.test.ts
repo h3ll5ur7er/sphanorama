@@ -371,6 +371,7 @@ function fakeTrack(options: {
   // answer very differently: `getSettings()` drops the geometry and keeps the mode strings, and
   // `applyConstraints` rejects.
   let readyState = 'live';
+  let endOnWrite = false;
   const track = {
     applied,
     end() {
@@ -392,8 +393,12 @@ function fakeTrack(options: {
         focusMode: ['continuous', 'manual'],
       };
     },
+    // Ends the moment the next constraint reaches it, which is how a track pulled away mid-write
+    // behaves: the call in flight rejects and so does every one after it.
+    endOnNextConstraint() { endOnWrite = true; },
     async applyConstraints(constraints: unknown) {
       applied.push(constraints);
+      if (endOnWrite) this.end();
       if (readyState === 'ended') {
         // What Chromium does. Swallowed by `ask`, which is right — a camera that will not take a
         // constraint is a supported outcome — and is exactly why the read-back has to be of
@@ -641,6 +646,32 @@ describe('applying the locks', () => {
     const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
     expect(released.ok, 'a dead track answered a lock write').toBe(false);
     if (!released.ok) expect(released.status.code).toBe('CameraUnavailable');
+  });
+
+  it('refuses when the track ends while the locks are being written', async () => {
+    // The entry guard above cannot see this and a reviewer proved it: the body awaits between
+    // three and six `applyConstraints` calls — 120 ms each on the cameras this repo has measured,
+    // and `writeLocks` allows a whole write three seconds — so a track that ends *inside* that
+    // window walks straight past a check made before the first one.
+    //
+    // What comes out the other end is the invented success the entry guard was written to stop:
+    // every rejection is swallowed by `ask` on purpose, and an ended track keeps the last lock's
+    // mode strings, so the read-back reports three locks held by a camera that is gone. Which is
+    // why the check that matters is on the read-back.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    const held = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(held.ok && held.value.exposure, 'nothing was ever locked to lose').toBe(true);
+
+    // Pulled away on the first constraint of the release, which is what a track being taken
+    // mid-write looks like: this one rejects, and so does every one after it.
+    track.endOnNextConstraint();
+
+    const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+    expect(released.ok, 'a track that died mid-write reported the locks it used to hold')
+      .toBe(false);
+    if (!released.ok) expect(released.status.detail).toContain('while its locks were being written');
   });
 
   it('asks the track for manual modes and confirms they took', async () => {

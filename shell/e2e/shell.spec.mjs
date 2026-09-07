@@ -1207,7 +1207,17 @@ test('a session ended mid-burst still says which locks that burst had', async ({
     // *while* the release is in flight: for the first second the row still shows the arm's line and
     // a negative assertion passes against the defect. Measured under sabotage as the arm line at
     // +300 ms and "no burst has run yet" from +900 ms on.
-    await expect(page.locator('#locks')).toContainText('released', { timeout: 15000 });
+    //
+    // Either outcome, because which one this is is genuinely a race and neither is the defect
+    // under test. `End()` posts `releaseLocks` and then `closeCamera` as two message tasks, and
+    // `writeLocks` chains: with the chain idle the release enters `camera.setLocks` on a microtask
+    // *before* the close stops the track and comes back `released`; with the chain busy — the
+    // arm's own write is up to three seconds — it enters afterwards and the adapter refuses,
+    // because a lock read off a dead track is the invented success ADR 0022 exists to prevent.
+    // A reviewer measured both. What this test is about is the row not forgetting *which* locks
+    // the burst had, which both sentences carry and the two assertions below check.
+    await expect(page.locator('#locks'))
+      .toContainText(/released|the camera went before/, { timeout: 15000 });
     // And now: whatever else it says, it must not claim nothing has run. "no burst has run yet" is
     // the row forgetting a burst it had already described a second earlier.
     await expect(page.locator('#locks')).not.toContainText('no burst has run yet');

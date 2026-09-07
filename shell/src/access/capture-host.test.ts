@@ -347,10 +347,16 @@ describe('which locks the camera is holding', () => {
     expect(host.cameraLocks()).toEqual({ exposure: false, whiteBalance: false, focus: false });
   });
 
+  const aCamera = {
+    maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+    supportsExposureLock: true, supportsWhiteBalanceLock: true, supportsFocusLock: true,
+  };
+
   it('reports what the page confirmed, not what it asked for', () => {
     // The distinction this whole path exists for: applyConstraints resolving is not the mode
     // changing, so what crosses is the state read back off the track (ADR 0022).
     const host = createCaptureHost();
+    host.setCamera(aCamera);
     host.setCameraLocks({ exposure: true, whiteBalance: false, focus: true });
 
     expect(host.cameraLocks()).toEqual({ exposure: true, whiteBalance: false, focus: true });
@@ -359,11 +365,37 @@ describe('which locks the camera is holding', () => {
   it('forgets the locks when the camera closes', () => {
     // A lock belongs to a track. Reporting one held after the stream is gone would let the next
     // session arm a burst believing an exposure was fixed by a camera that no longer exists.
+    //
+    // With a camera opened first, so the zeros afterwards are evidence rather than a default —
+    // both this and the test above set locks on a host holding no camera, which since those
+    // reports are dropped meant neither was asserting what it named.
+    const host = createCaptureHost();
+    host.setCamera(aCamera);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().exposure, 'nothing was ever held to forget').toBe(true);
+
+    host.closeCamera();
+    expect(host.cameraLocks().exposure).toBe(false);
+  });
+
+  it('drops a lock report for a camera it is not holding', () => {
+    // The other half of the race `refreshCamera` exists for. `armOnce` pushes the confirmed locks
+    // and the live capability set back to back with no `await` between, so a race with the core's
+    // own `closeCamera` delivers both — and hardening only the camera half leaves this one landing
+    // three held locks on a host that has just cleared its camera.
+    //
+    // Also the reopen: `clearCamera` and `closeCamera` reset the locks and `setCamera` did not, so
+    // a claim made against one camera could be read against its replacement.
     const host = createCaptureHost();
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
-    host.closeCamera();
+    expect(host.cameraLocks().exposure, 'a lock was held by no camera at all').toBe(false);
 
-    expect(host.cameraLocks().exposure).toBe(false);
+    host.setCamera(aCamera);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    host.closeCamera();
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    host.setCamera(aCamera);
+    expect(host.cameraLocks().exposure, 'a lock claim outlived the camera that made it').toBe(false);
   });
 
   it('forgets the locks when the camera is cleared', () => {

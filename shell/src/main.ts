@@ -186,8 +186,19 @@ function showLocksReleased(row: Element, write: LockWrite, had: string) {
     return;
   }
   const done = write.done;
-  row.textContent = done.ok
-    ? `${had} · released`
+  if (done.ok) {
+    row.textContent = `${had} · released`;
+    return;
+  }
+  // A camera that went away is not a camera that would not let go, and this row had one sentence
+  // for both. "Release refused" is its phrase for the ADR 0022 hazard — the track kept the lock,
+  // so the next burst starts pinned — and it is alarming on purpose. `CameraUnavailable` is the
+  // only failure `camera.setLocks` produces, and it means the opposite: there was nothing left to
+  // release. A reviewer measured both outcomes of one physical event, decided by whether the
+  // write chain was idle when the camera closed, so the row's last word for the life of the tab
+  // turned on a microtask boundary.
+  row.textContent = done.status.code === 'CameraUnavailable'
+    ? `${had} · the camera went before the locks could be given back`
     : `${had} · release refused — ${done.status.detail || done.status.code}`;
 }
 let lockWrites: Promise<unknown> = Promise.resolve();
@@ -764,6 +775,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // when the call went out — measured at 58 calls in five seconds against a 300 ms refusal, about
   // eighteen of them overlapping, which is the same storm the throttle was added to end.
   let coverageInFlight = false;
+  // Whether the one retry a stopped loop gets has been spent. Latched rather than counted, because
+  // the only thing it protects against is a read refused at the moment everything else stopped.
+  let lastCoverageRetried = false;
   const COVERAGE_RETRY_MS = 1000;
   const refreshCoverage = async () => {
     if (review === null || plan === null) return;
@@ -775,6 +789,20 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     coverageInFlight = false;
     if (state === null || !state.ok) {
       coverageStale = true;
+      // `coverageStale`'s only reader is inside `step`, and both terminal branches return before
+      // reaching it — so a read that was in flight across the camera going away and came back
+      // refused leaves the map one cell short of the work the user did, permanently. That is the
+      // outcome the paint below was un-gated to prevent, arriving through the failure door
+      // instead of the flag. A reviewer traced it from `coverageStale`'s single reader.
+      //
+      // One retry, latched, and only once the loop has stopped: while it is running `step` does
+      // this better, and if the core is what died the second attempt fails the same way and that
+      // is the end of it. `coverageInFlight` is already false here, so the retry is not blocked by
+      // the read that just failed.
+      if (loopStopped && !lastCoverageRetried) {
+        lastCoverageRetried = true;
+        setTimeout(() => { void refreshCoverage(); }, COVERAGE_RETRY_MS);
+      }
       return;
     }
     coverageStale = false;
@@ -1110,6 +1138,18 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // line telling the user to reload — the same defect the three windows below and above were
       // each fixed for, reached through the one door nobody had checked.
       const gone = cannotArm();
+      // Recorded before the release is queued, which the two exits below were each amended for and
+      // this one was not. `unlock` snapshots `lastLocksLine` to say what its release is a release
+      // *of*, so a throw raised before this arm wrote its own record hands it the previous burst's
+      // line — or, on the first arm of a session, the empty string, which the row renders as "no
+      // burst has run yet". Not reachable today (`camera.setLocks` catches every constraint
+      // rejection and the timeout leg cannot reject), so this is the invariant being made whole
+      // rather than a sentence anyone has seen: every exit that queues a release records first,
+      // and three of four honouring it is how the fourth gets rediscovered.
+      if (gone !== null) {
+        lastLocksLine = gone.row;
+        locksOut.textContent = lastLocksLine;
+      }
       sayForAWhile(gone !== null ? gone.say
         : `arming failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       unlock();
@@ -1204,6 +1244,17 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       overlay.show({ rings: [], arrow: null });
       guidanceOut.textContent = 'the camera was taken away';
       stage.textContent = 'the camera was taken away — reload to start again';
+      // The map, last and unconditionally. This branch's comment has claimed since it was written
+      // that "the sibling branch calls it *for* the map", and that sibling is the guidance-failure
+      // `else`, which only runs while the loop is still ticking — so the cell whose burst finished
+      // on the very tick the camera went was left to a read that happened to be in flight. Asked
+      // for here instead: `refreshCoverage` returns immediately if one is outstanding, and that
+      // one paints.
+      //
+      // After the clear above, never before it: `refreshCoverage` is asynchronous and one started
+      // earlier was measured putting a ring back one millisecond after `overlay.show({rings: []})`
+      // — which is why `paintOverlay` gates itself on the flags this branch has just set.
+      void refreshCoverage();
       return;
     }
     const drained = await motion.drain(32);
