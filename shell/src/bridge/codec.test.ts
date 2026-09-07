@@ -15,7 +15,8 @@ import { Reader, Writer } from './wire';
 import type * as C from '../../../contracts/ts/contracts';
 
 const GOLDEN_CAPTURE_GUIDANCE =
-  '0000000000001c4000000000000029400000000000000ac0000000000000e03f0100000000';
+  '0000000000001c4000000000000029400000000000000ac0000000000000e03f'
+  + '01000000000000000000000000';
 
 // The one field kind that carries a length prefix, and the only one that carries pixels
 // (ADR 0038). A prefix the two halves disagreed about decodes into a plausible image of the wrong
@@ -42,6 +43,10 @@ describe('cross-language wire format', () => {
     // because a golden that stops at the last field it knew about is a golden that would still
     // pass if the two halves disagreed about everything after it.
     expect(guidance.aimKnown).toBe(false);
+    // And the eight bytes `heldFraction` added after it (ADR 0043), for the same reason: a golden
+    // that stops at the last field it knew about would still pass if the two halves disagreed
+    // about everything past it.
+    expect(guidance.heldFraction).toBe(0);
     expect(guidance.action).toBe('HoldStill');
   });
 
@@ -54,6 +59,7 @@ describe('cross-language wire format', () => {
       stability: 0.5,
       action: 'HoldStill',
       aimKnown: false,
+      heldFraction: 0,
     });
     expect(toHex(writer.finish())).toBe(GOLDEN_CAPTURE_GUIDANCE);
   });
@@ -101,6 +107,7 @@ describe('round trips', () => {
       rollErrorDeg: 0,
       stability: 0.25,
       action: 'Seek',
+      heldFraction: 0.75,
     };
     encodeCaptureGuidance(writer, original);
     expect(decodeCaptureGuidance(new Reader(writer.finish()))).toEqual(original);
@@ -150,6 +157,7 @@ describe('round trips', () => {
     encodeCaptureGuidance(writer, {
       targetNode: 1 as C.NodeId, angularErrorDeg: 1, rollErrorDeg: 1, stability: 1, action: 'Seek',
       aimKnown: true,
+      heldFraction: 0,
     });
     const full = writer.finish();
     const reader = new Reader(full.subarray(0, full.length - 1));
@@ -162,6 +170,7 @@ describe('round trips', () => {
     encodeCaptureGuidance(writer, {
       targetNode: 1 as C.NodeId, angularErrorDeg: 1, rollErrorDeg: 1, stability: 1, action: 'Seek',
       aimKnown: true,
+      heldFraction: 0,
     });
     const full = writer.finish();
     const reader = new Reader(full.subarray(0, full.length - 4));

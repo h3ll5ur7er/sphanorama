@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -155,6 +156,22 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // and there is no moment at which the deadline has to be inferred from a frame that has not
   // been taken yet, which is what the old "last frame" reading needed a backdated clock for.
   int64_t next_frame_ns_ = 0;
+
+  // The dwell that fires a burst without anyone pressing anything (ADR 0043).
+  //
+  // Accumulated rather than measured from a start time, because the two differ exactly where this
+  // has to be careful: a start time plus "now" counts the stretch when the sensor stopped
+  // delivering, and firing on that is firing into a cell the phone may have left. Only a tick that
+  // carried a sample adds to it.
+  //
+  // `std::optional` rather than a node id plus a flag: "which cell is being held" and "is anything
+  // being held" are one fact, and a zero node id is a real cell.
+  int64_t dwell_ns_ = 0;
+  int64_t dwell_marked_ns_ = 0;
+  std::optional<NodeId> dwell_node_;
+  // Whether `Fire` has already been reported for this dwell. It is an edge: a client arms on it,
+  // and reporting it again on the next tick would arm a second burst into a refusal.
+  bool dwell_fired_ = false;
 
   uint64_t next_session_ = 1;
   uint64_t next_candidate_ = 1;

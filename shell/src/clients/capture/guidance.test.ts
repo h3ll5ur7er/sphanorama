@@ -12,6 +12,7 @@ const guidance = (over: Partial<CaptureGuidance> = {}): CaptureGuidance => ({
   stability: 1,
   action: 'Seek',
   aimKnown: true,
+  heldFraction: 0,
   ...over,
 });
 
@@ -137,26 +138,17 @@ describe('canCapture', () => {
     stability: 1,
     action,
     aimKnown,
+    heldFraction: 0,
   });
 
-  it('offers a capture on the one action that means "inside a cone and still needed"', () => {
-    expect(canCapture(at('HoldStill'))).toBe(true);
-  });
-
-  it('offers nothing while the camera is aimed at no cell', () => {
-    // The case the whole rule exists for: `ArmBurst` refuses here, so offering would be offering a
-    // refusal.
-    expect(canCapture(at('Seek'))).toBe(false);
-  });
-
-  it('offers nothing on a cell that is already captured', () => {
-    // Inside a cone, so the core would accept it — this is the page declining rather than the core
-    // refusing. Re-shooting a finished cell is a deliberate act and belongs to the retake flow.
-    expect(canCapture(at('AlreadyCaptured'))).toBe(false);
-  });
-
-  it('offers nothing during a burst, on the tick one finishes, or once the sphere is done', () => {
-    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast'] as const) {
+  it('offers nothing at all where there is an aim, whatever guidance says', () => {
+    // Since ADR 0043 the dwell fires the burst, so with an aim there is no shutter to gate. Every
+    // action, including the one this used to be the whole rule for: a button beside an automatic
+    // trigger is two ways to do one thing, and the one the finger reaches for moves the phone it is
+    // supposed to be holding still.
+    for (const action of
+      ['HoldStill', 'Seek', 'AlreadyCaptured', 'Firing', 'CellDone', 'SphereDone', 'TooFast',
+       'Fire'] as const) {
       expect(canCapture(at(action)), action).toBe(false);
     }
   });
@@ -169,7 +161,7 @@ describe('canCapture', () => {
   });
 
   it('still offers nothing blind while a burst runs or the sphere is finished', () => {
-    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast'] as const) {
+    for (const action of ['Firing', 'CellDone', 'SphereDone', 'TooFast', 'Fire'] as const) {
       expect(canCapture(at(action, BLIND)), action).toBe(false);
     }
   });

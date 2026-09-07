@@ -295,8 +295,14 @@ struct BurstSpec {
 //
 // Appended rather than inserted: the wire carries the index.
 enum class GuidanceAction : uint8_t {
-  Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured
+  Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured, Fire
 };
+// `Fire` is an *edge*, like `CellDone` and unlike `AlreadyCaptured`: it is reported on the one tick
+// the dwell completes, and a client arms a burst on it exactly as it would have on a press. The
+// manager cannot arm for itself — a burst is paced by the client's ticks over a preview frame the
+// client keeps resident (ADR 0018) — so the decision is here and the call is the client's.
+//
+// Appended, because the wire carries this enum as an index (ADR 0043).
 
 struct CaptureGuidance {
   NodeId targetNode;
@@ -315,6 +321,22 @@ struct CaptureGuidance {
   //
   // Appended rather than inserted, because field order is wire order.
   bool aimKnown = false;
+  // How much of the dwell the camera has served on this cell, in [0,1]. One at the moment `action`
+  // is `Fire`, zero whenever there is nothing to hold on.
+  //
+  // Published so the ring the user watches and the trigger that fires are **the same number in the
+  // same message**. A client counting its own dwell would be a second copy of a fact this manager
+  // already holds, and the two would disagree exactly when it mattered — a progress bar that
+  // filled and did not fire, or fired before it filled.
+  //
+  // The dwell is counted here rather than in a client for a reason a client cannot work around:
+  // `performance.now()` keeps moving when the sensor stops delivering, so a page counting elapsed
+  // time matures its dwell on guidance about a cell the phone may have left. This manager has the
+  // sample timestamps and `IClock` side by side, and declines to accumulate over an interval no
+  // pose arrived in (ADR 0043).
+  //
+  // Appended, for the same reason as the field above.
+  double heldFraction = 0;
 };
 
 struct CoverageState {
