@@ -15,13 +15,23 @@ import { createCoverageRefresh } from './coverage-refresh';
  */
 function heldReads() {
   const pending: Array<(answer: number | null) => void> = [];
+  const rejects: Array<(cause: unknown) => void> = [];
   let asks = 0;
   return {
     get asks() { return asks; },
     pending,
     read: () => {
       asks += 1;
-      return new Promise<number | null>((resolve) => { pending.push(resolve); });
+      return new Promise<number | null>((resolve, reject) => {
+        pending.push(resolve);
+        rejects.push(reject);
+      });
+    },
+    /** Fails the oldest outstanding read, the way a port that throws would. */
+    reject: (cause: unknown) => {
+      const fail = rejects.shift();
+      if (fail === undefined) throw new Error('nothing was asked');
+      fail(cause);
     },
     /** Answers the oldest outstanding read. */
     answer: async (value: number | null) => {
@@ -197,6 +207,59 @@ describe('the coverage refresh', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not let a deferred ask spend a second retry on a stopped loop', async () => {
+    // The latch says "one retry", and a deferred ask made it two. If something asked while the
+    // read that then *failed* was out, `askedAgain` survived the refusal — so the latched retry
+    // answered, and its success then issued the deferred read as a third ask. A reviewer measured
+    // three where this asserts two.
+    //
+    // The refusal path is where the deferred ask is *subsumed* rather than owed: the retry it
+    // schedules is the re-ask, and when the loop is still running `stale` is what re-asks. Either
+    // way somebody is going to look again, so carrying the flag past a refusal double-counts it.
+    vi.useFakeTimers();
+    try {
+      const core = heldReads();
+      const accepted: number[] = [];
+      const coverage = refresher(core, accepted, { stopped: () => true });
+
+      void coverage.refresh();
+      // The `CellDone` that arrives while the first read is still out.
+      void coverage.refresh();
+      expect(core.asks).toBe(1);
+
+      await core.answer(null);          // the first read refuses
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(core.asks, 'the latched retry did not go out').toBe(2);
+
+      await core.answer(7);             // the retry answers
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(core.asks, 'a deferred ask spent a second retry past the latch').toBe(2);
+      expect(accepted).toEqual([7]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers when a read rejects rather than answering', async () => {
+    // `read`'s contract is "`null` is a refusal, whatever produced it", and the composition root
+    // honours that with a `.catch`. But a port that rejects instead would leave `inFlight` true
+    // for ever: every later refresh takes the deferral branch, `isDue()` is false because `stale`
+    // was never set, and all four flags are wedged for the session with nothing able to recover.
+    //
+    // A rejection is not this module's to interpret, but it is this module's to survive.
+    const core = heldReads();
+    const accepted: number[] = [];
+    const coverage = refresher(core, accepted);
+
+    const first = coverage.refresh();
+    core.reject(new Error('the worker went away'));
+    await expect(first).rejects.toThrow('the worker went away');
+
+    // The next ask must actually go out rather than being deferred behind a read that ended.
+    void coverage.refresh();
+    expect(core.asks, 'a rejected read wedged the in-flight flag').toBe(2);
   });
 
   it('asks nothing when there is no plan to ask about', async () => {

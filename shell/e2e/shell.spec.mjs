@@ -808,6 +808,16 @@ test('a camera that dies while the page is still enabling does not start a captu
       return got.ok ? got.value.nodes.length : -1;
     });
     expect(planned).toBe(-1);
+
+    // And a way forward. `enable` hides `#enable` and `#resume` before it learns the camera went,
+    // and the `pump` behind this message hides `#new-capture` — so this line arrived with all
+    // three controls hidden and reload was the only way on. A reviewer found it; round 15's
+    // `#new-capture` fork had just made the same window reachable from a third button.
+    //
+    // `#enable` specifically, because what is missing is a camera and opening one is what that
+    // button does.
+    await expect(page.locator('#enable')).toBeVisible();
+    await expect(page.locator('#enable')).toBeEnabled();
   } finally {
     await server.close();
     await context.close();

@@ -116,6 +116,25 @@ function cameraHeld(): boolean {
 }
 
 /**
+ * Puts the camera offer back up, for the states that end with no camera and no loop.
+ *
+ * Those states used to end with nothing pressable. `enable` hides `#enable` and `#resume` before
+ * it knows whether the camera survived the two awaits below that line, and a `pump` with no plan
+ * hides `#new-capture` — so "the camera was taken away before the capture could start" arrived
+ * with all three controls hidden, and reload was the only way on. A reviewer found it after round
+ * 15's `#new-capture` fork made the same window reachable from a third button.
+ *
+ * `#enable` is the honest offer here rather than a generic retry: what it does is open a camera,
+ * which is the thing that is missing. It is *not* offered when the page still holds one — then the
+ * refusal was about something else and this button would fix nothing.
+ */
+function offerTheCameraAgain(): void {
+  if (cameraHeld()) return;
+  enableButton.hidden = false;
+  enableButton.disabled = false;
+}
+
+/**
  * Whether the camera went away *without* the core asking for it.
  *
  * Not the same fact as `!cameraHeld()`, which is also true after an orderly `End` — the core
@@ -473,6 +492,9 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   const stillHeld = opened.ok && cameraHeld();
   if (opened.ok && !stillHeld) {
     stage.textContent = 'the camera was taken away before the capture could start';
+    // With a way forward, which this had none of: both offers were hidden four lines up and the
+    // `pump` below hides the third.
+    offerTheCameraAgain();
   }
   if (stillHeld) await beginSession(core, started.ok, resume);
   // Still pumped, so the sensor readout stays live and the reason stays on screen — the same
@@ -572,6 +594,11 @@ async function startFresh(core: SphanoramaCore,
   });
   if (!begun.ok) {
     stage.textContent = describeFailure(begun.status);
+    // The camera can go between `cameraHeld()` at the press and this line — `project.create` is a
+    // worker round trip — and then `begin` refuses `CameraUnavailable` and the `pump` below takes
+    // the last button away. That is the state `#new-capture`'s fork exists to prevent, arriving
+    // one await later than the fork can see, so the recovery is offered here instead.
+    offerTheCameraAgain();
     pump(core, null, motionRunning, null);
     return null;
   }

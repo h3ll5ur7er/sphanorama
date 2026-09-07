@@ -72,11 +72,27 @@ export function createCoverageRefresh<S>(ports: CoverageRefreshPorts<S>): Covera
     inFlight = true;
     // Armed here, not on the answer: the interval is between asks.
     retryAtMs = ports.now() + ports.retryMs;
-    const state = await ports.read();
-    inFlight = false;
+    let state: S | null;
+    try {
+      state = await ports.read();
+    } finally {
+      // In a `finally`, because a port that *rejects* rather than answering would otherwise leave
+      // this true for the life of the session: every later refresh would take the deferral branch,
+      // `isDue()` would be false because `stale` was never set, and all four flags would be wedged
+      // with nothing able to recover them. `read`'s contract says a refusal arrives as `null` and
+      // the composition root honours that with a `.catch` — but a rejection is not this module's
+      // to interpret and is still this module's to survive.
+      inFlight = false;
+    }
 
     if (state === null) {
       stale = true;
+      // The deferred ask is subsumed here rather than owed. Something is going to look again
+      // either way — the latched retry below when the loop has stopped, or `stale` when it is
+      // still running — so carrying the flag past a refusal counts the same ask twice, and a
+      // reviewer measured what that costs: the retry answers, its success issues the deferred
+      // read, and the "one retry, latched" below has quietly spent two.
+      askedAgain = false;
       // One retry, latched, and only once the loop has stopped: while it is running the loop does
       // this better, and if the core is what died the second attempt fails the same way and that
       // is the end of it. `inFlight` is already false here, so the retry is not blocked by the

@@ -1078,7 +1078,19 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     if (!(camera_capabilities_.maxBurstFps > 0.0)) {
       camera_capabilities_.maxBurstFps = kept.maxBurstFps;
     }
-    if (camera_capabilities_.maxWidth <= 0 || camera_capabilities_.maxHeight <= 0) {
+    //
+    // Tested both ways round, because "they move together" is a claim about both. A silence about
+    // the frame was the case a reviewer found; a silence about the *angles* beside a real frame is
+    // the same pairing from the other side, and it walked past a guard that only asked about
+    // width and height. It is reachable through `BrowserCameraAccess::ReadCapabilities`, which
+    // zeroes the angle pair when it cannot derive one — so the port answering honestly is what
+    // produces it.
+    const bool anglesDerived = std::isfinite(camera_capabilities_.horizontalFovDeg) &&
+                               camera_capabilities_.horizontalFovDeg > 0.0 &&
+                               std::isfinite(camera_capabilities_.verticalFovDeg) &&
+                               camera_capabilities_.verticalFovDeg > 0.0;
+    if (camera_capabilities_.maxWidth <= 0 || camera_capabilities_.maxHeight <= 0 ||
+        !anglesDerived) {
       camera_capabilities_.maxWidth = kept.maxWidth;
       camera_capabilities_.maxHeight = kept.maxHeight;
       camera_capabilities_.horizontalFovDeg = kept.horizontalFovDeg;

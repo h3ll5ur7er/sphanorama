@@ -2370,6 +2370,48 @@ TEST_F(CaptureSession, AFieldOfViewIsKeptWithTheFrameItWasDerivedFrom) {
   EXPECT_DOUBLE_EQ(after.value.verticalFovDeg, atBegin.value.verticalFovDeg);
 }
 
+TEST_F(CaptureSession, AFrameIsKeptWithTheAnglesItCouldNotBeDerivedInto) {
+  // The mirror of the test above, and the half the guard did not have. That one covers "geometry
+  // gone, angles arriving"; this one is "geometry arriving, angles gone" — and until now it walked
+  // straight past, because the keep tested `maxWidth <= 0 || maxHeight <= 0` and nothing else.
+  //
+  // It is reachable through the port this branch added the guard to. `ReadCapabilities` zeroes the
+  // angle pair when either angle is not finite and positive, deliberately and as one pair — so a
+  // host that reports a resolution and a broken derivation produces exactly this struct. The
+  // session then keeps a real 1920x1080 beside a 0-degree lens, which is the same "camera that
+  // never existed" the sibling test names, arriving from the other side.
+  //
+  // `types.h` states the rule the two tests share: a silence about the frame is a silence about
+  // its angles, and they move together or not at all. Together means both ways round.
+  BurstSpec burst;
+  burst.frameCount = 2;
+
+  Begin();
+  auto atBegin = manager->CameraInUse();
+  ASSERT_TRUE(atBegin.ok());
+  ASSERT_GT(atBegin.value.horizontalFovDeg, 0.0) << "nothing to lose, so this test is about nothing";
+
+  CameraCapabilities derived;
+  derived.maxWidth = 1920;            // a real frame, and a bigger one than the session had
+  derived.maxHeight = 1080;
+  derived.maxBurstFps = 30.0;
+  derived.horizontalFovDeg = 0.0;     // the pair the port zeroes when it cannot derive one
+  derived.verticalFovDeg = 0.0;
+  camera->SetCapabilities(derived);
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  auto after = manager->CameraInUse();
+  ASSERT_TRUE(after.ok());
+  EXPECT_DOUBLE_EQ(after.value.horizontalFovDeg, atBegin.value.horizontalFovDeg)
+      << "a lens of zero degrees was published as what the camera reports";
+  EXPECT_DOUBLE_EQ(after.value.verticalFovDeg, atBegin.value.verticalFovDeg);
+  // And the frame comes back with them, because taking the new geometry beside the old angles is
+  // the pairing this rule exists to prevent.
+  EXPECT_EQ(after.value.maxWidth, atBegin.value.maxWidth)
+      << "a frame was kept that its angles were not derived from";
+  EXPECT_EQ(after.value.maxHeight, atBegin.value.maxHeight);
+}
+
 TEST_F(CaptureSession, TheCameraInUseIsTheOneTheBurstIsPacedBy) {
   // `CameraInUse()` had no native test of any kind: deleting its session guard and returning a
   // default-constructed struct was invisible to the whole suite. Two claims in its header, both
