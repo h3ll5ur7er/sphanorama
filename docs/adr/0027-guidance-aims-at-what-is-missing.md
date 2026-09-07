@@ -1,5 +1,18 @@
 # 0027 — Guidance aims at what is missing
 
+> **Partly superseded by [ADR 0041](0041-aim-decides-which-cell-a-burst-belongs-to.md).** The
+> `SphereDone` half stands. The targeting half does not: `Locate` no longer searches *only* the
+> holes. A camera resting inside a cell's acceptance cone names that cell whether or not it is
+> captured, because skipping it moved the target out from under a still phone — and since
+> `ArmBurst` did not check aim, the next press filled a neighbour with this cell's pixels. What
+> this ADR was protecting, never telling someone to re-shoot what they have, is now carried by the
+> *action* (`AlreadyCaptured` rather than `HoldStill`) instead of by which cell is named.
+>
+> **And restored, unchanged, wherever there is no aim** — [ADR 0042](0042-with-no-aim-coverage-decides-alone.md).
+> A pose no reading has anchored gives nothing to rest "inside a cone" of, so the target rule below
+> is the one that runs, for the whole life of a sensorless capture. The supersession is conditional
+> rather than complete, and 0042 names this ADR as what it falls back to.
+
 ## Context
 
 `ICoveragePlannerEngine::Locate(current, plan)` answered "which cell is this orientation nearest

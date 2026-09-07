@@ -57,6 +57,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // says which sphere is being captured, never what the device it comes back on can sense.
   Result<PoseState> StartTracking(MotionCapability motion);
   bool HasNode(NodeId node) const;
+  /** The cell by id, or null. Callers that need the cone rather than merely its existence. */
+  const CoverageNode* FindNode(NodeId node) const;
   std::vector<Candidate> AllCandidates() const;
   void Discard(std::vector<Candidate>& candidates);
   // Sends a cell's own frames to whatever cheaper tier the store has. The session knows when a

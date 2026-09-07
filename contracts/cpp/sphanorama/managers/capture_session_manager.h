@@ -50,6 +50,18 @@ class ICaptureSessionManager {
   // on this call are what the camera has to converge to. Under that floor the camera's own frame
   // period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
   // frame period the latest frame is one the camera produced before the locks landed.
+  //
+  // Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
+  // acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+  // burst records whatever the camera is looking at and the node is only a name to file it under,
+  // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
+  // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+  //
+  // **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
+  // zero, which is what a phone with no motion sensor reports for the life of a session — there is
+  // no direction to measure a cone against, and every cell arms. A client on such a device will
+  // never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
+  // capture, because it never will (ADR 0042).
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
@@ -93,6 +105,20 @@ class ICaptureSessionManager {
 
   // Re-arms a cell. Existing candidates are kept unless `replace` is set, so a retake can add to
   // the evidence pool rather than discard it.
+  //
+  // "Re-arms" is about the cell's state, not about a burst: the burst that follows still goes
+  // through `ArmBurst` and is still refused if the camera is not aimed at the cell (ADR 0041). So
+  // a retake asks the user to point at the cell again before anything is recorded — which is the
+  // point, since a retake that captured from wherever the phone happened to be pointing is the bug
+  // ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
+  //
+  // **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
+  // anchored there is no direction to measure a cone against, so the burst after a retake arms
+  // wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
+  // device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
+  // commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
+  // states a precondition without its exemption tells a client to wait for something that will
+  // never happen.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

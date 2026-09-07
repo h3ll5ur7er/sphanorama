@@ -114,11 +114,14 @@ TEST(Codec, TheWireFormatIsPinnedAcrossLanguages) {
   guidance.rollErrorDeg = -3.25;
   guidance.stability = 0.5;
   guidance.action = GuidanceAction::HoldStill;
+  // Left false, so the pinned bytes end in the zero byte an appended `bool` adds. The field is new
+  // (ADR 0042) and this is the test that made both languages learn about it at the same time.
+  guidance.aimKnown = false;
 
   Writer writer;
   Encode(writer, guidance);
   EXPECT_EQ(Hex(writer.bytes()),
-            "0000000000001c4000000000000029400000000000000ac0000000000000e03f01000000");
+            "0000000000001c4000000000000029400000000000000ac0000000000000e03f0100000000");
 }
 
 TEST(Codec, RoundTripsABytePayload) {

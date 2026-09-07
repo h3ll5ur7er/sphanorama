@@ -96,15 +96,34 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // a gyroscope that is not there would only add lag to the one signal there is, which is why
     // every platform reporting an attitude alone behaves exactly as it did before this existed.
     const bool fusing = Measured(sample);
-    const bool advanced = state.observed && sample.timestampNs > state.pose.timestampNs;
+    // Two questions, and they were one flag. `elapsed` is whether there is an interval to integrate
+    // a rate over — a clock, which the first sample of any stream sets whether or not it estimated
+    // anything. `predictable` is whether there is an *estimate* worth predicting forward and
+    // correcting back from, which is a stronger thing: dead reckoning can start from the identity,
+    // and a complementary filter cannot, because it would blend the first real reading with a guess
+    // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
+    // leaves the pose most of a turn from a reading it should simply have taken.
+    const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
+    // `absolute`, not "something moved it". A prediction is only worth blending against a reading
+    // when it descends from a reading: dead reckoning moves the orientation too, so a stream
+    // opening with rate-only samples reached the first attitude holding an estimate integrated
+    // from the identity it was born with — a direction nobody chose — and correcting a fraction of
+    // the way towards the first real reading kept most of that arbitrary origin. Third route to
+    // the same 25.5°.
+    //
+    // It narrows the branch rather than disabling it: `absolute` is set by both attitude branches,
+    // so once a stream is anchored the filter runs normally, and it goes false only where the
+    // estimate really has stopped descending from a reading.
+    const bool predictable = state.absolute && elapsed;
     const double seconds =
-        advanced ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
+        elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
 
-    if (sample.hasOrientation && !(fusing && advanced)) {
+    if (sample.hasOrientation && !(fusing && predictable)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
       state.absolute = true;
+      state.anchored = true;
     } else if (sample.hasOrientation) {
       // Predict where the gyroscope says the device now points, then take part of the way back to
       // where the reading says it does. The prediction carries the fast motion the reading is too
@@ -135,24 +154,57 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
       // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
       //
-      // The clamp is what makes it safe for any gap rather than merely for realistic ones. A
-      // single observation may move the offset by at most the whole rate error it saw, so the
-      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the
-      // capture loop does with its timestamps.
+      // A single observation may move the offset by at most the whole rate error it saw, so the
+      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the capture
+      // loop does with its timestamps. That is a property of the expression below rather than of a
+      // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
+      // gap) and is under 1 at every gap, because past the time constant the denominator grows with
+      // `seconds` while `share` is already saturating at 1.
+      //
+      // It was a clamped expression until a reviewer removed the clamp and found the whole suite
+      // still green — including the ten-gap sweep written for exactly this invariant. The clamp had
+      // been load-bearing when the divisor was `kBiasSeconds` alone, where the factor really did
+      // pass 1; `std::max` took the job away from it and the comment went on crediting it. A guard
+      // that cannot fire reads as the thing keeping you safe, which is worse than no guard: the
+      // next person to change the divisor would trust it.
       //
       // No stillness detector, and none needed: what accumulates here is the part of the error
       // that keeps pointing the same way. Noise does not, and cancels. A device that is really
       // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      const double charge = std::min(share / kBiasSeconds, 1.0);
+      // Divided by the *window*, not by the time constant alone. `error * share` is the rate error
+      // (the disagreement with its accumulation window divided out); charging `share / kBiasSeconds`
+      // therefore steps the offset by that rate times `seconds / kBiasSeconds`, which grows with the
+      // gap — so the clamp below bounded the step by the whole *angle* of disagreement while its
+      // comment claimed the whole rate error. The two differ by exactly that window.
+      //
+      // Measured before the fix, a still device reporting 0.02 rad/s: sign flip at a 2 s gap, and
+      // −5.48 rad/s learned across twelve samples 10 s apart. `std::max` keeps the fast-sample
+      // behaviour identical — under one time constant the window is the time constant — and makes
+      // a long gap charge at most the rate error it actually saw, which is what the paragraph
+      // above has always said it does.
+      const double charge = share / std::max(kBiasSeconds, seconds);
       state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
                                                       error.z * charge});
       state.absolute = true;
-    } else if (advanced && fusing) {
+      // Anchored here as well as in the branch above, because both are branches that fold in a
+      // reading and that is what anchoring is.
+      //
+      // It was briefly absent, on a proof that had gone stale under my own hand: the argument was
+      // that this branch is reached only when `predictable` held and `predictable` requires the
+      // flag — true when `predictable` was `state.estimated && elapsed`, and false since it became
+      // `state.absolute && elapsed` one round later. Deleting the line left the suite green
+      // because every caller in this repository reaches here with both flags set, which is an
+      // invariant nothing states and nothing asserts — and `Integrate`'s prior is a caller's
+      // value, not this engine's. A prior with `absolute` and not `anchored` ran the whole
+      // complementary filter, moved 4.6 degrees from a real reading, and came back at confidence
+      // zero: the contract's word for "nothing estimated this".
+      state.anchored = true;
+    } else if (elapsed && fusing) {
       // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
       // correcting the estimate, so an offset left in the rate integrates straight into the
       // answer.
       //
-      // Gated on the same flag as the fusion, and the gate is not decorative: a sample with
+      // Gated on a measured rate, and the gate is not decorative: a sample with
       // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so
       // subtracting a learned offset from it and integrating the result would turn "nothing was
       // reported" into a rotation backwards at the offset's own rate. A sample that reports
@@ -160,19 +212,37 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const Vec3 rate = Subtract(sample.angularVelocity, state.gyroBias);
       if (Magnitude(rate) > 1e-9) {
         state.pose.orientation = Turned(state.pose.orientation, rate, seconds);
+        // No anchor here, and that is the point of the flag. Integrating a rate says how far the
+        // device has turned and nothing about where it started, so a stream that has never carried
+        // an attitude is turning away from an identity nobody chose. `anchored` stays false, the
+        // confidence below stays zero, and every rule that asks "is there an aim" gets the honest
+        // answer for the whole stream rather than for its first sample only.
         // Dead reckoning from here on. Leaving the flag set would keep reporting an integrated
         // pose with the confidence of a measured one, and the drift would be invisible.
         state.absolute = false;
       }
     }
-    state.pose.timestampNs = sample.timestampNs;
+    // The clock only moves forward. A sample too old to have an interval of its own is too old to
+    // become the interval for the next one: adopting its timestamp unconditionally refused it and
+    // then fabricated a gap for its successor, so one stale sample in a 60 Hz stream handed the
+    // following sample a window hundreds of times too long — and the bias learned over that window
+    // is charged as though the device had really been turning for it.
+    state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
+    // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
+    // anchored anything is `anchored`, set by the two branches above that fold in a reading.
     state.observed = true;
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;
-  // Zero until something has actually been observed: a caller reading confidence 0 knows the
-  // orientation is a default rather than an estimate.
-  state.pose.confidence = !state.observed ? 0.0 : (state.absolute ? 1.0 : 0.5);
+  // Zero until an absolute reading has been folded in: a caller reading confidence 0 knows it is
+  // holding a direction nobody measured, whether that is the identity the state was born with or
+  // an integration away from it.
+  //
+  // Keyed on `anchored` rather than on `observed` — a sample can arrive and inform nothing, and
+  // both used to come back at 0.5 — and rather than on "something moved it", which is the same
+  // mistake one sample later: a gyroscope-only stream moves the orientation on its second sample
+  // and has still never been told where it is pointing.
+  state.pose.confidence = !state.anchored ? 0.0 : (state.absolute ? 1.0 : 0.5);
   return Ok(state);
 }
 

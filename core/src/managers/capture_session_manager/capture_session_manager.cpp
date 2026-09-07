@@ -6,9 +6,12 @@
 #include <sstream>
 #include <string>
 
+#include "utilities/quaternion.h"
+
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
 //
@@ -311,8 +314,13 @@ Status CaptureSessionManager::RequireSession() const {
 }
 
 bool CaptureSessionManager::HasNode(NodeId node) const {
-  return std::any_of(plan_.nodes.begin(), plan_.nodes.end(),
-                     [&](const CoverageNode& n) { return n.id.value == node.value; });
+  return FindNode(node) != nullptr;
+}
+
+const CoverageNode* CaptureSessionManager::FindNode(NodeId node) const {
+  const auto found = std::find_if(plan_.nodes.begin(), plan_.nodes.end(),
+                                  [&](const CoverageNode& n) { return n.id.value == node.value; });
+  return found == plan_.nodes.end() ? nullptr : &*found;
 }
 
 std::vector<Candidate> CaptureSessionManager::AllCandidates() const {
@@ -419,7 +427,10 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
 
 Result<PoseState> CaptureSessionManager::StartTracking(MotionCapability motion) {
   // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
-  // vision-only and no other component learns the difference (docs/03 UC-4).
+  // vision-only and no other component learns the difference (docs/03 UC-4) — with one exception,
+  // in ArmBurst, which looks in order to decline to have an opinion. See the comment there: it is
+  // what keeps every cell armable on such a device, so the behaviour this sentence promises
+  // survives even though the sentence is no longer literally true.
   const PoseMode mode = motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
   auto initial = pose_.Initial(mode, motion);
   if (!initial.ok()) {
@@ -631,9 +642,22 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   auto covered = planner_.Evaluate(plan_, AllCandidates());
   if (!covered.ok()) return Abandon(covered.status);
 
-  auto located = planner_.Locate(pose_state_.pose.orientation, plan_, covered.value);
+  auto located = planner_.Locate(pose_state_.pose, plan_, covered.value);
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
+
+  // Derived here as well as inside the engine, and this is the copy a client reads.
+  //
+  // Not distrust of the engine: the engine needs the answer for itself, to choose between aiming
+  // and covering, and `ArmBurst` derives it a third time to decide whether to enforce a cone. The
+  // three have to agree, and there is exactly one source they can all agree on — `confidence`,
+  // which is the contract's own word for whether the orientation was estimated at all. What this
+  // line removes is the possibility of a *published* answer that disagrees with the one the
+  // refusal uses: an engine leaving the field at its default puts the page in blind mode on a
+  // phone that has a sensor, and every capture it then offers is refused by this manager for a
+  // reason the page has already decided cannot apply. `stability` and `targetNode` are patched
+  // here for the same reason.
+  guidance.aimKnown = pose_state_.pose.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(batch); stability.ok()) {
@@ -656,7 +680,12 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
 
 Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   if (auto status = RequireSession(); !status.ok()) return status;
-  if (!HasNode(node)) return Fail(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  // One lookup, kept, rather than asking whether the cell exists here and asking again for the
+  // cell itself thirty lines below: two lookups make the second one's dereference depend on the
+  // first one staying above it, and a later edit that reorders the guards turns that into a null
+  // dereference with nothing local to say why.
+  const CoverageNode* aimed = FindNode(node);
+  if (aimed == nullptr) return Fail(StatusCode::NotFound, kComponent, "no such cell in the plan");
   if (burst.frameCount <= 0) {
     return Fail(StatusCode::InvalidArgument, kComponent, "a burst needs at least one frame");
   }
@@ -677,6 +706,46 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // has not committed, and a second arm would strand both. One burst at a time is also all a
     // single camera can honestly serve.
     return Fail(StatusCode::FailedPrecondition, kComponent, "a burst is already in flight");
+  }
+
+  // The camera has to be looking at the cell it is about to fill.
+  //
+  // A burst records whatever the camera sees; the node is only a name to file it under. Arming
+  // against a cell somewhere else therefore stores a good picture in the wrong place, which is
+  // undetectable afterwards — the frames are sharp, the scores are real, and the stitch is wrong.
+  // Nothing checked it. A client can check most of it — the page has always held every cell's cone
+  // and gets the angular error every tick, and it now gates its own shutter on exactly that — but
+  // not the last part: the reticle can retarget between the moment a user decides to press and the
+  // moment the press lands, which is a race no caller can win from outside. That is why the check
+  // is here as well as there.
+  //
+  // The same cone the planner guides with, so "the reticle is closed" and "this will arm" are the
+  // same condition rather than two that nearly agree.
+  //
+  // Only where there is an aim to check. `confidence` is the contract's own word for whether the
+  // orientation was estimated at all, and zero means nothing produced it — a phone that declined
+  // the motion sensor, or one that has none, tracks vision-only and reports identity forever.
+  // Enforcing a cone against that number would refuse every cell but the one that happens to sit
+  // straight ahead, so a sensorless capture would stop after its first burst with nothing on
+  // screen saying why — measured on the shipped composition as one cell armable of thirty-two.
+  // Sensor absence is a supported configuration (docs/03 UC-4), and this line is the one place
+  // that learns of it: it looks in order to decline to have an opinion, so what UC-4 promises —
+  // every cell still reachable — holds. Such a user aims by eye, which is what vision-only means.
+  //
+  // One signal, and it is the contract's: `PoseSample.confidence` of zero means no reading has ever
+  // anchored the orientation. `PoseState::observed` was tested alongside it for a while and is the
+  // wrong second conjunct — it means "a sample arrived", which a rate-only stream satisfies while
+  // reporting confidence zero, so the pair is not two ways of saying one thing. Which flag carries
+  // which fact is the engine's business (`observed`, `absolute` and `anchored` are three of them),
+  // and the manager holds no opinion of its own about any of them: it reads the one number the
+  // contract publishes.
+  const bool measured = pose_state_.pose.confidence > 0.0;
+  const double offBy =
+      AngleBetweenDirections(Direction(pose_state_.pose.orientation),
+                             Direction(aimed->targetOrientation)) * kRadToDeg;
+  if (measured && offBy > aimed->acceptanceConeDeg) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the camera is not aimed at that cell");
   }
 
   // Every frame in a burst must share an exposure, or selection compares brightness rather than

@@ -226,13 +226,26 @@ TEST(CoveragePlanner, RefusesAnAcceptanceConeOfZero) {
   EXPECT_EQ(planner.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
 }
 
+// A measured pose looking this way.
+//
+// Every test below the line is about the aim rule, and the aim rule applies only to an orientation
+// something actually estimated — `confidence` zero is the contract's word for "nothing produced
+// this", and `Locate` then targets by coverage alone (ADR 0042). So a test that means "the camera
+// is pointing here" has to say so with a confidence, or it is quietly testing the sensorless path.
+PoseSample Aiming(const Quat& orientation) {
+  PoseSample sample;
+  sample.orientation = orientation;
+  sample.confidence = 1.0;
+  return sample;
+}
+
 // ----------------------------------------------------------------------------------- locate
 
 TEST(CoveragePlanner, LocateFindsTheCellTheUserIsAimingAt) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   for (const auto& node : plan.nodes) {
-    auto guidance = planner.Locate(node.targetOrientation, plan, CoverageState{});
+    auto guidance = planner.Locate(Aiming(node.targetOrientation), plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
     EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-9);
@@ -244,7 +257,7 @@ TEST(CoveragePlanner, LocateAsksTheUserToKeepLookingWhenTheyAreOff) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   const Quat aim = Multiply(plan.nodes.front().targetOrientation, FromAzimuthElevation(20.0, 0.0));
-  auto guidance = planner.Locate(aim, plan, CoverageState{});
+  auto guidance = planner.Locate(Aiming(aim), plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
   EXPECT_GT(guidance.value.angularErrorDeg, plan.spec.acceptanceConeDeg);
@@ -257,10 +270,30 @@ TEST(CoveragePlanner, NoDirectionIsFurtherFromACellThanAFieldOfView) {
   for (const Vec3& direction : SphereSamples(500)) {
     const double azimuth = std::atan2(direction.x, -direction.z) * kRadToDeg;
     const double elevation = std::asin(std::clamp(direction.y, -1.0, 1.0)) * kRadToDeg;
-    auto guidance = planner.Locate(FromAzimuthElevation(azimuth, elevation), plan, CoverageState{});
+    auto guidance = planner.Locate(Aiming(FromAzimuthElevation(azimuth, elevation)), plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_LT(guidance.value.angularErrorDeg, plan.spec.horizontalFovDeg);
   }
+}
+
+// An attitude nudged off a cell by more than its acceptance cone, so the camera is aimed at no
+// cell at all. Guidance behaves differently inside a cone and outside every one of them, and a
+// test about seeking has to stand outside or it is testing the other rule.
+//
+// It checks that rather than assuming it. "More than its acceptance cone" was true of the nudge
+// only because 20° happened to clear a 5° cone written down 180 lines away in `Spec()`, and a cell
+// spacing nobody measured — narrow the cells or widen the cone and every caller quietly starts
+// testing the inside-a-cone rule while its name still says otherwise.
+Quat NudgedOffTarget(const CapturePlan& plan, const Quat& from, double degrees) {
+  const Quat aim = Multiply(from, FromAxisAngle(Vec3{0.0, 1.0, 0.0}, degrees / kRadToDeg));
+  for (const auto& node : plan.nodes) {
+    const double offBy =
+        AngleBetweenDirections(Direction(aim), Direction(node.targetOrientation)) * kRadToDeg;
+    EXPECT_GT(offBy, node.acceptanceConeDeg)
+        << "the nudge lands inside cell " << node.id.value << "'s cone, so the caller is not "
+        << "testing the outside-every-cone rule it believes it is";
+  }
+  return aim;
 }
 
 // Everything captured except the named cells, which is what a session part-way through looks like.
@@ -275,22 +308,100 @@ CoverageState AllDoneBut(const CapturePlan& plan, std::vector<uint64_t> missing)
   return state;
 }
 
-TEST(CoveragePlanner, LocateAimsAtACellThatIsStillMissing) {
-  // Aiming straight at a cell that is already captured used to name that cell and say "hold
-  // still", which is an instruction to stand still and photograph what you already have. A person
-  // reading only the angular error cannot tell the difference, and on a phone that is the whole
-  // interface.
+TEST(CoveragePlanner, LocateNamesTheCellTheCameraIsInsideEvenWhenItIsCaptured) {
+  // The cell you are pointing at is the cell guidance names, captured or not. This reverses an
+  // earlier rule — skip a captured cell and name the nearest missing one — which was right about
+  // its own concern and wrong about the one that matters more on a phone. Standing still and
+  // pressing capture three times filled the cell in front of you and then two neighbours, because
+  // the target moved out from under a phone that had not moved; and since a burst records
+  // whatever the camera sees, those two neighbours were filled with this cell's pixels.
+  //
+  // What the old rule was protecting is kept by the *action*, not by the target: it refuses to say
+  // "hold still" at a cell there is no reason to re-shoot. It says the cell is done and lets the
+  // user decide, which is what makes a deliberate re-capture possible at all.
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   const CoverageNode& aimedAt = plan.nodes.front();
   const CoverageNode& missing = plan.nodes.back();
 
-  auto guidance = planner.Locate(aimedAt.targetOrientation, plan,
+  auto guidance = planner.Locate(Aiming(aimedAt.targetOrientation), plan,
                                  AllDoneBut(plan, {missing.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::AlreadyCaptured);
+  EXPECT_LE(guidance.value.angularErrorDeg, aimedAt.acceptanceConeDeg);
+}
+
+TEST(CoveragePlanner, LocateSendsYouOnWhenYouAreAimedAtNoCellAtAll) {
+  // The other half of the rule above, and the one that keeps a capture moving: outside every
+  // acceptance cone there is no cell to hold on, so the nearest *missing* one is the answer.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+  const CoverageNode& missing = plan.nodes.back();
+  const Quat between = NudgedOffTarget(plan, aimedAt.targetOrientation, 20.0);
+
+  auto guidance = planner.Locate(Aiming(between), plan, AllDoneBut(plan, {missing.id.value}));
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.targetNode.value, missing.id.value);
   EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
-  EXPECT_GT(guidance.value.angularErrorDeg, 0.0);
+  // The error is measured to the cell that was named, and pinned rather than merely asserted
+  // positive: this is the number the reticle's radius is drawn from on every frame of a real
+  // capture, and it is computed on a line this change rewrote. `EXPECT_GT(..., 0.0)` passed for a
+  // constant.
+  EXPECT_NEAR(guidance.value.angularErrorDeg,
+              AngleBetweenDirections(Direction(between), Direction(missing.targetOrientation)) *
+                  kRadToDeg,
+              1e-9);
+}
+
+TEST(CoveragePlanner, LocateSaysHoldStillOnACellThatStillNeedsShooting) {
+  // Inside a cone and the cell is a hole: this is the one case that asks for a capture, and it is
+  // what the eventual dwell trigger will fire on. Told apart from the captured case above by the
+  // action alone, since both name the cell under the reticle.
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& aimedAt = plan.nodes.front();
+
+  auto guidance = planner.Locate(Aiming(aimedAt.targetOrientation), plan,
+                                 AllDoneBut(plan, {aimedAt.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
+  EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
+}
+
+TEST(CoveragePlanner, WithNoAimTheTargetIsTheNearestMissingCellRatherThanWhateverSitsAtIdentity) {
+  // UC-4: a phone that declined motion, or has none, tracks vision-only and reports identity for
+  // the life of the session at confidence zero — the contract's word for "nothing estimated this".
+  //
+  // Preferring the cell under the camera is only meaningful when there *is* a camera direction.
+  // Against an unmeasured identity it means preferring whichever cell happens to sit at identity,
+  // on every tick, for ever: capture that cell and guidance says `AlreadyCaptured` about it until
+  // the session ends, and the sphere can never move on. So with no aim, coverage decides alone and
+  // the answer is ADR 0027's — the nearest cell still missing (ADR 0042).
+  RingsCoveragePlannerEngine planner;
+  const CapturePlan plan = Plan(Spec());
+  const CoverageNode& atIdentity = plan.nodes.front();
+  const CoverageNode& missing = plan.nodes.back();
+  ASSERT_NE(atIdentity.id.value, missing.id.value);
+
+  PoseSample unmeasured;
+  unmeasured.orientation = atIdentity.targetOrientation;   // exactly where the aim rule would bite
+  unmeasured.confidence = 0.0;
+
+  auto guidance = planner.Locate(unmeasured, plan, AllDoneBut(plan, {missing.id.value}));
+  ASSERT_TRUE(guidance.ok());
+  EXPECT_EQ(guidance.value.targetNode.value, missing.id.value)
+      << "with no aim to prefer, a captured cell under an unmeasured identity still won the target";
+  EXPECT_EQ(guidance.value.action, GuidanceAction::Seek);
+
+  // And the same attitude *with* a confidence keeps the aim rule, so this is about the measurement
+  // and not about the direction.
+  auto aimed = planner.Locate(Aiming(atIdentity.targetOrientation), plan,
+                              AllDoneBut(plan, {missing.id.value}));
+  ASSERT_TRUE(aimed.ok());
+  EXPECT_EQ(aimed.value.targetNode.value, atIdentity.id.value);
+  EXPECT_EQ(aimed.value.action, GuidanceAction::AlreadyCaptured);
 }
 
 TEST(CoveragePlanner, LocateStillPicksTheNearestOfTheCellsThatAreMissing) {
@@ -299,18 +410,38 @@ TEST(CoveragePlanner, LocateStillPicksTheNearestOfTheCellsThatAreMissing) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   ASSERT_GE(plan.nodes.size(), 3u);
-  const CoverageNode& here = plan.nodes[0];
-  const CoverageNode& near = plan.nodes[1];
-  const CoverageNode& far = plan.nodes[plan.nodes.size() / 2];
+  // From outside every cone, so this is the seeking rule rather than the aimed-at-a-cell one.
+  const Quat looking = NudgedOffTarget(plan, plan.nodes[0].targetOrientation, 20.0);
+  const auto angleTo = [&](const CoverageNode& node) {
+    return AngleBetweenDirections(Direction(looking), Direction(node.targetOrientation));
+  };
 
-  auto guidance = planner.Locate(here.targetOrientation, plan,
+  // The far cell has to come *earlier* in plan order than the near one, or the test cannot tell
+  // "nearest" from "first one scanned" — and a `nearestOf` that simply kept its first hit would
+  // pass. The previous fixture took `nodes[1]` as the near cell and `nodes[size/2]` as the far
+  // one, so plan order and distance agreed and the assertion proved nothing.
+  size_t farIdx = plan.nodes.size();
+  size_t nearIdx = plan.nodes.size();
+  for (size_t i = 0; i < plan.nodes.size() && nearIdx == plan.nodes.size(); ++i) {
+    for (size_t j = i + 1; j < plan.nodes.size(); ++j) {
+      if (angleTo(plan.nodes[j]) < angleTo(plan.nodes[i])) {
+        farIdx = i;
+        nearIdx = j;
+        break;
+      }
+    }
+  }
+  ASSERT_LT(nearIdx, plan.nodes.size())
+      << "this plan is already sorted by distance from the camera, so nothing here can tell the "
+      << "two rules apart";
+  const CoverageNode& near = plan.nodes[nearIdx];
+  const CoverageNode& far = plan.nodes[farIdx];
+
+  auto guidance = planner.Locate(Aiming(looking), plan,
                                  AllDoneBut(plan, {near.id.value, far.id.value}));
   ASSERT_TRUE(guidance.ok());
-  const double toNear = AngleBetweenDirections(Direction(here.targetOrientation),
-                                               Direction(near.targetOrientation));
-  const double toFar = AngleBetweenDirections(Direction(here.targetOrientation),
-                                              Direction(far.targetOrientation));
-  ASSERT_LT(toNear, toFar) << "the fixture picked two cells that are not ordered as assumed";
+  ASSERT_LT(angleTo(near), angleTo(far));
+  ASSERT_LT(farIdx, nearIdx);
   EXPECT_EQ(guidance.value.targetNode.value, near.id.value);
 }
 
@@ -319,7 +450,7 @@ TEST(CoveragePlanner, LocateSaysTheSphereIsDoneWhenNothingIsMissing) {
   // cell nearest the phone forever.
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
-  auto guidance = planner.Locate(plan.nodes.front().targetOrientation, plan, AllDoneBut(plan, {}));
+  auto guidance = planner.Locate(Aiming(plan.nodes.front().targetOrientation), plan, AllDoneBut(plan, {}));
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.action, GuidanceAction::SphereDone);
 }
@@ -330,7 +461,7 @@ TEST(CoveragePlanner, LocateAimsAtTheNearestCellWhenNothingHasBeenCaptured) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
   const CoverageNode& aimedAt = plan.nodes.front();
-  auto guidance = planner.Locate(aimedAt.targetOrientation, plan, CoverageState{});
+  auto guidance = planner.Locate(Aiming(aimedAt.targetOrientation), plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
   EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
@@ -338,7 +469,7 @@ TEST(CoveragePlanner, LocateAimsAtTheNearestCellWhenNothingHasBeenCaptured) {
 
 TEST(CoveragePlanner, LocateRefusesAnEmptyPlan) {
   RingsCoveragePlannerEngine planner;
-  EXPECT_EQ(planner.Locate(Quat{}, CapturePlan{}, CoverageState{}).status.code,
+  EXPECT_EQ(planner.Locate(Aiming(Quat{}), CapturePlan{}, CoverageState{}).status.code,
             StatusCode::FailedPrecondition);
 }
 
@@ -494,13 +625,13 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
   const CapturePlan plan = Plan(Spec());
 
   const Quat aimed = plan.nodes.front().targetOrientation;
-  auto straight = engine.Locate(aimed, plan, CoverageState{});
+  auto straight = engine.Locate(Aiming(aimed), plan, CoverageState{});
   ASSERT_TRUE(straight.ok());
 
   // The same direction, rotated 30 degrees about the axis the camera looks along.
   const Vec3 axis = Direction(aimed);
   const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), aimed);
-  auto tilted = engine.Locate(rolled, plan, CoverageState{});
+  auto tilted = engine.Locate(Aiming(rolled), plan, CoverageState{});
   ASSERT_TRUE(tilted.ok());
 
   EXPECT_EQ(tilted.value.targetNode.value, straight.value.targetNode.value);
@@ -511,7 +642,7 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
 TEST(CoveragePlanner, ReportsNoRollWhenTheCameraIsUpright) {
   RingsCoveragePlannerEngine engine;
   const CapturePlan plan = Plan(Spec());
-  auto guidance = engine.Locate(plan.nodes.front().targetOrientation, plan, CoverageState{});
+  auto guidance = engine.Locate(Aiming(plan.nodes.front().targetOrientation), plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_NEAR(guidance.value.rollErrorDeg, 0.0, 1e-9);
 }
@@ -524,7 +655,7 @@ TEST(CoveragePlanner, PicksTheCellTheCameraActuallyPointsAt) {
   for (const auto& node : plan.nodes) {
     const Vec3 axis = Direction(node.targetOrientation);
     const Quat rolled = Multiply(FromAxisAngle(axis, 45.0 / kRadToDeg), node.targetOrientation);
-    auto guidance = engine.Locate(rolled, plan, CoverageState{});
+    auto guidance = engine.Locate(Aiming(rolled), plan, CoverageState{});
     ASSERT_TRUE(guidance.ok());
     EXPECT_EQ(guidance.value.targetNode.value, node.id.value);
     EXPECT_NEAR(guidance.value.angularErrorDeg, 0.0, 1e-6);
@@ -544,18 +675,86 @@ TEST(NullCoveragePlanner, AlsoSeparatesRollFromAim) {
   node.acceptanceConeDeg = 5.0;
   plan.nodes.push_back(node);
 
-  auto straight = engine.Locate(node.targetOrientation, plan, CoverageState{});
+  auto straight = engine.Locate(Aiming(node.targetOrientation), plan, CoverageState{});
   ASSERT_TRUE(straight.ok());
   EXPECT_NEAR(straight.value.angularErrorDeg, 0.0, 1e-9);
   EXPECT_NEAR(straight.value.rollErrorDeg, 0.0, 1e-9);
 
   const Vec3 axis = Direction(node.targetOrientation);
   const Quat rolled = Multiply(FromAxisAngle(axis, 30.0 / kRadToDeg), node.targetOrientation);
-  auto tilted = engine.Locate(rolled, plan, CoverageState{});
+  auto tilted = engine.Locate(Aiming(rolled), plan, CoverageState{});
   ASSERT_TRUE(tilted.ok());
   EXPECT_NEAR(tilted.value.angularErrorDeg, 0.0, 1e-6);
   EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);
   EXPECT_EQ(tilted.value.action, GuidanceAction::HoldStill);
+}
+
+TEST(NullCoveragePlanner, SaysTheSameFourThingsAboutAimAndCoverageTheRealOneDoes) {
+  // Every action this engine can return, asserted here because nothing else asserts them. It is
+  // the engine the manager tests run against, so its guidance rule is what those tests believe the
+  // shipped path does — and three of the four actions could have been replaced with the wrong one
+  // and left the whole suite green. A rule that agrees with the real planner by intention and not
+  // by test is a rule that will drift the next time one of them is edited.
+  NullCoveragePlannerEngine engine;
+  CapturePlan plan;
+  CoverageNode here;
+  here.id = NodeId{1};
+  here.targetOrientation = Quat{};
+  here.acceptanceConeDeg = 5.0;
+  plan.nodes.push_back(here);
+  CoverageNode there;
+  there.id = NodeId{2};
+  there.targetOrientation = FromAzimuthElevation(40.0, 0.0);
+  there.acceptanceConeDeg = 5.0;
+  plan.nodes.push_back(there);
+
+  // Nothing evaluated yet: coverage has no opinion, so being on a cell means shoot it.
+  auto fresh = engine.Locate(Aiming(Quat{}), plan, CoverageState{});
+  ASSERT_TRUE(fresh.ok());
+  EXPECT_EQ(fresh.value.targetNode.value, here.id.value);
+  EXPECT_EQ(fresh.value.action, GuidanceAction::HoldStill);
+
+  // On a cell that is still a hole.
+  auto needed = engine.Locate(Aiming(Quat{}), plan, AllDoneBut(plan, {here.id.value}));
+  ASSERT_TRUE(needed.ok());
+  EXPECT_EQ(needed.value.targetNode.value, here.id.value);
+  EXPECT_EQ(needed.value.action, GuidanceAction::HoldStill);
+
+  // On a cell that is already shot: still named — that is the whole point of the aim rule — but
+  // the action says there is no reason to shoot it again, which is what the page colours the
+  // reticle from and what stops a dwell trigger firing on a cell nobody asked to re-take.
+  auto done = engine.Locate(Aiming(Quat{}), plan, AllDoneBut(plan, {there.id.value}));
+  ASSERT_TRUE(done.ok());
+  EXPECT_EQ(done.value.targetNode.value, here.id.value);
+  EXPECT_EQ(done.value.action, GuidanceAction::AlreadyCaptured);
+
+  // Between the two cells, inside neither cone: the nearest cell that is still missing.
+  const Quat between = FromAzimuthElevation(20.0, 0.0);
+  auto seeking = engine.Locate(Aiming(between), plan, AllDoneBut(plan, {there.id.value}));
+  ASSERT_TRUE(seeking.ok());
+  EXPECT_EQ(seeking.value.targetNode.value, there.id.value);
+  EXPECT_EQ(seeking.value.action, GuidanceAction::Seek);
+
+  // Nothing left anywhere.
+  auto finished = engine.Locate(Aiming(Quat{}), plan, AllDoneBut(plan, {}));
+  ASSERT_TRUE(finished.ok());
+  EXPECT_EQ(finished.value.action, GuidanceAction::SphereDone);
+
+  // And the fifth thing, which is not an action: whether there was an aim to speak of. Asserted
+  // here for the same reason as the four above — this engine is unreachable from the browser, so
+  // nothing else can catch it. Forcing `aimKnown` true left the whole suite green while the rings
+  // engine's copy of the same line failed thirteen browser tests, which is exactly the asymmetry
+  // that lets a null implementation drift away from the real one.
+  EXPECT_TRUE(fresh.value.aimKnown);
+  PoseSample unaimed;
+  unaimed.confidence = 0.0;
+  auto blind = engine.Locate(unaimed, plan, CoverageState{});
+  ASSERT_TRUE(blind.ok());
+  EXPECT_FALSE(blind.value.aimKnown);
+  // And with no aim, coverage decides alone (ADR 0042): the nearest missing cell rather than
+  // whatever sits at identity, and never `HoldStill` — a page gating its shutter on that would
+  // offer nothing for ever.
+  EXPECT_EQ(blind.value.action, GuidanceAction::Seek);
 }
 
 }  // namespace

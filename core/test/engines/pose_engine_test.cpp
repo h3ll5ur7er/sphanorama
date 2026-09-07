@@ -174,6 +174,311 @@ TEST(PoseEngine, IntegratingIsPureInThePriorState) {
   EXPECT_FALSE(state.observed);
 }
 
+TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
+  // A sample carrying neither an attitude nor a measured rate contributes nothing, and Integrate
+  // already knows it: every branch that could move the orientation is gated on one or the other,
+  // under a comment saying "a sample that reports nothing should move nothing". It moved one thing
+  // anyway — `observed` — and `observed` is how a caller learns whether the orientation in its
+  // hand is a reading.
+  //
+  // What that costs is not academic. `CaptureSessionManager::ArmBurst` enforces the acceptance
+  // cone only against a pose that was measured, which is what lets a phone with no motion sensor
+  // capture at all (ADR 0041). One empty sample used to flip the state to observed with confidence
+  // 0.5 and the orientation still at identity, and the manager then refused thirty-one cells of
+  // thirty-two on the strength of a number nobody measured.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample nothing;
+  nothing.timestampNs = 1'000'000;
+  nothing.hasOrientation = false;
+  nothing.hasAngularVelocity = false;
+
+  auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_FALSE(after.value.anchored) << "an empty sample estimates nothing";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0)
+      << "confidence is derived from `estimated`, so it has to follow it down";
+  // `observed` is true, and that is right: a sample arrived, and the next one's elapsed time is
+  // measured from it. The two facts were one flag, which is the whole finding.
+  EXPECT_TRUE(after.value.observed);
+  // And the orientation really did not move, which is what makes the flag the whole finding.
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
+
+  // A real reading after it still lands, so this refuses an empty sample rather than the stream.
+  ImuSample real = Oriented(2'000'000, 30.0, 0.0);
+  auto seen = engine.Integrate(after.value, std::span<const ImuSample>(&real, 1));
+  ASSERT_TRUE(seen.ok());
+  EXPECT_TRUE(seen.value.anchored);
+  EXPECT_DOUBLE_EQ(seen.value.pose.confidence, 1.0);
+}
+
+TEST(PoseEngine, ARateOnlyStreamTurnsTheOrientationAndStillReportsNoAim) {
+  // A gyroscope reports a rate, and a rate only becomes an orientation when there is an elapsed
+  // time to integrate it over — which the first sample of a stream does not have. Every branch in
+  // `Integrate` knows that: dead reckoning is gated on `advanced`, so the first rate-only sample
+  // moves nothing at all. It still has to establish the clock the second one measures against, and
+  // that is not the same thing as having seen where the camera points.
+  //
+  // Conflating the two put an unmeasured identity behind confidence 0.5, and every rule that keys
+  // on confidence then treats straight-ahead as a measurement: the manager enforces the acceptance
+  // cone against it and refuses thirty-one cells of thirty-two (ADR 0042).
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample first;
+  first.timestampNs = 1'000'000;
+  first.hasAngularVelocity = true;
+  first.angularVelocity = Vec3{0.0, 0.5, 0.0};
+
+  auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&first, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_FALSE(after.value.anchored)
+      << "the first rate has no elapsed time to turn into an orientation";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0);
+  // Arrived, though — which is exactly what the second sample measures its interval against.
+  EXPECT_TRUE(after.value.observed);
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
+
+  // The second one does have a gap, so the stream starts turning — this refuses a sample that
+  // could not have informed anything, not the gyroscope.
+  //
+  // And it still reports no aim, which is the half this test used to get wrong. Fixing the first
+  // sample only moved the same defect one sample along: the orientation is now several degrees
+  // from the identity and nobody has ever said where the identity was pointing, so a confidence of
+  // 0.5 here would put an unmeasured heading behind the acceptance cone exactly as before —
+  // measured on the shipped tessellation at zero of thirty-two cells armable, with the page in
+  // aimed mode because `aimKnown` was true.
+  ImuSample second = first;
+  second.timestampNs = 1'020'000'000;
+  auto turning = engine.Integrate(after.value, std::span<const ImuSample>(&second, 1));
+  ASSERT_TRUE(turning.ok());
+  EXPECT_GT(AngleBetween(turning.value.pose.orientation, Quat{}), 0.1)
+      << "the second sample does have an interval, so it turns the device";
+  EXPECT_FALSE(turning.value.anchored) << "turned, but from a direction nobody measured";
+  EXPECT_DOUBLE_EQ(turning.value.pose.confidence, 0.0);
+}
+
+TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorrectTowards) {
+  // The complementary filter has two modes and picks between them on whether there is an estimate
+  // worth predicting from: with one, it predicts forward and takes a fraction of the way back to
+  // the reading; without one, it takes the reading whole. Choosing wrongly is not a small error —
+  // the correction share is `1 - exp(-dt/0.1)`, so at a 16 ms gap it moves about 15% of the way
+  // and the pose sits most of a turn away from a reading it should simply have accepted.
+  //
+  // The blank sample is what exposed it: it establishes the clock without estimating anything, and
+  // an engine that took "a sample arrived" as "there is an estimate to predict from" then treated
+  // the *first real reading* as a correction to an identity nobody had measured.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample nothing;
+  nothing.timestampNs = 1'000'000;
+
+  auto quiet = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
+  ASSERT_TRUE(quiet.ok());
+
+  // A real fused reading 16 ms later: an attitude *and* a measured rate, which is the shape that
+  // selects the predict-and-correct branch when there is something to predict from.
+  ImuSample reading = Oriented(17'000'000, 30.0, 0.0);
+  reading.hasAngularVelocity = true;
+
+  auto after = engine.Integrate(quiet.value, std::span<const ImuSample>(&reading, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, reading.orientation) * kRadToDeg, 0.0, 1e-9)
+      << "the first reading of a session is ground truth, not a correction to an unmeasured guess";
+  EXPECT_DOUBLE_EQ(after.value.pose.confidence, 1.0);
+}
+
+TEST(PoseEngine, EveryPathThatFoldsInAReadingAnchorsAndNoOtherPathDoes) {
+  // `anchored` is what `confidence` is derived from, and confidence is what `ArmBurst` and
+  // `Locate` branch on — so this is the flag that decides whether a device is treated as knowing
+  // where it points. It has to answer "does this orientation descend from a reading?", which is
+  // not the same question as "has anything moved it": integrating a rate moves the orientation and
+  // says nothing about where it started.
+  //
+  // Both halves are asserted here because both have been wrong. A reading path that forgets to
+  // anchor reports a real orientation as "nothing produced this"; a dead-reckoning path that
+  // anchors puts a heading nobody measured behind confidence 0.5, and `ArmBurst` then enforces the
+  // acceptance cone against it — zero of thirty-two cells armable on the shipped tessellation.
+  OrientationPoseEngine engine;
+
+  // The fusion path: an attitude and a rate, arriving after an estimate already exists.
+  {
+    auto state = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    ImuSample first = Oriented(0, 10.0, 0.0);
+    auto seeded = engine.Integrate(state.value, std::span<const ImuSample>(&first, 1));
+    ASSERT_TRUE(seeded.ok());
+    ASSERT_TRUE(seeded.value.anchored);
+
+    ImuSample fused = Oriented(16'000'000, 12.0, 0.0);
+    fused.hasAngularVelocity = true;
+    fused.angularVelocity = Vec3{0.0, 0.1, 0.0};
+    auto corrected = engine.Integrate(seeded.value, std::span<const ImuSample>(&fused, 1));
+    ASSERT_TRUE(corrected.ok());
+    EXPECT_TRUE(corrected.value.anchored) << "the predict-and-correct path folded in a reading";
+    EXPECT_DOUBLE_EQ(corrected.value.pose.confidence, 1.0);
+  }
+
+  // A prior that is `absolute` without being `anchored` — which no caller in this repository
+  // produces, and `Integrate`'s prior is a caller's value rather than this engine's. The fusion
+  // branch has to anchor for itself rather than inherit it, and it briefly did not: the deletion
+  // was justified by `predictable` requiring the flag, which stopped being true when `predictable`
+  // was rekeyed onto `absolute`. Without the write this comes back at confidence zero for a pose
+  // the filter has just moved several degrees towards a real reading.
+  {
+    auto state = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    PoseState prior = state.value;
+    prior.observed = true;
+    prior.absolute = true;
+    prior.anchored = false;
+    prior.pose.timestampNs = 0;
+
+    ImuSample fused = Oriented(16'000'000, 12.0, 0.0);
+    fused.hasAngularVelocity = true;
+    fused.angularVelocity = Vec3{0.0, 0.1, 0.0};
+    auto corrected = engine.Integrate(prior, std::span<const ImuSample>(&fused, 1));
+    ASSERT_TRUE(corrected.ok());
+    EXPECT_TRUE(corrected.value.anchored) << "a reading was folded in on this call";
+    EXPECT_DOUBLE_EQ(corrected.value.pose.confidence, 1.0);
+  }
+
+  // The dead-reckoning path, which moves the orientation and must *not* anchor. A gyroscope says
+  // how fast the device is turning; a stream that has never carried an attitude is turning away
+  // from the identity it was born with, which is a direction nobody chose.
+  {
+    auto state = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
+    ASSERT_TRUE(state.ok());
+    const std::vector<ImuSample> turning{Spinning(0, 0.5), Spinning(200'000'000, 0.5)};
+    auto moved = engine.Integrate(state.value, turning);
+    ASSERT_TRUE(moved.ok());
+    EXPECT_GT(AngleBetween(moved.value.pose.orientation, Quat{}) * kRadToDeg, 1.0)
+        << "the fixture needs the orientation to have actually moved";
+    EXPECT_FALSE(moved.value.anchored)
+        << "integrating a rate says how far, never from where";
+    EXPECT_DOUBLE_EQ(moved.value.pose.confidence, 0.0);
+
+    // And once a reading arrives, the same stream is anchored for good — including through the
+    // dead-reckoning stretches after it, which is what confidence 0.5 is for.
+    ImuSample reading = Oriented(400'000'000, 10.0, 0.0);
+    auto read = engine.Integrate(moved.value, std::span<const ImuSample>(&reading, 1));
+    ASSERT_TRUE(read.ok());
+    ASSERT_TRUE(read.value.anchored);
+    EXPECT_DOUBLE_EQ(read.value.pose.confidence, 1.0);
+
+    const std::vector<ImuSample> drifting{Spinning(600'000'000, 0.5)};
+    auto reckoned = engine.Integrate(read.value, drifting);
+    ASSERT_TRUE(reckoned.ok());
+    EXPECT_TRUE(reckoned.value.anchored) << "an anchor is not lost by integrating away from it";
+    EXPECT_DOUBLE_EQ(reckoned.value.pose.confidence, 0.5) << "integrated, so not absolute";
+  }
+}
+
+TEST(PoseEngine, ASampleThatDidNotAdvanceTheClockIsTakenWholeRatherThanBlendedOverZeroSeconds) {
+  // Timestamps are a platform's to supply, and a platform can repeat one or hand back an older one
+  // — a stream resuming after a background, two adapters interleaving, a device whose clock steps.
+  // `elapsed` is a strict `>`, so both cases give it false, and the question is whether the
+  // branches underneath are the right ones when there is no interval.
+  //
+  // They are, and this pins it: with no elapsed time there is nothing to have predicted over, so an
+  // attitude is ground truth and a rate integrates nothing. The failure it guards against is the
+  // arithmetic one — `seconds` of zero drives `share = 1 - exp(0) = 0`, which as a blend weight
+  // would keep the *prediction* and discard the reading entirely.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample first = Oriented(1'000'000'000, 10.0, 0.0);
+  first.hasAngularVelocity = true;
+  auto seeded = engine.Integrate(initial.value, std::span<const ImuSample>(&first, 1));
+  ASSERT_TRUE(seeded.ok());
+
+  // The same instant again, with a different attitude: taken whole.
+  ImuSample repeated = Oriented(1'000'000'000, 40.0, 0.0);
+  repeated.hasAngularVelocity = true;
+  auto same = engine.Integrate(seeded.value, std::span<const ImuSample>(&repeated, 1));
+  ASSERT_TRUE(same.ok());
+  EXPECT_NEAR(AngleBetween(same.value.pose.orientation, repeated.orientation) * kRadToDeg, 0.0, 1e-9)
+      << "a repeated timestamp has no interval, so there is nothing to correct across";
+
+  // And a timestamp *behind* the state's: likewise, rather than an interval of negative seconds.
+  ImuSample backwards = Oriented(500'000'000, 70.0, 0.0);
+  backwards.hasAngularVelocity = true;
+  auto older = engine.Integrate(same.value, std::span<const ImuSample>(&backwards, 1));
+  ASSERT_TRUE(older.ok());
+  EXPECT_NEAR(AngleBetween(older.value.pose.orientation, backwards.orientation) * kRadToDeg, 0.0,
+              1e-9)
+      << "a backwards timestamp must not integrate a negative interval";
+
+  // A rate-only sample that does not advance the clock moves nothing at all, rather than turning
+  // the device by a rate multiplied by zero — or by a negative.
+  ImuSample stale = Spinning(200'000'000, 1.0);
+  auto unmoved = engine.Integrate(older.value, std::span<const ImuSample>(&stale, 1));
+  ASSERT_TRUE(unmoved.ok());
+  EXPECT_NEAR(AngleBetween(unmoved.value.pose.orientation, older.value.pose.orientation) * kRadToDeg,
+              0.0, 1e-9);
+
+  // And the stale sample must not become the clock the *next* one is measured against, which is
+  // the half this test originally stopped short of. Refusing a sample's own interval and then
+  // adopting its timestamp fabricates the gap for its successor — one stale sample in a 60 Hz
+  // stream would hand the next one a window hundreds of times too long, and the bias learned over
+  // that window is charged as though the device really had been turning for it.
+  EXPECT_EQ(unmoved.value.pose.timestampNs, older.value.pose.timestampNs)
+      << "a sample too old to be integrated is too old to set the clock";
+
+  ImuSample next = Spinning(1'016'000'000, 1.0);   // 16 ms after the last *accepted* sample
+  auto resumed = engine.Integrate(unmoved.value, std::span<const ImuSample>(&next, 1));
+  ASSERT_TRUE(resumed.ok());
+  // One frame of a 1 rad/s turn is about 0.92°, not the 46° an 800 ms fabricated gap would give.
+  EXPECT_NEAR(AngleBetween(resumed.value.pose.orientation, unmoved.value.pose.orientation)
+                  * kRadToDeg, 0.9167, 0.01);
+}
+
+TEST(PoseEngine, TheFirstAbsoluteReadingIsGroundTruthEvenAfterDeadReckoningFromNowhere) {
+  // The third route to the same 25.5°. A stream that opens with rate-only samples arrives at the
+  // first attitude holding an orientation integrated from the identity the state was born with,
+  // which is a direction nobody chose — and correcting a fraction of the way towards the first
+  // real reading would keep most of that arbitrary origin.
+  //
+  // A prediction is only worth blending against a reading when it descends from a reading. That is
+  // `absolute`, and it is why `predictable` asks for it rather than for "something moved this".
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  const std::vector<ImuSample> spinning{Spinning(0, 0.7), Spinning(300'000'000, 0.7)};
+  auto reckoned = engine.Integrate(initial.value, spinning);
+  ASSERT_TRUE(reckoned.ok());
+  ASSERT_GT(AngleBetween(reckoned.value.pose.orientation, Quat{}) * kRadToDeg, 1.0)
+      << "the fixture needs the orientation to have been moved by dead reckoning";
+  ASSERT_FALSE(reckoned.value.absolute) << "and for it to be a dead-reckoned one";
+  ASSERT_FALSE(reckoned.value.anchored) << "and for it to descend from no reading at all";
+
+  ImuSample reading = Oriented(316'000'000, 30.0, 0.0);
+  reading.hasAngularVelocity = true;
+  auto anchored = engine.Integrate(reckoned.value, std::span<const ImuSample>(&reading, 1));
+  ASSERT_TRUE(anchored.ok());
+  EXPECT_NEAR(AngleBetween(anchored.value.pose.orientation, reading.orientation) * kRadToDeg, 0.0,
+              1e-9)
+      << "the first reading of a session is ground truth however much dead reckoning preceded it";
+  EXPECT_DOUBLE_EQ(anchored.value.pose.confidence, 1.0);
+
+  // And once anchored, the filter does its job: the next reading is corrected towards, not taken
+  // whole, so this narrows the branch rather than disabling it.
+  ImuSample later = Oriented(332'000'000, 34.0, 0.0);
+  later.hasAngularVelocity = true;
+  later.angularVelocity = Vec3{0.0, 0.7, 0.0};
+  auto blended = engine.Integrate(anchored.value, std::span<const ImuSample>(&later, 1));
+  ASSERT_TRUE(blended.ok());
+  EXPECT_GT(AngleBetween(blended.value.pose.orientation, later.orientation) * kRadToDeg, 1e-6)
+      << "an anchored estimate is still blended with the reading rather than replaced by it";
+}
+
 TEST(PoseEngine, AFreshStateHasSeenNothing) {
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::GyroOnly, MotionCapability::GyroAccel);
@@ -555,15 +860,22 @@ TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
   // an offset estimate outside [0, b]. There is no more bias available than the rate observed.
   OrientationPoseEngine engine;
   const Vec3 bias{0.0, 0.02, 0.0};
-  PoseState state = Started(engine, MotionCapability::GyroAccel);
 
-  int64_t t = 0;
-  for (int step = 0; step < 6; ++step) {
-    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
-    t += 1'000'000'000;   // a second apart: a stalled capture loop, or a backgrounded tab
+  // Swept rather than sampled, because "holds for any gap" was asserted at exactly one gap — and
+  // one second is the gap at which the recurrence factor happens to be zero, so it was the single
+  // value that could not show the divergence. At 2 s the learned offset changes sign; above it, it
+  // runs away.
+  for (const int64_t gapMs : {16, 100, 500, 1'000, 1'500, 2'000, 2'500, 3'000, 10'000, 30'000}) {
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    int64_t t = 0;
+    for (int step = 0; step < 12; ++step) {
+      state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+      t += gapMs * 1'000'000;
+    }
+    EXPECT_GE(state.gyroBias.y, 0.0) << "gap " << gapMs << " ms learned " << state.gyroBias.y;
+    EXPECT_LE(state.gyroBias.y, bias.y * 1.001)
+        << "gap " << gapMs << " ms learned " << state.gyroBias.y;
   }
-  EXPECT_GE(state.gyroBias.y, 0.0);
-  EXPECT_LE(state.gyroBias.y, bias.y * 1.001) << "learned " << state.gyroBias.y;
 }
 
 TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {

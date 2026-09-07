@@ -31,7 +31,7 @@ and the alternative we rejected and why.
 | [0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md) | The pose engine fuses an attitude with gyroscope rates when both arrive, and `PoseState` carries the learned gyro offset |
 | [0025](0025-a-sample-says-whether-its-rate-was-measured.md) | `ImuSample` says whether its rate was measured; the browser adapts `rotationRate` and the capability stops deciding |
 | [0026](0026-candidates-come-back-ranked.md) | `Candidates(node)` hands a cell back ranked best-first, so a review client can name the automatic pick without deciding what best means |
-| [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and aims at the nearest cell still needed, and says `SphereDone` when there are none |
+| [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and says `SphereDone` when nothing is left — its targeting rule partly superseded by 0041 |
 | [0028](0028-markers-are-drawn-in-the-box-the-video-is-painted-in.md) | The overlay's markers are drawn in the video's own box and mapped through the `object-fit: cover` crop, and the panel folds out of the picture while a capture runs |
 | [0029](0029-a-session-is-resumed-by-the-manager-that-owns-one.md) | `Resume` moves to `ICaptureSessionManager`, the frame store can `Adopt` frames a dead store spilled, and the session document is written at every cell |
 | [0030](0030-the-spill-tier-is-resident-and-carries-its-own-index.md) | The OPFS spill tier has a fixed preferred name and a sibling index, so a reload can find the frames its session document names |
@@ -45,3 +45,5 @@ and the alternative we rejected and why.
 | [0038](0038-a-frame-leaves-the-core-reduced-and-a-new-engine-reduces-it.md) | A frame leaves the core reduced to a preview, and a new engine (V16) is what reduces it |
 | [0039](0039-a-refused-resume-keeps-its-offer-unless-only-a-build-could-change-it.md) | A refused resume keeps its offer unless only a new build could change the answer; the withdrawal lives in the tab and is never written down |
 | [0040](0040-a-selection-is-read-back-from-the-core.md) | `IProjectManager` gains `GetSelection`, so the review strip shows the recorded pick rather than a copy of its own writes |
+| [0041](0041-aim-decides-which-cell-a-burst-belongs-to.md) | Guidance names the cell the camera is inside, captured or not, and `ArmBurst` refuses one it is not aimed at |
+| [0042](0042-with-no-aim-coverage-decides-alone.md) | `Locate` takes a `PoseSample` and prefers the cell the camera is inside only when the pose was measured, so a phone with no sensor is targeted by coverage and keeps moving |
