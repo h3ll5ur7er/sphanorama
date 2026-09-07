@@ -66,6 +66,35 @@ describe('opening the camera', () => {
     if (result.ok) expect(result.value.maxBurstFps).toBe(30);
   });
 
+  it('treats a rate that is not a measurement as no answer at all', async () => {
+    // The guard is `typeof rate === 'number' && Number.isFinite(rate) && rate > 0`, and only the
+    // ordinary case and the absent one were driven — so a reviewer deleted the whole condition and
+    // all 43 camera tests stayed green.
+    //
+    // Each of these reaches the core as `maxBurstFps`, which floors a burst's interval and settle.
+    // A NaN or a zero would become a period the manager has to decide what to do with; zero is the
+    // contract's word for "the platform will not say", and that is the honest thing to send for a
+    // track that answered with something that is not a rate.
+    for (const frameRate of [Number.NaN, Number.POSITIVE_INFINITY, 0, -30, '30' as unknown]) {
+      const camera = createCameraAccess(fakeMedia({
+        stream: {
+          getVideoTracks: () => [{
+            getSettings: () => ({ width: 1280, height: 720, frameRate }),
+            getCapabilities: () => ({}),
+            stop: vi.fn(),
+          }],
+          getTracks: () => [{ stop: vi.fn() }],
+        },
+      }) as never);
+      const result = await camera.open({ preferRearCamera: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.maxBurstFps, `a frameRate of ${String(frameRate)} became a real rate`)
+          .toBe(0);
+      }
+    }
+  });
+
   it('says nothing about the rate rather than guessing when the track does not report one', async () => {
     // Zero is the contract's word for "the platform will not say", and the core reads it as "no
     // floor here". A default invented in the adapter would slow every burst on the browsers that

@@ -17,6 +17,18 @@ export const RETICLE_MAX_RADIUS = 44;
 const FULL_ERROR_DEG = 60;
 
 export function reticleRadius(angularErrorDeg: number, acceptanceConeDeg: number): number {
+  // A cone that is not a measurement closes nothing. `ICoveragePlannerEngine` requires it to be
+  // finite and positive, both engines' `Plan` refuse otherwise, both `Locate`s skip such a cell
+  // and `ArmBurst` refuses it — and this is the sixth reading of that one number, the one the user
+  // is actually looking at. Without the rule, `!(90 > Infinity)` is false and the ring drew fully
+  // closed and `locked` ninety degrees off target while the core said `Seek` and nothing fired:
+  // "a capture that looks ready and does nothing", which is the failure the engine header names as
+  // the reason its guards must agree.
+  //
+  // Wide open rather than parked, because there is a real difference between the two cases. A cell
+  // whose cone is broken is one the core will never let the user finish, and a ring at its widest
+  // says "not this, keep looking" — which is what `Locate` is saying at the same moment.
+  if (!(acceptanceConeDeg > 0) || !Number.isFinite(acceptanceConeDeg)) return RETICLE_MAX_RADIUS;
   // `!(x > y)` rather than `<=` so a NaN error — a sensor that reported nothing usable — parks
   // the ring instead of erasing it.
   if (!(angularErrorDeg > acceptanceConeDeg)) return RETICLE_LOCKED_RADIUS;

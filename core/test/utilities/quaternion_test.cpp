@@ -225,10 +225,21 @@ TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinit
   }
 }
 
-// Every degenerate *quaternion* already reaches that guard as something it catches, which is why
-// no caller going through `Direction` has ever seen a NaN angle. Pinned rather than assumed: it is
-// the reason `CaptureSessionManager::ArmBurst` can compare `offBy` against a cone with an ordinary
-// `>` instead of a NaN-proof spelling, and that reasoning is only as good as this test.
+// Every degenerate *quaternion* comes back through `Direction` as something one of the two guards
+// above catches, so no caller has ever seen a NaN angle from one.
+//
+// **This test cannot fail on either guard alone, and that is worth stating rather than fixing.**
+// A reviewer deleted `AngleBetweenDirections`'s degeneracy check and it stayed green, because
+// `Normalize(Vec3)`'s own `length > 1e-12` gate catches the same inputs one line earlier; delete
+// that instead and this guard catches them. Two independent holders of one guarantee, so no test
+// can name which is load-bearing. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is
+// the one that pins the guard, through the input only it can reach — a `Vec3` with an infinite
+// component, which `Normalize` turns into NaN per element rather than into the origin.
+//
+// What this test is for, then, is the *guarantee* rather than a guard: that nothing arriving as a
+// quaternion can produce an unusable angle. `CaptureSessionManager::ArmBurst` no longer rests on
+// it — it checks both of its rotations first — but `Locate` and the reticle still measure angles
+// against directions, and this says what those measurements can be.
 TEST(AngleBetweenDirections, EveryDegenerateQuaternionStillMeasuresAFiniteAngle) {
   const double inf = std::numeric_limits<double>::infinity();
   const double nan = std::numeric_limits<double>::quiet_NaN();

@@ -986,12 +986,29 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "this cell's acceptance cone is not a usable measurement");
   }
-  // `offBy > cone` is enough, and it is enough because of something proved one layer down rather
-  // than assumed here: `AngleBetweenDirections` returns a finite angle in `[0, π]` for *every*
-  // input reachable through `Direction`, degenerate quaternions included, and
-  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` is what holds it
-  // to that. With `offBy` finite and the cone finite and positive by the line above, the naive
-  // comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
+  // And the cell has to point somewhere, which is the same sentence about the node's other number.
+  // `AngleBetweenDirections` answers a degenerate direction with `0.0`, and `0.0` is also what a
+  // camera aimed exactly at the cell measures — so a target that is not a rotation is *dead on*
+  // from every direction, through a cone that is itself perfectly valid. The cone check above
+  // cannot see it, and neither can the comparison below, because nothing about the arithmetic is
+  // wrong: the answer really is zero. `IsUsableRotation` is the question the sentinel cannot be
+  // asked afterwards.
+  if (!IsUsableRotation(aimed->targetOrientation)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this cell does not point anywhere a camera could be aimed");
+  }
+  // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
+  // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
+  // target by the check directly above, and the pose by `OrientationPoseEngine::Integrate`, which
+  // refuses to anchor on an attitude that is not one (`PoseEngine.AnAttitudeThatIsNotARotation-
+  // IsNotAReading`). Two usable rotations give two usable directions and an angle in `[0, π]`, so
+  // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
+  //
+  // An earlier version of this comment credited
+  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` instead. That test
+  // states a true guarantee and is not what holds it — a reviewer deleted the degeneracy guard it
+  // was written for and the test stayed green, because `Normalize(Vec3)` catches the same inputs
+  // one line earlier. Citing a test by name is a claim that it would fail, and this one would not.
   //
   // This line carried the NaN-proof spelling and a comment claiming a test drove it. No test did:
   // the cone check above absorbs the only non-finite input the suite can deliver, and no caller

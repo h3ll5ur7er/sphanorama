@@ -15,19 +15,28 @@
 
 import type { LockState } from './camera';
 import type { GrabbedFrame } from './preview-frame';
-import type { ImuSample } from '../../../contracts/ts/contracts';
+import type { CameraCapabilities as CoreCameraCapabilities, ImuSample }
+  from '../../../contracts/ts/contracts';
 
-export interface CameraCapabilities {
-  maxWidth: number;
-  maxHeight: number;
-  horizontalFovDeg: number;
-  verticalFovDeg: number;
-  /** Frames per second the track settled on, or 0 when it will not say. */
-  maxBurstFps: number;
-  supportsTorch: boolean;
-  supportsExposureLock: boolean;
+/**
+ * What this host answers `host_camera_metric` with — the core's own struct, plus the one field the
+ * page knows about and the core does not.
+ *
+ * **Extended from the generated mirror rather than copied beside it**, and that is the whole point
+ * of the declaration. `maxBurstFps` had been in `CameraCapabilities` in `types.h` since the field
+ * was introduced, and was missing from every hand-written mirror of it on this side — so the core
+ * read its own default, zero, which it correctly treats as "the platform will not say". A floor
+ * that was never wired is indistinguishable from a browser declining to answer, and nothing failed
+ * for the life of the field. Deriving makes the next such omission a compile error on the day the
+ * C++ field lands; this file was already importing `ImuSample` from that exact generated file,
+ * with its sibling type hand-copied ten lines below.
+ *
+ * `supportsWhiteBalanceLock` is the extra: the page reads it off the track and `SetLocks` takes a
+ * white-balance flag, but `CameraCapabilities` in `types.h` has no field for it. That asymmetry is
+ * older than this file and is a contract question — `docs/06-roadmap.md` carries it.
+ */
+export interface CameraCapabilities extends CoreCameraCapabilities {
   supportsWhiteBalanceLock: boolean;
-  supportsFocusLock: boolean;
 }
 
 /** Nothing locked — what a host with no camera reports, and what closing one goes back to. */

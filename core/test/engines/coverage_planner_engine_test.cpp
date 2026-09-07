@@ -266,30 +266,72 @@ TEST(CoveragePlanner, ACellWhoseConeIsNotAMeasurementIsNeverTheOneBeingHeld) {
   // restarts, and it repeats forever. ADR 0044 took the shutter away, so there is nothing left to
   // capture with while it does.
   //
+  // **Both aims, and the second is the point.** This swept only a pose 90 degrees away, which
+  // never reaches the `|| cone <= 0.0` clause: a reviewer deleted that clause from both engines
+  // and all 529 tests stayed green. Zero and the negatives are refused by `angle > cone` when the
+  // aim is wrong and only bite when it is exactly right — which is the arrangement that produces
+  // the loop, since a cone of zero is where `Locate` says `HoldStill` and `ArmBurst` refuses.
+  //
   // Built by hand rather than planned, because both `Plan`s now refuse such a spec — which is the
-  // point of the two guards, and also why nothing else in the suite can reach this line.
+  // point of the two guards, and also why nothing else in the suite can reach these lines.
   const double inf = std::numeric_limits<double>::infinity();
+  const Quat cell = FromAzimuthElevation(0.0, 0.0);
   for (const double cone : {inf, -inf, std::numeric_limits<double>::quiet_NaN(), 0.0, -5.0}) {
+    for (const Quat aim : {FromAzimuthElevation(90.0, 0.0), cell}) {
+      CapturePlan plan;
+      plan.spec = Spec();
+      CoverageNode node;
+      node.id = NodeId{1};
+      node.targetOrientation = cell;
+      node.acceptanceConeDeg = cone;
+      plan.nodes.push_back(node);
+
+      NullCoveragePlannerEngine nullEngine;
+      RingsCoveragePlannerEngine ringsEngine;
+      for (ICoveragePlannerEngine* engine :
+           {static_cast<ICoveragePlannerEngine*>(&nullEngine),
+            static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
+        auto guidance = engine->Locate(Aiming(aim), plan, CoverageState{});
+        ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+        EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+            << "a cell was reported as held on a cone of " << cone
+            << ", aimed " << (AngleBetween(aim, cell) < 1e-9 ? "straight at it" : "90 degrees off");
+      }
+    }
+  }
+}
+
+TEST(CoveragePlanner, ACellPointingNowhereIsNeverTheOneBeingHeld) {
+  // The same sentence about the other half of a node. `AngleBetweenDirections` answers a
+  // degenerate direction with `0.0` — "dead on" — so a node whose `targetOrientation` is not a
+  // rotation is inside an ordinary five-degree cone from every direction in the world. The cone is
+  // a perfectly good measurement here; it is the *target* that is not one, and the two guards
+  // added for the cone did not cover it.
+  //
+  // `0.0` is the sentinel this lens is about: it is also the answer for a camera pointed exactly
+  // at the cell, so nothing downstream can tell "dead on" from "I could not say".
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Quat broken : {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0}, Quat{inf, 0, 0, 0},
+                            Quat{1, 0, nan, 0}}) {
     CapturePlan plan;
     plan.spec = Spec();
     CoverageNode node;
     node.id = NodeId{1};
-    node.targetOrientation = FromAzimuthElevation(0.0, 0.0);
-    node.acceptanceConeDeg = cone;
+    node.targetOrientation = broken;
+    node.acceptanceConeDeg = 5.0;
     plan.nodes.push_back(node);
-
-    // Ninety degrees away — nowhere near it by any usable measurement.
-    const PoseSample looking = Aiming(FromAzimuthElevation(90.0, 0.0));
 
     NullCoveragePlannerEngine nullEngine;
     RingsCoveragePlannerEngine ringsEngine;
     for (ICoveragePlannerEngine* engine :
          {static_cast<ICoveragePlannerEngine*>(&nullEngine),
           static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
-      auto guidance = engine->Locate(looking, plan, CoverageState{});
+      auto guidance = engine->Locate(Aiming(FromAzimuthElevation(90.0, 20.0)), plan,
+                                     CoverageState{});
       ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
       EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
-          << "a cell 90 degrees away was reported as held, on a cone of " << cone;
+          << "a cell that points nowhere was reported as held";
     }
   }
 }

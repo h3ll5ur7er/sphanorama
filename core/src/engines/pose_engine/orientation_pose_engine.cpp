@@ -26,7 +26,24 @@ Vec3 Subtract(const Vec3& a, const Vec3& b) { return Vec3{a.x - b.x, a.y - b.y, 
 // device that has the API and is reporting nothing, and a capability answered before the first
 // sample arrived cannot know either way. Where they disagree the sample is the one that knows
 // (ADR 0025).
-bool Measured(const ImuSample& sample) { return sample.hasAngularVelocity; }
+//
+// Both flags are *claims* about what the platform put in the sample, not guarantees about what it
+// put there. A port can set `hasOrientation` beside a zero or NaN quaternion, and the value that
+// reaches the estimate then is neither refused nor marked unknown: `Normalize` answers a
+// degenerate rotation with `Quat{}`, which is the identity — an ordinary attitude pointing
+// straight ahead, at a direction a capture plan names a cell at. Same for a non-finite rate, which
+// integrates to a non-finite quaternion and collapses onto the identity by the same route.
+//
+// So the claim is checked against its own contents here, once, and every branch below reads these
+// rather than the flags. `IsUsableRotation` and `IsUsableVector` are the questions "will
+// `Normalize` derive something from this, or fall back?" and "is every component a number?".
+bool Measured(const ImuSample& sample) {
+  return sample.hasAngularVelocity && IsUsableVector(sample.angularVelocity);
+}
+
+bool Attitude(const ImuSample& sample) {
+  return sample.hasOrientation && IsUsableRotation(sample.orientation);
+}
 
 // How the disagreement between the gyroscope's prediction and the absolute reading is split: part
 // of it corrects the estimate now, part of it is charged to the gyroscope's zero offset. The pair
@@ -118,13 +135,13 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     const double seconds =
         elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
 
-    if (sample.hasOrientation && !(fusing && predictable)) {
+    if (Attitude(sample) && !(fusing && predictable)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
       state.absolute = true;
       state.anchored = true;
-    } else if (sample.hasOrientation) {
+    } else if (Attitude(sample)) {
       // Predict where the gyroscope says the device now points, then take part of the way back to
       // where the reading says it does. The prediction carries the fast motion the reading is too
       // slow and too noisy to follow; the reading anchors the slow drift the gyroscope cannot see
@@ -290,7 +307,7 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
     if (Measured(sample)) {
       peak = std::max(peak, Magnitude(sample.angularVelocity));
       measured = true;
-    } else if (previous != nullptr && sample.hasOrientation &&
+    } else if (previous != nullptr && Attitude(sample) &&
                sample.timestampNs > previous->timestampNs) {
       const double seconds =
           static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
@@ -299,7 +316,7 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
     }
     // Whatever carried an attitude is what the next gap is measured from, whether or not its own
     // rate was the thing that judged it.
-    if (sample.hasOrientation) previous = &sample;
+    if (Attitude(sample)) previous = &sample;
   }
 
   if (!measured) {

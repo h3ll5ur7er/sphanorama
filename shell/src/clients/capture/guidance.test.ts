@@ -26,6 +26,29 @@ const coverage = (over: Partial<CoverageState> = {}): CoverageState => ({
 });
 
 describe('reticleRadius', () => {
+  it('does not close on a cell whose cone is not a measurement', () => {
+    // The sixth copy of one rule, and the one the user actually looks at. `ICoveragePlannerEngine`
+    // requires an acceptance cone to be finite and positive; both engines' `Plan` refuse otherwise,
+    // both `Locate`s skip such a cell, and `ArmBurst` refuses it. This function is the page's own
+    // reading of the same number, and it had no usability rule at all.
+    //
+    // What that looked like: on an `inf` or `NaN` cone `!(90 > cone)` is false, so the ring drew
+    // fully closed and took the `locked` class, ninety degrees off target, while the core said
+    // `Seek` and nothing ever fired. Which is the exact symptom the engine header names as the
+    // reason the guards must agree — "the reticle would close on a cell that then would not arm".
+    //
+    // `-Infinity` was a second defect wearing the first one's clothes: the interpolation produced
+    // `NaN`, `NaN.toFixed(1)` is the string "NaN", and an invalid SVG length either drops the
+    // circle or freezes it at its last radius. The same failure the overlay's `holding` clamp was
+    // given a guard for one file away, on the sibling number painted from the same tick.
+    for (const cone of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NaN, 0, -5]) {
+      const radius = reticleRadius(90, cone);
+      expect(Number.isFinite(radius), `a cone of ${cone} produced a radius of ${radius}`).toBe(true);
+      expect(radius, `the reticle locked onto a cell 90 degrees away, on a cone of ${cone}`)
+        .toBe(RETICLE_MAX_RADIUS);
+    }
+  });
+
   it('rests on the acceptance ring while the phone is aimed well enough', () => {
     // Inside the cone the frame is acceptable, so the ring must stop moving: a reticle that
     // keeps twitching invites the user to keep correcting an aim that is already good.

@@ -185,6 +185,12 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const PoseSample& cur
     // therefore "inside"; `!(angle <= cone)` refuses a NaN on either side, where both comparisons
     // are false and the naive form reads the same silence as agreement.
     if (!std::isfinite(node.acceptanceConeDeg) || node.acceptanceConeDeg <= 0.0) continue;
+    // And the cell has to point somewhere. `AngleBetweenDirections` answers a degenerate direction
+    // with `0.0` — "dead on" — which is the same number a camera aimed exactly at the cell
+    // produces, so a node whose target is not a rotation is inside any cone from any direction and
+    // nothing downstream can tell the two apart. The cone guard above does not cover it: the cone
+    // is a perfectly good measurement in that case and the *target* is not.
+    if (!IsUsableRotation(node.targetOrientation)) continue;
     if (!(angle * kRadToDeg <= node.acceptanceConeDeg)) continue;
     if (inside == nullptr || angle < insideAngle) {
       insideAngle = angle;

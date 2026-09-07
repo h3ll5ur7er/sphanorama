@@ -15,6 +15,22 @@ Quat Normalize(const Quat& q) {
   return Quat{q.w / norm, q.x / norm, q.y / norm, q.z / norm};
 }
 
+bool IsUsableRotation(const Quat& q) {
+  // Finite first, because `Norm` of a quaternion carrying an infinity is an infinity, and
+  // `inf > 1e-12` is true — so a norm test alone accepts the one input `Normalize` most obviously
+  // cannot use. NaN would fail the norm test on its own; infinity would not.
+  if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
+    return false;
+  }
+  // The same threshold `Normalize` divides by, so this answers exactly the question "will
+  // `Normalize` return something derived from this, or its fallback identity?".
+  return Norm(q) > 1e-12;
+}
+
+bool IsUsableVector(const Vec3& v) {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
 Quat FromAxisAngle(const Vec3& axis, double radians) {
   const double length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
   if (!(length > 1e-12)) return Quat{};

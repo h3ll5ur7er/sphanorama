@@ -6,6 +6,7 @@
 // argument for that layer.
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
 #include <set>
 #include <span>
@@ -392,7 +393,7 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
     CapturePlan plan;
     CoverageNode node;
     node.id = NodeId{1};
-    node.targetOrientation = Quat{};
+    node.targetOrientation = target_;
     node.acceptanceConeDeg = cone_;
     plan.nodes.push_back(node);
     return Ok(std::move(plan));
@@ -420,8 +421,14 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
     return Ok(std::vector<NodeId>{});
   }
 
+  // A target the plan can be given as well as a cone, because the two fail the same way and only
+  // one of them was reachable. `AngleBetweenDirections` answers a degenerate direction with `0.0`,
+  // so a cell pointing nowhere is inside an ordinary cone from every direction.
+  void PointNowhere(const Quat& target) { target_ = target; }
+
  private:
   double cone_;
+  Quat target_{};
 };
 
 TEST_F(CaptureSession, TheHeldFractionIsTheManagersAnswerRatherThanWhateverThePlannerLeftThere) {
@@ -492,6 +499,41 @@ TEST_F(CaptureSession, ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed) {
     EXPECT_NE(armed.detail.find("not a usable measurement"), std::string::npos)
         << "refused for a cone of " << cone << ", but as \"" << armed.detail
         << "\" — a broken plan reported as a user who needs to turn the phone";
+    ASSERT_TRUE(manager.End().ok());
+  }
+}
+
+TEST_F(CaptureSession, ACellThatPointsNowhereCannotBeArmedFromAnywhere) {
+  // The manager's half of `ACellPointingNowhereIsNeverTheOneBeingHeld`. Both guards exist for one
+  // fact and they have to agree, which is the arrangement `ICoveragePlannerEngine`'s header
+  // describes — and the acceptance cone is not the only number in a node that can stop being a
+  // measurement.
+  //
+  // `offBy` is `AngleBetweenDirections(where the camera looks, where the cell is)`, and that
+  // function answers `0.0` for a degenerate direction. So a node whose `targetOrientation` is a
+  // zero or NaN quaternion measures as *exactly* on target, from any aim, through a cone that is
+  // itself perfectly valid — and every guard in `ArmBurst` is satisfied.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const Quat broken : {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0},
+                            Quat{std::numeric_limits<double>::infinity(), 0, 0, 0}}) {
+    CarelessCoveragePlannerEngine careless(5.0);
+    careless.PointNowhere(broken);
+    CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
+                                  *projects, clock);
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+
+    // A real, measured aim, pointed somewhere ordinary. Nothing about the *pose* is degenerate.
+    pose.LookAt(FromAzimuthElevation(37.0, 12.0));
+    ImuSample sample;
+    sample.hasOrientation = true;
+    sample.timestampNs = clock.MonotonicNs();
+    ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+
+    BurstSpec burst;
+    burst.frameCount = 2;
+    const Status armed = manager.ArmBurst(manager.GetPlan().value.nodes.front().id, burst);
+    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition)
+        << "a burst was armed against a cell that points nowhere, from an aim 37 degrees away";
     ASSERT_TRUE(manager.End().ok());
   }
 }
@@ -2053,7 +2095,14 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
   // hour cannot be burst from at all, and there is no useful difference between waiting an hour
   // and waiting three hundred years. The cap keeps the value representable and lets the ordinary
   // "the camera's rate is the floor" arithmetic run on it.
-  for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min()}) {
+  //
+  // NaN is in the list for the other half of `!(max_burst_fps_ > 0.0)`, which the naive `<= 0.0`
+  // spelling gets wrong in the direction that is harder to notice: a NaN rate would become a
+  // one-hour floor rather than no floor at all, so a camera that answered nonsense would stall
+  // every burst instead of falling back to the tick rate. Untested until a reviewer swapped the
+  // spelling and the whole suite stayed green.
+  for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
     CameraCapabilities absurd = camera->Capabilities();
     absurd.maxBurstFps = fps;
     camera->SetCapabilities(absurd);
@@ -2076,9 +2125,16 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
     // that just said it cannot.
     clock.AdvanceMs(60'000);
     ASSERT_TRUE(manager->OnMotion({}).ok());
-    EXPECT_EQ(camera->FramesTaken(), before)
-        << "a camera claiming " << fps << " fps produced a frame a minute after arming, so its "
-           "frame period was not a representable number";
+    if (std::isnan(fps)) {
+      // "Will not say", not "one frame an hour". A rate that is not a number is not a slow camera.
+      EXPECT_GT(camera->FramesTaken(), before)
+          << "a NaN rate was treated as a real one, so a camera answering nonsense stalls every "
+             "burst instead of leaving the tick rate in charge";
+    } else {
+      EXPECT_EQ(camera->FramesTaken(), before)
+          << "a camera claiming " << fps << " fps produced a frame a minute after arming, so its "
+             "frame period was not a representable number";
+    }
 
     // Past the cap, so the burst does eventually run rather than hanging forever.
     clock.AdvanceMs(3'600'000);
