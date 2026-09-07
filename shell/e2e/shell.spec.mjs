@@ -1426,27 +1426,25 @@ test('the off-screen arrow is not on screen when there is nothing to point at', 
     // would pass against a rule that never applied.
     expect(ringColours).toEqual({ fill: 'rgb(142, 224, 106)', track: 'rgb(142, 224, 106)' });
 
-    // Back to where the capture was taken, and assert directly rather than sweeping for a hit.
+    // **And the arrow's other half is gone from this test, deliberately.**
     //
-    // The sweep this replaced probed 120 attitudes and exactly one of them raised the arrow — the
-    // first, which is this one. The other 119 could never be the iteration that passed, so it read
-    // as a hunt and was a single coincidence wearing a loop. Worse, each step turned the phone with
-    // one animation frame while guidance is a worker round trip, so a slower machine would have
-    // been sampling attitudes the core had not answered for yet.
+    // It used to assert here that the arrow *can* appear, on a premise it stated out loud:
+    // capturing the cell you are on sends guidance to a cell that is still missing, and from here
+    // that cell is out of the picture. ADR 0041 deleted exactly that — guidance now names the cell
+    // the camera is *inside*, captured or not — so the target never leaves the screen and
+    // `planOverlay`'s condition (`isTarget && !seen.onScreen && !captured`) is not met.
     //
-    // The state is principled and does not need hunting for: capturing the cell you are on sends
-    // guidance to a cell that is still missing, and from here that cell is out of the picture —
-    // which is precisely when the arrow is for.
+    // Measured over 247 attitudes covering the whole sphere, at three arrangements — fresh, after
+    // capturing the cell in view, and after capturing a neighbourhood: the arrow is raised at none
+    // of them. Whether it should point at `targetNode` at all, or at the nearest *hole*, is a
+    // question about the feature rather than about this test, and it has an issue of its own.
+    //
+    // What stays is the half that pins the defect this test was written for: the cascade. The
+    // markup and the class both said `hidden` and only a real stylesheet in a real engine
+    // disagreed, and every assertion above still fails without `#target-arrow[hidden] { display:
+    // none; }`.
     await turn(home);
-    await expect(page.locator('#target-arrow')).toBeVisible();
-
-    // When it is up it points somewhere and says how far, rather than being an empty box.
-    const shown = await page.evaluate(() => ({
-      away: document.querySelector('#target-arrow .arrow-away')?.textContent ?? '',
-      turned: document.querySelector('#target-arrow svg')?.style.transform ?? '',
-    }));
-    expect(shown.away).toMatch(/^\d+°$/);
-    expect(shown.turned).toMatch(/^rotate\(-?\d+(\.\d+)?deg\)$/);
+    await expect(page.locator('#target-arrow')).toBeHidden();
   } finally {
     await server.close();
   }

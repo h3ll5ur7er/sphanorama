@@ -450,15 +450,35 @@ been dropped: at that offset the target is *on screen*, so `planOverlay` returns
 **What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
 front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
 
+**And then ADR 0041 made it unreachable, which is the state it is in now.** Guidance names the cell
+the camera is *inside*, captured or not, so `targetNode` no longer moves off screen and
+`planOverlay`'s `isTarget && !seen.onScreen && !captured` is not met. Measured over 247 attitudes
+covering the whole sphere, at three arrangements — a fresh capture, after capturing the cell in
+view, and after capturing a neighbourhood, which ought to be the arrow's best case since the nearest
+hole is then far away: **raised at none of them.**
+
+The browser test keeps the half that pins the cascade defect — the arrow is hidden when there is
+nothing to point at, and every assertion in it fails without `#target-arrow[hidden] { display:
+none; }`. The half that asserted the arrow *can* appear is gone, because it rested on the rule
+ADR 0041 deleted and there is no arrangement left that raises it.
+
 **Still open, and in a shape somebody can pick up.**
 
-1. *Should the arrow appear when the target ring is already on screen?* Today it does not — the rule
-   is `isTarget && !onScreen && !captured` in `planOverlay`. With the freeze fixed, the arrow now
-   genuinely comes and goes as the target moves in and out of view, which some people will read as
-   flicker. The alternatives are: leave it (the ring is the guidance when it is visible); always
-   show it; or hold it for a moment after the target comes into view so it fades rather than blinks.
+1. *What should the arrow point at?* This is now the first question rather than the third, because
+   the answer decides whether the feature exists. It points at `targetNode`, which since ADR 0041 is
+   "the cell you are in" — and a lost user does not need pointing at the cell they are already
+   inside. The thing they need is the nearest *hole*, which `Locate` already computes internally and
+   does not report. Pointing the arrow at that would make it mean something again and is a small
+   change to `planOverlay`. The alternative is that an off-screen indicator has no job once the
+   target is always on screen, and the arrow, its CSS and its remaining test come out together.
+2. *Should the arrow appear when the target ring is already on screen?* Moot until (1) is answered,
+   and kept because it is the same design call from the other side. Today it does not — with the
+   freeze fixed the arrow would come and go as the target moves in and out of view, which some
+   people read as flicker. The alternatives are: leave it (the ring is the guidance when it is
+   visible); always show it; or hold it for a moment after the target comes into view so it fades
+   rather than blinks.
    This is a design call and wants a device session, not an argument.
-2. *The bearing at the camera's own elevation does not rotate*, correctly, and the distance beside it
+3. *The bearing at the camera's own elevation does not rotate*, correctly, and the distance beside it
    is the only thing that moves. Whether a glyph that holds still while the phone turns reads as
    "correct" or "broken" is again a question for a device rather than for a test.
 
