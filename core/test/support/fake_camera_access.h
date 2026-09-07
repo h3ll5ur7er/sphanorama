@@ -56,12 +56,9 @@ class FakeCameraAccess final : public ICameraAccess {
       return Err<CameraCapabilities>(StatusCode::Internal, "FakeCameraAccess",
                                      "the camera would not answer");
     }
-    return Ok(capabilities_);
+    return Ok(WhatItIsDoing());
   }
-  void SetCapabilities(const CameraCapabilities& caps) {
-    capabilities_ = caps;
-    free_running_fps_ = caps.maxBurstFps;
-  }
+  void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
   /**
    * Where this camera's fills start, so two of them can produce frames a test can tell apart.
    * Every instance counts from 1 otherwise, which is right — a fresh camera in a fresh process is
@@ -85,6 +82,14 @@ class FakeCameraAccess final : public ICameraAccess {
   // dropped by a lock write and restored by nothing — not the unlock, not `Close()` — so a fake
   // reopened after a locked burst reported the slow rate with no lock held, and a second `Begin`
   // would have paced by it. A real camera goes back up when it stops holding the exposure.
+  //
+  // Derived rather than stored, which is the second half and came from the same lens one round
+  // later. Holding the free-running rate in a second member alongside the dropped one put two
+  // copies of one fact in a class whose whole job is to be predictable: `SetCapabilities` called
+  // while the exposure was pinned seeded the "free-running" rate from the *dropped* one, and the
+  // write that applied the drop sat above `SetLocks`' own refusal path, so a refused unlock
+  // reported a camera running at 30 fps while still holding the lock. Neither is reachable from
+  // the suite; both stop existing when the rate is a function of `exposure_locked_`.
   void SlowToOnLock(double fps) { fps_on_lock_ = fps; }
   /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
   void FailUnlock(bool fail) { fail_unlock_ = fail; }
@@ -92,6 +97,15 @@ class FakeCameraAccess final : public ICameraAccess {
   void FailClose(bool fail) { fail_close_ = fail; }
 
  private:
+  // What this camera reports right now: what it was configured with, with the exposure lock's cost
+  // applied if it is holding one. One expression, evaluated at every read, so there is no second
+  // copy of the rate to keep in step and no write ordering to get wrong.
+  CameraCapabilities WhatItIsDoing() const {
+    CameraCapabilities now = capabilities_;
+    if (fps_on_lock_ > 0.0 && exposure_locked_) now.maxBurstFps = fps_on_lock_;
+    return now;
+  }
+
   std::shared_ptr<IFrameStoreAccess> store_;
   CameraCapabilities capabilities_;
   bool open_ = false;
@@ -100,10 +114,6 @@ class FakeCameraAccess final : public ICameraAccess {
   bool fail_open_ = false;
   bool fail_capabilities_ = false;
   double fps_on_lock_ = 0.0;
-  // What the camera runs at when nothing is pinned, so the drop above has something to come back
-  // to. Kept beside the struct rather than read out of it, because the struct is what the drop
-  // overwrites.
-  double free_running_fps_ = 0.0;
   bool fail_unlock_ = false;
   bool fail_close_ = false;
   int frames_taken_ = 0;

@@ -2286,6 +2286,17 @@ TEST_F(CaptureSession, ARateDroppedByALockComesBackWhenTheLockDoes) {
   ASSERT_TRUE(camera.SetLocks(false, false, false).ok());
   EXPECT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 30.0)
       << "the camera kept the slow rate after it stopped holding the exposure";
+
+  // A refused unlock has not unlocked, so the cost of the lock is still being paid. This was the
+  // half a stored rate got wrong: the write that applied the drop sat above `SetLocks`' own
+  // refusal path, so a refused unlock reported a free-running camera that was still holding the
+  // exposure. Deriving the rate from `exposure_locked_` makes the two agree by construction.
+  ASSERT_TRUE(camera.SetLocks(true, true, true).ok());
+  camera.FailUnlock(true);
+  EXPECT_FALSE(camera.SetLocks(false, false, false).ok());
+  EXPECT_TRUE(camera.ExposureLocked()) << "a refused unlock half-unlocked";
+  EXPECT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 2.0)
+      << "a camera still holding its exposure reported the rate it runs at without one";
 }
 
 TEST_F(CaptureSession, ARefreshThatSaysNothingKeepsEveryNumberTheSessionHad) {
@@ -2296,7 +2307,16 @@ TEST_F(CaptureSession, ARefreshThatSaysNothingKeepsEveryNumberTheSessionHad) {
   // with zeros — which `CameraInUse()` then publishes as what the camera reports, and which
   // `deriveFieldOfView(0, 0)` on the way back in would size a tessellation from.
   //
-  // The booleans are deliberately not in this: `false` is an answer, not a silence.
+  // The geometry and its angles move together, which is the half a reviewer found after the first
+  // fix: the browser derives the field of view *from* width and height, so a refresh that says
+  // nothing about the frame still carries a full pair — the 4:3 landscape fallback — and keeping
+  // the four fields independently pairs a real portrait resolution with a landscape lens. A struct
+  // describing no camera that ever existed, which is worse than either half being stale.
+  //
+  // The booleans are not in this, and not because they cannot be silent: through the browser they
+  // can, and `describe()` renders an absent capability and a refused one alike. It is that
+  // `CameraCapabilities` has nowhere to put the difference — the same asymmetry the roadmap
+  // records for the white-balance lock.
   BurstSpec burst;
   burst.frameCount = 2;
 
@@ -2317,6 +2337,37 @@ TEST_F(CaptureSession, ARefreshThatSaysNothingKeepsEveryNumberTheSessionHad) {
   EXPECT_DOUBLE_EQ(after.value.maxBurstFps, atBegin.value.maxBurstFps) << "maxBurstFps";
   EXPECT_DOUBLE_EQ(after.value.horizontalFovDeg, atBegin.value.horizontalFovDeg) << "horizontal";
   EXPECT_DOUBLE_EQ(after.value.verticalFovDeg, atBegin.value.verticalFovDeg) << "vertical";
+}
+
+TEST_F(CaptureSession, AFieldOfViewIsKeptWithTheFrameItWasDerivedFrom) {
+  // The browser never reports a field of view; the host derives it from the frame's own shape
+  // against an assumed lens, and answers the 4:3 landscape fallback when there is no frame to
+  // derive from. So a camera that has gone quiet about its resolution is *not* quiet about its
+  // angles, and a guard that kept the five measured fields one at a time paired a real resolution
+  // with the fallback lens.
+  //
+  // Modelled here the way the host produces it: geometry gone, angles still arriving.
+  BurstSpec burst;
+  burst.frameCount = 2;
+
+  Begin();
+  auto atBegin = manager->CameraInUse();
+  ASSERT_TRUE(atBegin.ok());
+  ASSERT_GT(atBegin.value.maxWidth, 0);
+
+  CameraCapabilities quiet;
+  quiet.maxBurstFps = 30.0;
+  quiet.horizontalFovDeg = 66.0;      // what `deriveFieldOfView(0, 0)` answers
+  quiet.verticalFovDeg = 51.9;
+  camera->SetCapabilities(quiet);
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  auto after = manager->CameraInUse();
+  ASSERT_TRUE(after.ok());
+  ASSERT_EQ(after.value.maxWidth, atBegin.value.maxWidth);
+  EXPECT_DOUBLE_EQ(after.value.horizontalFovDeg, atBegin.value.horizontalFovDeg)
+      << "the frame the session has and the angles it reports came from different cameras";
+  EXPECT_DOUBLE_EQ(after.value.verticalFovDeg, atBegin.value.verticalFovDeg);
 }
 
 TEST_F(CaptureSession, TheCameraInUseIsTheOneTheBurstIsPacedBy) {

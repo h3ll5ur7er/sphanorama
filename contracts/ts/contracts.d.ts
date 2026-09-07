@@ -679,7 +679,10 @@ export interface CaptureSessionManager {
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
   /**
-   * What the camera this session is using reports it can do, as the manager last read it.
+   * What the camera this session is using reports it can do, as the manager last read it — which
+   * is at `Begin`/`Resume` and again at every `ArmBurst` (ADR 0045). Where that read said nothing,
+   * what it last *heard*: a metric of zero is the contract's "the platform will not say", so the
+   * rate and the frame's geometry survive a refresh that answers with neither.
    * Here rather than on a port because a port is not on the boundary: `ICameraAccess` is the
    * core's, and the page's own adapter is a different object that happens to answer the same
    * questions. Two answers to one question is what this call exists to stop being possible to

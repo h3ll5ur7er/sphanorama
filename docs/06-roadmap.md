@@ -398,9 +398,11 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   what the core read back on the boundary, and `every camera capability the core reads crosses the
   seam it reads it through` is the browser test that reads the whole struct back through it — the
   only one in the tree that does. (Not "the only one that runs `BrowserCameraAccess::Open`", which
-  this said in two tenses and was never true in either: every one of the 47 tests that clicks
-  `#enable` runs `Open`, because `Begin` opens the camera. What none of them did was look at what
-  it answered.) Renaming `case 8` to `case 9` fails it; before, that left the native suite, vitest
+  this said in two tenses and was never true in either: `Begin` opens the camera, so almost every
+  test that clicks `#enable` runs `Open` — almost, because `RequireMotion()` comes first and a
+  device with no motion sensor refuses before a camera is asked for, which is ADR 0044's whole
+  ordering and what three of those tests assert. What none of them did was look at what `Open`
+  answered.) Renaming `case 8` to `case 9` fails it; before, that left the native suite, vitest
   and the browser suite all green with the floor dead.
 
   Seven of the eight metrics, measured by renumbering each in turn: `supportsTorch` is `false` on a

@@ -75,8 +75,9 @@ export interface CaptureHost {
    * The page guards it too, but a page guard cannot close this: it can only refuse on a close it
    * has already been *told* about. Here the question does not arise. A refresh says "the camera
    * you have is now like this", so with no camera there is nothing for it to say, and the last
-   * word on whether a camera exists stays with `setCamera` and `clearCamera` — the two calls the
-   * page makes when it actually opens or loses one.
+   * word on whether a camera exists stays with `setCamera` and `clearCamera` — which the page
+   * calls when it opens a camera, when it fails to, and when a track ends under it, and which the
+   * core reaches itself through `closeCamera`.
    */
   refreshCamera(camera: Omit<CameraCapabilities, 'horizontalFovDeg' | 'verticalFovDeg'>): void;
   clearCamera(): void;

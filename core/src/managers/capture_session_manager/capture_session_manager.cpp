@@ -1050,21 +1050,34 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // the value and this discarded it. The browser port is the likely producer of the second,
     // since `ReadCapabilities` maps a missing or non-finite metric to `0.0` and answers `Ok`.
     //
-    // Every measured field, not only the rate. That was the shape a reviewer found: the rule was
-    // stated generally in this comment and applied to `maxBurstFps` alone, so a refresh that said
-    // nothing still replaced a real resolution with zeros — which `CameraInUse()` then publishes
-    // as what the camera reports. The booleans are left out because they have no "will not say":
-    // `false` is an answer.
+    // Two measured facts, kept whole rather than field by field. That distinction is the second
+    // correction this guard has had: applied to `maxBurstFps` alone it let a silent refresh
+    // replace a real resolution with zeros, and applied to all five fields *independently* it
+    // produced something worse — a struct describing no camera that ever existed.
+    //
+    // The angles are a function of the geometry, not a measurement beside it: the browser reports
+    // no field of view at all, and the host derives the pair from width and height against an
+    // assumed lens. So a refresh that says nothing about the geometry still carries a full pair —
+    // `deriveFieldOfView(0, 0)` answers the 4:3 landscape fallback rather than zeros — and keeping
+    // the four independently paired a real 1080x1920 portrait resolution with a landscape lens.
+    // A silence about the frame is a silence about its angles; they move together or not at all.
+    //
+    // The booleans stay out, and the reason is not that they cannot be silent — through the
+    // browser they can, and `describe()` renders an absent capability and a refused one as the
+    // same `false`. It is that `CameraCapabilities` has nowhere to put the difference, so there is
+    // no silence *here* to detect. That asymmetry is the same one `docs/06-roadmap.md` records for
+    // the white-balance lock, and it wants the same contract change.
     const CameraCapabilities kept = camera_capabilities_;
     camera_capabilities_ = refreshed.value;
-    const auto keepIfSilent = [](auto& now, auto before) {
-      if (!(now > 0)) now = before;
-    };
-    keepIfSilent(camera_capabilities_.maxBurstFps, kept.maxBurstFps);
-    keepIfSilent(camera_capabilities_.maxWidth, kept.maxWidth);
-    keepIfSilent(camera_capabilities_.maxHeight, kept.maxHeight);
-    keepIfSilent(camera_capabilities_.horizontalFovDeg, kept.horizontalFovDeg);
-    keepIfSilent(camera_capabilities_.verticalFovDeg, kept.verticalFovDeg);
+    if (!(camera_capabilities_.maxBurstFps > 0.0)) {
+      camera_capabilities_.maxBurstFps = kept.maxBurstFps;
+    }
+    if (camera_capabilities_.maxWidth <= 0 || camera_capabilities_.maxHeight <= 0) {
+      camera_capabilities_.maxWidth = kept.maxWidth;
+      camera_capabilities_.maxHeight = kept.maxHeight;
+      camera_capabilities_.horizontalFovDeg = kept.horizontalFovDeg;
+      camera_capabilities_.verticalFovDeg = kept.verticalFovDeg;
+    }
   }
 
   firing_ = true;

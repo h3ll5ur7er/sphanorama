@@ -705,10 +705,15 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -848,10 +853,15 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -922,9 +932,12 @@ test('every camera capability the core reads crosses the seam it reads it throug
   // all green with the floor dead again. This is the assertion that fails instead — the only one
   // in the tree that reads the whole struct back through the seam.
   //
-  // Not "the only one that runs `BrowserCameraAccess::Open`", which this said: every test that
-  // clicks `#enable` runs it, because `Begin` opens the camera, and there are 47 of them. What
-  // none of them did was look at what it answered, which is a different and much smaller claim.
+  // Not "the only one that runs `BrowserCameraAccess::Open`", which this said: `Begin` opens the
+  // camera, so almost every test that clicks `#enable` runs it. Almost, and the exceptions are
+  // ADR 0044's — `RequireMotion()` comes first, so a device with no motion sensor refuses before a
+  // camera is asked for, which is the whole point of that ordering and is what three tests in this
+  // file assert, one of them on `__cameraAsked === 0`. What none of them did was look at what
+  // `Open` answered, which is a different and much smaller claim.
   //
   // Chromium's `--use-fake-device-for-media-stream` reports a real resolution and a real frame
   // rate, so the values are the device's rather than a fixture's, and the assertions are about
@@ -1150,10 +1163,15 @@ test('a session ended mid-burst still says which locks that burst had', async ({
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1255,10 +1273,15 @@ test('a slow camera spends its lock budget on the track, not in the queue', asyn
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1327,10 +1350,15 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1417,10 +1445,15 @@ test('an arm still in flight does not hand back a camera the core has closed', a
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1511,10 +1544,15 @@ test('a camera taken away while the arm is in the core says so, and keeps saying
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
     // the real settings show through has `setLocks` find the locks already held and skip the
-    // negotiation the delay below is measuring. Measured, since the first version of this note
-    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
-    // before, six after — the releases still ran, the acquisitions did not. The camera has to
-    // start out adapting for pinning it to be an event.
+    // negotiation the delay below is measuring: the acquisition loop breaks on its first check for
+    // each of the three and applies nothing, so all that is left of a burst's lock traffic is the
+    // release. The camera has to start out adapting for pinning it to be an event.
+    //
+    // The first version of this note said "apply no constraint at all", which is wrong about the
+    // release; a reviewer then counted four constraint sets per arm before and six after, and a
+    // second reviewer pointed out that four does not decompose the way the correction implied.
+    // The mechanism above is what is actually established. Anyone wanting the numbers should count
+    // `applyConstraints` calls per arm on both fakes rather than trust either sentence.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',

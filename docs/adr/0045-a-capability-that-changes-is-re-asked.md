@@ -132,10 +132,15 @@ struct for the life of the field, had no `case` in the switch, and no suite coul
 through the boundary, so a missing case or a renamed property fails a test instead of reading as
 zero.
 
-Seven of the eight cases, to be exact, and the eighth is a hole in the runner rather than in the
-assertion: the test compares what the core reports against what the page reads off the same track,
-and Chromium's fake camera has no torch — so `supportsTorch` is `false` whether the metric is read
-or not, and equality cannot separate them. Measured by renumbering each case in turn. A second
+Seven of the eight cases, and the account of *how* is worth being exact about, because two of the
+seven are not caught the way the rest are. The test compares what the core reports against what the
+page reads off the same track, which catches five outright. Cases 2 and 3, the field of view, are
+not comparable at all — the page adapter has no such field, since the host derives the pair from the
+frame's shape — and they are caught harder than the rest anyway: renumbering either makes `Begin`
+refuse with "the lens field of view is unknown; nothing can be tessellated", which kills every
+browser test that opens a camera. The eighth, `supportsTorch`, is a hole in the runner rather than
+in the assertion: Chromium's fake camera has no torch, so both sides say `false` whether the metric
+is read or not. All measured by renumbering each case in turn. A second
 browser test covers what identity cannot: it pins an exposure, which drops the fake camera from 30
 fps to 15, and asserts the core paces the burst by 15 — which fails if the page stops pushing, if
 `case 8` moves, or if `ArmBurst` stops re-asking.
@@ -151,8 +156,18 @@ number a burst is actually paced by, which is the one that costs frames.
 against `applyConstraints` in the same call, which is measured in hundreds of milliseconds, it does
 not register.
 
-**The refresh takes the whole struct, and `CameraInUse()` reports the camera rather than the plan.**
-One rule beats a list of fields somebody has to keep current. It does mean `CameraInUse().maxWidth`
+**The refresh takes the whole struct, keeps two facts when it says nothing, and `CameraInUse()`
+reports the camera rather than the plan.** "One rule beats a list of fields somebody has to keep
+current" is what this said, and it stopped being true when the zero-sentinel guard grew past
+`maxBurstFps` — so the rule is stated instead of the list. Zero is the contract's word for "the
+platform will not say", so a refresh answering zero reports what a refusal reports and must leave
+the session where a refusal would: the rate is kept, and the frame's geometry is kept *with the
+angles derived from it*, because the browser reports no field of view at all and
+`deriveFieldOfView(0, 0)` answers an assumed lens rather than zeros. Keeping those four
+independently paired a real portrait resolution with a landscape lens — a struct describing no
+camera that ever existed, which is worse than either half being stale. The booleans are outside it
+because `CameraCapabilities` has nowhere to record a silence, not because they cannot be silent;
+that asymmetry is the white-balance one the roadmap already carries. It does mean `CameraInUse().maxWidth`
 answers "what the camera says now" and not "what the plan was sized from" — those are two facts and
 the second lives in `CaptureSessionManager::lens_`, the manager's own `Intrinsics`, written at
 `Begin` and restored at `Resume` and deliberately never refreshed. (Not "the plan's own
@@ -176,15 +191,16 @@ track (measured: 32 cells, `maxWidth 0`).
 
 The first fix for that was a page guard, and a reviewer showed why it cannot be the only one: a
 page can refuse on a close it has already been *told* about, and the close happens inside the
-worker with the news travelling by message. So the host gained a second verb. `setCamera` and
-`clearCamera` are the page saying it has opened or lost a camera; `refreshCamera` says "the camera
-you have is now like this", and does nothing when there is none. A push that lost the race finds no
+worker with the news travelling by message. So the host gained a third verb alongside the two
+it had. `setCamera` and `clearCamera` are the page saying it has opened a camera or has none;
+`refreshCamera` says "the camera you have is now like this", and does nothing when there is none. A push that lost the race finds no
 camera and says nothing instead of becoming one. The page guard stays, because it also stops the
 `applyConstraints` writes that would otherwise reach a live track after the session ended — the two
 answer different halves.
 
-Underneath both, the adapter stops answering for a camera it is not holding: `capabilities()`,
-`setLocks()` and `offeredModes()` all refuse a track whose `readyState` is `'ended'`. A browser
+Underneath both, the adapter stops answering for a camera it is not holding: `setLocks()` refuses a
+track whose `readyState` is `'ended'`, and `capabilities()` and `offeredModes()` — which have no
+failure to return — answer zeros and "nothing reported" instead. A browser
 answers such a track *unevenly* — geometry dropped from `getSettings()`, every mode still listed by
 `getCapabilities()`, `applyConstraints` rejecting — so reading it produced a mixture, and in
 `setLocks` a lie: the read-back that ADR 0022 relies on to make "held" true would report the dead

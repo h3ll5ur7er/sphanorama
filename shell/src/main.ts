@@ -437,6 +437,17 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
       if (stream === null || cameraStream !== stream) return;
       stopCameraStream(stream);
       cameraTakenAway = true;
+      // And the core is told, which this did not do. `clearCamera` is documented as what the page
+      // calls when it has no camera, and the one route to it was the *failed open* branch below —
+      // so a camera taken away mid-session left the worker holding a full capability set, a stale
+      // preview frame and a lock state, for a device that had none of them. Contained today only
+      // because the loop stops and nothing asks again; that is not a reason for the two sides to
+      // disagree about whether a camera exists.
+      //
+      // Safe against the open it might race, by the same identity guard as the line above: this
+      // handler only fires for the stream it belongs to, so the news of an old camera's death
+      // cannot clear a new one.
+      remote.setCamera(null);
       cameraState.textContent = 'taken away';
     };
     for (const track of stream?.getTracks() ?? []) track.addEventListener('ended', forgetCamera);
@@ -687,10 +698,17 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // used to say "nothing may paint them", which is true of the overlay and was read as covering
   // both.
   let guidanceFailed = false;
-  // Whether this loop has reached a state it does not come back from. Read by everything that can
-  // paint, because the things that paint are asynchronous and a terminal state has no next tick to
-  // take their answer down again — which is the difference from the flag above, and why it reaches
-  // the map as well as the markers: there is no later tick to correct a stale dot.
+  // Whether this loop has reached a state it does not come back from. Read by the marker painter,
+  // because the things that paint are asynchronous and a terminal state has no next tick to take
+  // their answer down again — and by `cannotArm`, because a loop that is not coming back can
+  // finish no burst.
+  //
+  // Not by the map. This comment used to say it reached "the map as well as the markers: there is
+  // no later tick to correct a stale dot", and that argument was withdrawn — see the note in
+  // `refreshCoverage`. The short version: a marker is a claim about where to point a camera that
+  // may be gone, and a filled cell is a record of a frame that was banked, so only the first goes
+  // stale. On that question this flag and `guidanceFailed` now agree; the difference between them
+  // is the one stated above — this one is never cleared.
   let loopStopped = false;
   const paintOverlay = () => {
     if (loopStopped || guidanceFailed) return;

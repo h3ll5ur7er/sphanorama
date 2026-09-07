@@ -18,7 +18,6 @@ FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
   capabilities_.supportsExposureLock = true;
   capabilities_.supportsFocusLock = true;
   capabilities_.maxBurstFps = 30.0;
-  free_running_fps_ = capabilities_.maxBurstFps;
 }
 
 Result<CameraCapabilities> FakeCameraAccess::Open(const CameraOpenSpec&) {
@@ -68,18 +67,16 @@ Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
   // reopened while returning a refusal that said nothing had happened. Unreachable from the suite
   // as it stands, which is why it is cheap to put right now rather than the day it is not.
   if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
-  // A lock write can change what the camera can do, which is the premise of ADR 0045: pinning an
-  // exposure long is what drops a real camera from 30 fps to 15 — the exposure specifically, which
-  // is why only that flag is read here. A test asks for it with
-  // `SlowToOnLock`.
-  if (fps_on_lock_ > 0.0) {
-    capabilities_.maxBurstFps = exposure ? fps_on_lock_ : free_running_fps_;
-  }
   if (fail_unlock_ && !exposure) {
     // Refused *and* left locked, which is the case worth modelling: a port that failed to unlock
     // has not half-unlocked, and a caller told the burst finished would have no reason to look.
     return Fail(StatusCode::CameraUnavailable, kComponent, "the track refused to drop its locks");
   }
+  // A lock write can change what the camera can do, which is the premise of ADR 0045: pinning an
+  // exposure long is what drops a real camera from 30 fps to 15 — the exposure specifically, which
+  // is why only that flag matters. `SlowToOnLock` says by how much, and `Capabilities()` applies
+  // it: this line is the *whole* of the state change, so a refused write above cannot half-apply
+  // it and there is no second copy of the rate to restore.
   exposure_locked_ = exposure;
   return Status::Ok();
 }
