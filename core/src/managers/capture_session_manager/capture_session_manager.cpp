@@ -443,7 +443,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
 
   // Kept, not read once and dropped: it is the floor on how fast a burst can honestly take
   // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
-  max_burst_fps_ = opened.value.maxBurstFps;
+  camera_capabilities_ = opened.value;
 
   resolved.motion = motion;
 
@@ -635,7 +635,7 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // checks the project exists before touching the camera.
   auto opened = camera_.Open(CameraOpenSpec{});
   if (!opened.ok()) return opened.status;
-  max_burst_fps_ = opened.value.maxBurstFps;
+  camera_capabilities_ = opened.value;
 
   auto initialPose = StartTracking(motion);
   if (!initialPose.ok()) return initialPose.status;
@@ -1027,6 +1027,23 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     return locked;
   }
 
+  // Re-asked here rather than remembered from `Open`, because arming is where the number is
+  // consumed and *after* the locks that most often change it (ADR 0045). A camera whose exposure
+  // has just been pinned long is exactly the one that drops from 30 fps to 15, so a floor read at
+  // `Begin` is stale in the direction that reintroduces the defect it exists to prevent — a burst
+  // taking frames faster than the camera makes them fills with duplicates of one exposure, which
+  // selection then ranks against copies of itself.
+  //
+  // After `SetLocks`, deliberately: before it, the answer would be the pre-lock rate and this
+  // would be a more expensive way of trusting `Open`.
+  //
+  // A refusal is not fatal. If the port cannot say, the burst runs on what the session already
+  // had: declining to capture because a figure could not be refreshed trades a real capture for
+  // an accurate number, which is backwards.
+  if (auto refreshed = camera_.Capabilities(); refreshed.ok()) {
+    camera_capabilities_ = refreshed.value;
+  }
+
   firing_ = true;
   burst_node_ = node;
   burst_spec_ = burst;
@@ -1040,7 +1057,7 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
 int64_t CaptureSessionManager::CameraFramePeriodNs() const {
   // `!(x > 0)` rather than `x <= 0`, so a NaN rate lands on "will not say" with the zero that
   // means the same thing.
-  if (!(max_burst_fps_ > 0.0)) return 0;
+  if (!(camera_capabilities_.maxBurstFps > 0.0)) return 0;
 
   // Capped before the conversion, because the conversion is the undefined part. `maxBurstFps` is
   // a double crossing a resource-access contract, and a manager does not get to assume a platform
@@ -1059,7 +1076,7 @@ int64_t CaptureSessionManager::CameraFramePeriodNs() const {
   // and there is no useful difference between waiting an hour and waiting three hundred years.
   // The cap keeps the value representable and lets the ordinary floor arithmetic run on it.
   constexpr int64_t kSlowestUsefulFramePeriodNs = 3'600'000'000'000;
-  const double period = 1000000000.0 / max_burst_fps_;
+  const double period = 1000000000.0 / camera_capabilities_.maxBurstFps;
   if (!(period < static_cast<double>(kSlowestUsefulFramePeriodNs))) {
     return kSlowestUsefulFramePeriodNs;
   }
@@ -1343,6 +1360,14 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   return Ok(FrameVerdict::Accepted);
 }
 
+Result<CameraCapabilities> CaptureSessionManager::CameraInUse() const {
+  if (auto status = RequireSession(); !status.ok()) return status;
+  // The copy the session is pacing bursts by, refreshed at `ArmBurst` (ADR 0045) — not a fresh
+  // read. Asking the camera here would answer a different question from the one a caller wants:
+  // "what is this burst being timed against", which is the copy.
+  return Ok(camera_capabilities_);
+}
+
 Result<CoverageState> CaptureSessionManager::Coverage() const {
   if (auto status = RequireSession(); !status.ok()) return status;
   const std::vector<Candidate> all = AllCandidates();
@@ -1459,7 +1484,7 @@ Status CaptureSessionManager::End() {
   const Status closed = camera_.Close();
 
   active_ = false;
-  max_burst_fps_ = 0;
+  camera_capabilities_ = CameraCapabilities{};
   candidates_.clear();
   burst_owned_.clear();
   plan_ = CapturePlan{};

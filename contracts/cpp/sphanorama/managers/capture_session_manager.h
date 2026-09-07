@@ -108,6 +108,27 @@ class ICaptureSessionManager {
   virtual Result<FrameVerdict> OfferFrame(NodeId node, const FrameRef& frame,
                                           const PoseSample& pose) = 0;
 
+  // What the camera this session is using reports it can do, as the manager last read it.
+  //
+  // Here rather than on a port because a port is not on the boundary: `ICameraAccess` is the
+  // core's, and the page's own adapter is a different object that happens to answer the same
+  // questions. Two answers to one question is what this call exists to stop being possible to
+  // ignore — the two sides of the browser seam agree by an integer index and a property name, and
+  // nothing checked either. `maxBurstFps` was in `CameraCapabilities` for the life of the field,
+  // had no case in the port's metric switch, and read as zero — which the manager is right to
+  // treat as "the platform will not say", so a floor that was never wired looked exactly like a
+  // browser declining to answer. Nothing failed. A test that reads these back through the facade
+  // is what makes a missing case fail instead (ADR 0045).
+  //
+  // "As the manager last read it", not "as the camera is now": this reports the copy the session
+  // is actually pacing bursts by, which is refreshed at `ArmBurst`. A client wanting a status row
+  // to be exactly current would be asking the wrong object — that is a fact about the device, and
+  // the page holds the device.
+  //
+  // Refused with `FailedPrecondition` when no session is open, since there is no camera to
+  // describe.
+  virtual Result<CameraCapabilities> CameraInUse() const = 0;
+
   virtual Result<CoverageState> Coverage() const = 0;
   // Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
   // committed burst. The order is an answer rather than a record of when the shutter fired, so a

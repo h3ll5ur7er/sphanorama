@@ -38,7 +38,15 @@ class FakeCameraAccess final : public ICameraAccess {
    */
   int Opens() const { return opens_; }
   bool ExposureLocked() const { return exposure_locked_; }
-  const CameraCapabilities& Capabilities() const { return capabilities_; }
+  // The contract's read, and the one tests use. It was a non-virtual `const&` accessor before
+  // `ICameraAccess` grew `Capabilities()` (ADR 0045); one name, one answer, so a test cannot read
+  // something the manager cannot.
+  Result<CameraCapabilities> Capabilities() override {
+    if (fail_open_) {
+      return Err<CameraCapabilities>(StatusCode::CameraUnavailable, "FakeCameraAccess", "no usable camera");
+    }
+    return Ok(capabilities_);
+  }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
   /**
    * Where this camera's fills start, so two of them can produce frames a test can tell apart.

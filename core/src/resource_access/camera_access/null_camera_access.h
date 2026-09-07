@@ -10,6 +10,7 @@ namespace sphanorama {
 class NullCameraAccess final : public ICameraAccess {
  public:
   Result<CameraCapabilities> Open(const CameraOpenSpec& spec) override;
+  Result<CameraCapabilities> Capabilities() override;
   Status StartPreview() override;
   Status StopPreview() override;
   Result<FrameRef> PeekPreviewFrame() override;

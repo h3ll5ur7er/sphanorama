@@ -17,6 +17,20 @@ class ICameraAccess {
   virtual ~ICameraAccess() = default;
 
   virtual Result<CameraCapabilities> Open(const CameraOpenSpec& spec) = 0;
+
+  // What the device is doing *now*, which is not what it was doing when it was opened.
+  //
+  // A read rather than a second `Open`: no acquisition, no permission prompt, no change to what
+  // the preview delivers. A port that cannot answer without opening refuses with
+  // `FailedPrecondition`.
+  //
+  // It exists because a capability moves. `SetLocks` pins the exposure (ADR 0022), and a camera
+  // whose exposure has just been pinned long is exactly the one that drops from 30 fps to 15 — so
+  // `maxBurstFps`, which floors a burst's interval and settle (ADR 0018, ADR 0032), goes stale in
+  // the direction that reintroduces the defect it exists to prevent, during the only call that
+  // matters. `ICaptureSessionManager::ArmBurst` re-asks here rather than trusting what `Open`
+  // said, on the rule that a capability is re-asked where it is consumed (ADR 0045).
+  virtual Result<CameraCapabilities> Capabilities() = 0;
   virtual Status StartPreview() = 0;
   virtual Status StopPreview() = 0;
 

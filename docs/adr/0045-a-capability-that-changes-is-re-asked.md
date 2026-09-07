@@ -1,0 +1,101 @@
+# 0045 — A capability that changes is re-asked, not remembered
+
+## Context
+
+`CameraCapabilities` is answered once, by `ICameraAccess::Open`. `CaptureSessionManager` copies what
+it needs into `max_burst_fps_` at `Begin` and at `Resume`, and nothing invalidates either copy for
+the life of the session.
+
+That was harmless while the field was dead. It stopped being harmless the moment PR #49 wired
+`maxBurstFps` through to the browser for the first time, and a reviewer pointed out that the app
+changes the very thing it had just started trusting:
+
+- `maxBurstFps` floors a burst's interval and its settle (ADR 0018, ADR 0032). `PeekPreviewFrame`
+  borrows the *latest* preview frame, so a burst asking for frames faster than the camera makes
+  them fills with duplicates of one exposure, and selection ranks a frame against copies of itself.
+- `SetLocks` drives `applyConstraints({ advanced: [{ exposureMode: 'manual', … }] })` (ADR 0022).
+  A camera whose exposure has just been pinned long is exactly the one that drops from 30 fps to
+  15 — that *is* what an exposure lock in dim light does.
+
+So the floor goes stale in precisely the direction that reintroduces the defect it exists to
+prevent, and only while a burst is running, which is the only time it matters.
+
+The question this raises is bigger than one field. `maxWidth` and `maxHeight` have the same shape
+the day a track renegotiates resolution, and `supportsExposureLock` the day a platform reports a
+mode it later withdraws. Answering it for `maxBurstFps` alone would leave the next field to be
+found by the next reviewer.
+
+## Decision
+
+**A capability is re-asked when it is about to be used, not remembered from when the device was
+opened. `ICameraAccess` grows a read-only `Capabilities()`, and `CaptureSessionManager::ArmBurst`
+calls it before it computes a burst's timing.**
+
+Three things follow.
+
+**`Capabilities()` is a read, not a second `Open`.** It reports what the device is doing now and
+has no side effects: it does not acquire, does not prompt, and does not change what the preview is
+delivering. A port that cannot answer without opening returns `FailedPrecondition`, which is what
+`NullCameraAccess` does for everything.
+
+**`ArmBurst` is the place, because arming is the moment the numbers are consumed.** The burst's
+interval and settle are computed there and nowhere else, and it is the one call in the sequence
+that happens *after* the locks have been applied — which is the event most likely to have changed
+the answer. Re-asking on every `OnMotion` would put a port call on the tick loop for a value that
+changes at most once per burst; re-asking at `Begin` only is what we have.
+
+**A refusal to answer is not a refusal to arm.** If `Capabilities()` fails, the burst goes ahead on
+what the session already had. The alternative — declining to capture because a status line's number
+could not be refreshed — trades a real capture for an accurate figure, which is backwards.
+
+The capabilities the manager last read are exposed on the facade, as
+`ICaptureSessionManager::CameraInUse()`.
+
+## Alternatives considered
+
+**`SetLocks` reports revised capabilities.** The invalidator is already in hand: `setLocks` in the
+shell adapter re-reads `track.getSettings()` three lines after applying the constraints, on the same
+object that carries `frameRate`. Rejected because it puts the answer on the wrong call. `SetLocks`
+answers "which locks are held" and widening it to "and here is everything else about the camera"
+makes a lock write the channel for capability news, so a session that never locks anything never
+learns. It also only covers the one cause we happen to have thought of; a track renegotiating for
+thermal reasons announces itself to nobody.
+
+**A push from the page.** The host could call `setCamera` again whenever `getSettings()` moves. This
+is how the resident ports already work and it was the closest alternative. Rejected because it makes
+correctness depend on a client noticing — the core would be trusting every future host to watch a
+field it has no reason to care about, and the failure is silent. The pull is one call in one place
+and cannot be forgotten by a port author.
+
+**Nothing — keep the snapshot and document it.** Rejected because the documented behaviour would be
+"the burst floor is right unless you locked the exposure", and the whole point of the floor is the
+burst that runs after the locks are applied.
+
+## Consequences
+
+**A contract grows a method, and every implementation owes an answer.** `NullCameraAccess` refuses,
+`FakeCameraAccess` answers from what a test set, and `BrowserCameraAccess` reads the metrics it
+already reads at `Open`. That last one is the point of the next paragraph.
+
+**The camera seam becomes testable, which it was not.** `host_camera_metric` and the page agree by
+an integer index and a property name, and nothing checked either: `maxBurstFps` was in the C++
+struct for the life of the field, had no `case` in the switch, and no suite could tell. With
+`CameraInUse()` on the facade a browser test opens a real camera and reads every capability back
+through the boundary, so a missing case or a renamed property fails a test instead of reading as
+zero. That is the arrangement the motion port next door already has — a named constant, the field
+order written out on both sides, "pinned together by a test on each side" — and the camera port did
+not.
+
+**A stale figure is still possible, and is now bounded.** Between two arms the manager's copy can be
+wrong, and the status row the page draws from it can be wrong with it. What cannot be wrong is the
+number a burst is actually paced by, which is the one that costs frames.
+
+**One more port call per burst.** Synchronous, resident, and once per arm rather than per tick —
+against `applyConstraints` in the same call, which is measured in hundreds of milliseconds, it does
+not register.
+
+**This does not settle every capability.** `maxWidth` and the lock flags are still read at `Open`
+and still copied; the plan is sized from the first and cannot be resized mid-session anyway, and
+the second is re-read from the track by `SetLocks` itself, which is where it is used. What this ADR
+settles is the *rule* — a capability is re-asked where it is consumed — so the next field to move
+has an answer rather than a discovery.

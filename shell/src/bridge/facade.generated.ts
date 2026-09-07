@@ -87,6 +87,17 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
         'malformed response: CaptureSessionManager.offerFrame returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
+    async cameraInUse() {
+      const args = new Writer();
+      const raw = await call('CaptureSessionManager.cameraInUse', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = codec.decodeCameraCapabilities(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.cameraInUse returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async coverage() {
       const args = new Writer();
       const raw = await call('CaptureSessionManager.coverage', args.finish());

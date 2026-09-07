@@ -2103,7 +2103,7 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
   // spelling and the whole suite stayed green.
   for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min(),
                            std::numeric_limits<double>::quiet_NaN()}) {
-    CameraCapabilities absurd = camera->Capabilities();
+    CameraCapabilities absurd = camera->Capabilities().value;
     absurd.maxBurstFps = fps;
     camera->SetCapabilities(absurd);
     Begin();
@@ -2145,11 +2145,63 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
   }
 }
 
+TEST_F(CaptureSession, ArmingReReadsTheCamerasRateRatherThanTrustingWhatOpenSaid) {
+  // ADR 0045. `maxBurstFps` floors a burst's interval and settle, and the app changes the very
+  // thing it depends on: `SetLocks` pins the exposure (ADR 0022), and a camera whose exposure has
+  // just been pinned long is exactly the one that drops from 30 fps to 15. Read once at `Begin`,
+  // the floor is stale in the direction that reintroduces the defect it exists to prevent —
+  // duplicates of one exposure ranked against copies of itself — and only during a burst, which
+  // is the only time it matters.
+  //
+  // The camera here changes its answer *between* `Begin` and `ArmBurst`, which is what a lock
+  // write does in life. A manager holding the opening snapshot paces the burst at 30 fps; one
+  // that re-asks paces it at 2.
+  Begin();
+
+  CameraCapabilities slowed = camera->Capabilities().value;
+  slowed.maxBurstFps = 2.0;             // 500 ms a frame
+  camera->SetCapabilities(slowed);
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 0;                 // ask for no floor of our own, so the camera's is the only one
+  burst.settleMs = 0;
+  const int before = camera->FramesTaken();
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // A tick 100 ms in. At the rate the camera reports *now* there is no frame yet; at the rate it
+  // reported when the session opened there would be three.
+  clock.AdvanceMs(100);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), before)
+      << "the burst was paced by the rate the camera reported at Begin, not the one it reports now";
+
+  // And past the rate it actually reports, a frame arrives — so this is a floor being honoured
+  // rather than a burst that stopped working.
+  clock.AdvanceMs(500);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_GT(camera->FramesTaken(), before);
+}
+
+TEST_F(CaptureSession, ACameraThatCannotSayWhatItIsDoingStillArms) {
+  // The refusal case, and the direction it has to fail in. If `Capabilities()` answers with a
+  // status, the burst goes ahead on what the session already had: declining to capture because a
+  // number could not be refreshed trades a real capture for an accurate figure, which is
+  // backwards (ADR 0045).
+  Begin();
+  camera->FailOpen(true);               // which is also what makes Capabilities() refuse
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  EXPECT_TRUE(manager->ArmBurst(FirstNode(), burst).ok())
+      << "a camera that would not report its capabilities refused the burst as well";
+}
+
 TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
   // maxBurstFps is 0 when the platform will not report one, and 0 has to mean "no floor here"
   // rather than a guess. A default invented in the manager would slow every burst on the browsers
   // that decline to answer, which is most of them.
-  CameraCapabilities silent = camera->Capabilities();
+  CameraCapabilities silent = camera->Capabilities().value;
   silent.maxBurstFps = 0;
   camera->SetCapabilities(silent);
   Begin();
@@ -3733,7 +3785,7 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   // A different lens on the way back — a much wider field of view, which is the input the
   // tessellation is actually made from. A Resume that replanned from the camera in front of it
   // would come back with a coarser sphere and hand every restored candidate to another cell.
-  CameraCapabilities wider = second_camera.Capabilities();
+  CameraCapabilities wider = second_camera.Capabilities().value;
   wider.horizontalFovDeg = 110.0;
   wider.verticalFovDeg = 90.0;
   second_camera.SetCapabilities(wider);

@@ -24,6 +24,7 @@ class BrowserCameraAccess final : public ICameraAccess {
   explicit BrowserCameraAccess(IFrameStoreAccess& frames) : frames_(frames) {}
 
   Result<CameraCapabilities> Open(const CameraOpenSpec& spec) override;
+  Result<CameraCapabilities> Capabilities() override;
   Status StartPreview() override;
   Status StopPreview() override;
   Result<FrameRef> PeekPreviewFrame() override;

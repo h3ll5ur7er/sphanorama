@@ -37,6 +37,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   Status ArmBurst(NodeId node, const BurstSpec& burst) override;
   Result<FrameVerdict> OfferFrame(NodeId node, const FrameRef& frame,
                                   const PoseSample& pose) override;
+  Result<CameraCapabilities> CameraInUse() const override;
   Result<CoverageState> Coverage() const override;
   Result<std::vector<Candidate>> Candidates(NodeId node) const override;
   Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
@@ -150,7 +151,13 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // What the camera said it can deliver when it was opened, in frames per second; 0 when the
   // platform will not say. It is a floor on a burst's waits — the interval between its frames and
   // the settle before its first — and nothing else reads it.
-  double max_burst_fps_ = 0;
+  // What the camera reports it can do, whole rather than the one field a burst is timed by.
+  //
+  // It was `double max_burst_fps_` — a second copy of one member of a struct the session already
+  // had to hold to answer `CameraInUse()`. Two places holding the same number is the drift this
+  // codebase keeps finding; keeping the struct means the refresh at `ArmBurst` (ADR 0045) updates
+  // everything the port has changed its mind about rather than the one field somebody remembered.
+  CameraCapabilities camera_capabilities_;
 
   // The burst in flight, if any. It is session state and it lives here for the same reason the
   // pose does: a manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4).

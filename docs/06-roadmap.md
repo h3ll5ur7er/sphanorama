@@ -373,36 +373,22 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   needed to make: how long a session waits for its first reading before saying so, and whether
   that sentence comes from the manager or the page. `ARateOnlyStreamNeverMaturesADwell` pins the
   half that is settled, which is that such a stream must never be mistaken for an aim.
-- **A camera's frame rate is read once and never re-asked — open.** `maxBurstFps` is taken from
-  `track.getSettings()` inside `open()`, copied into `CaptureSessionManager::max_burst_fps_` at
-  `Begin`/`Resume`, and never invalidated. But the rate is not a constant and this app changes it
-  deliberately: `setLocks` drives `applyConstraints({ exposureMode: 'manual', … })`, and a camera
-  whose exposure has just been pinned long is exactly the one that drops from 30 fps to 15 — that
-  is what an exposure lock in dim light *is*. The floor is then stale in precisely the direction
-  that reintroduces the defect it exists to prevent, and only during a burst, which is the only
-  time it matters.
+- **A camera's frame rate is read once and never re-asked — closed by ADR 0045.**
+  `maxBurstFps` was taken from `track.getSettings()` inside `open()`, copied into the manager at
+  `Begin`/`Resume`, and never invalidated — while `setLocks` drives the `applyConstraints` that
+  most often changes it. `ICameraAccess::Capabilities()` is a read-only second call and
+  `ArmBurst` uses it, after the locks, on the rule that a capability is re-asked where it is
+  consumed. The rule is the deliverable rather than the field: `maxWidth` has the same shape the
+  day a track renegotiates.
 
-  Found by a reviewer on PR #49, who also found where the fix goes: `setLocks` already re-reads
-  `track.getSettings()` after the constraints land, on the same object that carries `frameRate`.
-  What is missing is a channel — `SetLocks` answers with a `LockState`, not with capabilities, and
-  the core's only writers of the field are `Begin` and `Resume`. So this is a contract question
-  rather than a line to add: either the lock call reports a revised rate, or the manager re-asks
-  the camera for its capabilities when it arms. Worth an ADR, because "who owns a capability that
-  changes" is a decision the other capability fields will want too.
-
-- **The camera port's `EM_JS` seam has nothing pinning its shape — open.** `host_camera_metric`
-  agrees with `capture-host.ts` by an integer index and a property name, and neither is checked:
-  `maxBurstFps` was in the C++ struct for the life of the field, had no `case`, and nothing failed.
-  The host's TypeScript interface now derives from the generated mirror, so a *new C++ field* is a
-  compile error — but a `case` that is never added, or a property renamed on the JS side, still is
-  not, and `BrowserCameraAccess::Open` only executes under wasm so neither vitest nor the native
-  suite can reach it.
-
-  The sibling seam in the same directory is done the other way and says so: the motion port names
-  `MOTION_SAMPLE_DOUBLES`, writes the field order out on both sides, and is "pinned together by a
-  test on each side". The camera seam wants the same treatment — a browser test that opens a camera
-  and reads every capability back through the facade would do it — and it is a change of its own
-  rather than a line, which is why it is here.
+- **The camera port's `EM_JS` seam has nothing pinning its shape — closed by ADR 0045.**
+  `host_camera_metric` and `capture-host.ts` agreed by an integer index and a property name, and
+  neither was checked: `maxBurstFps` was in the C++ struct for the life of the field, had no
+  `case`, and read as zero, which is a legal answer. `ICaptureSessionManager::CameraInUse()` puts
+  what the core read back on the boundary, and `every camera capability the core reads crosses the
+  seam it reads it through` is the browser test that runs `BrowserCameraAccess::Open` — the only
+  one in the tree that does. Renaming `case 8` to `case 9` fails it; before, that left the native
+  suite, vitest and the browser suite all green with the floor dead.
 
 - **The white-balance lock has no capability field — open, and pre-existing.**
   `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`

@@ -678,6 +678,25 @@ export interface CaptureSessionManager {
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
+  /**
+   * What the camera this session is using reports it can do, as the manager last read it.
+   * Here rather than on a port because a port is not on the boundary: `ICameraAccess` is the
+   * core's, and the page's own adapter is a different object that happens to answer the same
+   * questions. Two answers to one question is what this call exists to stop being possible to
+   * ignore — the two sides of the browser seam agree by an integer index and a property name, and
+   * nothing checked either. `maxBurstFps` was in `CameraCapabilities` for the life of the field,
+   * had no case in the port's metric switch, and read as zero — which the manager is right to
+   * treat as "the platform will not say", so a floor that was never wired looked exactly like a
+   * browser declining to answer. Nothing failed. A test that reads these back through the facade
+   * is what makes a missing case fail instead (ADR 0045).
+   * "As the manager last read it", not "as the camera is now": this reports the copy the session
+   * is actually pacing bursts by, which is refreshed at `ArmBurst`. A client wanting a status row
+   * to be exactly current would be asking the wrong object — that is a fact about the device, and
+   * the page holds the device.
+   * Refused with `FailedPrecondition` when no session is open, since there is no camera to
+   * describe.
+   */
+  cameraInUse(): Promise<Result<CameraCapabilities>>;
   coverage(): Promise<Result<CoverageState>>;
   /**
    * Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
@@ -806,6 +825,19 @@ export interface ProjectManager {
  */
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
+  /**
+   * What the device is doing *now*, which is not what it was doing when it was opened.
+   * A read rather than a second `Open`: no acquisition, no permission prompt, no change to what
+   * the preview delivers. A port that cannot answer without opening refuses with
+   * `FailedPrecondition`.
+   * It exists because a capability moves. `SetLocks` pins the exposure (ADR 0022), and a camera
+   * whose exposure has just been pinned long is exactly the one that drops from 30 fps to 15 — so
+   * `maxBurstFps`, which floors a burst's interval and settle (ADR 0018, ADR 0032), goes stale in
+   * the direction that reintroduces the defect it exists to prevent, during the only call that
+   * matters. `ICaptureSessionManager::ArmBurst` re-asks here rather than trusting what `Open`
+   * said, on the rule that a capability is re-asked where it is consumed (ADR 0045).
+   */
+  capabilities(): Promise<Result<CameraCapabilities>>;
   startPreview(): Promise<Result<void>>;
   stopPreview(): Promise<Result<void>>;
   /**

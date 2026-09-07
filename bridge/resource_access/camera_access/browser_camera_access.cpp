@@ -107,14 +107,11 @@ EM_JS(int32_t, host_preview_copy, (uint8_t* into, int32_t expected), {
 
 }  // namespace
 
-Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
-  // The page opens the camera; this reports what it got. Asking the core to open one would mean
-  // blocking a synchronous call on a permission prompt.
-  if (host_camera_open() == 0) {
-    return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent,
-                                   "the page has not opened a camera yet");
-  }
+namespace {
 
+// One read of the host's metrics, so `Open` and `Capabilities` cannot answer differently — which
+// is the whole point of having the second call at all (ADR 0045).
+CameraCapabilities ReadCapabilities() {
   CameraCapabilities capabilities;
   capabilities.maxWidth = Pixels(host_camera_metric(0));
   capabilities.maxHeight = Pixels(host_camera_metric(1));
@@ -133,7 +130,29 @@ Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
   // unusable answer becomes silence rather than a guess.
   const double fps = host_camera_metric(8);
   capabilities.maxBurstFps = std::isfinite(fps) && fps > 0.0 ? fps : 0.0;
-  return Ok(capabilities);
+  return capabilities;
+}
+
+}  // namespace
+
+Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
+  // The page opens the camera; this reports what it got. Asking the core to open one would mean
+  // blocking a synchronous call on a permission prompt.
+  if (host_camera_open() == 0) {
+    return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent,
+                                   "the page has not opened a camera yet");
+  }
+  return Ok(ReadCapabilities());
+}
+
+// The same read, without the acquisition semantics. `ArmBurst` calls it after applying the locks,
+// because a lock write is what most often changes the answer (ADR 0045).
+Result<CameraCapabilities> BrowserCameraAccess::Capabilities() {
+  if (host_camera_open() == 0) {
+    return Err<CameraCapabilities>(StatusCode::FailedPrecondition, kComponent,
+                                   "no camera open");
+  }
+  return Ok(ReadCapabilities());
 }
 
 Status BrowserCameraAccess::StartPreview() {

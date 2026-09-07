@@ -890,6 +890,57 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
   }
 });
 
+test('every camera capability the core reads crosses the seam it reads it through', async ({ page }) => {
+  // The seam nothing was holding. `host_camera_metric` and `capture-host.ts` agree by an integer
+  // index and a property name, and neither was checked by anything: `maxBurstFps` was in
+  // `CameraCapabilities` for the life of the field, had no `case` in that switch, and read as
+  // zero — which the manager is right to treat as "the platform will not say", so a floor that was
+  // never wired looked exactly like a browser declining to answer. Nothing failed.
+  //
+  // Every test written when the field was finally wired sat on the TypeScript side of the
+  // boundary, so renaming `case 8` to `case 9` left the native suite, vitest and the browser suite
+  // all green with the floor dead again. This is the assertion that fails instead — the only one
+  // in the tree that runs `BrowserCameraAccess::Open`, which executes under wasm and nowhere else.
+  //
+  // Chromium's `--use-fake-device-for-media-stream` reports a real resolution and a real frame
+  // rate, so the values are the device's rather than a fixture's, and the assertions are about
+  // *shape and plausibility* rather than exact numbers a runner is entitled to change.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    const seen = await page.evaluate(async () => {
+      const got = await window.sphanoramaCore.captureSession.cameraInUse();
+      return got.ok ? got.value : { error: got.status };
+    });
+
+    expect(seen.error, `the core would not say what camera it has: ${JSON.stringify(seen.error)}`)
+      .toBeUndefined();
+    // The resolution the page negotiated, which is what the plan is sized from.
+    expect(seen.maxWidth, 'maxWidth did not cross').toBeGreaterThan(0);
+    expect(seen.maxHeight, 'maxHeight did not cross').toBeGreaterThan(0);
+    // Derived in the host from those two, so this covers the pair that feed it as well.
+    expect(seen.horizontalFovDeg, 'horizontalFovDeg did not cross').toBeGreaterThan(0);
+    expect(seen.verticalFovDeg, 'verticalFovDeg did not cross').toBeGreaterThan(0);
+    // The one that was missing. A rate of 0 is a legal answer from a platform that will not say —
+    // and Chromium's fake device does say, so 0 here means the metric never arrived.
+    expect(seen.maxBurstFps, 'maxBurstFps did not cross — the case is missing again')
+      .toBeGreaterThan(0);
+    // Booleans, so "did it cross" is not a question a number can answer. Asserted as types rather
+    // than values: whether this runner's fake camera offers a manual exposure mode is its
+    // business, and `supportsExposureLock` being *absent* would arrive as `undefined`.
+    expect(typeof seen.supportsTorch).toBe('boolean');
+    expect(typeof seen.supportsExposureLock).toBe('boolean');
+    expect(typeof seen.supportsFocusLock).toBe('boolean');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a second arm while the first is still crossing the worker says so', async ({ page }) => {
   // The one exit from `armAt` that used to report nothing, and the dwell's retry is what made it
   // reachable: a `Fire` the core re-offers two seconds later lands while the first arm is still in
