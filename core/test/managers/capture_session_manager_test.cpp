@@ -962,6 +962,69 @@ TEST_F(CaptureSession, TheHeldFractionNeverLeavesTheRangeItPromises) {
   EXPECT_TRUE(fired) << "the dwell never completed, so the overshoot was never reached";
 }
 
+// A clock that goes backwards, which `ManualClock` will not do — `AdvanceNs` drops a negative
+// step, so nothing already in the tree can produce the delta the dwell's floor exists for.
+//
+// Writing one is the same move `CarelessCoveragePlannerEngine` makes for the acceptance cone: the
+// manager holds a reference to a contract, and a test that only ever hands it well behaved
+// implementations cannot say what happens when one misbehaves. `MonotonicNs`'s name is a promise
+// and nothing enforces it.
+class RewindingClock final : public IClock {
+ public:
+  int64_t MonotonicNs() override { return now_ns_; }
+  int64_t WallMs() override { return now_ns_ / 1'000'000; }
+  void Set(int64_t ns) { now_ns_ = ns; }
+
+ private:
+  int64_t now_ns_ = 0;
+};
+
+TEST(CaptureSessionClock, TimeRunningBackwardsDoesNotTakeBackDwellTheUserHeld) {
+  // The dwell banks `now - dwell_marked_ns_`, both from the clock. A clock that stepped back would
+  // bank a negative number, which does not merely publish a fraction below zero — it *unwinds* a
+  // dwell the user really did hold, so the ring empties under a phone that never moved and the
+  // burst that was about to fire does not. Nothing on screen would say why.
+  auto store = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess camera(store);
+  FakeMotionSensorAccess sensor;
+  FakeProjectStoreAccess projects;
+  (void)projects.WriteDocument(kProject, "title", "test project");
+  NullCoveragePlannerEngine planner;
+  AimablePoseEngine pose;
+  NullFrameQualityEngine quality;
+  RefusingFramePreviewEngine preview;
+  RewindingClock clock;
+  CaptureSessionManager manager(planner, pose, quality, preview, camera, sensor, *store, projects,
+                                clock);
+
+  CapturePlanSpec spec;
+  spec.acceptanceConeDeg = 5.0;
+  ASSERT_TRUE(manager.Begin(kProject, spec).ok());
+  pose.LookAt(manager.GetPlan().value.nodes.front().targetOrientation);
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  const auto tick = [&]() {
+    sample.timestampNs = clock.MonotonicNs();
+    auto guided = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
+    EXPECT_TRUE(guided.ok()) << guided.status.detail;
+    return guided.ok() ? guided.value : CaptureGuidance{};
+  };
+
+  ASSERT_EQ(tick().action, GuidanceAction::HoldStill) << "the fixture expects a held cell";
+  clock.Set(200'000'000);
+  const double banked = tick().heldFraction;
+  ASSERT_GT(banked, 0.0) << "the dwell never started, so there is nothing to take back";
+
+  // Back to where it was. Under the bare `std::min` this credits -200 ms and the ring returns to
+  // empty; the floor makes it a tick that banked nothing, which is what a stalled stretch already
+  // does.
+  clock.Set(0);
+  const double afterRewind = tick().heldFraction;
+  EXPECT_GE(afterRewind, banked) << "a clock that stepped back took away dwell the user held";
+  EXPECT_LE(afterRewind, 1.0);
+}
+
 TEST_F(CaptureSession, ANewSessionDoesNotInheritTheLastOnesDwell) {
   // Dwell state was never session-scoped, and until the latch went that was hidden: `Fire` set a
   // flag that was only cleared when the held cell changed, which happened to suppress a dwell

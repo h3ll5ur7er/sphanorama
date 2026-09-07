@@ -823,17 +823,30 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     // and the browser is the second kind — it drains its own event buffer into the resident port
     // and calls this with nothing. Asking `samples` made the dwell dead in the only client there
     // is, while every native test passed because they all push. The e2e is what found it.
-    dwell_ns_ += std::min(now - dwell_marked_ns_, kMaxDwellCreditNs);
+    //
+    // Clamped below as well as above, and this is the only place a bad delta can enter. Both ends
+    // of it come from `clock_.MonotonicNs()`, so a negative one means a clock that broke the
+    // promise in its own name — but `IClock` is a contract, and a manager does not get to assume
+    // every implementation of one keeps its word. The harm is worse than an out-of-range number:
+    // an un-banked stretch takes back dwell the user really did hold, so the ring runs backwards
+    // and the burst never fires, with nothing on screen to say why.
+    //
+    // It is also the whole reason `heldFraction` needs no lower bound of its own: `dwell_ns_` is
+    // non-negative by construction from here, so a second clamp downstream would be a guard no
+    // input could reach. One guard, where the value arrives.
+    dwell_ns_ += std::clamp(now - dwell_marked_ns_, int64_t{0}, kMaxDwellCreditNs);
   }
   dwell_marked_ns_ = now;
   if (held) {
-    // Clamped at both ends, because the contract says `[0,1]` and the page draws an arc from it:
-    // `RingMark.fill` and `OverlayInput.holding` both promise the range, and a negative fraction
-    // would send `strokeDashoffset` past the circumference and draw a ring that is *more* than
-    // empty. Only monotonic clocks make the lower end unreachable today, which is a property of
-    // every `IClock` in the tree rather than of this arithmetic.
-    guidance.heldFraction =
-        std::clamp(static_cast<double>(dwell_ns_) / kDwellNs, 0.0, 1.0);
+    // Capped, because the contract says `[0,1]` and the page draws an arc from it: `RingMark.fill`
+    // and `OverlayInput.holding` both promise the range, and a fraction past 1 sends
+    // `strokeDashoffset` the wrong side of the circumference. The overshoot is ordinary rather
+    // than theoretical — one tick can credit up to `kMaxDwellCreditNs`, so the tick that completes
+    // a dwell can be holding 2.3 seconds of a 2 second dwell, which is 1.15.
+    //
+    // Capped only above. The floor is held by the accumulation instead, where a negative delta
+    // would have to arrive; asserting it a second time here would be a guard no input can reach.
+    guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
     if (dwell_ns_ >= kDwellNs) {
       // An edge, and the counter restarts rather than latching. The client arms on this; the
       // manager cannot arm for itself, because a burst is paced by the client's ticks over a
@@ -938,29 +951,28 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
+
+  // Two refusals, because they have two causes and a caller reading the detail deserves to know
+  // which: an unusable cone is a broken plan, and being outside a usable one is a user who needs
+  // to turn the phone.
   //
-  // `!(offBy <= cone)` rather than `offBy > cone`, so a cone that is NaN refuses rather than waves
-  // everything through: NaN compares false against both, and the naive form turns one unusable
-  // number into "every cell is armable from anywhere" — ADR 0041's failure reached through the
-  // arithmetic rather than through the rule. The same spelling `reticleRadius` uses in the shell.
+  // Infinity is why the cone is checked separately rather than folded into the comparison below.
+  // A NaN cone makes that comparison false and the `!(<=)` form already refuses it; an infinite
+  // one satisfies it *legitimately* — every direction really is inside an infinite cone — so no
+  // arithmetic is wrong and every cell is armable from anywhere, which is ADR 0041's failure
+  // reached through the arithmetic rather than through the rule. What is being enforced here is
+  // that a cone is a measurement, and neither of those is one: a statement about the value, not
+  // about the comparison, which is why it cannot be a spelling of one.
   //
-  // Both shipped planners now refuse a non-finite cone at `Begin`, so nothing in this build can
-  // deliver one here — which is an argument for keeping these checks rather than deleting them.
-  // The cone arrives from an engine behind a contract, and a manager does not get to assume every
-  // implementation of that contract validates its own output; the two that exist disagreed about
-  // this class of input twice while this branch was being reviewed.
-  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both with a planner that does not
-  // validate, so the lines are exercised rather than merely justified.
-  // The cone first, and separately, because the two refusals have different causes and a caller
-  // reading the detail deserves to know which. An unusable cone is a broken plan; being outside a
-  // usable one is a user who needs to turn the phone.
-  //
-  // Infinity is why this is a check of its own rather than a spelling of the one below. NaN makes
-  // the comparison false and the `!(<=)` form catches it; infinity satisfies the comparison
-  // *legitimately* — every direction really is inside an infinite cone — so no arithmetic here is
-  // wrong and every cell is armable from anywhere. The rule being broken is that a cone is a
-  // measurement, and neither of those is one, which is a statement about the value rather than
-  // about the comparison.
+  // Both shipped planners refuse a non-finite cone at `Begin`, so nothing in this build delivers
+  // one here — which is an argument for the check rather than against it. The cone arrives from
+  // an engine behind a contract, and a manager does not get to assume every implementation of
+  // that contract validates its own output; the two that exist disagreed about this class of
+  // input twice while this branch was being reviewed. An earlier version of this comment argued
+  // the point from the null planner's weaker guard, and the commit that wrote it had already
+  // strengthened that guard — so the reason was untrue as it was written down.
+  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both lines with a planner that
+  // does not validate, so they are exercised rather than merely justified.
   if (!std::isfinite(aimed->acceptanceConeDeg)) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "this cell's acceptance cone is not a usable measurement");

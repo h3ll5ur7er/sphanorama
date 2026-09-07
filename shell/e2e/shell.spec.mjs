@@ -890,6 +890,47 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
   }
 });
 
+test('a second arm while the first is still crossing the worker says so', async ({ page }) => {
+  // The one exit from `armAt` that used to report nothing, and the dwell's retry is what made it
+  // reachable: a `Fire` the core re-offers two seconds later lands while the first arm is still in
+  // flight — `armOnce` waits on a lock write bounded at three seconds — and the ring has restarted
+  // from zero meanwhile, because the core resets its counter when it fires. So the user watched
+  // the ring fill, saw nothing happen, and watched it fill again.
+  //
+  // Round 6 turned that silence into a line. A reviewer then pointed out that the line was
+  // asserted nowhere: the string appears exactly once in the tree, in `main.ts`, and `main.ts` has
+  // no unit test of its own — so deleting it, or letting a later reorder put the guidance line
+  // after it, would leave every test green. This is the assertion.
+  //
+  // Driven by calling the hook twice without awaiting the first, which is deterministic rather
+  // than a race: `armAt` sets `arming` synchronously, before any await, so the second call is
+  // already refused by the time it can yield.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+
+    const { second, said } = await page.evaluate(async () => {
+      const first = window.sphanoramaCapture();
+      const refused = await window.sphanoramaCapture();
+      // Read before awaiting the first, which finishes by painting a line of its own over this.
+      const line = document.querySelector('#guidance').textContent;
+      await first;
+      return { second: refused, said: line };
+    });
+
+    expect(second, 'a second arm was accepted while one was in flight').toBe(false);
+    expect(said, 'the refused arm said nothing, so the user saw the ring restart with no reason')
+      .toMatch(/still arming that cell/i);
+  } finally {
+    await server.close();
+  }
+});
+
 test('a session ended mid-burst still says which locks that burst had', async ({ browser }) => {
   // `#locks` reads "no burst has run yet" from an empty `lastLocksLine`, and `onCloseCamera` writes
   // that same empty string to mean "the record was discarded". Two writers, one reading — and
