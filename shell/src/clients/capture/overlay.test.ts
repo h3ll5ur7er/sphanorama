@@ -1,6 +1,10 @@
-// What the capture overlay decides to draw: a ring on every cell in view, filled if it has been
-// captured, and an arrow when the cell to go to is not in view at all. How any of it looks is
-// reviewed by eye; that it names the right cells, in the right places, with the right fill, is not.
+// What the capture overlay decides to draw: a ring on every cell in view, coloured if that cell
+// already holds a capture and filled by how far a hold has got, and an arrow when the cell to go to
+// is not in view at all. How any of it looks is reviewed by eye; that it names the right cells, in
+// the right places, with the right fill and the right captured flag, is not.
+//
+// The fill and the colour are two facts now, not one: a full ring meant "captured" until a
+// hold-still timer became the other way to fill it.
 import { describe, expect, it } from 'vitest';
 
 import { planOverlay } from './overlay';
@@ -134,6 +138,25 @@ describe('planOverlay', () => {
     });
     expect(overlay.rings[0].x).toBeCloseTo(0.5, 6);
     expect(overlay.rings[0].y).toBeCloseTo(0.5, 6);
+  });
+
+  it('tells a captured ring from one the user has held on, though both are full', () => {
+    // `fill` reaches 1 by two different roads: a cell that has been captured, and a cell the user
+    // has held the phone on long enough to fire. To someone deciding whether to re-shoot, those
+    // are opposite meanings, and a fraction cannot carry the difference — so the mark says which
+    // it is and the stylesheet can colour them apart.
+    const done = planOverlay({
+      plan: plan(cell(1, 0, 0)), coverage: coverage(), attitude: ahead, targetNode: 1 as NodeId,
+    });
+    expect(done.rings[0].fill).toBe(1);
+    expect(done.rings[0].captured).toBe(true);
+
+    const held = planOverlay({
+      plan: plan(cell(1, 0, 0)), coverage: coverage(1), attitude: ahead, targetNode: 1 as NodeId,
+      holding: 1,
+    });
+    expect(held.rings[0].fill).toBe(1);
+    expect(held.rings[0].captured).toBe(false);
   });
 
   it('raises an arrow only when the cell to go to is out of sight', () => {
