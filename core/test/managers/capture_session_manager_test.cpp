@@ -2251,8 +2251,13 @@ TEST_F(CaptureSession, TheRateIsReadAfterTheLocksLandRatherThanBefore) {
   const int before = camera->FramesTaken();
   ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
 
-  // 100 ms in. At the post-lock 2 fps there is no frame yet; at the pre-lock 30 fps there are
-  // three.
+  // 100 ms in. At the post-lock 2 fps there is no frame yet; at the pre-lock 30 fps there is one.
+  //
+  // One, not the three a reviewer found this comment claiming: `AdvanceBurst` takes at most one
+  // frame per tick and this makes one tick, and `frameCount = 2` caps the burst anyway. The
+  // 100 ms is still chosen rather than arbitrary — 2 fps floors the settle at 500 ms, so this tick
+  // is inside it, and 100 ms is comfortably past the stale 33.33 ms, which is what makes the
+  // assertion below a discriminator rather than a coincidence.
   clock.AdvanceMs(100);
   ASSERT_TRUE(manager->OnMotion({}).ok());
   EXPECT_EQ(camera->FramesTaken(), before)

@@ -404,6 +404,24 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   by 15. That one runs `Capabilities()` under wasm, which nothing else does: the C++ contract suite
   has one implementation and it is a fake.
 
+- **A field of view nobody measured is reported as one the camera stated — open, and
+  pre-existing.** `CameraCapabilities` documents `horizontalFovDeg`/`verticalFovDeg` as "0 when the
+  platform will not say", and the browser never says: `deriveFieldOfView` answers a non-zero pair
+  unconditionally, from `ASSUMED_LONG_EDGE_FOV_DEG`, including for a 0×0 camera. So the one value
+  that means *nobody measured this* cannot be produced by the only real platform, and no reader can
+  tell an assumption from a measurement.
+
+  ADR 0045 did not create this but it did publish it: `CameraInUse()` is on the boundary now and is
+  documented as what the camera *reports*, so a status row rendering it shows the user 66° and a
+  trigonometric consequence of 66°, attributed to their lens. The browser test's
+  `expect(seen.horizontalFovDeg).toBeGreaterThan(0)` cannot fail for the same reason, which is why
+  the assertions either side of it are identity against the page rather than presence.
+
+  The honest fix is on the contract rather than in the test — a way for the struct to say
+  "assumed", so the client can label it — and that is a contract change with an ADR behind it.
+  Phase 2's bundle adjustment estimates focal length from the frames, which is the only way to
+  actually know, and would give the field its first real answer.
+
 - **The white-balance lock has no capability field — open, and pre-existing.**
   `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`
   off the track, and the worker host forwards it as camera metric 6 — but `CameraCapabilities` in

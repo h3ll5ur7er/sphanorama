@@ -441,8 +441,11 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   if (resolved.horizontalFovDeg <= 0.0) resolved.horizontalFovDeg = opened.value.horizontalFovDeg;
   if (resolved.verticalFovDeg <= 0.0) resolved.verticalFovDeg = opened.value.verticalFovDeg;
 
-  // Kept, not read once and dropped: it is the floor on how fast a burst can honestly take
-  // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
+  // The whole struct, kept rather than read once and dropped. This comment described one field of
+  // it — `maxBurstFps`, the floor on how fast a burst can honestly take distinct frames — from
+  // when the member was a `double`, and stayed put when the member became a struct and grew a
+  // second reader in `CameraInUse()`. `ArmBurst` refreshes it (ADR 0045); this is where a session
+  // starts from.
   camera_capabilities_ = opened.value;
 
   resolved.motion = motion;
