@@ -86,6 +86,18 @@ const NOTHING_REPORTED: LockModes =
 
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
+  /**
+   * What the track reports *now*, read live rather than remembered from `open`.
+   *
+   * ADR 0045's other half. The core re-asks its camera port before it paces a burst — but that
+   * port lives in the worker and answers from what this page last pushed into it, so a pull with
+   * nothing pushing behind it reads a cache and gets `open`'s answer back. This is what the page
+   * pushes after it has changed the camera, which today means after `setLocks` settles.
+   *
+   * Zeros when no track is held: the core reads 0 as "the platform will not say", which is true
+   * of a camera that is gone and better than a stale last-known set.
+   */
+  capabilities(): CameraCapabilities;
   stream(): MediaStream | null;
   /**
    * Asks the track for the modes these locks imply and reports back what it settled on.
@@ -186,6 +198,35 @@ function statusFor(name: string) {
   }
 }
 
+/**
+ * One reading of a track's settings and capabilities, so `open` and `capabilities` cannot answer
+ * differently about the same camera. They did not before this existed — they were the same lines
+ * written twice, which is the shape that lets one of them go stale.
+ */
+function describe(settings: Record<string, unknown>,
+                  capabilities: Record<string, unknown>): CameraCapabilities {
+  // `maxBurstFps` is the floor `CaptureSessionManager` puts under a burst's interval and settle
+  // (ADR 0018, ADR 0032). `PeekPreviewFrame` borrows the latest preview frame, so a burst taking
+  // frames faster than the camera makes them fills with duplicates of one exposure — and selection
+  // then ranks a frame against copies of itself, which looks like a fast burst and is a single
+  // frame. It was simply never sent for the life of the field: the core's arithmetic, the ADRs and
+  // the contract all described a floor that could not apply in the only client there is.
+  const rate = settings.frameRate;
+  return {
+    maxWidth: (settings.width as number | undefined) ?? 0,
+    maxHeight: (settings.height as number | undefined) ?? 0,
+    // The rate the track settled on, which is the floor `CaptureSessionManager` puts under a
+    // burst's interval and settle (ADR 0018, ADR 0032). Zero when the track will not say, because
+    // the core reads zero as "no floor here" — and a default invented here would slow every burst
+    // on the browsers that decline to answer, which is most of them.
+    maxBurstFps: typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0,
+    supportsTorch: 'torch' in capabilities,
+    supportsExposureLock: offersManual(capabilities.exposureMode),
+    supportsWhiteBalanceLock: offersManual(capabilities.whiteBalanceMode),
+    supportsFocusLock: offersManual(capabilities.focusMode),
+  };
+}
+
 export function createCameraAccess(media: MediaDevices | undefined): CameraAccess {
   let active: MediaStream | null = null;
   // What this camera has already said no to, so a sphere does not ask twenty-eight times. Locks
@@ -273,32 +314,33 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
           whiteBalance: reportedModes(capabilities.whiteBalanceMode),
           focus: reportedModes(capabilities.focusMode),
         });
-        // The rate the track settled on, which is the floor `CaptureSessionManager` puts under a
-        // burst's interval and settle (ADR 0018, ADR 0032). `PeekPreviewFrame` borrows the latest
-        // preview frame, so a burst taking frames faster than the camera makes them fills with
-        // duplicates of one exposure — and selection then ranks a frame against copies of itself,
-        // which looks like a fast burst and is a single frame.
-        //
-        // This was simply never sent. The core's arithmetic, the ADRs and the contract all
-        // described a floor that could not apply in the only client there is, because zero is the
-        // contract's word for "the platform will not say" and that is what the field held. Zero
-        // stays the answer when the track does not report one: a default invented here would slow
-        // every burst on the browsers that decline to answer, which is most of them.
-        const rate = settings.frameRate;
-        return ok({
-          maxWidth: settings.width ?? 0,
-          maxHeight: settings.height ?? 0,
-          maxBurstFps: typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0,
-          supportsTorch: 'torch' in capabilities,
-          supportsExposureLock: offersManual(capabilities.exposureMode),
-          supportsWhiteBalanceLock: offersManual(capabilities.whiteBalanceMode),
-          supportsFocusLock: offersManual(capabilities.focusMode),
-        });
+        // Through `describe`, the same reading `capabilities()` uses, so the answer this call gives
+        // and the answer a later re-ask gives cannot differ about anything except what actually
+        // moved on the track.
+        return ok(describe(settings as unknown as Record<string, unknown>, capabilities));
       } catch (cause) {
         const error = cause as { name?: string; message?: string };
         return err<CameraCapabilities>(statusFor(error.name ?? ''), COMPONENT,
           `${error.name ?? 'Error'}: ${error.message ?? String(cause)}`);
       }
+    },
+
+    capabilities(): CameraCapabilities {
+      const track = active?.getVideoTracks()[0];
+      if (!track) {
+        // No track, no answer. Zeros rather than a stale last-known set: the core reads 0 as "the
+        // platform will not say", which is exactly true of a camera that is gone.
+        return describe({}, {});
+      }
+      let offered: Record<string, unknown> = {};
+      try {
+        offered = ((track as MediaStreamTrack & {
+          getCapabilities?: () => MediaTrackCapabilities;
+        }).getCapabilities?.() ?? {}) as Record<string, unknown>;
+      } catch {
+        // Same three ways to say nothing as `open` has, and the same empty answer.
+      }
+      return describe(track.getSettings() as unknown as Record<string, unknown>, offered);
     },
 
     stream() {

@@ -148,15 +148,17 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // and a copy would be a second place for the truth to live.
   std::set<uint64_t> burst_owned_;
 
-  // What the camera said it can deliver when it was opened, in frames per second; 0 when the
-  // platform will not say. It is a floor on a burst's waits — the interval between its frames and
-  // the settle before its first — and nothing else reads it.
-  // What the camera reports it can do, whole rather than the one field a burst is timed by.
+  // What the camera reports it can do, whole rather than the one field a burst is timed by, and
+  // refreshed at every `ArmBurst` (ADR 0045) rather than held from `Open`.
   //
-  // It was `double max_burst_fps_` — a second copy of one member of a struct the session already
-  // had to hold to answer `CameraInUse()`. Two places holding the same number is the drift this
-  // codebase keeps finding; keeping the struct means the refresh at `ArmBurst` (ADR 0045) updates
-  // everything the port has changed its mind about rather than the one field somebody remembered.
+  // It was `double max_burst_fps_` with a comment above it saying the value was read "when it was
+  // opened", was "in frames per second", and that "nothing else reads it". All three are now
+  // false, and that comment survived the change that falsified it — which is the shape this
+  // branch's reviews have caught four times, so it is called out rather than quietly replaced.
+  //
+  // The geometry in here is what the camera says *now*. What the plan was sized from is `lens_`,
+  // which is deliberately never refreshed: a camera that changes resolution mid-session has
+  // invalidated the plan, and adopting the new numbers here would hide that rather than handle it.
   CameraCapabilities camera_capabilities_;
 
   // The burst in flight, if any. It is session state and it lives here for the same reason the

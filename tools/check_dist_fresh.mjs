@@ -14,7 +14,7 @@
  * Modification times rather than hashes, because the question is only "was this built after the
  * code changed" and a fresh checkout has no `dist` at all — the missing case is the loud one.
  */
-import { readdirSync, statSync, existsSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +58,23 @@ export default function checkDistIsFresh() {
   const sources = ['shell/src', 'shell/index.html', 'contracts/ts', 'shell/public']
     .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
     .filter((s) => s.mtime > 0);
+
+  // The wasm is *staged* rather than compiled by `npm run build`, so comparing mtimes against
+  // `shell/public` catches a core that was staged late and misses one that was rebuilt and never
+  // staged at all — which is the same trap one step earlier, and the one a reviewer walked into
+  // while sabotaging the core itself. Content rather than mtime, because that question has an
+  // exact answer and a timestamp only has a plausible one.
+  const compiled = join(repoRoot, 'build', 'wasm-release', 'bridge', 'sphanorama-core.wasm');
+  const staged = join(repoRoot, 'shell', 'public', 'core', 'sphanorama-core.wasm');
+  if (existsSync(compiled) && existsSync(staged)
+      && !readFileSync(compiled).equals(readFileSync(staged))) {
+    throw new Error(
+      'the compiled core and the staged one are different files — the browser suite would test a\n' +
+      'core that is not the one you just built.\n' +
+      `  compiled: ${compiled}\n` +
+      `  staged:   ${staged}\n` +
+      'Run `npm run build` in shell/ (and read its exit status).');
+  }
 
   const stale = sources.filter((s) => s.mtime > built.mtime);
   if (stale.length > 0) {

@@ -31,11 +31,27 @@ found by the next reviewer.
 opened. `ICameraAccess` grows a read-only `Capabilities()`, and `CaptureSessionManager::ArmBurst`
 calls it before it computes a burst's timing.**
 
+**And the port it asks has to have something new to say, which is the half the first version of
+this ADR got wrong.** A resource-access port is resident (ADR 0014): `capture-host` runs inside the
+worker and the `MediaStream` lives in the page, so the host cannot read a track — it answers from
+what the page last pushed into it. A pull therefore reaches the page's *cache*, not the device, and
+a pull-only design was never available to us. Three reviewers found this independently within
+minutes of each other, and one put it exactly: the ADR rejected a push because it "makes correctness
+depend on a client noticing", and as first built the pull depended on precisely that.
+
+So the pull and the push are complementary rather than alternatives, and each owns a different
+question. **The pull decides *when* a value is read** — at the moment it is consumed, which is what
+keeps the rule general across capabilities. **The push is how a resident cache stays true** — the
+page re-reports the camera after it changes it, which today means after `setLocks` settles, since
+that is the call that reconfigures the track. Neither is sufficient: without the push the pull reads
+a stale cache, and without the pull a fresh cache is read at the wrong moment.
+
 Three things follow.
 
 **`Capabilities()` is a read, not a second `Open`.** It reports what the device is doing now and
 has no side effects: it does not acquire, does not prompt, and does not change what the preview is
-delivering. A port that cannot answer without opening returns `FailedPrecondition`, which is what
+delivering. A port that has a camera and has not opened it returns
+`FailedPrecondition`; a port with no camera at all returns `CameraUnavailable`, which is what
 `NullCameraAccess` does for everything.
 
 **`ArmBurst` is the place, because arming is the moment the numbers are consumed.** The burst's
@@ -61,11 +77,12 @@ makes a lock write the channel for capability news, so a session that never lock
 learns. It also only covers the one cause we happen to have thought of; a track renegotiating for
 thermal reasons announces itself to nobody.
 
-**A push from the page.** The host could call `setCamera` again whenever `getSettings()` moves. This
-is how the resident ports already work and it was the closest alternative. Rejected because it makes
-correctness depend on a client noticing — the core would be trusting every future host to watch a
-field it has no reason to care about, and the failure is silent. The pull is one call in one place
-and cannot be forgotten by a port author.
+**A push from the page, instead of a pull.** ~~Rejected because it makes correctness depend on a
+client noticing.~~ **This rejection was wrong and is withdrawn.** The objection stands as an
+objection — a host that forgets to re-report is a silent failure — but it is not a reason to choose
+the pull *instead*, because the pull cannot reach past the worker into a `MediaStream` either. Both
+are needed, and the decision above says so. What the objection does buy is where the test goes: the
+push is the fallible half, so it is the half a browser test has to pin.
 
 **Nothing — keep the snapshot and document it.** Rejected because the documented behaviour would be
 "the burst floor is right unless you locked the exposure", and the whole point of the floor is the
@@ -73,9 +90,18 @@ burst that runs after the locks are applied.
 
 ## Consequences
 
-**A contract grows a method, and every implementation owes an answer.** `NullCameraAccess` refuses,
-`FakeCameraAccess` answers from what a test set, and `BrowserCameraAccess` reads the metrics it
-already reads at `Open`. That last one is the point of the next paragraph.
+**A contract grows a method, and every implementation owes an answer** — the *same* answer for the
+same state, which is what a contract is. `camera_access_contract_test.cpp` holds them to it, which
+is where the first version of this decision had nothing at all and three implementations gave three
+answers.
+
+Two refusals, and they are different facts rather than two spellings of one: a port that has a
+camera and has not opened it answers `FailedPrecondition`, a call out of order and fixable by
+opening; a port with no camera at all answers `CameraUnavailable`. `NullCameraAccess` is the
+second, and an earlier draft of this ADR asserted it was the first — wrongly, and about the port
+whose whole job is to refuse. `FakeCameraAccess` answers from what a
+test set, and `BrowserCameraAccess` reads the metrics it already reads at `Open`, through one shared
+helper so the two calls cannot compute different values.
 
 **The camera seam becomes testable, which it was not.** `host_camera_metric` and the page agree by
 an integer index and a property name, and nothing checked either: `maxBurstFps` was in the C++
@@ -94,8 +120,19 @@ number a burst is actually paced by, which is the one that costs frames.
 against `applyConstraints` in the same call, which is measured in hundreds of milliseconds, it does
 not register.
 
-**This does not settle every capability.** `maxWidth` and the lock flags are still read at `Open`
-and still copied; the plan is sized from the first and cannot be resized mid-session anyway, and
-the second is re-read from the track by `SetLocks` itself, which is where it is used. What this ADR
-settles is the *rule* — a capability is re-asked where it is consumed — so the next field to move
-has an answer rather than a discovery.
+**The refresh takes the whole struct, and `CameraInUse()` reports the camera rather than the plan.**
+One rule beats a list of fields somebody has to keep current. It does mean `CameraInUse().maxWidth`
+answers "what the camera says now" and not "what the plan was sized from" — those are two facts and
+the second lives in the plan's own `Intrinsics`, which is deliberately never refreshed, because a
+camera that changes resolution mid-session has invalidated the plan and silently adopting the new
+numbers would hide that rather than handle it. Handling it is a change of its own.
+
+**A rate of zero never overwrites a rate we had.** Zero means "the platform will not say", so a
+refresh that answers `Ok` with zero is telling us the same thing a refusal does, and the two are
+now treated alike: the session keeps the floor it was given. They were not, at first — a refusal
+kept the old rate and an `Ok(0)` discarded it, which is two spellings of one fact with opposite
+outcomes, and the browser port is the most likely producer of the second.
+
+**This does not settle every capability.** The rule is settled — a capability is re-asked where it
+is consumed, and the port it asks is kept true by the client that changes it — so the next field to
+move has an answer rather than a discovery.

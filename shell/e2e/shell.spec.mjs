@@ -920,22 +920,45 @@ test('every camera capability the core reads crosses the seam it reads it throug
 
     expect(seen.error, `the core would not say what camera it has: ${JSON.stringify(seen.error)}`)
       .toBeUndefined();
-    // The resolution the page negotiated, which is what the plan is sized from.
-    expect(seen.maxWidth, 'maxWidth did not cross').toBeGreaterThan(0);
-    expect(seen.maxHeight, 'maxHeight did not cross').toBeGreaterThan(0);
-    // Derived in the host from those two, so this covers the pair that feed it as well.
-    expect(seen.horizontalFovDeg, 'horizontalFovDeg did not cross').toBeGreaterThan(0);
-    expect(seen.verticalFovDeg, 'verticalFovDeg did not cross').toBeGreaterThan(0);
-    // The one that was missing. A rate of 0 is a legal answer from a platform that will not say —
-    // and Chromium's fake device does say, so 0 here means the metric never arrived.
-    expect(seen.maxBurstFps, 'maxBurstFps did not cross — the case is missing again')
-      .toBeGreaterThan(0);
-    // Booleans, so "did it cross" is not a question a number can answer. Asserted as types rather
-    // than values: whether this runner's fake camera offers a manual exposure mode is its
-    // business, and `supportsExposureLock` being *absent* would arrive as `undefined`.
-    expect(typeof seen.supportsTorch).toBe('boolean');
-    expect(typeof seen.supportsExposureLock).toBe('boolean');
-    expect(typeof seen.supportsFocusLock).toBe('boolean');
+
+    // **Against what the page itself sees, field by field, rather than against `> 0`.**
+    //
+    // The first version of this asserted presence — every number greater than zero, every boolean
+    // a boolean — and a reviewer showed what that buys: renumbering `case 4`, `5` or `7` left it
+    // green, because `typeof x === 'boolean'` is satisfied by the codec rather than by the switch,
+    // and swapping `case 0` with `case 1` or `case 2` with `case 3` left it green too, because a
+    // transposed pair is still two positive numbers. A transposed field of view sizes the
+    // tessellation from the wrong axis.
+    //
+    // So the assertion is identity: the page reads the same track through its own adapter, and
+    // every field the core reports has to equal what the page sees. That is the seam's whole
+    // claim, and it catches any transposition and any renumbering — of seven of the eight cases.
+    //
+    // **`supportsTorch` is the eighth and is unobservable here**, measured by renumbering each case
+    // in turn: Chromium's fake camera reports no torch, so the page says `false`, and a core that
+    // never reads the metric says `false` too. Equality cannot separate them. It is not a hole in
+    // the assertion but in the runner — on a device with a torch this catches it like the rest —
+    // and it is written down because "the seam is pinned" was the claim a reviewer disproved once
+    // already, and half-pinned is what it actually is.
+    const pageSees = await page.evaluate(() => window.sphanoramaCameraCapabilities());
+    expect(seen.maxWidth, 'maxWidth').toBe(pageSees.maxWidth);
+    expect(seen.maxHeight, 'maxHeight').toBe(pageSees.maxHeight);
+    expect(seen.maxBurstFps, 'maxBurstFps').toBe(pageSees.maxBurstFps);
+    expect(seen.supportsTorch, 'supportsTorch').toBe(pageSees.supportsTorch);
+    expect(seen.supportsExposureLock, 'supportsExposureLock').toBe(pageSees.supportsExposureLock);
+    expect(seen.supportsFocusLock, 'supportsFocusLock').toBe(pageSees.supportsFocusLock);
+
+    // The field of view is derived in the host from the resolution rather than read from a metric,
+    // so equality against the page would compare a constant with itself. What it can say is that
+    // the pair is oriented the way the frame is — a landscape frame has the wider angle across —
+    // which is the transposition this file's own tessellation depends on.
+    expect(seen.horizontalFovDeg, 'horizontalFovDeg').toBeGreaterThan(0);
+    expect(seen.verticalFovDeg, 'verticalFovDeg').toBeGreaterThan(0);
+    expect(seen.maxWidth > seen.maxHeight
+      ? seen.horizontalFovDeg > seen.verticalFovDeg
+      : seen.verticalFovDeg > seen.horizontalFovDeg,
+    `the field of view is transposed against the frame: ${seen.maxWidth}x${seen.maxHeight} `
+    + `reported as ${seen.horizontalFovDeg}x${seen.verticalFovDeg}`).toBe(true);
   } finally {
     await server.close();
   }

@@ -2183,18 +2183,110 @@ TEST_F(CaptureSession, ArmingReReadsTheCamerasRateRatherThanTrustingWhatOpenSaid
   EXPECT_GT(camera->FramesTaken(), before);
 }
 
+TEST_F(CaptureSession, ARefreshThatSaysNothingDoesNotTakeAwayARateTheSessionHad) {
+  // Zero is the contract's word for "the platform will not say" — the same fact a refused
+  // `Capabilities()` reports, spelled as an answer instead of a status. So the two have to be
+  // treated alike, and they were not: a refusal kept the rate the session was given and an `Ok`
+  // carrying zero discarded it, leaving the burst with no floor at all.
+  //
+  // The browser port is the most likely producer of the second, not the first: `ReadCapabilities`
+  // maps a missing or non-finite `frameRate` to `0.0` and answers `Ok`.
+  Begin();
+
+  CameraCapabilities silent = camera->Capabilities().value;
+  silent.maxBurstFps = 0.0;
+  camera->SetCapabilities(silent);
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 0;
+  burst.settleMs = 0;
+  const int before = camera->FramesTaken();
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // The fixture's camera reported 30 fps at `Begin`, so the floor is 33 ms. A tick 10 ms in must
+  // not produce a frame — and would, if the refresh had thrown the rate away.
+  clock.AdvanceMs(10);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), before)
+      << "a refresh that said \"I cannot say\" took away the floor the session already had";
+}
+
 TEST_F(CaptureSession, ACameraThatCannotSayWhatItIsDoingStillArms) {
   // The refusal case, and the direction it has to fail in. If `Capabilities()` answers with a
   // status, the burst goes ahead on what the session already had: declining to capture because a
   // number could not be refreshed trades a real capture for an accurate figure, which is
   // backwards (ADR 0045).
   Begin();
-  camera->FailOpen(true);               // which is also what makes Capabilities() refuse
+  camera->FailCapabilities(true);
+
+  // The arrangement, asserted rather than assumed. This used to reach for `FailOpen`, which after
+  // a successful `Begin` did not make `Capabilities()` refuse at all — so the test was asserting
+  // that arming works, which it does, for reasons having nothing to do with its name. A reviewer
+  // removed the refusal outright and 535 tests stayed green.
+  ASSERT_FALSE(camera->Capabilities().ok())
+      << "the fixture is not producing the refusal this test is about";
 
   BurstSpec burst;
   burst.frameCount = 2;
   EXPECT_TRUE(manager->ArmBurst(FirstNode(), burst).ok())
       << "a camera that would not report its capabilities refused the burst as well";
+}
+
+TEST_F(CaptureSession, TheRateIsReadAfterTheLocksLandRatherThanBefore) {
+  // ADR 0045 argues the ordering and nothing held it: the re-ask sits below `SetLocks` because a
+  // lock write is what most often changes the answer, and moving it above left every test green —
+  // because nothing in the suite could make a lock write change anything.
+  //
+  // Now it can. The camera drops to 2 fps when its exposure is pinned, which is what a real one
+  // does in dim light, so a refresh taken before the write reads 30 and one taken after reads 2.
+  Begin();
+  camera->SlowToOnLock(2.0);
+
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.intervalMs = 0;
+  burst.settleMs = 0;
+  burst.lockExposure = true;
+  const int before = camera->FramesTaken();
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  // 100 ms in. At the post-lock 2 fps there is no frame yet; at the pre-lock 30 fps there are
+  // three.
+  clock.AdvanceMs(100);
+  ASSERT_TRUE(manager->OnMotion({}).ok());
+  EXPECT_EQ(camera->FramesTaken(), before)
+      << "the burst was paced by the rate the camera had before its exposure was pinned";
+}
+
+TEST_F(CaptureSession, TheCameraInUseIsTheOneTheBurstIsPacedBy) {
+  // `CameraInUse()` had no native test of any kind: deleting its session guard and returning a
+  // default-constructed struct was invisible to the whole suite. Two claims in its header, both
+  // asserted here — that it refuses without a session, and that it reports the *refreshed* copy
+  // rather than the one `Open` gave.
+  BurstSpec burst;
+  burst.frameCount = 2;
+  burst.lockExposure = true;
+
+  EXPECT_EQ(manager->CameraInUse().status.code, StatusCode::FailedPrecondition)
+      << "a camera was described with no session open to describe one for";
+
+  Begin();
+  auto atBegin = manager->CameraInUse();
+  ASSERT_TRUE(atBegin.ok()) << atBegin.status.detail;
+  EXPECT_DOUBLE_EQ(atBegin.value.maxBurstFps, camera->Capabilities().value.maxBurstFps);
+
+  camera->SlowToOnLock(2.0);
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  auto afterArm = manager->CameraInUse();
+  ASSERT_TRUE(afterArm.ok());
+  EXPECT_DOUBLE_EQ(afterArm.value.maxBurstFps, 2.0)
+      << "the reported camera is the one Open described, not the one the burst is paced by";
+
+  ASSERT_TRUE(manager->End().ok());
+  EXPECT_EQ(manager->CameraInUse().status.code, StatusCode::FailedPrecondition)
+      << "the camera outlived the session it belonged to";
 }
 
 TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {

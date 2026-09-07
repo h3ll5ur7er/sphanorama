@@ -66,6 +66,50 @@ describe('opening the camera', () => {
     if (result.ok) expect(result.value.maxBurstFps).toBe(30);
   });
 
+  it('reports the track as it is now, not as it was when it opened', async () => {
+    // ADR 0045's push half. `ICameraAccess::Capabilities()` lets the core re-ask at arm time, but
+    // the port it asks lives in the worker and answers from what this page last pushed — so a
+    // pull with nothing pushing behind it reads a cache and returns what `open()` said. Three
+    // reviewers found that independently.
+    //
+    // What makes it matter is that this app changes the thing it depends on: `setLocks` drives
+    // `applyConstraints({ exposureMode: 'manual' })`, and a camera whose exposure has just been
+    // pinned long is exactly the one that drops from 30 fps to 15.
+    const settings = { width: 1280, height: 720, frameRate: 30 };
+    const camera = createCameraAccess(fakeMedia({
+      stream: {
+        getVideoTracks: () => [{
+          getSettings: () => settings,
+          getCapabilities: () => ({}),
+          stop: vi.fn(),
+        }],
+        getTracks: () => [{ stop: vi.fn() }],
+      },
+    }) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.maxBurstFps).toBe(30);
+
+    // The track slows, as one does under a long exposure.
+    settings.frameRate = 15;
+
+    const now = camera.capabilities();
+    expect(now.maxBurstFps, 'the adapter answered from what open() saw, not from the track')
+      .toBe(15);
+    // And the rest of the answer is the same shape as `open`'s, so the two cannot disagree about
+    // anything but what actually moved.
+    expect(now.maxWidth).toBe(1280);
+    expect(now.maxHeight).toBe(720);
+  });
+
+  it('says nothing about a camera it is not holding', async () => {
+    // No track, no answer to give. Zeros rather than a stale last-known set: the core reads 0 as
+    // "the platform will not say", which is true of a camera that is gone.
+    const camera = createCameraAccess(fakeMedia({}) as never);
+    const before = camera.capabilities();
+    expect(before.maxWidth).toBe(0);
+    expect(before.maxBurstFps).toBe(0);
+  });
+
   it('treats a rate that is not a measurement as no answer at all', async () => {
     // The guard is `typeof rate === 'number' && Number.isFinite(rate) && rate > 0`, and only the
     // ordinary case and the absent one were driven — so a reviewer deleted the whole condition and

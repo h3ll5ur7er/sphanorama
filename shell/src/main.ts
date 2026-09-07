@@ -895,6 +895,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       const settled = held.ok
         ? held.value : { exposure: false, whiteBalance: false, focus: false };
       remote.setLocks(settled);
+      // And what the *camera* now is, not just which locks it granted (ADR 0045). The core re-asks
+      // its camera port before it paces this burst, and that port lives in the worker: it answers
+      // from what this page last pushed, so without this line the re-ask reads a cache written at
+      // `open` and gets the pre-lock rate back. Which is the number that matters here — pinning an
+      // exposure long is what drops a camera from 30 fps to 15, and a burst paced at 30 on a
+      // 15 fps camera fills with duplicates of one exposure.
+      //
+      // After the write settles rather than before, for the same reason the core's re-ask is after
+      // `SetLocks`: before it, this reports the camera we are about to change.
+      remote.setCamera(camera.capabilities());
       // On screen as well as into the core. The page has always known which locks the camera
       // granted and had nowhere to say it, which left the one question a burst's numbers raise —
       // is the camera free to re-expose and refocus between these frames? — unanswerable from a
@@ -1237,6 +1247,10 @@ async function main() {
     Object.assign(window as unknown as Record<string, unknown>, {
       sphanoramaCore: core,
       sphanoramaHost: { flush: () => remote.flush() },
+      // What the *page* sees of the camera, so a test can hold the core's answer to it field by
+      // field. The two ends of that seam agree by an integer index and a property name and nothing
+      // else checks either — a metric that stops being read comes back as a legal-looking zero.
+      sphanoramaCameraCapabilities: () => camera.capabilities(),
       // The end-to-end suite drives capture through the same path the button does, rather than
       // reaching into the core: arming outside the loop is the mistake this hook exists to avoid.
       sphanoramaCapture: () =>

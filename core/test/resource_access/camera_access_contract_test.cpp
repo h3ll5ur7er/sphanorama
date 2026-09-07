@@ -35,6 +35,35 @@ TYPED_TEST(CameraAccessContract, PreviewBeforeOpenIsRefused) {
   EXPECT_EQ(this->camera->StartPreview().code, StatusCode::FailedPrecondition);
 }
 
+TYPED_TEST(CameraAccessContract, CapabilitiesBeforeOpenIsRefused) {
+  // Added a round after the method was. Three implementations gave three answers for this one
+  // state — `Ok` with a fixture's numbers, `FailedPrecondition`, and `CameraUnavailable` — which
+  // is what a contract exists to stop, and there was no line here holding any of them to it.
+  EXPECT_EQ(this->camera->Capabilities().status.code, StatusCode::FailedPrecondition);
+}
+
+TYPED_TEST(CameraAccessContract, CapabilitiesAgreesWithWhatOpenReported) {
+  // The two calls answer the same question about the same device, so on a camera nothing has
+  // changed they cannot differ. `BrowserCameraAccess` shares one reading between them for this
+  // reason (ADR 0045).
+  auto opened = this->camera->Open(CameraOpenSpec{});
+  ASSERT_TRUE(opened.ok());
+  auto asked = this->camera->Capabilities();
+  ASSERT_TRUE(asked.ok()) << asked.status.detail;
+  EXPECT_EQ(asked.value.maxWidth, opened.value.maxWidth);
+  EXPECT_EQ(asked.value.maxHeight, opened.value.maxHeight);
+  EXPECT_DOUBLE_EQ(asked.value.maxBurstFps, opened.value.maxBurstFps);
+  EXPECT_EQ(asked.value.supportsExposureLock, opened.value.supportsExposureLock);
+}
+
+TYPED_TEST(CameraAccessContract, CapabilitiesAfterCloseIsRefusedAgain) {
+  // Closing returns the port to its initial state, which the suite already asserts for the other
+  // calls. A capability read that kept answering would report a camera nobody is holding.
+  this->Open();
+  ASSERT_TRUE(this->camera->Close().ok());
+  EXPECT_EQ(this->camera->Capabilities().status.code, StatusCode::FailedPrecondition);
+}
+
 TYPED_TEST(CameraAccessContract, PeekBeforeOpenIsRefused) {
   EXPECT_EQ(this->camera->PeekPreviewFrame().status.code, StatusCode::FailedPrecondition);
 }
@@ -98,6 +127,9 @@ TEST(NullCamera, RefusesEveryCallWithAReasonRatherThanAnEmptyAnswer) {
   EXPECT_EQ(camera.StartPreview().code, StatusCode::CameraUnavailable);
   EXPECT_EQ(camera.PeekPreviewFrame().status.code, StatusCode::CameraUnavailable);
   EXPECT_EQ(camera.SetLocks(true, true, true).code, StatusCode::CameraUnavailable);
+  // `CameraUnavailable` rather than `FailedPrecondition`, and that is the contract rather than an
+  // inconsistency: this port has no camera at all, which is not a call made out of order.
+  EXPECT_EQ(camera.Capabilities().status.code, StatusCode::CameraUnavailable);
 }
 
 TEST(FakeCamera, RecordsThatTheSessionLockedExposureForABurst) {

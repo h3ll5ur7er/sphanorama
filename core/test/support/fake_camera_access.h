@@ -42,8 +42,19 @@ class FakeCameraAccess final : public ICameraAccess {
   // `ICameraAccess` grew `Capabilities()` (ADR 0045); one name, one answer, so a test cannot read
   // something the manager cannot.
   Result<CameraCapabilities> Capabilities() override {
-    if (fail_open_) {
-      return Err<CameraCapabilities>(StatusCode::CameraUnavailable, "FakeCameraAccess", "no usable camera");
+    // Not open is not the same fact as cannot open, and conflating them is how a fake hides a
+    // defect: this answered `Ok` with 32x24 for a camera nobody had opened *and* for one it had
+    // closed, so every caller's ordering mistake looked like a working camera.
+    if (!open_) {
+      return Err<CameraCapabilities>(StatusCode::FailedPrecondition, "FakeCameraAccess",
+                                     "no camera open");
+    }
+    // Separately refusable from `Open`, because "I cannot acquire a camera" and "I have one and
+    // cannot describe it" are different states and a fake that offers only the first cannot drive
+    // the manager's non-fatal-refusal path at all.
+    if (fail_capabilities_) {
+      return Err<CameraCapabilities>(StatusCode::Internal, "FakeCameraAccess",
+                                     "the camera would not answer");
     }
     return Ok(capabilities_);
   }
@@ -62,6 +73,12 @@ class FakeCameraAccess final : public ICameraAccess {
    * user declining the prompt. The ask is still counted: a refused open has raised the prompt.
    */
   void FailOpen(bool fail) { fail_open_ = fail; }
+  void FailCapabilities(bool fail) { fail_capabilities_ = fail; }
+  // What a real camera does when its exposure is pinned long: the frame rate drops. Nothing in
+  // this fake could change a capability after `Open` before, so ADR 0045's whole subject — a
+  // capability that moves, and moves *because* of a lock write — had no arrangement in the suite,
+  // and moving the re-ask above `SetLocks` left every test green.
+  void SlowToOnLock(double fps) { fps_on_lock_ = fps; }
   /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
   void FailUnlock(bool fail) { fail_unlock_ = fail; }
   /** Makes closing fail, which is what leaves a camera both open and possibly still locked. */
@@ -74,6 +91,8 @@ class FakeCameraAccess final : public ICameraAccess {
   bool previewing_ = false;
   bool exposure_locked_ = false;
   bool fail_open_ = false;
+  bool fail_capabilities_ = false;
+  double fps_on_lock_ = 0.0;
   bool fail_unlock_ = false;
   bool fail_close_ = false;
   int frames_taken_ = 0;

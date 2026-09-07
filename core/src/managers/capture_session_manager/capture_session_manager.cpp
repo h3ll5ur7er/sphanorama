@@ -1041,7 +1041,14 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // had: declining to capture because a figure could not be refreshed trades a real capture for
   // an accurate number, which is backwards.
   if (auto refreshed = camera_.Capabilities(); refreshed.ok()) {
+    // Zero never overwrites a rate we had. Zero is the contract's word for "the platform will not
+    // say", which is the same fact a *refused* refresh reports — so an `Ok` carrying zero and a
+    // refusal have to leave the session in the same state, and they did not: the refusal kept the
+    // floor and this discarded it. The browser port is the likely producer of the second, since
+    // `ReadCapabilities` maps a missing or non-finite `frameRate` to `0.0` and answers `Ok`.
+    const double keptRate = camera_capabilities_.maxBurstFps;
     camera_capabilities_ = refreshed.value;
+    if (!(camera_capabilities_.maxBurstFps > 0.0)) camera_capabilities_.maxBurstFps = keptRate;
   }
 
   firing_ = true;
