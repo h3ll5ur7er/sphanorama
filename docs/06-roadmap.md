@@ -390,6 +390,12 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   live while `enable` runs, so a refused resume followed by a resume press and then a new-capture
   press starts two loops. Found by a reviewer on PR #49, against ADR 0039's refused-resume flow.
 
+  What it looks like is worse than "two loops", and a later round measured it: `pickUp` writes the
+  buttons' visibility while `startFresh` writes `#stage`, both from answers that crossed the
+  worker — so the visible end state of that sequence is a **running capture underneath the line
+  "a session is already in progress; end it first"**. A user reading that reloads, which costs
+  them nothing but is the app telling them it is broken while it works.
+
   Not fixed there because the honest fix is not local. One guard owning "a loop is starting or
   running" would replace three buttons' worth of `hidden`/`disabled` bookkeeping that `enable`,
   `beginSession`, `pickUp` and `pump` all write, and each of those paths wants a test. That is a
