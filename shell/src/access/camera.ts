@@ -24,6 +24,17 @@ export interface CameraOpenSpec {
 export interface CameraCapabilities {
   maxWidth: number;
   maxHeight: number;
+  /**
+   * Frames per second the track settled on, or 0 when it will not say.
+   *
+   * Declared late, and its absence here is the whole reason the core's camera-rate floor did
+   * nothing: `CaptureSessionManager` reads `maxBurstFps` off the port and floors a burst's
+   * interval and settle with it (ADR 0018, ADR 0032), the C++ contract has always carried the
+   * field, and this hand-written mirror of that struct did not — so the value crossing the
+   * boundary was the C++ default, 0, which the core reads as "no floor". A silence that looked
+   * exactly like a browser declining to answer.
+   */
+  maxBurstFps: number;
   supportsTorch: boolean;
   /**
    * Whether the track offers a *manual* mode for each. Reported rather than assumed, because a
@@ -262,9 +273,22 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
           whiteBalance: reportedModes(capabilities.whiteBalanceMode),
           focus: reportedModes(capabilities.focusMode),
         });
+        // The rate the track settled on, which is the floor `CaptureSessionManager` puts under a
+        // burst's interval and settle (ADR 0018, ADR 0032). `PeekPreviewFrame` borrows the latest
+        // preview frame, so a burst taking frames faster than the camera makes them fills with
+        // duplicates of one exposure — and selection then ranks a frame against copies of itself,
+        // which looks like a fast burst and is a single frame.
+        //
+        // This was simply never sent. The core's arithmetic, the ADRs and the contract all
+        // described a floor that could not apply in the only client there is, because zero is the
+        // contract's word for "the platform will not say" and that is what the field held. Zero
+        // stays the answer when the track does not report one: a default invented here would slow
+        // every burst on the browsers that decline to answer, which is most of them.
+        const rate = settings.frameRate;
         return ok({
           maxWidth: settings.width ?? 0,
           maxHeight: settings.height ?? 0,
+          maxBurstFps: typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0,
           supportsTorch: 'torch' in capabilities,
           supportsExposureLock: offersManual(capabilities.exposureMode),
           supportsWhiteBalanceLock: offersManual(capabilities.whiteBalanceMode),

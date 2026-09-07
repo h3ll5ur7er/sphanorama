@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 #include "utilities/quaternion.h"
 
@@ -202,6 +203,42 @@ TEST(AngleBetweenDirections, IgnoresLengthAndMeasuresTheAngle) {
   EXPECT_NEAR(AngleBetweenDirections(Vec3{5, 0, 0}, Vec3{0, 2, 0}) * kDegPerRad, 90.0, 1e-9);
   EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{-1, 0, 0}) * kDegPerRad, 180.0, 1e-9);
   EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{1, 0, 0}), 0.0, 1e-9);
+}
+
+TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite) {
+  // The function's own comment says "a degenerate direction is not an angle" and returns 0.0 for
+  // one. It got that right for a zero vector and for NaN — both normalise to zero, and the
+  // `Dot(x, x) < 0.5` test catches them — and wrong for an infinite component, which normalises to
+  // `inf/inf` = NaN *per element*: `Dot(x, x)` is then NaN, `NaN < 0.5` is false, and the
+  // degeneracy check hands NaN through to `acos`.
+  //
+  // It matters because the answer is an angular error, and every caller compares it against a
+  // threshold. A NaN loses every comparison, so `angle > cone` reads as "inside the cone" and
+  // `angle <= cone` reads as "outside" — the same number arriving at two callers as two different
+  // answers, which is the shape of defect this branch has now closed three times.
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const Vec3 degenerate : {Vec3{inf, 0, 0}, Vec3{-inf, 0, 0}, Vec3{nan, 0, 0}, Vec3{0, 0, 0},
+                                Vec3{inf, inf, inf}}) {
+    EXPECT_DOUBLE_EQ(AngleBetweenDirections(degenerate, Vec3{1, 0, 0}), 0.0);
+    EXPECT_DOUBLE_EQ(AngleBetweenDirections(Vec3{1, 0, 0}, degenerate), 0.0);
+  }
+}
+
+// Every degenerate *quaternion* already reaches that guard as something it catches, which is why
+// no caller going through `Direction` has ever seen a NaN angle. Pinned rather than assumed: it is
+// the reason `CaptureSessionManager::ArmBurst` can compare `offBy` against a cone with an ordinary
+// `>` instead of a NaN-proof spelling, and that reasoning is only as good as this test.
+TEST(AngleBetweenDirections, EveryDegenerateQuaternionStillMeasuresAFiniteAngle) {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const Quat broken : {Quat{inf, 0, 0, 0}, Quat{nan, 1, 0, 0}, Quat{0, 0, 0, 0},
+                            Quat{1e300, 1e300, 1e300, 1e300}, Quat{-inf, inf, nan, 0}}) {
+    const double angle = AngleBetweenDirections(Direction(broken), Vec3{1, 0, 0});
+    EXPECT_TRUE(std::isfinite(angle)) << "a degenerate quaternion produced an unusable angle";
+    EXPECT_GE(angle, 0.0);
+    EXPECT_LE(angle, 3.15);
+  }
 }
 
 TEST(RollBetween, IsZeroForTheSameOrientation) {

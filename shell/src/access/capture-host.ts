@@ -22,6 +22,8 @@ export interface CameraCapabilities {
   maxHeight: number;
   horizontalFovDeg: number;
   verticalFovDeg: number;
+  /** Frames per second the track settled on, or 0 when it will not say. */
+  maxBurstFps: number;
   supportsTorch: boolean;
   supportsExposureLock: boolean;
   supportsWhiteBalanceLock: boolean;
@@ -211,7 +213,8 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
 
     cameraCapabilities(): CameraCapabilities {
       return camera ?? {
-        maxWidth: 0, maxHeight: 0, horizontalFovDeg: 0, verticalFovDeg: 0, supportsTorch: false,
+        maxWidth: 0, maxHeight: 0, horizontalFovDeg: 0, verticalFovDeg: 0, maxBurstFps: 0,
+        supportsTorch: false,
         supportsExposureLock: false, supportsWhiteBalanceLock: false, supportsFocusLock: false,
       };
     },

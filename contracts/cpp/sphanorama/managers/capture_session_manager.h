@@ -68,10 +68,18 @@ class ICaptureSessionManager {
   // frame period the latest frame is one the camera produced before the locks landed.
   //
   // Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
-  // acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+  // acceptance cone the plan gave it, which is the cone guidance closes its reticle on. A
   // burst records whatever the camera is looking at and the node is only a name to file it under,
   // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
   // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+  //
+  // Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
+  // measurement — not finite, or not greater than zero. The detail says which: "not a usable
+  // measurement" is a broken plan and nothing the user can do anything about, where "not aimed at
+  // that cell" is a phone to turn. `ICoveragePlannerEngine::Plan` forbids such a cone and both
+  // shipped engines refuse it, so this is the manager declining to assume every implementation of
+  // that contract validates its own output — the two that exist disagreed about exactly this,
+  // twice, in consecutive rounds of one review.
   //
   // **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
   // stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
@@ -83,7 +91,12 @@ class ICaptureSessionManager {
   // initialisation.
   //
   // So a client may wait for guidance to say `HoldStill`, which means "inside this cell's cone
-  // and this cell still wants shooting" — precisely the condition this arms on. What it must not
+  // and this cell still wants shooting" — the condition this arms on, from the same plan and the
+  // same cone. It is one condition read twice rather than one call trusting another, so the two
+  // can be made to disagree by a plan neither of them wrote: a cone that is not a measurement had
+  // `Locate` reporting `HoldStill` while this call refused, which since ADR 0043 is a dwell that
+  // matures, fires, is refused, and starts again. `ICoveragePlannerEngine` now states the rule
+  // that keeps them together, on `Plan`, where a planner will read it. What it must not
   // assume is that the action always comes: it needs an anchored pose, so a stream that carries
   // rates and never an attitude produces a session that begins and can never arm. The shipped
   // browser adapter cannot produce one (every sample it emits carries an attitude), and a port

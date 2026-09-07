@@ -17,6 +17,8 @@ import type { RuntimeCapabilities } from './core';
 export interface CameraOpening {
   maxWidth: number;
   maxHeight: number;
+  /** Frames per second the track settled on, or 0 when it will not say. */
+  maxBurstFps: number;
   supportsTorch: boolean;
   supportsExposureLock: boolean;
   supportsWhiteBalanceLock: boolean;

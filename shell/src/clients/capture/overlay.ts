@@ -24,8 +24,17 @@ export interface RingMark {
    *
    * A fraction rather than a flag because captured-or-not is the *current* answer and not the
    * interesting one: a hold-still timer counting toward a burst reads as a filling ring, and a
-   * fill that only ever took two values would have to be rebuilt to say so. Nothing drives a
-   * middle value yet; `holding` is where one would arrive.
+   * fill that only ever took two values would have to be rebuilt to say so.
+   *
+   * That timer arrived (ADR 0043) and this is now the target cell's normal state for two seconds
+   * out of every cell captured: `CaptureSessionManager` publishes `CaptureGuidance.heldFraction`
+   * on every tick and the page passes it in as `holding`. It is the whole user-visible half of a
+   * capture that nobody presses anything to start — the ring filling *is* the countdown, and it
+   * is presentation only: the core decides when to fire and says so with `Fire`, and a page that
+   * inferred a trigger from this number would be deciding for itself something the contract is at
+   * pains to keep in one place.
+   *
+   * This paragraph read "nothing drives a middle value yet" for a round after one did.
    */
   fill: number;
   /** Whether this is the cell guidance is sending the user to. */
@@ -92,7 +101,14 @@ export function planOverlay(input: OverlayInput): Overlay {
   if (!sized) return { rings: [], arrow: null };
 
   const holes = new Set<number>(coverage.holes);
-  const holding = Math.min(1, Math.max(0, input.holding ?? 0));
+  // `NaN` first, because the clamp does not catch it: `Math.max(0, NaN)` is `NaN`, and the painter
+  // then writes the string "NaN" to `strokeDashoffset`, which CSSOM discards — leaving the target
+  // ring frozen at whatever it last showed, which reads as a hold that stopped counting.
+  // Unreachable from the shipped core, whose fraction is a quotient of two integers; reachable
+  // from anything else that ever fills this field, which is the argument for the clamp being here
+  // at all rather than trusting the number that crossed the boundary.
+  const asked = input.holding ?? 0;
+  const holding = Number.isFinite(asked) ? Math.min(1, Math.max(0, asked)) : 0;
   const fit = input.fit;
   const place = (x: number, y: number) => (fit ? intoViewfinder(x, y, fit) : { x, y });
 

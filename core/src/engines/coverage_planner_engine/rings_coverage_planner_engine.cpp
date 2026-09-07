@@ -178,7 +178,14 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const PoseSample& cur
   for (const auto& node : aimed ? std::span<const CoverageNode>(plan.nodes)
                                 : std::span<const CoverageNode>()) {
     const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
-    if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
+    // A cone that is not a usable measurement puts no cell inside it — the same answer
+    // `ICaptureSessionManager::ArmBurst` gives, and they have to agree or the reticle closes on a
+    // cell that will not arm (see `ICoveragePlannerEngine`'s header). Both halves are spelled to
+    // fail closed: `!isfinite` refuses `inf`, where `angle > cone` is false and every direction is
+    // therefore "inside"; `!(angle <= cone)` refuses a NaN on either side, where both comparisons
+    // are false and the naive form reads the same silence as agreement.
+    if (!std::isfinite(node.acceptanceConeDeg) || node.acceptanceConeDeg <= 0.0) continue;
+    if (!(angle * kRadToDeg <= node.acceptanceConeDeg)) continue;
     if (inside == nullptr || angle < insideAngle) {
       insideAngle = angle;
       inside = &node;

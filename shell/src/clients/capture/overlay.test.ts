@@ -94,6 +94,11 @@ describe('planOverlay', () => {
 
     expect(ringFor(1.15), 'an overshooting hold drew more than a full ring').toBe(1);
     expect(ringFor(-0.2), 'a negative hold drew a ring past its own start').toBe(0);
+    // The case the clamp does *not* catch on its own: `Math.max(0, NaN)` is `NaN`, the painter
+    // writes the string "NaN" to `strokeDashoffset`, CSSOM discards it, and the ring freezes at
+    // whatever it last drew — a hold that silently stopped counting. The test said "whatever it is
+    // handed" and handed it two of the three things that are not a fraction.
+    expect(ringFor(Number.NaN), 'a NaN hold left the ring frozen at its last value').toBe(0);
   });
 
   it('does not let a hold overwrite a cell that is already captured', () => {

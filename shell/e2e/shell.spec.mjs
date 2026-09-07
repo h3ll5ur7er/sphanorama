@@ -914,15 +914,20 @@ test('a second arm while the first is still crossing the worker says so', async 
     await aimAtACell(page);
     await viewfinderIsLive(page);
 
-    const { second, said } = await page.evaluate(async () => {
-      const first = window.sphanoramaCapture();
+    const { first, second, said } = await page.evaluate(async () => {
+      const armed = window.sphanoramaCapture();
       const refused = await window.sphanoramaCapture();
       // Read before awaiting the first, which finishes by painting a line of its own over this.
       const line = document.querySelector('#guidance').textContent;
-      await first;
-      return { second: refused, said: line };
+      return { first: await armed, second: refused, said: line };
     });
 
+    // The first arm has to have been a real one. Since ADR 0043 the loop arms on the core's own
+    // `Fire`, so a run where the dwell had already matured during `aimAtACell` would send *both*
+    // of these calls down the `arming` branch — `second` false, the line still right, and the test
+    // green without ever having exercised the thing it is named for.
+    expect(first, 'the first call was refused too, so nothing was ever in flight to collide with')
+      .toBe(true);
     expect(second, 'a second arm was accepted while one was in flight').toBe(false);
     expect(said, 'the refused arm said nothing, so the user saw the ring restart with no reason')
       .toMatch(/still arming that cell/i);

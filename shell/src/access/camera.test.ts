@@ -41,6 +41,41 @@ describe('opening the camera', () => {
     }
   });
 
+  it('reports the track frame rate, so the core has a camera-rate floor to apply', async () => {
+    // `CameraCapabilities.maxBurstFps` is what `CaptureSessionManager` floors a burst's interval
+    // and settle with (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview frame,
+    // so asking for frames faster than the camera makes them fills a burst with duplicates of one
+    // exposure, and selection then ranks a frame against copies of itself.
+    //
+    // This adapter never set the field. The whole floor was therefore dead in the only client
+    // there is — zero means "the platform will not say", which is the one answer that turns it
+    // off — while the core, the ADRs and the contract all described it as working. Found by a
+    // reviewer reading the core's arithmetic and asking who supplies the number.
+    const camera = createCameraAccess(fakeMedia({
+      stream: {
+        getVideoTracks: () => [{
+          getSettings: () => ({ width: 1280, height: 720, frameRate: 30 }),
+          getCapabilities: () => ({}),
+          stop: vi.fn(),
+        }],
+        getTracks: () => [{ stop: vi.fn() }],
+      },
+    }) as never);
+    const result = await camera.open({ preferRearCamera: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.maxBurstFps).toBe(30);
+  });
+
+  it('says nothing about the rate rather than guessing when the track does not report one', async () => {
+    // Zero is the contract's word for "the platform will not say", and the core reads it as "no
+    // floor here". A default invented in the adapter would slow every burst on the browsers that
+    // decline to answer, which the core's own test says is most of them.
+    const camera = createCameraAccess(fakeMedia({}) as never);
+    const result = await camera.open({ preferRearCamera: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.maxBurstFps).toBe(0);
+  });
+
   it('requires the rear camera rather than merely preferring it', async () => {
     // `ideal` is scored, not obeyed: getUserMedia picks the device with the lowest *combined*
     // fitness distance over every ideal constraint, so a front camera that matches the requested

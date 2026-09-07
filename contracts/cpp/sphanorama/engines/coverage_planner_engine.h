@@ -10,6 +10,23 @@ class ICoveragePlannerEngine {
  public:
   virtual ~ICoveragePlannerEngine() = default;
 
+  // Tessellates the sphere for this lens.
+  //
+  // **`spec.acceptanceConeDeg` must be finite and greater than zero, and an implementation that
+  // cannot make it so refuses with `InvalidArgument` rather than planning.** Written here because
+  // it was written nowhere: it lived inside two implementations, which disagreed about it twice in
+  // consecutive rounds of one review — first about `NaN`, then about `+Infinity` — and each time
+  // the fix went into the implementation that had been caught.
+  //
+  // The cone is not a preference. It is the number `Locate` decides "the user is inside this cell"
+  // with and the number `ArmBurst` refuses a burst by, so a value that is not a measurement is not
+  // a wide cone or a narrow one — it is a plan in which those two calls cannot agree. `inf` loses
+  // every `angle > cone`, which reads as *every* direction being inside *every* cell; `NaN` loses
+  // both comparisons, so one caller reads it as inside and another as outside; zero and negatives
+  // put the camera outside a cell it is pointed exactly at.
+  //
+  // Both callers guard it anyway, which is not redundancy but the arrangement `Locate` describes
+  // below — one guard for what the user sees, one for what the frames depend on.
   virtual Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics& lens) = 0;
 
   // Which cell should the user go to from here, and how far off are they?
@@ -55,6 +72,13 @@ class ICoveragePlannerEngine {
   // which is worse to diagnose than one that says it is seeking. Two guards for one fact is the
   // arrangement here on purpose: this one is what the user sees, and the manager's is what the
   // frames depend on.
+  //
+  // Two guards only work while they agree, and the same applies to the acceptance cone: **a cell
+  // whose cone is not a finite positive number is one no camera is inside**, which is the answer
+  // `ArmBurst` gives. They disagreed about it for one round, and the cost was not a wrong reticle:
+  // guidance said `HoldStill` on a cell ninety degrees away, the dwell matured, `Fire` went out,
+  // `ArmBurst` refused the same cone as unusable, the dwell restarted, and it repeated — with no
+  // shutter left to escape it since ADR 0044.
   //
   // An empty state means no information rather than nothing missing: at the start of a session
   // nothing has been captured and nothing is a hole, and reading that as a finished sphere would

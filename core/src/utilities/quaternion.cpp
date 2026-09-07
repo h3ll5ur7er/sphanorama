@@ -97,7 +97,14 @@ Vec3 Normalize(const Vec3& v) {
 double AngleBetweenDirections(const Vec3& a, const Vec3& b) {
   const Vec3 x = Normalize(a);
   const Vec3 y = Normalize(b);
-  if (Dot(x, x) < 0.5 || Dot(y, y) < 0.5) return 0.0;   // a degenerate direction is not an angle
+  // `!(… > 0.5)` rather than `… < 0.5`, so a NaN lands on "degenerate" with everything else that
+  // is not a direction. `Normalize` turns a zero or NaN vector into the origin, which `< 0.5`
+  // catches — but an *infinite* component divides by an infinite length and yields NaN per
+  // element, and NaN loses `<` as readily as it loses `>`, so the check waved it through into
+  // `acos` and this returned NaN. Every caller compares the answer against a threshold, and a NaN
+  // loses those comparisons too: `angle > cone` then reads "inside" and `angle <= cone` reads
+  // "outside", one number arriving at two callers as two answers.
+  if (!(Dot(x, x) > 0.5) || !(Dot(y, y) > 0.5)) return 0.0;
   return std::acos(std::clamp(Dot(x, y), -1.0, 1.0));
 }
 

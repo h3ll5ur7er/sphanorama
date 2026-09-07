@@ -91,7 +91,7 @@ describe('capture host', () => {
   it('reports what the page opened', () => {
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: true,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: true,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -102,11 +102,33 @@ describe('capture host', () => {
     expect(caps.verticalFovDeg).toBeGreaterThan(0);
   });
 
+  it('carries the camera rate through to what the core reads', () => {
+    // `maxBurstFps` is what `CaptureSessionManager` floors a burst's interval and settle with
+    // (ADR 0018, ADR 0032). It crosses four hand-written mirrors of one C++ struct to get here —
+    // the adapter's `CameraCapabilities`, the worker protocol's `CameraOpening`, this host's, and
+    // the EM_JS metric switch — and it was missing from every one of them, so the field the core
+    // read was the C++ default. Zero, which the core is right to treat as "the platform will not
+    // say"; a floor that is off is indistinguishable from a browser that declined to answer,
+    // which is why nothing noticed for the life of the field.
+    const host = createCaptureHost();
+    host.setCamera({
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+      supportsExposureLock: false, supportsWhiteBalanceLock: false,
+      supportsFocusLock: false,
+    });
+    expect(host.cameraCapabilities().maxBurstFps).toBe(30);
+  });
+
+  it('reports no rate rather than a guess when there is no camera', () => {
+    const host = createCaptureHost();
+    expect(host.cameraCapabilities().maxBurstFps).toBe(0);
+  });
+
   it('forgets the camera when the page closes it', () => {
     // A stale capability set would let the core plan a capture against a camera that is gone.
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -197,7 +219,7 @@ describe('closing and resetting', () => {
     let asked = 0;
     const host = createCaptureHost({ onCloseCamera: () => { asked += 1; } });
     host.setCamera({
-      maxWidth: 640, maxHeight: 480, supportsTorch: false,
+      maxWidth: 640, maxHeight: 480, maxBurstFps: 0, supportsTorch: false,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -341,7 +363,7 @@ describe('which locks the camera is holding', () => {
   it('carries the lock capabilities the page reported', () => {
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
       supportsExposureLock: true, supportsWhiteBalanceLock: false, supportsFocusLock: true,
     });
 

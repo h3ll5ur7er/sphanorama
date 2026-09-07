@@ -253,6 +253,47 @@ TEST(CoveragePlanner, LocateFindsTheCellTheUserIsAimingAt) {
   }
 }
 
+TEST(CoveragePlanner, ACellWhoseConeIsNotAMeasurementIsNeverTheOneBeingHeld) {
+  // The other side of the guard `ArmBurst` grew in round 7, and the side that decides what the
+  // user sees. `ICoveragePlannerEngine`'s own header says why they have to agree: "the reticle
+  // would close on a cell that then would not arm — a capture that looks ready and does nothing,
+  // which is worse to diagnose than one that says it is seeking".
+  //
+  // Both engines decided "inside the cone" with `angle > cone`, and that comparison is false for
+  // `inf` and for `NaN` alike — so a cell carrying one was inside its cone from *every* direction.
+  // Downstream, since ADR 0043, that is not a cosmetic wrong answer: the reticle closes, the dwell
+  // matures, guidance says `Fire`, `ArmBurst` refuses the same cone as unusable, the dwell
+  // restarts, and it repeats forever. ADR 0044 took the shutter away, so there is nothing left to
+  // capture with while it does.
+  //
+  // Built by hand rather than planned, because both `Plan`s now refuse such a spec — which is the
+  // point of the two guards, and also why nothing else in the suite can reach this line.
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double cone : {inf, -inf, std::numeric_limits<double>::quiet_NaN(), 0.0, -5.0}) {
+    CapturePlan plan;
+    plan.spec = Spec();
+    CoverageNode node;
+    node.id = NodeId{1};
+    node.targetOrientation = FromAzimuthElevation(0.0, 0.0);
+    node.acceptanceConeDeg = cone;
+    plan.nodes.push_back(node);
+
+    // Ninety degrees away — nowhere near it by any usable measurement.
+    const PoseSample looking = Aiming(FromAzimuthElevation(90.0, 0.0));
+
+    NullCoveragePlannerEngine nullEngine;
+    RingsCoveragePlannerEngine ringsEngine;
+    for (ICoveragePlannerEngine* engine :
+         {static_cast<ICoveragePlannerEngine*>(&nullEngine),
+          static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
+      auto guidance = engine->Locate(looking, plan, CoverageState{});
+      ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+          << "a cell 90 degrees away was reported as held, on a cone of " << cone;
+    }
+  }
+}
+
 TEST(CoveragePlanner, LocateAsksTheUserToKeepLookingWhenTheyAreOff) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());

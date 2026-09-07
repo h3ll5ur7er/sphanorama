@@ -373,6 +373,20 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   needed to make: how long a session waits for its first reading before saying so, and whether
   that sentence comes from the manager or the page. `ARateOnlyStreamNeverMaturesADwell` pins the
   half that is settled, which is that such a stream must never be mistaken for an aim.
+- **The white-balance lock has no capability field — open, and pre-existing.**
+  `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`
+  off the track, and the worker host forwards it as camera metric 6 — but `CameraCapabilities` in
+  `contracts/cpp/sphanorama/types.h` has fields for exposure, focus and torch and none for white
+  balance, so the browser port reads that metric nowhere and the core cannot know whether the lock
+  it is asking for is one the camera offers. Exposure and focus are checked against their fields
+  before `SetLocks` is trusted (ADR 0022); white balance is asked for and believed.
+
+  Found while wiring `maxBurstFps` through the same seam, and deliberately not fixed there: adding
+  a field to a contract struct is a contract change, which wants an ADR and a decision about what
+  a camera that offers no manual white balance should make `SetLocks` do — refuse, or take the two
+  locks it can and say which. The answer is probably "the same as exposure", but "probably" is not
+  what a contract is for.
+
 - **`contract_gen` reads a sentence about the marker as the marker — open.** `tools/contract_gen.py`
   tests `BOUNDARY_MARKER in d` against each comment line above a class, so
   `IMotionSensorAccess`'s own "not marked `@boundary`, because this contract moves bytes through

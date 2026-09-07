@@ -837,16 +837,25 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     dwell_ns_ += std::clamp(now - dwell_marked_ns_, int64_t{0}, kMaxDwellCreditNs);
   }
   dwell_marked_ns_ = now;
+  // Written on every tick, not only on held ones, because this field is the manager's answer and
+  // not the engine's. `guidance` is whatever `Locate` returned, and until this line was moved out
+  // of the `if` below, a `Seek`, `Firing`, `CellDone`, `AlreadyCaptured` or `SphereDone` tick —
+  // most ticks of a capture — shipped whatever the planner had left in it. Both engines leave it
+  // default-constructed, so the published value was 0 and the promise in `types.h` was kept by
+  // every implementation happening to behave, which is not what a promise is. `aimKnown` sixty
+  // lines above is re-derived unconditionally for exactly this reason, and there is no argument
+  // that covers one and not the other.
+  //
+  // Capped, because the contract says `[0,1]` and the page draws an arc from it: `RingMark.fill`
+  // and `OverlayInput.holding` both promise the range, and a fraction past 1 sends
+  // `strokeDashoffset` the wrong side of the circumference. The overshoot is ordinary rather
+  // than theoretical — one tick can credit up to `kMaxDwellCreditNs`, so the tick that completes
+  // a dwell can be holding 2.3 seconds of a 2 second dwell, which is 1.15.
+  //
+  // Capped only above. The floor is held by the accumulation instead, where a negative delta
+  // would have to arrive; asserting it a second time here would be a guard no input can reach.
+  guidance.heldFraction = held ? std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs) : 0.0;
   if (held) {
-    // Capped, because the contract says `[0,1]` and the page draws an arc from it: `RingMark.fill`
-    // and `OverlayInput.holding` both promise the range, and a fraction past 1 sends
-    // `strokeDashoffset` the wrong side of the circumference. The overshoot is ordinary rather
-    // than theoretical — one tick can credit up to `kMaxDwellCreditNs`, so the tick that completes
-    // a dwell can be holding 2.3 seconds of a 2 second dwell, which is 1.15.
-    //
-    // Capped only above. The floor is held by the accumulation instead, where a negative delta
-    // would have to arrive; asserting it a second time here would be a guard no input can reach.
-    guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
     if (dwell_ns_ >= kDwellNs) {
       // An edge, and the counter restarts rather than latching. The client arms on this; the
       // manager cannot arm for itself, because a burst is paced by the client's ticks over a
@@ -973,14 +982,22 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // strengthened that guard — so the reason was untrue as it was written down.
   // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both lines with a planner that
   // does not validate, so they are exercised rather than merely justified.
-  if (!std::isfinite(aimed->acceptanceConeDeg)) {
+  if (!std::isfinite(aimed->acceptanceConeDeg) || aimed->acceptanceConeDeg <= 0.0) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "this cell's acceptance cone is not a usable measurement");
   }
-  // `!(offBy <= cone)` rather than `offBy > cone`: a NaN *error* — an unnormalised pose, an
-  // orientation nobody filled in — compares false against both, and the naive form would arm on
-  // it. The same spelling `reticleRadius` uses in the shell, for the same reason.
-  if (!(offBy <= aimed->acceptanceConeDeg)) {
+  // `offBy > cone` is enough, and it is enough because of something proved one layer down rather
+  // than assumed here: `AngleBetweenDirections` returns a finite angle in `[0, π]` for *every*
+  // input reachable through `Direction`, degenerate quaternions included, and
+  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` is what holds it
+  // to that. With `offBy` finite and the cone finite and positive by the line above, the naive
+  // comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
+  //
+  // This line carried the NaN-proof spelling and a comment claiming a test drove it. No test did:
+  // the cone check above absorbs the only non-finite input the suite can deliver, and no caller
+  // can produce a non-finite `offBy` at all. An unreachable guard reads as a checked case and is
+  // one more thing to keep true, so it is the guarantee that is pinned now instead of the shape.
+  if (offBy > aimed->acceptanceConeDeg) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");
   }
@@ -1003,6 +1020,35 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   return Status::Ok();
 }
 
+int64_t CaptureSessionManager::CameraFramePeriodNs() const {
+  // `!(x > 0)` rather than `x <= 0`, so a NaN rate lands on "will not say" with the zero that
+  // means the same thing.
+  if (!(max_burst_fps_ > 0.0)) return 0;
+
+  // Capped before the conversion, because the conversion is the undefined part. `maxBurstFps` is
+  // a double crossing a resource-access contract, and a manager does not get to assume a platform
+  // reports a sane one: at 1e-10 fps the reciprocal is 1e19 ns, which does not fit in an
+  // `int64_t`, and converting a floating value outside the destination's range is undefined
+  // rather than merely wrong. UBSan says so — "1e+19 is outside the range of representable values
+  // of type 'long int'" — but only with `float-cast-overflow`, which GCC leaves out of
+  // `-fsanitize=undefined`; the sanitizer job could not see this until that flag was named.
+  //
+  // What the undefined conversion actually did is worth recording, because it is not a crash: on
+  // the usual hardware it yields `INT64_MIN`, which loses every `byCamera > …` comparison and so
+  // *removes* the floor it was computing. A camera saying "I cannot give you a frame this hour"
+  // produced a burst that fired immediately.
+  //
+  // An hour, because a camera that cannot manage one frame an hour cannot be burst from at all,
+  // and there is no useful difference between waiting an hour and waiting three hundred years.
+  // The cap keeps the value representable and lets the ordinary floor arithmetic run on it.
+  constexpr int64_t kSlowestUsefulFramePeriodNs = 3'600'000'000'000;
+  const double period = 1000000000.0 / max_burst_fps_;
+  if (!(period < static_cast<double>(kSlowestUsefulFramePeriodNs))) {
+    return kSlowestUsefulFramePeriodNs;
+  }
+  return static_cast<int64_t>(period);
+}
+
 int64_t CaptureSessionManager::BurstIntervalNs() const {
   int64_t interval = static_cast<int64_t>(burst_spec_.intervalMs) * 1000000;
 
@@ -1014,10 +1060,8 @@ int64_t CaptureSessionManager::BurstIntervalNs() const {
   // it looks like a fast one.
   //
   // Zero means the platform will not say, in which case the tick rate is the only floor there is.
-  if (max_burst_fps_ > 0) {
-    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
-    if (byCamera > interval) interval = byCamera;
-  }
+  const int64_t byCamera = CameraFramePeriodNs();
+  if (byCamera > interval) interval = byCamera;
   return interval;
 }
 
@@ -1033,10 +1077,8 @@ int64_t CaptureSessionManager::BurstSettleNs() const {
   // Zero still means "the platform will not say", and then the tick rate is the only floor there
   // is. A caller asking for no settle at all on a camera that reports its rate gets one frame
   // period, which is the least that can be asked for and still mean anything.
-  if (max_burst_fps_ > 0) {
-    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
-    if (byCamera > settle) settle = byCamera;
-  }
+  const int64_t byCamera = CameraFramePeriodNs();
+  if (byCamera > settle) settle = byCamera;
   return settle;
 }
 

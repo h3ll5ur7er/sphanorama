@@ -402,6 +402,11 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
     CaptureGuidance guidance;
     guidance.targetNode = plan.nodes.front().id;
     guidance.action = GuidanceAction::Seek;
+    // Carelessly, which is the fake's whole job. `heldFraction` is the manager's answer — the
+    // number the page draws the ring from — and an engine has no business filling it in. Both
+    // shipped engines leave it at zero, so a manager that simply passed `Locate`'s struct through
+    // published the right value by their good manners rather than by deciding anything.
+    guidance.heldFraction = 7.0;
     return Ok(guidance);
   }
   Result<CoverageState> Evaluate(const CapturePlan& plan,
@@ -419,25 +424,60 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
   double cone_;
 };
 
+TEST_F(CaptureSession, TheHeldFractionIsTheManagersAnswerRatherThanWhateverThePlannerLeftThere) {
+  // `guidance` is `Locate`'s return value, copied whole, and the dwell used to write this field
+  // only on ticks where a cell was actually being held. On every other tick — `Seek`, `Firing`,
+  // `CellDone`, `AlreadyCaptured`, `SphereDone`, which is most ticks of a capture — whatever the
+  // engine had put there was encoded and shipped.
+  //
+  // The contract calls it the manager's own: "the ring the user watches and the trigger that fires
+  // are the same number in the same message". A planner writing it would break that quietly, and
+  // the page would draw an arc from a number nothing in the core decided. `aimKnown` is re-derived
+  // unconditionally a few lines above for the same reason and says so in a comment.
+  CarelessCoveragePlannerEngine careless(5.0);
+  CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  sample.timestampNs = clock.MonotonicNs();
+  auto guided = manager.OnMotion(std::span<const ImuSample>(&sample, 1));
+  ASSERT_TRUE(guided.ok()) << guided.status.detail;
+  ASSERT_EQ(guided.value.action, GuidanceAction::Seek) << "the fake reports Seek on every tick";
+  EXPECT_DOUBLE_EQ(guided.value.heldFraction, 0.0)
+      << "the planner's 7.0 reached the client, so the ring is drawn from a number the manager "
+         "never decided";
+  ASSERT_TRUE(manager.End().ok());
+}
+
 TEST_F(CaptureSession, ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed) {
   // The manager's own arithmetic, against an engine that does not validate. Both shipped planners
-  // refuse a non-finite cone at `Begin` now, so this guard is unreachable through them — and that
-  // is why it is worth a test rather than a deletion: the cone crosses a contract, and the two
+  // refuse such a cone at `Begin` now, so this guard is unreachable through them — and that is why
+  // it is worth a test rather than a deletion: the cone crosses a contract, and the two
   // implementations of that contract disagreed about this class of input twice in one review.
   //
-  // Infinity as well as NaN, because the two fail differently. NaN makes `offBy > cone` false and
-  // waves the burst through; infinity makes it false *legitimately* — every direction really is
-  // within an infinite cone — which is worse, because no arithmetic here is wrong. The rule being
-  // broken is that a cone is a measurement, and neither of these is one.
-  for (const double cone : {std::numeric_limits<double>::quiet_NaN(),
-                            std::numeric_limits<double>::infinity()}) {
+  // Five cones, which is the class rather than a member of it. `inf` makes `offBy <= cone` true
+  // *legitimately* — every direction really is inside an infinite cone — which is the worst of
+  // them, because no arithmetic is wrong. `NaN` loses both comparisons. `0.0` is finite and
+  // positive-adjacent and used to arm whenever the aim was exact, since `0 <= 0`. `-inf` and
+  // `-5.0` are refused by the naive comparison, but as *bad aim* rather than as a broken plan,
+  // which tells the user to turn a phone that is already pointed correctly.
+  //
+  // **Aimed at the cell, not away from it**, which is the whole shape of this test. It used to aim
+  // 180 degrees away and compare only `StatusCode` — and `ArmBurst` answers `FailedPrecondition`
+  // for a bad aim too, so it passed unchanged when a reviewer replaced the unusable cones with an
+  // ordinary 5 and 10 degrees. A test named for a broken plan was asserting that the camera was
+  // pointed the wrong way. Aiming *at* the cell leaves the cone as the only thing that can refuse,
+  // and the detail string says which refusal it was.
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double cone : {std::numeric_limits<double>::quiet_NaN(), inf, -inf, 0.0, -5.0}) {
     CarelessCoveragePlannerEngine careless(cone);
     CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
                                   *projects, clock);
     ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << "cone " << cone;
 
-    // Aimed nowhere near it: the pose is measured, and the cell is 180 degrees away.
-    pose.LookAt(Quat{0.0, 0.0, 1.0, 0.0});
+    pose.LookAt(manager.GetPlan().value.nodes.front().targetOrientation);
     ImuSample sample;
     sample.hasOrientation = true;
     sample.timestampNs = clock.MonotonicNs();
@@ -445,9 +485,13 @@ TEST_F(CaptureSession, ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed) {
 
     BurstSpec burst;
     burst.frameCount = 2;
-    EXPECT_EQ(manager.ArmBurst(NodeId{1}, burst).code, StatusCode::FailedPrecondition)
+    const Status armed = manager.ArmBurst(manager.GetPlan().value.nodes.front().id, burst);
+    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition)
         << "a burst was armed against a cone of " << cone << ", so every cell is armable from "
            "anywhere";
+    EXPECT_NE(armed.detail.find("not a usable measurement"), std::string::npos)
+        << "refused for a cone of " << cone << ", but as \"" << armed.detail
+        << "\" — a broken plan reported as a user who needs to turn the phone";
     ASSERT_TRUE(manager.End().ok());
   }
 }
@@ -947,18 +991,37 @@ TEST_F(CaptureSession, TheHeldFractionNeverLeavesTheRangeItPromises) {
     return guided.ok() ? guided.value : CaptureGuidance{};
   };
 
-  // Deliberately off the 16 ms grid, so the dwell overshoots rather than landing on it: ticks of
-  // 250 ms credit 250 each, and eight of them is 2000 exactly — 290 does not divide 2000.
+  // Ticks of 290 ms: off the 16 ms grid the older tests use, and chosen so the dwell overshoots
+  // its boundary rather than landing on it.
+  //
+  // Whether it *does* overshoot is a fact about `kDwellNs` and `kMaxDwellCreditNs`, which live in
+  // the manager's translation unit and are not the test's to read — so the arrangement is checked
+  // rather than assumed, below. A reviewer showed why: retuning the credit ceiling to 250 ms makes
+  // 290 ms ticks credit 250 each, eight of them land on exactly 2000, and this test goes on
+  // passing while measuring nothing at all — the cap could be deleted underneath it. The check
+  // reconstructs the step from the published fractions and asks whether one more of them would
+  // have crossed 1, which needs no constant and fails loudly the day the tuning changes.
   ASSERT_EQ(tick().action, GuidanceAction::HoldStill) << "the fixture expects a held cell";
   bool fired = false;
+  double previous = 0.0;
+  double step = 0.0;
+  double lastBeforeFire = 0.0;
   for (int i = 0; i < 20 && !fired; ++i) {
     clock.AdvanceMs(290);
     const CaptureGuidance guidance = tick();
-    EXPECT_GE(guidance.heldFraction, 0.0) << "on tick " << i;
     EXPECT_LE(guidance.heldFraction, 1.0)
         << "the ring was told to draw more than a full circle, on tick " << i;
     fired = guidance.action == GuidanceAction::Fire;
+    if (!fired) {
+      step = guidance.heldFraction - previous;
+      lastBeforeFire = guidance.heldFraction;
+      previous = guidance.heldFraction;
+    }
   }
+  EXPECT_GT(lastBeforeFire + step, 1.0 + 1e-9)
+      << "these ticks divide the dwell exactly, so the firing tick lands on 1.0 and this test "
+         "cannot tell a capped fraction from an uncapped one — retune the tick, or the dwell "
+         "constants moved";
   EXPECT_TRUE(fired) << "the dwell never completed, so the overshoot was never reached";
 }
 
@@ -1022,7 +1085,6 @@ TEST(CaptureSessionClock, TimeRunningBackwardsDoesNotTakeBackDwellTheUserHeld) {
   clock.Set(0);
   const double afterRewind = tick().heldFraction;
   EXPECT_GE(afterRewind, banked) << "a clock that stepped back took away dwell the user held";
-  EXPECT_LE(afterRewind, 1.0);
 }
 
 TEST_F(CaptureSession, ANewSessionDoesNotInheritTheLastOnesDwell) {
@@ -1974,6 +2036,57 @@ TEST_F(CaptureSession, ABurstTakesNoFramesFasterThanTheCameraCanMakeThem) {
   clock.AdvanceMs(8);
   ASSERT_TRUE(manager->OnMotion({}).ok());
   EXPECT_EQ(camera->FramesTaken(), 2);
+}
+
+TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepresentablePeriod) {
+  // `maxBurstFps` is a double arriving through a resource-access contract, and the manager turns
+  // it into a nanosecond period by reciprocal. Nothing bounds the reciprocal: at 1e-10 fps the
+  // period is 1e19 ns, which does not fit in an `int64_t`, and converting a floating value outside
+  // a type's range is undefined rather than merely wrong. Measured under UBSan: "1e+19 is outside
+  // the range of representable values of type 'long int'".
+  //
+  // Not reachable from the shipped browser adapter, which never sets the field — which is an
+  // argument for the guard rather than against it. A camera port is a contract with more than one
+  // implementation, and the number is the platform's rather than ours.
+  //
+  // The chosen answer is a cap rather than a refusal: a camera claiming less than one frame an
+  // hour cannot be burst from at all, and there is no useful difference between waiting an hour
+  // and waiting three hundred years. The cap keeps the value representable and lets the ordinary
+  // "the camera's rate is the floor" arithmetic run on it.
+  for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min()}) {
+    CameraCapabilities absurd = camera->Capabilities();
+    absurd.maxBurstFps = fps;
+    camera->SetCapabilities(absurd);
+    Begin();
+
+    BurstSpec burst;
+    burst.frameCount = 2;
+    burst.intervalMs = 0;
+    burst.settleMs = 0;
+    const int before = camera->FramesTaken();
+    ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok()) << "fps " << fps;
+
+    // A minute, which is inside the cap. No frame yet: the camera says it cannot produce one for
+    // an hour, and that floor is the whole point of the arithmetic.
+    //
+    // This is what makes the undefined conversion *observable* without a sanitizer. Out-of-range
+    // `static_cast<int64_t>` of 1e19 yields `INT64_MIN` on the usual hardware — a hugely negative
+    // period, which loses `byCamera > interval` and silently removes the floor. So the symptom is
+    // not a crash or a wrong number in a log: it is a burst that fires immediately off a camera
+    // that just said it cannot.
+    clock.AdvanceMs(60'000);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+    EXPECT_EQ(camera->FramesTaken(), before)
+        << "a camera claiming " << fps << " fps produced a frame a minute after arming, so its "
+           "frame period was not a representable number";
+
+    // Past the cap, so the burst does eventually run rather than hanging forever.
+    clock.AdvanceMs(3'600'000);
+    ASSERT_TRUE(manager->OnMotion({}).ok());
+    EXPECT_GT(camera->FramesTaken(), before)
+        << "a camera claiming " << fps << " fps stalled the burst past the cap as well";
+    ASSERT_TRUE(manager->End().ok());
+  }
 }
 
 TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {

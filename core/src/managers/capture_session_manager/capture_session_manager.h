@@ -80,6 +80,12 @@ class CaptureSessionManager final : public ICaptureSessionManager {
 
   // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
   // spec asked for and what the camera says it can deliver.
+  // The camera's own frame period in nanoseconds, or zero when the platform will not say.
+  //
+  // One place rather than the reciprocal spelled twice, because the reciprocal is the part that
+  // needs care: `maxBurstFps` is a double from a resource-access contract and nothing bounds
+  // 1e9 divided by it.
+  int64_t CameraFramePeriodNs() const;
   int64_t BurstIntervalNs() const;
   // How long the armed burst waits after arming before its first frame, in nanoseconds, on the
   // same two floors — a different quantity from the interval, and the camera's rate bounds it for
