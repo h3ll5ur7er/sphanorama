@@ -88,6 +88,18 @@ could not.
 - **Asking is its own problem, and the read-back exposed it.** The first device reading came back
   `focus · exposure refused · white balance refused`, and how the page should ask instead is a
   decision of its own: **ADR 0031**.
+- **A lock write that has not answered is not a refusal, and a burst does not fire over one.** The
+  page bounds every write to the camera at three seconds, because `applyConstraints` is a promise
+  the platform owns and a track pulled away mid-call settles nothing. That bound answers the
+  caller; it does not cancel the write, which stays on the chain and reaches the track whenever the
+  track becomes reachable. Manufacturing the timeout into a refusal — the same
+  `{ok: false, CameraUnavailable}` a camera that says no produces — made every caller treat "no
+  state" as a known state, and the burst armed on it would have had the abandoned write land in the
+  middle of it: five frames straddling an exposure change, which is the whole failure this ADR
+  exists to prevent, reached by the one path where nobody was claiming otherwise. So the timeout is
+  now its own answer, the arm is refused, and the release queued behind the abandoned write puts
+  the camera back into the state the core was told about. It costs one burst on a camera that
+  answers late; the retry works as soon as the chain drains.
 
 ## Rejected alternative
 **Lock once for the whole session.** The page could apply the locks when capture begins and hold

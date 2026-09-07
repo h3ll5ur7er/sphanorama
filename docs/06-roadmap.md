@@ -484,10 +484,28 @@ branch's own core, which is the same "roughly a third".
 Recorded because the next person measuring here should rebuild the core for *this* branch first.
 `tools/gate.sh` is the only thing that does it as part of a run.
 
-**A note on the ADR numbers here.** This branch references ADR 0041 and ADR 0042, which live on the
-`claude/aim-decides-the-cell` branch and not yet on `main`. The two changes are a pair — that branch
-makes aim name the cell under the reticle whether or not it is captured, and this one is what lets a
-user *see* which cells those are — so this branch is written to merge after it.
+**Open: the pose has no age, and one refusal now depends on it.** `CaptureSessionManager` refreshes
+`pose_state_` only on a tick that carried samples, so a sensor that dies mid-session freezes it —
+and the page's pump used to ask for guidance only when there were samples or a burst was running, so
+a dead sensor froze the whole loop on its last good value. The pump now has a 250 ms heartbeat, so
+the *loop* survives — but the pose it is asking about does not, and that is the part still open:
+guidance keeps answering, from an orientation nothing has refreshed. Everything downstream then agrees with each
+other and with nothing real: the reticle sits on a cell the camera has left, and `ArmBurst`'s aim
+check (ADR 0041) *permits* a burst against it, which is that ADR's own failure reached through a
+stale pose instead of a stale target. Nothing detects it. `PoseSample.timestampNs` is in the
+sensor's time base and `IClock::MonotonicNs` is in the manager's — *in the implementations*. No
+contract says so: neither `PoseSample`, `ImuSample` nor `utilities/clock.h` documents an epoch at
+all, so "the two do not subtract" is a property nothing prevents a future port from breaking in
+either direction. Writing the time bases into the contract is arguably the first half of this work.
+
+The signal that already knows the difference is `guidance.stability`, and it is better than it
+looks: the manager does not compute it — it asks `IPoseEngine::Stability` and copies the answer
+when it succeeds — and on the sample-less tick this is about, `OrientationPoseEngine` *refuses*
+(`FailedPrecondition` on an empty span, deliberately, because reporting stability for a dropout
+would let a burst fire blind). So during a freeze the field is not stale, it is absent. Something
+has to notice that nobody is asking, decide how old is too old, and say so on screen — a frozen
+reticle with no explanation is what a user gets today. Worth doing before the dwell trigger lands, since a trigger that fires on its own will
+reach this state without anybody pressing anything.
 
 ---
 

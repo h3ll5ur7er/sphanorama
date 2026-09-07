@@ -152,7 +152,26 @@ struct PoseSample {
   int64_t timestampNs = 0;
   Quat orientation;
   Vec3 angularVelocity;
-  double confidence = 0.0;   // [0,1]
+  // How much the orientation above is worth, in [0,1].
+  //
+  // **Zero means no reading has ever anchored it**, which is not the same as "nothing has moved
+  // it": integrating a gyroscope's rates turns the orientation degrees away from where it started
+  // and says nothing whatever about where that was. A stream of rates alone reports zero for its
+  // whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
+  // that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
+  //
+  // Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
+  // cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
+  // for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+  // *from* one — drifting away from a direction somebody measured, which is worth aiming with and
+  // an unanchored integration is not.
+  //
+  // The old gloss said zero meant nothing had moved the orientation. An engine written against it
+  // reports 0.5 for a heading nobody measured, and every rule above then fires on it: zero of
+  // thirty-two cells armable on the shipped tessellation, with the client in aimed mode so nothing
+  // on screen says why. This sentence is what a second `IPoseEngine` is written against, so it is
+  // the sentence that has to be right.
+  double confidence = 0.0;
   bool visuallyCorrected = false;
 };
 
@@ -263,7 +282,21 @@ struct BurstSpec {
 };
 
 // ---------------------------------------------------------------- guidance
-enum class GuidanceAction : uint8_t { Seek, HoldStill, Firing, CellDone, SphereDone, TooFast };
+// What the user should do about the cell guidance is naming.
+//
+// `CellDone` is an *edge*: the manager emits it on the one tick a burst fills, and callers act on
+// it once — **unless that tick fails**. Releasing the camera's locks is the last thing a filled
+// burst does, and a track that refuses returns that failure from `OnMotion`, so the cell is
+// committed and no action announces it. The failure winning is deliberate (a camera left locked is
+// the worse problem), which makes this a caller's problem: anything mirroring coverage off
+// `CellDone` has to re-read it on a failed tick too. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
+// already holds a capture, and it is true on every tick the phone stays there. They were briefly
+// the same value, which turned a once-per-cell refresh into one per animation frame.
+//
+// Appended rather than inserted: the wire carries the index.
+enum class GuidanceAction : uint8_t {
+  Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured
+};
 
 struct CaptureGuidance {
   NodeId targetNode;
@@ -271,6 +304,17 @@ struct CaptureGuidance {
   double rollErrorDeg = 0;
   double stability = 0;          // [0,1]
   GuidanceAction action = GuidanceAction::Seek;
+  // Whether the orientation this answer was computed from was a measurement at all.
+  //
+  // It is here because a client has to make the same decision the planner just made and has no
+  // other way to know it made it. With no aim, `Locate` targets by coverage and never says
+  // `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
+  // on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
+  // is wrong for every tick before the first sample arrives, which is what turned twelve browser
+  // tests red when the page tried.
+  //
+  // Appended rather than inserted, because field order is wire order.
+  bool aimKnown = false;
 };
 
 struct CoverageState {
@@ -348,9 +392,32 @@ struct PoseState {
   PoseMode mode = PoseMode::Fused;
   MotionCapability capability = MotionCapability::None;
   PoseSample pose;
-  // Whether any sample has been folded in at all. Distinguishes "identity because nothing has
-  // been seen" from "identity because the device is level and facing north".
+  // Whether any sample has arrived at all. It is what the elapsed time between samples is measured
+  // from, so the first sample of a stream sets it whether or not it moved anything — a rate has no
+  // orientation in it until there is an interval to integrate it over.
+  //
+  // It is *not* the answer to "is this orientation a measurement": that is `anchored` below, and
+  // `PoseSample.confidence` is what callers should read. The two were one flag, and the first
+  // rate-only sample of a stream then reported an integrated pose before anything was integrated.
   bool observed = false;
+  // Whether this orientation descends from an absolute reading — not whether something moved it.
+  //
+  // Set the first time an attitude is folded in and never cleared, so it survives the stretches
+  // where `absolute` goes false: dead reckoning after a reading is still an estimate *of a
+  // direction somebody measured*, which is what confidence 0.5 means.
+  //
+  // The distinction is the whole of ADR 0042 and it is not the one this field was first written
+  // with. It used to mean "something moved the orientation", which dead reckoning also does — so a
+  // gyroscope-only stream integrating away from the identity it was born with reported confidence
+  // 0.5 for a heading nobody had ever measured, and `ArmBurst` then enforced the acceptance cone
+  // against it: zero of thirty-two cells armable on the shipped tessellation, which is ADR 0042's
+  // own failure reached through the other door. A rate says how fast the device is turning and
+  // nothing about where it started.
+  //
+  // Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
+  // an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
+  // keeps a phone with no motion sensor able to capture at all.
+  bool anchored = false;
   // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
   // is derived from this, so it has to survive between calls.
   bool absolute = false;

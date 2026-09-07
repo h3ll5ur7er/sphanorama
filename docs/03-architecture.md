@@ -342,13 +342,19 @@ sequenceDiagram
   M2-->>U: highlighted regions on the sphere
   U->>M1: RequestRetake(nodeId)
   M1-->>U: reticle re-armed
-  Note over U,M1: UC-1 runs again for that cell only
+  Note over U,M1: UC-1 runs again for that cell only —<br/>the user must aim at it again before ArmBurst will take a burst (ADR 0041)
   U->>M2: Invalidate(buildId, [nodeId])
   M2->>M2: recompute dirty sub-graph only
   M2-->>U: BuildProgress → updated tiles
 ```
 
 The client sequences the two managers; they never call each other.
+
+A retake marks the cell and nothing more. The burst that fills it goes through `ArmBurst` like any
+other and is refused while the camera is aimed somewhere else (ADR 0041), so a retake is an
+instruction to go back and re-shoot rather than a shutter that fires where the phone happens to be
+pointing — which is the failure that rule exists to stop. On a device with no motion sensor there
+is no aim to check and the retake behaves as it always did.
 
 ### UC-3 · Pick a different frame from the burst by hand
 
@@ -364,9 +370,28 @@ mechanism, two features. That is the payoff of modelling the build as a graph.
 
 `IMotionSensorAccess.Capabilities()` reports `none`. `CaptureSessionManager` configures
 `PoseEngine` in vision-only mode, where orientation comes from frame-to-frame tracking seeded by
-`RegistrationEngine` output rather than from integration. `CoveragePlannerEngine` switches to a
-looser acceptance tolerance. No other component learns that sensors were absent — the volatility
-is contained in V5 plus one flag in the plan spec.
+`RegistrationEngine` output rather than from integration — **which does not exist yet**:
+`RegistrationEngine` is null, so the pose stays at identity for the life of the session and such a
+capture is genuinely blind. Cells fill in coverage order and nothing verifies the pixels match the
+direction they are filed under; that is the honest state of UC-4 and only a real registration engine
+changes it.
+
+`CapturePlanSpec` carries a `motion` field, and the manager reads it to choose the pose mode — but
+**no planner does**, so the claim that `CoveragePlannerEngine` switches to a looser acceptance
+tolerance has never been true. The cone is
+whatever the client asked for, sensor or no sensor. What *is* true is that guidance stops preferring
+the cell under an orientation nobody measured and targets by coverage instead (ADR 0042), which is
+what keeps a blind capture moving from cell to cell.
+
+Three places learn that sensors were absent, and all three are there to
+give the same answer as if it had not: `ArmBurst`'s aim check applies only to a pose that was
+actually measured (a non-zero `PoseSample.confidence`), so a device that reports identity forever can
+still arm every cell rather than the one that happens to sit straight ahead (ADR 0041); and `Locate`
+prefers the cell the camera is inside only when there is an aim to prefer (ADR 0042); and the page
+reads the `aimKnown` those two produce, because a client has to make the same decision and cannot
+derive it. Apart from those the volatility is contained in V5 — and the third one is the honest
+cost of the first two: once the core answers differently, something has to tell the client so, and
+that is a component learning the difference however carefully it is worded.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 
