@@ -166,7 +166,9 @@ estimate. Its loop is:
 - `OfferFrame(frame, pose)` → asks `FrameQualityEngine` to score it, decides whether it joins the
   cell's candidate set (and whether the burst continues), asks `CoveragePlannerEngine` whether the
   cell is now satisfied, persists through `IFrameStoreAccess`/`IProjectStoreAccess`.
-- `RequestRetake(nodeId)` → clears or supplements a cell's candidates and re-arms that reticle.
+- `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
+  frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
+  Additively it marks nothing a client can act on in this build; see UC-2 and the contract.
 - `CandidatePreview(node, candidate, maxEdge)` → asks `FramePreviewEngine` for a reduced copy of
   one candidate's frame, and puts the frame back in the tier it found it in. This is the only call
   in the contracts that answers with pixels, and the reduction is why: a review client needs to
@@ -288,11 +290,15 @@ sequenceDiagram
   P-->>M: pose, stability
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
-  M-->>U: Guidance{node, error, "hold still"}
-  Note over U: the client applies and confirms the locks first (ADR 0022)
+  M-->>U: Guidance{node, error, "hold still", heldFraction}
+  Note over M: the dwell runs while the cell is held; about two seconds of ticks that carried samples
+  M-->>U: Guidance{node, "fire"}
+  Note over U: nobody presses anything (ADR 0043). The client applies and confirms the locks first (ADR 0022)
   U->>M: ArmBurst(node, burst)
   M->>C: SetLocks(exposure, white balance, focus)
   C-->>M: Ok, or FailedPrecondition naming the locks not held
+  M->>C: Capabilities()
+  C-->>M: what the camera is doing now — a pinned exposure is what drops it to 15 fps (ADR 0045)
   Note over M,C: ticks pass and no frame is taken for burst.settleMs, while the camera converges
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)
@@ -340,9 +346,9 @@ sequenceDiagram
   M2->>E: DetectGhosts(candidates per node)
   E-->>M2: GhostMap{node, region, confidence}
   M2-->>U: highlighted regions on the sphere
-  U->>M1: RequestRetake(nodeId)
-  M1-->>U: reticle re-armed
-  Note over U,M1: UC-1 runs again for that cell only —<br/>the user must aim at it again before ArmBurst will take a burst (ADR 0041)
+  U->>M1: RequestRetake(nodeId, replace: true)
+  M1-->>U: the cell is emptied of every frame the store will let go of
+  Note over U,M1: UC-1 runs again for that cell only — the dwell fires it (ADR 0043),<br/>and the user must aim at it again before ArmBurst will take a burst (ADR 0041)
   U->>M2: Invalidate(buildId, [nodeId])
   M2->>M2: recompute dirty sub-graph only
   M2-->>U: BuildProgress → updated tiles
@@ -350,11 +356,21 @@ sequenceDiagram
 
 The client sequences the two managers; they never call each other.
 
-A retake marks the cell and nothing more. The burst that fills it goes through `ArmBurst` like any
+A retake marks nothing — there is no retake flag on a node, in the manager or in `CoverageNode`.
+What `RequestRetake` does is abort a burst in flight on that cell, and, in its replacing form,
+empty the cell. The burst that fills it afterwards goes through `ArmBurst` like any
 other and is refused while the camera is aimed somewhere else (ADR 0041), so a retake is an
 instruction to go back and re-shoot rather than a shutter that fires where the phone happens to be
-pointing — which is the failure that rule exists to stop. On a device with no motion sensor there
-is no aim to check and the retake behaves as it always did.
+pointing — which is the failure that rule exists to stop. There is always an aim to check: a
+session cannot begin on a device with no motion sensor (ADR 0044).
+
+Only the replacing form of `RequestRetake` reaches that burst in this build, and the contract says
+so rather than leaving a reader to find out. Keeping the existing evidence leaves the cell covered,
+so guidance answers `AlreadyCaptured` and the dwell — which arms every burst since ADR 0043 — never
+matures on it. And a replacing retake empties the cell of everything the frame store will let go
+of: a frame it refuses to forget keeps its candidate, because the bytes are still charged and
+dropping the last handle to them would orphan them. The retake flow that closes the additive case
+is Phase 3.
 
 ### UC-3 · Pick a different frame from the burst by hand
 
@@ -368,37 +384,45 @@ mechanism, two features. That is the payoff of modelling the build as a graph.
 
 ### UC-4 · No motion sensors (permission denied on iOS)
 
-`IMotionSensorAccess.Capabilities()` reports `none`. `CaptureSessionManager` configures
-`PoseEngine` in vision-only mode, where orientation comes from frame-to-frame tracking seeded by
-`RegistrationEngine` output rather than from integration — **which does not exist yet**:
-`RegistrationEngine` is null, so the pose stays at identity for the life of the session and such a
-capture is genuinely blind. Cells fill in coverage order and nothing verifies the pixels match the
-direction they are filed under; that is the honest state of UC-4 and only a real registration engine
-changes it.
+`IMotionSensorAccess.Capabilities()` reports `none`, or fails to answer. `CaptureSessionManager`
+refuses: `Begin` and `Resume` return `SensorUnavailable`, before either opens a camera, and the
+page turns that into a sentence saying what is required and what is missing (ADR 0044).
 
-`CapturePlanSpec` carries a `motion` field, and the manager reads it to choose the pose mode — but
-**no planner does**, so the claim that `CoveragePlannerEngine` switches to a looser acceptance
-tolerance has never been true. The cone is
-whatever the client asked for, sensor or no sensor. What *is* true is that guidance stops preferring
-the cell under an orientation nobody measured and targets by coverage instead (ADR 0042), which is
-what keeps a blind capture moving from cell to cell.
+It used to capture. `PoseEngine` went into vision-only mode, guidance targeted by coverage instead
+of by aim, `ArmBurst` declined to enforce a cone it had nothing to measure against, and the user
+aimed by eye. All of that worked. What it produced was the problem: cells filled in coverage order
+with whatever the camera happened to be pointing at, nothing anywhere verified that a cell's frames
+came from that cell's direction, and the failure was invisible until a build stage this repo does
+not have yet. Vision-only orientation is what would make those labels true — frame-to-frame
+tracking seeded by `RegistrationEngine` — and `RegistrationEngine` is null. Until it is not, the
+honest answer is a message rather than a sphere.
 
-Three places learn that sensors were absent, and all three are there to
-give the same answer as if it had not: `ArmBurst`'s aim check applies only to a pose that was
-actually measured (a non-zero `PoseSample.confidence`), so a device that reports identity forever can
-still arm every cell rather than the one that happens to sit straight ahead (ADR 0041); and `Locate`
-prefers the cell the camera is inside only when there is an aim to prefer (ADR 0042); and the page
-reads the `aimKnown` those two produce, because a client has to make the same decision and cannot
-derive it. Apart from those the volatility is contained in V5 — and the third one is the honest
-cost of the first two: once the core answers differently, something has to tell the client so, and
-that is a component learning the difference however carefully it is worded.
+`PoseMode::VisionOnly` stays in the contract and nothing selects it. It is what such a capture
+would run in the day the registration engine can carry one; ADR 0044 is the record of why nothing
+reaches it today.
+
+`CapturePlanSpec` still carries a `motion` field and the manager still fills it from the live
+capability — but **no planner reads it**, so the claim that `CoveragePlannerEngine` switches to a
+looser acceptance tolerance has never been true. The cone is whatever the client asked for.
+
+One rule per question survives this, which is the other half of what it bought. `Locate` names the
+cell the camera is inside; `ArmBurst` refuses a burst on two counts — nothing has measured where
+the camera is pointing, or what was measured is outside that cone; the dwell fires. Zero
+`PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
+and a stream carrying angular rates with no attitude in them never anchors at all — and it means
+"no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.
+The page reads the `aimKnown` the planner publishes to park its reticle and stop correcting for
+roll, which is presentation rather than a second copy of the rule.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 
 At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
 `hasSession`. If there is one it offers a resume beside the ordinary enable; both are the same user
 gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed,
-it opens the camera, pushes the lens to the host, and calls `CaptureSessionManager.Resume(project)`
+it establishes the motion capability first — a device reporting none is turned away before
+`getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
+(ADR 0044) — then opens the camera, pushes the lens to the host, and calls
+`CaptureSessionManager.Resume(project)`
 instead of `Create` plus `Begin` — the manager reads the document it wrote, replans from the spec
 and lens that document carries, and hands the frames it names back to the store, so the cells
 already captured keep counting (ADR 0029).
@@ -407,3 +431,11 @@ A client sequencing two managers, and the boundary is what keeps it honest: the 
 whether to offer, the second is the only thing that hands back a session. A refusal from the second
 — a document this build cannot read, a plan the stored spec no longer produces, frames the tier
 lost — goes on screen through `describeFailure`, and a new capture stays one press away.
+
+Except where nothing a press could do would change the answer, and then the offer goes with it.
+`Unsupported` waits for a new build and `SensorUnavailable` waits for a reload, so leaving either
+on screen would invite a press that fails identically (ADR 0039, narrowed by ADR 0044). The
+capture itself is untouched in both cases, though not for the reason this once gave: `Unsupported`
+*is* the document being read and failing to decode, and `SensorUnavailable` is checked after that
+read. What makes the sphere safe is that neither refusal mutates anything — `ReadDocument` is a
+read, and nothing before the sensor check writes — so what goes is the offer, not the sphere.

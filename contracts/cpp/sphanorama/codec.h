@@ -58,6 +58,8 @@ void Encode(Writer& out, const EncodeSpec& value);
 bool Decode(Reader& in, EncodeSpec& value);
 void Encode(Writer& out, const PanoramaRef& value);
 bool Decode(Reader& in, PanoramaRef& value);
+void Encode(Writer& out, const CameraCapabilities& value);
+bool Decode(Reader& in, CameraCapabilities& value);
 void Encode(Writer& out, const ProjectSummary& value);
 bool Decode(Reader& in, ProjectSummary& value);
 void Encode(Writer& out, const ExportSpec& value);
@@ -116,7 +118,7 @@ inline void Encode(Writer& out, const ImuSample& value) {
 }
 
 inline bool Decode(Reader& in, ImuSample& value) {
-  value.timestampNs = static_cast<decltype(value.timestampNs)>(in.GetF64());
+  value.timestampNs = in.GetInt64();
   if (!Decode(in, value.angularVelocity)) return false;
   if (!Decode(in, value.acceleration)) return false;
   value.hasMagnetometer = in.GetBool();
@@ -136,7 +138,7 @@ inline void Encode(Writer& out, const PoseSample& value) {
 }
 
 inline bool Decode(Reader& in, PoseSample& value) {
-  value.timestampNs = static_cast<decltype(value.timestampNs)>(in.GetF64());
+  value.timestampNs = in.GetInt64();
   if (!Decode(in, value.orientation)) return false;
   if (!Decode(in, value.angularVelocity)) return false;
   value.confidence = static_cast<decltype(value.confidence)>(in.GetF64());
@@ -162,7 +164,7 @@ inline bool Decode(Reader& in, FrameRef& value) {
   value.width = in.GetInteger<int32_t>();
   value.height = in.GetInteger<int32_t>();
   value.stride = in.GetInteger<int32_t>();
-  value.timestampNs = static_cast<decltype(value.timestampNs)>(in.GetF64());
+  value.timestampNs = in.GetInt64();
   value.contentHash = in.GetU64();
   return in.ok();
 }
@@ -447,6 +449,29 @@ inline bool Decode(Reader& in, PanoramaRef& value) {
   return in.ok();
 }
 
+inline void Encode(Writer& out, const CameraCapabilities& value) {
+  out.PutF64(static_cast<double>(value.maxWidth));
+  out.PutF64(static_cast<double>(value.maxHeight));
+  out.PutF64(static_cast<double>(value.horizontalFovDeg));
+  out.PutF64(static_cast<double>(value.verticalFovDeg));
+  out.PutBool(value.supportsExposureLock);
+  out.PutBool(value.supportsFocusLock);
+  out.PutBool(value.supportsTorch);
+  out.PutF64(static_cast<double>(value.maxBurstFps));
+}
+
+inline bool Decode(Reader& in, CameraCapabilities& value) {
+  value.maxWidth = in.GetInteger<int32_t>();
+  value.maxHeight = in.GetInteger<int32_t>();
+  value.horizontalFovDeg = static_cast<decltype(value.horizontalFovDeg)>(in.GetF64());
+  value.verticalFovDeg = static_cast<decltype(value.verticalFovDeg)>(in.GetF64());
+  value.supportsExposureLock = in.GetBool();
+  value.supportsFocusLock = in.GetBool();
+  value.supportsTorch = in.GetBool();
+  value.maxBurstFps = static_cast<decltype(value.maxBurstFps)>(in.GetF64());
+  return in.ok();
+}
+
 inline void Encode(Writer& out, const ProjectSummary& value) {
   out.PutF64(static_cast<double>(value.id.value));
   out.PutString(value.title);
@@ -460,7 +485,7 @@ inline void Encode(Writer& out, const ProjectSummary& value) {
 inline bool Decode(Reader& in, ProjectSummary& value) {
   value.id.value = in.GetId();
   value.title = in.GetString();
-  value.createdAtMs = static_cast<decltype(value.createdAtMs)>(in.GetF64());
+  value.createdAtMs = in.GetInt64();
   value.nodesTotal = in.GetInteger<int32_t>();
   value.nodesSatisfied = in.GetInteger<int32_t>();
   value.hasBuild = in.GetBool();

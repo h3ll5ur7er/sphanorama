@@ -295,8 +295,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   resume flow arrived, what it would need was "a project that stops being offered rather than a
   document that has been destroyed". The flow landed alongside it and did neither, and the two ADRs
   were never reconciled on it. They are now, and the answer is close to 0035's instinct but scoped
-  differently (ADR 0039): the offer survives every refusal except `Unsupported`, and the withdrawal
-  lives in the tab that saw it rather than anywhere durable.
+  differently (ADR 0039): the offer survives every refusal except `Unsupported` — and, since
+  ADR 0044, `SensorUnavailable` — and the withdrawal lives in the tab that saw it rather than
+  anywhere durable.
 
   The split is between a refusal about *this attempt* and one about *this build*. A tier this
   device does not currently hold, a store that would not take the frames back, a camera another tab
@@ -332,6 +333,175 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   The number is stated rather than derived from the store's own ceiling, which is the weaker half
   of the decision and is argued in the ADR: what would change it is a device where thirteen frames
   is too many, and the arithmetic to redo it sits beside the constant.
+- **A capture needs a motion sensor — decided, and the degraded path is gone.** ADR 0042 made a
+  phone with no orientation a supported configuration: guidance targeted by coverage, `ArmBurst`
+  declined to enforce a cone it had nothing to measure, and the user aimed by eye. It worked, and
+  it took three rounds of review across three layers to make it work.
+
+  What it produced is the reason it is gone. Cells filled in coverage order with whatever the
+  camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
+  with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
+  `RegistrationEngine` is what would make the labels true and it is null; getting there is far
+  future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
+  opens a camera, and the user gets a sentence saying what is required and what is missing
+  (ADR 0044).
+
+  The second path went with it, which is most of the change: `ArmBurst` enforces the cone
+  on two counts rather than one — nothing measured, then outside the cone —
+  `StartTracking` always selects `PoseMode::Fused`, `canCapture` and `#capture`
+  are gone entirely — the dwell fires every burst and there is no second way — and `beginSession`
+  has no "without motion" line to write. Zero `PoseSample.confidence` still exists and now means
+  only "no reading yet": a session's first ticks, and a stream carrying rates with no attitude.
+  `Locate` keeps its unaimed branch for exactly that, which was worth catching — deleting it, as
+  the ADR's first draft said to, would have let a rate-only stream mature a dwell against an
+  unmeasured identity and fire a burst at a cell nobody pointed at.
+
+  It cost the browser suite its arrangement, and that was overdue: this runner reports no
+  orientation until a test dispatches one, so every capture test in it had been running the
+  sensorless path. They now aim at a cell of the plan the core actually made, through the inverse
+  of the adapter's own conversion, checked against that conversion rather than assumed.
+- **A session that begins and can never capture — open, and recorded rather than closed.** ADR
+  0044 refuses a capture where `Capabilities()` says `None`, which is the whole of what a device
+  can be asked before a session starts. It does not cover a port that reports a capability and
+  then delivers a stream carrying angular rates with no attitude in it: nothing anchors the pose,
+  `Locate` never says `HoldStill`, the dwell never matures, and since ADR 0043 the dwell is the
+  only thing that arms a burst. The reticle sits parked and the user is told nothing.
+
+  Not reachable from the shipped page — the browser adapter builds every sample from an
+  orientation event, so every sample carries an attitude — which is why this is written down
+  rather than fixed in the same breath. What would close it is a decision this repo has not
+  needed to make: how long a session waits for its first reading before saying so, and whether
+  that sentence comes from the manager or the page. `ARateOnlyStreamNeverMaturesADwell` pins the
+  half that is settled, which is that such a stream must never be mistaken for an aim.
+- **A camera's frame rate is read once and never re-asked — closed by ADR 0045.**
+  `maxBurstFps` was taken from `track.getSettings()` inside `open()`, copied into the manager at
+  `Begin`/`Resume`, and never invalidated — while `setLocks` drives the `applyConstraints` that
+  most often changes it. `ICameraAccess::Capabilities()` is a read-only second call and
+  `ArmBurst` uses it, after the locks, on the rule that a capability is re-asked where it is
+  consumed. The rule is the deliverable rather than the field: `maxWidth` has the same shape the
+  day a track renegotiates.
+
+  The pull is half of it. A resource-access port is resident (ADR 0014) — the host runs in the
+  worker and the `MediaStream` is in the page — so `Capabilities()` reads the page's cache rather
+  than a track, and the page is what keeps that cache true: it re-reports the camera after
+  `setLocks` settles. That re-report is a *refresh* rather than an open — a separate verb on the
+  host that updates a camera it has and cannot conjure one it has not — because a push can lose the
+  race with the core's own close, and a page guard can only refuse on a close it has been told
+  about. Three reviewers found the
+  pull-only version of this within minutes of each other, which is why the ADR carries a withdrawn
+  rejection rather than a tidy one.
+
+- **The camera port's `EM_JS` seam has nothing pinning its shape — closed by ADR 0045.**
+  `host_camera_metric` and `capture-host.ts` agreed by an integer index and a property name, and
+  neither was checked: `maxBurstFps` was in the C++ struct for the life of the field, had no
+  `case`, and read as zero, which is a legal answer. `ICaptureSessionManager::CameraInUse()` puts
+  what the core read back on the boundary, and `every camera capability the core reads crosses the
+  seam it reads it through` is the browser test that reads the whole struct back through it — the
+  only one in the tree that does. (Not "the only one that runs `BrowserCameraAccess::Open`", which
+  this said in two tenses and was never true in either: `Begin` opens the camera, so almost every
+  test that clicks `#enable` runs `Open` — almost, because `RequireMotion()` comes first and a
+  device with no motion sensor refuses before a camera is asked for, which is ADR 0044's whole
+  ordering and what three of those tests assert. What none of them did was look at what `Open`
+  answered.) Renaming `case 8` to `case 9` fails it; before, that left the native suite, vitest
+  and the browser suite all green with the floor dead.
+
+  Seven of the eight metrics, measured by renumbering each in turn: `supportsTorch` is `false` on a
+  runner with no torch whether the metric is read or not, so identity cannot separate the two. What
+  covers the rest of the seam is `the camera the core paces a burst by is the one the locks left
+  behind`, which pins an exposure — dropping the fake camera to 15 fps — and asserts the core paces
+  by 15. Every arm runs `Capabilities()` under wasm — `ArmBurst` calls it unconditionally after a
+  successful `SetLocks` — so what is unique about that test is that it is the only one anywhere
+  that asserts on the *answer*. The C++ contract suite cannot: it has one implementation and it is
+  a fake.
+
+- **A field of view nobody measured is reported as one the camera stated — open, and
+  pre-existing.** `CameraCapabilities` now documents `horizontalFovDeg`/`verticalFovDeg` as 0 where
+  nothing has been *derived*, rather than where nothing was measured — the sentence was corrected
+  on the branch that added ADR 0045, because the old one stated a rule the only real platform
+  cannot keep: `deriveFieldOfView` answers a non-zero pair unconditionally, from
+  `ASSUMED_LONG_EDGE_FOV_DEG`, including for a 0×0 camera. The correction makes the header honest
+  and leaves the gap exactly where it was: there is still no value meaning *nobody measured this*,
+  so no reader can tell an assumption from a measurement.
+
+  ADR 0045 did not create this but it did publish it: `CameraInUse()` is on the boundary now and is
+  documented as what the camera *reports*, so a status row rendering it shows the user 66° and a
+  trigonometric consequence of 66°, attributed to their lens.
+
+  The browser test cannot hold this pair the way it holds the rest — the page adapter's
+  `CameraCapabilities` has no field of view at all, since the host derives the pair from resolution
+  and a constant, so identity is impossible here rather than merely weak. Its
+  `expect(seen.horizontalFovDeg).toBeGreaterThan(0)` cannot fail either, which two reviewers read
+  in opposite directions and neither got right. Measured, by renumbering `case 2` off the end and
+  rebuilding the core: the metric reads 0, `Begin` refuses with *"the lens field of view is unknown;
+  nothing can be tessellated"*, and the test dies fifty lines earlier — as does every browser test
+  that opens a camera. So those two metrics are the most strongly pinned in the switch, by the core
+  refusing to plan rather than by any assertion.
+
+  What none of that touches is a *wrong constant*, which is the actual defect here and is
+  unfalsifiable by construction: nothing in the tree measures the angle, so nothing can disagree
+  with 66°.
+
+  The honest fix is on the contract rather than in the test — a way for the struct to say
+  "assumed", so the client can label it — and that is a contract change with an ADR behind it.
+  Phase 2's bundle adjustment estimates focal length from the frames, which is the only way to
+  actually know, and would give the field its first real answer.
+
+- **The white-balance lock has no capability field — open, and pre-existing.**
+  `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`
+  off the track, and the worker host forwards it as camera metric 6 — but `CameraCapabilities` in
+  `contracts/cpp/sphanorama/types.h` has fields for exposure, focus and torch and none for white
+  balance, so the browser port reads that metric nowhere and the core cannot know whether the lock
+  it is asking for is one the camera offers. Exposure and focus are checked against their fields
+  before `SetLocks` is trusted (ADR 0022); white balance is asked for and believed.
+
+  Found while wiring `maxBurstFps` through the same seam, and deliberately not fixed there: adding
+  a field to a contract struct is a contract change, which wants an ADR and a decision about what
+  a camera that offers no manual white balance should make `SetLocks` do — refuse, or take the two
+  locks it can and say which. The answer is probably "the same as exposure", but "probably" is not
+  what a contract is for.
+
+- **`contract_gen` reads a sentence about the marker as the marker — open.** `tools/contract_gen.py`
+  tests `BOUNDARY_MARKER in d` against each comment line above a class, so
+  `IMotionSensorAccess`'s own "not marked `@boundary`, because this contract moves bytes through
+  the shared heap" was taken as the mark. The interface was mirrored into
+  `contracts/ts/contracts.d.ts` as a declaration nothing imports, and the line that triggered it
+  was swallowed on the way, leaving the sentences either side of it joined mid-clause.
+
+  The header is worded around it for now, so the wrong file stops shipping. The fix is to require
+  the marker to *begin* a comment's text rather than appear anywhere in it, with a generator test
+  for the case that was wrong — small, and worth a change of its own, because marker detection
+  decides what crosses the boundary at all and a subtle change there is not something to slip
+  into a PR about something else.
+- **Two capture loops from three buttons — open, and pre-existing.** Tracked as
+  [#50](https://github.com/h3ll5ur7er/sphanorama/issues/50). `pump` says it is "the one
+  place that can promise there is only ever one", and nothing enforces that: `#new-capture` stays
+  live while `enable` runs, so a refused resume followed by a resume press and then a new-capture
+  press starts two loops. Found by a reviewer on PR #49, against ADR 0039's refused-resume flow.
+
+  What it looks like is worse than "two loops", and a later round measured it: `pickUp` writes the
+  buttons' visibility while `startFresh` writes `#stage`, both from answers that crossed the
+  worker — so the visible end state of that sequence is a **running capture underneath the line
+  "a session is already in progress; end it first"**. A user reading that reloads, which costs
+  them nothing but is the app telling them it is broken while it works.
+
+  Not fixed there because the honest fix is not local. One guard owning "a loop is starting or
+  running" would replace three buttons' worth of `hidden`/`disabled` bookkeeping that `enable`,
+  `beginSession`, `pickUp` and `pump` all write, and each of those paths wants a test. That is a
+  change to the page's state machine and belongs in a branch of its own rather than inside one
+  about motion sensors.
+- **A second guard, for the other thing the gate could not see.** A note explaining one axis of
+  the volatility map was inserted between two of its rows. A markdown table ends at the first
+  blank line, so eleven rows — every engine, resource access and owner from V6 to V16 — stopped
+  being a table and rendered as literal pipe text. Nothing about the source looks wrong; only the
+  page is broken, and only from the gap down. Five review rounds read the paragraph's prose and
+  none rendered the page.
+
+  `tools/markdown_table_check.py` runs beside the conflict-marker checker and on the same
+  argument: documentation is a deliverable (ADR 0007), and a table that stops halfway is worse
+  than an out-of-date one because it does not read as damage — it reads as a shorter table. It
+  compares column counts rather than merely finding pipes, so a diagram drawn with pipes is not a
+  finding, and its own first version missed the very document that prompted it until its tests
+  said so. **Done.**
 - **A guard for the one thing the gate could not see.** A three-way merge left a `>>>>>>>` line in
   this file and the full gate went green over it: the compilers only read C++ and TypeScript, where
   a marker is a syntax error anyway, so the files actually at risk were the ADRs and these notes.
@@ -426,12 +596,18 @@ were plausible:
 - *"one or two cells are on screen at all times, so the arrow is simply absent."* The first clause is
   right; the second does not follow. The arrow's condition is about the **target** cell, not about
   any cell. Sweeping elevations and azimuths across a few hundred randomly chosen capture states, a
-  level phone raises the arrow **roughly a third of the time** — two independent runs read 34.6%
+  level phone raised the arrow **roughly a third of the time** — two independent runs read 34.6%
   and 37.5%, and a third 39.4%, which is what a figure sampled over random coverage states does.
   The number is not the point and a single decimal place would be false precision; what matters is
-  that it is *not* near zero, and that it is symmetric in elevation, so nothing about it
-  distinguishes "down". (A reproducible version of this would have to state the capture states it
+  that it was *not* near zero, and that it was symmetric in elevation, so nothing about it
+  distinguished "down". (A reproducible version of this would have to state the capture states it
   sampled, which is the standard the rest of this section is now held to.)
+
+  **Past tense throughout, and that is not a stylistic choice.** Every figure in this bullet was
+  measured under the targeting rule ADR 0041 replaced, where the target could be a cell off screen.
+  Under the rule that shipped it is zero — see the paragraph below, which is the live number. A
+  reviewer read the two forty lines apart and asked which one was true; both are, of different
+  builds, and only this sentence said so.
 - *"Tilt down, the whole ring leaves the field of view."* At every elevation from −90 to +90 there
   are between one and five cell centres on screen; the view never empties, which is what a
   sphere-covering tessellation means. On a fresh capture the arrow is raised at 0 of 2664 attitudes.
@@ -462,7 +638,9 @@ nothing to point at, and every assertion in it fails without `#target-arrow[hidd
 none; }`. The half that asserted the arrow *can* appear is gone, because it rested on the rule
 ADR 0041 deleted and there is no arrangement left that raises it.
 
-**Still open, and in a shape somebody can pick up.**
+**Still open, and in a shape somebody can pick up** — tracked as
+[#52](https://github.com/h3ll5ur7er/sphanorama/issues/52), because a question this size does not
+belong only in a document nobody is assigned.
 
 1. *What should the arrow point at?* This is now the first question rather than the third, because
    the answer decides whether the feature exists. It points at `targetNode`, which since ADR 0041 is
@@ -524,8 +702,26 @@ when it succeeds — and on the sample-less tick this is about, `OrientationPose
 (`FailedPrecondition` on an empty span, deliberately, because reporting stability for a dropout
 would let a burst fire blind). So during a freeze the field is not stale, it is absent. Something
 has to notice that nobody is asking, decide how old is too old, and say so on screen — a frozen
-reticle with no explanation is what a user gets today. Worth doing before the dwell trigger lands, since a trigger that fires on its own will
-reach this state without anybody pressing anything.
+reticle with no explanation is what a user gets today. It outlived the dwell trigger it was written
+to precede: ADR 0043 landed, so a capture now reaches this state without anybody pressing anything,
+and the dwell's credit bound limits what a resumed loop can bank rather than saying anything about
+what a frozen one reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
+
+### The stage line has no notion of what supersedes what
+
+Found by round 16's shell-ordering lens. `sayForAWhile` holds a message for a fixed time, and the
+guidance-failure branch writes `#guidance` directly — so a line set just before a failure can sit
+on screen for up to ~1.1 s after the loop has recovered and repainted the reticle, the horizon and
+the markers. The sentence then disagrees with everything around it.
+
+Cosmetic and self-clearing, which is why it was not fixed on the branch that found it: it is a
+stale sentence for one second rather than a wrong state. The fix is not a patch either — it means
+giving the status line a notion of priority, so a recovery can retract a message a timer is still
+holding, and that is a small design decision about the one surface the user reads when something
+has gone wrong.
+
+Worth doing before the surface grows: every message added between now and then is another pair
+that has to be ordered.
 
 ---
 
@@ -569,7 +765,10 @@ measurably faster than a full one (target: an order of magnitude).
   CPU path retained as the correctness reference (a differential test asserts they agree).
 - Threaded feature extraction and blending; single-threaded path verified in CI.
 - PWA polish: installable, fully offline, share-target export, background-safe builds.
-- Degraded modes: no-sensor capture, no-SAB capture, low-memory device profile.
+- Degraded modes: no-SAB capture, low-memory device profile. **Not** no-sensor capture — that is
+  refused rather than degraded (ADR 0044), and what would reopen it is a registration engine
+  good enough to place a live stream of frames without any external reference, which is a
+  Phase 3 question at the earliest.
 
 **Exit:** a stated build-time target met on a mid-range device with WebGPU, the CPU path within a
 stated factor of it, and the app fully functional offline after first load.

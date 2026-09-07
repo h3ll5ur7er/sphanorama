@@ -78,6 +78,33 @@ describe('planOverlay', () => {
     expect(overlay.rings[0].fill).toBeCloseTo(0.4, 9);
   });
 
+  it('keeps a hold inside the range the ring can draw, whatever it is handed', () => {
+    // `RingMark.fill` is a fraction of a circumference, and `strokeDashoffset` is computed from it
+    // in `capture/overlay` markup: past 1 the arc runs the wrong side of the circle, below 0 it
+    // draws more than a full one. The core promises `[0,1]` (`CaptureGuidance.heldFraction`) and
+    // caps its own end, so this is the boundary keeping its own word about a value that crossed a
+    // layer to get here rather than a second copy of the core's rule — a client redrawing whatever
+    // the wire says would have no way to notice the day the wire is wrong.
+    //
+    // Both ends, because the clamp had assertions at neither: reducing it to `input.holding ?? 0`
+    // left all 410 shell tests green, which a reviewer showed by doing exactly that.
+    const ringFor = (holding: number) => planOverlay({
+      plan: plan(cell(1, 0, 0)),
+      coverage: coverage(1),
+      attitude: ahead,
+      targetNode: 1 as NodeId,
+      holding,
+    }).rings[0].fill;
+
+    expect(ringFor(1.15), 'an overshooting hold drew more than a full ring').toBe(1);
+    expect(ringFor(-0.2), 'a negative hold drew a ring past its own start').toBe(0);
+    // The case the clamp does *not* catch on its own: `Math.max(0, NaN)` is `NaN`, the painter
+    // writes the string "NaN" to `strokeDashoffset`, CSSOM discards it, and the ring freezes at
+    // whatever it last drew — a hold that silently stopped counting. The test said "whatever it is
+    // handed" and handed it two of the three things that are not a fraction.
+    expect(ringFor(Number.NaN), 'a NaN hold left the ring frozen at its last value').toBe(0);
+  });
+
   it('does not let a hold overwrite a cell that is already captured', () => {
     // Progress toward capturing something is meaningless once it is captured, and a ring that
     // emptied itself when the user lingered would read as losing the frame they just took.

@@ -106,8 +106,33 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
         // The pushes. No reply, and none of them can fail in a way the page could act on: the
         // core reads whatever is here the next time it looks.
         case 'camera':
-          if (message.opened) captureHost.setCamera(message.opened);
+          // `null` is the signal, and nothing else is. A capability set of all zeros is a legal
+          // answer from a browser that will not report a resolution — `open()` produces one, and
+          // the host derives an assumed field of view for exactly that case — so it must reach
+          // `setCamera` like any other. Written `!== null` rather than as a truthiness test
+          // because the truthiness test invites the opposite reading: a reviewer asked whether a
+          // zeroed struct was meant to clear the camera, which is a fair question of
+          // `if (message.opened)` and not of this.
+          //
+          // What must never arrive here is a struct read off a camera that is gone. That is the
+          // page's to guarantee and it does (`cannotArm` in `main.ts`, ADR 0045), because only the
+          // page can tell "the platform said nothing" from "there is no track left to ask".
+          //
+          // `!= null` rather than `!== null`, so an *absent* `opened` is refused rather than
+          // answered. TypeScript makes that unreachable from this repo's own sender; the cost of
+          // being right about it anyway is one character, and the failure it prevents is
+          // `cameraOpen()` true with every metric NaN — which reads as a camera and plans like one.
+          if (message.opened != null) captureHost.setCamera(message.opened);
           else captureHost.clearCamera();
+          return;
+
+        // What the page has just done to the camera it holds, rather than a camera arriving or
+        // going (ADR 0045). It cannot create one — the host drops it when there is none — which is
+        // what stops a push that lost the race with a `closeCamera` from handing the core a camera
+        // back. A guard on the page can only refuse on a close it has already been told about;
+        // this one does not have to know.
+        case 'camera-refresh':
+          if (message.opened != null) captureHost.refreshCamera(message.opened);
           return;
 
         case 'motion':

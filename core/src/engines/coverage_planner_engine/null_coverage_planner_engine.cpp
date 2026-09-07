@@ -1,5 +1,7 @@
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 
+#include <cmath>
+
 #include <algorithm>
 #include <span>
 
@@ -13,9 +15,21 @@ constexpr double kRadToDeg = 57.29577951308232;
 
 Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
                                                     const Intrinsics&) {
-  if (spec.acceptanceConeDeg <= 0.0) {
+  // Finite and positive, which is `RingsCoveragePlannerEngine`'s rule spelled the same way rather
+  // than a second rule that nearly matches it.
+  //
+  // Two attempts got here. The first, `x <= 0.0`, let NaN through, because NaN compares false
+  // against every ordering. The second, `!(x > 0.0)`, refused NaN and let *infinity* through — and
+  // infinity is the worse of the two: a cone of `inf` makes `Locate` report every cell as one the
+  // camera is inside, from any direction, and `ArmBurst` accept a burst 179 degrees off. That is
+  // verbatim the "every cell armable from anywhere" the previous comment here claimed to have
+  // closed. `wire::Reader::GetF64` does not filter non-finite values, so it crosses the facade.
+  //
+  // The lesson is in the shape rather than the value: a hand-rolled predicate against a class of
+  // inputs will keep missing one member of it, and `std::isfinite` is the name of the class.
+  if (!std::isfinite(spec.acceptanceConeDeg) || spec.acceptanceConeDeg <= 0.0) {
     return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                            "acceptance cone must be positive");
+                            "acceptance cone must be a positive, finite number");
   }
 
   CapturePlan plan;
@@ -45,10 +59,19 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& curr
   // sequence does not change when V4 lands.
   const Vec3 looking = Direction(current.orientation);
 
-  // Whether there is an aim to prefer at all. Zero confidence is the contract's word for "nothing
-  // estimated this", and a phone with no motion sensor reports identity for the whole session —
-  // so the aim rule below would name whichever cell sits at identity every single tick, and a
-  // capture could never move off it. With no aim, coverage decides alone (ADR 0042).
+  // Whether there is an aim to prefer at all. Zero confidence is the contract's word for "no
+  // reading has ever anchored this orientation", which leaves the pose at the identity it was
+  // born with — a direction nobody chose. Naming the cell that happens to sit there would put the
+  // reticle on it every tick until a reading arrives, and on a stream carrying rates with no
+  // attitude in it, forever: the pose would drift off identity without ever being *about*
+  // anything, and a dwell keyed on `HoldStill` would mature into a burst at a cell nobody
+  // pointed at.
+  //
+  // This branch used to describe a device — a phone with no motion sensor, which ADR 0042 made a
+  // supported configuration and coverage guided alone. That device is refused at `Begin` now
+  // (ADR 0044), so what is left here is a session's opening ticks and a stream that anchors
+  // nothing: not a way to capture, a wait. Guidance seeks until there is something to be inside
+  // of.
   const bool aimed = current.confidence > 0.0;
 
   // Coverage has an opinion only once something has been evaluated. An empty state is no
@@ -82,6 +105,26 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& curr
   for (const auto& node : aimed ? std::span<const CoverageNode>(plan.nodes)
                                 : std::span<const CoverageNode>()) {
     const double angle = AngleBetweenDirections(looking, Direction(node.targetOrientation));
+    // A cone that is not a usable measurement puts no cell inside it — the same answer
+    // `ICaptureSessionManager::ArmBurst` gives, and they have to agree or the reticle closes on a
+    // cell that will not arm (see `ICoveragePlannerEngine`'s header). It is spelled to fail closed:
+    // `!isfinite` refuses `inf`, where the comparison further down is false and every direction is
+    // therefore "inside". Refusing a non-finite cone *here* is also what earns that comparison the
+    // right to be a plain `>` rather than a NaN-safe spelling — see its own comment.
+    if (!std::isfinite(node.acceptanceConeDeg) || node.acceptanceConeDeg <= 0.0) continue;
+    // And the cell has to point somewhere. `AngleBetweenDirections` answers a degenerate direction
+    // with `0.0` — "dead on" — which is the same number a camera aimed exactly at the cell
+    // produces, so a node whose target is not a rotation is inside any cone from any direction and
+    // nothing downstream can tell the two apart. The cone guard above does not cover it: the cone
+    // is a perfectly good measurement in that case and the *target* is not.
+    if (!IsUsableRotation(node.targetOrientation)) continue;
+    // A plain `>`, matching `ArmBurst`, which is the other reading of this same number and whose
+    // comment cites these two lines. `!(x <= y)` is the NaN-safe spelling and it is not doing any
+    // work here: the two guards above have already refused a non-finite cone and a target that is
+    // not a rotation, and `AngleBetweenDirections` cannot answer NaN for usable inputs — so a
+    // reviewer swapped it in both files and every test stayed green, which is what a guard that
+    // cannot decide anything looks like. Written as the thing it means, so the next reader does
+    // not have to work out which NaN it is defending against.
     if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
     if (inside == nullptr || angle < insideAngle) {
       insideAngle = angle;
@@ -98,7 +141,9 @@ Result<CaptureGuidance> NullCoveragePlannerEngine::Locate(const PoseSample& curr
   if (nearest == nullptr) nearest = nearestOf(false);
 
   CaptureGuidance guidance;
-  // Said out loud, because a client gates on it too and cannot derive it (ADR 0042).
+  // Said out loud, because a client reads it and cannot derive it: the page parks the reticle at
+  // its widest and stops correcting for roll while it is false, and neither is a number it can
+  // work out from an orientation it never sees.
   guidance.aimKnown = aimed;
   guidance.targetNode = nearest->id;
   guidance.angularErrorDeg =

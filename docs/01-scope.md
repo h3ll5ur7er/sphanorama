@@ -25,7 +25,7 @@
 
 | Constraint | Consequence |
 | ---------- | ----------- |
-| iOS Safari requires a user gesture for `DeviceOrientationEvent.requestPermission()` | Sensor access is a permission-gated ResourceAccess with an explicit "unavailable" mode; capture must degrade to vision-only pose |
+| iOS Safari requires a user gesture for `DeviceOrientationEvent.requestPermission()` | Sensor access is a permission-gated ResourceAccess with an explicit "unavailable" mode, asked for before the camera and during the gesture. A capture *requires* one: without it the session is refused and the page says what is missing, because a sphere whose cells are labelled with directions nobody measured is worse than a message (ADR [0044](adr/0044-a-capture-needs-a-motion-sensor.md)) |
 | `SharedArrayBuffer` (needed for WASM threads) requires cross-origin isolation (COOP/COEP), and GitHub Pages cannot send response headers | **The default deployment has no threads.** Two builds ship; Pages gets the single-threaded one. A threaded build served without isolation does not degrade — it hangs on load with no error (ADR [0011](adr/0011-single-threaded-build-for-github-pages.md)) |
 | Mobile WASM heaps are bounded (often well under 1 GB) and OOM is fatal | Frames are never all resident. A tiered frame store with spill to OPFS is a first-class service, not an optimisation |
 | A 12 MP burst of 8 frames × 40 cells is ~15 GB uncompressed | Bursts stay encoded (or downscaled) until a candidate is selected. Residency policy is explicit |

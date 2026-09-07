@@ -253,6 +253,93 @@ TEST(CoveragePlanner, LocateFindsTheCellTheUserIsAimingAt) {
   }
 }
 
+TEST(CoveragePlanner, ACellWhoseConeIsNotAMeasurementIsNeverTheOneBeingHeld) {
+  // The other side of the guard `ArmBurst` grew in round 7, and the side that decides what the
+  // user sees. `ICoveragePlannerEngine`'s own header says why they have to agree: "the reticle
+  // would close on a cell that then would not arm — a capture that looks ready and does nothing,
+  // which is worse to diagnose than one that says it is seeking".
+  //
+  // Both engines decided "inside the cone" with `angle > cone`, and that comparison is false for
+  // `inf` and for `NaN` alike — so a cell carrying one was inside its cone from *every* direction.
+  // Downstream, since ADR 0043, that is not a cosmetic wrong answer: the reticle closes, the dwell
+  // matures, guidance says `Fire`, `ArmBurst` refuses the same cone as unusable, the dwell
+  // restarts, and it repeats forever. ADR 0044 took the shutter away, so there is nothing left to
+  // capture with while it does.
+  //
+  // **Both aims, and the second is the point.** This swept only a pose 90 degrees away, which
+  // never reaches the `|| cone <= 0.0` clause: a reviewer deleted that clause from both engines
+  // and all 529 tests stayed green. Zero and the negatives are refused by `angle > cone` when the
+  // aim is wrong and only bite when it is exactly right — which is the arrangement that produces
+  // the loop, since a cone of zero is where `Locate` says `HoldStill` and `ArmBurst` refuses.
+  //
+  // Built by hand rather than planned, because both `Plan`s now refuse such a spec — which is the
+  // point of the two guards, and also why nothing else in the suite can reach these lines.
+  const double inf = std::numeric_limits<double>::infinity();
+  const Quat cell = FromAzimuthElevation(0.0, 0.0);
+  for (const double cone : {inf, -inf, std::numeric_limits<double>::quiet_NaN(), 0.0, -5.0}) {
+    for (const Quat aim : {FromAzimuthElevation(90.0, 0.0), cell}) {
+      CapturePlan plan;
+      plan.spec = Spec();
+      CoverageNode node;
+      node.id = NodeId{1};
+      node.targetOrientation = cell;
+      node.acceptanceConeDeg = cone;
+      plan.nodes.push_back(node);
+
+      NullCoveragePlannerEngine nullEngine;
+      RingsCoveragePlannerEngine ringsEngine;
+      for (ICoveragePlannerEngine* engine :
+           {static_cast<ICoveragePlannerEngine*>(&nullEngine),
+            static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
+        auto guidance = engine->Locate(Aiming(aim), plan, CoverageState{});
+        ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+        EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+            << "a cell was reported as held on a cone of " << cone
+            << ", aimed " << (AngleBetween(aim, cell) < 1e-9 ? "straight at it" : "90 degrees off");
+      }
+    }
+  }
+}
+
+TEST(CoveragePlanner, ACellPointingNowhereIsNeverTheOneBeingHeld) {
+  // The same sentence about the other half of a node. `AngleBetweenDirections` answers a
+  // degenerate direction with `0.0` — "dead on" — so a node whose `targetOrientation` is not a
+  // rotation is inside an ordinary five-degree cone from every direction in the world. The cone is
+  // a perfectly good measurement here; it is the *target* that is not one, and the two guards
+  // added for the cone did not cover it.
+  //
+  // `0.0` is the sentinel this lens is about: it is also the answer for a camera pointed exactly
+  // at the cell, so nothing downstream can tell "dead on" from "I could not say".
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Quat broken : {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0}, Quat{inf, 0, 0, 0},
+                            Quat{1, 0, nan, 0}}) {
+    CapturePlan plan;
+    plan.spec = Spec();
+    CoverageNode node;
+    node.id = NodeId{1};
+    node.targetOrientation = broken;
+    node.acceptanceConeDeg = 5.0;
+    plan.nodes.push_back(node);
+
+    NullCoveragePlannerEngine nullEngine;
+    RingsCoveragePlannerEngine ringsEngine;
+    for (ICoveragePlannerEngine* engine :
+         {static_cast<ICoveragePlannerEngine*>(&nullEngine),
+          static_cast<ICoveragePlannerEngine*>(&ringsEngine)}) {
+      // Aimed at the identity, which is where a degenerate target now resolves to. It used to be
+      // (90, 20), and that stopped testing anything once this branch hardened `Normalize(Quat)`:
+      // `Direction(Quat{0,0,0,0})` became `(0,0,-1)`, an ordinary direction 90 degrees away, so
+      // the cone refused the cell and both planners' `IsUsableRotation` guards could be deleted
+      // with all 553 native tests green. Aiming here restores the 0.0 the test is named for.
+      auto guidance = engine->Locate(Aiming(Quat{}), plan, CoverageState{});
+      ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+          << "a cell that points nowhere was reported as held";
+    }
+  }
+}
+
 TEST(CoveragePlanner, LocateAsksTheUserToKeepLookingWhenTheyAreOff) {
   RingsCoveragePlannerEngine planner;
   const CapturePlan plan = Plan(Spec());
@@ -368,6 +455,39 @@ TEST(CoveragePlanner, LocateSaysHoldStillOnACellThatStillNeedsShooting) {
   ASSERT_TRUE(guidance.ok());
   EXPECT_EQ(guidance.value.targetNode.value, aimedAt.id.value);
   EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
+}
+
+TEST(CoveragePlanner, AConeNobodyCouldMeasureAgainstIsRefusedRatherThanPlanned) {
+  // Every non-finite value, not one of them, and that is the whole point of this test rather than
+  // thoroughness for its own sake. Two attempts at this guard each closed one member of the class
+  // and left another: `<= 0.0` admitted NaN, and `!(x > 0.0)` admitted infinity — which is the
+  // worse one, because a cone of `inf` is not merely unmeasurable, it makes `Locate` report every
+  // cell as one the camera is inside and `ArmBurst` accept a burst 179 degrees off. Verbatim the
+  // "every cell armable from anywhere" both fixes claimed to close.
+  //
+  // Both engines, because they disagreed twice: the rings planner has asked `std::isfinite` since
+  // it was written and the null one has now been wrong about the same class in two different
+  // directions. The null one is what every manager test runs on, so its disagreement is the one
+  // the suite cannot see.
+  for (const double cone : {std::numeric_limits<double>::quiet_NaN(),
+                            std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity()}) {
+    CapturePlanSpec spec;
+    spec.horizontalFovDeg = 66.0;
+    spec.verticalFovDeg = 50.0;
+    spec.overlapTarget = 0.30;
+    spec.acceptanceConeDeg = cone;
+    Intrinsics lens;
+    lens.width = 1280;
+    lens.height = 960;
+
+    NullCoveragePlannerEngine null;
+    EXPECT_EQ(null.Plan(spec, lens).status.code, StatusCode::InvalidArgument)
+        << "the null planner accepted a cone of " << cone;
+    RingsCoveragePlannerEngine rings;
+    EXPECT_EQ(rings.Plan(spec, lens).status.code, StatusCode::InvalidArgument)
+        << "the rings planner accepted a cone of " << cone;
+  }
 }
 
 TEST(CoveragePlanner, WithNoAimTheTargetIsTheNearestMissingCellRatherThanWhateverSitsAtIdentity) {

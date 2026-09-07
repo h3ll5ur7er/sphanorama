@@ -160,9 +160,11 @@ struct PoseSample {
   // whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
   // that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
   //
-  // Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
-  // cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
-  // for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+  // Callers act on the zero rather than on the number's size: `Locate` prefers the cell the camera
+  // is inside only for an anchored pose, and names no cell as held otherwise (ADR 0041).
+  // `ArmBurst` used to stand its cone check down on a zero and no longer does — there is nothing
+  // to check against an identity nobody chose, so there is nothing to allow (ADR 0044). Above
+  // zero, 1.0 is an absolute reading and 0.5 is dead reckoning
   // *from* one — drifting away from a direction somebody measured, which is worth aiming with and
   // an unanchored integration is not.
   //
@@ -297,10 +299,18 @@ struct BurstSpec {
 enum class GuidanceAction : uint8_t {
   Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured, Fire
 };
-// `Fire` is an *edge*, like `CellDone` and unlike `AlreadyCaptured`: it is reported on the one tick
-// the dwell completes, and a client arms a burst on it exactly as it would have on a press. The
-// manager cannot arm for itself — a burst is paced by the client's ticks over a preview frame the
-// client keeps resident (ADR 0018) — so the decision is here and the call is the client's.
+// `Fire` is an *edge*, like `CellDone` and unlike `AlreadyCaptured`: it is reported on the tick a
+// dwell completes and not on the ticks either side, and a client arms a burst on it exactly as it
+// would have on a press. The manager cannot arm for itself — a burst is paced by the client's
+// ticks over a preview frame the client keeps resident (ADR 0018) — so the decision is here and
+// the call is the client's.
+//
+// An edge, but not a once-per-cell one, and the difference is a client's to handle. A `Fire` the
+// client could not act on — a lock write that timed out, a camera busy for an instant — is
+// offered again after another full dwell, because since ADR 0044 there is no shutter to fall back
+// on and a refused arm otherwise strands the capture with the ring full and nothing that will
+// ever fire again. A client that arms on every `Fire` is doing the right thing: a burst that
+// starts changes the action, so no second `Fire` follows one that took.
 //
 // Appended, because the wire carries this enum as an index (ADR 0043).
 
@@ -312,12 +322,17 @@ struct CaptureGuidance {
   GuidanceAction action = GuidanceAction::Seek;
   // Whether the orientation this answer was computed from was a measurement at all.
   //
-  // It is here because a client has to make the same decision the planner just made and has no
-  // other way to know it made it. With no aim, `Locate` targets by coverage and never says
-  // `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
-  // on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
-  // is wrong for every tick before the first sample arrives, which is what turned twelve browser
-  // tests red when the page tried.
+  // It is here because a client has to know which of two answers it is reading and has no other
+  // way to find out. With no aim, `angularErrorDeg` is measured from an identity nobody chose and
+  // comes back near zero for whichever cell happens to sit there — so a page that drew its
+  // reticle from it would show a closed ring on a pose nothing had measured, and a horizon rolled
+  // against nothing. It parks both instead.
+  //
+  // Guessing from "the sensor started" is not the same fact: it is wrong for every tick before
+  // the first sample arrives, which is what turned twelve browser tests red when the page tried.
+  //
+  // It used to gate a shutter as well, on a device that captured without an aim at all. That
+  // device is refused now (ADR 0044) and the shutter is gone with it; this field is presentation.
   //
   // Appended rather than inserted, because field order is wire order.
   bool aimKnown = false;
@@ -328,6 +343,13 @@ struct CaptureGuidance {
   // same message**. A client counting its own dwell would be a second copy of a fact this manager
   // already holds, and the two would disagree exactly when it mattered — a progress bar that
   // filled and did not fire, or fired before it filled.
+  //
+  // It can fill more than once for one cell, and that is not the disagreement above. `Fire` is
+  // re-offered after another full dwell when nothing acted on it, so a client whose arm was
+  // refused — or is simply still crossing the worker — sees the ring restart from zero and climb
+  // again. The ring and the trigger still agree; what a client owes its user in that window is a
+  // word about the arm, because a ring that fills twice with nothing happening reads as a control
+  // that has stopped working.
   //
   // The dwell is counted here rather than in a client for a reason a client cannot work around:
   // `performance.now()` keeps moving when the sensor stops delivering, so a page counting elapsed
@@ -436,9 +458,10 @@ struct PoseState {
   // own failure reached through the other door. A rate says how fast the device is turning and
   // nothing about where it started.
   //
-  // Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
-  // an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
-  // keeps a phone with no motion sensor able to capture at all.
+  // Callers act on this through `PoseSample.confidence`, which is derived from it: `Locate`
+  // prefers aim only for an anchored pose (ADR 0041). What that buys is no longer a sensorless
+  // capture — that is refused (ADR 0044) — but a session whose first ticks, and whose rate-only
+  // streams, cannot be mistaken for an aim and fire a burst at a cell nobody pointed at.
   bool anchored = false;
   // Whether the pose came from an absolute reading rather than from integrating rates. Confidence
   // is derived from this, so it has to survive between calls.
@@ -495,17 +518,54 @@ struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; 
 struct SeamMap { BufferId labelBuffer; int32_t width = 0, height = 0; };
 
 // ------------------------------------------------- platform value types
+// **Zero means "the platform will not say", on every measured field below.** Not "zero" and not a
+// default to improve on: an implementation that cannot answer must answer 0, and one that guesses
+// a plausible number is worse than one that says nothing, because a caller can act on a silence
+// and cannot detect a guess.
+//
+// Written here because six places in this repository cite "the contract's word for 'the platform
+// will not say'" and, until a reviewer went looking, this file said it on one field pair — the one
+// nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a refreshed struct
+// answers 0 (ADR 0045), and 0 is the *only* silence that keep can recognise: a guessed 30 fps is
+// indistinguishable from a measurement, so it overwrites the real 15 the session was holding and
+// the burst then asks for frames twice as fast as the camera makes them. That is the cost a second
+// implementation reading only this header would not have seen.
+//
+// Above the struct rather than inside it, which is not a formatting choice: `contract_gen.py`
+// attaches a doc to the declaration the comment *precedes*, so a paragraph written inside the
+// braces reaches every C++ reader and no TypeScript one — and this one was, leaving the mirror
+// with a field marked "exempt from the zero rule above" and no rule above it.
+//
+// Two exemptions, both gaps rather than decisions. The booleans: `false` here means "no" and "did
+// not say" alike, and there is nowhere to record the difference. And the field-of-view pair, which
+// is derived rather than measured — no browser reports angles, so the host computes them from the
+// frame's shape and its fallback is a 4:3 landscape lens, never 0. A producer that cannot derive
+// the pair answers 0 for *both* angles; a consumer reads 0 on either angle, or on either geometry
+// field, as a silence about all four and keeps the four it had (ADR 0045). Stated as the rule both
+// sides keep, because an earlier wording — "a silence about the frame is a silence about its
+// angles" — was true in one direction only, and the port that zeroes the pair while reporting a
+// real resolution walked straight past a keep that only asked about the geometry. See the
+// white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
 struct CameraCapabilities {
   // The mode the camera actually settled on, not the largest it could reach. The coverage plan is
   // sized from these, so they have to describe the frames that will arrive: a sensor maximum the
   // preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
   // captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
-  int32_t maxWidth = 0, maxHeight = 0;
-  double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 when the platform will not say
+  int32_t maxWidth = 0, maxHeight = 0;   // 0 when the platform will not say
+  // Derived from the frame's own shape where a platform reports no angles — which is every
+  // browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+  // caller that keeps one across a silent refresh keeps all four (ADR 0045). Zero here means "not
+  // derived" rather than "not measured", and travels as a pair: both angles or neither.
+  double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 only where nothing has been derived yet
   bool supportsExposureLock = false;
   bool supportsFocusLock = false;
   bool supportsTorch = false;
-  double maxBurstFps = 0;
+  // Frames per second the device settled on. `CaptureSessionManager` floors a burst's interval and
+  // its settle with this (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview
+  // frame, so a burst asking for frames faster than the camera makes them fills with duplicates of
+  // one exposure, and selection then ranks a frame against copies of itself. 0 turns the floor
+  // off, which is the right answer for a platform that will not say and the wrong one for a guess.
+  double maxBurstFps = 0;   // 0 when the platform will not say
 };
 
 struct CameraOpenSpec {

@@ -1,6 +1,7 @@
 #include "managers/capture_session_manager/capture_session_manager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <iomanip>
 #include <sstream>
@@ -19,6 +20,38 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // the same standing as the pose engine's rate thresholds — and a config key's worth of tuning once
 // there are real captures to tune against (ADR 0043).
 constexpr int64_t kDwellNs = 2'000'000'000;
+// The most one tick may add to a dwell, whatever the clock says passed since the last one.
+//
+// The dwell is meant to measure "the camera was held here", and it approximates that by adding
+// the interval since the previous tick, on ticks that carried a sample. The approximation breaks
+// where there were no ticks at all: a backgrounded tab suspends the render loop, and the first
+// tick after it returns carries a buffered sample and an interval of however long the user was
+// away. Thirty seconds banked in one go is a full dwell several times over, so a burst fires on
+// the frame the tab comes back — the failure ADR 0041 exists to stop, reached without anybody
+// holding anything.
+//
+// Three hundred milliseconds, and the number comes from the client rather than from an intuition
+// about one. `pump` asks for guidance on every animation frame and, when no sample has arrived,
+// on the first frame after 250 ms — a heartbeat it keeps deliberately, so the reticle stays live
+// on a still phone. That is a floor rather than a ceiling: the tick that follows it costs a frame
+// and a worker round trip, so a running loop's quiet gap is 250 ms *plus* those, and this bound
+// sits above the floor rather than above every possible tick. What it separates cleanly is a loop
+// that is running at all from one that is suspended for seconds, which is the failure below.
+//
+// Nothing ties this constant to the shell's 250 ms, and nothing can: they are on opposite sides of
+// the boundary and the core must not read a client's cadence. A client that ticked far more slowly
+// would want a larger number here, and would find this comment.
+//
+// A first draft said half a second and justified it as "far longer than any tick", which was an
+// invented figure: the shipped loop's own guarantee is the heartbeat, and 500 ms is twice it.
+// The difference is not academic — the residual is what a stalled loop banks on the tick it
+// resumes, and 500 ms against a two-second dwell completes one that was already past 75%.
+//
+// Bounded rather than refused outright, because neither extreme is honest. Whether the camera was
+// held through a gap no tick covered is simply unknown: crediting all of it is a guess, and
+// crediting none of it under-counts real elapsed time on a tick that was merely late. A bound
+// keeps the ordinary case exact and makes the unknown case cost at most a seventh of a dwell.
+constexpr int64_t kMaxDwellCreditNs = 300'000'000;
 constexpr double kRadToDeg = 57.29577951308232;
 
 // ------------------------------------------------------------------ the session document
@@ -342,13 +375,35 @@ std::vector<Candidate> CaptureSessionManager::AllCandidates() const {
 void CaptureSessionManager::Discard(std::vector<Candidate>& candidates) {
   // Releasing is not optional housekeeping: a full sphere of bursts is around 15 GB, so a
   // replace-retake that leaked would exhaust the device inside one session.
+  //
+  // A refusal keeps the candidate, exactly as `Trim` keeps one — and for the same reason, which
+  // this had not learned. `Forget` leaves its entry in place when it says no and goes on charging
+  // the budget for those bytes, so clearing the vector threw away the last handle to a frame the
+  // store was still accounting for: an orphan nothing can name, free, checkpoint or resume.
+  // Keeping it means the cell still shows a frame the user asked to discard, which is honest —
+  // the bytes are still there — and the next retake tries again.
+  //
+  // What reaches it today is a pinned frame: `Pin` promises its span until `Release`, so the
+  // store refuses to erase the entry underneath one. An earlier version of this comment blamed
+  // `OpfsSpillSink::Drop` instead and was wrong on both platforms — the browser host's `drop`
+  // answers true on every path by contract, and natively `Forget` does not reach a sink at all.
+  // The rule stands on `Forget`'s own contract rather than on any one sink's behaviour, which is
+  // the right thing for it to stand on.
+  //
+  // `NotFound` is not a refusal: the store is not holding it, so there is nothing left to keep a
+  // handle to and the candidate would be a row pointing at nothing.
+  std::vector<Candidate> stuck;
   for (const auto& candidate : candidates) {
-    (void)frames_.Forget(candidate.frame);
+    const Status forgotten = frames_.Forget(candidate.frame);
+    if (!forgotten.ok() && forgotten.code != StatusCode::NotFound) {
+      stuck.push_back(candidate);
+      continue;
+    }
     // Forgotten, so no longer this manager's to cool. Left behind, the ids would accumulate for
     // the length of a session that retook a lot of cells and mean nothing.
     burst_owned_.erase(candidate.id.value);
   }
-  candidates.clear();
+  candidates.swap(stuck);
 }
 
 Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CapturePlanSpec& spec) {
@@ -368,6 +423,11 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     return Err<SessionId>(StatusCode::NotFound, kComponent, "no such project");
   }
 
+  // Before the camera, and that ordering is load-bearing rather than tidy: `Open` is what lights
+  // the indicator and raises the permission prompt, so a session that cannot start must not ask
+  // for one on its way to saying so (ADR 0044). It is also the cheapest refusal available here.
+  SPH_TRY(const MotionCapability motion, RequireMotion());
+
   // The lens decides the tessellation, so the camera is opened before the plan is made rather
   // than when the first burst fires.
   auto opened = camera_.Open(CameraOpenSpec{});
@@ -381,12 +441,14 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   if (resolved.horizontalFovDeg <= 0.0) resolved.horizontalFovDeg = opened.value.horizontalFovDeg;
   if (resolved.verticalFovDeg <= 0.0) resolved.verticalFovDeg = opened.value.verticalFovDeg;
 
-  // Kept, not read once and dropped: it is the floor on how fast a burst can honestly take
-  // distinct frames, and AdvanceBurst is the only place that knows one is being paced.
-  max_burst_fps_ = opened.value.maxBurstFps;
+  // The whole struct, kept rather than read once and dropped. This comment described one field of
+  // it — `maxBurstFps`, the floor on how fast a burst can honestly take distinct frames — from
+  // when the member was a `double`, and stayed put when the member became a struct and grew a
+  // second reader in `CameraInUse()`. `ArmBurst` refreshes it (ADR 0045); this is where a session
+  // starts from.
+  camera_capabilities_ = opened.value;
 
-  auto capability = sensor_.Capabilities();
-  resolved.motion = capability.ok() ? capability.value : MotionCapability::None;
+  resolved.motion = motion;
 
   // Everything from here can fail with the camera already open, because the lens has to be read
   // before the plan can be made. Returning without closing it leaves the indicator lit for a
@@ -433,14 +495,37 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   return Ok(session_);
 }
 
+Result<MotionCapability> CaptureSessionManager::RequireMotion() {
+  // ADR 0044. A capture needs a motion sensor, and this is the one place either door checks for
+  // one. Without it the pose is the identity it was born with for the life of the session, and
+  // every cell the plan names gets filled with whatever the user happened to be pointing at —
+  // sharp frames, real scores, and a label nobody measured. That is not a worse sphere, it is a
+  // sphere with no evidence in it, and it stays invisible until a build stage this repo does not
+  // have yet. A sentence saying what is missing costs the user nothing by comparison.
+  //
+  // A probe that fails is refused alongside one that answers `None`: both mean nothing has
+  // established that this device can sense which way it is pointing, and only the detail
+  // distinguishes them for a log.
+  auto capability = sensor_.Capabilities();
+  if (!capability.ok()) {
+    return Err<MotionCapability>(StatusCode::SensorUnavailable, kComponent,
+                                 "this device could not say whether it has motion sensors: "
+                                     + capability.status.detail);
+  }
+  if (capability.value == MotionCapability::None) {
+    return Err<MotionCapability>(StatusCode::SensorUnavailable, kComponent,
+                                 "this device reports no motion sensors, and a capture cannot "
+                                 "place its frames without one");
+  }
+  return capability;
+}
+
 Result<PoseState> CaptureSessionManager::StartTracking(MotionCapability motion) {
-  // Sensor absence is a supported configuration, not a failure: PoseEngine switches to
-  // vision-only and no other component learns the difference (docs/03 UC-4) — with one exception,
-  // in ArmBurst, which looks in order to decline to have an opinion. See the comment there: it is
-  // what keeps every cell armable on such a device, so the behaviour this sentence promises
-  // survives even though the sentence is no longer literally true.
-  const PoseMode mode = motion == MotionCapability::None ? PoseMode::VisionOnly : PoseMode::Fused;
-  auto initial = pose_.Initial(mode, motion);
+  // Always fused, because there is always something to fuse: `RequireMotion` has already turned
+  // away every caller that had no sensor (ADR 0044). `PoseMode::VisionOnly` stays in the contract
+  // — it is what a vision-only capture would select the day `RegistrationEngine` can carry one —
+  // and nothing selects it today, which is a fact about this build rather than about the enum.
+  auto initial = pose_.Initial(PoseMode::Fused, motion);
   if (!initial.ok()) {
     (void)camera_.Close();
     return initial.status;
@@ -475,8 +560,15 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                           "this project's session document is from a shape this build cannot read");
   }
 
-  // Before the plan, the frames and the camera, because it is the cheapest thing that can refuse
-  // and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
+  // The live capability rather than the stored one, and before anything with a side effect: the
+  // document says which sphere is being captured, never what the device it came back on can
+  // sense. A sphere begun on a phone with a sensor can be resumed on one without, or on the same
+  // phone after the user declined the prompt this time (ADR 0044).
+  SPH_TRY(const MotionCapability motion, RequireMotion());
+
+  // Before the plan, the frames and the camera. `RequireMotion` above is cheaper still and asks a
+  // question about the device; this is the cheapest thing that can refuse for a reason belonging
+  // to *this capture*, and the one most likely to. `Begin` empties the tier and then reissues identities from 1, so
   // a document belonging to a *different* project names frames that are now some other capture's
   // — right identities, right size, really there, and a `Pin` of them succeeds with the wrong
   // pixels. Nothing downstream of here can tell; only the tier can, and this is it asking
@@ -546,17 +638,26 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // checks the project exists before touching the camera.
   auto opened = camera_.Open(CameraOpenSpec{});
   if (!opened.ok()) return opened.status;
-  max_burst_fps_ = opened.value.maxBurstFps;
+  camera_capabilities_ = opened.value;
 
-  // The live capability rather than the stored one: the document says which sphere is being
-  // captured, never what the device it came back on can sense.
-  auto capability = sensor_.Capabilities();
-  auto initialPose = StartTracking(capability.ok() ? capability.value : MotionCapability::None);
+  auto initialPose = StartTracking(motion);
   if (!initialPose.ok()) return initialPose.status;
 
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{stored.session};
+  // The stored spec, whole, including `motion` — and that last part was briefly "fixed" and is
+  // deliberately back. A review round called the stored capability stale, since `Resume` decides
+  // on the live one; the answer is that it is not a record of this device, it is an input the
+  // sphere was planned with. `Resume` replans from exactly these bytes, so overwriting a field of
+  // them with something the phone in hand reports makes the tessellation device-dependent — and
+  // node ids are indices into a particular tessellation, so the next resume on a different phone
+  // would file every restored candidate under a different cell. That is the failure this whole
+  // line exists to prevent, seeded one field at a time.
+  //
+  // No planner reads `motion` today (`docs/03-architecture.md` says so, and says it has never
+  // been true that one does), so the overwrite was harmless in this build. It would not have
+  // stayed harmless, and a defect that waits for a feature is the expensive kind.
   resolved_spec_ = stored.spec;
   lens_ = stored.lens;
   candidates_.clear();
@@ -574,6 +675,19 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   pose_state_ = initialPose.value;
   active_ = true;
   return Ok(session_);
+}
+
+void CaptureSessionManager::ResetDwell() {
+  // A dwell belongs to the session that counted it. Nothing used to clear this: a session that
+  // ended mid-dwell left `dwell_node_` naming a cell and `dwell_marked_ns_` naming a moment, and
+  // the next session's first tick added every nanosecond since. The latch `Fire` used to set hid
+  // one shape of this and not the shape below — it was only ever set *after* a dwell completed,
+  // so a session ended part-way through one carried nothing to suppress it. Node ids are indices into a tessellation, so the stale cell matches the new
+  // session's target by construction rather than by luck — a burst on the first tick of a capture
+  // nobody had started aiming yet.
+  dwell_ns_ = 0;
+  dwell_node_ = std::nullopt;
+  dwell_marked_ns_ = clock_.MonotonicNs();
 }
 
 void CaptureSessionManager::Checkpoint() const {
@@ -623,7 +737,13 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   std::span<const ImuSample> batch = samples;
   if (samples.empty()) {
     if (auto drained = sensor_.Drain(std::span<ImuSample>(pulled)); drained.ok()) {
-      batch = std::span<const ImuSample>(pulled.data(), static_cast<size_t>(drained.value));
+      // Clamped to what was actually offered. `Drain` answers a count and the contract says it is
+      // at most the span's size, but this is a *port* — the manager distrusts `IClock`,
+      // `ICoveragePlannerEngine` and `Rank` by name a few lines either side of here, and a count
+      // it took on faith would build a span over this stack array and read past it. A reviewer
+      // noticed the inconsistency before it was anything else.
+      const int64_t count = std::clamp<int64_t>(drained.value, 0, kDrainBatch);
+      batch = std::span<const ImuSample>(pulled.data(), static_cast<size_t>(count));
     }
     // A port that cannot be pulled is not a failure. It means the client is the push kind, and
     // this call is the empty-batch case below.
@@ -656,15 +776,19 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
 
   // Derived here as well as inside the engine, and this is the copy a client reads.
   //
-  // Not distrust of the engine: the engine needs the answer for itself, to choose between aiming
-  // and covering, and `ArmBurst` derives it a third time to decide whether to enforce a cone. The
-  // three have to agree, and there is exactly one source they can all agree on — `confidence`,
-  // which is the contract's own word for whether the orientation was estimated at all. What this
-  // line removes is the possibility of a *published* answer that disagrees with the one the
-  // refusal uses: an engine leaving the field at its default puts the page in blind mode on a
-  // phone that has a sensor, and every capture it then offers is refused by this manager for a
-  // reason the page has already decided cannot apply. `stability` and `targetNode` are patched
-  // here for the same reason.
+  // Not distrust of the engine. Three readers derive the same fact and all three must agree:
+  // `Locate` chooses between naming the cell the camera is inside and waiting for a reading,
+  // `ArmBurst` refuses what nothing has measured, and the page parks its reticle and stops
+  // correcting for roll. There is exactly one source they can agree on — `confidence`, the
+  // contract's own word for whether anything ever anchored the orientation. What this line
+  // removes is a *published* answer disagreeing with the one the refusal uses: a planner leaving
+  // the field at its default would park the page's reticle on a phone whose pose is perfectly
+  // well measured, and every burst the dwell then fired would look to the user like a control
+  // that had stopped working.
+  //
+  // `stability` below and `targetNode` in the burst block are written here for reasons of their
+  // own, not this one: the first because only this call holds the batch to estimate it from, the
+  // second because a burst in flight is filed under the cell it was armed at.
   guidance.aimKnown = pose_state_.pose.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
@@ -699,7 +823,6 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   if (!held || !sameCell) {
     // Nothing to hold on, or something else to hold on. Either way this is a new dwell.
     dwell_ns_ = 0;
-    dwell_fired_ = false;
     dwell_node_ = held ? std::optional<NodeId>(guidance.targetNode) : std::nullopt;
   } else if (!batch.empty()) {
     // Only a tick that carried a sample adds time. The mark moves on every tick either way, so a
@@ -709,16 +832,70 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     // and the browser is the second kind — it drains its own event buffer into the resident port
     // and calls this with nothing. Asking `samples` made the dwell dead in the only client there
     // is, while every native test passed because they all push. The e2e is what found it.
-    dwell_ns_ += now - dwell_marked_ns_;
+    //
+    // Clamped below as well as above, and this is the only place a bad delta can enter. Both ends
+    // of it come from `clock_.MonotonicNs()`, so a negative one means a clock that broke the
+    // promise in its own name — but `IClock` is a contract, and a manager does not get to assume
+    // every implementation of one keeps its word. The harm is worse than an out-of-range number:
+    // an un-banked stretch takes back dwell the user really did hold, so the ring runs backwards
+    // and the burst never fires, with nothing on screen to say why.
+    //
+    // It is also the whole reason `heldFraction` needs no lower bound of its own: `dwell_ns_` is
+    // non-negative by construction from here, so a second clamp downstream would be a guard no
+    // input could reach. One guard, where the value arrives.
+    dwell_ns_ += std::clamp(now - dwell_marked_ns_, int64_t{0}, kMaxDwellCreditNs);
   }
   dwell_marked_ns_ = now;
+  // Written on every tick, not only on held ones, because this field is the manager's answer and
+  // not the engine's. `guidance` is whatever `Locate` returned, and until this line was moved out
+  // of the `if` below, a `Seek`, `Firing`, `CellDone`, `AlreadyCaptured` or `SphereDone` tick —
+  // most ticks of a capture — shipped whatever the planner had left in it. Both engines leave it
+  // default-constructed, so the published value was 0 and the promise in `types.h` was kept by
+  // every implementation happening to behave, which is not what a promise is. `aimKnown` sixty
+  // lines above is re-derived unconditionally for exactly this reason, and there is no argument
+  // that covers one and not the other.
+  //
+  // Capped, because the contract says `[0,1]` and the page draws an arc from it: `RingMark.fill`
+  // and `OverlayInput.holding` both promise the range, and a fraction past 1 sends
+  // `strokeDashoffset` the wrong side of the circumference. The overshoot is ordinary rather
+  // than theoretical — one tick can credit up to `kMaxDwellCreditNs`, so the tick that completes
+  // a dwell can be holding 2.3 seconds of a 2 second dwell, which is 1.15.
+  //
+  // Capped only above. The floor is held by the accumulation instead, where a negative delta
+  // would have to arrive; asserting it a second time here would be a guard no input can reach.
+  guidance.heldFraction = held ? std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs) : 0.0;
   if (held) {
-    guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
-    if (dwell_ns_ >= kDwellNs && !dwell_fired_) {
-      // An edge, once per dwell. The client arms on it; the manager cannot arm for itself, because
-      // a burst is paced by the client's ticks over a frame the client keeps resident (ADR 0018).
+    if (dwell_ns_ >= kDwellNs) {
+      // An edge, and the counter restarts rather than latching. The client arms on this; the
+      // manager cannot arm for itself, because a burst is paced by the client's ticks over a
+      // frame the client keeps resident (ADR 0018).
+      //
+      // Restarting is what makes it possible to try again, and that matters more since ADR 0044
+      // than it did when this was written: the shutter used to be the way out of a `Fire` the
+      // client could not act on, and there is no shutter. A refused arm — a lock write that timed
+      // out, a camera busy for an instant — used to strand the capture with the ring full, the
+      // line still saying "hold still", and nothing that would ever fire again; measured at
+      // twenty seconds of holding one cell for zero candidates, escapable only by looking away
+      // and back. Now the dwell simply runs again.
+      //
+      // A whole dwell rather than the next tick, so a client that is merely slow is not pelted
+      // with offers while it answers the first. That is a bound on how often, not a promise that
+      // the previous offer has been resolved: an arm can take longer than a dwell. `armOnce` in
+      // the shipped page waits on a lock write bounded at three seconds and has been measured at
+      // 3007 ms, against a two-second dwell — so a second `Fire` really can be reported while the
+      // first arm is still crossing the worker.
+      //
+      // Which is safe, and is a division of labour rather than an oversight, because the core
+      // cannot know how long a client takes to answer and any figure here would be a guess about
+      // one. Two things hold it: `ArmBurst` refuses outright while a burst is in flight, and the
+      // page ignores a `Fire` it already has an arm out for (`armAt`'s `arming`). A client that
+      // did neither would collect a refusal rather than a second burst. The contract says so.
+      //
+      // And a burst that *does* start overwrites the action above, so `held` goes false and the
+      // dwell resets on its own — no second `Fire` follows one that took. A latched flag was
+      // tried first and did that half without allowing a retry at all.
       guidance.action = GuidanceAction::Fire;
-      dwell_fired_ = true;
+      dwell_ns_ = 0;
     }
   }
   return Ok(guidance);
@@ -759,37 +936,94 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // A burst records whatever the camera sees; the node is only a name to file it under. Arming
   // against a cell somewhere else therefore stores a good picture in the wrong place, which is
   // undetectable afterwards — the frames are sharp, the scores are real, and the stitch is wrong.
-  // Nothing checked it. A client can check most of it — the page has always held every cell's cone
-  // and gets the angular error every tick, and it now gates its own shutter on exactly that — but
-  // not the last part: the reticle can retarget between the moment a user decides to press and the
-  // moment the press lands, which is a race no caller can win from outside. That is why the check
-  // is here as well as there.
+  // Nothing checked it. A client can see most of it — the page holds every cell's cone and gets
+  // the angular error every tick, which is what closes the reticle — but seeing is not checking,
+  // and since ADR 0043 the client does not decide at all: the core counts the dwell and reports
+  // `Fire`, and the page arms on it. The gap this closes is the one between the tick that said
+  // `Fire` and the arm arriving back over the worker, in which the phone has moved.
   //
   // The same cone the planner guides with, so "the reticle is closed" and "this will arm" are the
   // same condition rather than two that nearly agree.
   //
-  // Only where there is an aim to check. `confidence` is the contract's own word for whether the
-  // orientation was estimated at all, and zero means nothing produced it — a phone that declined
-  // the motion sensor, or one that has none, tracks vision-only and reports identity forever.
-  // Enforcing a cone against that number would refuse every cell but the one that happens to sit
-  // straight ahead, so a sensorless capture would stop after its first burst with nothing on
-  // screen saying why — measured on the shipped composition as one cell armable of thirty-two.
-  // Sensor absence is a supported configuration (docs/03 UC-4), and this line is the one place
-  // that learns of it: it looks in order to decline to have an opinion, so what UC-4 promises —
-  // every cell still reachable — holds. Such a user aims by eye, which is what vision-only means.
+  // Two conditions, and the cone is only the second.
   //
-  // One signal, and it is the contract's: `PoseSample.confidence` of zero means no reading has ever
-  // anchored the orientation. `PoseState::observed` was tested alongside it for a while and is the
-  // wrong second conjunct — it means "a sample arrived", which a rate-only stream satisfies while
-  // reporting confidence zero, so the pair is not two ways of saying one thing. Which flag carries
-  // which fact is the engine's business (`observed`, `absolute` and `anchored` are three of them),
-  // and the manager holds no opinion of its own about any of them: it reads the one number the
-  // contract publishes.
-  const bool measured = pose_state_.pose.confidence > 0.0;
+  // Something has to have measured where the camera is pointing at all. This check used to stand
+  // down on a zero `PoseSample.confidence` — the contract's word for "no reading has ever
+  // anchored this orientation" — so that a phone with no motion sensor could reach every cell of
+  // its own plan by eye. ADR 0044 refuses that phone at `Begin` instead, and the first draft of
+  // this change concluded that the cone could therefore be enforced unconditionally and the
+  // confidence read deleted.
+  //
+  // That was wrong by exactly one cell, and a review caught it. An unanchored pose sits at the
+  // identity it was born with, so for whichever node happens to sit *there* `offBy` is 0.0 and a
+  // cone check accepts — filing real pixels under a cell picked by an accident of initialisation,
+  // which is the failure this ADR exists to remove, surviving inside the change that removed it.
+  // What is left of zero confidence is transient (a session's opening ticks, and a stream
+  // carrying rates with no attitude) and it is still a direction nobody chose. There is nothing
+  // to check, so there is nothing to allow — including the cell the accident points at.
+  if (!(pose_state_.pose.confidence > 0.0)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "nothing has measured where the camera is pointing yet");
+  }
+
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
-  if (measured && offBy > aimed->acceptanceConeDeg) {
+
+  // Two refusals, because they have two causes and a caller reading the detail deserves to know
+  // which: an unusable cone is a broken plan, and being outside a usable one is a user who needs
+  // to turn the phone.
+  //
+  // Infinity is why the cone is checked separately rather than folded into the comparison below.
+  // A NaN cone makes that comparison false and the `!(<=)` form already refuses it; an infinite
+  // one satisfies it *legitimately* — every direction really is inside an infinite cone — so no
+  // arithmetic is wrong and every cell is armable from anywhere, which is ADR 0041's failure
+  // reached through the arithmetic rather than through the rule. What is being enforced here is
+  // that a cone is a measurement, and neither of those is one: a statement about the value, not
+  // about the comparison, which is why it cannot be a spelling of one.
+  //
+  // Both shipped planners refuse a non-finite cone at `Begin`, so nothing in this build delivers
+  // one here — which is an argument for the check rather than against it. The cone arrives from
+  // an engine behind a contract, and a manager does not get to assume every implementation of
+  // that contract validates its own output; the two that exist disagreed about this class of
+  // input twice while this branch was being reviewed. An earlier version of this comment argued
+  // the point from the null planner's weaker guard, and the commit that wrote it had already
+  // strengthened that guard — so the reason was untrue as it was written down.
+  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both lines with a planner that
+  // does not validate, so they are exercised rather than merely justified.
+  if (!std::isfinite(aimed->acceptanceConeDeg) || aimed->acceptanceConeDeg <= 0.0) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this cell's acceptance cone is not a usable measurement");
+  }
+  // And the cell has to point somewhere, which is the same sentence about the node's other number.
+  // `AngleBetweenDirections` answers a degenerate direction with `0.0`, and `0.0` is also what a
+  // camera aimed exactly at the cell measures — so a target that is not a rotation is *dead on*
+  // from every direction, through a cone that is itself perfectly valid. The cone check above
+  // cannot see it, and neither can the comparison below, because nothing about the arithmetic is
+  // wrong: the answer really is zero. `IsUsableRotation` is the question the sentinel cannot be
+  // asked afterwards.
+  if (!IsUsableRotation(aimed->targetOrientation)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this cell does not point anywhere a camera could be aimed");
+  }
+  // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
+  // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
+  // target by the check directly above, and the pose by `OrientationPoseEngine::Integrate`, which
+  // refuses to anchor on an attitude that is not one (`PoseEngine.AnAttitudeThatIsNotARotation-
+  // IsNotAReading`). Two usable rotations give two usable directions and an angle in `[0, π]`, so
+  // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
+  //
+  // An earlier version of this comment credited
+  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` instead. That test
+  // states a true guarantee and is not what holds it — a reviewer deleted the degeneracy guard it
+  // was written for and the test stayed green, because `Normalize(Vec3)` catches the same inputs
+  // one line earlier. Citing a test by name is a claim that it would fail, and this one would not.
+  //
+  // This line carried the NaN-proof spelling and a comment claiming a test drove it. No test did:
+  // the cone check above absorbs the only non-finite input the suite can deliver, and no caller
+  // can produce a non-finite `offBy` at all. An unreachable guard reads as a checked case and is
+  // one more thing to keep true, so it is the guarantee that is pinned now instead of the shape.
+  if (offBy > aimed->acceptanceConeDeg) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");
   }
@@ -802,6 +1036,68 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     return locked;
   }
 
+  // Re-asked here rather than remembered from `Open`, because arming is where the number is
+  // consumed and *after* the locks that most often change it (ADR 0045). A camera whose exposure
+  // has just been pinned long is exactly the one that drops from 30 fps to 15, so a floor read at
+  // `Begin` is stale in the direction that reintroduces the defect it exists to prevent — a burst
+  // taking frames faster than the camera makes them fills with duplicates of one exposure, which
+  // selection then ranks against copies of itself.
+  //
+  // After `SetLocks`, deliberately: before it, the answer would be the pre-lock rate and this
+  // would be a more expensive way of trusting `Open`.
+  //
+  // A refusal is not fatal. If the port cannot say, the burst runs on what the session already
+  // had: declining to capture because a figure could not be refreshed trades a real capture for
+  // an accurate number, which is backwards.
+  if (auto refreshed = camera_.Capabilities(); refreshed.ok()) {
+    // Zero never overwrites a number we had. Zero is the contract's word for "the platform will
+    // not say", which is the same fact a *refused* refresh reports — so an `Ok` carrying zero and
+    // a refusal have to leave the session in the same state, and they did not: the refusal kept
+    // the value and this discarded it. The browser port is the likely producer of the second,
+    // since `ReadCapabilities` maps a missing or non-finite metric to `0.0` and answers `Ok`.
+    //
+    // Two measured facts, kept whole rather than field by field. That distinction is the second
+    // correction this guard has had: applied to `maxBurstFps` alone it let a silent refresh
+    // replace a real resolution with zeros, and applied to all five fields *independently* it
+    // produced something worse — a struct describing no camera that ever existed.
+    //
+    // The angles are a function of the geometry, not a measurement beside it: the browser reports
+    // no field of view at all, and the host derives the pair from width and height against an
+    // assumed lens. So a refresh that says nothing about the geometry still carries a full pair —
+    // `deriveFieldOfView(0, 0)` answers the 4:3 landscape fallback rather than zeros — and keeping
+    // the four independently paired a real 1080x1920 portrait resolution with a landscape lens.
+    // A silence about the frame is a silence about its angles; they move together or not at all.
+    //
+    // The booleans stay out, and the reason is not that they cannot be silent — through the
+    // browser they can, and `describe()` renders an absent capability and a refused one as the
+    // same `false`. It is that `CameraCapabilities` has nowhere to put the difference, so there is
+    // no silence *here* to detect. That asymmetry is the same one `docs/06-roadmap.md` records for
+    // the white-balance lock, and it wants the same contract change.
+    const CameraCapabilities kept = camera_capabilities_;
+    camera_capabilities_ = refreshed.value;
+    if (!(camera_capabilities_.maxBurstFps > 0.0)) {
+      camera_capabilities_.maxBurstFps = kept.maxBurstFps;
+    }
+    //
+    // Tested both ways round, because "they move together" is a claim about both. A silence about
+    // the frame was the case a reviewer found; a silence about the *angles* beside a real frame is
+    // the same pairing from the other side, and it walked past a guard that only asked about
+    // width and height. It is reachable through `BrowserCameraAccess::ReadCapabilities`, which
+    // zeroes the angle pair when it cannot derive one — so the port answering honestly is what
+    // produces it.
+    const bool anglesDerived = std::isfinite(camera_capabilities_.horizontalFovDeg) &&
+                               camera_capabilities_.horizontalFovDeg > 0.0 &&
+                               std::isfinite(camera_capabilities_.verticalFovDeg) &&
+                               camera_capabilities_.verticalFovDeg > 0.0;
+    if (camera_capabilities_.maxWidth <= 0 || camera_capabilities_.maxHeight <= 0 ||
+        !anglesDerived) {
+      camera_capabilities_.maxWidth = kept.maxWidth;
+      camera_capabilities_.maxHeight = kept.maxHeight;
+      camera_capabilities_.horizontalFovDeg = kept.horizontalFovDeg;
+      camera_capabilities_.verticalFovDeg = kept.verticalFovDeg;
+    }
+  }
+
   firing_ = true;
   burst_node_ = node;
   burst_spec_ = burst;
@@ -810,6 +1106,35 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // now has to converge to, and the first frame waits for that (ADR 0032).
   next_frame_ns_ = clock_.MonotonicNs() + BurstSettleNs();
   return Status::Ok();
+}
+
+int64_t CaptureSessionManager::CameraFramePeriodNs() const {
+  // `!(x > 0)` rather than `x <= 0`, so a NaN rate lands on "will not say" with the zero that
+  // means the same thing.
+  if (!(camera_capabilities_.maxBurstFps > 0.0)) return 0;
+
+  // Capped before the conversion, because the conversion is the undefined part. `maxBurstFps` is
+  // a double crossing a resource-access contract, and a manager does not get to assume a platform
+  // reports a sane one: at 1e-10 fps the reciprocal is 1e19 ns, which does not fit in an
+  // `int64_t`, and converting a floating value outside the destination's range is undefined
+  // rather than merely wrong. UBSan says so — "1e+19 is outside the range of representable values
+  // of type 'long int'" — but only with `float-cast-overflow`, which GCC leaves out of
+  // `-fsanitize=undefined`; the sanitizer job could not see this until that flag was named.
+  //
+  // What the undefined conversion actually did is worth recording, because it is not a crash: on
+  // the usual hardware it yields `INT64_MIN`, which loses every `byCamera > …` comparison and so
+  // *removes* the floor it was computing. A camera saying "I cannot give you a frame this hour"
+  // produced a burst that fired immediately.
+  //
+  // An hour, because a camera that cannot manage one frame an hour cannot be burst from at all,
+  // and there is no useful difference between waiting an hour and waiting three hundred years.
+  // The cap keeps the value representable and lets the ordinary floor arithmetic run on it.
+  constexpr int64_t kSlowestUsefulFramePeriodNs = 3'600'000'000'000;
+  const double period = 1000000000.0 / camera_capabilities_.maxBurstFps;
+  if (!(period < static_cast<double>(kSlowestUsefulFramePeriodNs))) {
+    return kSlowestUsefulFramePeriodNs;
+  }
+  return static_cast<int64_t>(period);
 }
 
 int64_t CaptureSessionManager::BurstIntervalNs() const {
@@ -823,10 +1148,8 @@ int64_t CaptureSessionManager::BurstIntervalNs() const {
   // it looks like a fast one.
   //
   // Zero means the platform will not say, in which case the tick rate is the only floor there is.
-  if (max_burst_fps_ > 0) {
-    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
-    if (byCamera > interval) interval = byCamera;
-  }
+  const int64_t byCamera = CameraFramePeriodNs();
+  if (byCamera > interval) interval = byCamera;
   return interval;
 }
 
@@ -842,10 +1165,8 @@ int64_t CaptureSessionManager::BurstSettleNs() const {
   // Zero still means "the platform will not say", and then the tick rate is the only floor there
   // is. A caller asking for no settle at all on a camera that reports its rate gets one frame
   // period, which is the least that can be asked for and still mean anything.
-  if (max_burst_fps_ > 0) {
-    const int64_t byCamera = static_cast<int64_t>(1000000000.0 / max_burst_fps_);
-    if (byCamera > settle) settle = byCamera;
-  }
+  const int64_t byCamera = CameraFramePeriodNs();
+  if (byCamera > settle) settle = byCamera;
   return settle;
 }
 
@@ -1067,10 +1388,20 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
 
   NodeContext context;
   context.siblings = cell;
+  // From here on the cell has to be cooled on every way out, refusals included. `Score` measures
+  // each sibling for exposure agreement and every measurement `Pin`s, which faults a `Spilled`
+  // frame back into the heap and leaves it `HeapEncoded` — so scoring an offer re-heats a cell
+  // that a burst already sent down. `Disarm` cools for exactly this reason and this path never
+  // reaches it: `OfferFrame` arms nothing, so `Disarm` returns at its first line. That made an
+  // offer into a captured cell the one route that skipped the policy ADR 0023 exists for.
+  //
+  // `Cool` touches only what a burst here took, so the offered frame stays where the caller left
+  // it — which is the same reason it is not forgotten below.
   auto scored = quality_.Score(frame, pose, context);
   if (!scored.ok()) {
     // Same reasoning as CaptureCell, minus the release: this frame came from the caller, who
     // still owns it. Forgetting someone else's handle would be the worse bug.
+    Cool(cell);
     return scored.status;
   }
   candidate.quality = scored.value;
@@ -1084,13 +1415,24 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   auto ranked = quality_.Rank(cell, SelectionPolicy{});
   if (!ranked.ok()) {
     cell.pop_back();
+    Cool(cell);
     return ranked.status;
   }
   const size_t judged = Reorder(cell, ranked.value);
   // An offer can push a burst's frame below the cut, so the cell is trimmed here too. The frame
   // just offered is not this manager's to end and Trim knows it.
   Trim(cell, judged);
+  // After the trim, so nothing forgotten is demoted on its way out.
+  Cool(cell);
   return Ok(FrameVerdict::Accepted);
+}
+
+Result<CameraCapabilities> CaptureSessionManager::CameraInUse() const {
+  if (auto status = RequireSession(); !status.ok()) return status;
+  // The copy the session is pacing bursts by, refreshed at `ArmBurst` (ADR 0045) — not a fresh
+  // read. Asking the camera here would answer a different question from the one a caller wants:
+  // "what is this burst being timed against", which is the copy.
+  return Ok(camera_capabilities_);
 }
 
 Result<CoverageState> CaptureSessionManager::Coverage() const {
@@ -1209,10 +1551,23 @@ Status CaptureSessionManager::End() {
   const Status closed = camera_.Close();
 
   active_ = false;
-  max_burst_fps_ = 0;
+  camera_capabilities_ = CameraCapabilities{};
   candidates_.clear();
   burst_owned_.clear();
   plan_ = CapturePlan{};
+  // Beside the rest of this session's state, and the only place that does it.
+  //
+  // `Begin` and `Resume` had one of these too, on the reasoning that a session should start clean
+  // whatever came before. A reviewer showed each of the three was individually removable with the
+  // whole suite green, which is the signal this repo treats as meaning a line is dead rather than
+  // defensive — and it is: `Begin` refuses while a session is active, `Abandon` leaves it active,
+  // and every failure path through `End` reaches this block, so ending here is the only way a
+  // session stops. Three resets meant none of them was tested.
+  //
+  // What would make this insufficient is a way to stop a session that does not come through here
+  // — a fatal `Abandon` that cleared `active_`, say. Whoever adds one adds a reset with it, and
+  // `ANewSessionDoesNotInheritTheLastOnesDwell` is what fails if they do not.
+  ResetDwell();
 
   // The session is over regardless — every field above is cleared before this returns, so there
   // is nothing here for a caller to retry. What is left worth reporting is the camera, and only

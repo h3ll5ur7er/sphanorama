@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 #include "utilities/quaternion.h"
 
@@ -196,12 +197,115 @@ TEST(Vec3Maths, NormalizeIsTotal) {
   EXPECT_DOUBLE_EQ(zero.z, 0.0);
   const Vec3 unit = Normalize(Vec3{0, 3, 4});
   EXPECT_NEAR(std::sqrt(Dot(unit, unit)), 1.0, 1e-12);
+
+  // A finite length is not enough: `Dot` squares before it sums, so a component large enough
+  // overflows and the length is an infinity that `length > 1e-12` waves through. Dividing by it
+  // gives NaN wherever the component was itself infinite, and zero elsewhere — half a vector.
+  // The `isfinite` half of the guard is what makes this the origin like every other degenerate
+  // input, and a reviewer found it had no test: dropping it left all 554 green, because
+  // `AngleBetweenDirections` catches both spellings one call later.
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Vec3 unusable : {Vec3{inf, 0, 0}, Vec3{1e300, 1e300, 1e300}, Vec3{-inf, inf, 0}}) {
+    const Vec3 answered = Normalize(unusable);
+    EXPECT_DOUBLE_EQ(answered.x, 0.0);
+    EXPECT_DOUBLE_EQ(answered.y, 0.0);
+    EXPECT_DOUBLE_EQ(answered.z, 0.0);
+  }
 }
 
 TEST(AngleBetweenDirections, IgnoresLengthAndMeasuresTheAngle) {
   EXPECT_NEAR(AngleBetweenDirections(Vec3{5, 0, 0}, Vec3{0, 2, 0}) * kDegPerRad, 90.0, 1e-9);
   EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{-1, 0, 0}) * kDegPerRad, 180.0, 1e-9);
   EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{1, 0, 0}), 0.0, 1e-9);
+}
+
+TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite) {
+  // The function's own comment says "a degenerate direction is not an angle" and returns 0.0 for
+  // one. It got that right for a zero vector and for NaN — both normalise to zero, and the
+  // `Dot(x, x) < 0.5` test catches them — and wrong for an infinite component, which normalises to
+  // `inf/inf` = NaN *per element*: `Dot(x, x)` is then NaN, `NaN < 0.5` is false, and the
+  // degeneracy check hands NaN through to `acos`.
+  //
+  // It matters because the answer is an angular error, and every caller compares it against a
+  // threshold. A NaN loses every comparison, so `angle > cone` reads as "inside the cone" and
+  // `angle <= cone` reads as "outside" — the same number arriving at two callers as two different
+  // answers, which is the shape of defect this branch has now closed three times.
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const Vec3 degenerate : {Vec3{inf, 0, 0}, Vec3{-inf, 0, 0}, Vec3{nan, 0, 0}, Vec3{0, 0, 0},
+                                Vec3{inf, inf, inf}}) {
+    EXPECT_DOUBLE_EQ(AngleBetweenDirections(degenerate, Vec3{1, 0, 0}), 0.0);
+    EXPECT_DOUBLE_EQ(AngleBetweenDirections(Vec3{1, 0, 0}, degenerate), 0.0);
+  }
+}
+
+// Every degenerate *quaternion* comes back through `Direction` as something one of the two guards
+// above catches, so no caller has ever seen a NaN angle from one.
+//
+// **This test cannot fail on either guard alone, and that is worth stating rather than fixing.**
+// A reviewer deleted `AngleBetweenDirections`'s degeneracy check and it stayed green, because
+// `Normalize(Vec3)`'s own gate catches the same inputs one line earlier; delete that instead and
+// this guard catches them. Two independent holders of one guarantee, so no test can name which is
+// load-bearing here. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is the one that
+// pins `AngleBetweenDirections`'s guard: deleting it alone fails that test and nothing else.
+//
+// The *reason* it reaches the guard changed on this branch and this paragraph did not follow.
+// It used to be that `Normalize` turned an infinite component into NaN per element, which only
+// `!(Dot > 0.5)` could catch. `Normalize(Vec3)` now refuses a non-finite length outright, so the
+// same input arrives as the origin — still caught, by the same line, for a different reason.
+// `Vec3Maths.NormalizeIsTotal` pins that half; it had nothing before, which is how the stale
+// sentence survived.
+//
+// What this test is for, then, is the *guarantee* rather than a guard: that nothing arriving as a
+// quaternion can produce an unusable angle. `CaptureSessionManager::ArmBurst` no longer rests on
+// it — it checks both of its rotations first — but `Locate` and the reticle still measure angles
+// against directions, and this says what those measurements can be.
+TEST(AngleBetweenDirections, EveryDegenerateQuaternionStillMeasuresAFiniteAngle) {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const Quat broken : {Quat{inf, 0, 0, 0}, Quat{nan, 1, 0, 0}, Quat{0, 0, 0, 0},
+                            Quat{1e300, 1e300, 1e300, 1e300}, Quat{-inf, inf, nan, 0}}) {
+    const double angle = AngleBetweenDirections(Direction(broken), Vec3{1, 0, 0});
+    EXPECT_TRUE(std::isfinite(angle)) << "a degenerate quaternion produced an unusable angle";
+    EXPECT_GE(angle, 0.0);
+    EXPECT_LE(angle, 3.15);
+  }
+}
+
+TEST(IsUsableRotation, RefusesAQuaternionWhoseNormIsNotFinite) {
+  // Every component finite and the *norm* infinite, which is the case the finiteness check was
+  // written for and cannot see: `Norm` squares before it sums, so anything above about 1.34e154
+  // overflows on the way. `inf > 1e-12` is true, so the predicate said yes and `Normalize` then
+  // divided by infinity and answered `{0,0,0,0}` — neither the input's rotation nor the identity
+  // this header promises as the fallback.
+  //
+  // What that cost, run end to end by the reviewer who found it: `Quat{0, 1e200, 0, 0}` is a 180°
+  // flip about X whose real `Direction` is `(0,0,+1)`, and what came out was `(0,0,-1)` — straight
+  // ahead. `OrientationPoseEngine::Integrate` then anchored the pose at **confidence 1.0** on a
+  // direction 180 degrees from the sample, after which `ArmBurst`'s confidence guard, the cone
+  // check (`offBy` exactly 0) and the dwell all pass.
+  //
+  // `IsUsableRotation` had no test of its own at all. The nearest one, below, feeds `Quat{1e300,…}`
+  // through `Direction` and passes because it asserts only that the *angle* comes back finite.
+  for (const Quat overflowing : {Quat{0, 1e200, 0, 0}, Quat{1e300, 1e300, 1e300, 1e300},
+                                 Quat{1e155, 0, 0, 0}, Quat{0, 0, -1e200, 0}}) {
+    EXPECT_FALSE(IsUsableRotation(overflowing))
+        << "a quaternion `Normalize` cannot use was reported usable";
+    const Quat normalized = Normalize(overflowing);
+    EXPECT_DOUBLE_EQ(normalized.w, 1.0) << "the fallback was not the identity the header promises";
+    EXPECT_DOUBLE_EQ(normalized.x, 0.0);
+    EXPECT_DOUBLE_EQ(normalized.y, 0.0);
+    EXPECT_DOUBLE_EQ(normalized.z, 0.0);
+  }
+}
+
+TEST(IsUsableRotation, AcceptsTheRotationsAPhoneActuallyProduces) {
+  // The other side of it, because a predicate that refuses everything is also wrong and would have
+  // passed the test above. A unit quaternion, an unnormalised but honest one, and the identity.
+  EXPECT_TRUE(IsUsableRotation(FromAzimuthElevation(37.0, -12.0)));
+  EXPECT_TRUE(IsUsableRotation(Quat{2, 0, 0, 0}));
+  EXPECT_TRUE(IsUsableRotation(Quat{}));
+  EXPECT_FALSE(IsUsableRotation(Quat{0, 0, 0, 0}));
 }
 
 TEST(RollBetween, IsZeroForTheSameOrientation) {

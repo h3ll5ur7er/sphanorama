@@ -41,6 +41,161 @@ describe('opening the camera', () => {
     }
   });
 
+  it('reports the track frame rate, so the core has a camera-rate floor to apply', async () => {
+    // `CameraCapabilities.maxBurstFps` is what `CaptureSessionManager` floors a burst's interval
+    // and settle with (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview frame,
+    // so asking for frames faster than the camera makes them fills a burst with duplicates of one
+    // exposure, and selection then ranks a frame against copies of itself.
+    //
+    // This adapter never set the field. The whole floor was therefore dead in the only client
+    // there is — zero means "the platform will not say", which is the one answer that turns it
+    // off — while the core, the ADRs and the contract all described it as working. Found by a
+    // reviewer reading the core's arithmetic and asking who supplies the number.
+    const camera = createCameraAccess(fakeMedia({
+      stream: {
+        getVideoTracks: () => [{
+          getSettings: () => ({ width: 1280, height: 720, frameRate: 30 }),
+          getCapabilities: () => ({}),
+          stop: vi.fn(),
+        }],
+        getTracks: () => [{ stop: vi.fn() }],
+      },
+    }) as never);
+    const result = await camera.open({ preferRearCamera: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.maxBurstFps).toBe(30);
+  });
+
+  it('reports the track as it is now, not as it was when it opened', async () => {
+    // ADR 0045's push half. `ICameraAccess::Capabilities()` lets the core re-ask at arm time, but
+    // the port it asks lives in the worker and answers from what this page last pushed — so a
+    // pull with nothing pushing behind it reads a cache and returns what `open()` said. Three
+    // reviewers found that independently.
+    //
+    // What makes it matter is that this app changes the thing it depends on: `setLocks` drives
+    // `applyConstraints({ exposureMode: 'manual' })`, and a camera whose exposure has just been
+    // pinned long is exactly the one that drops from 30 fps to 15.
+    const settings = { width: 1280, height: 720, frameRate: 30 };
+    const camera = createCameraAccess(fakeMedia({
+      stream: {
+        getVideoTracks: () => [{
+          getSettings: () => settings,
+          getCapabilities: () => ({}),
+          stop: vi.fn(),
+        }],
+        getTracks: () => [{ stop: vi.fn() }],
+      },
+    }) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.maxBurstFps).toBe(30);
+
+    // The track slows, as one does under a long exposure.
+    settings.frameRate = 15;
+
+    const now = camera.capabilities();
+    expect(now.maxBurstFps, 'the adapter answered from what open() saw, not from the track')
+      .toBe(15);
+    // And the rest of the answer is the same shape as `open`'s, so the two cannot disagree about
+    // anything but what actually moved.
+    expect(now.maxWidth).toBe(1280);
+    expect(now.maxHeight).toBe(720);
+  });
+
+  it('says nothing about a camera it is not holding', async () => {
+    // No track, no answer to give. Zeros rather than a stale last-known set: the core reads 0 as
+    // "the platform will not say", which is true of a camera that is gone.
+    //
+    // Asked *after* a camera has been open and reported real numbers, which is the half a reviewer
+    // showed was missing: asked before any open, this assertion is satisfied by a default, and an
+    // implementation that remembered the last camera for ever would pass it. Zeros here are only
+    // evidence of anything if there was something else to answer with.
+    const camera = createCameraAccess(fakeMedia({}) as never);
+    expect(camera.capabilities().maxWidth, 'nothing open, so nothing to say').toBe(0);
+
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.maxWidth).toBe(1920);
+
+    await camera.close();
+    const after = camera.capabilities();
+    expect(after.maxWidth, 'the adapter kept answering for a camera it had closed').toBe(0);
+    expect(after.maxBurstFps).toBe(0);
+    expect(after.supportsTorch, 'and kept a capability of it too').toBe(false);
+  });
+
+  it('says nothing about a track that has ended, rather than half of it', async () => {
+    // The camera the page actually loses. `close()` is the only thing that clears `active` and the
+    // page never calls it — the core's route out is `closeCamera`, which stops the tracks — and
+    // `stop()` does not remove a track from its stream. So the adapter goes on being handed a dead
+    // track, and a dead track answers *unevenly*: `getSettings()` has dropped the geometry and
+    // `getCapabilities()` still lists every mode the device supports.
+    //
+    // Read without a guard that is a mixture — zero width and height next to
+    // `supportsExposureLock: true` — and both halves are believed downstream: the host derives a
+    // field of view from `deriveFieldOfView(0, 0)` and the manager paces a burst expecting to pin
+    // an exposure on a camera that is gone. Half an answer is worse than none, because none is a
+    // state the core has a word for.
+    // Through `fakeTrack`, which is the one model of an ended track in this file. It was written
+    // inline here first, with `getSettings()` answering `{}` — and a reviewer pointed out that the
+    // repo then carried two models of the same browser behaviour, disagreeing about the half this
+    // test is named for: an ended track drops the *geometry* and keeps the mode strings, which is
+    // what makes the answer a mixture rather than an absence. Two models is how one of them
+    // quietly stops matching the browser.
+    const track = fakeTrack({
+      capabilities: { torch: true, exposureMode: ['continuous', 'manual'] },
+      initial: { width: 1280, height: 720, frameRate: 30 },
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.supportsExposureLock).toBe(true);
+
+    track.end();
+    const now = camera.capabilities();
+    expect(now.maxWidth, 'geometry').toBe(0);
+    expect(now.maxBurstFps, 'rate').toBe(0);
+    expect(now.supportsExposureLock,
+      'a dead track was still promising an exposure lock').toBe(false);
+    expect(now.supportsTorch, 'and a torch').toBe(false);
+  });
+
+  it('treats a rate that is not a measurement as no answer at all', async () => {
+    // The guard is `typeof rate === 'number' && Number.isFinite(rate) && rate > 0`, and only the
+    // ordinary case and the absent one were driven — so a reviewer deleted the whole condition and
+    // all 43 camera tests stayed green.
+    //
+    // Each of these reaches the core as `maxBurstFps`, which floors a burst's interval and settle.
+    // A NaN or a zero would become a period the manager has to decide what to do with; zero is the
+    // contract's word for "the platform will not say", and that is the honest thing to send for a
+    // track that answered with something that is not a rate.
+    for (const frameRate of [Number.NaN, Number.POSITIVE_INFINITY, 0, -30, '30' as unknown]) {
+      const camera = createCameraAccess(fakeMedia({
+        stream: {
+          getVideoTracks: () => [{
+            getSettings: () => ({ width: 1280, height: 720, frameRate }),
+            getCapabilities: () => ({}),
+            stop: vi.fn(),
+          }],
+          getTracks: () => [{ stop: vi.fn() }],
+        },
+      }) as never);
+      const result = await camera.open({ preferRearCamera: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.maxBurstFps, `a frameRate of ${String(frameRate)} became a real rate`)
+          .toBe(0);
+      }
+    }
+  });
+
+  it('says nothing about the rate rather than guessing when the track does not report one', async () => {
+    // Zero is the contract's word for "the platform will not say", and the core reads it as "no
+    // floor here". A default invented in the adapter would slow every burst on the browsers that
+    // decline to answer, which the core's own test says is most of them.
+    const camera = createCameraAccess(fakeMedia({}) as never);
+    const result = await camera.open({ preferRearCamera: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.maxBurstFps).toBe(0);
+  });
+
   it('requires the rear camera rather than merely preferring it', async () => {
     // `ideal` is scored, not obeyed: getUserMedia picks the device with the lowest *combined*
     // fitness distance over every ideal constraint, so a front camera that matches the requested
@@ -210,8 +365,19 @@ function fakeTrack(options: {
 } = {}) {
   const applied: unknown[] = [];
   let settings: Record<string, unknown> = { width: 1920, height: 1080, ...options.initial };
+  // Live until a test ends it. Modelled because an ended track is not a missing one and the two
+  // answer very differently: `getSettings()` drops the geometry and keeps the mode strings, and
+  // `applyConstraints` rejects.
+  let readyState = 'live';
+  let endOnWrite = false;
   const track = {
     applied,
+    end() {
+      readyState = 'ended';
+      settings = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => !['width', 'height', 'frameRate'].includes(key)));
+    },
+    get readyState() { return readyState; },
     getSettings: () => settings,
     getCapabilities: () => {
       if (options.capabilitiesThrow) {
@@ -225,8 +391,20 @@ function fakeTrack(options: {
         focusMode: ['continuous', 'manual'],
       };
     },
+    // Ends the moment the next constraint reaches it, which is how a track pulled away mid-write
+    // behaves: the call in flight rejects and so does every one after it.
+    endOnNextConstraint() { endOnWrite = true; },
     async applyConstraints(constraints: unknown) {
       applied.push(constraints);
+      if (endOnWrite) this.end();
+      if (readyState === 'ended') {
+        // What Chromium does. Swallowed by `ask`, which is right — a camera that will not take a
+        // constraint is a supported outcome — and is exactly why the read-back has to be of
+        // something alive.
+        const error = new Error('the track has ended');
+        error.name = 'InvalidStateError';
+        throw error;
+      }
       if (options.rejectWith) {
         const error = new Error('constraint refused');
         error.name = options.rejectWith;
@@ -416,6 +594,21 @@ describe('what the camera says it offers', () => {
     expect(camera.offeredModes().exposure).toBeNull();
   });
 
+  it('says nothing about the modes of a track that has ended', async () => {
+    // ADR 0033: a refusal explained with the last camera's lists is worse than one explained with
+    // nothing, and "the last camera" here is the same one — the page never calls `close()`, so a
+    // track that simply ends leaves `offered` standing and the row goes on quoting a device that
+    // is gone.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    expect(camera.offeredModes().exposure).toEqual(['continuous', 'manual']);
+
+    track.end();
+
+    expect(camera.offeredModes().exposure, 'a dead track was still listing its modes').toBeNull();
+  });
+
   it('replaces the list when another camera is opened', async () => {
     // Same reason a refusal is not carried across an open: what a camera offers is a fact about
     // that camera.
@@ -431,6 +624,54 @@ describe('what the camera says it offers', () => {
 });
 
 describe('applying the locks', () => {
+  it('refuses a track that has ended rather than reading a lock off a corpse', async () => {
+    // ADR 0022's rule is that the returned state is *observed* rather than acknowledged, and
+    // observing a corpse is not observing. On an ended track `applyConstraints` rejects — which
+    // `ask` swallows by design — while `getSettings()` keeps the last lock's mode strings. So the
+    // read-back reports the locks the dead camera was holding, and a release that reached the
+    // track nowhere comes back as `ok({exposure: true, …})`: success invented from rejections.
+    //
+    // The `!track` guard could not fire for this. `close()` is the only thing that clears the
+    // adapter's stream and the page never calls it, so the dead track is still handed out.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    const held = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(held.ok && held.value.exposure, 'the arrangement never took a lock to lose').toBe(true);
+
+    track.end();
+
+    const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+    expect(released.ok, 'a dead track answered a lock write').toBe(false);
+    if (!released.ok) expect(released.status.code).toBe('CameraUnavailable');
+  });
+
+  it('refuses when the track ends while the locks are being written', async () => {
+    // The entry guard above cannot see this and a reviewer proved it: the body awaits between
+    // three and six `applyConstraints` calls — 120 ms each on the cameras this repo has measured,
+    // and `writeLocks` allows a whole write three seconds — so a track that ends *inside* that
+    // window walks straight past a check made before the first one.
+    //
+    // What comes out the other end is the invented success the entry guard was written to stop:
+    // every rejection is swallowed by `ask` on purpose, and an ended track keeps the last lock's
+    // mode strings, so the read-back reports three locks held by a camera that is gone. Which is
+    // why the check that matters is on the read-back.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    const held = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(held.ok && held.value.exposure, 'nothing was ever locked to lose').toBe(true);
+
+    // Pulled away on the first constraint of the release, which is what a track being taken
+    // mid-write looks like: this one rejects, and so does every one after it.
+    track.endOnNextConstraint();
+
+    const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+    expect(released.ok, 'a track that died mid-write reported the locks it used to hold')
+      .toBe(false);
+    if (!released.ok) expect(released.status.detail).toContain('while its locks were being written');
+  });
+
   it('asks the track for manual modes and confirms they took', async () => {
     const track = fakeTrack();
     const camera = createCameraAccess(mediaWith(track) as never);

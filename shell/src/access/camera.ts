@@ -24,6 +24,17 @@ export interface CameraOpenSpec {
 export interface CameraCapabilities {
   maxWidth: number;
   maxHeight: number;
+  /**
+   * Frames per second the track settled on, or 0 when it will not say.
+   *
+   * Declared late, and its absence here is the whole reason the core's camera-rate floor did
+   * nothing: `CaptureSessionManager` reads `maxBurstFps` off the port and floors a burst's
+   * interval and settle with it (ADR 0018, ADR 0032), the C++ contract has always carried the
+   * field, and this hand-written mirror of that struct did not — so the value crossing the
+   * boundary was the C++ default, 0, which the core reads as "no floor". A silence that looked
+   * exactly like a browser declining to answer.
+   */
+  maxBurstFps: number;
   supportsTorch: boolean;
   /**
    * Whether the track offers a *manual* mode for each. Reported rather than assumed, because a
@@ -75,6 +86,18 @@ const NOTHING_REPORTED: LockModes =
 
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
+  /**
+   * What the track reports *now*, read live rather than remembered from `open`.
+   *
+   * ADR 0045's other half. The core re-asks its camera port before it paces a burst — but that
+   * port lives in the worker and answers from what this page last pushed into it, so a pull with
+   * nothing pushing behind it reads a cache and gets `open`'s answer back. This is what the page
+   * pushes after it has changed the camera, which today means after `setLocks` settles.
+   *
+   * Zeros when no track is held: the core reads 0 as "the platform will not say", which is true
+   * of a camera that is gone and better than a stale last-known set.
+   */
+  capabilities(): CameraCapabilities;
   stream(): MediaStream | null;
   /**
    * Asks the track for the modes these locks imply and reports back what it settled on.
@@ -130,6 +153,22 @@ function reportedModes(modes: unknown): readonly string[] | null {
   return Array.isArray(modes) ? Object.freeze(modes.map(String)) : null;
 }
 
+/**
+ * Whether a track is still delivering.
+ *
+ * A function rather than an inline comparison, and not only for the three callers: TypeScript
+ * narrows `readyState` to `'live'` after the first check in a scope and then calls the second one
+ * unintentional — which is exactly backwards for this property, whose whole point is that it
+ * changes under you across an `await`. Passing the track through a parameter defeats the narrowing
+ * and keeps the second check, which is the one that matters in `setLocks`.
+ *
+ * `!== 'ended'` rather than `=== 'live'`: those are the only two states a real track has, and a
+ * fake without the property at all is a test's camera rather than a dead one.
+ */
+function stillLive(track: { readyState?: string } | undefined): boolean {
+  return track !== undefined && track.readyState !== 'ended';
+}
+
 const MODE_OF: Record<keyof LockState, string> = {
   exposure: 'exposureMode',
   whiteBalance: 'whiteBalanceMode',
@@ -173,6 +212,35 @@ function statusFor(name: string) {
     default:
       return 'Internal' as const;
   }
+}
+
+/**
+ * One reading of a track's settings and capabilities, so `open` and `capabilities` cannot answer
+ * differently about the same camera. They did not before this existed — they were the same lines
+ * written twice, which is the shape that lets one of them go stale.
+ */
+function describe(settings: Record<string, unknown>,
+                  capabilities: Record<string, unknown>): CameraCapabilities {
+  // `maxBurstFps` is the floor `CaptureSessionManager` puts under a burst's interval and settle
+  // (ADR 0018, ADR 0032). `PeekPreviewFrame` borrows the latest preview frame, so a burst taking
+  // frames faster than the camera makes them fills with duplicates of one exposure — and selection
+  // then ranks a frame against copies of itself, which looks like a fast burst and is a single
+  // frame. It was simply never sent for the life of the field: the core's arithmetic, the ADRs and
+  // the contract all described a floor that could not apply in the only client there is.
+  const rate = settings.frameRate;
+  return {
+    maxWidth: (settings.width as number | undefined) ?? 0,
+    maxHeight: (settings.height as number | undefined) ?? 0,
+    // The rate the track settled on, which is the floor `CaptureSessionManager` puts under a
+    // burst's interval and settle (ADR 0018, ADR 0032). Zero when the track will not say, because
+    // the core reads zero as "no floor here" — and a default invented here would slow every burst
+    // on the browsers that decline to answer, which is most of them.
+    maxBurstFps: typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0,
+    supportsTorch: 'torch' in capabilities,
+    supportsExposureLock: offersManual(capabilities.exposureMode),
+    supportsWhiteBalanceLock: offersManual(capabilities.whiteBalanceMode),
+    supportsFocusLock: offersManual(capabilities.focusMode),
+  };
 }
 
 export function createCameraAccess(media: MediaDevices | undefined): CameraAccess {
@@ -262,14 +330,10 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
           whiteBalance: reportedModes(capabilities.whiteBalanceMode),
           focus: reportedModes(capabilities.focusMode),
         });
-        return ok({
-          maxWidth: settings.width ?? 0,
-          maxHeight: settings.height ?? 0,
-          supportsTorch: 'torch' in capabilities,
-          supportsExposureLock: offersManual(capabilities.exposureMode),
-          supportsWhiteBalanceLock: offersManual(capabilities.whiteBalanceMode),
-          supportsFocusLock: offersManual(capabilities.focusMode),
-        });
+        // Through `describe`, the same reading `capabilities()` uses, so the answer this call gives
+        // and the answer a later re-ask gives cannot differ about anything except what actually
+        // moved on the track.
+        return ok(describe(settings as unknown as Record<string, unknown>, capabilities));
       } catch (cause) {
         const error = cause as { name?: string; message?: string };
         return err<CameraCapabilities>(statusFor(error.name ?? ''), COMPONENT,
@@ -277,20 +341,60 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       }
     },
 
+    capabilities(): CameraCapabilities {
+      const track = active?.getVideoTracks()[0];
+      // No track, or one that has ended. Zeros rather than a stale last-known set: the core reads
+      // 0 as "the platform will not say", which is exactly true of a camera that is gone.
+      //
+      // The `ended` half is not the same guard written twice. `stop()` does not remove a track
+      // from its stream and `close()` is the only thing that clears `active` — which the page
+      // never calls, because the core's route out is `closeCamera` — so `active?.getVideoTracks()`
+      // goes on handing back the dead track for the life of the tab. Reading it produces a
+      // *mixture*: an ended track has dropped the geometry from `getSettings()` and still answers
+      // `getCapabilities()`, so the answer is zero width and height beside
+      // `supportsExposureLock: true`. The core would size a tessellation from
+      // `deriveFieldOfView(0, 0)` and pace a burst believing it can pin an exposure on a camera
+      // that is gone. Half an answer is worse than none, because none is a state the core has a
+      // word for.
+      //
+      // `=== 'ended'` rather than `!== 'live'`: the only two states a track has are those, and a
+      // fake without the property at all is a test's camera rather than a dead one.
+      if (!track || !stillLive(track)) return describe({}, {});
+      let offered: Record<string, unknown> = {};
+      try {
+        offered = ((track as MediaStreamTrack & {
+          getCapabilities?: () => MediaTrackCapabilities;
+        }).getCapabilities?.() ?? {}) as Record<string, unknown>;
+      } catch {
+        // Same three ways to say nothing as `open` has, and the same empty answer.
+      }
+      return describe(track.getSettings() as unknown as Record<string, unknown>, offered);
+    },
+
     stream() {
       return active;
     },
 
     offeredModes() {
-      return offered;
+      // The same rule as `capabilities()` and `setLocks()` above: a camera that is gone has nothing
+      // to say. `offered` is cleared by `open` and `close`, and the page calls neither when a track
+      // simply ends — so a refusal explained after the camera went would have been explained with
+      // the *previous* camera's lists, which ADR 0033 says outright is worse than explaining
+      // nothing. Reported, never consulted, so this costs a row a sentence and nothing else.
+      return stillLive(active?.getVideoTracks()[0]) ? offered : NOTHING_REPORTED;
     },
 
     async setLocks(wanted: LockState) {
       const track = active?.getVideoTracks()[0] as (MediaStreamTrack & {
         applyConstraints?(constraints: unknown): Promise<void>;
       }) | undefined;
-      if (!track) {
-        return err<LockState>('CameraUnavailable', COMPONENT, 'no camera open');
+      // Refused before anything is written to a track that is already dead. This is the cheap half
+      // and it is not the load-bearing one — see the read-back at the bottom of this function,
+      // which is where the guard has to be. Kept because `onReleaseLocks` reaches `writeLocks`
+      // without passing the page's own `cannotArm`, and writing constraints to a corpse to find
+      // out it is one is not a better way to learn.
+      if (!track || !stillLive(track)) {
+        return err<LockState>('CameraUnavailable', COMPONENT, 'no live camera track');
       }
 
       // A refusal is never a failure of this call: it means the camera would not take that lock,
@@ -322,6 +426,23 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
       // Read back rather than trust. `applyConstraints` resolving says the browser accepted the
       // request, not that the mode changed — and on the cameras where it does not, the burst
       // above would compare candidates on sharpness while the exposure moved under it.
+      //
+      // Of a track that is still alive, which is the whole of ADR 0022's rule and is where the
+      // check belongs. The guard at the top of this function is an entry check on a body that
+      // awaits between three and six `applyConstraints` calls — measured at 120 ms each here, and
+      // `writeLocks` allows a whole write three seconds — so a track that ends *inside* that
+      // window walks straight past it. A reviewer drove exactly that: a track ending on the first
+      // constraint and rejecting every one after it, with `setLocks({all false})` returning
+      // `ok({exposure: true, whiteBalance: true, focus: true})`. Every rejection is swallowed by
+      // `ask` on purpose, and an ended track keeps the last lock's mode strings in `getSettings()`
+      // — so the read-back reported three locks held by a camera that was gone, which is the
+      // invented success the entry guard was written to stop and could not.
+      //
+      // Observing a corpse is not observing.
+      if (!stillLive(track)) {
+        return err<LockState>('CameraUnavailable', COMPONENT,
+                              'the camera went away while its locks were being written');
+      }
       const settled = track.getSettings() as Record<string, unknown>;
       return ok<LockState>({
         exposure: holding(settled, 'exposure'),

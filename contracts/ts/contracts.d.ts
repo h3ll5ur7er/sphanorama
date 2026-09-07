@@ -121,9 +121,11 @@ export interface PoseSample {
    * and says nothing whatever about where that was. A stream of rates alone reports zero for its
    * whole life, however far it has turned — measured at 8.709° off the identity, still zero — and
    * that is the honest answer, because the direction it is 8.709° away from is one nobody chose.
-   * Callers act on the zero rather than on the number's size: `ArmBurst` enforces the acceptance
-   * cone only against an anchored pose, and `Locate` only prefers the cell the camera is inside
-   * for one (ADR 0041, ADR 0042). Above zero, 1.0 is an absolute reading and 0.5 is dead reckoning
+   * Callers act on the zero rather than on the number's size: `Locate` prefers the cell the camera
+   * is inside only for an anchored pose, and names no cell as held otherwise (ADR 0041).
+   * `ArmBurst` used to stand its cone check down on a zero and no longer does — there is nothing
+   * to check against an identity nobody chose, so there is nothing to allow (ADR 0044). Above
+   * zero, 1.0 is an absolute reading and 0.5 is dead reckoning
    * *from* one — drifting away from a direction somebody measured, which is worth aiming with and
    * an unanchored integration is not.
    * The old gloss said zero meant nothing had moved the orientation. An engine written against it
@@ -280,12 +282,15 @@ export interface CaptureGuidance {
   action: GuidanceAction;
   /**
    * Whether the orientation this answer was computed from was a measurement at all.
-   * It is here because a client has to make the same decision the planner just made and has no
-   * other way to know it made it. With no aim, `Locate` targets by coverage and never says
-   * `HoldStill` (ADR 0042) — so a page gating its shutter on `HoldStill` offers nothing, for ever,
-   * on a phone with no motion sensor. Guessing from "the sensor started" is not the same fact: it
-   * is wrong for every tick before the first sample arrives, which is what turned twelve browser
-   * tests red when the page tried.
+   * It is here because a client has to know which of two answers it is reading and has no other
+   * way to find out. With no aim, `angularErrorDeg` is measured from an identity nobody chose and
+   * comes back near zero for whichever cell happens to sit there — so a page that drew its
+   * reticle from it would show a closed ring on a pose nothing had measured, and a horizon rolled
+   * against nothing. It parks both instead.
+   * Guessing from "the sensor started" is not the same fact: it is wrong for every tick before
+   * the first sample arrives, which is what turned twelve browser tests red when the page tried.
+   * It used to gate a shutter as well, on a device that captured without an aim at all. That
+   * device is refused now (ADR 0044) and the shutter is gone with it; this field is presentation.
    * Appended rather than inserted, because field order is wire order.
    */
   aimKnown: boolean;
@@ -296,6 +301,12 @@ export interface CaptureGuidance {
    * same message**. A client counting its own dwell would be a second copy of a fact this manager
    * already holds, and the two would disagree exactly when it mattered — a progress bar that
    * filled and did not fire, or fired before it filled.
+   * It can fill more than once for one cell, and that is not the disagreement above. `Fire` is
+   * re-offered after another full dwell when nothing acted on it, so a client whose arm was
+   * refused — or is simply still crossing the worker — sees the ring restart from zero and climb
+   * again. The ring and the trigger still agree; what a client owes its user in that window is a
+   * word about the arm, because a ring that fills twice with nothing happening reads as a control
+   * that has stopped working.
    * The dwell is counted here rather than in a client for a reason a client cannot work around:
    * `performance.now()` keeps moving when the sensor stops delivering, so a page counting elapsed
    * time matures its dwell on guidance about a cell the phone may have left. This manager has the
@@ -412,9 +423,10 @@ export interface PoseState {
    * against it: zero of thirty-two cells armable on the shipped tessellation, which is ADR 0042's
    * own failure reached through the other door. A rate says how fast the device is turning and
    * nothing about where it started.
-   * Callers act on this through `PoseSample.confidence`: `ArmBurst` enforces the cone only against
-   * an anchored pose and `Locate` only prefers aim for one (ADR 0041, ADR 0042), which is what
-   * keeps a phone with no motion sensor able to capture at all.
+   * Callers act on this through `PoseSample.confidence`, which is derived from it: `Locate`
+   * prefers aim only for an anchored pose (ADR 0041). What that buys is no longer a sensorless
+   * capture — that is refused (ADR 0044) — but a session whose first ticks, and whose rate-only
+   * streams, cannot be mistaken for an aim and fire a burst at a cell nobody pointed at.
    */
   anchored: boolean;
   /**
@@ -488,13 +500,41 @@ export interface SeamMap {
   height: number;
 }
 
-/** ------------------------------------------------- platform value types */
+/**
+ * ------------------------------------------------- platform value types
+ * **Zero means "the platform will not say", on every measured field below.** Not "zero" and not a
+ * default to improve on: an implementation that cannot answer must answer 0, and one that guesses
+ * a plausible number is worse than one that says nothing, because a caller can act on a silence
+ * and cannot detect a guess.
+ * Written here because six places in this repository cite "the contract's word for 'the platform
+ * will not say'" and, until a reviewer went looking, this file said it on one field pair — the one
+ * nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a refreshed struct
+ * answers 0 (ADR 0045), and 0 is the *only* silence that keep can recognise: a guessed 30 fps is
+ * indistinguishable from a measurement, so it overwrites the real 15 the session was holding and
+ * the burst then asks for frames twice as fast as the camera makes them. That is the cost a second
+ * implementation reading only this header would not have seen.
+ * Above the struct rather than inside it, which is not a formatting choice: `contract_gen.py`
+ * attaches a doc to the declaration the comment *precedes*, so a paragraph written inside the
+ * braces reaches every C++ reader and no TypeScript one — and this one was, leaving the mirror
+ * with a field marked "exempt from the zero rule above" and no rule above it.
+ * Two exemptions, both gaps rather than decisions. The booleans: `false` here means "no" and "did
+ * not say" alike, and there is nowhere to record the difference. And the field-of-view pair, which
+ * is derived rather than measured — no browser reports angles, so the host computes them from the
+ * frame's shape and its fallback is a 4:3 landscape lens, never 0. A producer that cannot derive
+ * the pair answers 0 for *both* angles; a consumer reads 0 on either angle, or on either geometry
+ * field, as a silence about all four and keeps the four it had (ADR 0045). Stated as the rule both
+ * sides keep, because an earlier wording — "a silence about the frame is a silence about its
+ * angles" — was true in one direction only, and the port that zeroes the pair while reporting a
+ * real resolution walked straight past a keep that only asked about the geometry. See the
+ * white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
+ */
 export interface CameraCapabilities {
   /**
    * The mode the camera actually settled on, not the largest it could reach. The coverage plan is
    * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
    * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
    * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   * 0 when the platform will not say
    */
   maxWidth: number;
   /**
@@ -502,15 +542,36 @@ export interface CameraCapabilities {
    * sized from these, so they have to describe the frames that will arrive: a sensor maximum the
    * preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
    * captures. What the caller asks for is CameraOpenSpec's business; this is the answer.
+   * 0 when the platform will not say
    */
   maxHeight: number;
-  /** 0 when the platform will not say */
+  /**
+   * Derived from the frame's own shape where a platform reports no angles — which is every
+   * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045). Zero here means "not
+   * derived" rather than "not measured", and travels as a pair: both angles or neither.
+   * 0 only where nothing has been derived yet
+   */
   horizontalFovDeg: number;
-  /** 0 when the platform will not say */
+  /**
+   * Derived from the frame's own shape where a platform reports no angles — which is every
+   * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045). Zero here means "not
+   * derived" rather than "not measured", and travels as a pair: both angles or neither.
+   * 0 only where nothing has been derived yet
+   */
   verticalFovDeg: number;
   supportsExposureLock: boolean;
   supportsFocusLock: boolean;
   supportsTorch: boolean;
+  /**
+   * Frames per second the device settled on. `CaptureSessionManager` floors a burst's interval and
+   * its settle with this (ADR 0018, ADR 0032): `PeekPreviewFrame` borrows the *latest* preview
+   * frame, so a burst asking for frames faster than the camera makes them fills with duplicates of
+   * one exposure, and selection then ranks a frame against copies of itself. 0 turns the floor
+   * off, which is the right answer for a platform that will not say and the wrong one for a guess.
+   * 0 when the platform will not say
+   */
   maxBurstFps: number;
 }
 
@@ -582,6 +643,17 @@ export interface ExportSpec {
  * where a reticle sits (V4), or how bytes are stored (V11).
  */
 export interface CaptureSessionManager {
+  /**
+   * Opens a capture session on a project that already exists.
+   * Refused with `SensorUnavailable` when `IMotionSensorAccess::Capabilities()` reports `None` or
+   * cannot answer, and refused *before* a camera is opened. A capture places every frame by the
+   * direction the phone was pointing, and a device that cannot sense one produces cells labelled
+   * with directions nobody measured — a failure invisible until a build, so it is refused at the
+   * door instead (ADR 0044). A client whose own platform can answer that question earlier should:
+   * this call is the rule, not the only place to be polite about it.
+   * Refused with `NotFound` when the project does not exist, which is checked first: beginning
+   * against an id nobody created would leave a titleless project in the user's list.
+   */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
    * Picks a session back up from what was written down about it.
@@ -593,6 +665,10 @@ export interface CaptureSessionManager {
    * The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
    * particular sphere, so replanning from whatever lens is in front of the phone now would file
    * every restored candidate under a different cell.
+   * The motion capability is not stored, and this reads the live one: a document says which
+   * sphere is being captured, never what the device it comes back on can sense. So this is
+   * refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
+   * began the capture if the user declined the permission this time (ADR 0044).
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -616,19 +692,63 @@ export interface CaptureSessionManager {
    * period applies as well: `PeekPreviewFrame` borrows the latest preview frame, and inside one
    * frame period the latest frame is one the camera produced before the locks landed.
    * Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
-   * acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+   * acceptance cone the plan gave it, which is the cone guidance closes its reticle on. A
    * burst records whatever the camera is looking at and the node is only a name to file it under,
    * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
    * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
-   * **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
-   * zero, which is what a phone with no motion sensor reports for the life of a session — there is
-   * no direction to measure a cone against, and every cell arms. A client on such a device will
-   * never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
-   * capture, because it never will (ADR 0042).
+   * Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
+   * measurement — not finite, or not greater than zero. The detail says which: "not a usable
+   * measurement" is a broken plan and nothing the user can do anything about, where "not aimed at
+   * that cell" is a phone to turn. `ICoveragePlannerEngine::Plan` forbids such a cone and both
+   * shipped engines refuse it, so this is the manager declining to assume every implementation of
+   * that contract validates its own output — the two that exist disagreed about exactly this,
+   * twice, in consecutive rounds of one review.
+   * **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
+   * stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
+   * could reach every cell of its own plan by eye. Such a phone is now refused at `Begin`, and
+   * what is left of zero confidence is transient: the ticks before a session's first reading, and
+   * a stream carrying rates with no attitude in them. In both the pose is the identity it was
+   * born with, which is a direction nobody chose, so there is nothing to check and nothing to
+   * allow — arming then would file real pixels under a cell picked by an accident of
+   * initialisation.
+   * So a client may wait for guidance to say `HoldStill`, which means "inside this cell's cone
+   * and this cell still wants shooting" — the condition this arms on, from the same plan and the
+   * same cone. It is one condition read twice rather than one call trusting another, so the two
+   * can be made to disagree by a plan neither of them wrote: a cone that is not a measurement had
+   * `Locate` reporting `HoldStill` while this call refused, which since ADR 0043 is a dwell that
+   * matures, fires, is refused, and starts again. `ICoveragePlannerEngine` now states the rule
+   * that keeps them together, on `Plan`, where a planner will read it. What it must not
+   * assume is that the action always comes: it needs an anchored pose, so a stream that carries
+   * rates and never an attitude produces a session that begins and can never arm. The shipped
+   * browser adapter cannot produce one (every sample it emits carries an attitude), and a port
+   * that can owes its user a way to say so. Nothing in this build watches for it; the roadmap
+   * carries it.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
   /** For externally sourced frames: file import, replayed datasets, manual shutter. */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
+  /**
+   * What the camera this session is using reports it can do, as the manager last read it — which
+   * is at `Begin`/`Resume` and again at every `ArmBurst` (ADR 0045). Where that read said nothing,
+   * what it last *heard*: a metric of zero is the contract's "the platform will not say", so the
+   * rate and the frame's geometry survive a refresh that answers with neither.
+   * Here rather than on a port because a port is not on the boundary: `ICameraAccess` is the
+   * core's, and the page's own adapter is a different object that happens to answer the same
+   * questions. Two answers to one question is what this call exists to stop being possible to
+   * ignore — the two sides of the browser seam agree by an integer index and a property name, and
+   * nothing checked either. `maxBurstFps` was in `CameraCapabilities` for the life of the field,
+   * had no case in the port's metric switch, and read as zero — which the manager is right to
+   * treat as "the platform will not say", so a floor that was never wired looked exactly like a
+   * browser declining to answer. Nothing failed. A test that reads these back through the facade
+   * is what makes a missing case fail instead (ADR 0045).
+   * "As the manager last read it", not "as the camera is now": this reports the copy the session
+   * is actually pacing bursts by, which is refreshed at `ArmBurst`. A client wanting a status row
+   * to be exactly current would be asking the wrong object — that is a fact about the device, and
+   * the page holds the device.
+   * Refused with `FailedPrecondition` when no session is open, since there is no camera to
+   * describe.
+   */
+  cameraInUse(): Promise<Result<CameraCapabilities>>;
   coverage(): Promise<Result<CoverageState>>;
   /**
    * Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
@@ -669,13 +789,22 @@ export interface CaptureSessionManager {
    * a retake asks the user to point at the cell again before anything is recorded — which is the
    * point, since a retake that captured from wherever the phone happened to be pointing is the bug
    * ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
-   * **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
-   * anchored there is no direction to measure a cone against, so the burst after a retake arms
-   * wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
-   * device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
-   * commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
-   * states a precondition without its exemption tells a client to wait for something that will
-   * never happen.
+   * **Without exemption, and this paragraph used to carry one.** It said the burst after a retake
+   * arms wherever the phone is pointing when the pose was never anchored, because that was the
+   * only way a sensorless device could retake at all. That device is refused at `Begin` now
+   * (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
+   * taken there or not at all.
+   * With `replace` false, that burst has nothing to fire it in this build, and the honest place
+   * to say so is here. Keeping the evidence leaves the cell covered, `Locate` answers
+   * `AlreadyCaptured` rather than `HoldStill` for a covered cell, and the dwell that arms every
+   * burst since ADR 0043 only matures on `HoldStill` — so an additive retake marks nothing a
+   * client can act on. `replace` true empties the cell of everything the store will let go of,
+   * which makes it a hole again and puts it back in the dwell's way — everything, unless the
+   * store refuses to forget a frame, in which case that one candidate stays and the cell stays
+   * covered until a later retake succeeds. `Discard` keeps it deliberately: the bytes are still
+   * charged, and dropping the last handle to them would orphan them. The retake flow that closes
+   * the additive case is Phase 3 (`docs/06-roadmap.md`); until then this call aborts a burst in
+   * flight and, additively, does nothing else.
    */
   requestRetake(node: NodeId, replace: boolean): Promise<Result<void>>;
   end(): Promise<Result<void>>;
@@ -748,6 +877,28 @@ export interface ProjectManager {
  */
 export interface CameraAccess {
   open(spec: CameraOpenSpec): Promise<Result<CameraCapabilities>>;
+  /**
+   * What the device is doing *now*, which is not what it was doing when it was opened.
+   * A read rather than a second `Open`: no acquisition, no permission prompt, no change to what
+   * the preview delivers.
+   * Two refusals, and they are different facts rather than two spellings of one. A port that has a
+   * camera but has not opened it answers `FailedPrecondition` — a call out of order, fixable by
+   * opening. A port with no camera at all answers `CameraUnavailable`, which is not a sequencing
+   * complaint. `NullCameraAccess` gives the second to every call that needs a camera — `Open`,
+   * `Capabilities`, `StartPreview`, `PeekPreviewFrame`, `SetLocks`. `StopPreview` and `Close`
+   * return `Ok`, because stopping something that is not running and closing something that is not
+   * open are requests it has already satisfied. ("Says to everything" is what this said, and then
+   * "every call that could report a camera", which is not the line either — `StartPreview` and
+   * `SetLocks` report no camera and still refuse. Two reviewers, two readings of the file.) The
+   * contract suite holds the first refusal; the null port's own test holds the second.
+   * It exists because a capability moves. `SetLocks` pins the exposure (ADR 0022), and a camera
+   * whose exposure has just been pinned long is exactly the one that drops from 30 fps to 15 — so
+   * `maxBurstFps`, which floors a burst's interval and settle (ADR 0018, ADR 0032), goes stale in
+   * the direction that reintroduces the defect it exists to prevent, during the only call that
+   * matters. `ICaptureSessionManager::ArmBurst` re-asks here rather than trusting what `Open`
+   * said, on the rule that a capability is re-asked where it is consumed (ADR 0045).
+   */
+  capabilities(): Promise<Result<CameraCapabilities>>;
   startPreview(): Promise<Result<void>>;
   stopPreview(): Promise<Result<void>>;
   /**
@@ -767,20 +918,6 @@ export interface CameraAccess {
   peekPreviewFrame(): Promise<Result<FrameRef>>;
   setLocks(exposure: boolean, whiteBalance: boolean, focus: boolean): Promise<Result<void>>;
   close(): Promise<Result<void>>;
-}
-
-/**
- * V10 — where motion data comes from. Reporting MotionCapability::None is a normal outcome, not
- * an error: iOS requires a user gesture and the user may decline.
- * through marshalled values, so its TypeScript adapter is written against the shared-heap
- * protocol rather than mirroring this signature. See ADR 0009.
- */
-export interface MotionSensorAccess {
-  capabilities(): Promise<Result<MotionCapability>>;
-  start(requestedHz: number): Promise<Result<void>>;
-  /** Copies out of the shared ring buffer; returns how many samples were written. */
-  drain(out: ImuSample[]): Promise<Result<number>>;
-  stop(): Promise<Result<void>>;
 }
 
 /**

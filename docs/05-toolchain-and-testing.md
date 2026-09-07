@@ -53,12 +53,31 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    look green when the build produced nothing.
 6. **Browser tests** — the shipped modules loaded in headless Chromium, served with *and* without
    COOP/COEP, which is the only way to find out what the deployment target does with them.
+   `tools/check_dist_fresh.mjs` is their precondition rather than a step of its own: Playwright's
+   `globalSetup`, refusing to run the suite against a bundle or a core older than the sources it
+   was built from. It compares both wasm presets and the glue `.js` against the C++ and the build
+   files, and it exists because two false-green sabotage runs got through — one after
+   `npm run build` had exited non-zero on a typecheck error and left the previous `dist` standing.
+7. **Conflict markers** — `tools/conflict_marker_check.py`, because a merge marker in a tracked
+   file is a file nobody finished reading.
+8. **Broken tables** — `tools/markdown_table_check.py`. A paragraph between two rows closes a
+   GitHub-flavoured table, and eleven rows of the volatility map rendered as pipe text for five
+   review rounds because everybody read the prose and nobody rendered the page.
+
+Every checker in that list has its own test suite, `check_dist_fresh` included, and `gate.sh` runs
+most of them immediately before the check they guard. The reason is in that file's own header:
+the checkers never change while you are working, which is exactly what makes a broken one the
+easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
+rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
+checker suites at the top, fourteen steps before the budget it guards, because that budget needs a
+wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
+`npm test`, with `npm run build` between it and the Playwright run it gates.
 
 Not yet wired, and deliberately absent from CI rather than stubbed green:
 
-7. **FlatBuffers schema** — generated from the same parse as the contract mirror, for zero-copy
-   reads across the worker boundary. Needs the boundary runtime.
-8. **Time-to-first-viewfinder budget** — needs the PWA shell.
+- **FlatBuffers schema** — generated from the same parse as the contract mirror, for zero-copy
+  reads across the worker boundary. Needs the boundary runtime.
+- **Time-to-first-viewfinder budget** — needs the PWA shell.
 
 ## 5.4 Test strategy
 

@@ -38,6 +38,8 @@ export interface WorkerLike {
 /** What the page pushes across, and the one thing the worker asks of it. */
 export interface RemoteCore extends CoreRuntime {
   setCamera(opened: CameraOpening | null): void;
+  /** What the camera the page holds is doing now. Cannot open one; see `refreshCamera` in the host. */
+  refreshCamera(opened: CameraOpening): void;
   setMotion(capability: string): void;
   pushMotion(doubles: Float64Array): void;
   /**
@@ -185,6 +187,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
   const remote: RemoteCore = {
     ...runtime,
     setCamera: (opened) => worker.postMessage({ kind: 'camera', opened }),
+    refreshCamera: (opened) => worker.postMessage({ kind: 'camera-refresh', opened }),
     setMotion: (capability) => worker.postMessage({ kind: 'motion', capability }),
     // Transferred, so a batch costs the same whatever its length. The buffer is not read again
     // on this side, which is what makes handing over ownership safe rather than clever.

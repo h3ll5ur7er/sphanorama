@@ -8,9 +8,14 @@ layer rules, the TDD workflow, contract discipline, repo structure and the defin
 Rationale is in `docs/00-principles.md` and `docs/03-architecture.md`.
 
 **Review every PR with `.claude/skills/sphanorama-review/SKILL.md`.** It spawns reviewer subagents,
-one per lens, against the mistakes this codebase has actually made — and each publishes its findings
-to the pull request, where the answers go too. Reviews are run here rather than bought from a bot,
-and they are held in the open so the reasoning outlives the session that produced it.
+one per lens, against the mistakes this codebase has actually made — and each publishes its
+findings to the pull request, where the answers go too. Reviews are run here rather than bought
+from a bot, and they are held in the open so the reasoning outlives the session that produced it.
+Expect several rounds, and change the scope at the end. On PR #49 every round after the first, up
+to the thirteenth, reviewed a commit range and found its worst defect inside the previous round's
+fix — which is the argument for running another rather than for stopping. Round 14 reviewed the *whole branch against main* for the
+first time and found two defects that predate the branch entirely — a quaternion norm overflow and
+an unbounded frame read — because a range diff cannot see code nobody touched.
 
 The four things that are most expensive to get wrong:
 
@@ -31,21 +36,44 @@ deploy are in and green. A phone opens the app, the core plans a real tessellati
 page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
 coverage and acceptance are all decided in the core.
 
-Two engines are still null (`Registration`, `Composition`). `FrameQuality` has a real one:
-sharpness is the variance of a Laplacian over a downscaled luma plane, exposure agreement is
-measured against the rest of the burst, and `Rank` normalises before it weights so the selection
+**What is real.** Four of the six engine contracts have a real implementation — `CoveragePlanner`
+(rings), `Pose` (orientation), `FramePreview` (box) and `FrameQuality` (sharpness). `Registration`
+and `Composition` are still null, which is what Phase 1 is for.
+
+`FrameQuality` is the one worth describing, because its numbers decide which frame of a burst
+survives: sharpness is the variance of a Laplacian over a downscaled luma plane, exposure agreement
+is measured against the rest of the burst, and `Rank` normalises before it weights so the selection
 policy's knobs all turn something. `motionBlur` stays zero and says why — smear in pixels needs an
-exposure time and a focal length the engine is not handed. The call that did not
-fit the resident-port pattern, `ICameraAccess::CaptureBurst`, is gone: a burst takes time, so it is
-now paced by `CaptureSessionManager` across the ticks the client already makes, over the preview
-frame the page keeps resident (ADR 0018). `ArmBurst` arms one; `PeekPreviewFrame` is the whole pixel
-path, and it reaches the browser: the page draws the viewfinder into a canvas and transfers the
-buffer to the worker the core runs in, where `PeekPreviewFrame` copies it into the frame store
-(ADR 0019, ADR 0021). A burst armed from the capture loop captures real pixels, which an
-end-to-end test drives in a real browser. Its frames share an exposure where the camera can hold
-one: the page applies the locks and confirms them by reading the mode back before arming, and
-`SetLocks` refuses a lock it has not been told is held (ADR 0022). The frame store's browser
-ceiling is read from `navigator.deviceMemory` rather than stated, so it scales with the machine;
-and the policy above it is in: `CaptureSessionManager` cools a cell the moment its burst is
-ranked, so a sphere larger than the store still captures and `Allocate`'s refusal is the backstop
-rather than the first thing a capture hits (ADR 0023). See `docs/06-roadmap.md`.
+exposure time and a focal length the engine is not handed.
+
+**The pixel path reaches the browser.** The call that did not fit the resident-port pattern,
+`ICameraAccess::CaptureBurst`, is gone: a burst takes time, so `CaptureSessionManager` paces it
+across the ticks the client already makes, over the preview frame the page keeps resident
+(ADR 0018). `ArmBurst` arms one and `PeekPreviewFrame` is the whole of it — the page draws the
+viewfinder into a canvas and transfers the buffer to the worker the core runs in, where
+`PeekPreviewFrame` copies it into the frame store (ADR 0019, ADR 0021). An end-to-end test drives
+that in a real browser.
+
+**A burst's frames are comparable, and its memory is bounded.** They share an exposure where the
+camera can hold one: the page applies the locks and confirms them by reading the mode back before
+arming, and `SetLocks` refuses a lock it has not been told is held (ADR 0022). The frame store's
+browser ceiling is read from `navigator.deviceMemory` rather than stated, so it scales with the
+machine, and the policy above it is in — `CaptureSessionManager` cools a cell the moment its burst
+is ranked, so a sphere larger than the store still captures and `Allocate`'s refusal is the
+backstop rather than the first thing a capture hits (ADR 0023).
+
+**Nobody presses anything.** The core counts a two-second dwell on a held cell and says `Fire`, and
+the page arms on it — the decision is the core's and the call is the client's, because a burst is
+paced by the client's ticks (ADR 0043). A `Fire` nobody could act on comes round again, since there
+is no shutter left to fall back on.
+
+**And a capture needs a motion sensor.** Without one, `Begin` and `Resume` refuse before they open
+a camera, and the page says what is required and what is missing — a sphere whose cells are
+labelled with directions nobody measured is worse than a message (ADR 0044).
+
+**A capability is re-asked where it is consumed**, rather than remembered from `Open`: `ArmBurst`
+reads the camera again after applying the locks, because pinning an exposure is what drops a camera
+to half its frame rate. The page keeps that resident port true by re-reporting the camera it has
+just changed — and by refusing to report one it is no longer holding (ADR 0045).
+
+See `docs/06-roadmap.md`.

@@ -91,7 +91,7 @@ describe('capture host', () => {
   it('reports what the page opened', () => {
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: true,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: true,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -102,11 +102,62 @@ describe('capture host', () => {
     expect(caps.verticalFovDeg).toBeGreaterThan(0);
   });
 
+  it('a refresh updates a camera it has and cannot conjure one it has not', () => {
+    // ADR 0045's push, and the reason it is a different verb from `setCamera`. A pushed fact can
+    // arrive late: the core closes the camera from inside this worker and the page learns by a
+    // message, so an arm parked on `applyConstraints` can resume in the gap and push what it read
+    // beforehand. Through `setCamera` that hands the core a camera back — `cameraOpen()` true
+    // again on a struct read off a dead track, and the next `Begin` plans a whole tessellation
+    // from it, measured at 32 cells.
+    //
+    // The page guards it too, and cannot close it: a page guard can only refuse on a close it has
+    // already been *told* about. Here the question does not arise.
+    const opened = {
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+      supportsExposureLock: true, supportsWhiteBalanceLock: true, supportsFocusLock: true,
+    };
+    const host = createCaptureHost();
+
+    host.refreshCamera(opened);
+    expect(host.cameraOpen(), 'a refresh opened a camera nobody had opened').toBe(false);
+
+    host.setCamera(opened);
+    // What a pinned exposure does to a real camera, which is the whole reason the push exists.
+    host.refreshCamera({ ...opened, maxBurstFps: 15 });
+    expect(host.cameraCapabilities().maxBurstFps, 'the refresh did not reach the core').toBe(15);
+
+    host.closeCamera();
+    host.refreshCamera(opened);
+    expect(host.cameraOpen(), 'a late refresh handed back a camera the core had closed').toBe(false);
+  });
+
+  it('carries the camera rate through to what the core reads', () => {
+    // `maxBurstFps` is what `CaptureSessionManager` floors a burst's interval and settle with
+    // (ADR 0018, ADR 0032). It crosses four hand-written mirrors of one C++ struct to get here —
+    // the adapter's `CameraCapabilities`, the worker protocol's `CameraOpening`, this host's, and
+    // the EM_JS metric switch — and it was missing from every one of them, so the field the core
+    // read was the C++ default. Zero, which the core is right to treat as "the platform will not
+    // say"; a floor that is off is indistinguishable from a browser that declined to answer,
+    // which is why nothing noticed for the life of the field.
+    const host = createCaptureHost();
+    host.setCamera({
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+      supportsExposureLock: false, supportsWhiteBalanceLock: false,
+      supportsFocusLock: false,
+    });
+    expect(host.cameraCapabilities().maxBurstFps).toBe(30);
+  });
+
+  it('reports no rate rather than a guess when there is no camera', () => {
+    const host = createCaptureHost();
+    expect(host.cameraCapabilities().maxBurstFps).toBe(0);
+  });
+
   it('forgets the camera when the page closes it', () => {
     // A stale capability set would let the core plan a capture against a camera that is gone.
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -197,7 +248,7 @@ describe('closing and resetting', () => {
     let asked = 0;
     const host = createCaptureHost({ onCloseCamera: () => { asked += 1; } });
     host.setCamera({
-      maxWidth: 640, maxHeight: 480, supportsTorch: false,
+      maxWidth: 640, maxHeight: 480, maxBurstFps: 0, supportsTorch: false,
       supportsExposureLock: false, supportsWhiteBalanceLock: false,
       supportsFocusLock: false,
     });
@@ -296,10 +347,16 @@ describe('which locks the camera is holding', () => {
     expect(host.cameraLocks()).toEqual({ exposure: false, whiteBalance: false, focus: false });
   });
 
+  const aCamera = {
+    maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+    supportsExposureLock: true, supportsWhiteBalanceLock: true, supportsFocusLock: true,
+  };
+
   it('reports what the page confirmed, not what it asked for', () => {
     // The distinction this whole path exists for: applyConstraints resolving is not the mode
     // changing, so what crosses is the state read back off the track (ADR 0022).
     const host = createCaptureHost();
+    host.setCamera(aCamera);
     host.setCameraLocks({ exposure: true, whiteBalance: false, focus: true });
 
     expect(host.cameraLocks()).toEqual({ exposure: true, whiteBalance: false, focus: true });
@@ -308,18 +365,68 @@ describe('which locks the camera is holding', () => {
   it('forgets the locks when the camera closes', () => {
     // A lock belongs to a track. Reporting one held after the stream is gone would let the next
     // session arm a burst believing an exposure was fixed by a camera that no longer exists.
+    //
+    // With a camera opened first, so the zeros afterwards are evidence rather than a default —
+    // both this and the test above set locks on a host holding no camera, which since those
+    // reports are dropped meant neither was asserting what it named.
     const host = createCaptureHost();
+    host.setCamera(aCamera);
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
-    host.closeCamera();
+    expect(host.cameraLocks().exposure, 'nothing was ever held to forget').toBe(true);
 
+    host.closeCamera();
     expect(host.cameraLocks().exposure).toBe(false);
   });
 
-  it('forgets the locks when the camera is cleared', () => {
+  it('drops a lock report for a camera it is not holding', () => {
+    // The other half of the race `refreshCamera` exists for. `armOnce` pushes the confirmed locks
+    // and the live capability set back to back with no `await` between, so a race with the core's
+    // own `closeCamera` delivers both — and hardening only the camera half leaves this one landing
+    // three held locks on a host that has just cleared its camera.
+    //
+    // Also the reopen: `clearCamera` and `closeCamera` reset the locks and `setCamera` did not, so
+    // a claim made against one camera could be read against its replacement.
     const host = createCaptureHost();
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
-    host.clearCamera();
+    expect(host.cameraLocks().exposure, 'a lock was held by no camera at all').toBe(false);
 
+    host.setCamera(aCamera);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    host.closeCamera();
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().exposure, 'a lock report landed on a closed camera').toBe(false);
+  });
+
+  it('a camera arriving brings its own lock state, which is none', () => {
+    // `setCamera`'s reset, on its own. The test above reaches the same assertion through
+    // `closeCamera`, which zeroes the locks itself — so it was claiming this line and asserting
+    // that one, which a reviewer measured by deleting the reset and watching the whole suite
+    // stay green.
+    //
+    // Here nothing else can make it false: one camera takes a lock, a second arrives without
+    // anything being closed or cleared in between. That is a device switch, and the new device is
+    // holding nothing.
+    const host = createCaptureHost();
+    host.setCamera(aCamera);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().exposure).toBe(true);
+
+    host.setCamera({ ...aCamera, maxWidth: 1280, maxHeight: 720 });
+    expect(host.cameraLocks().exposure, 'a lock claim was read against its replacement')
+      .toBe(false);
+  });
+
+  it('forgets the locks when the camera is cleared', () => {
+    // With a camera open first, for the reason its two siblings above were repaired: a lock report
+    // is dropped when the host holds no camera, so setting one on an empty host and then asserting
+    // zeros asserts the default. Two of the three were fixed when that drop was added and this one
+    // was missed — the same one-of-three shape this branch has now recorded four times.
+    const host = createCaptureHost();
+    host.setCamera(aCamera);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().focus, 'nothing was ever held to forget').toBe(true);
+
+    host.clearCamera();
     expect(host.cameraLocks().focus).toBe(false);
   });
 
@@ -341,7 +448,7 @@ describe('which locks the camera is holding', () => {
   it('carries the lock capabilities the page reported', () => {
     const host = createCaptureHost();
     host.setCamera({
-      maxWidth: 1920, maxHeight: 1080, supportsTorch: false,
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
       supportsExposureLock: true, supportsWhiteBalanceLock: false, supportsFocusLock: true,
     });
 

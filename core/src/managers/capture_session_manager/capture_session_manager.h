@@ -37,6 +37,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   Status ArmBurst(NodeId node, const BurstSpec& burst) override;
   Result<FrameVerdict> OfferFrame(NodeId node, const FrameRef& frame,
                                   const PoseSample& pose) override;
+  Result<CameraCapabilities> CameraInUse() const override;
   Result<CoverageState> Coverage() const override;
   Result<std::vector<Candidate>> Candidates(NodeId node) const override;
   Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
@@ -57,6 +58,14 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // The motion capability is the live one on both paths, including a resume: a stored session
   // says which sphere is being captured, never what the device it comes back on can sense.
   Result<PoseState> StartTracking(MotionCapability motion);
+  /**
+   * What both doors check before anything else: this device can sense which way it is pointing.
+   * Answers the capability on success and `SensorUnavailable` when the sensor reports none or
+   * cannot say (ADR 0044).
+   */
+  Result<MotionCapability> RequireMotion();
+  /** Clears the dwell, so no session inherits one another session counted. */
+  void ResetDwell();
   bool HasNode(NodeId node) const;
   /** The cell by id, or null. Callers that need the cone rather than merely its existence. */
   const CoverageNode* FindNode(NodeId node) const;
@@ -72,6 +81,12 @@ class CaptureSessionManager final : public ICaptureSessionManager {
 
   // How far apart the armed burst's frames have to be, in nanoseconds: the larger of what the
   // spec asked for and what the camera says it can deliver.
+  // The camera's own frame period in nanoseconds, or zero when the platform will not say.
+  //
+  // One place rather than the reciprocal spelled twice, because the reciprocal is the part that
+  // needs care: `maxBurstFps` is a double from a resource-access contract and nothing bounds
+  // 1e9 divided by it.
+  int64_t CameraFramePeriodNs() const;
   int64_t BurstIntervalNs() const;
   // How long the armed burst waits after arming before its first frame, in nanoseconds, on the
   // same two floors — a different quantity from the interval, and the camera's rate bounds it for
@@ -133,10 +148,18 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // and a copy would be a second place for the truth to live.
   std::set<uint64_t> burst_owned_;
 
-  // What the camera said it can deliver when it was opened, in frames per second; 0 when the
-  // platform will not say. It is a floor on a burst's waits — the interval between its frames and
-  // the settle before its first — and nothing else reads it.
-  double max_burst_fps_ = 0;
+  // What the camera reports it can do, whole rather than the one field a burst is timed by, and
+  // refreshed at every `ArmBurst` (ADR 0045) rather than held from `Open`.
+  //
+  // It was `double max_burst_fps_` with a comment above it saying the value was read "when it was
+  // opened", was "in frames per second", and that "nothing else reads it". All three are now
+  // false, and that comment survived the change that falsified it — which is the shape this
+  // branch's reviews have caught four times, so it is called out rather than quietly replaced.
+  //
+  // The geometry in here is what the camera says *now*. What the plan was sized from is `lens_`,
+  // which is deliberately never refreshed: a camera that changes resolution mid-session has
+  // invalidated the plan, and adopting the new numbers here would hide that rather than handle it.
+  CameraCapabilities camera_capabilities_;
 
   // The burst in flight, if any. It is session state and it lives here for the same reason the
   // pose does: a manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4).
@@ -169,9 +192,6 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   int64_t dwell_ns_ = 0;
   int64_t dwell_marked_ns_ = 0;
   std::optional<NodeId> dwell_node_;
-  // Whether `Fire` has already been reported for this dwell. It is an edge: a client arms on it,
-  // and reporting it again on the next tick would arm a second burst into a refusal.
-  bool dwell_fired_ = false;
 
   uint64_t next_session_ = 1;
   uint64_t next_candidate_ = 1;

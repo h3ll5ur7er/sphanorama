@@ -15,6 +15,24 @@ double Norm(const Quat& q);
 // Returns identity for a degenerate quaternion rather than dividing by zero.
 Quat Normalize(const Quat& q);
 
+// Whether this quaternion describes a rotation at all.
+//
+// `Normalize` answers a degenerate one with `Quat{}`, and `Quat{}` is the *identity* — a perfectly
+// ordinary rotation whose `Direction` is `(0,0,-1)`. That is the right answer for a rendering
+// helper, which needs some rotation and cannot fail, and the wrong one for anything deciding
+// whether an attitude was measured: it turns "I could not tell" into "pointing straight ahead",
+// which is a direction a capture plan can name a cell at.
+//
+// So callers that are deciding rather than drawing ask this first. There is no way to ask
+// `Normalize`'s answer afterwards, because the identity is also what a phone genuinely held level
+// reports.
+bool IsUsableRotation(const Quat& q);
+
+// Whether this vector is a measurement — every component finite. Not whether it is non-zero: a
+// stationary phone really does report a zero angular velocity, and that is a rate rather than a
+// silence.
+bool IsUsableVector(const Vec3& v);
+
 Quat FromAxisAngle(const Vec3& axis, double radians);
 
 // Rotation separating two orientations, in radians, in [0, pi]. Treats q and -q as the same

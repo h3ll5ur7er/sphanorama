@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "engines/pose_engine/orientation_pose_engine.h"
@@ -212,6 +213,135 @@ TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
   ASSERT_TRUE(seen.ok());
   EXPECT_TRUE(seen.value.anchored);
   EXPECT_DOUBLE_EQ(seen.value.pose.confidence, 1.0);
+}
+
+TEST(PoseEngine, AnAttitudeThatIsNotARotationIsNotAReading) {
+  // The worst defect this branch has produced, and it is a sentinel spelled as an ordinary value.
+  //
+  // `Normalize(const Quat&)` answers a degenerate quaternion with `Quat{}` — and `Quat{}` is not a
+  // null object, it is `{w=1,x=0,y=0,z=0}`, the identity, whose `Direction` is a perfectly
+  // ordinary `(0,0,-1)`. So a sample claiming `hasOrientation` with a zero or NaN attitude was not
+  // refused and was not marked unknown: the engine stored the identity, set `anchored`, and
+  // published `confidence = 1.0`.
+  //
+  // Downstream that is not a wrong number, it is the failure ADR 0041 exists to stop. A reviewer
+  // drove it against the shipped 32-cell plan: `Locate` answered `HoldStill` on node 13 at
+  // 0.0000 degrees, `aimKnown` was true so the page closed and locked the reticle, the dwell
+  // matured, `Fire` went out, and `ArmBurst` passed all three of its guards — including the
+  // `confidence > 0` check kept specifically to refuse an unanchored identity, which cannot see
+  // this one because `confidence` says the identity was measured. Real pixels, filed under a cell
+  // picked by an accident of initialisation: sharp, well scored, and undetectable afterwards.
+  //
+  // `hasOrientation` is a claim, and this is the layer that decides whether to believe it.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Quat broken : {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0}, Quat{1, nan, 0, 0},
+                            Quat{inf, 0, 0, 0}, Quat{0, 0, inf, 0}}) {
+    OrientationPoseEngine engine;
+    auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(initial.ok());
+
+    ImuSample claimed;
+    claimed.timestampNs = 1'000'000;
+    claimed.hasOrientation = true;
+    claimed.orientation = broken;
+
+    auto after = engine.Integrate(initial.value, std::span<const ImuSample>(&claimed, 1));
+    ASSERT_TRUE(after.ok());
+    EXPECT_FALSE(after.value.anchored)
+        << "an attitude that is not a rotation anchored the pose, so the identity it fell back to "
+           "is now a direction the core believes it measured";
+    EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0);
+
+    // And the stream is not poisoned: a real reading after it still lands.
+    ImuSample real = Oriented(2'000'000, 30.0, 0.0);
+    auto seen = engine.Integrate(after.value, std::span<const ImuSample>(&real, 1));
+    ASSERT_TRUE(seen.ok());
+    EXPECT_TRUE(seen.value.anchored);
+  }
+}
+
+TEST(PoseEngine, ARateTooLargeToSquareDoesNotTurnThePhone) {
+  // The fourth predicate in `quaternion.cpp`, and the one the round that hardened the other three
+  // deliberately left alone. `IsUsableVector` asks "is every component a number?" and says yes to
+  // `{1e200, 0, 0}`, where `IsUsableRotation` — asking "will `Normalize` derive something from
+  // this?" — would say no, because squaring overflows before the sum. The two are different
+  // questions on purpose (see `Measured`/`Attitude` in the engine), so this is not a bug to fix in
+  // the predicate; it is a claim about what happens downstream, and a claim is worth a test.
+  //
+  // What happens: `Magnitude` overflows to infinity, `Turned` takes the branch past its `<= 1e-9`
+  // guard, and `FromAxisAngle` refuses a non-finite angle with the identity — so the phone does
+  // not turn. Fails safe, by a guard two calls away from the predicate that let the value in.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample real = Oriented(1'000'000, 30.0, 0.0);
+  auto anchored = engine.Integrate(initial.value, std::span<const ImuSample>(&real, 1));
+  ASSERT_TRUE(anchored.ok() && anchored.value.anchored);
+
+  ImuSample huge;
+  huge.timestampNs = 1'020'000'000;
+  huge.hasAngularVelocity = true;
+  huge.angularVelocity = Vec3{1e200, 0, 0};
+
+  auto after = engine.Integrate(anchored.value, std::span<const ImuSample>(&huge, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_TRUE(std::isfinite(after.value.pose.orientation.w) &&
+              std::isfinite(after.value.pose.orientation.x) &&
+              std::isfinite(after.value.pose.orientation.y) &&
+              std::isfinite(after.value.pose.orientation.z))
+      << "a rate too large to square produced an orientation that is not a number";
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, anchored.value.pose.orientation), 0.0,
+              1e-12)
+      << "a rate too large to square turned the phone";
+  EXPECT_GT(AngleBetween(after.value.pose.orientation, Quat{}), 0.1)
+      << "the estimate collapsed onto the identity, which is a cell the plan can name";
+
+  // And the same value read as stability: infinity is not "still", so nothing arms on it.
+  auto stability = engine.Stability(std::span<const ImuSample>(&huge, 1));
+  ASSERT_TRUE(stability.ok()) << stability.status.detail;
+  EXPECT_LT(stability.value, 0.2)
+      << "a rate too large to square was read as a phone holding still";
+}
+
+TEST(PoseEngine, ARateThatIsNotAMeasurementDoesNotTurnThePhone) {
+  // The same sentence about the other half of the sample, found by the boundary lens on the same
+  // round. `Decode(ImuSample&)` checks `timestampNs` and hands `angularVelocity` through raw, and
+  // a non-finite rate integrates to a non-finite quaternion — which `Normalize` then answers with
+  // the identity, exactly as above. The reviewer measured the consequence: one poisoned sample
+  // sends the estimate to the plan's origin at confidence 0.5 with `anchored` intact, so a cell
+  // that had just been refused at 90 degrees off arms from the same aim a tick later.
+  //
+  // A rate nobody could have measured is not a rate, so it moves nothing. The sample still counts
+  // as arrived — the clock advanced and the next elapsed time is measured from it — which is the
+  // distinction `ASampleThatReportsNothingEstimatesNothing` established for the empty case.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const Vec3 rate : {Vec3{inf, 0, 0}, Vec3{0, nan, 0}, Vec3{-inf, inf, nan}}) {
+    OrientationPoseEngine engine;
+    auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+    ASSERT_TRUE(initial.ok());
+
+    // Anchored first, so there is a real attitude for a bad rate to destroy.
+    ImuSample real = Oriented(1'000'000, 30.0, 0.0);
+    auto anchored = engine.Integrate(initial.value, std::span<const ImuSample>(&real, 1));
+    ASSERT_TRUE(anchored.ok() && anchored.value.anchored);
+
+    ImuSample poison;
+    poison.timestampNs = 1'020'000'000;
+    poison.hasAngularVelocity = true;
+    poison.angularVelocity = rate;
+
+    auto after = engine.Integrate(anchored.value, std::span<const ImuSample>(&poison, 1));
+    ASSERT_TRUE(after.ok());
+    EXPECT_NEAR(AngleBetween(after.value.pose.orientation, anchored.value.pose.orientation), 0.0,
+                1e-12)
+        << "a rate nobody could have measured turned the phone";
+    // Specifically not to the identity, which is the direction the plan's first cells sit at.
+    EXPECT_GT(AngleBetween(after.value.pose.orientation, Quat{}), 0.1)
+        << "the estimate collapsed onto the identity, which is a cell the plan can name";
+  }
 }
 
 TEST(PoseEngine, ARateOnlyStreamTurnsTheOrientationAndStillReportsNoAim) {
@@ -507,6 +637,58 @@ TEST(PoseEngine, DeadReckoningAfterAnAbsoluteFixDropsBackToHalfConfidence) {
   ASSERT_TRUE(guessed.ok());
   EXPECT_DOUBLE_EQ(guessed.value.pose.confidence, 0.5);
   EXPECT_FALSE(guessed.value.absolute);
+}
+
+TEST(PoseEngine, AStreamThatMeasuredNothingUsableIsNotPerfectlyStill) {
+  // `Stability`'s two claim-checks, which had no test between them: a reviewer deleted each and
+  // the whole suite stayed green, then probed what the deletion buys. Both answer **1.0** —
+  // "perfectly still" — for a stream that measured nothing at all. That is the exact number the
+  // `!measured` refusal below them exists to avoid producing, arriving through the door marked
+  // "a rate was reported".
+  //
+  // `hasAngularVelocity` and `hasOrientation` are *claims* about what a platform put in the
+  // sample, not guarantees. A port can set either beside a value that is not a measurement, and
+  // `Measured`/`Attitude` are where that is checked — so a burst firing mid-swing is what a
+  // missing check here costs, on the one signal the dwell consults before it arms.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  OrientationPoseEngine engine;
+
+  {
+    // A rate that is not a number, claimed as one. `Measured` refuses it, nothing else can.
+    ImuSample claimed;
+    claimed.timestampNs = 0;
+    claimed.hasAngularVelocity = true;
+    claimed.angularVelocity = Vec3{nan, 0, 0};
+    ImuSample later = claimed;
+    later.timestampNs = 100'000'000;
+    const std::vector<ImuSample> samples{claimed, later};
+
+    auto stability = engine.Stability(samples);
+    EXPECT_FALSE(stability.ok() && stability.value > 0.9)
+        << "a rate nobody could have measured was read as a phone holding still";
+    if (!stability.ok()) {
+      EXPECT_EQ(stability.status.code, StatusCode::FailedPrecondition);
+    }
+  }
+
+  {
+    // The other door: no rates at all, and an attitude that is not a rotation. The gap between
+    // two attitudes is the fallback measurement, and it cannot be taken from this one.
+    const std::vector<ImuSample> samples{Oriented(0, 0.0, 0.0), [&] {
+      ImuSample broken;
+      broken.timestampNs = 100'000'000;
+      broken.hasOrientation = true;
+      broken.orientation = Quat{0, 0, 0, 0};
+      return broken;
+    }()};
+
+    auto stability = engine.Stability(samples);
+    EXPECT_FALSE(stability.ok() && stability.value > 0.9)
+        << "an attitude that is not a rotation was read as a phone holding still";
+    if (!stability.ok()) {
+      EXPECT_EQ(stability.status.code, StatusCode::FailedPrecondition);
+    }
+  }
 }
 
 TEST(PoseEngine, AStillDeviceIsPerfectlyStable) {

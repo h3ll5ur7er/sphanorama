@@ -1,5 +1,13 @@
 # ADR 0042 — With no aim, coverage decides alone
 
+> **Superseded by [ADR 0044](0044-a-capture-needs-a-motion-sensor.md).** Everything measured here
+> is still true and is the evidence 0044 was decided on; what changed is the question. This ADR
+> asked what a phone with no motion sensor should *do*, and answered it well. 0044 asked what such
+> a capture is *worth* — cells filled in coverage order with pixels nothing verified — and refuses
+> the session instead. `Locate`'s unaimed branch survives with a narrower meaning: not a device,
+> but a session's first ticks and a stream that carries rates without an attitude. `ArmBurst`'s
+> exemption and the client gate on `aimKnown` are gone.
+
 ## Context
 
 ADR 0041 made aim beat coverage: the cell the camera is inside is the cell guidance names, captured

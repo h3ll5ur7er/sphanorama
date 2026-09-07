@@ -17,6 +17,8 @@ import type { RuntimeCapabilities } from './core';
 export interface CameraOpening {
   maxWidth: number;
   maxHeight: number;
+  /** Frames per second the track settled on, or 0 when it will not say. */
+  maxBurstFps: number;
   supportsTorch: boolean;
   supportsExposureLock: boolean;
   supportsWhiteBalanceLock: boolean;
@@ -43,6 +45,9 @@ export type ToWorker =
   /** Awaits the document host's pending writes. The client calls it at session end and on unload. */
   | { kind: 'flush'; seq: number }
   | { kind: 'camera'; opened: CameraOpening | null }
+  // The camera the page is holding has changed, rather than been opened or lost (ADR 0045). A
+  // separate kind because it must not be able to create one: see `refreshCamera` in capture-host.
+  | { kind: 'camera-refresh'; opened: CameraOpening }
   | { kind: 'motion'; capability: string }
   /** Flat doubles, `MOTION_SAMPLE_DOUBLES` per sample, transferred rather than copied. */
   | { kind: 'imu'; doubles: Float64Array }

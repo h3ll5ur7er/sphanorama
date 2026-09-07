@@ -921,6 +921,15 @@ def emit_cpp_codec(module: Module) -> str:
             out.append("  (void)in; (void)value;")
         for field in struct.fields:
             kind = _field_wire_kind(struct, field)
+            if _canonical_cpp(field.cpp) == "int64_t":
+                # The same rule as the narrow integers below, through the one predicate that can
+                # express a 64-bit bound. `GetInteger` refuses to instantiate for `int64_t` —
+                # `IsRepresentableInteger` static_asserts `sizeof(T) <= 4`, because converting
+                # `INT64_MAX` to a double rounds up and the range test would then accept a value
+                # one past the end — so these fields were cast straight off `GetF64` instead.
+                # Every timestamp in these contracts is one of them.
+                out.append(f"  value.{field.name} = in.GetInt64();")
+                continue
             if field.cpp in NARROW_INTEGERS:
                 # Read as the integer the header declared rather than cast down from the double it
                 # crossed as. `static_cast<int32_t>` of a NaN, an infinity or a 1e300 is undefined,
@@ -1192,7 +1201,16 @@ def _cpp_param_decl(param: Param, kind: str, enums: set[str], ids: set[str],
     # to remove.
     declared = _canonical_cpp(param.cpp)
     declared = declared if declared in ARITHMETIC_SCALARS else None
-    if declared in NARROW_INTEGERS:
+    if declared == "int64_t":
+        # Through the 64-bit predicate, for the same reason and by the same rule as the fields
+        # below. `GetInteger` cannot take an `int64_t` — `IsRepresentableInteger` static_asserts
+        # `sizeof(T) <= 4`, because converting `INT64_MAX` to a double rounds up and its range test
+        # would then admit a value one past the end — so a parameter of this width fell through to
+        # a raw cast while every narrower one was checked. The fields got `GetInt64` a round
+        # earlier than the parameters, which is backwards: a parameter is the door a facade client
+        # knocks on directly.
+        decode = f"{name} = in.GetInt64();"
+    elif declared in NARROW_INTEGERS:
         # Read as the integer it is rather than cast from the double it crossed as. Every number
         # crosses as a double — JavaScript has no other kind — and `static_cast` of a NaN, an
         # infinity or an out-of-range value is undefined. `GetInteger` refuses those the way

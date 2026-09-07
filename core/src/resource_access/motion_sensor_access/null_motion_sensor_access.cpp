@@ -10,7 +10,7 @@ Result<MotionCapability> NullMotionSensorAccess::Capabilities() {
 }
 Status NullMotionSensorAccess::Start(int32_t) {
   return Fail(StatusCode::SensorUnavailable, kComponent,
-              "no motion port: the browser adapter is not wired to the core yet");
+              "no motion port is installed on this runtime");
 }
 Result<int32_t> NullMotionSensorAccess::Drain(std::span<ImuSample>) {
   return Err<int32_t>(StatusCode::FailedPrecondition, kComponent, "sensor is not running");

@@ -248,6 +248,21 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
    * name a sensor that has been stopped. Whatever takes over — the fallback below, or nothing at
    * all when the platform has no orientation event to fall back to — says so itself.
    */
+  function teardown() {
+    stopSensor();
+    if (listener) host.removeEventListener('deviceorientation', listener);
+    if (motionListener) host.removeEventListener('devicemotion', motionListener);
+    listener = null;
+    motionListener = null;
+    latestRate = null;
+    live = 'none';
+    // Here rather than in `stop`, and the reason is the second caller: `start` tears down an
+    // orphaned listener set before it builds a new one, and samples the previous session buffered
+    // are not this one's to drain. Both callers want it, which is what makes this the right home
+    // — a reviewer read the move as a widening, and the widening is the point.
+    buffered = [];
+  }
+
   function stopSensor() {
     live = 'none';
     if (!sensor) return;
@@ -273,6 +288,14 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       // the rule in two places, and the platform's half would be untestable here.
       const started = new ctor({ frequency: requestedHz, referenceFrame: 'device' });
       started.addEventListener('reading', () => {
+        // The same ownership question the error handler asks, and it was asked in only one of the
+        // two places. A sensor replaced by a later `start` keeps this listener, and a reading it
+        // delivers afterwards lands in the buffer the *live* sensor is filling — one stream, two
+        // sources, which `Drain` has no way to tell apart. `teardown` stops the old sensor first,
+        // so this should not fire; `stopSensor` swallows a `stop()` that throws and nulls the
+        // handle anyway, which leaves a sensor nothing can stop again. This is the half that does
+        // not need the platform to have cooperated.
+        if (sensor !== started) return;
         const reading = started.quaternion;
         // A reading event with no quaternion is what a sensor fires before its first fix.
         if (!reading || reading.length < 4) return;
@@ -285,6 +308,13 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
         }, screen);
       });
       started.addEventListener('error', () => {
+        // Only if this is still the sensor being read. The handler used to call `stopSensor`
+        // unconditionally, which acts on whichever sensor is *live* — so a sensor replaced by a
+        // later `start` could, on failing, stop its successor and drop the app to the Euler
+        // fallback ADR 0017 calls degenerate in this app's primary pose. `start` tears the old one
+        // down now, which should stop it firing at all; this is the half that does not depend on
+        // a platform being well behaved about a sensor it was told to stop.
+        if (sensor !== started) return;
         stopSensor();
         onFailure();
       });
@@ -362,6 +392,21 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
         return err('SensorUnavailable', COMPONENT, 'no motion sensors on this device');
       }
 
+      // Whatever is already running stops first, and this call is reachable twice: `enable` runs
+      // again when the resume offer is put back after a retryable refusal and the camera has since
+      // gone away. Without it the second start left the first sensor constructed and reading, and
+      // added a second `deviceorientation` listener while removing none — so one platform event
+      // produced two samples, and the pose survived only by accident, on `Integrate`'s strict
+      // `timestampNs >` comparison skipping the twin.
+      //
+      // The symptom that makes it worth a line here rather than a note: the orphan keeps its
+      // `error` handler, and that handler calls `stopSensor`, which stops whichever sensor is
+      // *live* — so a phone with a working quaternion sensor gets demoted to the Euler triple
+      // ADR 0017 calls degenerate in this app's primary pose, because a sensor nobody was reading
+      // failed. `stop` already tears down exactly what needs tearing down; it was simply never
+      // asked.
+      teardown();
+
       // The permission gate is only reached on the fallback path, and only iOS has one — where
       // there is no Generic Sensor API, so the gated call still happens inside the user gesture
       // that started this. A sensor that fails later falls back outside the gesture, on a
@@ -392,17 +437,12 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     },
 
     async stop() {
-      stopSensor();
-      if (listener) host.removeEventListener('deviceorientation', listener);
-      if (motionListener) host.removeEventListener('devicemotion', motionListener);
-      listener = null;
-      motionListener = null;
-      latestRate = null;
-      live = 'none';
+      teardown();
       // A deliberate stop is not a failure, and leaving the last one set would have drain blaming
-      // a dead sensor for a session the caller ended itself.
+      // a dead sensor for a session the caller ended itself. `teardown` does not clear it, because
+      // a *restart* wants the opposite: a sensor that died is why the caller is starting again,
+      // and `start` reports its own outcome anyway.
       lost = null;
-      buffered = [];
       return ok(undefined);
     },
   };

@@ -37,6 +37,7 @@ const char* const kMethodNames[] = {
     "CaptureSessionManager.onMotion",
     "CaptureSessionManager.armBurst",
     "CaptureSessionManager.offerFrame",
+    "CaptureSessionManager.cameraInUse",
     "CaptureSessionManager.coverage",
     "CaptureSessionManager.candidates",
     "CaptureSessionManager.candidatePreview",
@@ -56,7 +57,7 @@ const char* const kMethodNames[] = {
     "ProjectManager.export",
 };
 
-constexpr int32_t kMethodCount = 23;
+constexpr int32_t kMethodCount = 24;
 
 }  // namespace
 
@@ -171,7 +172,15 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 6: {  // CaptureSessionManager.coverage
+    case 6: {  // CaptureSessionManager.cameraInUse
+      auto result = runtime.captureSession().CameraInUse();
+      PutStatus(out, result.status);
+      if (result.ok()) {
+        codec::Encode(out, result.value);
+      }
+      break;
+    }
+    case 7: {  // CaptureSessionManager.coverage
       auto result = runtime.captureSession().Coverage();
       PutStatus(out, result.status);
       if (result.ok()) {
@@ -179,7 +188,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 7: {  // CaptureSessionManager.candidates
+    case 8: {  // CaptureSessionManager.candidates
       NodeId node{};
       node.value = in.GetId();
       if (!in.ok()) {
@@ -195,7 +204,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 8: {  // CaptureSessionManager.candidatePreview
+    case 9: {  // CaptureSessionManager.candidatePreview
       NodeId node{};
       node.value = in.GetId();
       CandidateId candidate{};
@@ -214,7 +223,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 9: {  // CaptureSessionManager.requestRetake
+    case 10: {  // CaptureSessionManager.requestRetake
       NodeId node{};
       node.value = in.GetId();
       bool replace{};
@@ -228,12 +237,12 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 10: {  // CaptureSessionManager.end
+    case 11: {  // CaptureSessionManager.end
       const Status status = runtime.captureSession().End();
       PutStatus(out, status);
       break;
     }
-    case 11: {  // PanoramaBuildManager.start
+    case 12: {  // PanoramaBuildManager.start
       SessionId session{};
       session.value = in.GetId();
       BuildSpec spec{};
@@ -250,7 +259,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 12: {  // PanoramaBuildManager.poll
+    case 13: {  // PanoramaBuildManager.poll
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -265,7 +274,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 13: {  // PanoramaBuildManager.panorama
+    case 14: {  // PanoramaBuildManager.panorama
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -280,7 +289,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 14: {  // PanoramaBuildManager.ghosts
+    case 15: {  // PanoramaBuildManager.ghosts
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -295,7 +304,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 15: {  // PanoramaBuildManager.invalidate
+    case 16: {  // PanoramaBuildManager.invalidate
       BuildId build{};
       build.value = in.GetId();
       std::vector<NodeId> dirty;
@@ -312,7 +321,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 16: {  // PanoramaBuildManager.cancel
+    case 17: {  // PanoramaBuildManager.cancel
       BuildId build{};
       build.value = in.GetId();
       if (!in.ok()) {
@@ -324,7 +333,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 17: {  // ProjectManager.list
+    case 18: {  // ProjectManager.list
       auto result = runtime.project().List();
       PutStatus(out, result.status);
       if (result.ok()) {
@@ -333,7 +342,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 18: {  // ProjectManager.create
+    case 19: {  // ProjectManager.create
       std::string title{};
       title = in.GetString();
       if (!in.ok()) {
@@ -348,7 +357,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 19: {  // ProjectManager.delete
+    case 20: {  // ProjectManager.delete
       ProjectId project{};
       project.value = in.GetId();
       if (!in.ok()) {
@@ -360,7 +369,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 20: {  // ProjectManager.setSelection
+    case 21: {  // ProjectManager.setSelection
       ProjectId project{};
       project.value = in.GetId();
       NodeId node{};
@@ -376,7 +385,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       PutStatus(out, status);
       break;
     }
-    case 21: {  // ProjectManager.getSelection
+    case 22: {  // ProjectManager.getSelection
       ProjectId project{};
       project.value = in.GetId();
       NodeId node{};
@@ -393,7 +402,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       }
       break;
     }
-    case 22: {  // ProjectManager.export
+    case 23: {  // ProjectManager.export
       ProjectId project{};
       project.value = in.GetId();
       BuildId build{};

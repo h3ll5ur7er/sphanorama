@@ -289,6 +289,39 @@ class MethodTableTest(unittest.TestCase):
         self.assertIn("maxEdge = in.GetInteger<int32_t>();", cpp)
         self.assertNotIn("static_cast<decltype(maxEdge)>(in.GetF64())", cpp)
 
+    def test_an_int64_parameter_is_read_as_an_integer_too(self):
+        # The same rule as the fields, which got it one round earlier. A parameter is the door a
+        # facade client knocks on directly, so if either half deserved the check first it was this
+        # one — it was simply the half that had no predicate to call.
+        module = parse(
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Status SeekTo(int64_t timestampNs) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_facade(module)
+        self.assertIn("timestampNs = in.GetInt64();", cpp)
+        self.assertNotIn("static_cast<int64_t>(in.GetF64())", cpp)
+
+    def test_an_int64_field_is_read_as_an_integer_too(self):
+        # The third door. `int32_t` fields went through `GetInteger` and `int64_t` ones did not,
+        # because `IsRepresentableInteger` static_asserts `sizeof(T) <= 4` — a 32-bit type's
+        # bounds are exactly representable as doubles and a 64-bit one's are not. So every
+        # timestamp in these contracts was cast straight off `GetF64`, which is undefined for a
+        # NaN, an infinity or a 1e300, and every one of those is a value the far side can present.
+        module = parse(
+            "struct ImuSample {\n"
+            "  int64_t timestampNs = 0;\n"
+            "};\n"
+            "// @boundary @facade\n"
+            "class ICaptureSessionManager {\n"
+            " public:\n"
+            "  virtual Status Offer(const ImuSample& sample) = 0;\n"
+            "};\n")
+        cpp = contract_gen.emit_cpp_codec(module)
+        self.assertIn("value.timestampNs = in.GetInt64();", cpp)
+        self.assertNotIn("static_cast<decltype(value.timestampNs)>(in.GetF64())", cpp)
+
     def test_a_double_parameter_is_not_read_as_an_integer(self):
         # The other half again: an angle is not a count, and routing one through an integer read
         # would refuse every fraction the contract exists to carry.

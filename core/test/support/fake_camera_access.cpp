@@ -21,7 +21,13 @@ FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
 }
 
 Result<CameraCapabilities> FakeCameraAccess::Open(const CameraOpenSpec&) {
+  // Counted before the refusal, because the count is about what was asked of the device rather
+  // than what it gave back: a refused open has already raised the prompt.
   ++opens_;
+  if (fail_open_) {
+    return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent,
+                                   "no usable camera");
+  }
   open_ = true;
   return Ok(capabilities_);
 }
@@ -56,12 +62,21 @@ Result<FrameRef> FakeCameraAccess::PeekPreviewFrame() {
 
 
 Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
+  // Refused first, and nothing changed by a refused call. This guard sat *below* the mutation
+  // below it, so a lock write to a closed camera altered what the fake would report once it was
+  // reopened while returning a refusal that said nothing had happened. Unreachable from the suite
+  // as it stands, which is why it is cheap to put right now rather than the day it is not.
   if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
   if (fail_unlock_ && !exposure) {
     // Refused *and* left locked, which is the case worth modelling: a port that failed to unlock
     // has not half-unlocked, and a caller told the burst finished would have no reason to look.
     return Fail(StatusCode::CameraUnavailable, kComponent, "the track refused to drop its locks");
   }
+  // A lock write can change what the camera can do, which is the premise of ADR 0045: pinning an
+  // exposure long is what drops a real camera from 30 fps to 15 — the exposure specifically, which
+  // is why only that flag matters. `SlowToOnLock` says by how much, and `Capabilities()` applies
+  // it: this line is the *whole* of the state change, so a refused write above cannot half-apply
+  // it and there is no second copy of the rate to restore.
   exposure_locked_ = exposure;
   return Status::Ok();
 }

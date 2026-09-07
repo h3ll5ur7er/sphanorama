@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
@@ -48,6 +49,15 @@ class FrameQuality : public ::testing::Test {
   }
 
   FrameRef Flat(uint8_t value = 128) { return Frame([value](int32_t, int32_t) { return value; }); }
+
+  /** A handle that names a real frame and lies about how big it is. */
+  static FrameRef Claiming(FrameRef real, int32_t width, int32_t height, int32_t stride) {
+    FrameRef lying = real;
+    lying.width = width;
+    lying.height = height;
+    lying.stride = stride;
+    return lying;
+  }
 
   /** Hard black-and-white squares: the most sharpness a frame this size can carry. */
   FrameRef Checkerboard(int32_t square = 4) {
@@ -330,6 +340,49 @@ TEST_F(FrameQuality, SharpnessIsWeighedAgainstExposureRatherThanDrowningIt) {
   ASSERT_TRUE(ranked.ok());
   EXPECT_EQ(ranked.value.front().value, 2u)
       << "raw sharpness swamped the exposure term, so the policy's weights mean nothing";
+}
+
+TEST_F(FrameQuality, AFrameRefThatLiesAboutItsSizeIsRefusedRatherThanRead) {
+  // A `FrameRef` is a plain value the caller passes in, and `Find` keys on `id` alone — so the
+  // geometry on the handle is the *caller's* claim, and nothing upstream makes it describe the
+  // allocation. `Pin` hands back the entry's real span; every read below used to index it with the
+  // claim.
+  //
+  // Reproduced by a reviewer under AddressSanitizer: allocate 640x480 RGBA8 honestly, then score
+  // the same id claiming `{4096, 4096, stride 16384}` — `heap-buffer-overflow READ 0 bytes after a
+  // 1228800-byte region`. `wire::GetInteger` bounds the *cast* of those numbers at the boundary
+  // and says nothing about what they describe, which is a different question and the one that
+  // matters here.
+  //
+  // No shipped caller builds a handle by hand today; `OfferFrame` is the door, `Candidates()`
+  // publishes every frame id to the client, and the callers that door was written for — file
+  // import, replay, a manual shutter — are exactly the ones that would.
+  const FrameRef real = Flat(128);
+
+  for (const auto& [label, lying] : {
+           std::pair{"width", Claiming(real, kWidth * 8, kHeight, 0)},
+           std::pair{"height", Claiming(real, kWidth, kHeight * 8, 0)},
+           std::pair{"stride", Claiming(real, kWidth, kHeight, kWidth * 4 * 8)},
+           std::pair{"everything", Claiming(real, 4096, 4096, 16384)},
+       }) {
+    auto scored = engine.Score(lying, PoseSample{}, NodeContext{});
+    EXPECT_FALSE(scored.ok()) << "a frame claiming more " << label << " than it has was read";
+    if (!scored.ok()) {
+      EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << label;
+    }
+  }
+}
+
+TEST_F(FrameQuality, AStrideNarrowerThanARowIsRefused) {
+  // Rows that overlap are not a frame anybody allocated, and a stride below the row's own width is
+  // the only way to ask for one. It reads inside the allocation, so a bounds check alone would let
+  // it past — and what it scores is a shear of the picture rather than the picture.
+  auto scored = engine.Score(Claiming(Flat(128), kWidth, kHeight, kWidth * 4 - 4),
+                             PoseSample{}, NodeContext{});
+  EXPECT_FALSE(scored.ok());
+  if (!scored.ok()) {
+    EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument);
+  }
 }
 
 TEST_F(FrameQuality, RankingNothingIsNotAFailure) {

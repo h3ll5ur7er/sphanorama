@@ -14,6 +14,17 @@ class ICaptureSessionManager {
  public:
   virtual ~ICaptureSessionManager() = default;
 
+  // Opens a capture session on a project that already exists.
+  //
+  // Refused with `SensorUnavailable` when `IMotionSensorAccess::Capabilities()` reports `None` or
+  // cannot answer, and refused *before* a camera is opened. A capture places every frame by the
+  // direction the phone was pointing, and a device that cannot sense one produces cells labelled
+  // with directions nobody measured — a failure invisible until a build, so it is refused at the
+  // door instead (ADR 0044). A client whose own platform can answer that question earlier should:
+  // this call is the rule, not the only place to be polite about it.
+  //
+  // Refused with `NotFound` when the project does not exist, which is checked first: beginning
+  // against an id nobody created would leave a titleless project in the user's list.
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -26,6 +37,11 @@ class ICaptureSessionManager {
   // The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
   // particular sphere, so replanning from whatever lens is in front of the phone now would file
   // every restored candidate under a different cell.
+  //
+  // The motion capability is not stored, and this reads the live one: a document says which
+  // sphere is being captured, never what the device it comes back on can sense. So this is
+  // refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
+  // began the capture if the user declined the permission this time (ADR 0044).
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;
@@ -52,21 +68,69 @@ class ICaptureSessionManager {
   // frame period the latest frame is one the camera produced before the locks landed.
   //
   // Refused with `FailedPrecondition` when the camera is not aimed at the cell — outside the
-  // acceptance cone the plan gave it, which is the same cone guidance closes its reticle on. A
+  // acceptance cone the plan gave it, which is the cone guidance closes its reticle on. A
   // burst records whatever the camera is looking at and the node is only a name to file it under,
   // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
   // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
   //
-  // **Only where there is an aim to check.** When the pose was never estimated — `confidence` of
-  // zero, which is what a phone with no motion sensor reports for the life of a session — there is
-  // no direction to measure a cone against, and every cell arms. A client on such a device will
-  // never meet this refusal, and must not wait for guidance to say `HoldStill` before offering a
-  // capture, because it never will (ADR 0042).
+  // Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
+  // measurement — not finite, or not greater than zero. The detail says which: "not a usable
+  // measurement" is a broken plan and nothing the user can do anything about, where "not aimed at
+  // that cell" is a phone to turn. `ICoveragePlannerEngine::Plan` forbids such a cone and both
+  // shipped engines refuse it, so this is the manager declining to assume every implementation of
+  // that contract validates its own output — the two that exist disagreed about exactly this,
+  // twice, in consecutive rounds of one review.
+  //
+  // **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
+  // stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
+  // could reach every cell of its own plan by eye. Such a phone is now refused at `Begin`, and
+  // what is left of zero confidence is transient: the ticks before a session's first reading, and
+  // a stream carrying rates with no attitude in them. In both the pose is the identity it was
+  // born with, which is a direction nobody chose, so there is nothing to check and nothing to
+  // allow — arming then would file real pixels under a cell picked by an accident of
+  // initialisation.
+  //
+  // So a client may wait for guidance to say `HoldStill`, which means "inside this cell's cone
+  // and this cell still wants shooting" — the condition this arms on, from the same plan and the
+  // same cone. It is one condition read twice rather than one call trusting another, so the two
+  // can be made to disagree by a plan neither of them wrote: a cone that is not a measurement had
+  // `Locate` reporting `HoldStill` while this call refused, which since ADR 0043 is a dwell that
+  // matures, fires, is refused, and starts again. `ICoveragePlannerEngine` now states the rule
+  // that keeps them together, on `Plan`, where a planner will read it. What it must not
+  // assume is that the action always comes: it needs an anchored pose, so a stream that carries
+  // rates and never an attitude produces a session that begins and can never arm. The shipped
+  // browser adapter cannot produce one (every sample it emits carries an attitude), and a port
+  // that can owes its user a way to say so. Nothing in this build watches for it; the roadmap
+  // carries it.
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
   virtual Result<FrameVerdict> OfferFrame(NodeId node, const FrameRef& frame,
                                           const PoseSample& pose) = 0;
+
+  // What the camera this session is using reports it can do, as the manager last read it — which
+  // is at `Begin`/`Resume` and again at every `ArmBurst` (ADR 0045). Where that read said nothing,
+  // what it last *heard*: a metric of zero is the contract's "the platform will not say", so the
+  // rate and the frame's geometry survive a refresh that answers with neither.
+  //
+  // Here rather than on a port because a port is not on the boundary: `ICameraAccess` is the
+  // core's, and the page's own adapter is a different object that happens to answer the same
+  // questions. Two answers to one question is what this call exists to stop being possible to
+  // ignore — the two sides of the browser seam agree by an integer index and a property name, and
+  // nothing checked either. `maxBurstFps` was in `CameraCapabilities` for the life of the field,
+  // had no case in the port's metric switch, and read as zero — which the manager is right to
+  // treat as "the platform will not say", so a floor that was never wired looked exactly like a
+  // browser declining to answer. Nothing failed. A test that reads these back through the facade
+  // is what makes a missing case fail instead (ADR 0045).
+  //
+  // "As the manager last read it", not "as the camera is now": this reports the copy the session
+  // is actually pacing bursts by, which is refreshed at `ArmBurst`. A client wanting a status row
+  // to be exactly current would be asking the wrong object — that is a fact about the device, and
+  // the page holds the device.
+  //
+  // Refused with `FailedPrecondition` when no session is open, since there is no camera to
+  // describe.
+  virtual Result<CameraCapabilities> CameraInUse() const = 0;
 
   virtual Result<CoverageState> Coverage() const = 0;
   // Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
@@ -112,13 +176,23 @@ class ICaptureSessionManager {
   // point, since a retake that captured from wherever the phone happened to be pointing is the bug
   // ADR 0041 exists to stop. `docs/03-architecture.md` UC-2 describes the flow.
   //
-  // **With `ArmBurst`'s exemption, and it is not optional here either.** Where the pose was never
-  // anchored there is no direction to measure a cone against, so the burst after a retake arms
-  // wherever the phone is pointing — which is what UC-4 has always been and is the only way such a
-  // device can retake at all (ADR 0042). This clause went into UC-2 and not into this header, one
-  // commit after the same omission was filed against `ArmBurst` fifty lines above: a contract that
-  // states a precondition without its exemption tells a client to wait for something that will
-  // never happen.
+  // **Without exemption, and this paragraph used to carry one.** It said the burst after a retake
+  // arms wherever the phone is pointing when the pose was never anchored, because that was the
+  // only way a sensorless device could retake at all. That device is refused at `Begin` now
+  // (ADR 0044), so the rule above is the whole rule: point at the cell again, and the burst is
+  // taken there or not at all.
+  //
+  // With `replace` false, that burst has nothing to fire it in this build, and the honest place
+  // to say so is here. Keeping the evidence leaves the cell covered, `Locate` answers
+  // `AlreadyCaptured` rather than `HoldStill` for a covered cell, and the dwell that arms every
+  // burst since ADR 0043 only matures on `HoldStill` — so an additive retake marks nothing a
+  // client can act on. `replace` true empties the cell of everything the store will let go of,
+  // which makes it a hole again and puts it back in the dwell's way — everything, unless the
+  // store refuses to forget a frame, in which case that one candidate stays and the cell stays
+  // covered until a later retake succeeds. `Discard` keeps it deliberately: the bytes are still
+  // charged, and dropping the last handle to them would orphan them. The retake flow that closes
+  // the additive case is Phase 3 (`docs/06-roadmap.md`); until then this call aborts a burst in
+  // flight and, additively, does nothing else.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
   virtual Status End() = 0;

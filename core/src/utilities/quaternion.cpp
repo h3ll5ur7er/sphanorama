@@ -11,13 +11,51 @@ double Norm(const Quat& q) {
 
 Quat Normalize(const Quat& q) {
   const double norm = Norm(q);
-  if (!(norm > 1e-12)) return Quat{};   // also catches NaN, which compares false against >
+  // Finite as well as positive. `!(norm > 1e-12)` catches NaN, which compares false against every
+  // comparison, and misses an *infinite* norm — which finite components can produce, because this
+  // squares before it sums and anything above about 1.34e154 overflows on the way. Dividing by
+  // that gave `{0,0,0,0}`: not the input's rotation, and not the identity this promises.
+  if (!std::isfinite(norm) || !(norm > 1e-12)) return Quat{};
   return Quat{q.w / norm, q.x / norm, q.y / norm, q.z / norm};
+}
+
+bool IsUsableRotation(const Quat& q) {
+  // The *norm* has to be finite, not merely the components — which is where the first version of
+  // this stopped, and it stopped one step short. Its own comment had the mechanism right: `Norm`
+  // of a quaternion carrying an infinity is an infinity and `inf > 1e-12` is true. What it missed
+  // is that the infinity does not have to arrive in a component. `Norm` squares before it sums, so
+  // every component of `Quat{0, 1e200, 0, 0}` is finite and its norm is not.
+  //
+  // A reviewer ran what that bought: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
+  // real `Direction` is `(0,0,+1)`, `Normalize` answered `{0,0,0,0}`, and `Direction` of *that* is
+  // `(0,0,-1)` — straight ahead. `OrientationPoseEngine::Integrate` anchored the pose at
+  // confidence 1.0 on a direction 180 degrees from the sample it was given, after which
+  // `ArmBurst`'s confidence guard, its cone check (`offBy` exactly 0) and the dwell all pass. Not
+  // reachable from the shipped `motion.ts`, whose quaternions are built from trigonometry and
+  // bounded by it; entirely reachable by any other implementation of the port.
+  //
+  // Checking the norm alone would be enough — a component that is NaN or infinite makes the norm
+  // one — but the component test stays because it is the cheaper of the two and says what it
+  // means. Together they answer exactly the question this predicate is for: "will `Normalize`
+  // return something derived from this, or its fallback identity?"
+  if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
+    return false;
+  }
+  const double norm = Norm(q);
+  return std::isfinite(norm) && norm > 1e-12;
+}
+
+bool IsUsableVector(const Vec3& v) {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
 Quat FromAxisAngle(const Vec3& axis, double radians) {
   const double length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
-  if (!(length > 1e-12)) return Quat{};
+  // Finite too, for the reason `Normalize` above needs it: a finite axis can have an infinite
+  // length. Dividing by that made `s` zero and returned `{cos(half), 0, 0, 0}`, which is a
+  // quaternion of norm |cos(half)| — zero for a half-turn — rather than any rotation about the
+  // axis asked for.
+  if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
 
   const double half = radians * 0.5;
   const double s = std::sin(half) / length;
@@ -90,14 +128,24 @@ Vec3 Cross(const Vec3& a, const Vec3& b) {
 
 Vec3 Normalize(const Vec3& v) {
   const double length = std::sqrt(Dot(v, v));
-  if (!(length > 1e-12)) return Vec3{0, 0, 0};
+  // Same overflow, same guard: `Dot` squares before it sums. Without it a finite vector normalised
+  // to `{0, 0, 0}` — which is what this returns for "no direction", so the answer was right by
+  // accident here and wrong for the same input in the quaternion above.
+  if (!std::isfinite(length) || !(length > 1e-12)) return Vec3{0, 0, 0};
   return Vec3{v.x / length, v.y / length, v.z / length};
 }
 
 double AngleBetweenDirections(const Vec3& a, const Vec3& b) {
   const Vec3 x = Normalize(a);
   const Vec3 y = Normalize(b);
-  if (Dot(x, x) < 0.5 || Dot(y, y) < 0.5) return 0.0;   // a degenerate direction is not an angle
+  // `!(… > 0.5)` rather than `… < 0.5`, so a NaN lands on "degenerate" with everything else that
+  // is not a direction. `Normalize` turns a zero or NaN vector into the origin, which `< 0.5`
+  // catches — but an *infinite* component divides by an infinite length and yields NaN per
+  // element, and NaN loses `<` as readily as it loses `>`, so the check waved it through into
+  // `acos` and this returned NaN. Every caller compares the answer against a threshold, and a NaN
+  // loses those comparisons too: `angle > cone` then reads "inside" and `angle <= cone` reads
+  // "outside", one number arriving at two callers as two answers.
+  if (!(Dot(x, x) > 0.5) || !(Dot(y, y) > 0.5)) return 0.0;
   return std::acos(std::clamp(Dot(x, y), -1.0, 1.0));
 }
 

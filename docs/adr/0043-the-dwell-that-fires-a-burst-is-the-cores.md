@@ -1,5 +1,17 @@
 # ADR 0043 — The dwell that fires a burst is the core's, and the page only obeys it
 
+> **Completed by [ADR 0044](0044-a-capture-needs-a-motion-sensor.md).** Two of the consequences
+> recorded below are reversed: `canCapture` and the `#capture` button were kept here for the one
+> device that could never reach `Fire`, and that device is now refused outright, so both are
+> deleted. The dwell is the only way a burst starts.
+>
+> Which changed one thing about the dwell itself. `Fire` was an edge reported once and latched,
+> because the shutter was there to cover a `Fire` the client could not act on. With no shutter, a
+> refused arm left the user on a full ring for ever — measured at twenty seconds of holding one
+> cell for zero candidates. The counter restarts instead of latching, so the dwell runs again and
+> offers the arm again; a burst that does start overwrites the action, so the retry cannot
+> double-fire one that took.
+
 ## Context
 
 ADR/PR #44 settled what the capture button promises by deleting it: a burst fires by itself once

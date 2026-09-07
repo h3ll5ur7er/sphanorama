@@ -152,6 +152,25 @@ describe('sample delivery', () => {
     if (drained.ok) expect(drained.value.length).toBe(2);
   });
 
+  it('a restarted session does not drain the previous one\'s samples', async () => {
+    // `buffered` is cleared in `teardown`, which both `stop` and a re-`start` reach — and only the
+    // second of those makes it interesting. A session that begins by draining the last one's
+    // orientation integrates a pose from where the phone *was*, and `OrientationPoseEngine` would
+    // anchor on it before the first real sample arrived.
+    //
+    // The clear used to sit in `stop` alone, and a reviewer read moving it as widening a meaning.
+    // It is, and the widening is the point; this is the half that had nothing asserting it.
+    listener({ alpha: 10, beta: 0, gamma: 0, timeStamp: 1 });
+    listener({ alpha: 20, beta: 0, gamma: 0, timeStamp: 2 });
+
+    await access.start(60);
+    const drained = await access.drain(8);
+    expect(drained.ok).toBe(true);
+    if (drained.ok) {
+      expect(drained.value.length, 'a new session drained the last one\'s orientation').toBe(0);
+    }
+  });
+
   it('drain consumes rather than repeats', async () => {
     listener({ alpha: 10, beta: 0, gamma: 0, timeStamp: 1 });
     await access.drain(8);
@@ -226,6 +245,106 @@ describe('events the platform could not fill in', () => {
     listenerOf(host)({ timeStamp: 1, alpha: 0, beta: 0, gamma: 0 } as unknown as Event);
     const drained = await access.drain(8);
     expect(drained.ok && drained.value).toHaveLength(1);
+  });
+});
+
+describe('starting twice', () => {
+  // `enable` runs a second time when a refused resume puts its offer back and the camera has since
+  // gone away, so `start` is reachable with one already running. It used to leave the first alive.
+  it('stops the sensor it is replacing rather than leaving it reading', async () => {
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    expect((await motion.start(60)).ok).toBe(true);
+    expect((await motion.start(60)).ok).toBe(true);
+
+    expect(built).toBe(2);
+    expect(first.sensor.stopped, 'the first sensor was left constructed and reading').toBe(true);
+  });
+
+  it('does not leave the orphan able to stop the live one', async () => {
+    // The symptom that made this worth fixing rather than noting. The orphan keeps its `error`
+    // handler, and that handler calls the adapter's own stop — which acts on whichever sensor is
+    // *live*. So a phone with a working quaternion sensor was demoted to the Euler triple ADR 0017
+    // calls degenerate in this app's primary pose, because a sensor nobody was reading failed.
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+    expect(motion.source()).toBe('AbsoluteOrientationSensor');
+
+    first.sensor.emitError();
+
+    expect(motion.source(), 'a dead orphan took the live sensor down with it')
+      .toBe('AbsoluteOrientationSensor');
+  });
+
+  it('does not let the orphan feed the buffer the live sensor is filling', async () => {
+    // The other half of the ownership question, and the half that does not need the platform to
+    // have cooperated. `teardown` calls `stop()` on the sensor it is replacing, so a well behaved
+    // orphan goes quiet — but `stopSensor` swallows a `stop()` that throws and drops the handle
+    // anyway, which leaves a sensor nothing can stop again. Its `reading` listener is still
+    // installed, and what it pushes goes into the same buffer the live sensor is filling: one
+    // stream carrying two attitudes, which `Drain` has no way to tell apart and the pose engine
+    // integrates as a phone that teleported.
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+
+    first.sensor.emitReading(landscapeReading, 4);
+    second.sensor.emitReading(landscapeReading, 9);
+
+    const drained = await motion.drain(8);
+    expect(drained.ok && drained.value, 'a sensor nobody is reading got a sample into the stream')
+      .toHaveLength(1);
+    if (drained.ok) expect(drained.value[0].timestampNs).toBe(9_000_000);
+  });
+
+  it('removes the orientation listener it is replacing, so one event is one sample', async () => {
+    // The fallback path has the same shape: a second `addEventListener` with no removal meant one
+    // platform event produced two samples. The pose survived that only by accident — `Integrate`
+    // compares timestamps strictly, so the twin was skipped — which is not a guard, it is luck.
+    const host = fakeWindow();
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+
+    // The listener that was installed, not merely some listener. `expect.anything()` here passed
+    // against a teardown that removed the wrong function, which a reviewer showed by making it do
+    // exactly that — the older `stops delivering after stop()` test pins identity and this one did
+    // not, in the same file.
+    const installed = host.addEventListener.mock.calls
+      .filter(([type]) => type === 'deviceorientation').map(([, fn]) => fn);
+    expect(installed.length).toBe(2);
+    expect(host.removeEventListener).toHaveBeenCalledWith('deviceorientation', installed[0]);
   });
 });
 

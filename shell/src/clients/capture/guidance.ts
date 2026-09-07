@@ -17,8 +17,25 @@ export const RETICLE_MAX_RADIUS = 44;
 const FULL_ERROR_DEG = 60;
 
 export function reticleRadius(angularErrorDeg: number, acceptanceConeDeg: number): number {
-  // `!(x > y)` rather than `<=` so a NaN error — a sensor that reported nothing usable — parks
-  // the ring instead of erasing it.
+  // A cone that is not a measurement closes nothing. `ICoveragePlannerEngine` requires it to be
+  // finite and positive, both engines' `Plan` refuse otherwise, both `Locate`s skip such a cell
+  // and `ArmBurst` refuses it — and this is the sixth reading of that one number, the one the user
+  // is actually looking at. Without the rule, `!(90 > Infinity)` is false and the ring drew fully
+  // closed and `locked` ninety degrees off target while the core said `Seek` and nothing fired:
+  // "a capture that looks ready and does nothing", which is the failure the engine header names as
+  // the reason its guards must agree.
+  //
+  // Wide open rather than parked, because there is a real difference between the two cases. A cell
+  // whose cone is broken is one the core will never let the user finish, and a ring at its widest
+  // says "not this, keep looking" — which is what `Locate` is saying at the same moment.
+  if (!(acceptanceConeDeg > 0) || !Number.isFinite(acceptanceConeDeg)) return RETICLE_MAX_RADIUS;
+  // An error that is not a measurement gets the same answer as a cone that is not one, and for the
+  // same reason — the two guards sit two lines apart and used to disagree about the same class of
+  // input. `!(x > y)` was chosen to keep NaN out of the growth arithmetic below, which it does,
+  // and it sent NaN to `RETICLE_LOCKED_RADIUS`: the fully-closed ring, drawn on target, for a pose
+  // nobody measured. The comment here called that "parking the ring", which is what the widest
+  // radius does and what this returns now.
+  if (!Number.isFinite(angularErrorDeg)) return RETICLE_MAX_RADIUS;
   if (!(angularErrorDeg > acceptanceConeDeg)) return RETICLE_LOCKED_RADIUS;
   const span = Math.max(FULL_ERROR_DEG - acceptanceConeDeg, 1);
   const travel = Math.min(1, (angularErrorDeg - acceptanceConeDeg) / span);
@@ -57,11 +74,24 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
     case 'CellDone':
       return `${cell} · captured · ${progress}`;
     // Resting on a cell that is already shot. Worded so it does not read as an instruction: the
-    // user is free to shoot it again, and nothing here asks them to.
+    // dwell will not fire on a covered cell, so nothing here is asking for a second burst, and
+    // re-shooting one is the retake flow's business rather than something to hint at from a
+    // status line.
     case 'AlreadyCaptured':
       return `${cell} · already captured · ${progress}`;
-    // The tick the dwell completed (ADR 0043). It reads as an announcement rather than an
-    // instruction, because by the time anyone can read it the burst has been armed.
+    // The tick a dwell completed (ADR 0043). An announcement rather than an instruction — the arm
+    // goes out on this tick, so by the time anyone reads it the burst is being asked for.
+    //
+    // Being *asked for*, not started, and the difference became reachable when the dwell learned
+    // to retry: an arm can be refused, and then this line has said "capturing" about a burst that
+    // never began.
+    //
+    // How long it says it is not one tick, which a first version of this comment claimed. `Fire`
+    // goes through `sayForAWhile` in the page, so the line is held for 1200 ms, and what actually
+    // replaces it is the arm's own refusal — up to the three seconds a lock write is allowed. So
+    // the honest description is a sentence that is briefly ahead of itself and is corrected by the
+    // failure rather than by the next frame. Kept anyway: the alternative is a word for "about
+    // to, probably", which is worse to read and no truer.
     case 'Fire':
       return `${cell} · capturing · ${progress}`;
     default:
@@ -71,48 +101,4 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
       // they were perfectly aimed at a cell the app cannot locate.
       return guidance.aimKnown ? `${cell} · ${off} · ${progress}` : `${cell} · ${progress}`;
   }
-}
-
-/**
- * Whether a burst may be armed at the cell guidance is naming.
- *
- * `ArmBurst` refuses a cell the camera is not aimed at (ADR 0041), and the page offers a capture
- * only where that refusal cannot fire — so a refusal is a backstop instead of the way the rule is
- * discovered.
- *
- * Not the *same* rule, though, and the difference is worth naming rather than glossing: the core
- * would also accept `AlreadyCaptured`, and the page declines it. This is the narrower of the two on
- * purpose — re-shooting a finished cell is a deliberate act and belongs to the retake flow — so
- * everything this offers the core takes, and not everything the core takes is offered.
- *
- * `HoldStill` is the only action that says both halves at once: the camera is inside a cell's
- * acceptance cone, and that cell still needs shooting. `AlreadyCaptured` is inside a cone too, and
- * a re-capture there is a deliberate act — it belongs to the retake flow rather than to the
- * shutter, which is why it is not offered here.
- *
- * `guidance.aimKnown` is whether the pose was a measurement at all, and it is read rather than
- * guessed. On a phone with no motion sensor the whole aim vocabulary is unavailable and a gate
- * written only for the aimed case silently becomes "never" — and the obvious local substitute,
- * "the sensor started", is a different fact: it is true for every tick before the first event
- * arrives, which is exactly the state twelve browser tests sit in.
- *
- * It lives here rather than inline in the pump because it is the predicate a dwell trigger will
- * fire on when one replaces the button, and because inline it had no test at all: the browser
- * suite only ever waits for the button to *become* enabled, so `!== 'Seek'` would have passed
- * every assertion in the repo.
- */
-export function canCapture(guidance: CaptureGuidance): boolean {
-  // With an aim the shutter is not offered at all: the dwell fires the burst, and the ring the user
-  // is watching is the same number the core counts (ADR 0043). A button beside an automatic trigger
-  // is two ways to do one thing, and the one the finger reaches for is the one that moves the phone
-  // it is supposed to be holding still.
-  if (guidance.aimKnown) return false;
-  // Without one, the shutter is all there is. `HoldStill` never arrives, so a dwell keyed on it can
-  // never mature and `Fire` can never be reported — and there is nothing else to key a dwell on
-  // either: `Stability` refuses a batch with no samples rather than answering "still", so wall
-  // clock alone would fire whether or not the person was ready, which is worse than the button it
-  // replaced. `Locate` targets by coverage instead (ADR 0042) and names the nearest cell still
-  // missing, which arrives as `Seek`; the core has nothing to check either, so what the page offers
-  // and what the core accepts still agree. The user aims by eye, which is what vision-only means.
-  return guidance.action === 'Seek';
 }

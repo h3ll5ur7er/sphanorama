@@ -15,17 +15,28 @@
 
 import type { LockState } from './camera';
 import type { GrabbedFrame } from './preview-frame';
-import type { ImuSample } from '../../../contracts/ts/contracts';
+import type { CameraCapabilities as CoreCameraCapabilities, ImuSample }
+  from '../../../contracts/ts/contracts';
 
-export interface CameraCapabilities {
-  maxWidth: number;
-  maxHeight: number;
-  horizontalFovDeg: number;
-  verticalFovDeg: number;
-  supportsTorch: boolean;
-  supportsExposureLock: boolean;
+/**
+ * What this host answers `host_camera_metric` with — the core's own struct, plus the one field the
+ * page knows about and the core does not.
+ *
+ * **Extended from the generated mirror rather than copied beside it**, and that is the whole point
+ * of the declaration. `maxBurstFps` had been in `CameraCapabilities` in `types.h` since the field
+ * was introduced, and was missing from every hand-written mirror of it on this side — so the core
+ * read its own default, zero, which it correctly treats as "the platform will not say". A floor
+ * that was never wired is indistinguishable from a browser declining to answer, and nothing failed
+ * for the life of the field. Deriving makes the next such omission a compile error on the day the
+ * C++ field lands; this file was already importing `ImuSample` from that exact generated file,
+ * with its sibling type hand-copied ten lines below.
+ *
+ * `supportsWhiteBalanceLock` is the extra: the page reads it off the track and `SetLocks` takes a
+ * white-balance flag, but `CameraCapabilities` in `types.h` has no field for it. That asymmetry is
+ * older than this file and is a contract question — `docs/06-roadmap.md` carries it.
+ */
+export interface CameraCapabilities extends CoreCameraCapabilities {
   supportsWhiteBalanceLock: boolean;
-  supportsFocusLock: boolean;
 }
 
 /** Nothing locked — what a host with no camera reports, and what closing one goes back to. */
@@ -52,6 +63,23 @@ export interface CaptureHost {
   cameraOpen(): boolean;
   cameraCapabilities(): CameraCapabilities;
   setCamera(camera: Omit<CameraCapabilities, 'horizontalFovDeg' | 'verticalFovDeg'>): void;
+  /**
+   * Updates the camera this host is already holding, and does nothing when it is holding none.
+   *
+   * ADR 0045's push, and it is a *different* verb from `setCamera` for one reason: a pushed fact
+   * can arrive late. The core closes the camera from inside this worker, and the page learns of it
+   * by a message; an arm parked on `applyConstraints` can resume in the gap and push what it read
+   * before. Through `setCamera` that hands the core a camera back — `cameraOpen()` reads true
+   * again, and the next `Begin` plans a whole tessellation against a struct read off a dead track.
+   *
+   * The page guards it too, but a page guard cannot close this: it can only refuse on a close it
+   * has already been *told* about. Here the question does not arise. A refresh says "the camera
+   * you have is now like this", so with no camera there is nothing for it to say, and the last
+   * word on whether a camera exists stays with `setCamera` and `clearCamera` — which the page
+   * calls when it opens a camera, when it fails to, and when a track ends under it, and which the
+   * core reaches itself through `closeCamera`.
+   */
+  refreshCamera(camera: Omit<CameraCapabilities, 'horizontalFovDeg' | 'verticalFovDeg'>): void;
   clearCamera(): void;
 
   /**
@@ -211,13 +239,25 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
 
     cameraCapabilities(): CameraCapabilities {
       return camera ?? {
-        maxWidth: 0, maxHeight: 0, horizontalFovDeg: 0, verticalFovDeg: 0, supportsTorch: false,
+        maxWidth: 0, maxHeight: 0, horizontalFovDeg: 0, verticalFovDeg: 0, maxBurstFps: 0,
+        supportsTorch: false,
         supportsExposureLock: false, supportsWhiteBalanceLock: false, supportsFocusLock: false,
       };
     },
 
     cameraLocks: () => locks,
     setCameraLocks(next: LockState) {
+      // Dropped when there is no camera, for the reason `refreshCamera` is dropped: `armOnce`
+      // pushes the confirmed locks and the live capability set back to back with no `await`
+      // between them, so a race with the core's own `closeCamera` delivers *both* — and hardening
+      // one of the two leaves the other landing `{exposure: true, …}` on a host that has just
+      // cleared its camera. A lock report is a fact about a camera in exactly the way a capability
+      // refresh is.
+      //
+      // Inert today, which a reviewer traced rather than assumed: `host_camera_lock`'s only reader
+      // refuses on `host_camera_open()` first, and the next arm's own push arrives ahead of its
+      // `ArmBurst` on the same FIFO port. This is what stops it being one line away from real.
+      if (camera === null) return;
       locks = next;
     },
 
@@ -227,6 +267,22 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
     },
 
     setCamera(opened) {
+      camera = {
+        ...opened,
+        ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),
+      };
+      // A new camera holds no locks, and this was the odd one out: `clearCamera` and `closeCamera`
+      // both reset them and this did not, so a lock claim could outlive the camera that made it
+      // and be read against its replacement. `locks` is a fact *about* a camera (see the note on
+      // the member), so a camera arriving is a lock state arriving with it.
+      locks = NO_LOCKS;
+    },
+
+    refreshCamera(opened) {
+      // Nothing to refresh, and that is the whole of it — see the note on the interface. A push
+      // that lost the race with a close finds no camera here and says nothing, instead of
+      // becoming one.
+      if (camera === null) return;
       camera = {
         ...opened,
         ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),

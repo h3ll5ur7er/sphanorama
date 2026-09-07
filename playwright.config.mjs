@@ -27,6 +27,11 @@ export default defineConfig({
   // Nothing in CI has a worktree, since CI clones fresh, which is why this belongs in the file
   // rather than in somebody's memory.
   testIgnore: ['node_modules/**', 'build/**', path.join(here, '.claude', '**')],
+  // Refuses the run if `dist/` is older than what it is built from. The suite serves that
+  // directory itself rather than through `webServer`, so without this a stale bundle is simply
+  // invisible: `npm run build` typechecks first and leaves the previous `dist` when it fails, and
+  // a green suite against week-old JavaScript looks exactly like a green suite.
+  globalSetup: './tools/check_dist_fresh.mjs',
   fullyParallel: false,
   reporter: process.env.CI ? 'list' : 'line',
   use: {

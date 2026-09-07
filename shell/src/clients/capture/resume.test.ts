@@ -87,6 +87,35 @@ describe('describeResumeRefusal', () => {
     expect(refusal.message).toMatch(/try again/i);
   });
 
+  it('takes the offer down when this device cannot place the frames at all', () => {
+    // ADR 0044. A resume needs a motion sensor and the host is told the capability once, inside
+    // `enable`, so a second press of either button re-runs the same refusal against the same
+    // answer — two dead controls under a sentence that had just said to change a setting and
+    // reload. What clears it is the reload, which rebuilds the offer from `hasSession` anyway.
+    const refusal = describeResumeRefusal({
+      code: 'SensorUnavailable', component: 'CaptureSessionManager',
+      detail: 'this device reports no motion sensors',
+    });
+    expect(refusal.offerAgain).toBe(false);
+    expect(refusal.message).not.toMatch(/try again/i);
+    // And the capture is still there. `Resume` refuses before it touches the document, so the
+    // sentence that ends the offer must not read as "your sphere was thrown away".
+    expect(refusal.message).toMatch(/kept/i);
+    // And neither is a fresh capture on offer, which is the half the first version of this missed:
+    // the refusal is about the device rather than the document, so `Begin` fails exactly as
+    // `Resume` just did and a way out that leads nowhere is one dead button instead of two.
+    expect(refusal.offerFresh).toBe(false);
+  });
+
+  it('still offers a fresh capture for a refusal that is only about this document', () => {
+    // The distinction `offerFresh` exists for. Nothing a press can do makes this build read that
+    // document — so the resume offer goes — but a new sphere on the same device is untouched, and
+    // taking that away too would strand a user who has a working camera and a working sensor.
+    const refusal = describeResumeRefusal(unreadable);
+    expect(refusal.offerAgain).toBe(false);
+    expect(refusal.offerFresh).toBe(true);
+  });
+
   it('takes the offer down for a refusal only a new build can change', () => {
     // Nothing the user can do in this tab reads a document shape this build does not know, so an
     // offer left up is one that fails identically every time it is pressed. It is withdrawn for

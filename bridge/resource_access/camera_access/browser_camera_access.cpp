@@ -2,19 +2,44 @@
 
 #include <emscripten/emscripten.h>
 
+#include <cmath>
 #include <string>
+
+#include "sphanorama/wire.h"
 
 namespace sphanorama::bridge {
 namespace {
 
 constexpr const char* kComponent = "BrowserCameraAccess";
 
+// A metric that has to become a pixel count, checked rather than cast.
+//
+// Everything crossing this seam is a JavaScript number, so `maxWidth` is a double until this
+// line — and `static_cast<int32_t>` of a value outside `int32_t`'s range is undefined, not merely
+// wrong. `getSettings()` reports sane numbers, which is an argument about one browser rather than
+// about the language: the same reasoning is already written down at `wire::GetInteger`, which is
+// where this predicate lives, and at the two other doors in this directory that check.
+//
+// Zero for anything unrepresentable, which is what an absent `getSettings()` field already
+// produces — so an impossible answer and a missing one arrive as the same thing rather than as
+// undefined behaviour.
+int32_t Pixels(double raw) {
+  return wire::IsRepresentableInteger<int32_t>(raw) ? static_cast<int32_t>(raw) : 0;
+}
+
 EM_JS(int32_t, host_camera_open, (), {
   return Module.sphHost && Module.sphHost.cameraOpen() ? 1 : 0;
 });
 
-// Capabilities are read as four scalars rather than a struct: the wire codec exists for the
-// facade, and reaching for it here would put a second marshalling path inside a port.
+// Capabilities are read as scalars rather than a struct: the wire codec exists for the facade,
+// and reaching for it here would put a second marshalling path inside a port.
+//
+// The cost of that choice is that the two ends agree by an integer nobody checks, and a field can
+// go missing from one side without failing a build. `maxBurstFps` had no case here at all, so
+// ADR 0018's camera-rate floor read the C++ default — zero, which the manager is right to treat
+// as "the platform will not say", so a floor that was never wired looked exactly like a browser
+// declining to answer. `case 6` is the same seam seen from the other side: the page reports a
+// white-balance lock and the core's struct has nowhere to put it.
 EM_JS(double, host_camera_metric, (int32_t which), {
   const caps = Module.sphHost.cameraCapabilities();
   switch (which) {
@@ -26,6 +51,7 @@ EM_JS(double, host_camera_metric, (int32_t which), {
     case 5: return caps.supportsExposureLock ? 1 : 0;
     case 6: return caps.supportsWhiteBalanceLock ? 1 : 0;
     case 7: return caps.supportsFocusLock ? 1 : 0;
+    case 8: return caps.maxBurstFps;
     default: return 0;
   }
 });
@@ -81,6 +107,49 @@ EM_JS(int32_t, host_preview_copy, (uint8_t* into, int32_t expected), {
 
 }  // namespace
 
+namespace {
+
+// One read of the host's metrics, so `Open` and `Capabilities` cannot answer differently — which
+// is the whole point of having the second call at all (ADR 0045).
+CameraCapabilities ReadCapabilities() {
+  CameraCapabilities capabilities;
+  capabilities.maxWidth = Pixels(host_camera_metric(0));
+  capabilities.maxHeight = Pixels(host_camera_metric(1));
+  // The angle pair, guarded as one pair. `EM_JS`'s `double` carries a missing property across as
+  // NaN rather than refusing it, and these two were the only measured fields here with no door:
+  // `maxWidth`/`maxHeight` go through `Pixels` and `maxBurstFps` through the check below, so a
+  // NaN angle was the one value that could leave this function — past `CaptureSessionManager`'s
+  // ADR 0045 keep, whose comment asserts this function maps a non-finite metric to `0.0` and
+  // whose geometry test (`maxWidth <= 0`) does not fire on it — and reach a client as a raw f64.
+  //
+  // Both or neither, because the pair is a derivation from one geometry rather than two
+  // measurements (see `CameraCapabilities`): half an answer would pair a real angle with a
+  // zeroed one, which describes no lens, and the keep that moves all four together would have
+  // nothing to detect.
+  const double horizontalFovDeg = host_camera_metric(2);
+  const double verticalFovDeg = host_camera_metric(3);
+  const bool angles = std::isfinite(horizontalFovDeg) && horizontalFovDeg > 0.0 &&
+                      std::isfinite(verticalFovDeg) && verticalFovDeg > 0.0;
+  capabilities.horizontalFovDeg = angles ? horizontalFovDeg : 0.0;
+  capabilities.verticalFovDeg = angles ? verticalFovDeg : 0.0;
+  capabilities.supportsTorch = host_camera_metric(4) != 0.0;
+  // What the *track* says it can do, not what this port hopes. A camera with no manual exposure
+  // mode — most desktop webcams — reports false here, the client asks for no exposure lock, and
+  // the burst still fires: honest and degraded beats a burst that believes it is locked.
+  capabilities.supportsExposureLock = host_camera_metric(5) != 0.0;
+  // No case 6 here on purpose: `CameraCapabilities` has no white-balance field, though the page
+  // reports one and `SetLocks` takes one. That asymmetry is older than this change and is a
+  // contract question rather than a port's to settle; `docs/06-roadmap.md` carries it.
+  capabilities.supportsFocusLock = host_camera_metric(7) != 0.0;
+  // Zero means the platform will not say, which the manager reads as "no floor here" — so an
+  // unusable answer becomes silence rather than a guess.
+  const double fps = host_camera_metric(8);
+  capabilities.maxBurstFps = std::isfinite(fps) && fps > 0.0 ? fps : 0.0;
+  return capabilities;
+}
+
+}  // namespace
+
 Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
   // The page opens the camera; this reports what it got. Asking the core to open one would mean
   // blocking a synchronous call on a permission prompt.
@@ -88,19 +157,17 @@ Result<CameraCapabilities> BrowserCameraAccess::Open(const CameraOpenSpec&) {
     return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent,
                                    "the page has not opened a camera yet");
   }
+  return Ok(ReadCapabilities());
+}
 
-  CameraCapabilities capabilities;
-  capabilities.maxWidth = static_cast<int32_t>(host_camera_metric(0));
-  capabilities.maxHeight = static_cast<int32_t>(host_camera_metric(1));
-  capabilities.horizontalFovDeg = host_camera_metric(2);
-  capabilities.verticalFovDeg = host_camera_metric(3);
-  capabilities.supportsTorch = host_camera_metric(4) != 0.0;
-  // What the *track* says it can do, not what this port hopes. A camera with no manual exposure
-  // mode — most desktop webcams — reports false here, the client asks for no exposure lock, and
-  // the burst still fires: honest and degraded beats a burst that believes it is locked.
-  capabilities.supportsExposureLock = host_camera_metric(5) != 0.0;
-  capabilities.supportsFocusLock = host_camera_metric(7) != 0.0;
-  return Ok(capabilities);
+// The same read, without the acquisition semantics. `ArmBurst` calls it after applying the locks,
+// because a lock write is what most often changes the answer (ADR 0045).
+Result<CameraCapabilities> BrowserCameraAccess::Capabilities() {
+  if (host_camera_open() == 0) {
+    return Err<CameraCapabilities>(StatusCode::FailedPrecondition, kComponent,
+                                   "no camera open");
+  }
+  return Ok(ReadCapabilities());
 }
 
 Status BrowserCameraAccess::StartPreview() {

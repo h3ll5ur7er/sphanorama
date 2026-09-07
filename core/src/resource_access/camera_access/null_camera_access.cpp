@@ -9,6 +9,10 @@ constexpr const char* kReason = "no camera port: the browser adapter is not wire
 Result<CameraCapabilities> NullCameraAccess::Open(const CameraOpenSpec&) {
   return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent, kReason);
 }
+
+Result<CameraCapabilities> NullCameraAccess::Capabilities() {
+  return Err<CameraCapabilities>(StatusCode::CameraUnavailable, kComponent, kReason);
+}
 Status NullCameraAccess::StartPreview() {
   return Fail(StatusCode::CameraUnavailable, kComponent, kReason);
 }
