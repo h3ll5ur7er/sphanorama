@@ -26,6 +26,7 @@ import { describeResumeRefusal, resumableProject } from './clients/capture/resum
 import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
+import { createLockWriteChain } from './clients/capture/lock-writes';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
@@ -145,19 +146,6 @@ let cameraTakenAway = false;
 // throwing away *which* locks they were. The row's whole job is to answer "was the camera free to
 // re-expose between these frames?", and a bare "released" answers it for nobody.
 let lastLocksLine = '';
-/**
- * What a caller of `writeLocks` gets back: the camera's answer, or the fact that there was not one.
- *
- * The two used to be the same value. A write that timed out was manufactured into
- * `{ok: false, CameraUnavailable}` — the same shape a camera that *says no* produces — and every
- * caller downstream then treated "the track has not answered" as "the track refused". They are not
- * the same fact and the difference is the whole of ADR 0022: a refusal is a known state of the
- * camera, and a timeout is no state at all. Firing a burst over the second is firing over an
- * exposure that may change halfway through it, which is exactly what locks exist to prevent.
- */
-type LockWrite =
-  | { answered: true; done: Awaited<ReturnType<typeof camera.setLocks>> }
-  | { answered: false };
 
 // Painted from what the write *resolved with*, not from having queued it.
 //
@@ -201,50 +189,14 @@ function showLocksReleased(row: Element, write: LockWrite, had: string) {
     ? `${had} · the camera went before the locks could be given back`
     : `${had} · release refused — ${done.status.detail || done.status.code}`;
 }
-let lockWrites: Promise<unknown> = Promise.resolve();
-// How long a single lock write may take before the chain gives up waiting for it.
-//
-// `applyConstraints` is a promise the platform owns, and a camera that never settles one is not
-// hypothetical — a track pulled away mid-call resolves nothing. Without a bound the chain parks
-// for the life of the tab: every later write queues behind it, and because `armAt` awaits its own
-// write, `arming` stays true and no burst can ever be armed again. A slow camera merely arrives
-// late; this is what stops a stuck one from being permanent.
-const LOCK_WRITE_TIMEOUT_MS = 3000;
-function writeLocks(
-  wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean },
-): Promise<LockWrite> {
-  // The *caller* stops waiting after the timeout; the chain does not. Those are different things
-  // and conflating them is worse than having no timeout at all: if the queue advanced on the race,
-  // a stuck write would be overtaken by the release queued behind it, the release would reach the
-  // track first, and the stuck one would land afterwards — ending a session with the camera locked,
-  // which is the failure the ordering exists to prevent.
-  //
-  // So the chain is built from the real promise and only the answer is raced. A stuck write still
-  // delays everything behind it, and that is correct: a camera that has not answered has not
-  // answered, and guessing the order it will finish in is what produced the bug above.
-  //
-  // The clock starts when this write reaches the track, not when it joins the queue. Started at
-  // enqueue, the budget was spent waiting for the writes in front — and each refusal queued a
-  // release of its own behind the write it had given up on, so the queue grew by one write per
-  // failure. Measured on a camera taking 700 ms per constraint: the first burst succeeded, the
-  // second was refused after 3007 ms of which 2463 were spent in the queue, and every burst after
-  // it failed the same way at 3 s intervals while the track answered fourteen constraints back to
-  // back without an idle moment. One cell per session, blamed on a camera that was answering
-  // everything it was asked.
-  let reached: () => void;
-  const reaches = new Promise<void>((resolve) => { reached = resolve; });
-  const settled = lockWrites.then(() => {
-    reached();
-    return camera.setLocks(wanted);
-  });
-  lockWrites = settled.catch(() => undefined);
-  return Promise.race([
-    settled.then((done): LockWrite => ({ answered: true, done })),
-    reaches.then(() => new Promise<LockWrite>((resolve) => {
-      setTimeout(() => resolve({ answered: false }), LOCK_WRITE_TIMEOUT_MS);
-    })),
-  ]);
-}
+// Every write to the camera's lock state, in the order it was asked for — see `lock-writes.ts`,
+// which is where the queue and its clock live and where they are tested. Module scope because the
+// chain has to span a session: the core's release for the last burst of one session can still be
+// in flight when the next session applies its first locks.
+const writeLocks = createLockWriteChain(
+  (wanted: { exposure: boolean; whiteBalance: boolean; focus: boolean }) =>
+    camera.setLocks(wanted));
+type LockWrite = Awaited<ReturnType<typeof writeLocks>>;
 
 /** The page's end of the worker: what it pushes across, and the one thing the worker asks back. */
 let remote: RemoteCore;

@@ -1262,15 +1262,21 @@ test('a camera taken away mid-session takes the capture loop with it', async ({ 
   }
 });
 
-test('a slow camera spends its lock budget on the track, not in the queue', async ({ browser }) => {
-  // The 3 s bound on a lock write used to start when the write joined the chain rather than when
-  // it reached the track, and every refusal queued a release behind the write it had given up on
-  // — so the queue grew by one write per failure. On the camera this was first measured with, at
-  // 700 ms per constraint, the first burst succeeded and every burst after it was refused at 3 s
-  // intervals, most of that spent waiting, while the track answered fourteen constraints back to
-  // back without an idle moment. One cell per session, blamed on a camera that was answering
-  // everything it was asked. (The figure below is 400 ms now, for a reason given there; the
-  // history is the history.)
+test('a slow camera captures, rather than being refused for being slow', async ({ browser }) => {
+  // **The clock itself is held by `lock-writes.test.ts`, not here.** This test was named for it —
+  // the 3 s bound starting when a write joined the chain rather than when it reached the track —
+  // and a reviewer showed it cannot fail against that defect: reintroduced, at 400 ms and again at
+  // 700 ms per constraint, all 65 browser tests stayed green. Nothing in this arrangement ever
+  // puts two writes on the chain at once, so the two clocks are indistinguishable through the
+  // page. Contention takes one line in a unit test and is a race to construct here.
+  //
+  // What this one is still worth having for is the thing a unit test cannot say: that a camera
+  // slow enough to be interesting still gets a cell captured, through the real page, the real
+  // worker and the real core. The history is worth keeping too — measured at 700 ms per
+  // constraint, the first burst succeeded, the second was refused after 3007 ms of which 2463 were
+  // spent in the queue, and every burst after it failed the same way while the track answered
+  // fourteen constraints back to back without an idle moment. One cell per session, blamed on a
+  // camera that was answering everything it was asked.
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -3147,6 +3153,289 @@ test('a guidance call that rejects mid-burst does not abandon the burst', async 
     const kept = await page.evaluate(() => window.__callsRightAfterTheRejection);
     expect(kept, 'the rejection stalled the burst until the heartbeat reopened the tick gate')
       .toBeGreaterThanOrEqual(2);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a core that dies while the arm is in it gives the camera its locks back', async ({ browser }) => {
+  // The third arm window, widened from "the camera was taken away" to "the loop is not coming
+  // back". That widening reaches it with the camera *alive* and pinned at one exposure and focus,
+  // and nothing else can release them: the core's own release rides on `AdvanceBurst`, which needs
+  // the tick this exit is about. So the viewfinder would stay frozen at one exposure and `#locks`
+  // would go on listing three, terminally, under a line telling the user to reload.
+  //
+  // Arranged as the ordering it is: the arm's round trip is held open, and the core is made to
+  // stop answering guidance inside it.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    const modes = ['continuous', 'manual'];
+    let settled = {};
+    const settings = MediaStreamTrack.prototype.getSettings;
+    MediaStreamTrack.prototype.getCapabilities = function () {
+      return { exposureMode: modes, whiteBalanceMode: modes, focusMode: modes };
+    };
+    MediaStreamTrack.prototype.getSettings = function () {
+      const adapting = {
+        exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
+      };
+      return { ...settings.call(this), ...adapting, ...settled };
+    };
+    MediaStreamTrack.prototype.applyConstraints = function (constraints) {
+      return new Promise((resolve) => setTimeout(() => {
+        for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
+        resolve();
+      }, 100));
+    };
+    window.__failAllGuidance = false;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion'
+          && window.__failAllGuidance) {
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+          data: { kind: 'failed', seq: message.seq, detail: 'the core is gone' },
+        })), 0);
+        return undefined;
+      }
+      // The arm's round trip, held open for a second and a half. Delaying the *request* rather
+      // than the reply holds the whole trip, which is what the window is made of; the three
+      // guidance rejections that stop the loop all land inside it.
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.armBurst') {
+        const self = this;
+        window.__failAllGuidance = true;
+        setTimeout(() => post.call(self, message), 1500);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+
+    const armed = await page.evaluate(() => window.sphanoramaCapture());
+    expect(armed, 'nothing was armed, so no lock was ever taken to give back').toBe(false);
+    await expect(page.locator('#stage')).toContainText(/stopped answering/i, { timeout: 15000 });
+
+    // The row's last word, and the camera is alive — so this is a real release of real locks
+    // rather than a refusal from a track that is gone.
+    await expect(page.locator('#locks'), 'the camera was left pinned with nothing coming to free it')
+      .toContainText('released', { timeout: 15000 });
+    // Read back off the track itself, because the row is a claim and this is the fact.
+    const holding = await page.evaluate(() => {
+      const track = document.querySelector('video').srcObject.getVideoTracks()[0];
+      const now = track.getSettings();
+      return [now.exposureMode, now.whiteBalanceMode, now.focusMode];
+    });
+    expect(holding, 'the track is still holding a lock the page said it had released')
+      .toEqual(['continuous', 'continuous', 'continuous']);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('an arm that throws over a stopped loop says the loop stopped, not what threw', async ({ browser }) => {
+  // The fourth exit, and the only one that used to speak without asking whether anything was left
+  // to speak to. `sayForAWhile` writes `#guidance` directly and a stopped loop has no next tick to
+  // overwrite it, so `arming failed: <exception>` becomes the page's last word for the life of the
+  // tab, over a stage line telling the user to reload.
+  //
+  // Reached by making `armBurst` reject rather than answer — which is what a worker that is gone
+  // does to every call — while the loop is stopping for the same reason.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    window.__failAllGuidance = false;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion'
+          && window.__failAllGuidance) {
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+          data: { kind: 'failed', seq: message.seq, detail: 'the core is gone' },
+        })), 0);
+        return undefined;
+      }
+      // The arm throws, a second and a half later — long enough for the loop to have taken its
+      // terminal exit first, which is the state this is about.
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.armBurst') {
+        const self = this;
+        window.__failAllGuidance = true;
+        setTimeout(() => self.dispatchEvent(new MessageEvent('message', {
+          data: { kind: 'failed', seq: message.seq, detail: 'core could not allocate 96 bytes' },
+        })), 1500);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+
+    const armed = await page.evaluate(() => window.sphanoramaCapture());
+    expect(armed, 'the arm succeeded, so nothing threw and this test is about nothing').toBe(false);
+    await expect(page.locator('#stage')).toContainText(/stopped answering/i, { timeout: 15000 });
+
+    // What the user is left reading. The allocation message is true and useless: there is no tick
+    // coming to replace it, and the thing they need to know is on the stage line above.
+    await expect(page.locator('#guidance')).toContainText(/reload to start again/i,
+                                                          { timeout: 15000 });
+    await expect(page.locator('#guidance')).not.toContainText(/could not allocate/i);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a cell banked on the last tick before the camera went still reaches the map', async ({ browser }) => {
+  // The map is a record of work done, so a terminal state must not freeze it one cell short.
+  //
+  // `refreshCoverage` used to return early on `loopStopped`, so a read in flight when the camera
+  // was taken landed with the flag set and never painted — and there is no later tick to correct
+  // it, which is the whole of the argument that put the guard there and is what makes losing the
+  // cell permanent. A marker is a claim about where to point a camera that may be gone; a filled
+  // cell is a record of a frame that was banked, and stays true whatever happens to the loop.
+  //
+  // The read is held open deliberately rather than raced: every `coverage` reply is delayed, so
+  // the one for the completed cell is guaranteed to be in flight when the track ends.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call' && message.method === 'CaptureSessionManager.coverage') {
+        const self = this;
+        const send = () => post.call(self, message);
+        setTimeout(send, 1200);
+        return undefined;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+
+    const covered = page.locator('#coverage-map .cell:not([data-state="hole"])');
+    await expect(covered, 'a cell was covered before anything was captured').toHaveCount(0);
+
+    // A whole cell, banked. Armed through the client's own hook rather than waited for from the
+    // dwell, which needs a held phone this test is not simulating; the tick path is the same one
+    // either way. `CellDone` is what starts the coverage read this test holds open.
+    const armed = await page.evaluate(() => window.sphanoramaCapture());
+    expect(armed, 'nothing was captured, so there is no cell to lose').toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 20000 });
+
+    // And the camera goes while that read is still out.
+    await page.evaluate(() => {
+      const stream = document.querySelector('video').srcObject;
+      for (const track of stream.getTracks()) {
+        track.stop();
+        track.dispatchEvent(new Event('ended'));
+      }
+    });
+    await expect(page.locator('#stage')).toContainText(/taken away/i, { timeout: 15000 });
+
+    // The record survives the loop that stopped. Without the un-gating this stays at zero for the
+    // life of the tab, and nothing on screen says a cell was ever filled.
+    await expect(covered, 'the map lost the cell the user had just captured')
+      .toHaveCount(1, { timeout: 15000 });
+    // The markers do not, and that is the half the flag still does: they describe where to point a
+    // camera that is gone.
+    await expect(page.locator('#cell-layer .cell-ring:not([hidden])')).toHaveCount(0);
+  } finally {
+    await server.close();
+    await context.close();
+  }
+});
+
+test('a run of rejections is a run, not a lifetime total', async ({ browser }) => {
+  // `unreachedTicks` bounds how long the loop holds `firing`/`armed` across a *rejection* — a call
+  // that threw on the way in, so the manager never ran. Three of those and the session is over.
+  //
+  // It was reset only on a failing tick that *reached* the manager, and never on a successful one,
+  // so it counted a lifetime: three transient `_malloc` failures spread across a whole capture
+  // latched `loopStopped` and ended the session with "the core stopped answering", on a device
+  // that had answered a thousand times between them. And the trigger is a phone low on memory
+  // mid-capture, which is exactly when a capture is most worth not throwing away.
+  //
+  // Two pairs with real ticks between them, then a run of three: the first two pairs must leave
+  // the loop alive and the run must stop it, which is the difference between a counter and a
+  // total.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    window.__failGuidanceFor = 0;
+    window.__guidanceFailuresInjected = 0;
+    window.__guidanceAnswered = 0;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (message && message.kind === 'call'
+          && message.method === 'CaptureSessionManager.onMotion') {
+        if (window.__failGuidanceFor > 0) {
+          window.__failGuidanceFor -= 1;
+          window.__guidanceFailuresInjected += 1;
+          setTimeout(() => this.dispatchEvent(new MessageEvent('message', {
+            data: { kind: 'failed', seq: message.seq, detail: "core could not allocate 64 bytes" },
+          })), 0);
+          return undefined;
+        }
+        window.__guidanceAnswered += 1;
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await expect(page.locator('#guidance')).toContainText(/cell \d+/, { timeout: 15000 });
+    await viewfinderIsLive(page);
+
+    // Two pairs of rejections, each followed by ticks that work. Five is comfortably more than the
+    // one tick the reset needs and few enough not to be a wait.
+    for (const pair of [1, 2]) {
+      const before = await page.evaluate(() => window.__guidanceAnswered);
+      await page.evaluate(() => { window.__failGuidanceFor = 2; });
+      await expect.poll(() => page.evaluate(() => window.__guidanceAnswered),
+                        { timeout: 15000 }).toBeGreaterThan(before + 5);
+      await expect(page.locator('#stage'), `the loop gave up after pair ${pair}`)
+        .not.toContainText(/stopped answering/i);
+    }
+    expect(await page.evaluate(() => window.__guidanceFailuresInjected)).toBe(4);
+
+    // And the bound is still a bound: three in a row, with no successful tick between them, ends
+    // it. Without that this test would pass against a counter that never fires at all.
+    await page.evaluate(() => { window.__failGuidanceFor = 3; });
+    await expect(page.locator('#stage')).toContainText(/stopped answering/i, { timeout: 15000 });
   } finally {
     await server.close();
     await context.close();

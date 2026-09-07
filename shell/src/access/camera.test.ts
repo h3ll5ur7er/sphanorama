@@ -134,23 +134,21 @@ describe('opening the camera', () => {
     // field of view from `deriveFieldOfView(0, 0)` and the manager paces a burst expecting to pin
     // an exposure on a camera that is gone. Half an answer is worse than none, because none is a
     // state the core has a word for.
-    let readyState = 'live';
-    const camera = createCameraAccess(fakeMedia({
-      stream: {
-        getVideoTracks: () => [{
-          get readyState() { return readyState; },
-          // The mixture, written the way a browser produces it: geometry gone, capabilities kept.
-          getSettings: () => (readyState === 'live' ? { width: 1280, height: 720, frameRate: 30 } : {}),
-          getCapabilities: () => ({ torch: true, exposureMode: ['continuous', 'manual'] }),
-          stop: vi.fn(),
-        }],
-        getTracks: () => [{ stop: vi.fn() }],
-      },
-    }) as never);
+    // Through `fakeTrack`, which is the one model of an ended track in this file. It was written
+    // inline here first, with `getSettings()` answering `{}` — and a reviewer pointed out that the
+    // repo then carried two models of the same browser behaviour, disagreeing about the half this
+    // test is named for: an ended track drops the *geometry* and keeps the mode strings, which is
+    // what makes the answer a mixture rather than an absence. Two models is how one of them
+    // quietly stops matching the browser.
+    const track = fakeTrack({
+      capabilities: { torch: true, exposureMode: ['continuous', 'manual'] },
+      initial: { width: 1280, height: 720, frameRate: 30 },
+    });
+    const camera = createCameraAccess(mediaWith(track) as never);
     const opened = await camera.open({ preferRearCamera: true });
     expect(opened.ok && opened.value.supportsExposureLock).toBe(true);
 
-    readyState = 'ended';
+    track.end();
     const now = camera.capabilities();
     expect(now.maxWidth, 'geometry').toBe(0);
     expect(now.maxBurstFps, 'rate').toBe(0);

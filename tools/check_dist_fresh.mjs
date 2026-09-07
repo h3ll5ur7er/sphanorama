@@ -113,19 +113,29 @@ export default function checkDistIsFresh() {
     }
   }
 
-  // The threaded build, whose absence is silent rather than red: `bridge/test/module.spec.mjs`
-  // loads it directly and *skips* its two tests when the directory is not there, so a run that
-  // never built it reports "2 skipped" among sixty passes and nobody reads it as a gap. The gate
-  // builds both presets; a person running Playwright alone builds neither.
-  const threaded = join(repoRoot, 'build', 'wasm-release-threaded', 'bridge',
-                        'sphanorama-core.wasm');
-  if (!existsSync(threaded)) {
-    throw new Error(
-      'the threaded wasm build is missing — two browser tests load it directly and will skip\n' +
-      'silently rather than fail.\n' +
-      `  expected: ${threaded}\n` +
-      'Run `cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded`,\n' +
-      'or `tools/gate.sh`, which builds both.');
+  // Both wasm builds, whose absence is silent rather than red: `bridge/test/module.spec.mjs` loads
+  // each directly and *skips* its tests when the directory is not there, so a run that never built
+  // one reports "4 skipped" among sixty passes and nobody reads that as a gap. The gate builds both
+  // presets; a person running Playwright alone builds neither.
+  //
+  // The single-threaded one was left out of the first version of this check, and a reviewer showed
+  // it costs more than four skipped tests: everything above — the compiled-against-staged
+  // comparison and the whole C++-staleness block — is conditioned on that file existing, so its
+  // absence quietly disables them too. It is checked here rather than there so the message names
+  // the build to run instead of describing what could not be compared.
+  for (const [preset, why] of [
+    ['wasm-release', 'four browser tests load it directly, and every check above compares against it'],
+    ['wasm-release-threaded', 'two browser tests load it directly'],
+  ]) {
+    const built = join(repoRoot, 'build', preset, 'bridge', 'sphanorama-core.wasm');
+    if (!existsSync(built)) {
+      throw new Error(
+        `the ${preset} wasm build is missing — ${why}, and what is missing skips\n` +
+        'silently rather than failing.\n' +
+        `  expected: ${built}\n` +
+        `Run \`cmake --preset ${preset} && cmake --build build/${preset}\`, or \`tools/gate.sh\`,\n` +
+        'which builds both.');
+    }
   }
 
   const stale = sources.filter((s) => s.mtime > built.mtime);
