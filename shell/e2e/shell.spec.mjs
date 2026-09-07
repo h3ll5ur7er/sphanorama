@@ -2466,6 +2466,28 @@ test('the markers go when guidance stops working', async ({ page }) => {
     const rings = page.locator('#cell-layer .cell-ring:not([hidden])');
     await expect.poll(async () => rings.count(), { timeout: 15000 }).toBeGreaterThan(0);
 
+    // The reticle and the horizon as well as the rings, because `rings.count() === 0` is satisfied
+    // by `overlay.show({rings: [], arrow: null})` on its own — so for two rounds the helper that
+    // also opens the reticle and levels the horizon could have been deleted with this test still
+    // green, and a reviewer measured the consequence: a fully closed "on target" ring sitting over
+    // a dead viewfinder for as long as the page stayed open.
+    //
+    // Aimed at a cell that is *off level*, so all three of the things the helper takes down are
+    // saying something at the moment guidance stops: the reticle is closed on a target, it carries
+    // the `locked` class, and the horizon is reporting a roll. The attitude was searched for rather
+    // than guessed — most orientations give a lock with a level horizon or a tilt with no lock.
+    await page.evaluate(() => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+        alpha: 0, beta: 50, gamma: -40,
+      }));
+    });
+    const reticle = page.locator('#reticle');
+    const horizon = page.locator('#horizon-group');
+    await expect(reticle).toHaveClass(/locked/, { timeout: 15000 });
+    await expect
+      .poll(async () => horizon.getAttribute('transform'), { timeout: 15000 })
+      .not.toBe('rotate(0.0 50 50)');
+
     // Pulled out from under the capture loop, which is what a failing tick looks like from here.
     // Then one more sample, because the loop only asks the core for guidance when there is
     // something new to fold in — without it the failure never happens and the line just stops.
@@ -2478,6 +2500,10 @@ test('the markers go when guidance stops working', async ({ page }) => {
 
     await expect(page.locator('#guidance')).toContainText('guidance failed', { timeout: 15000 });
     await expect.poll(async () => rings.count(), { timeout: 15000 }).toBe(0);
+    await expect(reticle).not.toHaveClass(/locked/, { timeout: 15000 });
+    await expect(reticle).toHaveAttribute('r', '44.0');
+    // And the horizon, which was reporting a roll nothing measured this tick.
+    await expect(horizon).toHaveAttribute('transform', 'rotate(0 50 50)');
   } finally {
     await server.close();
   }

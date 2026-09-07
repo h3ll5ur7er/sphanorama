@@ -261,6 +261,50 @@ TEST(PoseEngine, AnAttitudeThatIsNotARotationIsNotAReading) {
   }
 }
 
+TEST(PoseEngine, ARateTooLargeToSquareDoesNotTurnThePhone) {
+  // The fourth predicate in `quaternion.cpp`, and the one the round that hardened the other three
+  // deliberately left alone. `IsUsableVector` asks "is every component a number?" and says yes to
+  // `{1e200, 0, 0}`, where `IsUsableRotation` — asking "will `Normalize` derive something from
+  // this?" — would say no, because squaring overflows before the sum. The two are different
+  // questions on purpose (see `Measured`/`Attitude` in the engine), so this is not a bug to fix in
+  // the predicate; it is a claim about what happens downstream, and a claim is worth a test.
+  //
+  // What happens: `Magnitude` overflows to infinity, `Turned` takes the branch past its `<= 1e-9`
+  // guard, and `FromAxisAngle` refuses a non-finite angle with the identity — so the phone does
+  // not turn. Fails safe, by a guard two calls away from the predicate that let the value in.
+  OrientationPoseEngine engine;
+  auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
+  ASSERT_TRUE(initial.ok());
+
+  ImuSample real = Oriented(1'000'000, 30.0, 0.0);
+  auto anchored = engine.Integrate(initial.value, std::span<const ImuSample>(&real, 1));
+  ASSERT_TRUE(anchored.ok() && anchored.value.anchored);
+
+  ImuSample huge;
+  huge.timestampNs = 1'020'000'000;
+  huge.hasAngularVelocity = true;
+  huge.angularVelocity = Vec3{1e200, 0, 0};
+
+  auto after = engine.Integrate(anchored.value, std::span<const ImuSample>(&huge, 1));
+  ASSERT_TRUE(after.ok());
+  EXPECT_TRUE(std::isfinite(after.value.pose.orientation.w) &&
+              std::isfinite(after.value.pose.orientation.x) &&
+              std::isfinite(after.value.pose.orientation.y) &&
+              std::isfinite(after.value.pose.orientation.z))
+      << "a rate too large to square produced an orientation that is not a number";
+  EXPECT_NEAR(AngleBetween(after.value.pose.orientation, anchored.value.pose.orientation), 0.0,
+              1e-12)
+      << "a rate too large to square turned the phone";
+  EXPECT_GT(AngleBetween(after.value.pose.orientation, Quat{}), 0.1)
+      << "the estimate collapsed onto the identity, which is a cell the plan can name";
+
+  // And the same value read as stability: infinity is not "still", so nothing arms on it.
+  auto stability = engine.Stability(std::span<const ImuSample>(&huge, 1));
+  ASSERT_TRUE(stability.ok()) << stability.status.detail;
+  EXPECT_LT(stability.value, 0.2)
+      << "a rate too large to square was read as a phone holding still";
+}
+
 TEST(PoseEngine, ARateThatIsNotAMeasurementDoesNotTurnThePhone) {
   // The same sentence about the other half of the sample, found by the boundary lens on the same
   // round. `Decode(ImuSample&)` checks `timestampNs` and hands `angularVelocity` through raw, and

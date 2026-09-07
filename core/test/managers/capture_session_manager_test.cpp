@@ -3341,6 +3341,132 @@ TEST_F(CaptureSessionUnderPressure, ARetakeThatIsAbandonedStillCoolsWhatItFaulte
   EXPECT_EQ(store->Budget().value.heapUsedBytes, 0);
 }
 
+// Reads pixels the way the real engine does, and then refuses — at whichever of the two doors a
+// test asks for. Both refusals are contract behaviour rather than contrivance: `Score` may fail
+// after it has measured the siblings for exposure agreement, and `Rank` may fail on a set it
+// cannot order. Without something that produces them, `OfferFrame`'s cooling on those paths could
+// be deleted with every test still green, which is the definition of a line nobody is holding.
+class ReadsThenRefusesQualityEngine final : public IFrameQualityEngine {
+ public:
+  explicit ReadsThenRefusesQualityEngine(IFrameStoreAccess& frames) : real_(frames) {}
+
+  // Flipped after the burst that sets the scene, so the same engine can capture honestly first.
+  bool refuseScoring = false;
+  bool refuseRanking = false;
+
+  Result<QualityScore> Score(const FrameRef& frame, const PoseSample& pose,
+                             const NodeContext& context) override {
+    // Delegated first, so the siblings are genuinely read — the failure has to arrive *after*
+    // the faulting-in, or it proves nothing about what the caller does on the way out.
+    auto scored = real_.Score(frame, pose, context);
+    if (refuseScoring) {
+      return Err<QualityScore>(StatusCode::Internal, "test", "refused after reading the siblings");
+    }
+    return scored;
+  }
+
+  Result<std::vector<CandidateId>> Rank(std::span<const Candidate> candidates,
+                                        const SelectionPolicy& policy) override {
+    if (refuseRanking) {
+      return Err<std::vector<CandidateId>>(StatusCode::Internal, "test", "refused to rank");
+    }
+    return real_.Rank(candidates, policy);
+  }
+
+ private:
+  SharpnessFrameQualityEngine real_;
+};
+
+TEST_F(CaptureSessionUnderPressure, AnOfferIntoACapturedCellCoolsWhatItFaultedIn) {
+  // The third door onto the same leak, and the one nothing was watching. `Score` measures every
+  // sibling for exposure agreement, each measurement `Pin`s, and `Pin` faults a `Spilled` frame
+  // back into the heap and leaves it `HeapEncoded` — so an offer into an already-captured cell
+  // re-heats the whole cell. `Cool` has exactly one call site, inside `Disarm`, and `Disarm`
+  // returns immediately unless a burst is firing: `OfferFrame` never arms one, so nothing sent
+  // them back down.
+  //
+  // The existing offer tests all offer *before* the burst, when there is nothing spilled to
+  // fault in, which is why the order that leaks had no test. And the offered frame itself is the
+  // caller's: it stays in the heap, because changing the residency of a borrowed handle is the
+  // surprise `Cool` already declines to spring.
+  SharpnessFrameQualityEngine sharp{*store};
+  CaptureSessionManager real(rings, aiming, sharp, preview, *camera, *sensor, *store, *projects,
+                             clock);
+  ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = AimedNode(real);
+  ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
+  ASSERT_EQ(store->Budget().value.heapUsedBytes, 0) << "the burst never left the heap";
+
+  auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_EQ(real.OfferFrame(node, imported.value, PoseSample{}).value, FrameVerdict::Accepted);
+
+  for (const auto& candidate : real.Candidates(node).value) {
+    if (candidate.frame.id.value == imported.value.id.value) continue;
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled)
+        << "an offer faulted a captured cell back into the heap and left it there";
+  }
+  // The caller's frame, and only the caller's frame.
+  EXPECT_NE(store->ResidencyOf(imported.value).value, Residency::Spilled)
+      << "a borrowed frame was spilled out from under its owner";
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, kPreviewFrameBytes);
+}
+
+TEST_F(CaptureSessionUnderPressure, AnOfferRefusedByScoringStillCoolsWhatItFaultedIn) {
+  // The refusal paths out of `OfferFrame` leave the same mess as the success path, because the
+  // faulting-in has already happened by the time the engine says no. A rollback that puts the
+  // cell's *contents* back and not its residency is only half a rollback.
+  ReadsThenRefusesQualityEngine engine{*store};
+  CaptureSessionManager real(rings, aiming, engine, preview, *camera, *sensor, *store, *projects,
+                             clock);
+  ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = AimedNode(real);
+  ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
+  ASSERT_EQ(store->Budget().value.heapUsedBytes, 0);
+
+  engine.refuseScoring = true;
+  auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  EXPECT_FALSE(real.OfferFrame(node, imported.value, PoseSample{}).ok());
+
+  for (const auto& candidate : real.Candidates(node).value) {
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, kPreviewFrameBytes)
+      << "only the caller's own frame should still be resident";
+}
+
+TEST_F(CaptureSessionUnderPressure, AnOfferRefusedByRankingStillCoolsWhatItFaultedIn) {
+  // The second door. `Score` succeeded here, so every sibling was read and is in the heap; the
+  // cell is rolled back by `pop_back` and the residency has to come back with it.
+  ReadsThenRefusesQualityEngine engine{*store};
+  CaptureSessionManager real(rings, aiming, engine, preview, *camera, *sensor, *store, *projects,
+                             clock);
+  ASSERT_TRUE(real.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = AimedNode(real);
+  ASSERT_TRUE(FireBurstOn(real, clock, node, burst).ok());
+  ASSERT_EQ(store->Budget().value.heapUsedBytes, 0);
+
+  engine.refuseRanking = true;
+  auto imported = store->Allocate(32, 24, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  EXPECT_FALSE(real.OfferFrame(node, imported.value, PoseSample{}).ok());
+
+  const std::vector<Candidate> cell = real.Candidates(node).value;
+  ASSERT_EQ(cell.size(), 3u) << "the refused offer was left in the cell";
+  for (const auto& candidate : cell) {
+    EXPECT_EQ(store->ResidencyOf(candidate.frame).value, Residency::Spilled);
+  }
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, kPreviewFrameBytes)
+      << "only the caller's own frame should still be resident";
+}
+
 TEST_F(CaptureSessionUnderPressure, ARetakeIsScoredAgainstEvidenceThatLeftTheHeap) {
   // A retake adds to the evidence pool, and scoring a frame against its siblings reads their
   // pixels — which are in the sink by then. This is the interaction that would make spilling

@@ -116,8 +116,9 @@ satisfied. Four instances, corrected in three passes — the header first, then 
 test name, then the suite comment a *fourth* reviewer found still standing 116 lines above the test
 whose comment declares the phrase wrong. It is the clearest example this branch has of the shape it
 keeps producing: a correction reaching the instance a reviewer pointed at and not the ones beside
-it. `grep -rni "refuses every call"` is now the check, and it returns this sentence and the one
-disowning it in the test.) So the suite says what the rule is and holds one implementation to it. The browser one is held
+it. `grep -rni "refuses every call"` is now the check, and it returns three: the sentence above
+that names the phrase, this one, and the one disowning it in the test — three mentions of a phrase
+nothing asserts, and no assertion of it left anywhere.) So the suite says what the rule is and holds one implementation to it. The browser one is held
 by the browser suite instead (see the next consequence), and the null one by its own test in the
 same file.
 

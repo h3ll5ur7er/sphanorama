@@ -115,8 +115,23 @@ CameraCapabilities ReadCapabilities() {
   CameraCapabilities capabilities;
   capabilities.maxWidth = Pixels(host_camera_metric(0));
   capabilities.maxHeight = Pixels(host_camera_metric(1));
-  capabilities.horizontalFovDeg = host_camera_metric(2);
-  capabilities.verticalFovDeg = host_camera_metric(3);
+  // The angle pair, guarded as one pair. `EM_JS`'s `double` carries a missing property across as
+  // NaN rather than refusing it, and these two were the only measured fields here with no door:
+  // `maxWidth`/`maxHeight` go through `Pixels` and `maxBurstFps` through the check below, so a
+  // NaN angle was the one value that could leave this function — past `CaptureSessionManager`'s
+  // ADR 0045 keep, whose comment asserts this function maps a non-finite metric to `0.0` and
+  // whose geometry test (`maxWidth <= 0`) does not fire on it — and reach a client as a raw f64.
+  //
+  // Both or neither, because the pair is a derivation from one geometry rather than two
+  // measurements (see `CameraCapabilities`): half an answer would pair a real angle with a
+  // zeroed one, which describes no lens, and the keep that moves all four together would have
+  // nothing to detect.
+  const double horizontalFovDeg = host_camera_metric(2);
+  const double verticalFovDeg = host_camera_metric(3);
+  const bool angles = std::isfinite(horizontalFovDeg) && horizontalFovDeg > 0.0 &&
+                      std::isfinite(verticalFovDeg) && verticalFovDeg > 0.0;
+  capabilities.horizontalFovDeg = angles ? horizontalFovDeg : 0.0;
+  capabilities.verticalFovDeg = angles ? verticalFovDeg : 0.0;
   capabilities.supportsTorch = host_camera_metric(4) != 0.0;
   // What the *track* says it can do, not what this port hopes. A camera with no manual exposure
   // mode — most desktop webcams — reports false here, the client asks for no exposure lock, and

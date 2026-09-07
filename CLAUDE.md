@@ -11,8 +11,11 @@ Rationale is in `docs/00-principles.md` and `docs/03-architecture.md`.
 one per lens, against the mistakes this codebase has actually made — and each publishes its
 findings to the pull request, where the answers go too. Reviews are run here rather than bought
 from a bot, and they are held in the open so the reasoning outlives the session that produced it.
-Expect several rounds: on PR #49 every one of thirteen found its worst defect inside the previous
-round's fix, which is the argument for running another rather than for stopping.
+Expect several rounds, and change the scope at the end. On PR #49 each of rounds 1-13 reviewed a
+commit range and found its worst defect inside the previous round's fix, which is the argument for
+running another rather than for stopping. Round 14 reviewed the *whole branch against main* for the
+first time and found two defects that predate the branch entirely — a quaternion norm overflow and
+an unbounded frame read — because a range diff cannot see code nobody touched.
 
 The four things that are most expensive to get wrong:
 
@@ -33,11 +36,15 @@ deploy are in and green. A phone opens the app, the core plans a real tessellati
 page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
 coverage and acceptance are all decided in the core.
 
-**What is real.** `FrameQuality` is the one engine with a real implementation: sharpness is the
-variance of a Laplacian over a downscaled luma plane, exposure agreement is measured against the
-rest of the burst, and `Rank` normalises before it weights so the selection policy's knobs all turn
-something. `motionBlur` stays zero and says why — smear in pixels needs an exposure time and a
-focal length the engine is not handed. `Registration` and `Composition` are still null.
+**What is real.** Four of the six engine contracts have a real implementation — `CoveragePlanner`
+(rings), `Pose` (orientation), `FramePreview` (box) and `FrameQuality` (sharpness). `Registration`
+and `Composition` are still null, which is what Phase 1 is for.
+
+`FrameQuality` is the one worth describing, because its numbers decide which frame of a burst
+survives: sharpness is the variance of a Laplacian over a downscaled luma plane, exposure agreement
+is measured against the rest of the burst, and `Rank` normalises before it weights so the selection
+policy's knobs all turn something. `motionBlur` stays zero and says why — smear in pixels needs an
+exposure time and a focal length the engine is not handed.
 
 **The pixel path reaches the browser.** The call that did not fit the resident-port pattern,
 `ICameraAccess::CaptureBurst`, is gone: a burst takes time, so `CaptureSessionManager` paces it

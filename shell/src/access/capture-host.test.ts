@@ -400,7 +400,8 @@ describe('which locks the camera is holding', () => {
   it('a camera arriving brings its own lock state, which is none', () => {
     // `setCamera`'s reset, on its own. The test above reaches the same assertion through
     // `closeCamera`, which zeroes the locks itself — so it was claiming this line and asserting
-    // that one, which a reviewer measured by deleting the reset and watching 443 stay green.
+    // that one, which a reviewer measured by deleting the reset and watching the whole suite
+    // stay green.
     //
     // Here nothing else can make it false: one camera takes a lock, a second arrives without
     // anything being closed or cleared in between. That is a device switch, and the new device is

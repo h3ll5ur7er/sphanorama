@@ -27,6 +27,7 @@ import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
 import { createLockWriteChain } from './clients/capture/lock-writes';
+import { createCoverageRefresh } from './clients/capture/coverage-refresh';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
@@ -492,21 +493,6 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
  */
 async function beginSession(core: SphanoramaCore, motionRunning: boolean,
                             resume: ProjectId | null) {
-  // The camera is still in hand, asked here because this is where the two entry points meet.
-  // `enable` checks it — `stillHeld` on its own line — and `#new-capture` and `#resume` do not,
-  // and after a retryable resume refusal (ADR 0039) they are the only things on screen with no
-  // loop watching. A lens taken in that window left `#camera-state` reading `taken away` while a
-  // press answered with the core's `CameraUnavailable` translated as *"another tab of this app may
-  // be holding it — close them and reload"*, as the last word, with every control then hidden.
-  //
-  // Said here rather than left to the core, because the core's answer is right about the state and
-  // wrong about the cause: it cannot tell a camera another tab is holding from one this page was
-  // holding a moment ago.
-  if (!cameraHeld()) {
-    stage.textContent = 'the camera is gone — reload to start again';
-    return;
-  }
-
   const project = resume === null
     ? await startFresh(core, motionRunning)
     : await pickUp(core, resume);
@@ -707,6 +693,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     overlay.show({ rings: [], arrow: null });
     reticle.setAttribute('r', RETICLE_MAX_RADIUS.toFixed(1));
     reticle.classList.remove('locked');
+    // The horizon too, which the first version of this helper missed while its own name said
+    // "everything the loop draws that is a claim about now". A rotated horizon over a dead
+    // viewfinder claims the phone is tilted by an amount nobody is measuring any more — and level
+    // is already what the loop itself draws for an unmeasured pose (`aimKnown ? -rollErrorDeg
+    // : 0`), so this is the same answer rather than a new one.
+    horizonGroup.setAttribute('transform', 'rotate(0 50 50)');
   };
 
   const paintOverlay = () => {
@@ -745,83 +737,46 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * frame would be a facade round trip for an answer that cannot have moved, which is the same
    * reasoning the guidance line already follows.
    */
-  // Set when a coverage read did not land, so the next tick tries again.
-  //
-  // `CellDone` fires once per burst, and it is the only thing that asks for coverage — so a single
-  // refused read left that cell drawn as a hole and `nodesSatisfied` short by one for the rest of
-  // the session, with nothing to retry it. For ever, if it was the last cell. The answer is cheap
-  // and idempotent; not retrying it was the only thing making a transient failure permanent.
-  let coverageStale = false;
-  // When the retry above may next fire. Without it, `coverageStale` asks on every animation frame
-  // — measured at 120 facade round trips in two seconds against a `coverage()` that refuses, about
-  // sixty of them in flight at once. That is the same once-per-cell-into-once-per-frame mistake
-  // ADR 0041 records a reviewer catching on the sibling branch, reintroduced by the fix for a
-  // dropped read. A refused read is worth retrying; it is not worth asking sixty times a second.
-  let coverageRetryAtMs = 0;
-  // Whether one is already in flight. The throttle alone does not stop a *slow* refusal from
-  // being asked again every frame, because it was armed when the answer came back rather than
-  // when the call went out — measured at 58 calls in five seconds against a 300 ms refusal, about
-  // eighteen of them overlapping, which is the same storm the throttle was added to end.
-  let coverageInFlight = false;
-  // Whether the one retry a stopped loop gets has been spent. Latched rather than counted, because
-  // the only thing it protects against is a read refused at the moment everything else stopped.
-  let lastCoverageRetried = false;
+  // The four flags this needs are in `clients/capture/coverage-refresh.ts`, with the measurements
+  // that put each of them there — they were untestable while they lived in this closure, which is
+  // how the last fix among them shipped with a defect a reviewer had to transcribe the function
+  // into node to find.
+  // How long between asks when a read was refused.
   const COVERAGE_RETRY_MS = 1000;
-  const refreshCoverage = async () => {
-    if (review === null || plan === null) return;
-    if (coverageInFlight) {
-      // Deferred, not dropped. The other two ways in defer — `coverageStale` remembers a refused
-      // read and `coverageRetryAtMs` spaces the retries — and this one returned with nothing
-      // marking that a refresh had been asked for and lost. A reviewer traced the case: a
-      // `CellDone` arriving while a read issued on an earlier tick is still out is the one refresh
-      // that *knows* something changed, and on the last cell of a sphere there is no later
-      // `CellDone` to ask again, so the map and the `n/total` count end permanently one short.
-      coverageStale = true;
-      return;
-    }
-    coverageInFlight = true;
-    // Armed here, not on the answer: the interval is between *asks*.
-    coverageRetryAtMs = performance.now() + COVERAGE_RETRY_MS;
-    const state = await core.captureSession.coverage().catch(() => null);
-    coverageInFlight = false;
-    if (state === null || !state.ok) {
-      coverageStale = true;
-      // `coverageStale`'s only reader is inside `step`, and both terminal branches return before
-      // reaching it — so a read that was in flight across the camera going away and came back
-      // refused leaves the map one cell short of the work the user did, permanently. That is the
-      // outcome the paint below was un-gated to prevent, arriving through the failure door
-      // instead of the flag. A reviewer traced it from `coverageStale`'s single reader.
+  const coverage = createCoverageRefresh<CoverageState>({
+    enabled: () => review !== null && plan !== null,
+    read: async () => {
+      const state = await core.captureSession.coverage().catch(() => null);
+      return state !== null && state.ok ? state.value : null;
+    },
+    accept: (state) => {
+      nodesSatisfied = state.nodesSatisfied;
+      lastCoverage = state;
+      // The map is drawn whatever state the loop is in; the markers are not, and `paintOverlay`
+      // gates itself.
       //
-      // One retry, latched, and only once the loop has stopped: while it is running `step` does
-      // this better, and if the core is what died the second attempt fails the same way and that
-      // is the end of it. `coverageInFlight` is already false here, so the retry is not blocked by
-      // the read that just failed.
-      if (loopStopped && !lastCoverageRetried) {
-        lastCoverageRetried = true;
-        setTimeout(() => { void refreshCoverage(); }, COVERAGE_RETRY_MS);
+      // This used to return early on `loopStopped`, on the argument that a terminal state has no
+      // later tick to correct a stale dot. A reviewer showed what that costs once the camera-lost
+      // branch also sets the flag: a cell whose burst *completed* on the last tick before the loss
+      // has its read in flight, and the answer lands with the flag set — so the map ends one cell
+      // short of the work the user actually did, permanently, with no way to find out otherwise.
+      // That is the window the sibling branch calls `refreshCoverage` *for*.
+      //
+      // The dot is not stale either: this runs only when `coverage()` answered, and what it
+      // answered is the core's own final count. A marker is a claim about where to point a camera
+      // that may be gone, which is why that one still stops; a filled cell is a record of a frame
+      // that was banked, and it stays true whatever happens to the loop afterwards.
+      if (review !== null && plan !== null) {
+        review.show(plan, state);
+        paintOverlay();
       }
-      return;
-    }
-    coverageStale = false;
-    nodesSatisfied = state.value.nodesSatisfied;
-    lastCoverage = state.value;
-    // The map is drawn whatever state the loop is in; the markers are not, and `paintOverlay`
-    // gates itself.
-    //
-    // This used to return early on `loopStopped`, on the argument that a terminal state has no
-    // later tick to correct a stale dot. A reviewer showed what that costs once the camera-lost
-    // branch also sets the flag: a cell whose burst *completed* on the last tick before the loss
-    // has its `refreshCoverage` in flight, and the read lands with the flag set — so the map ends
-    // one cell short of the work the user actually did, permanently, with no way to find out
-    // otherwise. That is the window the sibling branch calls `refreshCoverage` *for*.
-    //
-    // The dot is not stale either: this line runs only when `coverage()` answered, and what it
-    // answered is the core's own final count. A marker is a claim about where to point a camera
-    // that may be gone, which is why that one still stops; a filled cell is a record of a frame
-    // that was banked, and it stays true whatever happens to the loop afterwards.
-    review.show(plan, state.value);
-    paintOverlay();
-  };
+    },
+    stopped: () => loopStopped,
+    now: () => performance.now(),
+    later: (run, ms) => { setTimeout(run, ms); },
+    retryMs: COVERAGE_RETRY_MS,
+  });
+  const refreshCoverage = () => coverage.refresh();
 
   // Once at the start, and not only when a cell completes. Coverage can only *change* when one
   // does, which is why the refresh below is where it is — but a map that is drawn only on change
@@ -1020,13 +975,35 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     let armedNow;
     try {
       const write = await writeLocks(wanted);
-      // Asked before the abandoned-write branch below, because the two answers are about the same
-      // three seconds and only one of them is the reason. `LOCK_WRITE_TIMEOUT_MS`'s own header
-      // names the case — "a track pulled away mid-call resolves nothing" — so a camera taken away
-      // during a parked write is precisely what makes that timeout fire, and this exit was the one
-      // door of five that did not re-ask. What the user got: `#stage` saying the camera was taken
-      // away, over `#guidance` saying it is not answering and `#locks` saying it did not answer
-      // the request, as the page's last word.
+      // **The one check for everything that can have changed while the write was out**, and the
+      // only one there can be: from here to the two pushes below there is not a single `await`, so
+      // every term `cannotArm` reads — `cameraTakenAway`, the tracks' `readyState`, `loopStopped`
+      // — is task-driven and cannot move under the straight line that follows.
+      //
+      // It was two, one either side of the abandoned-write branch, and the second could not fire.
+      // The first was hoisted here in the round before because that branch was the one door of
+      // five that did not re-ask: `LOCK_WRITE_TIMEOUT_MS`'s own header names the case that reaches
+      // it — "a track pulled away mid-call resolves nothing" — so a camera taken away during a
+      // parked write is precisely what makes that timeout fire, and what the user got was `#stage`
+      // saying the camera was taken away over `#guidance` saying it is not answering and `#locks`
+      // saying it did not answer the request. Hoisting fixed that and made its own predecessor
+      // dead, which a reviewer caught one round later along with the comment on the dead block
+      // claiming an await that was no longer between them.
+      //
+      // What that block carried is here instead, because it is still the reason this check exists
+      // rather than being trusted from the top of the function:
+      //
+      // * A camera taken away mid-arm leaves `camera.setLocks` still answering — the adapter's
+      //   stream is cleared only by its own `close()`, which the page never calls — so the write
+      //   comes back `answered` and nothing below would notice. What that arms is a burst the
+      //   manager holds as firing for the life of the tab, over a loop that has already stopped.
+      // * It is the window ADR 0045's push has to survive. The check was `cameraLost()` alone for
+      //   a round, which says nothing about a camera the *core* closed, and the two pushes below
+      //   handed one back.
+      // * The record goes before the release, not after: `unlock` snapshots `lastLocksLine` to say
+      //   what its release is a release *of*, so setting the line one statement later hands it the
+      //   previous burst's record — or, on the first arm of a session, the empty string, which the
+      //   row renders as "no burst has run yet" about a camera that really did take three locks.
       const goneWhileWriting = cannotArm();
       if (goneWhileWriting !== null) {
         lastLocksLine = goneWhileWriting.row;
@@ -1063,37 +1040,6 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         locksOut.textContent = lastLocksLine;
         unlock();
         sayForAWhile('the camera is not answering — not capturing');
-        return false;
-      }
-      const lostMidArm = cannotArm();
-      if (lostMidArm !== null) {
-        // Asked again, because the guard at the top of this function is a fact about the moment
-        // the arm started and there is an await between them. A camera taken away mid-arm leaves
-        // `camera.setLocks` still answering — the adapter's `active` stream is cleared only by its
-        // own `close()`, which the page never calls, and `applyConstraints` on an ended track is
-        // swallowed — so the write comes back `answered` and nothing below would notice. What that
-        // arms is a burst the manager holds as firing for the life of the tab, over a loop that
-        // has already stopped, with `#locks` rewritten to describe a camera that is gone.
-        //
-        // The same latch shape as `opened.ok` in `enable`, one function up, and it wants the same
-        // answer: ask now rather than trusting a check that has aged across an await.
-        //
-        // This is also the window ADR 0045's push has to survive, and `cannotArm` is what makes it
-        // — the check used to be `cameraLost()` alone, which says nothing about a camera the core
-        // closed. Three statements below this one push locks and capabilities into the worker, and
-        // there is no await between them: everything that has to be true for those two pushes is
-        // decided here or not at all.
-        //
-        // Recorded first, exactly as the branch fifteen lines above now does. This one was written
-        // in the same commit as that fix and repeated the defect it was fixing: `unlock` snapshots
-        // the row to say what its release is a release *of*, so queueing the release before writing
-        // the record hands it the previous burst's line — or, on the first arm of a session, the
-        // empty string, and the row ends terminally at "no burst has run yet" after the camera
-        // really did take and release three locks.
-        lastLocksLine = lostMidArm.row;
-        locksOut.textContent = lastLocksLine;
-        unlock();
-        sayForAWhile(lostMidArm.say);
         return false;
       }
       held = write.done;
@@ -1302,7 +1248,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     // retry exists to recover from. Measured inside the block: coverage calls stayed at two across
     // five seconds with `cell 13 · captured · 0/32 done` frozen on screen, which is the permanence
     // the retry was written to remove, still there.
-    if (coverageStale && performance.now() >= coverageRetryAtMs) void refreshCoverage();
+    if (coverage.isDue()) void refreshCoverage();
 
     // Only when there is something new to fold in, plus once at the start so the reticle has a
     // position before the first sample arrives. An empty batch cannot change the pose, so it
@@ -1520,10 +1466,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // Set on *both* paths above: an unreached tick produced no pose either, and the fact that
         // its burst flags are deliberately held does not make its markers any less stale.
         guidanceFailed = true;
-        // And the markers go with it. They describe where the cells are *relative to a pose*, and
-        // a failed tick is one that produced no pose — leaving the last set on screen would draw
-        // a confident answer over a line that says guidance has stopped working.
-        overlay.show({ rings: [], arrow: null });
+        // And everything else that is a claim about now goes with it, through the same helper the
+        // two terminal exits use. They all describe where the cells are, or how level the phone
+        // is, *relative to a pose* — and a failed tick is one that produced no pose, so leaving
+        // any of it on screen draws a confident answer over a line saying guidance has stopped
+        // working.
+        //
+        // This site cleared the markers alone for a round after the helper existed, which left the
+        // reticle closed and `.locked` under "guidance failed". Not a flicker either: a refusal the
+        // manager *answers* resets `unreachedTicks` every time, so it can stand indefinitely.
+        clearWhatIsNoLongerTrue();
         guidanceOut.textContent = `guidance failed: ${describeGuidanceFailure(guided.status)}`;
         // Coverage is re-read even though the tick failed, because a tick can fail *after* the
         // burst it was advancing has already committed: `AdvanceBurst` banks the cell and then
@@ -1712,8 +1664,23 @@ async function main() {
     newCaptureButton.addEventListener('click', () => {
       startOnce(() => {
         newCaptureButton.disabled = true;
-        return beginSession(core, motionIsRunning, null)
-          .finally(() => { newCaptureButton.disabled = false; });
+        // The same `cameraHeld()` fork `#resume` has, for the same reason and the same window.
+        // ADR 0039 puts *both* offers back after a refusal that might succeed next time, and the
+        // refusal that raises them is `Resume` failing inside `StartTracking` — which closes the
+        // camera on its way out. So this button is routinely the one pressed with no camera in
+        // hand and no loop watching, and without the fork it reached the core and came back with
+        // `CameraUnavailable` rendered as "another tab of this app may be holding it — close them
+        // and reload", which is wrong about the cause and terminal about a state one press fixes.
+        //
+        // Reopening rather than refusing, which is the half a first attempt at this got wrong: the
+        // guard went in `beginSession`, where `#resume` had already asked one statement earlier
+        // (so it could never fire) and where the only caller it *could* fire for is this one — and
+        // it answered "reload to start again" while the button beside it fixed the same state in
+        // one press. A reviewer read both call sites rather than the function.
+        const attempt = cameraHeld()
+          ? beginSession(core, motionIsRunning, null)
+          : enable(core, null);
+        return attempt.finally(() => { newCaptureButton.disabled = false; });
       });
     });
   } catch (cause) {

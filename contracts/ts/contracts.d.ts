@@ -521,15 +521,17 @@ export interface CameraCapabilities {
   /**
    * Derived from the frame's own shape where a platform reports no angles — which is every
    * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
-   * caller that keeps one across a silent refresh keeps all four (ADR 0045).
-   * 0 when the platform will not say
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045). Exempt from the zero
+   * rule above, because a derivation always has an answer: read the silence off the geometry.
+   * 0 only where nothing has been derived yet
    */
   horizontalFovDeg: number;
   /**
    * Derived from the frame's own shape where a platform reports no angles — which is every
    * browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
-   * caller that keeps one across a silent refresh keeps all four (ADR 0045).
-   * 0 when the platform will not say
+   * caller that keeps one across a silent refresh keeps all four (ADR 0045). Exempt from the zero
+   * rule above, because a derivation always has an answer: read the silence off the geometry.
+   * 0 only where nothing has been derived yet
    */
   verticalFovDeg: number;
   supportsExposureLock: boolean;

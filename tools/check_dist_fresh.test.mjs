@@ -127,6 +127,14 @@ describe('the dist freshness check', () => {
     // teach people to skip the check. That rule had no case, which a reviewer pointed out is
     // exactly the shape this suite exists for — the exclusion is what keeps the checker usable, so
     // it is the line most costly to lose quietly.
+    //
+    // Only one of the two cases is load-bearing, and a later reviewer measured which: `bridge/test`
+    // sits *inside* a walked root, so the `test` entry in the skip set is the only thing excluding
+    // it and deleting that entry fails this test. `core/test` is excluded twice over — the root is
+    // `core/src` rather than `core`, and the skip set would catch it even if that were widened —
+    // so it survives either sabotage alone and pins nothing by itself. Kept anyway, and said out
+    // loud rather than left to look like coverage it does not provide: it is the case that fails
+    // if both are ever lost together, which is what a refactor of the root list would do.
     for (const test of ['core/test/a_test.cpp', 'bridge/test/b_test.cpp']) {
       const tree = aFreshTree();
       tree.put(test, Date.now());

@@ -1376,10 +1376,20 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
 
   NodeContext context;
   context.siblings = cell;
+  // From here on the cell has to be cooled on every way out, refusals included. `Score` measures
+  // each sibling for exposure agreement and every measurement `Pin`s, which faults a `Spilled`
+  // frame back into the heap and leaves it `HeapEncoded` — so scoring an offer re-heats a cell
+  // that a burst already sent down. `Disarm` cools for exactly this reason and this path never
+  // reaches it: `OfferFrame` arms nothing, so `Disarm` returns at its first line. That made an
+  // offer into a captured cell the one route that skipped the policy ADR 0023 exists for.
+  //
+  // `Cool` touches only what a burst here took, so the offered frame stays where the caller left
+  // it — which is the same reason it is not forgotten below.
   auto scored = quality_.Score(frame, pose, context);
   if (!scored.ok()) {
     // Same reasoning as CaptureCell, minus the release: this frame came from the caller, who
     // still owns it. Forgetting someone else's handle would be the worse bug.
+    Cool(cell);
     return scored.status;
   }
   candidate.quality = scored.value;
@@ -1393,12 +1403,15 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   auto ranked = quality_.Rank(cell, SelectionPolicy{});
   if (!ranked.ok()) {
     cell.pop_back();
+    Cool(cell);
     return ranked.status;
   }
   const size_t judged = Reorder(cell, ranked.value);
   // An offer can push a burst's frame below the cut, so the cell is trimmed here too. The frame
   // just offered is not this manager's to end and Trim knows it.
   Trim(cell, judged);
+  // After the trim, so nothing forgotten is demoted on its way out.
+  Cool(cell);
   return Ok(FrameVerdict::Accepted);
 }
 

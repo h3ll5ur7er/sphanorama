@@ -527,12 +527,17 @@ struct CameraCapabilities {
   // Written here because five places in this repository cite "the contract's word for 'the
   // platform will not say'" and, until a reviewer went looking, this file said it on one field
   // pair — the one nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a
-  // refreshed struct answers 0 (ADR 0045), so a second implementation reading only this header
-  // had no reason to know that a guessed 30 fps silently removes ADR 0018's burst floor rather
-  // than improving on it.
+  // refreshed struct answers 0 (ADR 0045), and 0 is the *only* silence that keep can recognise:
+  // a guessed 30 fps is indistinguishable from a measurement, so it overwrites the real 15 the
+  // session was holding and the burst then asks for frames twice as fast as the camera makes
+  // them. That is the cost a second implementation reading only this header would not have seen.
   //
-  // The booleans are outside the rule, and that is a gap rather than a decision: `false` here
-  // means "no" and "did not say" alike, and there is nowhere to record the difference. See the
+  // Two exemptions, both gaps rather than decisions. The booleans: `false` here means "no" and
+  // "did not say" alike, and there is nowhere to record the difference. And the field-of-view
+  // pair, which is derived rather than measured — no browser reports angles, so the host computes
+  // them from the frame's shape and its fallback is a 4:3 landscape lens, never 0. Its silence is
+  // the *geometry's*: `maxWidth`/`maxHeight` at 0 is what says the angles beside them were
+  // computed from nothing, which is why ADR 0045's keep moves all four together. See the
   // white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
 
   // The mode the camera actually settled on, not the largest it could reach. The coverage plan is
@@ -542,8 +547,9 @@ struct CameraCapabilities {
   int32_t maxWidth = 0, maxHeight = 0;   // 0 when the platform will not say
   // Derived from the frame's own shape where a platform reports no angles — which is every
   // browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
-  // caller that keeps one across a silent refresh keeps all four (ADR 0045).
-  double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 when the platform will not say
+  // caller that keeps one across a silent refresh keeps all four (ADR 0045). Exempt from the zero
+  // rule above, because a derivation always has an answer: read the silence off the geometry.
+  double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 only where nothing has been derived yet
   bool supportsExposureLock = false;
   bool supportsFocusLock = false;
   bool supportsTorch = false;
