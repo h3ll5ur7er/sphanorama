@@ -62,6 +62,11 @@ Result<FrameRef> FakeCameraAccess::PeekPreviewFrame() {
 
 
 Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
+  // Refused first, and nothing changed by a refused call. This guard sat *below* the mutation
+  // below it, so a lock write to a closed camera altered what the fake would report once it was
+  // reopened while returning a refusal that said nothing had happened. Unreachable from the suite
+  // as it stands, which is why it is cheap to put right now rather than the day it is not.
+  if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
   // A lock write can change what the camera can do, which is the premise of ADR 0045: pinning an
   // exposure long is what drops a real camera from 30 fps to 15 — the exposure specifically, which
   // is why only that flag is read here. A test asks for it with
@@ -69,7 +74,6 @@ Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
   if (fps_on_lock_ > 0.0 && exposure) {
     capabilities_.maxBurstFps = fps_on_lock_;
   }
-  if (!open_) return Fail(StatusCode::FailedPrecondition, kComponent, "camera is not open");
   if (fail_unlock_ && !exposure) {
     // Refused *and* left locked, which is the case worth modelling: a port that failed to unlock
     // has not half-unlocked, and a caller told the burst finished would have no reason to look.
