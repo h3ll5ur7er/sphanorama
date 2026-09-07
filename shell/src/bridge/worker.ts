@@ -106,7 +106,18 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
         // The pushes. No reply, and none of them can fail in a way the page could act on: the
         // core reads whatever is here the next time it looks.
         case 'camera':
-          if (message.opened) captureHost.setCamera(message.opened);
+          // `null` is the signal, and nothing else is. A capability set of all zeros is a legal
+          // answer from a browser that will not report a resolution — `open()` produces one, and
+          // the host derives an assumed field of view for exactly that case — so it must reach
+          // `setCamera` like any other. Written `!== null` rather than as a truthiness test
+          // because the truthiness test invites the opposite reading: a reviewer asked whether a
+          // zeroed struct was meant to clear the camera, which is a fair question of
+          // `if (message.opened)` and not of this.
+          //
+          // What must never arrive here is a struct read off a camera that is gone. That is the
+          // page's to guarantee and it does (`cannotArm` in `main.ts`, ADR 0045), because only the
+          // page can tell "the platform said nothing" from "there is no track left to ask".
+          if (message.opened !== null) captureHost.setCamera(message.opened);
           else captureHost.clearCamera();
           return;
 

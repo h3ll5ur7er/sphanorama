@@ -835,6 +835,19 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     //
     // Refusing here rather than only unlocking more carefully, because applying the locks at all
     // while a burst holds them is the mistake; there is nothing this call could do with them.
+    // A camera that is gone, or a loop that is not coming back, arms nothing. This read was
+    // missing, and the consequence was measured in a browser: with no burst in flight,
+    // `sphanoramaCapture()` after the core stopped answering returned `true` — a real burst armed,
+    // `applyConstraints` written to a live track, and locks and capabilities pushed into a core
+    // the page had already told the user was gone.
+    //
+    // First, before the in-flight guard, because it is the stronger fact: a burst in flight can
+    // still finish, and a stopped loop can finish nothing.
+    const cannot = cannotArm();
+    if (cannot !== null) {
+      sayForAWhile(cannot.say);
+      return false;
+    }
     if (arming || armed || firing) {
       // Said, not swallowed. This is the one exit from here that reports nothing, and the dwell's
       // retry made it reachable in a way it was not: a `Fire` the core re-offers two seconds later
@@ -853,14 +866,54 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     }
   };
 
-  const armOnce = async (node: NodeId) => {
+  /**
+   * Why this arm must not go ahead, or null when it may.
+   *
+   * Two facts, in the order they are worth reporting. `cameraLost` is the narrow one and gets the
+   * better sentence: a camera taken away is something that happened *to* the user, and naming it
+   * is what stops them tapping again.
+   *
+   * `!cameraHeld()` is the one that was missing, and it is broader on purpose — it is true of a
+   * camera the *core* closed, which `cameraTakenAway` deliberately is not (an orderly End is not
+   * a loss; see the note on that flag). What made it matter is what an arm does on its way past:
+   * it pushes the confirmed locks and the live capability set into the core (ADR 0045). Landing
+   * those after `onCloseCamera` has cleared the worker's copy hands the core a camera back —
+   * `cameraOpen()` reads true again on a struct read off a dead track — and the next `Begin`
+   * then succeeds where it should have refused with CameraUnavailable, planning a whole
+   * tessellation against `maxWidth 0, maxHeight 0` and the assumed field of view that stands in
+   * for a lens nobody measured. Measured: 32 cells planned after an `End`.
+   *
+   * `cameraLost()` cannot catch that, and the reason is worth writing down rather than
+   * rediscovering: it reads `cameraTakenAway`, which only the `ended` listener writes, and
+   * `track.stop()` — which is exactly how the core's own close ends the tracks — fires no `ended`
+   * event. `cameraHeld()` asks the tracks instead, so it is true of every way a camera goes.
+   *
+   * `loopStopped` is last, and the order is the whole reason these are in one place. Both terminal
+   * exits set it — the core that stopped answering, and now the camera that went away — so it is
+   * the least specific of the three and would otherwise tell a user whose camera was taken that
+   * the core had stopped answering. Most specific first, and the broad fact only when the narrow
+   * ones have nothing to say.
+   */
+  const cannotArm = (): { say: string; row: string } | null => {
     if (cameraLost()) {
-      // Reachable without the loop: the end-to-end hook calls `captureCell` straight, and so did
-      // the button before the loop learned to stop. A burst armed here would take five copies of
-      // the `<video>`'s frozen last frame, which passes both of the grabber's guards.
-      sayForAWhile('the camera was taken away — not capturing');
-      return false;
+      return {
+        say: 'the camera was taken away — not capturing',
+        row: 'the camera was taken away mid-arm',
+      };
     }
+    if (!cameraHeld()) {
+      return { say: 'the camera is closed — not capturing', row: 'the camera was closed mid-arm' };
+    }
+    if (loopStopped) {
+      return {
+        say: 'the core stopped answering — reload to start again',
+        row: 'the core stopped answering mid-arm',
+      };
+    }
+    return null;
+  };
+
+  const armOnce = async (node: NodeId) => {
     // Applied and confirmed *before* arming, which is the whole ordering requirement (ADR 0022):
     // the burst's first frame arrives on the very next tick, and the core reads the lock state
     // through a synchronous port that cannot wait for applyConstraints.
@@ -935,7 +988,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         sayForAWhile('the camera is not answering — not capturing');
         return false;
       }
-      if (cameraLost()) {
+      const lostMidArm = cannotArm();
+      if (lostMidArm !== null) {
         // Asked again, because the guard at the top of this function is a fact about the moment
         // the arm started and there is an await between them. A camera taken away mid-arm leaves
         // `camera.setLocks` still answering — the adapter's `active` stream is cleared only by its
@@ -946,16 +1000,23 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         //
         // The same latch shape as `opened.ok` in `enable`, one function up, and it wants the same
         // answer: ask now rather than trusting a check that has aged across an await.
+        //
+        // This is also the window ADR 0045's push has to survive, and `cannotArm` is what makes it
+        // — the check used to be `cameraLost()` alone, which says nothing about a camera the core
+        // closed. Three statements below this one push locks and capabilities into the worker, and
+        // there is no await between them: everything that has to be true for those two pushes is
+        // decided here or not at all.
+        //
         // Recorded first, exactly as the branch fifteen lines above now does. This one was written
         // in the same commit as that fix and repeated the defect it was fixing: `unlock` snapshots
         // the row to say what its release is a release *of*, so queueing the release before writing
         // the record hands it the previous burst's line — or, on the first arm of a session, the
         // empty string, and the row ends terminally at "no burst has run yet" after the camera
         // really did take and release three locks.
-        lastLocksLine = 'the camera was taken away mid-arm';
+        lastLocksLine = lostMidArm.row;
         locksOut.textContent = lastLocksLine;
         unlock();
-        sayForAWhile('the camera was taken away — not capturing');
+        sayForAWhile(lostMidArm.say);
         return false;
       }
       held = write.done;
@@ -1004,14 +1065,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       unlock();
       return false;
     }
-    if (cameraLost()) {
+    const lostWhileArming = cannotArm();
+    if (lostWhileArming !== null) {
       // The third window, and it is not the harmless one I claimed on the thread. There is no page
       // route to `Disarm` — it carries no `@facade` marker — so a burst armed here does stay armed
       // whatever this returns, and that much of the decline was right. What was wrong is the rest:
       // `sayForAWhile` writes `#guidance` directly and no tick follows a stopped loop, so
       // "capturing without exposure lock" or an arming refusal becomes the page's last word for
       // the life of the tab, over a stage line telling the user to reload.
-      sayForAWhile('the camera was taken away — not capturing');
+      sayForAWhile(lostWhileArming.say);
       return false;
     }
     if (armedNow.ok) {
@@ -1070,6 +1132,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // which claims a direction relative to a pose that no longer exists. That branch got the
       // flag *and* a call-ordering fix after it was measured putting a ring back one millisecond
       // later; this early return copied the clear and neither protection.
+      //
+      // And `loopStopped` with it, which this branch was missing while being exactly what that
+      // flag is defined as: a state the loop does not come back from. It returns before the
+      // `requestAnimationFrame` at the bottom, so the loop really does end here — the flag is what
+      // says so to the things that cannot see that. `refreshCoverage` is one (a read already in
+      // flight lands with no later tick to correct what it draws) and `cannotArm` is the other.
+      // Two terminal exits setting different flags is the kind of difference that reads as
+      // deliberate when it is not.
+      loopStopped = true;
       guidanceFailed = true;
       overlay.show({ rings: [], arrow: null });
       guidanceOut.textContent = 'the camera was taken away';
@@ -1273,11 +1344,18 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // most recently learned to reach. The call threw on the way in — `facade.ts` allocating
         // the arguments, the worker gone — so the manager never ran: the burst is still armed
         // inside the core, `pending_` still pinned, the locks still applied. Clearing here would
-        // tell the loop a burst is over that is not, and on a phone producing no motion samples it
-        // would take the last true term out of the tick gate above, so `onMotion` is never called
-        // again and the capture is dead for good: stuck at three frames of five, locks held, every
-        // further press refused. Leaving the flags is what keeps the loop asking, which is what
-        // recovers from an allocation failure that passes.
+        // tell the loop a burst is over that is not, and the burst would then advance at the
+        // heartbeat's rate rather than the animation frame's: a 250 ms stall in the middle of a
+        // five-frame burst, with the camera's exposure lock held across it.
+        //
+        // That is the whole of it, and this comment claimed more for two rounds: that on a phone
+        // producing no motion samples the flags were the last true terms in the tick gate, so
+        // clearing them left the capture "dead for good". `quiet` is a fifth term and reopens the
+        // gate by itself, and the tick it opens answers `Firing`, which sets `firing` straight
+        // back — measured, with this hold neutered, as a burst that banked all five candidates
+        // anyway. A reviewer found it by reading the gate rather than the sentence. The hold is
+        // worth keeping for the stall it avoids; it is not what stands between a rejection and a
+        // dead session, and the test beside it now asserts the thing it really decides.
         if (unreached) {
           // Held, but not for ever. A worker that is gone stays gone — `remote-core`'s `dead` is
           // never cleared, and an Emscripten `abort()` makes every later call throw — so a rule

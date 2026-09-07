@@ -49,3 +49,4 @@ and the alternative we rejected and why.
 | [0042](0042-with-no-aim-coverage-decides-alone.md) | `Locate` takes a `PoseSample` and prefers the cell the camera is inside only when the pose was measured — **superseded by 0044**, which refuses the session instead |
 | [0043](0043-the-dwell-that-fires-a-burst-is-the-cores.md) | The dwell that fires a burst is counted in `CaptureSessionManager` and reported on `CaptureGuidance`; the page acts on it and draws the ring from the same number |
 | [0044](0044-a-capture-needs-a-motion-sensor.md) | A capture requires a motion sensor: `Begin` and `Resume` refuse without one and the page says what is missing, superseding 0042's degraded path |
+| [0045](0045-a-capability-that-changes-is-re-asked.md) | A capability is re-asked where it is consumed: `ICameraAccess` grows `Capabilities()` and `ArmBurst` calls it after `SetLocks`, while the page keeps the resident port true by re-reporting the camera it has just changed |

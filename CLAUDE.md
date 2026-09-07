@@ -54,4 +54,8 @@ the core's and the call is the client's, because a burst is paced by the client'
 A `Fire` nobody could act on comes round again, since there is no shutter left to fall back on. And a capture needs
 a motion sensor — without one `Begin` and `Resume` refuse before they open a camera, and the page
 says what is required and what is missing, because a sphere whose cells are labelled with
-directions nobody measured is worse than a message (ADR 0044). See `docs/06-roadmap.md`.
+directions nobody measured is worse than a message (ADR 0044). And a capability is re-asked where
+it is consumed rather than remembered from `Open`: `ArmBurst` reads the camera again after it
+applies the locks, because pinning an exposure is what drops a camera to half its frame rate, and
+the page keeps that resident port true by re-reporting the camera it has just changed — and by
+refusing to report one it is no longer holding (ADR 0045). See `docs/06-roadmap.md`.

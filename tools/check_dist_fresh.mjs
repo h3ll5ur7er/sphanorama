@@ -64,16 +64,49 @@ export default function checkDistIsFresh() {
   // staged at all — which is the same trap one step earlier, and the one a reviewer walked into
   // while sabotaging the core itself. Content rather than mtime, because that question has an
   // exact answer and a timestamp only has a plausible one.
-  const compiled = join(repoRoot, 'build', 'wasm-release', 'bridge', 'sphanorama-core.wasm');
-  const staged = join(repoRoot, 'shell', 'public', 'core', 'sphanorama-core.wasm');
-  if (existsSync(compiled) && existsSync(staged)
-      && !readFileSync(compiled).equals(readFileSync(staged))) {
-    throw new Error(
-      'the compiled core and the staged one are different files — the browser suite would test a\n' +
-      'core that is not the one you just built.\n' +
-      `  compiled: ${compiled}\n` +
-      `  staged:   ${staged}\n` +
-      'Run `npm run build` in shell/ (and read its exit status).');
+  //
+  // Both halves of the core, and the glue is not a formality: every `EM_JS` body in `bridge/`
+  // compiles into `sphanorama-core.js`, not into the wasm. So the whole camera and motion port —
+  // `host_camera_metric`'s switch included, which is the seam an e2e test exists to pin — can be
+  // changed with the `.wasm` coming out byte for byte identical. A reviewer sabotaged `case 8`,
+  // rebuilt, and this check had nothing to say.
+  const coreBuild = join(repoRoot, 'build', 'wasm-release', 'bridge');
+  const coreStage = join(repoRoot, 'shell', 'public', 'core');
+  for (const file of ['sphanorama-core.wasm', 'sphanorama-core.js']) {
+    const compiled = join(coreBuild, file);
+    const staged = join(coreStage, file);
+    if (existsSync(compiled) && existsSync(staged)
+        && !readFileSync(compiled).equals(readFileSync(staged))) {
+      throw new Error(
+        `the compiled core and the staged one are different files (${file}) — the browser suite\n` +
+        'would test a core that is not the one you just built.\n' +
+        `  compiled: ${compiled}\n` +
+        `  staged:   ${staged}\n` +
+        'Run `npm run build` in shell/ (and read its exit status).');
+    }
+  }
+
+  // And the core against the C++ it is built from, which nothing above asks about: a compiled core
+  // that was never rebuilt matches the staged one exactly, so every comparison up to here is happy
+  // while the browser runs a core from before the change. The same trap as the bundle's, one
+  // language further down.
+  //
+  // `core/test` and `bridge/test` are left out on purpose — they are not linked into the wasm, and
+  // demanding a five-minute rebuild for a native test edit would teach people to skip this check.
+  const compiledCore = newest(join(coreBuild, 'sphanorama-core.wasm'));
+  if (compiledCore.mtime > 0) {
+    const cxx = ['core/src', 'bridge', 'contracts/cpp']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles'])) }))
+      .filter((s) => s.mtime > compiledCore.mtime);
+    if (cxx.length > 0) {
+      const worst = cxx.reduce((a, b) => (a.mtime > b.mtime ? a : b));
+      throw new Error(
+        'the compiled core is older than the C++ it is built from — the browser suite would test a\n' +
+        'core from before your change and pass.\n' +
+        `  newest source: ${worst.path}\n` +
+        `  compiled core: ${compiledCore.path}\n` +
+        'Run `tools/gate.sh` (or the wasm build), then `npm run build` in shell/ to stage it.');
+    }
   }
 
   const stale = sources.filter((s) => s.mtime > built.mtime);

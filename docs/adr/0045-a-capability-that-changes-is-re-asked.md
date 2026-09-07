@@ -71,11 +71,20 @@ The capabilities the manager last read are exposed on the facade, as
 
 **`SetLocks` reports revised capabilities.** The invalidator is already in hand: `setLocks` in the
 shell adapter re-reads `track.getSettings()` three lines after applying the constraints, on the same
-object that carries `frameRate`. Rejected because it puts the answer on the wrong call. `SetLocks`
-answers "which locks are held" and widening it to "and here is everything else about the camera"
-makes a lock write the channel for capability news, so a session that never locks anything never
-learns. It also only covers the one cause we happen to have thought of; a track renegotiating for
-thermal reasons announces itself to nobody.
+object that carries `frameRate`. Rejected because it puts the answer in the wrong *contract*.
+`ICameraAccess::SetLocks` answers "which locks are held", and widening its return value to "and here
+is everything else about the camera" would make a lock write the only channel capability news can
+travel down — a session that never locks anything could never learn, and no other cause of change
+would have a way in.
+
+A reviewer read this alongside the shell and asked the obvious question: `main.ts` pushes the
+capability set immediately after the lock write settles, so is the lock write not the channel after
+all? It is the *occasion*, and that is the distinction this rejection turns on. The page pushes
+because it has just changed the camera, and it may push whenever else it learns something —
+`camera.capabilities()` is a read of the track, callable from a `configurationchange` listener or a
+thermal event with nothing else moved. Had the answer ridden home on `SetLocks`'s return value there
+would be no such second door: a fact would be reachable only through the call it was bolted to. The
+occasion is one; the channel is general.
 
 **A push from the page, instead of a pull.** ~~Rejected because it makes correctness depend on a
 client noticing.~~ **This rejection was wrong and is withdrawn.** The objection stands as an
@@ -91,9 +100,16 @@ burst that runs after the locks are applied.
 ## Consequences
 
 **A contract grows a method, and every implementation owes an answer** — the *same* answer for the
-same state, which is what a contract is. `camera_access_contract_test.cpp` holds them to it, which
-is where the first version of this decision had nothing at all and three implementations gave three
-answers.
+same state, which is what a contract is. `camera_access_contract_test.cpp` states it, which is where
+the first version of this decision had nothing at all and three implementations gave three answers.
+
+"States" rather than "holds them to it", and the difference is worth being exact about, because a
+reviewer found the stronger claim and it is not true: the typed suite has one entry, and it is
+`FakeCameraAccess`. `NullCameraAccess` cannot join it — refusing every call is its whole job — and
+`BrowserCameraAccess` cannot either, since its body is `EM_JS` and it runs under wasm and nowhere
+else. So the suite says what the rule is and holds one implementation to it. The browser one is held
+by the browser suite instead (see the next consequence), and the null one by its own test in the
+same file.
 
 Two refusals, and they are different facts rather than two spellings of one: a port that has a
 camera and has not opened it answers `FailedPrecondition`, a call out of order and fixable by
@@ -108,9 +124,18 @@ an integer index and a property name, and nothing checked either: `maxBurstFps` 
 struct for the life of the field, had no `case` in the switch, and no suite could tell. With
 `CameraInUse()` on the facade a browser test opens a real camera and reads every capability back
 through the boundary, so a missing case or a renamed property fails a test instead of reading as
-zero. That is the arrangement the motion port next door already has — a named constant, the field
-order written out on both sides, "pinned together by a test on each side" — and the camera port did
-not.
+zero.
+
+Seven of the eight cases, to be exact, and the eighth is a hole in the runner rather than in the
+assertion: the test compares what the core reports against what the page reads off the same track,
+and Chromium's fake camera has no torch — so `supportsTorch` is `false` whether the metric is read
+or not, and equality cannot separate them. Measured by renumbering each case in turn. A second
+browser test covers what identity cannot: it pins an exposure, which drops the fake camera from 30
+fps to 15, and asserts the core paces the burst by 15 — which fails if the page stops pushing, if
+`case 8` moves, or if `ArmBurst` stops re-asking.
+
+That is the arrangement the motion port next door already has — a named constant, the field order
+written out on both sides, "pinned together by a test on each side" — and the camera port did not.
 
 **A stale figure is still possible, and is now bounded.** Between two arms the manager's copy can be
 wrong, and the status row the page draws from it can be wrong with it. What cannot be wrong is the
@@ -123,8 +148,11 @@ not register.
 **The refresh takes the whole struct, and `CameraInUse()` reports the camera rather than the plan.**
 One rule beats a list of fields somebody has to keep current. It does mean `CameraInUse().maxWidth`
 answers "what the camera says now" and not "what the plan was sized from" — those are two facts and
-the second lives in the plan's own `Intrinsics`, which is deliberately never refreshed, because a
-camera that changes resolution mid-session has invalidated the plan and silently adopting the new
+the second lives in `CaptureSessionManager::lens_`, the manager's own `Intrinsics`, written at
+`Begin` and restored at `Resume` and deliberately never refreshed. (Not "the plan's own
+`Intrinsics`", which an earlier draft said and a reviewer checked: `CapturePlan` is `{nodes, spec}`
+and carries no intrinsics at all. The header already had it right.) It is never refreshed because a
+camera that changes resolution mid-session has invalidated the plan, and silently adopting the new
 numbers would hide that rather than handle it. Handling it is a change of its own.
 
 **A rate of zero never overwrites a rate we had.** Zero means "the platform will not say", so a
@@ -132,6 +160,19 @@ refresh that answers `Ok` with zero is telling us the same thing a refusal does,
 now treated alike: the session keeps the floor it was given. They were not, at first — a refusal
 kept the old rate and an `Ok(0)` discarded it, which is two spellings of one fact with opposite
 outcomes, and the browser port is the most likely producer of the second.
+
+**The push needs a guard the pull never did, and it is on the page.** A pushed fact can arrive late.
+An arm parks on `applyConstraints` for as long as that takes, and an `End()` inside that window
+closes the camera underneath it — so the push lands after the host has cleared its copy and hands
+the core a camera back: `cameraOpen()` reads true again, and the next `Begin` succeeds where it owed
+`CameraUnavailable`, planning a whole tessellation against a struct read off a dead track (measured:
+32 cells, `maxWidth 0`). The page refuses to push when it is no longer holding the camera, asked of
+the tracks rather than of a flag, because `track.stop()` fires no `ended` event and the flag that
+records a camera *taken* away is deliberately silent about one the core closed. Two lines of it are
+the adapter's: `camera.capabilities()` answers zeros for an ended track rather than the mixture a
+browser gives — geometry dropped from `getSettings()`, every mode still listed by
+`getCapabilities()` — because half an answer is worse than none when none is a state the core has a
+word for.
 
 **This does not settle every capability.** The rule is settled — a capability is re-asked where it
 is consumed, and the port it asks is kept true by the client that changes it — so the next field to

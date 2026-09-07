@@ -104,10 +104,59 @@ describe('opening the camera', () => {
   it('says nothing about a camera it is not holding', async () => {
     // No track, no answer to give. Zeros rather than a stale last-known set: the core reads 0 as
     // "the platform will not say", which is true of a camera that is gone.
+    //
+    // Asked *after* a camera has been open and reported real numbers, which is the half a reviewer
+    // showed was missing: asked before any open, this assertion is satisfied by a default, and an
+    // implementation that remembered the last camera for ever would pass it. Zeros here are only
+    // evidence of anything if there was something else to answer with.
     const camera = createCameraAccess(fakeMedia({}) as never);
-    const before = camera.capabilities();
-    expect(before.maxWidth).toBe(0);
-    expect(before.maxBurstFps).toBe(0);
+    expect(camera.capabilities().maxWidth, 'nothing open, so nothing to say').toBe(0);
+
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.maxWidth).toBe(1920);
+
+    await camera.close();
+    const after = camera.capabilities();
+    expect(after.maxWidth, 'the adapter kept answering for a camera it had closed').toBe(0);
+    expect(after.maxBurstFps).toBe(0);
+    expect(after.supportsTorch, 'and kept a capability of it too').toBe(false);
+  });
+
+  it('says nothing about a track that has ended, rather than half of it', async () => {
+    // The camera the page actually loses. `close()` is the only thing that clears `active` and the
+    // page never calls it — the core's route out is `closeCamera`, which stops the tracks — and
+    // `stop()` does not remove a track from its stream. So the adapter goes on being handed a dead
+    // track, and a dead track answers *unevenly*: `getSettings()` has dropped the geometry and
+    // `getCapabilities()` still lists every mode the device supports.
+    //
+    // Read without a guard that is a mixture — zero width and height next to
+    // `supportsExposureLock: true` — and both halves are believed downstream: the host derives a
+    // field of view from `deriveFieldOfView(0, 0)` and the manager paces a burst expecting to pin
+    // an exposure on a camera that is gone. Half an answer is worse than none, because none is a
+    // state the core has a word for.
+    let readyState = 'live';
+    const camera = createCameraAccess(fakeMedia({
+      stream: {
+        getVideoTracks: () => [{
+          get readyState() { return readyState; },
+          // The mixture, written the way a browser produces it: geometry gone, capabilities kept.
+          getSettings: () => (readyState === 'live' ? { width: 1280, height: 720, frameRate: 30 } : {}),
+          getCapabilities: () => ({ torch: true, exposureMode: ['continuous', 'manual'] }),
+          stop: vi.fn(),
+        }],
+        getTracks: () => [{ stop: vi.fn() }],
+      },
+    }) as never);
+    const opened = await camera.open({ preferRearCamera: true });
+    expect(opened.ok && opened.value.supportsExposureLock).toBe(true);
+
+    readyState = 'ended';
+    const now = camera.capabilities();
+    expect(now.maxWidth, 'geometry').toBe(0);
+    expect(now.maxBurstFps, 'rate').toBe(0);
+    expect(now.supportsExposureLock,
+      'a dead track was still promising an exposure lock').toBe(false);
+    expect(now.supportsTorch, 'and a torch').toBe(false);
   });
 
   it('treats a rate that is not a measurement as no answer at all', async () => {

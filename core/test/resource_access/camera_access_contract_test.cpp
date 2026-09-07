@@ -21,6 +21,17 @@ class CameraAccessContract : public ::testing::Test {
   void Open() { ASSERT_TRUE(camera->Open(CameraOpenSpec{}).ok()); }
 };
 
+// One implementation, and it is a fake — which is a limit of this suite worth stating rather than
+// leaving to be discovered. `NullCameraAccess` cannot join it (it refuses every call by design, and
+// has its own test below), and the bridge's browser port cannot either: it is written in terms the
+// host provides, so it compiles and runs under the web build and nowhere else. Everything this
+// suite says about that implementation is therefore said by analogy.
+//
+// What holds that port instead is the browser suite. `the camera the core paces a burst by is the
+// one the locks left behind` drives `Open`, `SetLocks` and `Capabilities` through the real web
+// build against a camera whose frame rate changes when its exposure is pinned — which is the one
+// arrangement in the tree where an implementation returning `Ok(CameraCapabilities{})` from
+// `Capabilities()` goes red.
 using Implementations = ::testing::Types<FakeCameraAccessFactory>;
 TYPED_TEST_SUITE(CameraAccessContract, Implementations);
 
@@ -46,10 +57,20 @@ TYPED_TEST(CameraAccessContract, CapabilitiesAgreesWithWhatOpenReported) {
   // The two calls answer the same question about the same device, so on a camera nothing has
   // changed they cannot differ. `BrowserCameraAccess` shares one reading between them for this
   // reason (ADR 0045).
+  //
+  // Against the fake this is close to tautological — one member answers both calls, which is what
+  // makes the fake a *correct* implementation of the rule and also what stops this line being
+  // evidence about anybody else's. It is here as the statement of the requirement; the
+  // implementation it is really about is held by the browser suite, per the note on
+  // `Implementations` above.
   auto opened = this->camera->Open(CameraOpenSpec{});
   ASSERT_TRUE(opened.ok());
   auto asked = this->camera->Capabilities();
   ASSERT_TRUE(asked.ok()) << asked.status.detail;
+  // Not only equal to `opened` but a real answer, so an implementation that answered
+  // `Ok(CameraCapabilities{})` from both fails here rather than agreeing with itself about nothing.
+  EXPECT_GT(asked.value.maxWidth, 0);
+  EXPECT_GT(asked.value.maxHeight, 0);
   EXPECT_EQ(asked.value.maxWidth, opened.value.maxWidth);
   EXPECT_EQ(asked.value.maxHeight, opened.value.maxHeight);
   EXPECT_DOUBLE_EQ(asked.value.maxBurstFps, opened.value.maxBurstFps);

@@ -381,14 +381,28 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   consumed. The rule is the deliverable rather than the field: `maxWidth` has the same shape the
   day a track renegotiates.
 
+  The pull is half of it. A resource-access port is resident (ADR 0014) — the host runs in the
+  worker and the `MediaStream` is in the page — so `Capabilities()` reads the page's cache rather
+  than a track, and the page is what keeps that cache true: it re-reports the camera after
+  `setLocks` settles, and refuses to report one it is no longer holding. Three reviewers found the
+  pull-only version of this within minutes of each other, which is why the ADR carries a withdrawn
+  rejection rather than a tidy one.
+
 - **The camera port's `EM_JS` seam has nothing pinning its shape — closed by ADR 0045.**
   `host_camera_metric` and `capture-host.ts` agreed by an integer index and a property name, and
   neither was checked: `maxBurstFps` was in the C++ struct for the life of the field, had no
   `case`, and read as zero, which is a legal answer. `ICaptureSessionManager::CameraInUse()` puts
   what the core read back on the boundary, and `every camera capability the core reads crosses the
   seam it reads it through` is the browser test that runs `BrowserCameraAccess::Open` — the only
-  one in the tree that does. Renaming `case 8` to `case 9` fails it; before, that left the native
+  one in the tree that did. Renaming `case 8` to `case 9` fails it; before, that left the native
   suite, vitest and the browser suite all green with the floor dead.
+
+  Seven of the eight metrics, measured by renumbering each in turn: `supportsTorch` is `false` on a
+  runner with no torch whether the metric is read or not, so identity cannot separate the two. What
+  covers the rest of the seam is `the camera the core paces a burst by is the one the locks left
+  behind`, which pins an exposure — dropping the fake camera to 15 fps — and asserts the core paces
+  by 15. That one runs `Capabilities()` under wasm, which nothing else does: the C++ contract suite
+  has one implementation and it is a fake.
 
 - **The white-balance lock has no capability field — open, and pre-existing.**
   `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`
@@ -416,7 +430,8 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   for the case that was wrong — small, and worth a change of its own, because marker detection
   decides what crosses the boundary at all and a subtle change there is not something to slip
   into a PR about something else.
-- **Two capture loops from three buttons — open, and pre-existing.** `pump` says it is "the one
+- **Two capture loops from three buttons — open, and pre-existing.** Tracked as
+  [#50](https://github.com/h3ll5ur7er/sphanorama/issues/50). `pump` says it is "the one
   place that can promise there is only ever one", and nothing enforces that: `#new-capture` stays
   live while `enable` runs, so a refused resume followed by a resume press and then a new-capture
   press starts two loops. Found by a reviewer on PR #49, against ADR 0039's refused-resume flow.
@@ -539,12 +554,18 @@ were plausible:
 - *"one or two cells are on screen at all times, so the arrow is simply absent."* The first clause is
   right; the second does not follow. The arrow's condition is about the **target** cell, not about
   any cell. Sweeping elevations and azimuths across a few hundred randomly chosen capture states, a
-  level phone raises the arrow **roughly a third of the time** — two independent runs read 34.6%
+  level phone raised the arrow **roughly a third of the time** — two independent runs read 34.6%
   and 37.5%, and a third 39.4%, which is what a figure sampled over random coverage states does.
   The number is not the point and a single decimal place would be false precision; what matters is
-  that it is *not* near zero, and that it is symmetric in elevation, so nothing about it
-  distinguishes "down". (A reproducible version of this would have to state the capture states it
+  that it was *not* near zero, and that it was symmetric in elevation, so nothing about it
+  distinguished "down". (A reproducible version of this would have to state the capture states it
   sampled, which is the standard the rest of this section is now held to.)
+
+  **Past tense throughout, and that is not a stylistic choice.** Every figure in this bullet was
+  measured under the targeting rule ADR 0041 replaced, where the target could be a cell off screen.
+  Under the rule that shipped it is zero — see the paragraph below, which is the live number. A
+  reviewer read the two forty lines apart and asked which one was true; both are, of different
+  builds, and only this sentence said so.
 - *"Tilt down, the whole ring leaves the field of view."* At every elevation from −90 to +90 there
   are between one and five cell centres on screen; the view never empties, which is what a
   sphere-covering tessellation means. On a fresh capture the arrow is raised at 0 of 2664 attitudes.
@@ -575,7 +596,9 @@ nothing to point at, and every assertion in it fails without `#target-arrow[hidd
 none; }`. The half that asserted the arrow *can* appear is gone, because it rested on the rule
 ADR 0041 deleted and there is no arrangement left that raises it.
 
-**Still open, and in a shape somebody can pick up.**
+**Still open, and in a shape somebody can pick up** — tracked as
+[#52](https://github.com/h3ll5ur7er/sphanorama/issues/52), because a question this size does not
+belong only in a document nobody is assigned.
 
 1. *What should the arrow point at?* This is now the first question rather than the third, because
    the answer decides whether the feature exists. It points at `targetNode`, which since ADR 0041 is

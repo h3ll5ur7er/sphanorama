@@ -297,6 +297,8 @@ sequenceDiagram
   U->>M: ArmBurst(node, burst)
   M->>C: SetLocks(exposure, white balance, focus)
   C-->>M: Ok, or FailedPrecondition naming the locks not held
+  M->>C: Capabilities()
+  C-->>M: what the camera is doing now — a pinned exposure is what drops it to 15 fps (ADR 0045)
   Note over M,C: ticks pass and no frame is taken for burst.settleMs, while the camera converges
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)

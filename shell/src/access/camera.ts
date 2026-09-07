@@ -327,11 +327,23 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
 
     capabilities(): CameraCapabilities {
       const track = active?.getVideoTracks()[0];
-      if (!track) {
-        // No track, no answer. Zeros rather than a stale last-known set: the core reads 0 as "the
-        // platform will not say", which is exactly true of a camera that is gone.
-        return describe({}, {});
-      }
+      // No track, or one that has ended. Zeros rather than a stale last-known set: the core reads
+      // 0 as "the platform will not say", which is exactly true of a camera that is gone.
+      //
+      // The `ended` half is not the same guard written twice. `stop()` does not remove a track
+      // from its stream and `close()` is the only thing that clears `active` — which the page
+      // never calls, because the core's route out is `closeCamera` — so `active?.getVideoTracks()`
+      // goes on handing back the dead track for the life of the tab. Reading it produces a
+      // *mixture*: an ended track has dropped the geometry from `getSettings()` and still answers
+      // `getCapabilities()`, so the answer is zero width and height beside
+      // `supportsExposureLock: true`. The core would size a tessellation from
+      // `deriveFieldOfView(0, 0)` and pace a burst believing it can pin an exposure on a camera
+      // that is gone. Half an answer is worse than none, because none is a state the core has a
+      // word for.
+      //
+      // `=== 'ended'` rather than `!== 'live'`: the only two states a track has are those, and a
+      // fake without the property at all is a test's camera rather than a dead one.
+      if (!track || track.readyState === 'ended') return describe({}, {});
       let offered: Record<string, unknown> = {};
       try {
         offered = ((track as MediaStreamTrack & {
