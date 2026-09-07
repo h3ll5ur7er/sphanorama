@@ -762,9 +762,20 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     coverageStale = false;
     nodesSatisfied = state.value.nodesSatisfied;
     lastCoverage = state.value;
-    // Checked after the await as well as in `paintOverlay`, because this repaints the map too and
-    // that is a second drawing surface the flag has to reach.
-    if (loopStopped) return;
+    // The map is drawn whatever state the loop is in; the markers are not, and `paintOverlay`
+    // gates itself.
+    //
+    // This used to return early on `loopStopped`, on the argument that a terminal state has no
+    // later tick to correct a stale dot. A reviewer showed what that costs once the camera-lost
+    // branch also sets the flag: a cell whose burst *completed* on the last tick before the loss
+    // has its `refreshCoverage` in flight, and the read lands with the flag set — so the map ends
+    // one cell short of the work the user actually did, permanently, with no way to find out
+    // otherwise. That is the window the sibling branch calls `refreshCoverage` *for*.
+    //
+    // The dot is not stale either: this line runs only when `coverage()` answered, and what it
+    // answered is the core's own final count. A marker is a claim about where to point a camera
+    // that may be gone, which is why that one still stops; a filled cell is a record of a frame
+    // that was banked, and it stays true whatever happens to the loop afterwards.
     review.show(plan, state.value);
     paintOverlay();
   };
@@ -893,6 +904,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
    * the least specific of the three and would otherwise tell a user whose camera was taken that
    * the core had stopped answering. Most specific first, and the broad fact only when the narrow
    * ones have nothing to say.
+   *
+   * The order picks the most *informative* sentence, not the most severe one: all three are
+   * terminal, and there is nothing to weigh. Nor is the first clause an independent guard — a
+   * reviewer checked, and it is not: `forgetCamera` stops every track before it sets
+   * `cameraTakenAway`, so clause 2 is true whenever clause 1 is. Clause 1 exists to choose "taken
+   * away" over "closed", which is the difference between something that happened to the user and
+   * something the app did. Kept as a clause rather than moved into the message for that reason,
+   * and written down because a guard that cannot decide anything reads as a checked case.
    */
   const cannotArm = (): { say: string; row: string } | null => {
     if (cameraLost()) {
@@ -1034,7 +1053,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       //
       // After the write settles rather than before, for the same reason the core's re-ask is after
       // `SetLocks`: before it, this reports the camera we are about to change.
-      remote.setCamera(camera.capabilities());
+      //
+      // `refreshCamera` rather than `setCamera`, and the difference is a race this guard cannot
+      // win on its own: the core closes the camera from inside the worker and the page hears about
+      // it by a message, so an arm parked on `applyConstraints` can resume in the gap and push
+      // what it read before `cannotArm` had anything to see. A refresh cannot create a camera, so
+      // one that lost that race says nothing instead of handing the core a dead track.
+      remote.refreshCamera(camera.capabilities());
       // On screen as well as into the core. The page has always known which locks the camera
       // granted and had nowhere to say it, which left the one question a burst's numbers raise —
       // is the camera free to re-expose and refocus between these frames? — unanswerable from a
@@ -1061,7 +1086,14 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         lockFocus: held.ok && held.value.focus,
       });
     } catch (cause) {
-      sayForAWhile(`arming failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      // The fourth exit, and the only one that used to speak without asking whether anything was
+      // left to speak to. `sayForAWhile` writes `#guidance` directly and a stopped loop has no
+      // next tick to overwrite it, so `arming failed: …` became the page's last word over a stage
+      // line telling the user to reload — the same defect the three windows below and above were
+      // each fixed for, reached through the one door nobody had checked.
+      const gone = cannotArm();
+      sayForAWhile(gone !== null ? gone.say
+        : `arming failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       unlock();
       return false;
     }
@@ -1073,6 +1105,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // `sayForAWhile` writes `#guidance` directly and no tick follows a stopped loop, so
       // "capturing without exposure lock" or an arming refusal becomes the page's last word for
       // the life of the tab, over a stage line telling the user to reload.
+      //
+      // And the locks come back, which this exit alone did not do. It was written for a camera
+      // that had been taken away, where there is nothing left to unlock; widening it to a stopped
+      // loop reaches it with the camera *alive* and pinned at one exposure and focus, `#locks`
+      // still listing all three, and no tick coming that could release them — the core's own
+      // release rides on `AdvanceBurst`, which needs the loop this exit is about. `writeLocks` on
+      // a track that has ended is refused by the adapter rather than answered, so calling it here
+      // is right in both cases.
+      unlock();
       sayForAWhile(lostWhileArming.say);
       return false;
     }
@@ -1260,6 +1301,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       });
       if (guided.ok) {
         guidanceFailed = false;
+        // A run of rejections, not a lifetime total. This was reset only on a *failing* tick that
+        // reached the manager, and never on a successful one — so three transient `_malloc`
+        // failures spread across a whole capture latched `loopStopped` and ended the session with
+        // "the core stopped answering", on a device that had answered a thousand times between
+        // them. The bound exists to stop a worker that is *gone* from being fed for ever; a core
+        // that answers is not gone.
+        unreachedTicks = 0;
         const guidance = guided.value;
         firing = guidance.action === 'Firing';
         heldFraction = guidance.heldFraction;

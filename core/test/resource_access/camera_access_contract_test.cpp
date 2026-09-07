@@ -137,7 +137,12 @@ TYPED_TEST(CameraAccessContract, ClosingReturnsTheCameraToItsInitialState) {
 // nothing checks is one that can start answering `Ok` with an empty struct without anything going
 // red. That is the failure null-over-stub exists to prevent, so the coverage moves here rather
 // than disappearing.
-TEST(NullCamera, RefusesEveryCallWithAReasonRatherThanAnEmptyAnswer) {
+TEST(NullCamera, RefusesEveryCallThatNeedsACameraWithAReasonRatherThanAnEmptyAnswer) {
+  // Named for what it does. It was `RefusesEveryCall…`, which is not what this port does and not
+  // what this test asserts: `StopPreview` and `Close` answer `Ok`, and the assertions at the end
+  // are here so that "every call that needs a camera" is a partition of the port rather than a
+  // phrase. The same sentence was wrong in `camera_access.h` and twice in ADR 0045; a reviewer
+  // found it in the header, the fix reached the header alone, and a second reviewer found the rest.
   NullCameraAccess camera;
 
   auto opened = camera.Open(CameraOpenSpec{});
@@ -151,6 +156,32 @@ TEST(NullCamera, RefusesEveryCallWithAReasonRatherThanAnEmptyAnswer) {
   // `CameraUnavailable` rather than `FailedPrecondition`, and that is the contract rather than an
   // inconsistency: this port has no camera at all, which is not a call made out of order.
   EXPECT_EQ(camera.Capabilities().status.code, StatusCode::CameraUnavailable);
+
+  // And the two that do not refuse, which is the other half of the same rule. Stopping a preview
+  // that is not running and closing a camera that is not open are requests this port has already
+  // satisfied, so refusing them would make a caller's cleanup path report a failure that is not
+  // one — `CaptureSessionManager::End` calls both and would carry the status out.
+  EXPECT_TRUE(camera.StopPreview().ok());
+  EXPECT_TRUE(camera.Close().ok());
+}
+
+TEST(FakeCamera, ARefusedLockWriteChangesNothing) {
+  // The fake's own "not open means nothing happened", which the reordered guard in `SetLocks` is
+  // for and which nothing asserted — the guard sat below the mutation it was meant to guard, so a
+  // lock write to a closed camera changed what the camera would report once reopened while
+  // returning a refusal saying it had done nothing.
+  //
+  // Not reachable from the manager, which never writes locks to a closed camera. It is asserted
+  // because a fake that quietly does something on a path it says it refuses is a fake that will
+  // one day explain a test result nobody can reproduce.
+  FakeCameraAccess camera;
+  camera.SlowToOnLock(2.0);
+
+  EXPECT_EQ(camera.SetLocks(true, true, true).code, StatusCode::FailedPrecondition);
+
+  ASSERT_TRUE(camera.Open(CameraOpenSpec{}).ok());
+  EXPECT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 30.0)
+      << "a lock write this camera refused still slowed it down";
 }
 
 TEST(FakeCamera, RecordsThatTheSessionLockedExposureForABurst) {

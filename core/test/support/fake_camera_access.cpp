@@ -18,6 +18,7 @@ FakeCameraAccess::FakeCameraAccess(std::shared_ptr<IFrameStoreAccess> store)
   capabilities_.supportsExposureLock = true;
   capabilities_.supportsFocusLock = true;
   capabilities_.maxBurstFps = 30.0;
+  free_running_fps_ = capabilities_.maxBurstFps;
 }
 
 Result<CameraCapabilities> FakeCameraAccess::Open(const CameraOpenSpec&) {
@@ -71,8 +72,8 @@ Status FakeCameraAccess::SetLocks(bool exposure, bool, bool) {
   // exposure long is what drops a real camera from 30 fps to 15 — the exposure specifically, which
   // is why only that flag is read here. A test asks for it with
   // `SlowToOnLock`.
-  if (fps_on_lock_ > 0.0 && exposure) {
-    capabilities_.maxBurstFps = fps_on_lock_;
+  if (fps_on_lock_ > 0.0) {
+    capabilities_.maxBurstFps = exposure ? fps_on_lock_ : free_running_fps_;
   }
   if (fail_unlock_ && !exposure) {
     // Refused *and* left locked, which is the case worth modelling: a port that failed to unlock

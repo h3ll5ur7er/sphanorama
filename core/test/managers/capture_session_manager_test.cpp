@@ -2264,6 +2264,61 @@ TEST_F(CaptureSession, TheRateIsReadAfterTheLocksLandRatherThanBefore) {
       << "the burst was paced by the rate the camera had before its exposure was pinned";
 }
 
+TEST_F(CaptureSession, ARateDroppedByALockComesBackWhenTheLockDoes) {
+  // The fake's own honesty, and it is worth a test because the manager reads this port for a
+  // number it paces bursts by. The drop was one-way: `SlowToOnLock` pinned the rate on a lock
+  // write and nothing put it back — not the unlock, not `Close()` — so a camera reopened after a
+  // locked burst reported the slow rate with no lock held, and every arm after the first in a
+  // session would have been paced by a camera state that had ended.
+  //
+  // A real camera does exactly this and back again: an exposure held long costs frame rate, and
+  // releasing it returns the rate. A fake that models only the first half makes the second
+  // untestable.
+  FakeCameraAccess camera(store);
+  camera.SlowToOnLock(2.0);
+  ASSERT_TRUE(camera.Open(CameraOpenSpec{}).ok());
+  ASSERT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 30.0);
+
+  ASSERT_TRUE(camera.SetLocks(true, true, true).ok());
+  EXPECT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 2.0)
+      << "a pinned exposure did not cost the camera anything";
+
+  ASSERT_TRUE(camera.SetLocks(false, false, false).ok());
+  EXPECT_DOUBLE_EQ(camera.Capabilities().value.maxBurstFps, 30.0)
+      << "the camera kept the slow rate after it stopped holding the exposure";
+}
+
+TEST_F(CaptureSession, ARefreshThatSaysNothingKeepsEveryNumberTheSessionHad) {
+  // Zero is the contract's word for "the platform will not say", so an `Ok` carrying zeros reports
+  // the same fact a refusal does and has to leave the session in the same state. That was true of
+  // `maxBurstFps` and of nothing else: the rule was stated generally in the comment beside it and
+  // applied to one field, so a silent refresh replaced a real resolution and a real field of view
+  // with zeros — which `CameraInUse()` then publishes as what the camera reports, and which
+  // `deriveFieldOfView(0, 0)` on the way back in would size a tessellation from.
+  //
+  // The booleans are deliberately not in this: `false` is an answer, not a silence.
+  BurstSpec burst;
+  burst.frameCount = 2;
+
+  Begin();
+  auto atBegin = manager->CameraInUse();
+  ASSERT_TRUE(atBegin.ok()) << atBegin.status.detail;
+  ASSERT_GT(atBegin.value.maxWidth, 0) << "nothing to lose, so this test is about nothing";
+  ASSERT_GT(atBegin.value.horizontalFovDeg, 0.0);
+
+  // Everything zero: a camera that has stopped saying anything measurable, while still answering.
+  camera->SetCapabilities(CameraCapabilities{});
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+
+  auto after = manager->CameraInUse();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.maxWidth, atBegin.value.maxWidth) << "maxWidth";
+  EXPECT_EQ(after.value.maxHeight, atBegin.value.maxHeight) << "maxHeight";
+  EXPECT_DOUBLE_EQ(after.value.maxBurstFps, atBegin.value.maxBurstFps) << "maxBurstFps";
+  EXPECT_DOUBLE_EQ(after.value.horizontalFovDeg, atBegin.value.horizontalFovDeg) << "horizontal";
+  EXPECT_DOUBLE_EQ(after.value.verticalFovDeg, atBegin.value.verticalFovDeg) << "vertical";
+}
+
 TEST_F(CaptureSession, TheCameraInUseIsTheOneTheBurstIsPacedBy) {
   // `CameraInUse()` had no native test of any kind: deleting its session guard and returning a
   // default-constructed struct was invisible to the whole suite. Two claims in its header, both

@@ -704,9 +704,11 @@ test('a burst locks the camera when the camera can be locked', async ({ browser 
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -845,9 +847,11 @@ test('a held cell fires one burst, not one per tick', async ({ browser }) => {
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -916,7 +920,11 @@ test('every camera capability the core reads crosses the seam it reads it throug
   // Every test written when the field was finally wired sat on the TypeScript side of the
   // boundary, so renaming `case 8` to `case 9` left the native suite, vitest and the browser suite
   // all green with the floor dead again. This is the assertion that fails instead — the only one
-  // in the tree that runs `BrowserCameraAccess::Open`, which executes under wasm and nowhere else.
+  // in the tree that reads the whole struct back through the seam.
+  //
+  // Not "the only one that runs `BrowserCameraAccess::Open`", which this said: every test that
+  // clicks `#enable` runs it, because `Begin` opens the camera, and there are 47 of them. What
+  // none of them did was look at what it answered, which is a different and much smaller claim.
   //
   // Chromium's `--use-fake-device-for-media-stream` reports a real resolution and a real frame
   // rate, so the values are the device's rather than a fixture's, and the assertions are about
@@ -965,9 +973,24 @@ test('every camera capability the core reads crosses the seam it reads it throug
     expect(seen.supportsFocusLock, 'supportsFocusLock').toBe(pageSees.supportsFocusLock);
 
     // The field of view is derived in the host from the resolution rather than read from a metric,
-    // so equality against the page would compare a constant with itself. What it can say is that
-    // the pair is oriented the way the frame is — a landscape frame has the wider angle across —
-    // which is the transposition this file's own tessellation depends on.
+    // and the page adapter's own `CameraCapabilities` has no field for it at all — so there is no
+    // page-side value to compare against and identity is impossible here, rather than merely weak.
+    //
+    // These two lines cannot fail in this test, and the reason is better than the assertion would
+    // have been. Measured by renumbering `case 2` off the end and rebuilding the core: the metric
+    // reads 0, `Begin` refuses with "the lens field of view is unknown; nothing can be
+    // tessellated", and the test dies fifty lines above this at `#stage` never reaching
+    // "capturing" — as does every other browser test that opens a camera. So cases 2 and 3 are the
+    // most strongly pinned metrics in the switch: a session cannot begin without them.
+    //
+    // They stay because zero here is the contract's "the platform will not say", and a build where
+    // that reached the client rather than refusing would fail at the nearest assertion instead of
+    // wherever it happened to matter. What nothing catches is a *wrong constant* — nothing
+    // measures the angle at all; see the field-of-view entry in `docs/06-roadmap.md`.
+    //
+    // What stands in for identity is the orientation check below: the pair is oriented the way the
+    // frame is — a landscape frame has the wider angle across — which is the transposition this
+    // file's own tessellation depends on.
     expect(seen.horizontalFovDeg, 'horizontalFovDeg').toBeGreaterThan(0);
     expect(seen.verticalFovDeg, 'verticalFovDeg').toBeGreaterThan(0);
     expect(seen.maxWidth > seen.maxHeight
@@ -1126,9 +1149,11 @@ test('a session ended mid-burst still says which locks that burst had', async ({
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1212,10 +1237,12 @@ test('a camera taken away mid-session takes the capture loop with it', async ({ 
 test('a slow camera spends its lock budget on the track, not in the queue', async ({ browser }) => {
   // The 3 s bound on a lock write used to start when the write joined the chain rather than when
   // it reached the track, and every refusal queued a release behind the write it had given up on
-  // — so the queue grew by one write per failure. On a camera taking 700 ms per constraint the
-  // first burst succeeded and every burst after it was refused at 3 s intervals, most of that
-  // spent waiting, while the track answered fourteen constraints back to back without an idle
-  // moment. One cell per session, blamed on a camera that was answering everything it was asked.
+  // — so the queue grew by one write per failure. On the camera this was first measured with, at
+  // 700 ms per constraint, the first burst succeeded and every burst after it was refused at 3 s
+  // intervals, most of that spent waiting, while the track answered fourteen constraints back to
+  // back without an idle moment. One cell per session, blamed on a camera that was answering
+  // everything it was asked. (The figure below is 400 ms now, for a reason given there; the
+  // history is the history.)
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -1227,22 +1254,30 @@ test('a slow camera spends its lock budget on the track, not in the queue', asyn
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
       };
       return { ...settings.call(this), ...adapting, ...settled };
     };
-    // Slow, and never silent: 700 ms per constraint set, which is a 6x outlier over the 120 ms
-    // this codebase has measured and well inside the 3 s the page allows one write.
+    // Slow, and never silent: 400 ms per constraint set, a 3x outlier over the 120 ms this
+    // codebase has measured.
+    //
+    // It was 700 ms, and the arithmetic stopped working when the fake above started forcing
+    // `continuous`. `writeLocks` bounds a whole *write* at 3 s, and a write is three constraint
+    // sets — so 700 became 2100, and a reviewer measured runs at 2109–2180 ms against that bound.
+    // A loaded runner tips that into the abandoned-write branch, which is a different test.
+    // 1200 ms leaves 1800 ms of margin and exercises the same queue.
     MediaStreamTrack.prototype.applyConstraints = function (constraints) {
       return new Promise((resolve) => setTimeout(() => {
         for (const asked of constraints?.advanced ?? []) settled = { ...settled, ...asked };
         resolve();
-      }, 700));
+      }, 400));
     };
   });
 
@@ -1291,9 +1326,11 @@ test('a camera taken away mid-arm does not arm anything', async ({ browser }) =>
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1379,9 +1416,11 @@ test('an arm still in flight does not hand back a camera the core has closed', a
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -1420,6 +1459,13 @@ test('an arm still in flight does not hand back a camera the core has closed', a
     // *and* what an arm refused before it ever started produces, so the assertions below are what
     // carry the test; this one only says the arm did not somehow succeed over a closed camera.
     expect(armed, 'a burst armed over a camera the core had closed').toBe(false);
+    // And it was refused by *this* guard, in the window this test is about. `false` is also what
+    // an arm refused before it ever started returns — a reviewer showed the test staying green
+    // with `armAt` refusing everything outright — so the premise needs its own assertion. This
+    // line is written by one branch in the tree: the mid-arm check, after the lock write settled
+    // and found the camera closed under it.
+    await expect(page.locator('#locks'))
+      .toContainText('the camera was closed mid-arm', { timeout: 15000 });
 
     // The fact the whole thing turns on: with the camera closed, the core must not think it has
     // one. Asked through `Begin`, because that is the caller whose refusal matters — a session
@@ -1464,9 +1510,11 @@ test('a camera taken away while the arm is in the core says so, and keeps saying
     };
     // The three modes are stated rather than passed through, and it is load-bearing: Chromium's
     // fake device reports `exposureMode: 'manual'` from the moment it opens, so a fake that let
-    // the real settings show through has `setLocks` find every lock already held and apply no
-    // constraint at all — and the delay below, which is what makes this test's window, never runs.
-    // The camera has to start out adapting for pinning it to be an event.
+    // the real settings show through has `setLocks` find the locks already held and skip the
+    // negotiation the delay below is measuring. Measured, since the first version of this note
+    // said "apply no constraint at all" and a reviewer counted: four constraint sets per arm
+    // before, six after — the releases still ran, the acquisitions did not. The camera has to
+    // start out adapting for pinning it to be an event.
     MediaStreamTrack.prototype.getSettings = function () {
       const adapting = {
         exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous',
@@ -3119,8 +3167,14 @@ test('a core that stops answering stops the loop rather than feeding it for ever
     // the page had said the core was gone. So the line the guard produces is asserted too.
     expect(await page.evaluate(() => window.sphanoramaCapture()),
       'a stopped loop still armed a burst').toBe(false);
+    // `reload to start again`, not `stopped answering`. The shorter phrase is what the loop's own
+    // terminal exit already wrote to `#guidance` before this call was made — the `#stage`
+    // assertion above waits for it — so asserting it here passes with the guard deleted, which a
+    // reviewer measured. The full sentence is `cannotArm`'s and nothing else in the page produces
+    // it. Which is the same defect as the one this test was rewritten to fix, in the assertion
+    // written to fix it.
     await expect(page.locator('#guidance'))
-      .toContainText(/stopped answering/i, { timeout: 5000 });
+      .toContainText(/reload to start again/i, { timeout: 5000 });
 
     // And it really stopped: no further guidance calls after the ones it took to decide.
     const settled = await page.evaluate(() => window.__guidanceFailuresInjected);

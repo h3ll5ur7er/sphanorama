@@ -102,6 +102,35 @@ describe('capture host', () => {
     expect(caps.verticalFovDeg).toBeGreaterThan(0);
   });
 
+  it('a refresh updates a camera it has and cannot conjure one it has not', () => {
+    // ADR 0045's push, and the reason it is a different verb from `setCamera`. A pushed fact can
+    // arrive late: the core closes the camera from inside this worker and the page learns by a
+    // message, so an arm parked on `applyConstraints` can resume in the gap and push what it read
+    // beforehand. Through `setCamera` that hands the core a camera back — `cameraOpen()` true
+    // again on a struct read off a dead track, and the next `Begin` plans a whole tessellation
+    // from it, measured at 32 cells.
+    //
+    // The page guards it too, and cannot close it: a page guard can only refuse on a close it has
+    // already been *told* about. Here the question does not arise.
+    const opened = {
+      maxWidth: 1920, maxHeight: 1080, maxBurstFps: 30, supportsTorch: false,
+      supportsExposureLock: true, supportsWhiteBalanceLock: true, supportsFocusLock: true,
+    };
+    const host = createCaptureHost();
+
+    host.refreshCamera(opened);
+    expect(host.cameraOpen(), 'a refresh opened a camera nobody had opened').toBe(false);
+
+    host.setCamera(opened);
+    // What a pinned exposure does to a real camera, which is the whole reason the push exists.
+    host.refreshCamera({ ...opened, maxBurstFps: 15 });
+    expect(host.cameraCapabilities().maxBurstFps, 'the refresh did not reach the core').toBe(15);
+
+    host.closeCamera();
+    host.refreshCamera(opened);
+    expect(host.cameraOpen(), 'a late refresh handed back a camera the core had closed').toBe(false);
+  });
+
   it('carries the camera rate through to what the core reads', () => {
     // `maxBurstFps` is what `CaptureSessionManager` floors a burst's interval and settle with
     // (ADR 0018, ADR 0032). It crosses four hand-written mirrors of one C++ struct to get here —

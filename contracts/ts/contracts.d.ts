@@ -832,11 +832,13 @@ export interface CameraAccess {
    * Two refusals, and they are different facts rather than two spellings of one. A port that has a
    * camera but has not opened it answers `FailedPrecondition` — a call out of order, fixable by
    * opening. A port with no camera at all answers `CameraUnavailable`, which is not a sequencing
-   * complaint. `NullCameraAccess` gives the second to every call that could report a camera;
-   * `StopPreview` and `Close` return `Ok`, because stopping something that is not running and
-   * closing something that is not open are requests it has already satisfied. ("Says to
-   * everything" is what this said, and a reviewer read the file.) The contract suite holds the
-   * first refusal; the null port's own test holds the second.
+   * complaint. `NullCameraAccess` gives the second to every call that needs a camera — `Open`,
+   * `Capabilities`, `StartPreview`, `PeekPreviewFrame`, `SetLocks`. `StopPreview` and `Close`
+   * return `Ok`, because stopping something that is not running and closing something that is not
+   * open are requests it has already satisfied. ("Says to everything" is what this said, and then
+   * "every call that could report a camera", which is not the line either — `StartPreview` and
+   * `SetLocks` report no camera and still refuse. Two reviewers, two readings of the file.) The
+   * contract suite holds the first refusal; the null port's own test holds the second.
    * It exists because a capability moves. `SetLocks` pins the exposure (ADR 0022), and a camera
    * whose exposure has just been pinned long is exactly the one that drops from 30 fps to 15 — so
    * `maxBurstFps`, which floors a burst's interval and settle (ADR 0018, ADR 0032), goes stale in

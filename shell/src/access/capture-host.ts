@@ -63,6 +63,22 @@ export interface CaptureHost {
   cameraOpen(): boolean;
   cameraCapabilities(): CameraCapabilities;
   setCamera(camera: Omit<CameraCapabilities, 'horizontalFovDeg' | 'verticalFovDeg'>): void;
+  /**
+   * Updates the camera this host is already holding, and does nothing when it is holding none.
+   *
+   * ADR 0045's push, and it is a *different* verb from `setCamera` for one reason: a pushed fact
+   * can arrive late. The core closes the camera from inside this worker, and the page learns of it
+   * by a message; an arm parked on `applyConstraints` can resume in the gap and push what it read
+   * before. Through `setCamera` that hands the core a camera back — `cameraOpen()` reads true
+   * again, and the next `Begin` plans a whole tessellation against a struct read off a dead track.
+   *
+   * The page guards it too, but a page guard cannot close this: it can only refuse on a close it
+   * has already been *told* about. Here the question does not arise. A refresh says "the camera
+   * you have is now like this", so with no camera there is nothing for it to say, and the last
+   * word on whether a camera exists stays with `setCamera` and `clearCamera` — the two calls the
+   * page makes when it actually opens or loses one.
+   */
+  refreshCamera(camera: Omit<CameraCapabilities, 'horizontalFovDeg' | 'verticalFovDeg'>): void;
   clearCamera(): void;
 
   /**
@@ -239,6 +255,17 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
     },
 
     setCamera(opened) {
+      camera = {
+        ...opened,
+        ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),
+      };
+    },
+
+    refreshCamera(opened) {
+      // Nothing to refresh, and that is the whole of it — see the note on the interface. A push
+      // that lost the race with a close finds no camera here and says nothing, instead of
+      // becoming one.
+      if (camera === null) return;
       camera = {
         ...opened,
         ...deriveFieldOfView(opened.maxWidth, opened.maxHeight, ASSUMED_LONG_EDGE_FOV_DEG),

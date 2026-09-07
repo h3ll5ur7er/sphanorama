@@ -367,8 +367,18 @@ function fakeTrack(options: {
 } = {}) {
   const applied: unknown[] = [];
   let settings: Record<string, unknown> = { width: 1920, height: 1080, ...options.initial };
+  // Live until a test ends it. Modelled because an ended track is not a missing one and the two
+  // answer very differently: `getSettings()` drops the geometry and keeps the mode strings, and
+  // `applyConstraints` rejects.
+  let readyState = 'live';
   const track = {
     applied,
+    end() {
+      readyState = 'ended';
+      settings = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => !['width', 'height', 'frameRate'].includes(key)));
+    },
+    get readyState() { return readyState; },
     getSettings: () => settings,
     getCapabilities: () => {
       if (options.capabilitiesThrow) {
@@ -384,6 +394,14 @@ function fakeTrack(options: {
     },
     async applyConstraints(constraints: unknown) {
       applied.push(constraints);
+      if (readyState === 'ended') {
+        // What Chromium does. Swallowed by `ask`, which is right — a camera that will not take a
+        // constraint is a supported outcome — and is exactly why the read-back has to be of
+        // something alive.
+        const error = new Error('the track has ended');
+        error.name = 'InvalidStateError';
+        throw error;
+      }
       if (options.rejectWith) {
         const error = new Error('constraint refused');
         error.name = options.rejectWith;
@@ -573,6 +591,21 @@ describe('what the camera says it offers', () => {
     expect(camera.offeredModes().exposure).toBeNull();
   });
 
+  it('says nothing about the modes of a track that has ended', async () => {
+    // ADR 0033: a refusal explained with the last camera's lists is worse than one explained with
+    // nothing, and "the last camera" here is the same one — the page never calls `close()`, so a
+    // track that simply ends leaves `offered` standing and the row goes on quoting a device that
+    // is gone.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    expect(camera.offeredModes().exposure).toEqual(['continuous', 'manual']);
+
+    track.end();
+
+    expect(camera.offeredModes().exposure, 'a dead track was still listing its modes').toBeNull();
+  });
+
   it('replaces the list when another camera is opened', async () => {
     // Same reason a refusal is not carried across an open: what a camera offers is a fact about
     // that camera.
@@ -588,6 +621,28 @@ describe('what the camera says it offers', () => {
 });
 
 describe('applying the locks', () => {
+  it('refuses a track that has ended rather than reading a lock off a corpse', async () => {
+    // ADR 0022's rule is that the returned state is *observed* rather than acknowledged, and
+    // observing a corpse is not observing. On an ended track `applyConstraints` rejects — which
+    // `ask` swallows by design — while `getSettings()` keeps the last lock's mode strings. So the
+    // read-back reports the locks the dead camera was holding, and a release that reached the
+    // track nowhere comes back as `ok({exposure: true, …})`: success invented from rejections.
+    //
+    // The `!track` guard could not fire for this. `close()` is the only thing that clears the
+    // adapter's stream and the page never calls it, so the dead track is still handed out.
+    const track = fakeTrack();
+    const camera = createCameraAccess(mediaWith(track) as never);
+    await camera.open({ preferRearCamera: true });
+    const held = await camera.setLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(held.ok && held.value.exposure, 'the arrangement never took a lock to lose').toBe(true);
+
+    track.end();
+
+    const released = await camera.setLocks({ exposure: false, whiteBalance: false, focus: false });
+    expect(released.ok, 'a dead track answered a lock write').toBe(false);
+    if (!released.ok) expect(released.status.code).toBe('CameraUnavailable');
+  });
+
   it('asks the track for manual modes and confirms they took', async () => {
     const track = fakeTrack();
     const camera = createCameraAccess(mediaWith(track) as never);

@@ -1044,14 +1044,27 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // had: declining to capture because a figure could not be refreshed trades a real capture for
   // an accurate number, which is backwards.
   if (auto refreshed = camera_.Capabilities(); refreshed.ok()) {
-    // Zero never overwrites a rate we had. Zero is the contract's word for "the platform will not
-    // say", which is the same fact a *refused* refresh reports — so an `Ok` carrying zero and a
-    // refusal have to leave the session in the same state, and they did not: the refusal kept the
-    // floor and this discarded it. The browser port is the likely producer of the second, since
-    // `ReadCapabilities` maps a missing or non-finite `frameRate` to `0.0` and answers `Ok`.
-    const double keptRate = camera_capabilities_.maxBurstFps;
+    // Zero never overwrites a number we had. Zero is the contract's word for "the platform will
+    // not say", which is the same fact a *refused* refresh reports — so an `Ok` carrying zero and
+    // a refusal have to leave the session in the same state, and they did not: the refusal kept
+    // the value and this discarded it. The browser port is the likely producer of the second,
+    // since `ReadCapabilities` maps a missing or non-finite metric to `0.0` and answers `Ok`.
+    //
+    // Every measured field, not only the rate. That was the shape a reviewer found: the rule was
+    // stated generally in this comment and applied to `maxBurstFps` alone, so a refresh that said
+    // nothing still replaced a real resolution with zeros — which `CameraInUse()` then publishes
+    // as what the camera reports. The booleans are left out because they have no "will not say":
+    // `false` is an answer.
+    const CameraCapabilities kept = camera_capabilities_;
     camera_capabilities_ = refreshed.value;
-    if (!(camera_capabilities_.maxBurstFps > 0.0)) camera_capabilities_.maxBurstFps = keptRate;
+    const auto keepIfSilent = [](auto& now, auto before) {
+      if (!(now > 0)) now = before;
+    };
+    keepIfSilent(camera_capabilities_.maxBurstFps, kept.maxBurstFps);
+    keepIfSilent(camera_capabilities_.maxWidth, kept.maxWidth);
+    keepIfSilent(camera_capabilities_.maxHeight, kept.maxHeight);
+    keepIfSilent(camera_capabilities_.horizontalFovDeg, kept.horizontalFovDeg);
+    keepIfSilent(camera_capabilities_.verticalFovDeg, kept.verticalFovDeg);
   }
 
   firing_ = true;

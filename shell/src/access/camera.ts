@@ -360,15 +360,32 @@ export function createCameraAccess(media: MediaDevices | undefined): CameraAcces
     },
 
     offeredModes() {
-      return offered;
+      // The same rule as `capabilities()` and `setLocks()` above: a camera that is gone has nothing
+      // to say. `offered` is cleared by `open` and `close`, and the page calls neither when a track
+      // simply ends — so a refusal explained after the camera went would have been explained with
+      // the *previous* camera's lists, which ADR 0033 says outright is worse than explaining
+      // nothing. Reported, never consulted, so this costs a row a sentence and nothing else.
+      const track = active?.getVideoTracks()[0];
+      return !track || track.readyState === 'ended' ? NOTHING_REPORTED : offered;
     },
 
     async setLocks(wanted: LockState) {
       const track = active?.getVideoTracks()[0] as (MediaStreamTrack & {
         applyConstraints?(constraints: unknown): Promise<void>;
       }) | undefined;
-      if (!track) {
-        return err<LockState>('CameraUnavailable', COMPONENT, 'no camera open');
+      // The same `ended` half `capabilities()` above needed, and here it is worse than a mixture.
+      // Measured on an ended track in Chromium: `applyConstraints` rejects, which the `ask` below
+      // swallows by design; `getSettings()` drops the geometry but *keeps the last lock's mode
+      // strings*. So the read-back that is supposed to make this call's answer true reads
+      // `exposureMode: 'manual'` off a dead track, and `setLocks({all false})` returns
+      // `ok({exposure: true, whiteBalance: false, focus: true})` — success invented from three
+      // rejections, and a lock reported held by a camera that is gone.
+      //
+      // ADR 0022's whole point is that the returned state is *observed* rather than acknowledged.
+      // Observing a corpse is not observing. A client guard catches this today on one of three
+      // paths into `writeLocks`; that is a client's job to do as well, not instead.
+      if (!track || track.readyState === 'ended') {
+        return err<LockState>('CameraUnavailable', COMPONENT, 'no live camera track');
       }
 
       // A refusal is never a failure of this call: it means the camera would not take that lock,

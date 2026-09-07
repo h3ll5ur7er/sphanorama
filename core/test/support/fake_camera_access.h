@@ -58,7 +58,10 @@ class FakeCameraAccess final : public ICameraAccess {
     }
     return Ok(capabilities_);
   }
-  void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
+  void SetCapabilities(const CameraCapabilities& caps) {
+    capabilities_ = caps;
+    free_running_fps_ = caps.maxBurstFps;
+  }
   /**
    * Where this camera's fills start, so two of them can produce frames a test can tell apart.
    * Every instance counts from 1 otherwise, which is right — a fresh camera in a fresh process is
@@ -78,6 +81,10 @@ class FakeCameraAccess final : public ICameraAccess {
   // this fake could change a capability after `Open` before, so ADR 0045's whole subject — a
   // capability that moves, and moves *because* of a lock write — had no arrangement in the suite,
   // and moving the re-ask above `SetLocks` left every test green.
+  // The drop is undone when the lock is, which is the half a reviewer found missing: the rate was
+  // dropped by a lock write and restored by nothing — not the unlock, not `Close()` — so a fake
+  // reopened after a locked burst reported the slow rate with no lock held, and a second `Begin`
+  // would have paced by it. A real camera goes back up when it stops holding the exposure.
   void SlowToOnLock(double fps) { fps_on_lock_ = fps; }
   /** Makes releasing the locks fail, which the real port can do: applyConstraints can reject. */
   void FailUnlock(bool fail) { fail_unlock_ = fail; }
@@ -93,6 +100,10 @@ class FakeCameraAccess final : public ICameraAccess {
   bool fail_open_ = false;
   bool fail_capabilities_ = false;
   double fps_on_lock_ = 0.0;
+  // What the camera runs at when nothing is pinned, so the drop above has something to come back
+  // to. Kept beside the struct rather than read out of it, because the struct is what the drop
+  // overwrites.
+  double free_running_fps_ = 0.0;
   bool fail_unlock_ = false;
   bool fail_close_ = false;
   int frames_taken_ = 0;

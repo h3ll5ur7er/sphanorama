@@ -117,8 +117,22 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
           // What must never arrive here is a struct read off a camera that is gone. That is the
           // page's to guarantee and it does (`cannotArm` in `main.ts`, ADR 0045), because only the
           // page can tell "the platform said nothing" from "there is no track left to ask".
-          if (message.opened !== null) captureHost.setCamera(message.opened);
+          //
+          // `!= null` rather than `!== null`, so an *absent* `opened` is refused rather than
+          // answered. TypeScript makes that unreachable from this repo's own sender; the cost of
+          // being right about it anyway is one character, and the failure it prevents is
+          // `cameraOpen()` true with every metric NaN — which reads as a camera and plans like one.
+          if (message.opened != null) captureHost.setCamera(message.opened);
           else captureHost.clearCamera();
+          return;
+
+        // What the page has just done to the camera it holds, rather than a camera arriving or
+        // going (ADR 0045). It cannot create one — the host drops it when there is none — which is
+        // what stops a push that lost the race with a `closeCamera` from handing the core a camera
+        // back. A guard on the page can only refuse on a close it has already been told about;
+        // this one does not have to know.
+        case 'camera-refresh':
+          if (message.opened != null) captureHost.refreshCamera(message.opened);
           return;
 
         case 'motion':

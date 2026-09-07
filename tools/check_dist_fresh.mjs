@@ -95,7 +95,11 @@ export default function checkDistIsFresh() {
   // demanding a five-minute rebuild for a native test edit would teach people to skip this check.
   const compiledCore = newest(join(coreBuild, 'sphanorama-core.wasm'));
   if (compiledCore.mtime > 0) {
-    const cxx = ['core/src', 'bridge', 'contracts/cpp']
+    // The build files are in the list too, and a reviewer had to point that out: a preset, a
+    // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
+    // does, and three of them are outside every source directory named here.
+    const cxx = ['core/src', 'bridge', 'contracts/cpp',
+                 'core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
       .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles'])) }))
       .filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
@@ -107,6 +111,21 @@ export default function checkDistIsFresh() {
         `  compiled core: ${compiledCore.path}\n` +
         'Run `tools/gate.sh` (or the wasm build), then `npm run build` in shell/ to stage it.');
     }
+  }
+
+  // The threaded build, whose absence is silent rather than red: `bridge/test/module.spec.mjs`
+  // loads it directly and *skips* its two tests when the directory is not there, so a run that
+  // never built it reports "2 skipped" among sixty passes and nobody reads it as a gap. The gate
+  // builds both presets; a person running Playwright alone builds neither.
+  const threaded = join(repoRoot, 'build', 'wasm-release-threaded', 'bridge',
+                        'sphanorama-core.wasm');
+  if (!existsSync(threaded)) {
+    throw new Error(
+      'the threaded wasm build is missing — two browser tests load it directly and will skip\n' +
+      'silently rather than fail.\n' +
+      `  expected: ${threaded}\n` +
+      'Run `cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded`,\n' +
+      'or `tools/gate.sh`, which builds both.');
   }
 
   const stale = sources.filter((s) => s.mtime > built.mtime);

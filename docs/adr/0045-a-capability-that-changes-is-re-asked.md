@@ -52,7 +52,7 @@ Three things follow.
 has no side effects: it does not acquire, does not prompt, and does not change what the preview is
 delivering. A port that has a camera and has not opened it returns
 `FailedPrecondition`; a port with no camera at all returns `CameraUnavailable`, which is what
-`NullCameraAccess` does for everything.
+`NullCameraAccess` answers to every call that needs a camera.
 
 **`ArmBurst` is the place, because arming is the moment the numbers are consumed.** The burst's
 interval and settle are computed there and nowhere else, and it is the one call in the sequence
@@ -105,9 +105,15 @@ the first version of this decision had nothing at all and three implementations 
 
 "States" rather than "holds them to it", and the difference is worth being exact about, because a
 reviewer found the stronger claim and it is not true: the typed suite has one entry, and it is
-`FakeCameraAccess`. `NullCameraAccess` cannot join it — refusing every call is its whole job — and
-`BrowserCameraAccess` cannot either, since its body is `EM_JS` and it runs under wasm and nowhere
-else. So the suite says what the rule is and holds one implementation to it. The browser one is held
+`FakeCameraAccess`. `NullCameraAccess` cannot join it — refusing everything that needs a camera is
+its whole job — and `BrowserCameraAccess` cannot either, since its body is `EM_JS` and it runs under
+wasm and nowhere else.
+
+(Twice in this file, and once in `camera_access.h`, that was written as "refuses every call". It
+does not: `StopPreview` and `Close` return `Ok`, because stopping something not running and closing
+something not open are requests already satisfied. The header was corrected in the commit that
+wrote these two, which is the shape this branch keeps producing — a correction reaching the instance
+a reviewer pointed at and not the two beside it.) So the suite says what the rule is and holds one implementation to it. The browser one is held
 by the browser suite instead (see the next consequence), and the null one by its own test in the
 same file.
 
@@ -161,18 +167,29 @@ now treated alike: the session keeps the floor it was given. They were not, at f
 kept the old rate and an `Ok(0)` discarded it, which is two spellings of one fact with opposite
 outcomes, and the browser port is the most likely producer of the second.
 
-**The push needs a guard the pull never did, and it is on the page.** A pushed fact can arrive late.
-An arm parks on `applyConstraints` for as long as that takes, and an `End()` inside that window
-closes the camera underneath it — so the push lands after the host has cleared its copy and hands
-the core a camera back: `cameraOpen()` reads true again, and the next `Begin` succeeds where it owed
-`CameraUnavailable`, planning a whole tessellation against a struct read off a dead track (measured:
-32 cells, `maxWidth 0`). The page refuses to push when it is no longer holding the camera, asked of
-the tracks rather than of a flag, because `track.stop()` fires no `ended` event and the flag that
-records a camera *taken* away is deliberately silent about one the core closed. Two lines of it are
-the adapter's: `camera.capabilities()` answers zeros for an ended track rather than the mixture a
-browser gives — geometry dropped from `getSettings()`, every mode still listed by
-`getCapabilities()` — because half an answer is worse than none when none is a state the core has a
-word for.
+**A refresh is not an open, and the host enforces that rather than the page.** A pushed fact can
+arrive late. An arm parks on `applyConstraints` for as long as that takes, and an `End()` inside
+that window closes the camera underneath it — so the push lands after the host has cleared its copy
+and hands the core a camera back: `cameraOpen()` reads true again, and the next `Begin` succeeds
+where it owed `CameraUnavailable`, planning a whole tessellation against a struct read off a dead
+track (measured: 32 cells, `maxWidth 0`).
+
+The first fix for that was a page guard, and a reviewer showed why it cannot be the only one: a
+page can refuse on a close it has already been *told* about, and the close happens inside the
+worker with the news travelling by message. So the host gained a second verb. `setCamera` and
+`clearCamera` are the page saying it has opened or lost a camera; `refreshCamera` says "the camera
+you have is now like this", and does nothing when there is none. A push that lost the race finds no
+camera and says nothing instead of becoming one. The page guard stays, because it also stops the
+`applyConstraints` writes that would otherwise reach a live track after the session ended — the two
+answer different halves.
+
+Underneath both, the adapter stops answering for a camera it is not holding: `capabilities()`,
+`setLocks()` and `offeredModes()` all refuse a track whose `readyState` is `'ended'`. A browser
+answers such a track *unevenly* — geometry dropped from `getSettings()`, every mode still listed by
+`getCapabilities()`, `applyConstraints` rejecting — so reading it produced a mixture, and in
+`setLocks` a lie: the read-back that ADR 0022 relies on to make "held" true would report the dead
+camera's last mode strings, and a release that reached nothing came back as `ok({exposure: true})`.
+Half an answer is worse than none, because none is a state the core has a word for.
 
 **This does not settle every capability.** The rule is settled — a capability is re-asked where it
 is consumed, and the port it asks is kept true by the client that changes it — so the next field to

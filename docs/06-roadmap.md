@@ -384,7 +384,10 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   The pull is half of it. A resource-access port is resident (ADR 0014) — the host runs in the
   worker and the `MediaStream` is in the page — so `Capabilities()` reads the page's cache rather
   than a track, and the page is what keeps that cache true: it re-reports the camera after
-  `setLocks` settles, and refuses to report one it is no longer holding. Three reviewers found the
+  `setLocks` settles. That re-report is a *refresh* rather than an open — a separate verb on the
+  host that updates a camera it has and cannot conjure one it has not — because a push can lose the
+  race with the core's own close, and a page guard can only refuse on a close it has been told
+  about. Three reviewers found the
   pull-only version of this within minutes of each other, which is why the ADR carries a withdrawn
   rejection rather than a tidy one.
 
@@ -393,16 +396,21 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   neither was checked: `maxBurstFps` was in the C++ struct for the life of the field, had no
   `case`, and read as zero, which is a legal answer. `ICaptureSessionManager::CameraInUse()` puts
   what the core read back on the boundary, and `every camera capability the core reads crosses the
-  seam it reads it through` is the browser test that runs `BrowserCameraAccess::Open` — the only
-  one in the tree that did. Renaming `case 8` to `case 9` fails it; before, that left the native
-  suite, vitest and the browser suite all green with the floor dead.
+  seam it reads it through` is the browser test that reads the whole struct back through it — the
+  only one in the tree that does. (Not "the only one that runs `BrowserCameraAccess::Open`", which
+  this said in two tenses and was never true in either: every one of the 47 tests that clicks
+  `#enable` runs `Open`, because `Begin` opens the camera. What none of them did was look at what
+  it answered.) Renaming `case 8` to `case 9` fails it; before, that left the native suite, vitest
+  and the browser suite all green with the floor dead.
 
   Seven of the eight metrics, measured by renumbering each in turn: `supportsTorch` is `false` on a
   runner with no torch whether the metric is read or not, so identity cannot separate the two. What
   covers the rest of the seam is `the camera the core paces a burst by is the one the locks left
   behind`, which pins an exposure — dropping the fake camera to 15 fps — and asserts the core paces
-  by 15. That one runs `Capabilities()` under wasm, which nothing else does: the C++ contract suite
-  has one implementation and it is a fake.
+  by 15. Every arm runs `Capabilities()` under wasm — `ArmBurst` calls it unconditionally after a
+  successful `SetLocks` — so what is unique about that test is that it is the only one anywhere
+  that asserts on the *answer*. The C++ contract suite cannot: it has one implementation and it is
+  a fake.
 
 - **A field of view nobody measured is reported as one the camera stated — open, and
   pre-existing.** `CameraCapabilities` documents `horizontalFovDeg`/`verticalFovDeg` as "0 when the
@@ -413,9 +421,21 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
 
   ADR 0045 did not create this but it did publish it: `CameraInUse()` is on the boundary now and is
   documented as what the camera *reports*, so a status row rendering it shows the user 66° and a
-  trigonometric consequence of 66°, attributed to their lens. The browser test's
-  `expect(seen.horizontalFovDeg).toBeGreaterThan(0)` cannot fail for the same reason, which is why
-  the assertions either side of it are identity against the page rather than presence.
+  trigonometric consequence of 66°, attributed to their lens.
+
+  The browser test cannot hold this pair the way it holds the rest — the page adapter's
+  `CameraCapabilities` has no field of view at all, since the host derives the pair from resolution
+  and a constant, so identity is impossible here rather than merely weak. Its
+  `expect(seen.horizontalFovDeg).toBeGreaterThan(0)` cannot fail either, which two reviewers read
+  in opposite directions and neither got right. Measured, by renumbering `case 2` off the end and
+  rebuilding the core: the metric reads 0, `Begin` refuses with *"the lens field of view is unknown;
+  nothing can be tessellated"*, and the test dies fifty lines earlier — as does every browser test
+  that opens a camera. So those two metrics are the most strongly pinned in the switch, by the core
+  refusing to plan rather than by any assertion.
+
+  What none of that touches is a *wrong constant*, which is the actual defect here and is
+  unfalsifiable by construction: nothing in the tree measures the angle, so nothing can disagree
+  with 66°.
 
   The honest fix is on the contract rather than in the test — a way for the struct to say
   "assumed", so the client can label it — and that is a contract change with an ADR behind it.
