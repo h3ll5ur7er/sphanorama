@@ -55,10 +55,15 @@ function aFreshTree() {
   return { root, put };
 }
 
-/** What the check said, or null when it was happy. */
-function complaint(root) {
+/**
+ * What the check said, or null when it was happy.
+ *
+ * `argv` is the Playwright invocation, defaulting to one with no positional filter — every spec in
+ * scope, which is the strict reading and what `gate.sh` does.
+ */
+function complaint(root, argv = ['node', 'playwright', 'test']) {
   try {
-    checkDistIsFreshIn(root);
+    checkDistIsFreshIn(root, argv);
     return null;
   } catch (error) {
     return error.message;
@@ -140,6 +145,54 @@ describe('the dist freshness check', () => {
       tree.put(test, Date.now());
       expect(complaint(tree.root), test).toBeNull();
     }
+  });
+
+  it('does not demand the threaded core for a run that cannot reach the specs loading it', () => {
+    // The deploy workflow's case, and the one that broke the first deployment after this check
+    // landed. It builds `wasm-release` alone — deliberately, because that is the only core
+    // `stage_core.mjs` publishes and the threaded one hangs without COOP/COEP, which Pages cannot
+    // serve (ADR 0011) — and then verifies the bundle with `npx playwright test shell/e2e`.
+    //
+    // The requirement below is about `bridge/test/module.spec.mjs`, which loads each build
+    // directly and skips silently when one is absent. A run that cannot reach that file cannot
+    // suffer that silence, so demanding the build costs a two-minute compile of an artifact
+    // nothing in the run loads and nothing in the deploy publishes.
+    const tree = aFreshTree();
+    rmSync(join(tree.root, 'build', 'wasm-release-threaded'), { recursive: true });
+    expect(complaint(tree.root, ['node', 'playwright', 'test', 'shell/e2e'])).toBeNull();
+  });
+
+  it('still demands it when the filter can reach those specs', () => {
+    // Fail closed, which is what makes the case above safe: only a filter that provably cannot
+    // match `bridge/test/module.spec.mjs` relaxes anything. Everything else — no filter at all, a
+    // filter naming the bridge suite, a filter naming a single test by title — keeps the demand.
+    for (const argv of [['node', 'playwright', 'test'],
+                        ['node', 'playwright', 'test', 'bridge'],
+                        ['node', 'playwright', 'test', 'bridge/test/module.spec.mjs'],
+                        ['node', 'playwright', 'test', '--grep', 'threads'],
+                        // A positional spelled like the subcommand, *beside* one that could not
+                        // reach on its own. `test` is a substring of `bridge/test/module.spec.mjs`
+                        // so the run does reach it — and an earlier version that dropped every
+                        // `test` token swallowed the filter and answered "cannot reach", which is
+                        // the one direction a fail-closed check must not err in. The second filter
+                        // is what makes the two spellings distinguishable: with the list emptied
+                        // entirely, "no filter" also answers "reaching" and hides the difference.
+                        ['node', 'playwright', 'test', 'test', 'shell/e2e']]) {
+      const tree = aFreshTree();
+      rmSync(join(tree.root, 'build', 'wasm-release-threaded'), { recursive: true });
+      expect(complaint(tree.root, argv), argv.join(' '))
+        .toMatch(/the wasm-release-threaded wasm build is missing/);
+    }
+  });
+
+  it('always demands the single-threaded core, whatever the filter', () => {
+    // Not symmetric with the pair above, and the asymmetry is the point: `wasm-release` is the
+    // build the bundle is staged from, so every check above compares against it and every run
+    // needs it — the deploy included, which is why the deploy builds it.
+    const tree = aFreshTree();
+    rmSync(join(tree.root, 'build', 'wasm-release'), { recursive: true });
+    expect(complaint(tree.root, ['node', 'playwright', 'test', 'shell/e2e']))
+      .toMatch(/the wasm-release wasm build is missing/);
   });
 
   it('catches a bundle older than each of the things it is built from', () => {
