@@ -47,3 +47,4 @@ and the alternative we rejected and why.
 | [0040](0040-a-selection-is-read-back-from-the-core.md) | `IProjectManager` gains `GetSelection`, so the review strip shows the recorded pick rather than a copy of its own writes |
 | [0041](0041-aim-decides-which-cell-a-burst-belongs-to.md) | Guidance names the cell the camera is inside, captured or not, and `ArmBurst` refuses one it is not aimed at |
 | [0042](0042-with-no-aim-coverage-decides-alone.md) | `Locate` takes a `PoseSample` and prefers the cell the camera is inside only when the pose was measured, so a phone with no sensor is targeted by coverage and keeps moving |
+| [0043](0043-the-dwell-that-fires-a-burst-is-the-cores.md) | The dwell that fires a burst is counted in `CaptureSessionManager` and reported on `CaptureGuidance`; the page acts on it and draws the ring from the same number |

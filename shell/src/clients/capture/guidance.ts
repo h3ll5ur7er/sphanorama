@@ -60,6 +60,10 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
     // user is free to shoot it again, and nothing here asks them to.
     case 'AlreadyCaptured':
       return `${cell} · already captured · ${progress}`;
+    // The tick the dwell completed (ADR 0043). It reads as an announcement rather than an
+    // instruction, because by the time anyone can read it the burst has been armed.
+    case 'Fire':
+      return `${cell} · capturing · ${progress}`;
     default:
       // The angle only means something when the orientation it was measured from does. With no aim
       // it is computed against an unmeasured identity — it comes back `0° off` for whichever cell
@@ -98,13 +102,17 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
  * every assertion in the repo.
  */
 export function canCapture(guidance: CaptureGuidance): boolean {
-  // With an aim, `HoldStill` is the one action that says both halves at once.
-  if (guidance.aimKnown) return guidance.action === 'HoldStill';
-  // Without one there is no cone to be inside, so `HoldStill` never arrives and a gate that waited
-  // for it offered nothing at all — one cell of thirty-two on a phone that declined motion, and a
-  // dead shutter after that. `Locate` targets by coverage instead (ADR 0042) and names the nearest
-  // cell still missing, which arrives as `Seek`; the core has nothing to check either, so what the
-  // page offers and what the core accepts still agree. The user aims by eye, which is what
-  // vision-only means.
+  // With an aim the shutter is not offered at all: the dwell fires the burst, and the ring the user
+  // is watching is the same number the core counts (ADR 0043). A button beside an automatic trigger
+  // is two ways to do one thing, and the one the finger reaches for is the one that moves the phone
+  // it is supposed to be holding still.
+  if (guidance.aimKnown) return false;
+  // Without one, the shutter is all there is. `HoldStill` never arrives, so a dwell keyed on it can
+  // never mature and `Fire` can never be reported — and there is nothing else to key a dwell on
+  // either: `Stability` refuses a batch with no samples rather than answering "still", so wall
+  // clock alone would fire whether or not the person was ready, which is worse than the button it
+  // replaced. `Locate` targets by coverage instead (ADR 0042) and names the nearest cell still
+  // missing, which arrives as `Seek`; the core has nothing to check either, so what the page offers
+  // and what the core accepts still agree. The user aims by eye, which is what vision-only means.
   return guidance.action === 'Seek';
 }

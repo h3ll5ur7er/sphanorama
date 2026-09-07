@@ -298,6 +298,7 @@ inline void Encode(Writer& out, const CaptureGuidance& value) {
   out.PutF64(static_cast<double>(value.stability));
   out.PutI32(static_cast<int32_t>(value.action));
   out.PutBool(value.aimKnown);
+  out.PutF64(static_cast<double>(value.heldFraction));
 }
 
 inline bool Decode(Reader& in, CaptureGuidance& value) {
@@ -307,6 +308,7 @@ inline bool Decode(Reader& in, CaptureGuidance& value) {
   value.stability = static_cast<decltype(value.stability)>(in.GetF64());
   value.action = static_cast<GuidanceAction>(in.GetI32());
   value.aimKnown = in.GetBool();
+  value.heldFraction = static_cast<decltype(value.heldFraction)>(in.GetF64());
   return in.ok();
 }
 

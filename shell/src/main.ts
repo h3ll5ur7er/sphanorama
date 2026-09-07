@@ -592,6 +592,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   targetNode = null;
   // The two agree whenever samples are arriving, which is whenever anyone is capturing.
   let attitude: Quat | null = null;
+  // How much of the dwell the core says has been served on the target cell, from the last guidance
+  // answer. Held between paints because `paintOverlay` also runs from a coverage refresh, which
+  // carries no guidance — and drawn from the core's number rather than a timer of the page's own,
+  // so the ring that fills and the trigger that fires cannot disagree (ADR 0043).
+  let heldFraction = 0;
   // The coverage the map is drawn from, reused for the markers so the two renderings of one sphere
   // cannot disagree about which cells are done.
   let lastCoverage: CoverageState | null = null;
@@ -627,7 +632,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     if (loopStopped || guidanceFailed) return;
     if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
     overlay.show(planOverlay({
-      plan, coverage: lastCoverage, attitude, targetNode,
+      plan, coverage: lastCoverage, attitude, targetNode, holding: heldFraction,
       // Measured every paint rather than latched. The video reports no size until the first frame
       // decodes, the box changes shape when the phone is turned, and a marker drawn against the
       // last orientation's box is a marker in the wrong place.
@@ -1104,6 +1109,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         guidanceFailed = false;
         const guidance = guided.value;
         firing = guidance.action === 'Firing';
+        heldFraction = guidance.heldFraction;
         // Cleared once guidance has spoken for the armed burst, whatever it said. From here on
         // `firing` is the live answer and this flag would only keep the loop grabbing frames
         // after the burst had finished.
@@ -1136,6 +1142,12 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // it invisible — nothing was armed twice, and nothing said why the press did nothing.
         // A button offered while an arm is in flight is a button that lies about what pressing it
         // does.
+        // Hidden, not merely disabled, wherever there is an aim: with one, the dwell fires the
+        // burst and a disabled button beside an automatic trigger is a control that never becomes
+        // pressable, which reads as broken rather than as absent (ADR 0043). It survives on the one
+        // device that can never reach `Fire` — no aim to hold and no stability to measure — and
+        // there it is the whole shutter.
+        captureButton.hidden = guidance.aimKnown;
         captureButton.disabled = !canCapture(guidance) || arming || armed || firing;
         const cone = cones.get(targetNode as number) ?? 0;
         // A closed reticle is a claim about where the camera is pointing, so it needs a pose that
@@ -1195,6 +1207,13 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         // order nothing had chosen.
         paintOverlay();
         if (guidance.action === 'CellDone') void refreshCoverage();
+        // The dwell completed on this tick, so the burst is armed from here — the same call the
+        // button used to make, on the same predicate, decided by the core (ADR 0043). `armAt`
+        // refuses a second arm while one is in flight, and `Fire` is an edge rather than a level,
+        // so the two guards agree rather than merely coinciding.
+        if (guidance.action === 'Fire' && captureCell !== null && targetNode !== null) {
+          void captureCell(targetNode);
+        }
       } else {
         // Safe to stop ticking *when the manager answered*, because it disarms an armed burst on
         // every failing tick before it returns — so a refusal means the burst really is gone and
