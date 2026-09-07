@@ -392,6 +392,118 @@ constraints landed. A fifth of every burst was going in the bin on the device th
 locking, invisibly, because the bad frame is a real candidate with a real score that ranking simply
 never picks. `BurstSpec` now carries a `settleMs` the first frame waits out (ADR 0032).
 
+
+### The arrow that "only moves when pointing down" — a real defect, found the second time
+
+Reported from a phone alongside the three-cells-from-one-spot bug. Written down twice: once with
+the wrong explanation, and then corrected by review. Both halves are kept, because the wrong one is
+instructive.
+
+**The bearing arithmetic is correct**, and this part survived checking. It combines both axes: with
+the phone level, a cell 30° left and 30° up gives a bearing of 319.1°, one 30° right and 30° up
+gives 40.9°, and one straight up gives 0°. All three reproduce against the shipped engine.
+
+**The first explanation was that the symptom is a deliberate visibility rule** — the arrow is raised
+only when the target cell is not in the picture, a level phone always has a cell on screen, so the
+arrow is simply absent and "only moves while pointing down" is it only *existing* while pointing
+down. That was filed as "measured, not a defect". It was neither.
+
+**What is actually happening: the arrow never hides, so it freezes.** `#target-arrow` carries an
+author rule `display: grid`, and the UA stylesheet's `[hidden] { display: none }` is a lower cascade
+origin — so the painter setting `arrow.hidden = true` changed nothing that could be seen. The arrow
+is on screen at every attitude, including at page load, where a quarter of the glyph sits in the
+corner of the app. And because the painter also stops *updating* it when there is no target to point
+at, what stays on screen is its last bearing and its last distance, unchanging.
+
+So the report was exact and the explanation inverted it: the arrow was not moving while pointing
+down and absent otherwise — it was moving while pointing down and **frozen** otherwise. Fixed by
+`#target-arrow[hidden] { display: none; }`, which outranks the rule above it on specificity, with a
+browser test that fails without it at the first assertion.
+
+**Two claims in the first write-up were also measured false**, and are worth recording because they
+were plausible:
+
+- *"one or two cells are on screen at all times, so the arrow is simply absent."* The first clause is
+  right; the second does not follow. The arrow's condition is about the **target** cell, not about
+  any cell. Sweeping elevations and azimuths across a few hundred randomly chosen capture states, a
+  level phone raises the arrow **roughly a third of the time** — two independent runs read 34.6%
+  and 37.5%, and a third 39.4%, which is what a figure sampled over random coverage states does.
+  The number is not the point and a single decimal place would be false precision; what matters is
+  that it is *not* near zero, and that it is symmetric in elevation, so nothing about it
+  distinguishes "down". (A reproducible version of this would have to state the capture states it
+  sampled, which is the standard the rest of this section is now held to.)
+- *"Tilt down, the whole ring leaves the field of view."* At every elevation from −90 to +90 there
+  are between one and five cell centres on screen; the view never empties, which is what a
+  sphere-covering tessellation means. On a fresh capture the arrow is raised at 0 of 2664 attitudes.
+  The intuition came from the overlay unit tests, whose plans have a single cell.
+
+**One sub-case that is genuinely correct.** When the target sits at the camera's own elevation the
+bearing is ±90° and does not rotate as the phone pans, because the direction to turn does not
+change. The distance does, and the arrow carries it as a number. The exact statement is about the
+camera frame rather than about elevation in general: it holds at the horizon and degrades away from
+it. With camera and target both at 15° elevation, the bearing reads 83.9°, 75.5°, 58.0° and 18.7° at
+azimuth offsets of −45°, −90°, −135° and −170° — sampled points, not an even pan, and quoted that way
+because "across a pan" implied a sweep nobody ran. (A fifth reading at −20° was quoted here and has
+been dropped: at that offset the target is *on screen*, so `planOverlay` returns no arrow at all and
+87.4° is a bearing nothing ever draws. The exact ±90° case is the horizon, which reads 90.0.)
+
+**What was also broken is what the arrow pointed at** — under the old rule, capturing the cell in
+front of you moved the target to a neighbour under a still phone. ADR 0041 fixes that, separately.
+
+**And then ADR 0041 made it unreachable, which is the state it is in now.** Guidance names the cell
+the camera is *inside*, captured or not, so `targetNode` no longer moves off screen and
+`planOverlay`'s `isTarget && !seen.onScreen && !captured` is not met. Measured over 247 attitudes
+covering the whole sphere, at three arrangements — a fresh capture, after capturing the cell in
+view, and after capturing a neighbourhood, which ought to be the arrow's best case since the nearest
+hole is then far away: **raised at none of them.**
+
+The browser test keeps the half that pins the cascade defect — the arrow is hidden when there is
+nothing to point at, and every assertion in it fails without `#target-arrow[hidden] { display:
+none; }`. The half that asserted the arrow *can* appear is gone, because it rested on the rule
+ADR 0041 deleted and there is no arrangement left that raises it.
+
+**Still open, and in a shape somebody can pick up.**
+
+1. *What should the arrow point at?* This is now the first question rather than the third, because
+   the answer decides whether the feature exists. It points at `targetNode`, which since ADR 0041 is
+   "the cell you are in" — and a lost user does not need pointing at the cell they are already
+   inside. The thing they need is the nearest *hole*, which `Locate` already computes internally and
+   does not report. Pointing the arrow at that would make it mean something again and is a small
+   change to `planOverlay`. The alternative is that an off-screen indicator has no job once the
+   target is always on screen, and the arrow, its CSS and its remaining test come out together.
+2. *Should the arrow appear when the target ring is already on screen?* Moot until (1) is answered,
+   and kept because it is the same design call from the other side. Today it does not — with the
+   freeze fixed the arrow would come and go as the target moves in and out of view, which some
+   people read as flicker. The alternatives are: leave it (the ring is the guidance when it is
+   visible); always show it; or hold it for a moment after the target comes into view so it fades
+   rather than blinks.
+   This is a design call and wants a device session, not an argument.
+3. *The bearing at the camera's own elevation does not rotate*, correctly, and the distance beside it
+   is the only thing that moves. Whether a glyph that holds still while the phone turns reads as
+   "correct" or "broken" is again a question for a device rather than for a test.
+
+**The lesson worth keeping.** A measurement can be right and the conclusion drawn from it wrong: the
+three bearings were real, and they were used to close a report about something else entirely. The
+part nobody measured was the one the user was describing — whether the element is on the screen —
+and it took a reviewer with a browser and a `getComputedStyle` to ask. "Measured and not a defect"
+is a claim that needs the measurement to be of the thing reported.
+
+**A note on how these were measured.** The browser-derived figures here were first taken in a
+checkout whose staged `sphanorama-core.wasm` had been built from the sibling branch — the trap the
+engineering skill warns about, walked into while investigating it, and then walked into a second
+time while fixing the test that caught it.
+
+It changes the arrow conclusions not at all: that fix is pure CSS, and the hidden-arrow measurements
+are taken on a fresh capture, where both branches' targeting rules name the same cell because nothing
+is captured yet. It *could* have changed the "roughly a third" figure, which is sampled over random
+coverage states and is therefore the one measurement that depends on which targeting rule is in the
+core — an earlier version of this note claimed every arrow measurement was taken on a fresh capture,
+which was not true of that one. It has since been reproduced independently at 33.5% against this
+branch's own core, which is the same "roughly a third".
+
+Recorded because the next person measuring here should rebuild the core for *this* branch first.
+`tools/gate.sh` is the only thing that does it as part of a run.
+
 **Open: the pose has no age, and one refusal now depends on it.** `CaptureSessionManager` refreshes
 `pose_state_` only on a tick that carried samples, so a sensor that dies mid-session freezes it —
 and the page's pump used to ask for guidance only when there were samples or a burst was running, so
