@@ -277,6 +277,37 @@ describe('starting twice', () => {
       .toBe('AbsoluteOrientationSensor');
   });
 
+  it('does not let the orphan feed the buffer the live sensor is filling', async () => {
+    // The other half of the ownership question, and the half that does not need the platform to
+    // have cooperated. `teardown` calls `stop()` on the sensor it is replacing, so a well behaved
+    // orphan goes quiet — but `stopSensor` swallows a `stop()` that throws and drops the handle
+    // anyway, which leaves a sensor nothing can stop again. Its `reading` listener is still
+    // installed, and what it pushes goes into the same buffer the live sensor is filling: one
+    // stream carrying two attitudes, which `Drain` has no way to tell apart and the pose engine
+    // integrates as a phone that teleported.
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+
+    first.sensor.emitReading(landscapeReading, 4);
+    second.sensor.emitReading(landscapeReading, 9);
+
+    const drained = await motion.drain(8);
+    expect(drained.ok && drained.value, 'a sensor nobody is reading got a sample into the stream')
+      .toHaveLength(1);
+    if (drained.ok) expect(drained.value[0].timestampNs).toBe(9_000_000);
+  });
+
   it('removes the orientation listener it is replacing, so one event is one sample', async () => {
     // The fallback path has the same shape: a second `addEventListener` with no removal meant one
     // platform event produced two samples. The pose survived that only by accident — `Integrate`
@@ -287,7 +318,14 @@ describe('starting twice', () => {
     await motion.start(60);
     await motion.start(60);
 
-    expect(host.removeEventListener).toHaveBeenCalledWith('deviceorientation', expect.anything());
+    // The listener that was installed, not merely some listener. `expect.anything()` here passed
+    // against a teardown that removed the wrong function, which a reviewer showed by making it do
+    // exactly that — the older `stops delivering after stop()` test pins identity and this one did
+    // not, in the same file.
+    const installed = host.addEventListener.mock.calls
+      .filter(([type]) => type === 'deviceorientation').map(([, fn]) => fn);
+    expect(installed.length).toBe(2);
+    expect(host.removeEventListener).toHaveBeenCalledWith('deviceorientation', installed[0]);
   });
 });
 

@@ -1,5 +1,7 @@
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 
+#include <cmath>
+
 #include <algorithm>
 #include <span>
 
@@ -13,14 +15,21 @@ constexpr double kRadToDeg = 57.29577951308232;
 
 Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
                                                     const Intrinsics&) {
-  // `!(x > 0.0)` rather than `x <= 0.0`, so NaN is refused. It compares false against both, so
-  // the plain form let one through — and this is the engine every manager test runs on, so a cone
-  // nobody could measure against would have reached `ArmBurst` in the suite and nowhere else.
-  // `RingsCoveragePlannerEngine` has asked `std::isfinite` since it was written; this had not,
-  // which made the two disagree about what a plan is on exactly the input that matters.
-  if (!(spec.acceptanceConeDeg > 0.0)) {
+  // Finite and positive, which is `RingsCoveragePlannerEngine`'s rule spelled the same way rather
+  // than a second rule that nearly matches it.
+  //
+  // Two attempts got here. The first, `x <= 0.0`, let NaN through, because NaN compares false
+  // against every ordering. The second, `!(x > 0.0)`, refused NaN and let *infinity* through — and
+  // infinity is the worse of the two: a cone of `inf` makes `Locate` report every cell as one the
+  // camera is inside, from any direction, and `ArmBurst` accept a burst 179 degrees off. That is
+  // verbatim the "every cell armable from anywhere" the previous comment here claimed to have
+  // closed. `wire::Reader::GetF64` does not filter non-finite values, so it crosses the facade.
+  //
+  // The lesson is in the shape rather than the value: a hand-rolled predicate against a class of
+  // inputs will keep missing one member of it, and `std::isfinite` is the name of the class.
+  if (!std::isfinite(spec.acceptanceConeDeg) || spec.acceptanceConeDeg <= 0.0) {
     return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                            "acceptance cone must be a positive number");
+                            "acceptance cone must be a positive, finite number");
   }
 
   CapturePlan plan;

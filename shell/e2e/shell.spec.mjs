@@ -115,15 +115,15 @@ function deviceOrientationLookingAt(target) {
   // The convention out is the usual one: fold the free rotation into `alpha` and take `gamma` as
   // zero. Roll about the view axis is what `gamma` contributes here, and the tests that aim do
   // not care how the phone is rolled — the ones that do care dispatch their own triples.
-  if (Math.abs(m21) > 1 - 1e-7) {
+  if (m21 > 1 - 1e-7) {
+    // One sign, not two. `m21` works out to the cosine of the cell's elevation, and a plan's
+    // elevations live in [-90°, 90°], so it is never negative — a `beta = -90°` branch was
+    // written here and could not be reached by any plan, which a reviewer showed by deleting it
+    // with every browser test still green. A branch no input reaches is not defence, it is a
+    // second thing to keep true.
     const m00 = 1 - 2 * (q.y * q.y + q.z * q.z);
     const m02 = 2 * (q.x * q.z + q.w * q.y);
-    const upright = m21 > 0;
-    return {
-      alpha: Math.atan2(upright ? m02 : -m02, m00) * RAD_TO_DEG,
-      beta: beta * RAD_TO_DEG,
-      gamma: 0,
-    };
+    return { alpha: Math.atan2(m02, m00) * RAD_TO_DEG, beta: beta * RAD_TO_DEG, gamma: 0 };
   }
 
   return {
@@ -1415,6 +1415,15 @@ test('every cell of the plan can be aimed at, not just the one a test happens to
       return plan.ok ? plan.value.nodes.map((n) => n.targetOrientation) : [];
     });
     expect(nodes.length).toBeGreaterThan(8);
+
+    // And that the plan still puts a cell *at* the singularity, which is what makes this test about
+    // anything. The rings engine always lays a ring on the horizon, and `beta = 90°` is exactly
+    // that ring — but the test never said so, so a tessellation that stopped doing it (the
+    // strategy enum already names `Geodesic`) would leave this sweeping cells that were never in
+    // danger and reporting nothing.
+    const betas = nodes.map((target) => deviceOrientationLookingAt(target).beta);
+    expect(betas.some((beta) => Math.abs(beta - 90) < 0.001),
+      `no cell of this plan sits at the gimbal-lock singularity; betas: ${betas.map((b) => b.toFixed(1)).join(', ')}`).toBe(true);
 
     const off = [];
     for (const [index, target] of nodes.entries()) {

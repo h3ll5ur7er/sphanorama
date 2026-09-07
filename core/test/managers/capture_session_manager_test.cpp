@@ -380,6 +380,78 @@ TEST_F(CaptureSession, ACameraThatRefusesToOpenIsWhatBeginReports) {
   EXPECT_EQ(camera->Opens(), 1) << "the camera was never asked, so this proves nothing about it";
 }
 
+// A planner that hands out a cone nothing can be measured against, which both shipped ones now
+// refuse to produce. It exists because `ArmBurst`'s guard is otherwise unreachable — and a guard
+// at a contract boundary that no implementation currently trips is exactly the one worth having
+// and the hardest to keep honest.
+class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  explicit CarelessCoveragePlannerEngine(double cone) : cone_(cone) {}
+
+  Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics&) override {
+    CapturePlan plan;
+    CoverageNode node;
+    node.id = NodeId{1};
+    node.targetOrientation = Quat{};
+    node.acceptanceConeDeg = cone_;
+    plan.nodes.push_back(node);
+    return Ok(std::move(plan));
+  }
+  Result<CaptureGuidance> Locate(const PoseSample&, const CapturePlan& plan,
+                                 const CoverageState&) override {
+    CaptureGuidance guidance;
+    guidance.targetNode = plan.nodes.front().id;
+    guidance.action = GuidanceAction::Seek;
+    return Ok(guidance);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate>) override {
+    CoverageState state;
+    state.nodesTotal = static_cast<int32_t>(plan.nodes.size());
+    return Ok(state);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan&, const CoverageState&,
+                                             const GhostReport&) override {
+    return Ok(std::vector<NodeId>{});
+  }
+
+ private:
+  double cone_;
+};
+
+TEST_F(CaptureSession, ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed) {
+  // The manager's own arithmetic, against an engine that does not validate. Both shipped planners
+  // refuse a non-finite cone at `Begin` now, so this guard is unreachable through them — and that
+  // is why it is worth a test rather than a deletion: the cone crosses a contract, and the two
+  // implementations of that contract disagreed about this class of input twice in one review.
+  //
+  // Infinity as well as NaN, because the two fail differently. NaN makes `offBy > cone` false and
+  // waves the burst through; infinity makes it false *legitimately* — every direction really is
+  // within an infinite cone — which is worse, because no arithmetic here is wrong. The rule being
+  // broken is that a cone is a measurement, and neither of these is one.
+  for (const double cone : {std::numeric_limits<double>::quiet_NaN(),
+                            std::numeric_limits<double>::infinity()}) {
+    CarelessCoveragePlannerEngine careless(cone);
+    CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
+                                  *projects, clock);
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << "cone " << cone;
+
+    // Aimed nowhere near it: the pose is measured, and the cell is 180 degrees away.
+    pose.LookAt(Quat{0.0, 0.0, 1.0, 0.0});
+    ImuSample sample;
+    sample.hasOrientation = true;
+    sample.timestampNs = clock.MonotonicNs();
+    ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+
+    BurstSpec burst;
+    burst.frameCount = 2;
+    EXPECT_EQ(manager.ArmBurst(NodeId{1}, burst).code, StatusCode::FailedPrecondition)
+        << "a burst was armed against a cone of " << cone << ", so every cell is armable from "
+           "anywhere";
+    ASSERT_TRUE(manager.End().ok());
+  }
+}
+
 TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
   // The hole the test above cannot see, and it is the whole rule rather than an edge of it.
   //
@@ -851,6 +923,43 @@ TEST_F(CaptureSession, ADwellDoesNotBankTimeNobodyWasTicking) {
       << "thirty seconds nobody was ticking through were banked as a dwell";
   EXPECT_LT(back.value.heldFraction, 0.5)
       << "the ring jumped most of the way round on the tick a suspended loop resumed";
+}
+
+TEST_F(CaptureSession, TheHeldFractionNeverLeavesTheRangeItPromises) {
+  // `CaptureGuidance.heldFraction` says `[0,1]` in three places and the page draws an arc from it,
+  // so a value outside the range is a ring drawn past its own circumference. The upper end is
+  // reachable in ordinary use rather than only in theory: a tick credits up to `kMaxDwellCreditNs`
+  // and the dwell fires at `kDwellNs`, so the firing tick can hold up to 300 ms more than a full
+  // dwell before the counter restarts — 1.15, not 1.0.
+  //
+  // A reviewer found both ends unasserted: replacing the clamp with the bare quotient left the
+  // whole suite green, because the one test that reads the fraction lands exactly on the boundary
+  // (`Hold` steps 16 ms and 2000 is 125 of them), which cannot tell a clamp from no clamp.
+  Begin();
+  pose.LookAt(manager->GetPlan().value.nodes.front().targetOrientation);
+
+  ImuSample sample;
+  sample.hasOrientation = true;
+  const auto tick = [&]() {
+    sample.timestampNs = clock.MonotonicNs();
+    auto guided = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+    EXPECT_TRUE(guided.ok()) << guided.status.detail;
+    return guided.ok() ? guided.value : CaptureGuidance{};
+  };
+
+  // Deliberately off the 16 ms grid, so the dwell overshoots rather than landing on it: ticks of
+  // 250 ms credit 250 each, and eight of them is 2000 exactly — 290 does not divide 2000.
+  ASSERT_EQ(tick().action, GuidanceAction::HoldStill) << "the fixture expects a held cell";
+  bool fired = false;
+  for (int i = 0; i < 20 && !fired; ++i) {
+    clock.AdvanceMs(290);
+    const CaptureGuidance guidance = tick();
+    EXPECT_GE(guidance.heldFraction, 0.0) << "on tick " << i;
+    EXPECT_LE(guidance.heldFraction, 1.0)
+        << "the ring was told to draw more than a full circle, on tick " << i;
+    fired = guidance.action == GuidanceAction::Fire;
+  }
+  EXPECT_TRUE(fired) << "the dwell never completed, so the overshoot was never reached";
 }
 
 TEST_F(CaptureSession, ANewSessionDoesNotInheritTheLastOnesDwell) {

@@ -371,27 +371,36 @@ TEST(CoveragePlanner, LocateSaysHoldStillOnACellThatStillNeedsShooting) {
 }
 
 TEST(CoveragePlanner, AConeNobodyCouldMeasureAgainstIsRefusedRatherThanPlanned) {
-  // NaN compares false against every ordering, so `<= 0.0` waved it through and `> cone` in
-  // `ArmBurst` then waved through every cell from every direction — ADR 0041's failure reached
-  // through the arithmetic rather than through the rule.
+  // Every non-finite value, not one of them, and that is the whole point of this test rather than
+  // thoroughness for its own sake. Two attempts at this guard each closed one member of the class
+  // and left another: `<= 0.0` admitted NaN, and `!(x > 0.0)` admitted infinity — which is the
+  // worse one, because a cone of `inf` is not merely unmeasurable, it makes `Locate` report every
+  // cell as one the camera is inside and `ArmBurst` accept a burst 179 degrees off. Verbatim the
+  // "every cell armable from anywhere" both fixes claimed to close.
   //
-  // Both engines, because they disagreed: the rings planner has asked `std::isfinite` since it
-  // was written and the null one had not, and the null one is what every manager test runs on. An
-  // engine pair that answers differently about what a plan is, on exactly the input that matters,
-  // is the shape of a bug that hides in the suite.
-  CapturePlanSpec spec;
-  spec.horizontalFovDeg = 66.0;
-  spec.verticalFovDeg = 50.0;
-  spec.overlapTarget = 0.30;
-  spec.acceptanceConeDeg = std::numeric_limits<double>::quiet_NaN();
-  Intrinsics lens;
-  lens.width = 1280;
-  lens.height = 960;
+  // Both engines, because they disagreed twice: the rings planner has asked `std::isfinite` since
+  // it was written and the null one has now been wrong about the same class in two different
+  // directions. The null one is what every manager test runs on, so its disagreement is the one
+  // the suite cannot see.
+  for (const double cone : {std::numeric_limits<double>::quiet_NaN(),
+                            std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity()}) {
+    CapturePlanSpec spec;
+    spec.horizontalFovDeg = 66.0;
+    spec.verticalFovDeg = 50.0;
+    spec.overlapTarget = 0.30;
+    spec.acceptanceConeDeg = cone;
+    Intrinsics lens;
+    lens.width = 1280;
+    lens.height = 960;
 
-  NullCoveragePlannerEngine null;
-  EXPECT_EQ(null.Plan(spec, lens).status.code, StatusCode::InvalidArgument);
-  RingsCoveragePlannerEngine rings;
-  EXPECT_EQ(rings.Plan(spec, lens).status.code, StatusCode::InvalidArgument);
+    NullCoveragePlannerEngine null;
+    EXPECT_EQ(null.Plan(spec, lens).status.code, StatusCode::InvalidArgument)
+        << "the null planner accepted a cone of " << cone;
+    RingsCoveragePlannerEngine rings;
+    EXPECT_EQ(rings.Plan(spec, lens).status.code, StatusCode::InvalidArgument)
+        << "the rings planner accepted a cone of " << cone;
+  }
 }
 
 TEST(CoveragePlanner, WithNoAimTheTargetIsTheNearestMissingCellRatherThanWhateverSitsAtIdentity) {

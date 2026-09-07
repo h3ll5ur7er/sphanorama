@@ -1,6 +1,7 @@
 #include "managers/capture_session_manager/capture_session_manager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <iomanip>
 #include <sstream>
@@ -938,14 +939,35 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
   //
-  // `!(offBy <= cone)` rather than `offBy > cone`, so a cone that is NaN refuses rather than
-  // waves everything through. NaN compares false against both, and the naive form therefore turns
-  // one unusable number into "every cell is armable from anywhere" — ADR 0041's failure reached
-  // through the arithmetic rather than through the rule. `RingsCoveragePlannerEngine` rejects a
-  // non-finite cone at `Begin` and the browser never gets here with one; the null planner guards
-  // with `<= 0.0`, which NaN passes, and that is the engine every manager test runs on. So a
-  // regression in the Rings guard would be invisible to the suite and visible only here. The same
-  // spelling `reticleRadius` uses in the shell, and for the same reason.
+  // `!(offBy <= cone)` rather than `offBy > cone`, so a cone that is NaN refuses rather than waves
+  // everything through: NaN compares false against both, and the naive form turns one unusable
+  // number into "every cell is armable from anywhere" — ADR 0041's failure reached through the
+  // arithmetic rather than through the rule. The same spelling `reticleRadius` uses in the shell.
+  //
+  // Both shipped planners now refuse a non-finite cone at `Begin`, so nothing in this build can
+  // deliver one here — which is an argument for keeping these checks rather than deleting them.
+  // The cone arrives from an engine behind a contract, and a manager does not get to assume every
+  // implementation of that contract validates its own output; the two that exist disagreed about
+  // this class of input twice while this branch was being reviewed.
+  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both with a planner that does not
+  // validate, so the lines are exercised rather than merely justified.
+  // The cone first, and separately, because the two refusals have different causes and a caller
+  // reading the detail deserves to know which. An unusable cone is a broken plan; being outside a
+  // usable one is a user who needs to turn the phone.
+  //
+  // Infinity is why this is a check of its own rather than a spelling of the one below. NaN makes
+  // the comparison false and the `!(<=)` form catches it; infinity satisfies the comparison
+  // *legitimately* — every direction really is inside an infinite cone — so no arithmetic here is
+  // wrong and every cell is armable from anywhere. The rule being broken is that a cone is a
+  // measurement, and neither of those is one, which is a statement about the value rather than
+  // about the comparison.
+  if (!std::isfinite(aimed->acceptanceConeDeg)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this cell's acceptance cone is not a usable measurement");
+  }
+  // `!(offBy <= cone)` rather than `offBy > cone`: a NaN *error* — an unnormalised pose, an
+  // orientation nobody filled in — compares false against both, and the naive form would arm on
+  // it. The same spelling `reticleRadius` uses in the shell, for the same reason.
   if (!(offBy <= aimed->acceptanceConeDeg)) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");

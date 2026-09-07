@@ -284,6 +284,14 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       // the rule in two places, and the platform's half would be untestable here.
       const started = new ctor({ frequency: requestedHz, referenceFrame: 'device' });
       started.addEventListener('reading', () => {
+        // The same ownership question the error handler asks, and it was asked in only one of the
+        // two places. A sensor replaced by a later `start` keeps this listener, and a reading it
+        // delivers afterwards lands in the buffer the *live* sensor is filling — one stream, two
+        // sources, which `Drain` has no way to tell apart. `teardown` stops the old sensor first,
+        // so this should not fire; `stopSensor` swallows a `stop()` that throws and nulls the
+        // handle anyway, which leaves a sensor nothing can stop again. This is the half that does
+        // not need the platform to have cooperated.
+        if (sensor !== started) return;
         const reading = started.quaternion;
         // A reading event with no quaternion is what a sensor fires before its first fix.
         if (!reading || reading.length < 4) return;
