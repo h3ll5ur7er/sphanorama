@@ -707,6 +707,22 @@ to precede: ADR 0043 landed, so a capture now reaches this state without anybody
 and the dwell's credit bound limits what a resumed loop can bank rather than saying anything about
 what a frozen one reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
 
+### The stage line has no notion of what supersedes what
+
+Found by round 16's shell-ordering lens. `sayForAWhile` holds a message for a fixed time, and the
+guidance-failure branch writes `#guidance` directly — so a line set just before a failure can sit
+on screen for up to ~1.1 s after the loop has recovered and repainted the reticle, the horizon and
+the markers. The sentence then disagrees with everything around it.
+
+Cosmetic and self-clearing, which is why it was not fixed on the branch that found it: it is a
+stale sentence for one second rather than a wrong state. The fix is not a patch either — it means
+giving the status line a notion of priority, so a recovery can retract a message a timer is still
+holding, and that is a small design decision about the one surface the user reads when something
+has gone wrong.
+
+Worth doing before the surface grows: every message added between now and then is another pair
+that has to be ordered.
+
 ---
 
 ## Phase 2 — Stitching
