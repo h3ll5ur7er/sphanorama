@@ -415,11 +415,13 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   a fake.
 
 - **A field of view nobody measured is reported as one the camera stated — open, and
-  pre-existing.** `CameraCapabilities` documents `horizontalFovDeg`/`verticalFovDeg` as "0 when the
-  platform will not say", and the browser never says: `deriveFieldOfView` answers a non-zero pair
-  unconditionally, from `ASSUMED_LONG_EDGE_FOV_DEG`, including for a 0×0 camera. So the one value
-  that means *nobody measured this* cannot be produced by the only real platform, and no reader can
-  tell an assumption from a measurement.
+  pre-existing.** `CameraCapabilities` now documents `horizontalFovDeg`/`verticalFovDeg` as 0 where
+  nothing has been *derived*, rather than where nothing was measured — the sentence was corrected
+  on the branch that added ADR 0045, because the old one stated a rule the only real platform
+  cannot keep: `deriveFieldOfView` answers a non-zero pair unconditionally, from
+  `ASSUMED_LONG_EDGE_FOV_DEG`, including for a 0×0 camera. The correction makes the header honest
+  and leaves the gap exactly where it was: there is still no value meaning *nobody measured this*,
+  so no reader can tell an assumption from a measurement.
 
   ADR 0045 did not create this but it did publish it: `CameraInUse()` is on the boundary now and is
   documented as what the camera *reports*, so a status row rendering it shows the user 66° and a

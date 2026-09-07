@@ -65,9 +65,9 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    review rounds because everybody read the prose and nobody rendered the page.
 
 Every checker in that list has its own test suite, `check_dist_fresh` included, and `gate.sh` runs
-six of the eight immediately before the check they guard. The reason is in that file's own header:
+most of them immediately before the check they guard. The reason is in that file's own header:
 the checkers never change while you are working, which is exactly what makes a broken one the
-easiest thing not to notice. Two of the eight cannot be adjacent, and it is worth saying which
+easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
 checker suites at the top, fourteen steps before the budget it guards, because that budget needs a
 wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside

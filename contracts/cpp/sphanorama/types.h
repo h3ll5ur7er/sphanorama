@@ -518,28 +518,35 @@ struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; 
 struct SeamMap { BufferId labelBuffer; int32_t width = 0, height = 0; };
 
 // ------------------------------------------------- platform value types
+// **Zero means "the platform will not say", on every measured field below.** Not "zero" and not a
+// default to improve on: an implementation that cannot answer must answer 0, and one that guesses
+// a plausible number is worse than one that says nothing, because a caller can act on a silence
+// and cannot detect a guess.
+//
+// Written here because six places in this repository cite "the contract's word for 'the platform
+// will not say'" and, until a reviewer went looking, this file said it on one field pair — the one
+// nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a refreshed struct
+// answers 0 (ADR 0045), and 0 is the *only* silence that keep can recognise: a guessed 30 fps is
+// indistinguishable from a measurement, so it overwrites the real 15 the session was holding and
+// the burst then asks for frames twice as fast as the camera makes them. That is the cost a second
+// implementation reading only this header would not have seen.
+//
+// Above the struct rather than inside it, which is not a formatting choice: `contract_gen.py`
+// attaches a doc to the declaration the comment *precedes*, so a paragraph written inside the
+// braces reaches every C++ reader and no TypeScript one — and this one was, leaving the mirror
+// with a field marked "exempt from the zero rule above" and no rule above it.
+//
+// Two exemptions, both gaps rather than decisions. The booleans: `false` here means "no" and "did
+// not say" alike, and there is nowhere to record the difference. And the field-of-view pair, which
+// is derived rather than measured — no browser reports angles, so the host computes them from the
+// frame's shape and its fallback is a 4:3 landscape lens, never 0. A producer that cannot derive
+// the pair answers 0 for *both* angles; a consumer reads 0 on either angle, or on either geometry
+// field, as a silence about all four and keeps the four it had (ADR 0045). Stated as the rule both
+// sides keep, because an earlier wording — "a silence about the frame is a silence about its
+// angles" — was true in one direction only, and the port that zeroes the pair while reporting a
+// real resolution walked straight past a keep that only asked about the geometry. See the
+// white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
 struct CameraCapabilities {
-  // **Zero means "the platform will not say", on every measured field below.** Not "zero" and not
-  // a default to improve on: an implementation that cannot answer must answer 0, and one that
-  // guesses a plausible number is worse than one that says nothing, because a caller can act on a
-  // silence and cannot detect a guess.
-  //
-  // Written here because five places in this repository cite "the contract's word for 'the
-  // platform will not say'" and, until a reviewer went looking, this file said it on one field
-  // pair — the one nothing tests. `CaptureSessionManager::ArmBurst` keeps what it had when a
-  // refreshed struct answers 0 (ADR 0045), and 0 is the *only* silence that keep can recognise:
-  // a guessed 30 fps is indistinguishable from a measurement, so it overwrites the real 15 the
-  // session was holding and the burst then asks for frames twice as fast as the camera makes
-  // them. That is the cost a second implementation reading only this header would not have seen.
-  //
-  // Two exemptions, both gaps rather than decisions. The booleans: `false` here means "no" and
-  // "did not say" alike, and there is nowhere to record the difference. And the field-of-view
-  // pair, which is derived rather than measured — no browser reports angles, so the host computes
-  // them from the frame's shape and its fallback is a 4:3 landscape lens, never 0. Its silence is
-  // the *geometry's*: `maxWidth`/`maxHeight` at 0 is what says the angles beside them were
-  // computed from nothing, which is why ADR 0045's keep moves all four together. See the
-  // white-balance and field-of-view entries in `docs/06-roadmap.md`; both want the same change.
-
   // The mode the camera actually settled on, not the largest it could reach. The coverage plan is
   // sized from these, so they have to describe the frames that will arrive: a sensor maximum the
   // preview never runs at would derive an aspect ratio, and so a ring count, for a frame nobody
@@ -547,8 +554,8 @@ struct CameraCapabilities {
   int32_t maxWidth = 0, maxHeight = 0;   // 0 when the platform will not say
   // Derived from the frame's own shape where a platform reports no angles — which is every
   // browser — so these move with `maxWidth`/`maxHeight` rather than independently of them, and a
-  // caller that keeps one across a silent refresh keeps all four (ADR 0045). Exempt from the zero
-  // rule above, because a derivation always has an answer: read the silence off the geometry.
+  // caller that keeps one across a silent refresh keeps all four (ADR 0045). Zero here means "not
+  // derived" rather than "not measured", and travels as a pair: both angles or neither.
   double horizontalFovDeg = 0, verticalFovDeg = 0;   // 0 only where nothing has been derived yet
   bool supportsExposureLock = false;
   bool supportsFocusLock = false;

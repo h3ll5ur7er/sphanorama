@@ -11,9 +11,9 @@ Rationale is in `docs/00-principles.md` and `docs/03-architecture.md`.
 one per lens, against the mistakes this codebase has actually made — and each publishes its
 findings to the pull request, where the answers go too. Reviews are run here rather than bought
 from a bot, and they are held in the open so the reasoning outlives the session that produced it.
-Expect several rounds, and change the scope at the end. On PR #49 each of rounds 1-13 reviewed a
-commit range and found its worst defect inside the previous round's fix, which is the argument for
-running another rather than for stopping. Round 14 reviewed the *whole branch against main* for the
+Expect several rounds, and change the scope at the end. On PR #49 every round after the first, up
+to the thirteenth, reviewed a commit range and found its worst defect inside the previous round's
+fix — which is the argument for running another rather than for stopping. Round 14 reviewed the *whole branch against main* for the
 first time and found two defects that predate the branch entirely — a quaternion norm overflow and
 an unbounded frame read — because a range diff cannot see code nobody touched.
 

@@ -230,7 +230,7 @@ let remote: RemoteCore;
  */
 let captureCell: ((node: NodeId) => Promise<boolean>) | null = null;
 /**
- * The cell guidance last pointed at — what the capture button captures.
+ * The cell guidance last pointed at — what the dwell arms a burst on.
  *
  * Null until guidance has named one, rather than a placeholder id: there is no cell zero to fall
  * back on, and arming against a number nothing chose would fail with NotFound for a reason the
@@ -626,9 +626,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // a live offer to start a second loop over the session already running.
   resumeButton.hidden = true;
 
-  // Cleared with `targetNode`, and for the same reason: it is module scope because the click
-  // handler and the end-to-end hook read it, and that scope decision silently made it
-  // session-spanning. It is assigned only under `plan !== null`, so a second `pump` with no plan
+  // Cleared with `targetNode`, and for the same reason: it is module scope because the end-to-end
+  // hook reads it, and that scope decision silently made it session-spanning. It is assigned only under `plan !== null`, so a second `pump` with no plan
   // would keep the *previous* session's `armAt`, and the tick that fired would arm into it.
   //
   // The example this used to give was `captureButton.disabled = captureCell === null` leaving the
@@ -644,8 +643,8 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // gap the markers hold still while the reticle, sized from the core's own answer, keeps moving.
   // Cleared with the rest of the per-capture state, which it was not.
   //
-  // `targetNode` is module scope — the click handler and the end-to-end hook both read it — while
-  // `attitude` and `lastCoverage` are locals here and reset with every session. Three facts
+  // `targetNode` is module scope — the end-to-end hook reads it — while `attitude` and
+  // `lastCoverage` are locals here and reset with every session. Three facts
   // describe one capture and only two of them were per-capture.
   //
   // A second capture in the same tab does not happen today, but the reason used to be stated
@@ -861,7 +860,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   const armAt = async (node: NodeId) => {
     // One arm at a time, refused before a single constraint is applied.
     //
-    // Nothing serialised this. The click handler does not disable the button — only the pump does,
+    // Nothing serialised this. The press does not disable the button — only the pump does,
     // and it cannot until the core has set `firing_`, which is a worker round trip plus however
     // long `applyConstraints` takes: measured at 38 ms with an instant camera and 396 ms at
     // 120 ms per constraint. Inside that window a second tap applied the locks again, was refused
@@ -973,7 +972,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
 
     // Every failure ends up as `false` plus a line on screen, thrown ones included, and the try
     // starts here rather than at the arming call because both awaits are inside it. The callers
-    // are a click handler and the end-to-end hook, neither of which awaits — so an exception
+    // are a button's press handler and the end-to-end hook, neither of which awaits — so an exception
     // escaping is an unhandled rejection rather than anything a user could see, and a dead
     // worker or a track that vanished mid-gesture is exactly when that happens.
     // Everything the locks were applied for is off, so the camera goes back to metering.

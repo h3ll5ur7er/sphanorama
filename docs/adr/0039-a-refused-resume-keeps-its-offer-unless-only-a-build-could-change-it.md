@@ -1,5 +1,20 @@
 # ADR 0039 — A refused resume keeps its offer unless only a new build could change it
 
+> **Narrowed by [ADR 0044](0044-a-capture-needs-a-motion-sensor.md).** The title is now too narrow
+> for the rule it names, and the Decision below splits refusals into two kinds where there are
+> three. `SensorUnavailable` is the third: it is not about this attempt, and not about this build
+> — it is about this *device on this page load*, and what clears it is a reload, not a new build.
+>
+> So the rule this ADR decided still holds in shape — an offer stays up exactly where a second
+> press could succeed — and the test it gave for that ("could only a new build change this?") no
+> longer partitions the refusals. `SensorUnavailable` takes the resume offer down by the same
+> reasoning that keeps the others up.
+>
+> It also forced a distinction this ADR did not have. Withdrawing the resume offer and withdrawing
+> the *fresh-start* offer are separate questions, because most refusals are about one project and
+> a sensorless device cannot capture anything: `describeResumeRefusal` answers both, and
+> `offerFresh` is the half that did not exist here. See `shell/src/clients/capture/resume.ts`.
+
 ## Context
 
 ADR 0035 and ADR 0036 were written in parallel and never reconciled on one point, and the roadmap

@@ -356,7 +356,9 @@ sequenceDiagram
 
 The client sequences the two managers; they never call each other.
 
-A retake marks the cell and nothing more. The burst that fills it goes through `ArmBurst` like any
+A retake marks nothing — there is no retake flag on a node, in the manager or in `CoverageNode`.
+What `RequestRetake` does is abort a burst in flight on that cell, and, in its replacing form,
+empty the cell. The burst that fills it afterwards goes through `ArmBurst` like any
 other and is refused while the camera is aimed somewhere else (ADR 0041), so a retake is an
 instruction to go back and re-shoot rather than a shutter that fires where the phone happens to be
 pointing — which is the failure that rule exists to stop. There is always an aim to check: a
@@ -433,5 +435,7 @@ lost — goes on screen through `describeFailure`, and a new capture stays one p
 Except where nothing a press could do would change the answer, and then the offer goes with it.
 `Unsupported` waits for a new build and `SensorUnavailable` waits for a reload, so leaving either
 on screen would invite a press that fails identically (ADR 0039, narrowed by ADR 0044). The
-capture itself is untouched in both cases — the refusals happen before the document is read — so
-what goes is the offer, not the sphere.
+capture itself is untouched in both cases, though not for the reason this once gave: `Unsupported`
+*is* the document being read and failing to decode, and `SensorUnavailable` is checked after that
+read. What makes the sphere safe is that neither refusal mutates anything — `ReadDocument` is a
+read, and nothing before the sensor check writes — so what goes is the offer, not the sphere.
