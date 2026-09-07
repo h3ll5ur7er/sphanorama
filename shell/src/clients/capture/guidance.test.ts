@@ -70,6 +70,25 @@ describe('reticleRadius', () => {
     expect(Number.isFinite(radius)).toBe(true);
     expect(radius).toBeLessThanOrEqual(RETICLE_MAX_RADIUS);
   });
+  it('parks the ring for an angle nobody measured, rather than closing it', () => {
+    // The same rule as the cone guard above, applied to the other unusable number. A NaN error is
+    // a sensor that reported nothing usable, and `!(NaN > cone)` is *true* — so the spelling
+    // chosen to keep NaN out of the growth arithmetic sent it to `RETICLE_LOCKED_RADIUS` instead:
+    // the fully-closed "you are on target" ring, drawn for a pose that does not exist. The comment
+    // beside it said it "parks the ring", which is what the widest radius does and what this now
+    // returns.
+    //
+    // Found by a reviewer noticing that the two guards two lines apart disagreed about the same
+    // class of input, and that neither spelling had a test.
+    expect(reticleRadius(Number.NaN, 4)).toBe(RETICLE_MAX_RADIUS);
+    expect(reticleRadius(Number.POSITIVE_INFINITY, 4)).toBe(RETICLE_MAX_RADIUS);
+    // And the ordinary cases still land where they did, since the guard has to be narrower than
+    // "anything that is not smaller than the cone".
+    expect(reticleRadius(0, 4)).toBe(RETICLE_LOCKED_RADIUS);
+    expect(reticleRadius(4, 4)).toBe(RETICLE_LOCKED_RADIUS);
+    expect(reticleRadius(200, 4)).toBe(RETICLE_MAX_RADIUS);
+  });
+
 });
 
 describe('describeGuidance', () => {

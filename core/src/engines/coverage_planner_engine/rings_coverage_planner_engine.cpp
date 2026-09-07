@@ -191,7 +191,14 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const PoseSample& cur
     // nothing downstream can tell the two apart. The cone guard above does not cover it: the cone
     // is a perfectly good measurement in that case and the *target* is not.
     if (!IsUsableRotation(node.targetOrientation)) continue;
-    if (!(angle * kRadToDeg <= node.acceptanceConeDeg)) continue;
+    // A plain `>`, matching `ArmBurst`, which is the other reading of this same number and whose
+    // comment cites these two lines. `!(x <= y)` is the NaN-safe spelling and it is not doing any
+    // work here: the two guards above have already refused a non-finite cone and a target that is
+    // not a rotation, and `AngleBetweenDirections` cannot answer NaN for usable inputs — so a
+    // reviewer swapped it in both files and every test stayed green, which is what a guard that
+    // cannot decide anything looks like. Written as the thing it means, so the next reader does
+    // not have to work out which NaN it is defending against.
+    if (angle * kRadToDeg > node.acceptanceConeDeg) continue;
     if (inside == nullptr || angle < insideAngle) {
       insideAngle = angle;
       inside = &node;

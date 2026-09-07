@@ -152,6 +152,25 @@ describe('sample delivery', () => {
     if (drained.ok) expect(drained.value.length).toBe(2);
   });
 
+  it('a restarted session does not drain the previous one\'s samples', async () => {
+    // `buffered` is cleared in `teardown`, which both `stop` and a re-`start` reach — and only the
+    // second of those makes it interesting. A session that begins by draining the last one's
+    // orientation integrates a pose from where the phone *was*, and `OrientationPoseEngine` would
+    // anchor on it before the first real sample arrived.
+    //
+    // The clear used to sit in `stop` alone, and a reviewer read moving it as widening a meaning.
+    // It is, and the widening is the point; this is the half that had nothing asserting it.
+    listener({ alpha: 10, beta: 0, gamma: 0, timeStamp: 1 });
+    listener({ alpha: 20, beta: 0, gamma: 0, timeStamp: 2 });
+
+    await access.start(60);
+    const drained = await access.drain(8);
+    expect(drained.ok).toBe(true);
+    if (drained.ok) {
+      expect(drained.value.length, 'a new session drained the last one\'s orientation').toBe(0);
+    }
+  });
+
   it('drain consumes rather than repeats', async () => {
     listener({ alpha: 10, beta: 0, gamma: 0, timeStamp: 1 });
     await access.drain(8);

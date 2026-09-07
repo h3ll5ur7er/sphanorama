@@ -394,15 +394,38 @@ describe('which locks the camera is holding', () => {
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
     host.closeCamera();
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().exposure, 'a lock report landed on a closed camera').toBe(false);
+  });
+
+  it('a camera arriving brings its own lock state, which is none', () => {
+    // `setCamera`'s reset, on its own. The test above reaches the same assertion through
+    // `closeCamera`, which zeroes the locks itself — so it was claiming this line and asserting
+    // that one, which a reviewer measured by deleting the reset and watching 443 stay green.
+    //
+    // Here nothing else can make it false: one camera takes a lock, a second arrives without
+    // anything being closed or cleared in between. That is a device switch, and the new device is
+    // holding nothing.
+    const host = createCaptureHost();
     host.setCamera(aCamera);
-    expect(host.cameraLocks().exposure, 'a lock claim outlived the camera that made it').toBe(false);
+    host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
+    expect(host.cameraLocks().exposure).toBe(true);
+
+    host.setCamera({ ...aCamera, maxWidth: 1280, maxHeight: 720 });
+    expect(host.cameraLocks().exposure, 'a lock claim was read against its replacement')
+      .toBe(false);
   });
 
   it('forgets the locks when the camera is cleared', () => {
+    // With a camera open first, for the reason its two siblings above were repaired: a lock report
+    // is dropped when the host holds no camera, so setting one on an empty host and then asserting
+    // zeros asserts the default. Two of the three were fixed when that drop was added and this one
+    // was missed — the same one-of-three shape this branch has now recorded four times.
     const host = createCaptureHost();
+    host.setCamera(aCamera);
     host.setCameraLocks({ exposure: true, whiteBalance: true, focus: true });
-    host.clearCamera();
+    expect(host.cameraLocks().focus, 'nothing was ever held to forget').toBe(true);
 
+    host.clearCamera();
     expect(host.cameraLocks().focus).toBe(false);
   });
 

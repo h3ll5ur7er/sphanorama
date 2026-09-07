@@ -256,6 +256,10 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
     motionListener = null;
     latestRate = null;
     live = 'none';
+    // Here rather than in `stop`, and the reason is the second caller: `start` tears down an
+    // orphaned listener set before it builds a new one, and samples the previous session buffered
+    // are not this one's to drain. Both callers want it, which is what makes this the right home
+    // — a reviewer read the move as a widening, and the widening is the point.
     buffered = [];
   }
 

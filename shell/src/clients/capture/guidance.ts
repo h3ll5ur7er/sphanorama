@@ -29,8 +29,13 @@ export function reticleRadius(angularErrorDeg: number, acceptanceConeDeg: number
   // whose cone is broken is one the core will never let the user finish, and a ring at its widest
   // says "not this, keep looking" — which is what `Locate` is saying at the same moment.
   if (!(acceptanceConeDeg > 0) || !Number.isFinite(acceptanceConeDeg)) return RETICLE_MAX_RADIUS;
-  // `!(x > y)` rather than `<=` so a NaN error — a sensor that reported nothing usable — parks
-  // the ring instead of erasing it.
+  // An error that is not a measurement gets the same answer as a cone that is not one, and for the
+  // same reason — the two guards sit two lines apart and used to disagree about the same class of
+  // input. `!(x > y)` was chosen to keep NaN out of the growth arithmetic below, which it does,
+  // and it sent NaN to `RETICLE_LOCKED_RADIUS`: the fully-closed ring, drawn on target, for a pose
+  // nobody measured. The comment here called that "parking the ring", which is what the widest
+  // radius does and what this returns now.
+  if (!Number.isFinite(angularErrorDeg)) return RETICLE_MAX_RADIUS;
   if (!(angularErrorDeg > acceptanceConeDeg)) return RETICLE_LOCKED_RADIUS;
   const span = Math.max(FULL_ERROR_DEG - acceptanceConeDeg, 1);
   const travel = Math.min(1, (angularErrorDeg - acceptanceConeDeg) / span);

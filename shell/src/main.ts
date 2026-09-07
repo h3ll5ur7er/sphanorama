@@ -492,6 +492,21 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
  */
 async function beginSession(core: SphanoramaCore, motionRunning: boolean,
                             resume: ProjectId | null) {
+  // The camera is still in hand, asked here because this is where the two entry points meet.
+  // `enable` checks it — `stillHeld` on its own line — and `#new-capture` and `#resume` do not,
+  // and after a retryable resume refusal (ADR 0039) they are the only things on screen with no
+  // loop watching. A lens taken in that window left `#camera-state` reading `taken away` while a
+  // press answered with the core's `CameraUnavailable` translated as *"another tab of this app may
+  // be holding it — close them and reload"*, as the last word, with every control then hidden.
+  //
+  // Said here rather than left to the core, because the core's answer is right about the state and
+  // wrong about the cause: it cannot tell a camera another tab is holding from one this page was
+  // holding a moment ago.
+  if (!cameraHeld()) {
+    stage.textContent = 'the camera is gone — reload to start again';
+    return;
+  }
+
   const project = resume === null
     ? await startFresh(core, motionRunning)
     : await pickUp(core, resume);
@@ -673,6 +688,27 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // stale. On that question this flag and `guidanceFailed` now agree; the difference between them
   // is the one stated above — this one is never cleared.
   let loopStopped = false;
+  /**
+   * Everything the loop draws that is a claim about *now*, taken down together.
+   *
+   * The reticle is the half both terminal exits missed, and it is the loudest thing on the screen:
+   * `overlay.show({rings: [], arrow: null})` reaches `#cell-layer` and `#target-arrow`, because
+   * those are what the painter owns — and the reticle is written inline in the `guided.ok` block,
+   * so no flag reaches it and nothing clears it. Measured: both exits left `#reticle` at `r=7.0`
+   * with `.locked`, which is the fully-closed "you are on target" ring, over a dead viewfinder,
+   * for the life of the tab. A comment above one of them has claimed since it was written that
+   * "the reticle and the markers go".
+   *
+   * Parked wide open rather than hidden, which is the same answer the tick loop gives an
+   * unmeasured pose: an open ring says "nothing is being aimed at", and hiding it would say the
+   * app had stopped having an opinion, which is a different and less true thing.
+   */
+  const clearWhatIsNoLongerTrue = () => {
+    overlay.show({ rings: [], arrow: null });
+    reticle.setAttribute('r', RETICLE_MAX_RADIUS.toFixed(1));
+    reticle.classList.remove('locked');
+  };
+
   const paintOverlay = () => {
     if (loopStopped || guidanceFailed) return;
     if (plan === null || attitude === null || lastCoverage === null || targetNode === null) return;
@@ -733,7 +769,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   const COVERAGE_RETRY_MS = 1000;
   const refreshCoverage = async () => {
     if (review === null || plan === null) return;
-    if (coverageInFlight) return;
+    if (coverageInFlight) {
+      // Deferred, not dropped. The other two ways in defer — `coverageStale` remembers a refused
+      // read and `coverageRetryAtMs` spaces the retries — and this one returned with nothing
+      // marking that a refresh had been asked for and lost. A reviewer traced the case: a
+      // `CellDone` arriving while a read issued on an earlier tick is still out is the one refresh
+      // that *knows* something changed, and on the last cell of a sphere there is no later
+      // `CellDone` to ask again, so the map and the `n/total` count end permanently one short.
+      coverageStale = true;
+      return;
+    }
     coverageInFlight = true;
     // Armed here, not on the answer: the interval is between *asks*.
     coverageRetryAtMs = performance.now() + COVERAGE_RETRY_MS;
@@ -975,6 +1020,21 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     let armedNow;
     try {
       const write = await writeLocks(wanted);
+      // Asked before the abandoned-write branch below, because the two answers are about the same
+      // three seconds and only one of them is the reason. `LOCK_WRITE_TIMEOUT_MS`'s own header
+      // names the case — "a track pulled away mid-call resolves nothing" — so a camera taken away
+      // during a parked write is precisely what makes that timeout fire, and this exit was the one
+      // door of five that did not re-ask. What the user got: `#stage` saying the camera was taken
+      // away, over `#guidance` saying it is not answering and `#locks` saying it did not answer
+      // the request, as the page's last word.
+      const goneWhileWriting = cannotArm();
+      if (goneWhileWriting !== null) {
+        lastLocksLine = goneWhileWriting.row;
+        locksOut.textContent = lastLocksLine;
+        unlock();
+        sayForAWhile(goneWhileWriting.say);
+        return false;
+      }
       if (!write.answered) {
         // No burst over a camera in an unknown state.
         //
@@ -1193,7 +1253,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       // deliberate when it is not.
       loopStopped = true;
       guidanceFailed = true;
-      overlay.show({ rings: [], arrow: null });
+      clearWhatIsNoLongerTrue();
       guidanceOut.textContent = 'the camera was taken away';
       stage.textContent = 'the camera was taken away — reload to start again';
       // The map, last and unconditionally. This branch's comment has claimed since it was written
@@ -1446,7 +1506,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
             // capture here is `loopStopped`, which the tick gate reads before it asks for
             // anything. Removed rather than pointed at another element: there is nothing left
             // whose disabling would mean "you cannot capture now".
-            overlay.show({ rings: [], arrow: null });
+            clearWhatIsNoLongerTrue();
             guidanceOut.textContent = 'the core stopped answering';
             stage.textContent = 'the core stopped answering — reload to start again';
             return;
@@ -1582,16 +1642,24 @@ async function main() {
     // session is already up, so it cannot retract one already in flight. This is the guard that
     // can.
     //
-    // **No reachable failing case today, and that is measured rather than assumed.** With this
-    // guard neutered, both routes into a second start were driven and `pump` still ran exactly
-    // once. `#enable` beside `#resume` at load: the second `enable` dies in the camera adapter,
-    // which will not open a device it is already holding, so it reaches neither branch. `#resume`
-    // beside `#new-capture` after a refusal: the refusal that raised both offers is one that
-    // refuses again, so `pickUp` does not reach `pump` on the second press either. What makes the
-    // case real rather than theoretical is ADR 0039's own reason for keeping the offer up — a
-    // refusal that *might* succeed next time — and the first such refusal to exist makes two
-    // presses two sessions. The guard is here so that day is not also the day this is discovered.
-    // It has no test for the same reason it has no failing case: a test for it could not fail.
+    // **No reachable failing case today, and the reason is not the one recorded here for three
+    // rounds.** With this guard neutered, both routes into a second start were driven and `pump`
+    // still ran exactly once — that measurement holds. What was wrong is the explanation of the
+    // first route: *"the second `enable` dies in the camera adapter, which will not open a device
+    // it is already holding"*. A reviewer checked the adapter and it has no such check; Chromium
+    // hands out a second live stream through the adapter's own `ideal` fallback. What actually
+    // closes that route is the two `disabled` writes at the top of `enable`, which is a far more
+    // fragile thing to be resting on and worth knowing you are resting on it.
+    //
+    // `#resume` beside `#new-capture` after a refusal is closed for the reason given: the refusal
+    // that raised both offers is one that refuses again, so `pickUp` does not reach `pump` on the
+    // second press. What makes the case real rather than theoretical is ADR 0039's own reason for
+    // keeping the offer up — a refusal that *might* succeed next time — and the first such refusal
+    // to exist makes two presses two sessions.
+    //
+    // The guard is here so that day is not also the day this is discovered. It has no test for the
+    // same reason it has no failing case; that this paragraph was itself wrong for three rounds is
+    // the argument for the guard rather than against it.
     let sessionStarting = false;
     const startOnce = (attempt: () => Promise<unknown>) => {
       if (sessionStarting) return;

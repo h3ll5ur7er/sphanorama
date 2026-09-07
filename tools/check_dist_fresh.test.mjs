@@ -121,6 +121,31 @@ describe('the dist freshness check', () => {
     }
   });
 
+  it('does not demand a rebuild for a C++ test edit', () => {
+    // `core/test` and `bridge/test` are excluded because they are not linked into the wasm, and
+    // the reason is the file's own: demanding a five-minute rebuild for a native test edit would
+    // teach people to skip the check. That rule had no case, which a reviewer pointed out is
+    // exactly the shape this suite exists for — the exclusion is what keeps the checker usable, so
+    // it is the line most costly to lose quietly.
+    for (const test of ['core/test/a_test.cpp', 'bridge/test/b_test.cpp']) {
+      const tree = aFreshTree();
+      tree.put(test, Date.now());
+      expect(complaint(tree.root), test).toBeNull();
+    }
+  });
+
+  it('catches a bundle older than each of the things it is built from', () => {
+    // Four source roots feed the bundle and only `shell/src` was driven. `contracts/ts` in
+    // particular is generated from the C++ headers, so a contract change that reaches the browser
+    // suite through a stale bundle is the exact failure this file was written for.
+    for (const source of ['shell/src/main.ts', 'shell/index.html', 'contracts/ts/contracts.d.ts',
+                          'shell/public/core/sphanorama-core.js']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now(), 'sphanorama-core.js');
+      expect(complaint(tree.root), source).toMatch(/dist\/ is older than the sources/);
+    }
+  });
+
   it('says the loud thing when there is no bundle at all', () => {
     const tree = aFreshTree();
     rmSync(join(tree.root, 'dist'), { recursive: true });
