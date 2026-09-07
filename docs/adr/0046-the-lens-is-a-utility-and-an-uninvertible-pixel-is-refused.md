@@ -5,11 +5,13 @@
 `Intrinsics` has been in `contracts/cpp/sphanorama/types.h` since the architecture was written. It
 is passed to `ICoveragePlannerEngine::Plan` and to `IRegistrationEngine::Refine`, stored on
 `CaptureSessionManager`, and written into every persisted session. Until this change **no code in
-the repository read a field of it.** Both `Plan` implementations take the parameter unnamed and
-tessellate from `CapturePlanSpec`'s field of view instead; `Refine` is null. `CaptureSessionManager`
-fills in `width` and `height` from the camera and leaves the focal length and all five distortion
-coefficients at zero, which is correct — the struct's own comment says a lens is *estimated during a
-build*, and there has been no build.
+the repository read it as optics.** Two fields are read — `capture_session_manager.cpp` writes
+`lens.width` and `lens.height` into the session document — and they are read as a frame size, which
+is what those two are. Nothing has ever read the focal length, the optical centre or a distortion
+coefficient. Both `Plan` implementations take the parameter unnamed and tessellate from
+`CapturePlanSpec`'s field of view instead; `Refine` is null; and `CaptureSessionManager` leaves all
+seven optical fields at zero, which is correct — the struct's own comment says a lens is *estimated
+during a build*, and there has been no build.
 
 Phase 2 is the phase that estimates it, and every stage of Phase 2 is this transform or its
 inverse: rendering a synthetic frame from a known panorama, measuring a match residual in pixels,
@@ -39,8 +41,20 @@ Three things about it are easy to get wrong and invisible when wrong:
   any other tool drops into `Intrinsics` unchanged.
 - `Project` and `Unproject` answer a small struct carrying a `valid` flag. They refuse an unusable
   lens, a direction that is not a measurement, a direction at or behind the plane through the
-  optical centre, and a radius past the fold — where the *derivative* of the radial map,
-  `1 + 3k₁r² + 5k₂r⁴ + 7k₃r⁶`, has stopped being positive.
+  optical centre, and a radius the distortion does not invert up to.
+- **"Up to", not "at".** The fold test is a statement about the whole ray from the optical centre
+  outward, because a local one is worthless: the radial slope `1 + 3k₁r² + 5k₂r⁴ + 7k₃r⁶` is a cubic
+  in r² and can dip negative and come back, so a radius on the far side of the dip looks healthy
+  where it lands and is folded over all the same. The radial half is settled in closed form — the
+  slope is 1 at the centre, so it is enough to test the endpoint and the slope's own turning points
+  inside the interval. The tangential half cannot be: `p1` and `p2` break the reduction to one
+  dimension, so the Jacobian determinant of the full map is **sampled** along the ray, and a fold
+  thinner than a sixty-fourth of it would be missed.
+- **The field of view is measured through the model**, by asking where the two opposite edges of the
+  frame actually look, rather than computed from the focal length. Distortion moves it: on a
+  moderately barrelled lens `fx` alone says 66° for a frame subtending nearly 73°. An edge with no
+  preimage answers 0 — the contract's silence — because the lens has no left-hand side to measure
+  to.
 - `Unproject` iterates, then **checks its answer by calling `Project` on it** and refuses if the
   result does not land back on the pixel it was given. Not by repeating `Project`'s arithmetic
   locally: the fold refusal is a property of `Project`, and asking it is the only way the two are
@@ -51,29 +65,52 @@ Three things about it are easy to get wrong and invisible when wrong:
 
 ## Consequences
 
-- Phase 2 has its shared arithmetic, and one definition of it. The synthetic-dataset renderer, the
-  registration engine, the coverage planner and the composition engine all measure angles the same
-  way or they fail a test.
+- Phase 2 has its shared arithmetic, and one definition of it **inside the core**: the registration
+  engine, the coverage planner and the composition engine all measure angles the same way or they
+  fail a test. The synthetic-dataset renderer is deliberately *not* in that list — see the last
+  rejected alternative, which is the whole reason it renders through its own implementation. An
+  earlier draft of this bullet had it sharing the definition, which is the opposite of the decision
+  taken forty lines further down.
 - A default `Intrinsics` — the one every capture session is holding right now — answers `false` to
   `IsUsableLens`, and a test says so by name. Nothing can begin quietly trusting a zero focal
   length without that test going red first.
-- **The iteration budget is measured, not chosen.** On a `k₁ = −0.9` lens, a budget of 20 accepts
-  pixels out to only 89.6% of the radius that genuinely has a preimage; 100 reaches 99.6% and 500
-  reaches 99.98%. The loop exits as soon as it has settled — an ordinary phone lens takes about five
-  passes — so 500 is a ceiling on the pathological case rather than the common cost. A smaller
-  budget does not answer *approximately*; it refuses well-defined pixels near the edge of a wide
-  lens and calls it a lens it cannot describe.
+- **The iteration budget is a resource limit, and it is honest about being one.** On a `k₁ = −0.9`
+  lens a budget of 20 accepts pixels out to only 89.6% of the radius that genuinely has a preimage,
+  100 reaches 99.6%, and the shipped 5000 reaches 99.9999%. The loop exits as soon as it has settled,
+  which on the test suite's distorted lens is a mean of 14 passes and a maximum of 24 over the whole
+  frame — 1 on an undistorted one — so the ceiling is a bound on the pathological case rather than
+  the common cost. (An earlier draft said "about five passes"; that was a guess with a number on it,
+  and the measured figure is three times larger.)
 
-  It is 99.98% rather than 100% because the last sliver is the fold itself, where the iteration
-  converges with a ratio going to 1 and no finite budget arrives. That sliver is also where the
-  inverse is genuinely ill-conditioned — the forward map's derivative is heading for zero, so a
-  pixel's worth of image spans an unbounded range of directions — and refusing it is the right
-  answer rather than a rounding of one.
-- The convergence check is load-bearing and was nearly not tested. Sweeping the model rather than
-  reading it turned up the case that needs it: **strong tangential distortion**, which the fold
-  check cannot reason about because `p1` and `p2` are not radial. There the fixed point settles
-  somewhere that is not a preimage of the pixel at all, radial stays positive throughout, and
-  projecting the answer gives a perfectly valid pixel — just not the one asked about.
+  **Exhaustion and non-invertibility are both refusals, and they are not distinguished.** No budget
+  can be principled: arbitrarily close to a fold the convergence ratio goes to 1 and no finite number
+  of passes arrives. What *can* be said is that a real lens has no fold inside its own frame — an
+  image folded over itself is visible to the eye — so on anything a camera produces the ceiling never
+  binds. This was written the other way round first, with a budget of 500 stated as generous, and a
+  reviewer found a test of ours that had recorded the resulting truncation as though it were a
+  property of the lens: an interior pixel needing 835 passes, refused, on a file whose whole claim is
+  that it does not throw well-defined pixels away.
+- **There are two failures here and they have different catchers**, which the first draft of this
+  ADR ran together and a reviewer separated:
+  - A **settled** fixed point is, by construction, a solution of the forward equation — so it is
+    always a genuine preimage. "Converged on something that is not a preimage" is not a state this
+    iteration can be in; a 223,608-sample sweep found zero of them. What the round-trip tolerance
+    actually catches is **exhaustion**: an iterate that had not arrived when the budget ran out.
+  - Landing on a genuine preimage that is the **wrong one of two** is the other failure, and the
+    tolerance is structurally blind to it — the answer projects back exactly, because it really is a
+    preimage. Only the fold test catches that, which is why the fold test has to be right.
+- **Two of these consequences were written before the review and were wrong.** The fold test was
+  local where it promised to be global, and the field of view read the focal length while claiming
+  to say how much of the sphere a frame covers. Reviewers produced, independently, a lens answering
+  an in-frame pixel with a bearing **86.8° wrong** — a genuine preimage, just the wrong one of two,
+  which is the one class of error a round-trip check is structurally blind to. Both are fixed above,
+  and the record is left here rather than tidied because the pattern is the point: every one of these
+  came from a *local* test standing in for a *global* promise.
+- **Most guards in the file have no test of their own** — thirteen of fourteen are individually
+  removable with the suite green — and that is deliberate. Each makes the next step's precondition
+  locally true, so that correctness never rests on NaN propagating through a polynomial, which is a
+  guarantee `-ffast-math` withdraws. The implementation says so at the top rather than letting each
+  guard imply it is the sole refuser.
 - Cost: two conventions now have to be kept in step by hand — this model's, and whatever the
   synthetic-dataset generator uses to render. That is deliberate (see below) and it is why the
   agreement will be a pinned test rather than a shared function.
@@ -100,6 +137,6 @@ it would spend its accuracy where registration needs it most and say nothing abo
 ***Sharing one implementation with the synthetic-dataset generator.*** Tempting — two copies of a
 projection will drift. But a harness that renders its frames with the same code the engine under
 test uses cannot measure that code: a wrong camera model would render frames consistent with itself
-and score perfectly. Independent implementations are the point (§5.5 of the toolchain document says
+and score perfectly. Independent implementations are the point (§5.4 of the toolchain document says
 the same about the reference), and the drift is handled by pinning their agreement in a test rather
 than by removing one of them.

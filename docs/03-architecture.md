@@ -264,6 +264,13 @@ reports the same rotation as a quaternion, and an Android rotation vector differ
 ADR 0015. Nothing above resource access ever sees a second convention, which is what lets
 `CoveragePlannerEngine` compare a sensor reading to a plan cell with a single `AngleBetween`.
 
+That frame is about *directions*. A **pixel** needs a second convention, and the two disagree about
+one axis: image space is the ordinary raster one, **+x right and +y down**, with the origin at the
+image's top-left corner, so a pixel's centre sits at a half-integer. `utilities/camera_model` is
+where the two meet and where the Y flip between them happens, once (ADR 0046). Note the half pixel
+against OpenCV, which puts a pixel centre at an integer: distortion coefficients transfer unchanged
+because they live in normalised coordinates, and `cx`/`cy` from such a calibration do not.
+
 The frame is the **viewfinder's**, not the chassis'. Every platform reading describes the case the
 user is holding, and the browser re-orients the page inside it; the adapter folds
 `screen.orientation.angle` in so that +X means "the right edge of the picture" (ADR 0017). Roll is

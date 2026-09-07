@@ -201,8 +201,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    to correct, 0.5 s to learn an offset — have never met a real phone.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
    Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
-   synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
-   actually need.
+   synthetic-dataset generator — both of which Phase 2's accuracy harness is the first thing to
+   actually need. (This said Phase 1's, from before the harness had a phase: it measures
+   registration accuracy, and Phase 1 does no registration.)
 
 ---
 
@@ -747,7 +748,10 @@ that has to be ordered.
   blending, equirectangular projection with tiled output.
 - `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
-- Accuracy harness on synthetic datasets wired into CI.
+
+Listed in dependency order, which is not build order: **the accuracy harness on synthetic datasets
+comes first**, before any of the above, for the reason in "What to build first" below. It is last in
+this list only because it is the thing that measures the others.
 
 **Exit:** synthetic-dataset registration median error under a stated angular threshold; a real
 capture exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build

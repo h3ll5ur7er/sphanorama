@@ -38,8 +38,10 @@ coverage and acceptance are all decided in the core.
 
 **What is real.** Four of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box) and `FrameQuality` (sharpness). `Registration`
-and `Composition` are still null, which is what Phase 2 is for — Phase 1 is the guided capture that
-is already built, and this line said Phase 1 until Phase 2 actually started.
+and `Composition` are still null, which is what Phase 2 is for. This line said Phase 1 until Phase 2
+actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
+conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
+build, not finished.
 
 **Phase 2 has started at the bottom.** `utilities/camera_model` projects a direction to the pixel it
 lands on and back again, through Brown-Conrady distortion, and it is the first code in this

@@ -45,4 +45,4 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
 - **Tooling** — Python for contract codegen and the architecture checks CI runs; synthetic dataset
-  generation and offline ground-truth comparison arrive with Phase 1's accuracy harness.
+  generation and offline ground-truth comparison arrive with Phase 2's accuracy harness.

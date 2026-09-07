@@ -65,6 +65,32 @@ TEST(IsUsableLens, ALensNeedsAnImageWithArea) {
   EXPECT_FALSE(IsUsableLens(lens));
 }
 
+TEST(IsUsableLens, ALensNeedsItsOpticalCentreInsideItsImage) {
+  // Not fussiness about realism: without it the field of view collides with its own silence. Each
+  // half-angle is measured from the optical centre to an edge, so a centre far outside the image
+  // makes one of them negative and nearly cancels the other — at cx = 1e11 both atans round to the
+  // same double just under pi/2 and `HorizontalFovDeg` returns exactly 0.0, which is the contract's
+  // word for "will not say" (types.h), for a lens this function had accepted.
+  Intrinsics lens = Phone();
+  lens.cx = 1e11;
+  EXPECT_FALSE(IsUsableLens(lens));
+  EXPECT_DOUBLE_EQ(HorizontalFovDeg(lens), 0.0);
+
+  for (double cx : {-1.0, 0.0, 960.0, 961.0}) {
+    Intrinsics outside = Phone();
+    outside.cx = cx;
+    EXPECT_FALSE(IsUsableLens(outside)) << "cx=" << cx;
+  }
+  Intrinsics low = Phone();
+  low.cy = -0.5;
+  EXPECT_FALSE(IsUsableLens(low));
+
+  // Off centre but inside is a perfectly ordinary calibration and stays a lens.
+  Intrinsics decentred = Phone();
+  decentred.cx = 300.0;
+  EXPECT_TRUE(IsUsableLens(decentred));
+}
+
 TEST(IsUsableLens, ALensNeedsAPositiveFocalLengthOnBothAxes) {
   Intrinsics lens = Phone();
   lens.fx = 0;
@@ -131,11 +157,40 @@ TEST(HorizontalFovDeg, AnUnusableLensSaysNothingRatherThanZeroDegrees) {
   EXPECT_DOUBLE_EQ(VerticalFovDeg(Intrinsics{}), 0.0);
 }
 
-TEST(HorizontalFovDeg, AnOffCentreLensSeesLessThanTwiceItsWiderHalf) {
-  // The two half-angles are unequal and atan is concave, so their sum is largest when the optical
-  // centre is in the middle. Taking twice the angle to a half-width instead — the reading that
-  // looks right and is one line shorter — overstates a lens whose centre sits at 300 of 960 by
-  // 2.1 degrees, and the coverage planner would tessellate a sphere with gaps in it accordingly.
+TEST(HorizontalFovDeg, TheAngleIsMeasuredThroughTheLensRatherThanAroundIt) {
+  // Barrel distortion bends the edge of the frame outward, so the lens sees more of the world than
+  // its focal length alone implies. Reading fx and ignoring k1..k3 claims 66 degrees for a frame
+  // that actually subtends nearly 73 — an error several times the decentring one the next test is
+  // about, in the same function, and it was there while that one was being fixed.
+  const Intrinsics lens = Distorted();
+  const UnprojectedDirection left = Unproject(lens, Pixel{0.0, lens.cy});
+  const UnprojectedDirection right = Unproject(lens, Pixel{960.0, lens.cy});
+  ASSERT_TRUE(left.valid);
+  ASSERT_TRUE(right.valid);
+  const double subtended = AngleBetweenDirections(left.direction, right.direction) * kDegPerRad;
+  EXPECT_GT(subtended, 70.0);
+  EXPECT_NEAR(HorizontalFovDeg(lens), subtended, 1e-9);
+}
+
+TEST(HorizontalFovDeg, ALensWhoseEdgeHasNoPreimageSaysNothingRatherThanAnAngle) {
+  // With k1 = -1 the frame's own edge is past the fold: no direction lands there. An angle
+  // computed from the focal length would report a confident 66 degrees for a lens whose picture
+  // has no left-hand side.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  ASSERT_TRUE(IsUsableLens(lens));
+  ASSERT_FALSE(Unproject(lens, Pixel{0.0, lens.cy}).valid);
+  EXPECT_DOUBLE_EQ(HorizontalFovDeg(lens), 0.0);
+}
+
+TEST(HorizontalFovDeg, AnOffCentreLensSeesLessThanACentredOneOfTheSameFocalLength) {
+  // The two angles' tangents sum to width/fx however the centre moves, and atan is concave, so a
+  // constrained sum of two of them is largest when they are equal — the centred case. Taking twice
+  // the angle to a half-width instead, the reading that looks right and is one line shorter,
+  // overstates a lens whose centre sits at 300 of 960 by 2.1 degrees.
+  //
+  // The comparison is against the centred lens. This test was named for a weaker one — "less than
+  // twice its wider half", which is 83.5 degrees here and follows from monotonicity alone.
   Intrinsics lens = Phone();
   const double centred = HorizontalFovDeg(lens);
   EXPECT_NEAR(centred, 66.0, 1e-9);
@@ -165,9 +220,10 @@ TEST(Project, TheForwardAxisLandsOnTheOpticalCentre) {
 }
 
 TEST(Project, UpInTheWorldIsUpTheImageWhichIsADecreasingY) {
-  // The Y axis flips between camera space and raster space. Nothing else in this file would fail
-  // if it did not: a consistently upside-down model round-trips perfectly and stitches a sphere
-  // that is upside down.
+  // The Y axis flips between camera space and raster space, and a consistently upside-down model
+  // round-trips perfectly while stitching a sphere that is upside down — so the round-trip tests
+  // cannot see it. This one and `TheEdgeOfTheFieldOfViewIsTheEdgeOfTheImage` both can; the comment
+  // here claimed to be the only one until a reviewer ran the sabotage and found two failures.
   const Intrinsics lens = Phone();
   const ProjectedPixel up = Project(lens, OffAxis(10.0, 1));
   ASSERT_TRUE(up.valid);
@@ -200,8 +256,13 @@ TEST(Project, EveryDirectionInsideTheFieldOfViewHasAnImageInsideTheFrame) {
   // The completeness invariant, in miniature: a lens that claims 66 by 50 degrees must actually
   // put all of them on the sensor, or a coverage plan tessellated from that claim leaves gaps.
   const Intrinsics lens = Phone();
-  for (double h = -32.9; h <= 32.9; h += 2.0) {
-    for (double v = -24.9; v <= 24.9; v += 2.0) {
+  // Counted in integers: accumulating `h += 2.0` from -32.9 stops at 31.1 and never tests the far
+  // edge at all, which is exactly where a field-of-view error would show. A reviewer found a 100px
+  // error confined to 32.2-32.9 degrees passing the whole suite.
+  for (int hi = 0; hi <= 34; ++hi) {
+    const double h = -32.9 + 65.8 * static_cast<double>(hi) / 34.0;
+    for (int vi = 0; vi <= 26; ++vi) {
+      const double v = -24.9 + 49.8 * static_cast<double>(vi) / 26.0;
       const double th = h / kDegPerRad, tv = v / kDegPerRad;
       const Vec3 d{std::tan(th), std::tan(tv), -1.0};
       const ProjectedPixel p = Project(lens, d);
@@ -259,6 +320,55 @@ TEST(Project, AnUnusableLensProjectsNothing) {
   EXPECT_FALSE(Project(Intrinsics{}, Vec3{0, 0, -1}).valid);
 }
 
+TEST(Project, ARadiusPastTheFirstFoldIsRefusedEvenWhereTheSlopeHasTurnedPositiveAgain) {
+  // The fold check is a statement about the whole way out from the optical centre, not about the
+  // radius it is handed. `RadialSlope` is a cubic in r^2 and a cubic can dip below zero and come
+  // back: with k1 = -1 and k2 = +0.3 it is 1 - 3r^2 + 1.5r^4, negative between r = 0.650 and
+  // r = 1.256 and positive on either side. A check that only asks about the endpoint therefore
+  // re-admits radii the image has already folded over.
+  //
+  // Measured on this lens before the fix: 12.65 and 51.93 degrees — 39 degrees apart — projected
+  // to pixels 1.4e-06 apart, both `valid`, and `Unproject` answered the near one with confidence.
+  // The round-trip check cannot catch that, because both directions really do project there.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  lens.k2 = 0.3;
+  ASSERT_TRUE(IsUsableLens(lens));
+  EXPECT_TRUE(Project(lens, OffAxis(12.65, 0)).valid);
+  EXPECT_FALSE(Project(lens, OffAxis(51.93, 0)).valid);
+}
+
+TEST(Unproject, ATangentialLensNeverAnswersWithTheOtherPreimage) {
+  // p1 and p2 are not radial, so no amount of care about the radial polynomial says anything about
+  // them. Before the Jacobian was checked, this lens answered an in-frame pixel with a bearing
+  // **86.8 degrees** wrong, and the round-trip check could not object — that bearing really does
+  // project there. It is the other preimage, not a failure to converge, which is precisely the
+  // class of error a round-trip test is blind to.
+  //
+  // Stated as the invariant rather than as the one pixel that caught it: nothing this lens accepts
+  // may come back as a different direction.
+  Intrinsics lens = Distorted();
+  lens.p2 = 0.2;
+  ASSERT_TRUE(IsUsableLens(lens));
+
+  int accepted = 0;
+  for (double h = -60.0; h <= 60.0; h += 1.5) {
+    for (double v = -45.0; v <= 45.0; v += 1.5) {
+      const Vec3 d = Normalize(Vec3{std::tan(h / kDegPerRad), std::tan(v / kDegPerRad), -1.0});
+      const ProjectedPixel p = Project(lens, d);
+      if (!p.valid) continue;
+      if (p.pixel.x < 0.0 || p.pixel.x > 960.0 || p.pixel.y < 0.0 || p.pixel.y > 1280.0) continue;
+      const UnprojectedDirection back = Unproject(lens, p.pixel);
+      if (!back.valid) continue;
+      ++accepted;
+      EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3) << h << "," << v;
+    }
+  }
+  // Refusing everything would satisfy the loop above and prove nothing. This lens is strongly but
+  // not absurdly distorted and most of its frame is real.
+  EXPECT_GT(accepted, 200);
+}
+
 TEST(Unproject, APixelThatIsNotAMeasurementYieldsNoDirection) {
   const Intrinsics lens = Phone();
   EXPECT_FALSE(Unproject(lens, Pixel{kNaN, 640}).valid);
@@ -281,8 +391,10 @@ TEST(Unproject, TheOpticalCentreLooksStraightAhead) {
 
 TEST(Unproject, ADirectionSurvivesTheTripToAPixelAndBack) {
   const Intrinsics lens = Phone();
-  for (double h = -32.0; h <= 32.0; h += 4.0) {
-    for (double v = -24.0; v <= 24.0; v += 4.0) {
+  for (int hi = 0; hi <= 16; ++hi) {
+    const double h = -32.0 + 4.0 * static_cast<double>(hi);
+    for (int vi = 0; vi <= 12; ++vi) {
+      const double v = -24.0 + 4.0 * static_cast<double>(vi);
       const Vec3 d = Normalize(Vec3{std::tan(h / kDegPerRad), std::tan(v / kDegPerRad), -1.0});
       const ProjectedPixel p = Project(lens, d);
       ASSERT_TRUE(p.valid) << h << "," << v;
@@ -299,8 +411,10 @@ TEST(Unproject, TheRoundTripSurvivesDistortion) {
   // The one that matters: Brown-Conrady has no closed-form inverse, so this is the only evidence
   // the iteration converges to the right place rather than merely to a stable one.
   const Intrinsics lens = Distorted();
-  for (double h = -32.0; h <= 32.0; h += 4.0) {
-    for (double v = -24.0; v <= 24.0; v += 4.0) {
+  for (int hi = 0; hi <= 16; ++hi) {
+    const double h = -32.0 + 4.0 * static_cast<double>(hi);
+    for (int vi = 0; vi <= 12; ++vi) {
+      const double v = -24.0 + 4.0 * static_cast<double>(vi);
       const Vec3 d = Normalize(Vec3{std::tan(h / kDegPerRad), std::tan(v / kDegPerRad), -1.0});
       const ProjectedPixel p = Project(lens, d);
       ASSERT_TRUE(p.valid) << h << "," << v;
@@ -309,6 +423,35 @@ TEST(Unproject, TheRoundTripSurvivesDistortion) {
       EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3) << h << "," << v;
     }
   }
+}
+
+TEST(Project, TheDistortionTermsAreOpenCVsInOpenCVsOrder) {
+  // The header invites `k1 k2 p1 p2 k3` from a calibration done elsewhere, which is a promise about
+  // which coefficient multiplies what. `DistortionIsNotQuietlyIgnored` below cannot check it: a
+  // consistent k2/k3 swap moves a 30-degree pixel by 4.4px against a 20px threshold, so the whole
+  // suite stays green while the promise is false.
+  //
+  // So: one point, worked out by hand from the published Brown-Conrady form, as decimal constants
+  // rather than as the formula restated — a test that recomputes the implementation cannot disagree
+  // with it. At xn = 0.3, yn = 0.2 with k1..k3 = 0.1, 0.02, 0.003 and p1, p2 = 0.05, 0.07:
+  //   r2     = 0.13
+  //   radial = 1 + k1*r2 + k2*r2^2 + k3*r2^3            = 1.013344591
+  //   xd     = xn*radial + 2*p1*xn*yn + p2*(r2 + 2xn^2) = 0.3317033773
+  //   yd     = yn*radial + p1*(r2 + 2yn^2) + 2*p2*xn*yn = 0.2215689182
+  // A k2/k3 swap moves xd by 7.5e-05 and a p1/p2 swap by 3.8e-03; the tolerance below is 1e-09, so
+  // either is caught by four orders of magnitude.
+  Intrinsics lens = Phone();
+  lens.k1 = 0.1;
+  lens.k2 = 0.02;
+  lens.k3 = 0.003;
+  lens.p1 = 0.05;
+  lens.p2 = 0.07;
+
+  // yn is the negated camera-space y, so this direction has xn = 0.3 and yn = 0.2 exactly.
+  const ProjectedPixel p = Project(lens, Vec3{0.3, -0.2, -1.0});
+  ASSERT_TRUE(p.valid);
+  EXPECT_NEAR((p.pixel.x - lens.cx) / lens.fx, 0.3317033773, 1e-9);
+  EXPECT_NEAR((p.pixel.y - lens.cy) / lens.fy, 0.2215689182, 1e-9);
 }
 
 TEST(Unproject, DistortionIsNotQuietlyIgnored) {
@@ -334,22 +477,49 @@ TEST(Project, ADistortionThatFoldsTheImageBackOnItselfIsRefusedRatherThanGuessed
   EXPECT_FALSE(Project(lens, OffAxis(33.0, 0)).valid);
 }
 
-TEST(Unproject, APixelTheIterationCannotAccountForIsRefusedRatherThanAnswered) {
-  // Strong *tangential* distortion is what breaks the reasoning that the radial guard is enough.
-  // The radial terms are the ones the fold check reasons about; p1 and p2 are not radial, and with
-  // them the fixed point can settle somewhere that is not a preimage of this pixel at all. Radial
-  // stays positive the whole way, the point it settles on is inside the fold, and projecting it
-  // gives a perfectly valid pixel — just not this one. Nothing but comparing the round trip
-  // against the pixel we were handed can tell the difference.
+TEST(Unproject, APixelTheIterationNeverReachesIsRefusedRatherThanAnswered) {
+  // A pixel the iteration never arrives at. At (1010, 260) on this lens it is still moving when the
+  // budget runs out, and where it stops projects to a perfectly valid pixel 246 pixels away from the
+  // one it was asked about. Only comparing the round trip against the input can tell.
   //
-  // Found by sweeping the model rather than by reading it: with the check removed this returns a
-  // confident direction, and no other test in this file notices.
+  // Note what this is *not*. A settled fixed point satisfies the forward equation by construction,
+  // so it is always a genuine preimage — "converged on a non-preimage" is not a state this
+  // iteration can be in, and a reviewer's 223,608-sample sweep found zero of them. What the
+  // tolerance catches is exhaustion. Landing on the *wrong* preimage of two is a different failure
+  // that this check is structurally blind to, and the fold test is what catches that one.
+  //
+  // The earlier version of this test used a pixel that merely converged *slowly*: 835 passes to a
+  // residual of 6.7e-12, refused only because the budget was 500. A reviewer caught that it was
+  // recording a truncation as though it were a property of the lens — and refusing a well-defined
+  // pixel is what this file's own ADR calls the defect. The budget is now 5000 and that pixel is
+  // accepted, as it always should have been.
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   lens.p2 = 0.6;
-  const UnprojectedDirection u =
-      Unproject(lens, Pixel{lens.cx + 0.38 * lens.fx, lens.cy + 0.30 * lens.fy});
-  EXPECT_FALSE(u.valid);
+  ASSERT_TRUE(IsUsableLens(lens));
+  EXPECT_FALSE(Unproject(lens, Pixel{1010.0, 260.0}).valid);
+
+  // The slow one, for contrast: same lens, and it now answers.
+  EXPECT_TRUE(Unproject(lens, Pixel{lens.cx + 0.38 * lens.fx, lens.cy + 0.30 * lens.fy}).valid);
+}
+
+TEST(Unproject, TheTopLeftPixelIsNotAnsweredByTheThingThatMeansRefusal) {
+  // The one guard in this file that carries weight of its own rather than backstopping a later one,
+  // and it took a sweep to find an input that shows it. A refused `ProjectedPixel` carries the pixel
+  // `(0, 0)`. `Unproject` verifies its answer by projecting it and comparing to the pixel it was
+  // handed — so for an input of exactly `(0, 0)`, and for no other input, a refusal compares equal
+  // to the question and the tolerance test waves it through.
+  //
+  // This lens is one of 11,867 in a swept grid where the iteration settles on a point `Project`
+  // refuses. Without the `check.valid` line it answers the image's top-left corner with a confident
+  // direction that nothing looks in.
+  Intrinsics lens = Phone();
+  lens.k1 = -0.9;
+  lens.k2 = -0.6;
+  lens.p1 = -0.3;
+  lens.p2 = -0.35;
+  ASSERT_TRUE(IsUsableLens(lens));
+  EXPECT_FALSE(Unproject(lens, Pixel{0.0, 0.0}).valid);
 }
 
 TEST(Unproject, ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn) {
@@ -371,15 +541,22 @@ TEST(Unproject, ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn) {
 }
 
 TEST(Unproject, APixelBeyondTheFoldIsRefusedRatherThanApproximated) {
-  // The matching refusal on the way back. The iteration will happily converge somewhere here;
-  // answering with it would put a feature at a bearing nothing later could attribute to the lens.
+  // The matching refusal on the way back, at the boundary rather than far outside it. With k1 = -1
+  // the fold sits at r = 0.5774 and the largest *pixel* radius that still has a preimage is
+  // 0.5774 * (1 - 1/3) = 0.3849, i.e. x = cx + 0.3849 * fx = 764.49. Just inside answers; just
+  // outside must not.
+  //
+  // The earlier version of this test used x = 5000, which is refused on the first pass because the
+  // radial polynomial has already gone negative there — nothing to do with the fold the comment
+  // described. A reviewer pointed out it stayed green with the fold reasoning deleted entirely.
   Intrinsics lens = Phone();
   lens.k1 = -1.0;
   const ProjectedPixel inside = Project(lens, OffAxis(20.0, 0));
   ASSERT_TRUE(inside.valid);
   EXPECT_TRUE(Unproject(lens, inside.pixel).valid);
-  // Far outside the invertible radius: fx * 0.649 + cx is where 33 degrees would have landed
-  // undistorted, and the fold means nothing projects there.
+
+  EXPECT_TRUE(Unproject(lens, Pixel{764.0, lens.cy}).valid);
+  EXPECT_FALSE(Unproject(lens, Pixel{765.0, lens.cy}).valid);
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
