@@ -766,7 +766,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     //
     // Refusing here rather than only unlocking more carefully, because applying the locks at all
     // while a burst holds them is the mistake; there is nothing this call could do with them.
-    if (arming || armed || firing) return false;
+    if (arming || armed || firing) {
+      // Said, not swallowed. This is the one exit from here that reports nothing, and the dwell's
+      // retry made it reachable in a way it was not: a `Fire` the core re-offers two seconds later
+      // lands while the first arm is still crossing the worker — `armOnce` waits on a lock write
+      // bounded at three — and the ring has meanwhile restarted from zero, because the core resets
+      // the counter when it fires. So the user watched the ring fill, saw nothing happen, and
+      // watched it fill again. The arm is in flight and this says so.
+      sayForAWhile('still arming that cell — the camera has not answered yet');
+      return false;
+    }
     arming = true;
     try {
       return await armOnce(node);

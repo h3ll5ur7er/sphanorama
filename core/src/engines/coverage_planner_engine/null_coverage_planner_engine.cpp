@@ -13,9 +13,14 @@ constexpr double kRadToDeg = 57.29577951308232;
 
 Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,
                                                     const Intrinsics&) {
-  if (spec.acceptanceConeDeg <= 0.0) {
+  // `!(x > 0.0)` rather than `x <= 0.0`, so NaN is refused. It compares false against both, so
+  // the plain form let one through — and this is the engine every manager test runs on, so a cone
+  // nobody could measure against would have reached `ArmBurst` in the suite and nowhere else.
+  // `RingsCoveragePlannerEngine` has asked `std::isfinite` since it was written; this had not,
+  // which made the two disagree about what a plan is on exactly the input that matters.
+  if (!(spec.acceptanceConeDeg > 0.0)) {
     return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                            "acceptance cone must be positive");
+                            "acceptance cone must be a positive number");
   }
 
   CapturePlan plan;

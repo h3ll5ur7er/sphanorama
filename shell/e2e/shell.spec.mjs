@@ -99,6 +99,33 @@ function deviceOrientationLookingAt(target) {
   const m22 = 1 - 2 * (q.x * q.x + q.y * q.y);
 
   const beta = Math.asin(Math.max(-1, Math.min(1, m21)));
+
+  // Gimbal lock, and on this plan it is not an edge case — it is the horizon.
+  //
+  // At `beta = ±90°` the Z and Y rotations act about the same axis, so only their sum (or
+  // difference) is determined and `atan2(-m01, m11)` reads `atan2(0, 0)`: the azimuth is thrown
+  // away and every cell on the ring maps to the same triple. `Math.asin`'s clamp does not help —
+  // it guards against drifting *past* 1, not against being at it.
+  //
+  // Elevation zero is exactly `beta = 90°` in this frame, so the whole horizon ring is degenerate.
+  // A reviewer measured it: azimuth 45° round-trips to |dot| 0.9239, 90° to 0.7071, 180° to
+  // 0.0000, and cells 13-19 of the shipped plan fail the check below. It had not bitten only
+  // because `aimAtACell` walks the plan in order and the rings engine emits a pole first.
+  //
+  // The convention out is the usual one: fold the free rotation into `alpha` and take `gamma` as
+  // zero. Roll about the view axis is what `gamma` contributes here, and the tests that aim do
+  // not care how the phone is rolled — the ones that do care dispatch their own triples.
+  if (Math.abs(m21) > 1 - 1e-7) {
+    const m00 = 1 - 2 * (q.y * q.y + q.z * q.z);
+    const m02 = 2 * (q.x * q.z + q.w * q.y);
+    const upright = m21 > 0;
+    return {
+      alpha: Math.atan2(upright ? m02 : -m02, m00) * RAD_TO_DEG,
+      beta: beta * RAD_TO_DEG,
+      gamma: 0,
+    };
+  }
+
   return {
     alpha: Math.atan2(-m01, m11) * RAD_TO_DEG,
     beta: beta * RAD_TO_DEG,
@@ -1358,6 +1385,46 @@ test('enabling plans a sphere sized from the camera and guides toward a cell', a
     expect(plan.nodes.length).toBeGreaterThan(8);
     expect(plan.spec.horizontalFovDeg).toBeGreaterThan(0);
     expect(new Set(plan.nodes.map((n) => n.ringIndex)).size).toBeGreaterThan(2);
+  } finally {
+    await server.close();
+  }
+});
+
+test('every cell of the plan can be aimed at, not just the one a test happens to pick',
+  async ({ page }) => {
+  // The helper the whole suite aims with, checked against the plan it will be asked for rather
+  // than against the one cell a given test reaches. `aimAtACell` verifies its own round trip and
+  // fails loudly, but only for the cell it picked — and it picks the first uncaptured one, which
+  // on this tessellation is a pole. A reviewer found the horizon ring degenerate: elevation zero
+  // is exactly the gimbal-lock singularity of the Z-X'-Y'' decomposition, so cells 13-19 threw
+  // their azimuth away and would have failed the guard as an opaque fifteen-second timeout in
+  // whichever test first reached one.
+  //
+  // Nothing about the app is under test here. It is the arithmetic the tests are written on, and
+  // a harness that is wrong for a seventh of the sphere is one that decides what the suite is
+  // able to check.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+
+    const nodes = await page.evaluate(async () => {
+      const plan = await window.sphanoramaCore.captureSession.getPlan();
+      return plan.ok ? plan.value.nodes.map((n) => n.targetOrientation) : [];
+    });
+    expect(nodes.length).toBeGreaterThan(8);
+
+    const off = [];
+    for (const [index, target] of nodes.entries()) {
+      const { alpha, beta, gamma } = deviceOrientationLookingAt(target);
+      const round = quaternionFromDeviceOrientation(alpha, beta, gamma, 0);
+      const dot = Math.abs(round.w * target.w + round.x * target.x
+        + round.y * target.y + round.z * target.z);
+      if (dot < 0.9999) off.push(`${index} (|dot| ${dot.toFixed(4)}, beta ${beta.toFixed(1)})`);
+    }
+    expect(off, `cells the aim helper cannot reach: ${off.join(', ')}`).toEqual([]);
   } finally {
     await server.close();
   }

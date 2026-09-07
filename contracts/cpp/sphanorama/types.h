@@ -344,6 +344,13 @@ struct CaptureGuidance {
   // already holds, and the two would disagree exactly when it mattered — a progress bar that
   // filled and did not fire, or fired before it filled.
   //
+  // It can fill more than once for one cell, and that is not the disagreement above. `Fire` is
+  // re-offered after another full dwell when nothing acted on it, so a client whose arm was
+  // refused — or is simply still crossing the worker — sees the ring restart from zero and climb
+  // again. The ring and the trigger still agree; what a client owes its user in that window is a
+  // word about the arm, because a ring that fills twice with nothing happening reads as a control
+  // that has stopped working.
+  //
   // The dwell is counted here rather than in a client for a reason a client cannot work around:
   // `performance.now()` keeps moving when the sensor stops delivering, so a page counting elapsed
   // time matures its dwell on guidance about a cell the phone may have left. This manager has the

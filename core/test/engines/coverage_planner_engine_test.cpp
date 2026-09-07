@@ -370,6 +370,30 @@ TEST(CoveragePlanner, LocateSaysHoldStillOnACellThatStillNeedsShooting) {
   EXPECT_EQ(guidance.value.action, GuidanceAction::HoldStill);
 }
 
+TEST(CoveragePlanner, AConeNobodyCouldMeasureAgainstIsRefusedRatherThanPlanned) {
+  // NaN compares false against every ordering, so `<= 0.0` waved it through and `> cone` in
+  // `ArmBurst` then waved through every cell from every direction — ADR 0041's failure reached
+  // through the arithmetic rather than through the rule.
+  //
+  // Both engines, because they disagreed: the rings planner has asked `std::isfinite` since it
+  // was written and the null one had not, and the null one is what every manager test runs on. An
+  // engine pair that answers differently about what a plan is, on exactly the input that matters,
+  // is the shape of a bug that hides in the suite.
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = std::numeric_limits<double>::quiet_NaN();
+  Intrinsics lens;
+  lens.width = 1280;
+  lens.height = 960;
+
+  NullCoveragePlannerEngine null;
+  EXPECT_EQ(null.Plan(spec, lens).status.code, StatusCode::InvalidArgument);
+  RingsCoveragePlannerEngine rings;
+  EXPECT_EQ(rings.Plan(spec, lens).status.code, StatusCode::InvalidArgument);
+}
+
 TEST(CoveragePlanner, WithNoAimTheTargetIsTheNearestMissingCellRatherThanWhateverSitsAtIdentity) {
   // UC-4: a phone that declined motion, or has none, tracks vision-only and reports identity for
   // the life of the session at confidence zero — the contract's word for "nothing estimated this".

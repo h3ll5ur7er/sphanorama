@@ -229,6 +229,68 @@ describe('events the platform could not fill in', () => {
   });
 });
 
+describe('starting twice', () => {
+  // `enable` runs a second time when a refused resume puts its offer back and the camera has since
+  // gone away, so `start` is reachable with one already running. It used to leave the first alive.
+  it('stops the sensor it is replacing rather than leaving it reading', async () => {
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    expect((await motion.start(60)).ok).toBe(true);
+    expect((await motion.start(60)).ok).toBe(true);
+
+    expect(built).toBe(2);
+    expect(first.sensor.stopped, 'the first sensor was left constructed and reading').toBe(true);
+  });
+
+  it('does not leave the orphan able to stop the live one', async () => {
+    // The symptom that made this worth fixing rather than noting. The orphan keeps its `error`
+    // handler, and that handler calls the adapter's own stop — which acts on whichever sensor is
+    // *live*. So a phone with a working quaternion sensor was demoted to the Euler triple ADR 0017
+    // calls degenerate in this app's primary pose, because a sensor nobody was reading failed.
+    const first = fakeSensor();
+    const second = fakeSensor();
+    let built = 0;
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: function (this: unknown, options: unknown) {
+        built += 1;
+        return built === 1 ? first.ctor.call(this, options) : second.ctor.call(this, options);
+      } as unknown,
+    });
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+    expect(motion.source()).toBe('AbsoluteOrientationSensor');
+
+    first.sensor.emitError();
+
+    expect(motion.source(), 'a dead orphan took the live sensor down with it')
+      .toBe('AbsoluteOrientationSensor');
+  });
+
+  it('removes the orientation listener it is replacing, so one event is one sample', async () => {
+    // The fallback path has the same shape: a second `addEventListener` with no removal meant one
+    // platform event produced two samples. The pose survived that only by accident — `Integrate`
+    // compares timestamps strictly, so the twin was skipped — which is not a guard, it is luck.
+    const host = fakeWindow();
+    const motion = createMotionSensorAccess(host as unknown as Window);
+
+    await motion.start(60);
+    await motion.start(60);
+
+    expect(host.removeEventListener).toHaveBeenCalledWith('deviceorientation', expect.anything());
+  });
+});
+
 describe('choosing a source', () => {
   it('prefers the quaternion sensor, so the primary pose is off the Euler singularity', () => {
     // Camera at the horizon means the screen plane contains gravity, which is beta near ±90 —

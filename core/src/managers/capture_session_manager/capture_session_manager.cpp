@@ -826,7 +826,13 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   }
   dwell_marked_ns_ = now;
   if (held) {
-    guidance.heldFraction = std::min(1.0, static_cast<double>(dwell_ns_) / kDwellNs);
+    // Clamped at both ends, because the contract says `[0,1]` and the page draws an arc from it:
+    // `RingMark.fill` and `OverlayInput.holding` both promise the range, and a negative fraction
+    // would send `strokeDashoffset` past the circumference and draw a ring that is *more* than
+    // empty. Only monotonic clocks make the lower end unreachable today, which is a property of
+    // every `IClock` in the tree rather than of this arithmetic.
+    guidance.heldFraction =
+        std::clamp(static_cast<double>(dwell_ns_) / kDwellNs, 0.0, 1.0);
     if (dwell_ns_ >= kDwellNs) {
       // An edge, and the counter restarts rather than latching. The client arms on this; the
       // manager cannot arm for itself, because a burst is paced by the client's ticks over a
@@ -931,7 +937,16 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
-  if (offBy > aimed->acceptanceConeDeg) {
+  //
+  // `!(offBy <= cone)` rather than `offBy > cone`, so a cone that is NaN refuses rather than
+  // waves everything through. NaN compares false against both, and the naive form therefore turns
+  // one unusable number into "every cell is armable from anywhere" — ADR 0041's failure reached
+  // through the arithmetic rather than through the rule. `RingsCoveragePlannerEngine` rejects a
+  // non-finite cone at `Begin` and the browser never gets here with one; the null planner guards
+  // with `<= 0.0`, which NaN passes, and that is the engine every manager test runs on. So a
+  // regression in the Rings guard would be invisible to the suite and visible only here. The same
+  // spelling `reticleRadius` uses in the shell, and for the same reason.
+  if (!(offBy <= aimed->acceptanceConeDeg)) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");
   }
