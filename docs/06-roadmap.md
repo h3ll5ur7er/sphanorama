@@ -705,30 +705,6 @@ to precede: ADR 0043 landed, so a capture now reaches this state without anybody
 and the dwell's credit bound limits what a resumed loop can bank rather than saying anything about
 what a frozen one reports. The gap this names — nobody deciding how old is too old, and saying so — is still open.
 
-### The motion port's trust boundary, in two places rather than one
-
-Two findings from round 15's boundary lens, both `REASONED` and both unreachable with the ports
-this repository ships — kept together because they are one question asked at two call sites, and
-fixing either alone would leave the other looking handled.
-
-`host_motion_drain` (`bridge/resource_access/motion_sensor_access/browser_motion_sensor_access.cpp`)
-copies the host's array into the heap and derives its count *afterwards*:
-`HEAPF64.set(flat, out >> 3)` then `return flat.length / stride`. Neither `maxSamples` nor `stride`
-bounds the write — `maxSamples` is only forwarded to the host, `stride` only divides the result — so
-a host answering more than `maxSamples * 17` doubles writes past the vector `Drain` allocated.
-`Drain`'s own `std::min(count, out.size())` protects the caller's span and runs after the write.
-
-`CaptureSessionManager::OnMotion` trusts `Drain`'s returned count against a 64-element stack array:
-a port answering `100` gives `Integrate` a span reading 36 samples past it, and `-1` casts to
-`SIZE_MAX`. Every implementation bounds its own answer (`written <= taken <= out.size()`, a failure,
-or `min(out.size(), pending_.size())`), which is why it is unreachable — but it is the *one* contract
-answer that function trusts, in a function that distrusts everything else it touches.
-
-The fix is one pass: bound the copy in the port by what the caller allocated (re-deriving the count
-before the write, or slicing in JS), and clamp `drained.value` to `pulled.size()` in the manager.
-Two patches on the same trust boundary, landed as one change with one test each, rather than two
-one-liners on a branch already carrying fifteen rounds of unrelated work.
-
 ---
 
 ## Phase 2 — Stitching
