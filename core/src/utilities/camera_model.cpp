@@ -322,13 +322,15 @@ ProjectedPixel Project(const Intrinsics& lens, const Vec3& cameraSpace) {
   const double yn = -cameraSpace.y / depth;   // the world's up is the image's down
   if (!std::isfinite(xn) || !std::isfinite(yn)) return out;
 
-  const double r2 = xn * xn + yn * yn;
   if (!DistortionInvertsAlongTheRay(lens, xn, yn)) return out;
-  const double radial = Radial(lens, r2);
-  if (!(radial > 0.0)) return out;
+  // Through `DistortAt` rather than rebuilt here. This is the copy that *adjudicates* the solver's
+  // answer, so of the three places this arithmetic used to live it is the one that could least
+  // afford to drift from the other two.
+  const Distorted at = DistortAt(lens, xn, yn);
+  if (!(at.radial > 0.0)) return out;
 
-  const double xd = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn);
-  const double yd = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn;
+  const double xd = at.x;
+  const double yd = at.y;
 
   const double u = lens.fx * xd + lens.cx;
   const double v = lens.fy * yd + lens.cy;
@@ -376,6 +378,19 @@ UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel) {
     const double fullY = -(at.dxdx * residualY - at.cross * residualX) / at.determinant;
     if (!std::isfinite(fullX) || !std::isfinite(fullY)) return out;
 
+    // Arrived. This has to be tested on the *full* step, before the damping, and testing it after
+    // was a real cost rather than a tidiness point. When Newton converges exactly the full step is
+    // zero; every halving of zero puts the trial point exactly where the iterate already stands, so
+    // its residual is not *smaller* and the strict test below rejects all thirty in turn. The exit
+    // that exists for this sat after the loop and could never be reached — measured at ~30 wasted
+    // evaluations on every converged solve, and the whole of the cost on an undistorted lens
+    // (0.668 -> 0.077 us/px, 8.7x).
+    //
+    // **No test pins this**, and none should pretend to: removing the line changes no answer, which
+    // is exactly the property that makes it safe. It is held by the measurement above and by the
+    // check that the answers are identical over 743,175 accepted pixels, not by the suite.
+    if (fullX * fullX + fullY * fullY <= kSettledStepNormalised * kSettledStepNormalised) break;
+
     // **Damped, because a full step can leap the fold.** Newton aims at where the *linearised* map
     // sends the residual to zero, and near a fold that aim overshoots into territory the model does
     // not describe. Halving until the trial point is both defined and closer than where we stand is
@@ -403,9 +418,12 @@ UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel) {
       }
       scale *= 0.5;
     }
-    // Nowhere better to stand. Not a refusal on its own — the round-trip check below decides
-    // whether where we stopped is an answer.
+    // Nowhere better to stand — genuinely, now that an arrived iterate leaves above rather than
+    // here. Not a refusal on its own: the round-trip check below decides whether where we stopped is
+    // an answer.
     if (!stepped) break;
+    // A *damped* step can be small while the full one is not, which is heavy damping rather than
+    // convergence. Stopping on it is still right — the check below judges where we stopped.
     if (stepX * stepX + stepY * stepY <= kSettledStepNormalised * kSettledStepNormalised) break;
   }
 

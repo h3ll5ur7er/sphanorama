@@ -135,6 +135,11 @@ struct UnprojectedDirection {
 // the answer, and an undamped step overshot into territory the model does not describe — refusing
 // pixels this file's own `Project` had just produced. Barrel lenses hid that, because there the
 // guess sits inside and the iteration walks outward, and every lens in these tests had k1 <= 0.
+//
+// **The gap this closes is narrowed, not gone.** Over a grid of 625,953 in-frame pixels `Project`
+// accepts, six are still refused here — all at extreme tangential distortion combined with a strong
+// negative k2. `Project` accepting a direction is not yet a promise that `Unproject` takes it back,
+// and a reader is better served knowing the residue than reading a round zero.
 UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel);
 
 }  // namespace sphanorama

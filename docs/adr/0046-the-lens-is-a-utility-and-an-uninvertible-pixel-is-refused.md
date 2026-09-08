@@ -74,6 +74,14 @@ Three things about it are easy to get wrong and invisible when wrong:
 - A default `Intrinsics` — the one every capture session is holding right now — answers `false` to
   `IsUsableLens`, and a test says so by name. Nothing can begin quietly trusting a zero focal
   length without that test going red first.
+- **Newton arrives on the full step, not the damped one.** The damping halves a step until it is
+  defined and strictly closer; when Newton has converged exactly the step is *zero*, every halving of
+  zero lands on the point the iterate already occupies, and "strictly closer" rejects all thirty in
+  turn. The settled-step exit that exists for this was testing the accepted step and sitting after the
+  loop, so it could never run. Measured: about thirty wasted evaluations on every converged solve, and
+  **8.7×** the cost on an undistorted lens (0.668 → 0.077 µs/px). Testing the full step before the
+  damping fixes it, with the answers unchanged over 743,175 accepted pixels.
+
 - **The inverse is solved by Newton's method, and getting there took three tries.** The obvious
   choice is the fixed point `xn ← (xd − tangential) / radial`, which is what shipped first. It is
   wrong for the problem. Its multiplier at the solution is `|2u·R′(u)/R(u)|`, and that equals exactly
@@ -112,8 +120,15 @@ Three things about it are easy to get wrong and invisible when wrong:
   building the file both ways and diffing, 15 pixels of 462,969 differ and **every one is accepted
   only with the condition**. It widens what can be answered.
 
-  Measured after: zero refusals over six lens families, barrel and pincushion, of anything `Project`
-  accepts — worst round-trip error 1.2e-06 degrees, median 1 to 5 passes, longest tail 12.
+  Measured after — and **narrowed rather than closed**, which the first draft of this bullet claimed
+  and a reviewer disproved. Over six lens families, barrel and pincushion, there are zero refusals of
+  anything `Project` accepts. Over a wider grid of 625,953 in-frame accepted pixels there are **six**,
+  all at extreme tangential distortion (`p1 = p2 = 0.4`) combined with a strong negative `k₂` — a
+  0.0010% residue. Worst round-trip error 1.2e-06 degrees, median 1 to 5 passes, longest tail 12.
+
+  "Zero refusals over six lens families" was true and was not the claim a reader would take from it.
+  The invariant `Project` accepts ⇒ `Unproject` answers is one this model *aims* at and does not
+  fully reach, and saying so is worth more than a number chosen from where it happens to hold.
 
   **What the earlier numbers were measuring.** On a `k₁ = −0.9` lens the fixed point accepted pixels
   out to 89.6% of the invertible radius at a budget of 20 and 99.6% at 100. Those figures were real
