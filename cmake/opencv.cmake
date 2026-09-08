@@ -1,9 +1,10 @@
 # OpenCV, fetched and built from source as a trimmed static subset.
 #
 # ADR 0005 decided to depend on OpenCV's algorithms piecemeal rather than on its `stitching` module,
-# and named the parts: core, imgproc, features2d, calib3d, photo, flann. This is that list, and
-# nothing else — `BUILD_LIST` prunes the configure step itself, so the modules we do not name are
-# never configured, never compiled, and never linked.
+# and named the parts: core, imgproc, features2d, calib3d, photo, flann. `SPHANORAMA_OPENCV_MODULES`
+# below is that list, written once — `BUILD_LIST` prunes the configure step itself, so the modules we
+# do not name are never configured, never compiled, and never linked, and the include directories and
+# link libraries are derived from the same list rather than restated beside it.
 #
 # **From source, pinned, rather than from the system.** The same reasoning as googletest in
 # core/test/CMakeLists.txt: a floating dependency turns an unrelated upstream change into a red build
@@ -15,11 +16,26 @@
 
 include(FetchContent)
 
-set(SPHANORAMA_OPENCV_TAG "4.10.0" CACHE STRING "OpenCV release tag to build against")
+# Explicit rather than inherited: FetchContent finds git for its own use, but the pin check below
+# depends on GIT_EXECUTABLE being set, and a variable that happens to be there is not a dependency.
+find_package(Git REQUIRED)
+
+# The commit, not the tag. A tag is a mutable ref that resolves through the remote at fetch time with
+# no hash to check the result against, so the same name can serve different bytes; a SHA cannot. The
+# tag is kept beside it because the SHA alone says nothing about which release this is, and because
+# a bump has to move both.
+set(SPHANORAMA_OPENCV_TAG "4.10.0"
+    CACHE STRING "OpenCV release this build tracks — documentation for the SHA below")
+set(SPHANORAMA_OPENCV_COMMIT "71d3237a093b60a27601c20e9ee6c3e52154e8b1"
+    CACHE STRING "Exact OpenCV commit to build against (must be the tip of SPHANORAMA_OPENCV_TAG)")
+
+# ADR 0005's six modules, in one place. Everything below derives from this.
+set(SPHANORAMA_OPENCV_MODULES core imgproc features2d calib3d photo flann)
 
 # Everything below is set before the subdirectory is added, because OpenCV reads these at configure
 # time. FORCE because OpenCV's own CMakeLists caches many of them with defaults of its own.
-set(BUILD_LIST "core,imgproc,features2d,calib3d,photo,flann" CACHE STRING "" FORCE)
+string(REPLACE ";" "," SPHANORAMA_OPENCV_BUILD_LIST "${SPHANORAMA_OPENCV_MODULES}")
+set(BUILD_LIST "${SPHANORAMA_OPENCV_BUILD_LIST}" CACHE STRING "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(OPENCV_FORCE_3RDPARTY_BUILD OFF CACHE BOOL "" FORCE)
 
@@ -36,25 +52,51 @@ foreach(off
   set(${off} OFF CACHE BOOL "" FORCE)
 endforeach()
 
+# `GIT_SHALLOW` with a commit hash is documented as unsupported — ExternalProject's docs say
+# GIT_TAG "works only with branch names and tags" under it, because the clone is
+# `--depth 1 --no-single-branch` and a hash is then only reachable by luck. It is kept anyway
+# because it was measured rather than assumed: a probe configure against this commit produced a
+# one-commit history at exactly this SHA and a 325 MB `.git` instead of OpenCV's full history. The
+# check below is what turns "it stopped working" into a red configure rather than wrong bytes.
 FetchContent_Declare(opencv
   GIT_REPOSITORY https://github.com/opencv/opencv.git
-  GIT_TAG        ${SPHANORAMA_OPENCV_TAG}
+  GIT_TAG        ${SPHANORAMA_OPENCV_COMMIT}
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
 )
 FetchContent_MakeAvailable(opencv)
 
+# What was actually checked out, rather than what was asked for. A pin nobody verifies is a wish:
+# the SHA above closes the mutable-ref hole only if the tree on disk is that commit, and a shallow
+# clone whose reachability rules change upstream would otherwise hand us a different one silently.
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+  WORKING_DIRECTORY "${opencv_SOURCE_DIR}"
+  OUTPUT_VARIABLE SPHANORAMA_OPENCV_HEAD
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE SPHANORAMA_OPENCV_HEAD_STATUS
+  ERROR_QUIET)
+if(NOT SPHANORAMA_OPENCV_HEAD_STATUS EQUAL 0)
+  message(FATAL_ERROR
+    "Could not read the OpenCV checkout's commit in ${opencv_SOURCE_DIR}. The pin cannot be "
+    "verified, so the build stops rather than compiling an unidentified tree.")
+elseif(NOT SPHANORAMA_OPENCV_HEAD STREQUAL SPHANORAMA_OPENCV_COMMIT)
+  message(FATAL_ERROR
+    "OpenCV checkout is ${SPHANORAMA_OPENCV_HEAD}, expected ${SPHANORAMA_OPENCV_COMMIT} "
+    "(${SPHANORAMA_OPENCV_TAG}). Delete the _deps directory if this is a stale tree; otherwise the "
+    "pin no longer describes what is being built.")
+endif()
+
 # OpenCV's targets do not carry usable include directories when consumed from a build tree, so an
-# interface target collects them once and everything that needs OpenCV links this instead.
+# interface target collects them once and everything that needs OpenCV links this instead. Both lists
+# come from SPHANORAMA_OPENCV_MODULES: a module added there is included and linked without a second
+# edit, and one removed cannot be left behind in a list nobody thought to look at.
 add_library(sphanorama_opencv INTERFACE)
 target_include_directories(sphanorama_opencv SYSTEM INTERFACE
   "${OPENCV_CONFIG_FILE_INCLUDE_DIR}"
-  "${opencv_SOURCE_DIR}/include"
-  "${opencv_SOURCE_DIR}/modules/core/include"
-  "${opencv_SOURCE_DIR}/modules/imgproc/include"
-  "${opencv_SOURCE_DIR}/modules/features2d/include"
-  "${opencv_SOURCE_DIR}/modules/calib3d/include"
-  "${opencv_SOURCE_DIR}/modules/photo/include"
-  "${opencv_SOURCE_DIR}/modules/flann/include")
-target_link_libraries(sphanorama_opencv INTERFACE
-  opencv_core opencv_imgproc opencv_features2d opencv_calib3d opencv_photo opencv_flann)
+  "${opencv_SOURCE_DIR}/include")
+foreach(module IN LISTS SPHANORAMA_OPENCV_MODULES)
+  target_include_directories(sphanorama_opencv SYSTEM INTERFACE
+    "${opencv_SOURCE_DIR}/modules/${module}/include")
+  target_link_libraries(sphanorama_opencv INTERFACE opencv_${module})
+endforeach()

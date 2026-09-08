@@ -26,9 +26,18 @@ endif()
 option(SPHANORAMA_WITH_OPENCV "Build the OpenCV-backed engines and cross-checks"
        ${SPHANORAMA_WITH_OPENCV_DEFAULT})
 if(EMSCRIPTEN AND SPHANORAMA_WITH_OPENCV)
+  # The message names the stale cache first because that is how this actually fires. The option
+  # defaulted ON unconditionally until the fix above, so any wasm build directory configured before
+  # it still has ON written in its cache — where the new default cannot reach it, since a cached
+  # value wins over the default forever. Telling that person to "build it natively" would send them
+  # to the one place the problem is not.
   message(FATAL_ERROR
     "SPHANORAMA_WITH_OPENCV=ON is not available under Emscripten: the trimmed subset is not "
-    "cross-compiled yet (ADR 0047). Build it natively to run the OpenCV cross-checks.")
+    "cross-compiled yet (ADR 0047).\n"
+    "If you did not ask for this, the value is stale in ${CMAKE_BINARY_DIR}/CMakeCache.txt from a "
+    "configure that predates the platform default. Delete that build directory and configure "
+    "again.\n"
+    "If you did ask for it: build natively instead — that is where the OpenCV cross-checks run.")
 endif()
 if(SPHANORAMA_WITH_OPENCV)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/opencv.cmake")

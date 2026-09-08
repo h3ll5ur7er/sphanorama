@@ -26,13 +26,17 @@ Phase 2 registration needs it in a browser. Nothing about writing the algorithms
 **OpenCV is fetched from source at a pinned tag, built as a trimmed static subset, and linked
 natively only.**
 
-- `cmake/opencv.cmake` declares it with `FetchContent`, pinned to `SPHANORAMA_OPENCV_TAG` (4.10.0),
-  shallow. Same reasoning as the googletest pin: a floating dependency turns an unrelated upstream
-  change into a red build on a day nobody touched this repo. A distribution package could not be
-  pinned this way and could not be the same OpenCV the WASM build will eventually cross-compile.
-- `BUILD_LIST` is exactly ADR 0005's six modules. That prunes the *configure* step, not just the
-  link: the modules we do not name are never configured and never compiled. `dnn`, `highgui`,
-  `imgcodecs`, `ml`, `objdetect`, `stitching`, `video` and `videoio` fall out by dependency.
+- `cmake/opencv.cmake` declares it with `FetchContent`, pinned to the commit
+  `SPHANORAMA_OPENCV_COMMIT` (`71d3237`, the tip of 4.10.0), shallow, and verified after checkout.
+  Same reasoning as the googletest pin: a floating dependency turns an unrelated upstream change
+  into a red build on a day nobody touched this repo. A distribution package could not be pinned
+  this way and could not be the same OpenCV the WASM build will eventually cross-compile.
+- `SPHANORAMA_OPENCV_MODULES` is exactly ADR 0005's six modules, written once. `BUILD_LIST`, the
+  include directories and the link libraries are all derived from it, so a module cannot be linked
+  without being built or included without being linked. `BUILD_LIST` prunes the *configure* step,
+  not just the link: the modules we do not name are never configured and never compiled. `dnn`,
+  `highgui`, `imgcodecs`, `ml`, `objdetect`, `stitching`, `video` and `videoio` fall out by
+  dependency.
 - `SPHANORAMA_WITH_OPENCV` is `ON` for native builds and forced `OFF` under Emscripten.
 
 **And its first use is a cross-check, not an engine.** `camera_model_opencv_test.cpp` checks our
@@ -56,13 +60,35 @@ forward map.
   OpenCV edges regardless. A reviewer measured it. The entry is still large, most of it the `.git`
   directory a shallow clone leaves behind.
 
-- **"Pinned" is weaker than it sounds, and this ADR overstated it.** A git tag is a mutable ref and
-  there is no hash to check it against, so the same tag can serve different bytes; and the build
-  links the host's `libz.so.1`, so the artifact differs across machines even when the source does
-  not. What the pin buys is that an ordinary upstream release cannot change this build without
-  someone editing `SPHANORAMA_OPENCV_TAG` — which is the property that matters here and is not the
-  same as reproducibility. Pinning the commit hash and vendoring zlib would buy the rest, and neither
-  is worth doing until something depends on it.
+- **"Pinned" is weaker than it sounds, and this ADR overstated it — so the pin is now a commit.**
+  The first version of this decision named a tag, and a tag is a mutable ref that resolves through
+  the remote at fetch time with no hash to check the answer against, so the same name can serve
+  different bytes. `SPHANORAMA_OPENCV_COMMIT` is that commit, and `SPHANORAMA_OPENCV_TAG` stays
+  beside it as documentation, because a SHA alone does not say which release this is and a bump has
+  to move both.
+
+  Two things about how that is done are worth writing down, because both were measured rather than
+  assumed. CMake documents `GIT_SHALLOW` as working "only with branch names and tags" — a commit
+  hash "is not allowed" — and yet a probe configure against this commit produced a one-commit
+  history at exactly this SHA against GitHub, with a 325 MB `.git` rather than OpenCV's full
+  history. So the shallow clone is kept and the configure *verifies what it got*: it reads
+  `git rev-parse HEAD` in the populated tree and fails if it is not the pinned commit. A pin nobody
+  checks is a wish, and the reachability rules that make the shallow trick work are upstream's to
+  change.
+
+  What is still not bought is reproducibility: the build links the host's `libz.so.1`, so the
+  artifact differs across machines even when the source does not. Vendoring zlib would close that,
+  and it is not worth doing until something depends on it.
+- **The sanitizer job now instruments all of OpenCV, and that is a bill that has not arrived yet.**
+  `CMAKE_CXX_FLAGS` in the `native-asan` preset is global, so the sanitizers reach every translation
+  unit in the build tree — 296 OpenCV ones, measured from `compile_commands.json`, all carrying
+  `-fsanitize=address,undefined` under `-fno-sanitize-recover=all`. Today that is green, because
+  nothing calls into OpenCV outside `camera_model_opencv_test.cpp` and `cv::projectPoints` is well
+  behaved. The first `RegistrationEngine` call into `features2d` may not be: an unsigned overflow
+  deep in a third-party SIMD path would abort the job with no suppression file to hold it, in code
+  we did not write and will not fix. The remedy when that day comes is a suppressions file scoped to
+  `_deps/opencv-src`, not turning recovery back on — recovery off is what makes this job worth
+  running on our own code. Naming it now is cheaper than diagnosing it under a red build.
 - **RTTI turned out not to be needed at all**, and the flag that said otherwise never ran. This ADR
   first claimed the test target takes `-fno-rtti` back off because OpenCV's headers need RTTI. Both
   halves were wrong: CMake emits a target's own `COMPILE_OPTIONS` before the `INTERFACE` options it

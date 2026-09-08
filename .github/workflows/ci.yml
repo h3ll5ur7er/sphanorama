@@ -52,21 +52,33 @@ jobs:
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
-      # rebuilds it. Keyed on the tag so a version bump misses deliberately, and on the preset so the
-      # debug and sanitizer trees do not overwrite each other's objects.
+      # rebuilds it. Keyed on `cmake/opencv.cmake`, which carries the pinned commit, so a version bump
+      # misses deliberately; and on the preset, so the debug and sanitizer trees do not overwrite each
+      # other's objects.
       #
       # `.ninja_log` is in the path deliberately and the cache did nothing without it. Ninja marks any
       # output with no log entry dirty, and the log lives beside the build directory rather than
       # inside `_deps` — so the first version of this cached 946 MB of OpenCV objects and then rebuilt
       # all 244 of its edges anyway. Restoring the log is safe: ninja still stats every input, so our
       # own sources, whose objects are not cached, rebuild exactly as they should.
+      #
+      # Which is also why `runner.os` alone was not enough to key it. Restoring the log restores
+      # ninja's belief that those objects are current, and ninja decides that from timestamps rather
+      # than from who compiled them — so a runner image rotating to a different compiler would hand
+      # back objects nothing can notice are stale, and link them. The identity file is the compiler,
+      # ninja and cmake versions, so the miss happens exactly when the toolchain changes and not
+      # weekly on an image number.
+      - name: record the toolchain identity
+        run: |
+          { c++ --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
       - name: cache the OpenCV build
         uses: actions/cache@v4
         with:
           path: |
             build/native-debug/_deps
             build/native-debug/.ninja_log
-          key: opencv-native-debug-${{ runner.os }}-${{ hashFiles('cmake/opencv.cmake') }}
+          key: opencv-native-debug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/opencv.cmake', '.toolchain-identity') }}
       - name: configure
         run: cmake --preset native-debug
       - name: build
@@ -82,21 +94,33 @@ jobs:
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
-      # rebuilds it. Keyed on the tag so a version bump misses deliberately, and on the preset so the
-      # debug and sanitizer trees do not overwrite each other's objects.
+      # rebuilds it. Keyed on `cmake/opencv.cmake`, which carries the pinned commit, so a version bump
+      # misses deliberately; and on the preset, so the debug and sanitizer trees do not overwrite each
+      # other's objects.
       #
       # `.ninja_log` is in the path deliberately and the cache did nothing without it. Ninja marks any
       # output with no log entry dirty, and the log lives beside the build directory rather than
       # inside `_deps` — so the first version of this cached 946 MB of OpenCV objects and then rebuilt
       # all 244 of its edges anyway. Restoring the log is safe: ninja still stats every input, so our
       # own sources, whose objects are not cached, rebuild exactly as they should.
+      #
+      # Which is also why `runner.os` alone was not enough to key it. Restoring the log restores
+      # ninja's belief that those objects are current, and ninja decides that from timestamps rather
+      # than from who compiled them — so a runner image rotating to a different compiler would hand
+      # back objects nothing can notice are stale, and link them. The identity file is the compiler,
+      # ninja and cmake versions, so the miss happens exactly when the toolchain changes and not
+      # weekly on an image number.
+      - name: record the toolchain identity
+        run: |
+          { c++ --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
       - name: cache the OpenCV build
         uses: actions/cache@v4
         with:
           path: |
             build/native-asan/_deps
             build/native-asan/.ninja_log
-          key: opencv-native-asan-${{ runner.os }}-${{ hashFiles('cmake/opencv.cmake') }}
+          key: opencv-native-asan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/opencv.cmake', '.toolchain-identity') }}
       - name: configure
         run: cmake --preset native-asan
       - name: build

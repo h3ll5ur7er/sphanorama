@@ -22,7 +22,8 @@ removing one.
   and `core.st.wasm` (single-threaded fallback), selected at runtime by capability probe.
 - **CMake** presets: `wasm-release`, `wasm-debug`, `native-debug` (bench + tests), `native-asan`.
 - **OpenCV** built from source as a trimmed static subset — `core`, `imgproc`, `features2d`,
-  `calib3d`, `photo`, `flann` — fetched at a pinned tag by `cmake/opencv.cmake` (ADR 0047). The
+  `calib3d`, `photo`, `flann` — fetched at a pinned *commit* by `cmake/opencv.cmake`, and verified
+  against that commit after checkout rather than trusted (ADR 0047). The
   `stitching` module is deliberately *not* used wholesale: it is a monolith that would swallow V7 and
   V8 into one opaque dependency and make incremental rebuild impossible. We use its algorithms
   piecemeal behind our own engine contracts.
@@ -48,7 +49,17 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    the C++ headers and fails on any diff. It too has its own suite, including a strictness suite:
    what the generator *refuses* matters more than what it emits.
 3. **Native build and tests** — debug, plus a second pass under AddressSanitizer and
-   UndefinedBehaviorSanitizer.
+   UndefinedBehaviorSanitizer. Both jobs build OpenCV from source, so both cache `_deps` *and*
+   `.ninja_log` — ninja marks any output with no log entry dirty, so the cache did nothing without
+   the log. That is also why the key carries a toolchain identity (compiler, ninja and cmake
+   versions) and not just the runner OS: restoring the log restores ninja's belief that those
+   objects are current, and a runner image rotating to a different compiler would otherwise link
+   objects nothing can notice are stale.
+
+   The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so those 296 OpenCV translation units are
+   instrumented too, under `-fno-sanitize-recover=all`. It is green today and the first engine to
+   call into `features2d` may make it red inside third-party code; ADR 0047 records what to do then
+   and why it is not "turn recovery back on".
 4. **No-browser check** — `tools/no_browser_check.py` rejects any reference to Emscripten,
    inline JavaScript or WebAssembly build macros outside `bridge/`. Deliberately blunt: the bare
    word in a comment counts, because "on Emscripten we do X" means the core is reasoning about a
@@ -77,6 +88,11 @@ rather than claiming a tidiness the file does not have: `test_size_budget.py` ru
 checker suites at the top, fourteen steps before the budget it guards, because that budget needs a
 wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
+
+Every job that runs a checker sets up `uv` rather than a bare interpreter (ADR 0048), and invokes
+the tools as `uv run --locked`: `--locked` fails rather than silently re-resolving, so a `uv.lock`
+that no longer matches `pyproject.toml` is a red build rather than a CI run on dependencies nobody
+recorded.
 
 Not yet wired, and deliberately absent from CI rather than stubbed green:
 
