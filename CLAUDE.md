@@ -60,7 +60,14 @@ theirs is the one that is wrong. The Python tooling runs through `uv` with a com
 `uv run tools/…` and `uv add`, never pip (ADR 0048).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
-invisible to the eye — a rotation a degree out looks fine until the seam. And which feature
+invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that
+harness is in: `core/test/support/rotation_scoring` says how wrong a set of estimated rotations is,
+and the difficulty it exists for is that a panorama's world frame is arbitrary — turn every frame by
+one common rotation and it is the same panorama, so a perfect reconstruction compared frame by frame
+reads as wrong by that angle on every frame at once. The gauge comes off first and the median is the
+number (ADR 0049). Two things it taught, both found by sabotage rather than by reading: power
+iteration does not converge on exactly the half-broken input a harness is consulted about, and two of
+its own tests were satisfied by their arrangement rather than by the behaviour. And which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.
