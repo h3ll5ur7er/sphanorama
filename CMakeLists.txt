@@ -8,6 +8,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(SPHANORAMA_BUILD_TESTS "Build the native test suite" ON)
 
+# OpenCV is the dependency ADR 0005 chose and ADR 0047 wires in. It is off under Emscripten because
+# cross-compiling the trimmed subset to WASM is its own piece of work with its own size budget — the
+# roadmap defers it until Phase 2 registration needs it in a browser, and a native build that has it
+# is what lets the algorithms be written and measured before then.
+option(SPHANORAMA_WITH_OPENCV "Build the OpenCV-backed engines and cross-checks" ON)
+if(EMSCRIPTEN)
+  set(SPHANORAMA_WITH_OPENCV OFF)
+endif()
+if(SPHANORAMA_WITH_OPENCV)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/opencv.cmake")
+endif()
+
 # The contracts directory is the include root rather than being mirrored into core/include:
 # two copies of an interface is exactly the drift problem the contract-check exists to prevent.
 # See docs/adr/0008-contracts-are-the-include-path.md.

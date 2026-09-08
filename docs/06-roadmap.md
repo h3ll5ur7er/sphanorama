@@ -199,8 +199,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
    What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
    to correct, 0.5 s to learn an offset — have never met a real phone.
-4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
-   Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
+4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (nothing needs it in a
+   browser until Phase 2 registration ships, and the size budget has 8.36 MB of headroom — the
+   native build of the same trimmed subset is in, ADR 0047), the `bench/` CLI, and the
    synthetic-dataset generator — both of which Phase 2's accuracy harness is the first thing to
    actually need. (This said Phase 1's, from before the harness had a phase: it measures
    registration accuracy, and Phase 1 does no registration.)

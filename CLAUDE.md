@@ -51,6 +51,14 @@ rather than a pixel: an unusable lens, a direction behind the camera, a radius p
 the distortion stops being invertible, an inverse that does not land back where it started
 (ADR 0046). Its iteration budget is a measured number, not a chosen one.
 
+**OpenCV is in the build now**, fetched at a pinned tag and trimmed to ADR 0005's six modules,
+native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
+first use is not an engine: it cross-checks the camera model against `cv::projectPoints`, and asks
+our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
+inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
+theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
+`uv run tools/…` and `uv add`, never pip (ADR 0048).
+
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. And which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:

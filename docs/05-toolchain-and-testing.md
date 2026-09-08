@@ -10,7 +10,7 @@ makes them checkable.
 | -------- | -------- | --------- |
 | **C++20** | Managers, engines, resource-access contracts, native resource-access implementations | The whole point: one implementation of the business logic, compiled to WASM for the browser and to a native binary for the bench. OpenCV is C++ |
 | **TypeScript** | Clients, browser resource-access adapters, PWA shell, service worker | Thin by design. If a `.ts` file contains geometry or pixel maths, it is in the wrong layer |
-| **Python** | Contract codegen, synthetic dataset generation, reference implementations, result scoring | The auxiliary language. Nothing shipped to the device is written in it |
+| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations, result scoring | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip |
 
 No Rust/Swift/C# — nothing in the design needs them, and each would add a toolchain without
 removing one.
@@ -21,10 +21,15 @@ removing one.
   `-sEXPORT_ES6`. Two artefacts from one source tree: `core.wasm` (threaded, cross-origin isolated)
   and `core.st.wasm` (single-threaded fallback), selected at runtime by capability probe.
 - **CMake** presets: `wasm-release`, `wasm-debug`, `native-debug` (bench + tests), `native-asan`.
-- **OpenCV** built from source for WASM as a trimmed static subset — `core`, `imgproc`,
-  `features2d`, `calib3d`, `photo`, `flann`. The `stitching` module is deliberately *not* used
-  wholesale: it is a monolith that would swallow V7 and V8 into one opaque dependency and make
-  incremental rebuild impossible. We use its algorithms piecemeal behind our own engine contracts.
+- **OpenCV** built from source as a trimmed static subset — `core`, `imgproc`, `features2d`,
+  `calib3d`, `photo`, `flann` — fetched at a pinned tag by `cmake/opencv.cmake` (ADR 0047). The
+  `stitching` module is deliberately *not* used wholesale: it is a monolith that would swallow V7 and
+  V8 into one opaque dependency and make incremental rebuild impossible. We use its algorithms
+  piecemeal behind our own engine contracts.
+
+  **Native today, WASM later.** `SPHANORAMA_WITH_OPENCV` is on for native builds and forced off under
+  Emscripten: cross-compiling the subset has its own size budget and its own failure modes, and
+  nothing about writing the algorithms needs it in a browser first.
 - **Vite** for the PWA, `workbox` for the service worker, plus a COOP/COEP shim service worker for
   hosts that cannot set the headers (GitHub Pages).
 - Binary size budget: **< 8 MB** compressed for the core, enforced in CI. It is a phone over

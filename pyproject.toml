@@ -1,0 +1,20 @@
+# The Python tooling's environment, so that "it works here" is a fact about the repository rather
+# than about a machine.
+#
+# Everything under tools/ is standard library only and is meant to stay that way for the checkers —
+# they run on every CI job and a dependency there is a dependency on every build. The reason this
+# file exists anyway is the interpreter itself: `python3` was whatever the machine happened to have,
+# CI pinned 3.11 in one place, and nothing tied the two together. `uv run` resolves both from here.
+#
+# Dependencies are added with `uv add`, never with pip, and the lock file is committed.
+
+[project]
+name = "sphanorama-tools"
+version = "0.0.0"
+description = "Codegen, architecture checks and dataset tooling for sphanorama"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+# There is no package to build here — tools/ is a directory of scripts, run directly.
+package = false
