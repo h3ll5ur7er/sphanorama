@@ -31,7 +31,8 @@ diff adversarially, run the whole gate. This is the pass *after* that one.
    not need the shell-ordering lens; a docs-only change needs none of them. Two to four is usual.
    One lens per subagent: a reviewer given six things to look for finds the easy ones.
 4. **Spawn them in parallel, in the background.** They are independent, and each posts its own
-   review to the PR when it is done.
+   review to the PR when it is done — which works only if each obeys the publishing order below,
+   because the pending review is a per-user lock and they all share one account.
 5. **Reconcile in public.** Reply to each finding on its own thread with what you did about it.
    Every finding is yours to verify before you act on it — the subagent's confidence is not
    evidence.
@@ -70,6 +71,30 @@ A reviewer posts once, as a single review carrying all of its findings:
    prose.
 3. `mcp__github__pull_request_review_write` with `method: "submit_pending"` and `event: "COMMENT"`
    submits it. **Never `APPROVE` or `REQUEST_CHANGES`** — a reviewer here informs, it does not gate.
+
+**Finish every scrap of investigation before step 1, and run steps 1 to 3 back to back.** This is
+not tidiness, it is the difference between a review and a deadlock. GitHub allows **one pending
+review per user per pull request**, and every reviewer here authenticates as the same account — so
+a pending review opened at the start of the work is a lock held over the other reviewers for as
+long as the investigation takes. Four lenses in parallel produced exactly that: one held the lock,
+three sat retrying, and nothing was published at all. Drafting first shrinks the window from twenty
+minutes to seconds.
+
+So: write the findings to a scratch file as they are found, and treat the three calls above as one
+indivisible step at the very end. Two rules follow from the same fact:
+
+- If `create` fails because a pending review already exists, **that is another reviewer mid-publish,
+  not stale state.** Wait a minute and retry, up to ten times. Never delete a pending review that is
+  not yours — `delete_pending` would destroy their work, and it is not recoverable.
+- If ten retries still fail, publish the findings as one ordinary PR comment with
+  `mcp__github__add_issue_comment`, labelled with the lens and with `file:line` written into the
+  text. Say in the summary that this happened. An unanchored review is worth much less than an
+  anchored one and infinitely more than a lost one.
+
+**Budget the API too.** Four reviewers investigating a PR can exhaust the hourly REST limit between
+them, which then blocks the *answers* as well as the reviews — reading a diff through the API in a
+loop is the usual culprit, and reading it from the worktree with `git` costs nothing. Prefer git
+over API calls for anything that is in the checkout.
 
 The review body says which lens it is and what was examined. **A lens that found nothing still
 posts**, saying what it looked at and found clean: a review nobody can see is indistinguishable
