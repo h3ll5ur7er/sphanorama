@@ -46,7 +46,7 @@ jobs:
       - name: build core
         run: cmake --preset wasm-release && cmake --build build/wasm-release
       - name: size budget
-        run: uv run tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
+        run: uv run --locked tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
 
       - name: install shell deps
         run: npm ci

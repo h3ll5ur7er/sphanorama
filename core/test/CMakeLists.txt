@@ -59,10 +59,15 @@ add_executable(sphanorama_tests
 target_include_directories(sphanorama_tests PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/bridge")
 if(SPHANORAMA_WITH_OPENCV)
-  # OpenCV is compiled with RTTI and its headers use it; the core is built -fno-rtti and exports
-  # that PUBLIC (ADR 0012), so the flag has to be taken back off for this target or the headers do
-  # not compile. That is a fact about the test binary only — nothing in core/src includes OpenCV.
-  target_compile_options(sphanorama_tests PRIVATE -frtti)
+  # No -frtti here, and the absence is the interesting part. This target used to carry one, on the
+  # theory that OpenCV's headers need RTTI and the core exports -fno-rtti PUBLIC (ADR 0012). Both
+  # halves were wrong. CMake emits a target's own COMPILE_OPTIONS *before* the INTERFACE options it
+  # inherits, so the command line read `-frtti … -fno-rtti` and the inherited flag won — the flag
+  # never did anything. And it compiled anyway, which is the part that matters: the subset of OpenCV
+  # this depends on does not need RTTI, so nothing is being worked around.
+  #
+  # A reviewer found it by reading compile_commands.json rather than the CMakeLists, which is the
+  # only place the answer was visible.
   target_link_libraries(sphanorama_tests PRIVATE sphanorama_opencv)
 endif()
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)

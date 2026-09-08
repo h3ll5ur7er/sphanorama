@@ -5,7 +5,7 @@ Sizes are measured gzipped: that is what crosses a mobile network, and it is the
 decides whether someone waits for the page or closes the tab. Budgets live in size_budgets.toml.
 
 Usage:
-  python3 tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
+  uv run tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
 """
 from __future__ import annotations
 

@@ -51,10 +51,24 @@ forward map.
   inverse cannot solve is in the suite for exactly that reason.
 - **Cost, honestly.** A cold configure downloads the tree and the first build is long — minutes, on
   four cores — and it lands in `tools/gate.sh`. It is cached in the build directory afterwards, and
-  CI will need a cache entry keyed on the tag.
-- **RTTI is taken back off for the test target only.** `target_compile_options(sphanorama_tests
-  PRIVATE -frtti)`, because OpenCV's headers need it and the core exports `-fno-rtti` publicly.
-  Nothing in `core/src` includes an OpenCV header, so the core's own compilation is unchanged.
+  CI caches `_deps` **and `.ninja_log`**: the first version of that cache omitted the log, and since
+  ninja marks any output with no log entry dirty, it stored 946 MB per entry and rebuilt all 244
+  OpenCV edges regardless. A reviewer measured it. The entry is still large, most of it the `.git`
+  directory a shallow clone leaves behind.
+
+- **"Pinned" is weaker than it sounds, and this ADR overstated it.** A git tag is a mutable ref and
+  there is no hash to check it against, so the same tag can serve different bytes; and the build
+  links the host's `libz.so.1`, so the artifact differs across machines even when the source does
+  not. What the pin buys is that an ordinary upstream release cannot change this build without
+  someone editing `SPHANORAMA_OPENCV_TAG` — which is the property that matters here and is not the
+  same as reproducibility. Pinning the commit hash and vendoring zlib would buy the rest, and neither
+  is worth doing until something depends on it.
+- **RTTI turned out not to be needed at all**, and the flag that said otherwise never ran. This ADR
+  first claimed the test target takes `-fno-rtti` back off because OpenCV's headers need RTTI. Both
+  halves were wrong: CMake emits a target's own `COMPILE_OPTIONS` before the `INTERFACE` options it
+  inherits, so the command line read `-frtti … -fno-rtti` and the inherited flag won — and it
+  compiled anyway, which is the useful fact. The subset depended on here does not need RTTI. The flag
+  is gone; nothing is being worked around.
 - **The exception boundary is named here and not yet built.** When an engine calls OpenCV it cannot
   be compiled `-fno-exceptions`, because `cv::Exception` is how OpenCV reports ordinary failure. The
   shape that fits: the OpenCV-backed implementation is its own component, compiled with exceptions,

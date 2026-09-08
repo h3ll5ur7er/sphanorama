@@ -16,7 +16,7 @@ start of a line, so quoting one mid-sentence would in fact be safe — but only 
 reflows the paragraph and it lands in column one, and a checker that can be broken by rewrapping
 its own documentation is not one to rely on.
 
-Usage:  python3 tools/conflict_marker_check.py [repo_root]
+Usage:  uv run tools/conflict_marker_check.py [repo_root]
 """
 from __future__ import annotations
 

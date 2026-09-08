@@ -7,8 +7,8 @@ would silently drop a construct it did not understand, and the mirror would drif
 nobody was looking.
 
 Usage:
-  python3 tools/contract_gen.py            # rewrite the mirror
-  python3 tools/contract_gen.py --check    # fail if the committed mirror is stale
+  uv run tools/contract_gen.py            # rewrite the mirror
+  uv run tools/contract_gen.py --check    # fail if the committed mirror is stale
 """
 from __future__ import annotations
 
@@ -593,7 +593,7 @@ PREAMBLE = """/**
  * keeps this mirror from drifting (ADR 0009). To change anything here, change the header and
  * regenerate:
  *
- *     python3 tools/contract_gen.py
+ *     uv run tools/contract_gen.py
  *
  * Only interfaces marked `// @boundary` in C++ appear here: engines and the utilities bar never
  * cross into JavaScript.
@@ -719,7 +719,7 @@ def main(argv: list[str]) -> int:
     if stale:
         for relative in stale:
             print(f"{relative} is stale", file=sys.stderr)
-        print("run: python3 tools/contract_gen.py", file=sys.stderr)
+        print("run: uv run tools/contract_gen.py", file=sys.stderr)
         return 1
     return 0
 

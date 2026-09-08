@@ -5,7 +5,7 @@
  * keeps this mirror from drifting (ADR 0009). To change anything here, change the header and
  * regenerate:
  *
- *     python3 tools/contract_gen.py
+ *     uv run tools/contract_gen.py
  *
  * Only interfaces marked `// @boundary` in C++ appear here: engines and the utilities bar never
  * cross into JavaScript.

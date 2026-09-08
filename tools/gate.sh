@@ -43,18 +43,18 @@ step() {
 }
 
 echo "== contracts and architecture rules =="
-step "layer checker tests"        uv run tools/test_layer_check.py
-step "layer rules"                uv run tools/layer_check.py
-step "contract generator tests"   uv run tools/test_contract_gen.py
-step "codec generator tests"      uv run tools/test_codec_gen.py
-step "generated files not stale"  uv run tools/contract_gen.py --check
-step "size budget checker tests"  uv run tools/test_size_budget.py
-step "no-browser checker tests"   uv run tools/test_no_browser_check.py
-step "no browser assumptions"     uv run tools/no_browser_check.py
-step "marker checker tests"       uv run tools/test_conflict_marker_check.py
-step "no conflict markers"        uv run tools/conflict_marker_check.py
-step "table checker tests"        uv run tools/test_markdown_table_check.py
-step "no broken tables"           uv run tools/markdown_table_check.py
+step "layer checker tests"        uv run --locked tools/test_layer_check.py
+step "layer rules"                uv run --locked tools/layer_check.py
+step "contract generator tests"   uv run --locked tools/test_contract_gen.py
+step "codec generator tests"      uv run --locked tools/test_codec_gen.py
+step "generated files not stale"  uv run --locked tools/contract_gen.py --check
+step "size budget checker tests"  uv run --locked tools/test_size_budget.py
+step "no-browser checker tests"   uv run --locked tools/test_no_browser_check.py
+step "no browser assumptions"     uv run --locked tools/no_browser_check.py
+step "marker checker tests"       uv run --locked tools/test_conflict_marker_check.py
+step "no conflict markers"        uv run --locked tools/conflict_marker_check.py
+step "table checker tests"        uv run --locked tools/test_markdown_table_check.py
+step "no broken tables"           uv run --locked tools/markdown_table_check.py
 
 echo "== native =="
 step "native configure"  cmake --preset native-debug
@@ -74,7 +74,7 @@ if [ "$have_emcc" = no ]; then
 else
   step "wasm build"          bash -c "cmake --preset wasm-release && cmake --build build/wasm-release"
   step "wasm threaded build" bash -c "cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded"
-  step "size budget"         bash -c "uv run tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge && uv run tools/size_budget.py --profile wasm-release-threaded --build-dir build/wasm-release-threaded/bridge"
+  step "size budget"         bash -c "uv run --locked tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge && uv run --locked tools/size_budget.py --profile wasm-release-threaded --build-dir build/wasm-release-threaded/bridge"
   step "shell unit tests"    npm test
   step "build the shell"     npm run build
   step "browser tests"       npx playwright test

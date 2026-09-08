@@ -34,9 +34,17 @@ one at a time with a confusing message.
 
 ## Consequences
 
-- The interpreter version is a fact about the repository. `requires-python = ">=3.11"` and the lock
-  file resolve the same environment on a developer's machine and in every CI job, including the
-  `wasm` job that previously had no Python setup and was passing by luck.
+- The interpreter version is a fact about the repository — carried by **`.python-version`**, which is
+  the file that actually pins it. `requires-python = ">=3.11"` is a floor and `uv.lock` constrains
+  packages, not the interpreter: a reviewer deleted `.python-version` and uv cheerfully used 3.12.
+  This ADR credited the wrong two files at first. Every CI job that runs the tooling now installs uv,
+  including the `wasm` job that previously had no Python setup at all and was passing by luck.
+
+- **The lock is enforced, not merely committed.** `uv run` silently rewrites a lock that disagrees
+  with `pyproject.toml` and exits 0, so a dependency added without committing the regenerated lock
+  would have gone green while CI resolved whatever the index served — the exact failure the lock
+  exists to prevent. Every invocation is `uv run --locked`, which exits 2 instead. There is nothing
+  to resolve today (`dependencies = []`), which is why it was cheap to close before there was.
 - Adding a dependency is now a two-file diff a reviewer can read, rather than an instruction in a
   README that a machine may or may not have followed.
 - The checkers stay standard-library-only. That is a separate rule and this ADR does not relax it;
