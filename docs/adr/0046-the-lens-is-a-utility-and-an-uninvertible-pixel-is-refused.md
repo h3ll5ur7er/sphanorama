@@ -90,6 +90,25 @@ Three things about it are easy to get wrong and invisible when wrong:
   quadratically, lands in four to six passes, and reaches solutions the fixed point cannot approach.
   The ceiling is 20, and a refusal after 20 is a genuine failure rather than a budget expiring.
 
+  **And then damped, a round later.** Newton alone traded one family of refusals for another. Its
+  first guess is the distorted coordinate: on a *barrel* lens (k₁ < 0) that sits inside the answer and
+  the iteration walks outward, which is why every lens in the tests was fine — all of them had
+  k₁ ≤ 0. On a *pincushion* lens the guess sits outside, so a full step overshoots the fold, or the
+  guess is already past it, and the `radial > 0` and `determinant > 0` guards refuse — **because they
+  judge the iterate rather than the pixel.** A reviewer found a direction the model certifies, a pixel
+  this file's own `Project` produced from it, and an inverse that would not take it back; on a
+  stronger pincushion, 168 of 4,941 in-frame pixels.
+
+  Two changes close it. The guess is pulled toward the optical centre until the model is defined
+  where it stands — the centre always qualifies, so it terminates. And each step is halved until the
+  trial point is both defined and *closer than where the iterate stands*. Requiring the decrease
+  rather than mere definedness is what stops it cycling, and it is worth its own note: measured by
+  building the file both ways and diffing, 15 pixels of 462,969 differ and **every one is accepted
+  only with the condition**. It widens what can be answered.
+
+  Measured after: zero refusals over six lens families, barrel and pincushion, of anything `Project`
+  accepts — worst round-trip error 1.2e-06 degrees, median 1 to 5 passes, longest tail 12.
+
   **What the earlier numbers were measuring.** On a `k₁ = −0.9` lens the fixed point accepted pixels
   out to 89.6% of the invertible radius at a budget of 20 and 99.6% at 100. Those figures were real
   and they were beside the point: they describe how far a bad solver gets, not what the model can

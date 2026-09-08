@@ -125,10 +125,16 @@ struct UnprojectedDirection {
 // the solution does not land back on the pixel it was given. A best guess would be a wrong rotation
 // later that nothing would attribute to the lens.
 //
-// Newton rather than the obvious fixed point `xn <- (xd - tangential) / radial`, and the difference
-// is correctness rather than speed: that iteration diverges on lenses this model correctly certifies
-// as invertible. A 115-degree lens with k1 = -0.3, k2 = 0.1 folds nowhere at any radius, and the
-// fixed point could not find a quarter of its pixels.
+// **Damped** Newton rather than the obvious fixed point `xn <- (xd - tangential) / radial`, and each
+// half of that is a correctness fix rather than a speed one, found a round apart.
+//
+// Newton, because the fixed point diverges on lenses this model correctly certifies as invertible: a
+// 115-degree lens with k1 = -0.3, k2 = 0.1 folds nowhere at any radius, and it could not find a
+// quarter of that frame. Damped, because a full Newton step can leap the fold from the other
+// direction: the first guess is the distorted coordinate, which on a *pincushion* lens sits outside
+// the answer, and an undamped step overshot into territory the model does not describe — refusing
+// pixels this file's own `Project` had just produced. Barrel lenses hid that, because there the
+// guess sits inside and the iteration walks outward, and every lens in these tests had k1 <= 0.
 UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel);
 
 }  // namespace sphanorama

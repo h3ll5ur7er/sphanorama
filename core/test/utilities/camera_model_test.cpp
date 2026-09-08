@@ -430,6 +430,83 @@ TEST(Project, CoefficientsThatOverflowTheDiscriminantAreRefusedRatherThanWavedTh
   EXPECT_FALSE(far.valid);
 }
 
+TEST(Unproject, APincushionLensAnswersThePixelItsOwnProjectionProduced) {
+  // Newton's first guess is the distorted coordinate itself. On a barrel lens (k1 < 0) that guess
+  // lies *inside* the solution and the iteration walks outward, which is why every lens in this file
+  // was fine — all of them had k1 <= 0. On a pincushion lens the guess lies outside, so a full step
+  // can overshoot the fold, or the guess can already be past it. The `radial > 0` and
+  // `determinant > 0` guards then refuse, because they judge the iterate rather than the pixel.
+  //
+  // The self-inconsistency is what makes this worth a test of its own: the direction is one the
+  // model certifies, the pixel is one this same file produced from it, and the inverse would not
+  // take it back. Round two's switch to Newton removed 578 refusals on barrel lenses and introduced
+  // these; a reviewer found them by looking where the tests did not.
+  Intrinsics lens = Phone();
+  lens.k1 = 0.9;
+  lens.k2 = -1.35;
+  ASSERT_TRUE(IsUsableLens(lens));
+
+  const double theta = std::atan(0.7195);
+  const double diagonal = std::sin(theta) / std::sqrt(2.0);
+  const Vec3 d{diagonal, diagonal, -std::cos(theta)};
+  const ProjectedPixel p = Project(lens, d);
+  ASSERT_TRUE(p.valid);
+
+  const UnprojectedDirection back = Unproject(lens, p.pixel);
+  ASSERT_TRUE(back.valid);
+  EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3);
+}
+
+TEST(Unproject, ADampedStepHasToImproveOnWhereItStands) {
+  // The damping accepts the first halved step that lands somewhere the model is *defined*. That is
+  // not enough on its own: defined is not the same as closer, and a step that is merely defined can
+  // walk the iterate away from the answer and then back, forever, inside the budget.
+  //
+  // Requiring the residual to decrease is what makes it a descent. Measured by building the file
+  // both ways and diffing what each accepts over a grid of lenses and pixels: 15 of 462,969 differ,
+  // and **every one of them is accepted only with the condition** — it strictly widens what can be
+  // answered, which is the opposite of what a tightening usually does. This is one of the 15.
+  //
+  // (A first attempt at this test used a pixel found by replicating the loop in a probe rather than
+  // by building the real thing. The probe said 13,209 pixels differed; the function said that one
+  // was not among them, because the probe left out the round-trip check that runs after the loop.
+  // The number to trust is the one measured on what ships.)
+  Intrinsics lens = Phone();
+  lens.k1 = -0.5;
+  lens.k2 = -1.5;
+  lens.p2 = 0.4;
+  ASSERT_TRUE(IsUsableLens(lens));
+  EXPECT_TRUE(Unproject(lens, Pixel{960.0, 300.0}).valid);
+}
+
+TEST(Unproject, WhateverProjectAcceptsUnprojectTakesBack) {
+  // The completeness invariant the case above is one instance of, on a lens strong enough that the
+  // old solver refused 168 of 4941 in-frame pixels. Stated as a round trip from a direction rather
+  // than as a sweep over pixels, it cannot be satisfied by refusing more: every pixel tested here
+  // exists precisely because `Project` produced it.
+  Intrinsics lens = Phone();
+  lens.k1 = 2.0;
+  lens.k2 = -3.0;
+  ASSERT_TRUE(IsUsableLens(lens));
+
+  int checked = 0;
+  for (int hi = 0; hi <= 20; ++hi) {
+    const double h = -30.0 + 3.0 * static_cast<double>(hi);
+    for (int vi = 0; vi <= 16; ++vi) {
+      const double v = -22.0 + 2.75 * static_cast<double>(vi);
+      const Vec3 d = Normalize(Vec3{std::tan(h / kDegPerRad), std::tan(v / kDegPerRad), -1.0});
+      const ProjectedPixel p = Project(lens, d);
+      if (!p.valid) continue;
+      if (p.pixel.x < 0.0 || p.pixel.x > 960.0 || p.pixel.y < 0.0 || p.pixel.y > 1280.0) continue;
+      ++checked;
+      const UnprojectedDirection back = Unproject(lens, p.pixel);
+      ASSERT_TRUE(back.valid) << h << "," << v;
+      EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3) << h << "," << v;
+    }
+  }
+  EXPECT_GT(checked, 100);
+}
+
 TEST(Unproject, APixelThatIsNotAMeasurementYieldsNoDirection) {
   const Intrinsics lens = Phone();
   EXPECT_FALSE(Unproject(lens, Pixel{kNaN, 640}).valid);
@@ -579,9 +656,9 @@ TEST(Unproject, TheTopLeftPixelIsNotAnsweredByTheThingThatMeansRefusal) {
   // refuses. Without the `check.valid` line it answers the image's top-left corner with a confident
   // direction that nothing looks in.
   //
-  // Coupled to `kInverseIterations = 5000`, like
-  // `APixelTheIterationNeverReachesIsRefusedRatherThanAnswered` — see the note there. Raise the
-  // budget to 20000 and this pixel converges, and the pair stops covering what it covers now.
+  // Coupled to the solver's budget, like `APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered`
+  // — see the note there. (This said `kInverseIterations = 5000` and named a test that had been
+  // renamed in the same commit; both were true of the fixed point and neither survived Newton.)
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   lens.k2 = -0.6;

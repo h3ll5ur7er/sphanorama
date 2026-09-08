@@ -51,9 +51,7 @@ constexpr double kRadToDeg = 57.29577951308232;
 // one is never refused for rounding.
 constexpr double kInverseToleranceNormalised = 1e-9;
 
-// Brown-Conrady inverts by fixed-point iteration, which stops as soon as it has stopped moving —
-// an ordinary phone lens settles in about five passes, so the ceiling below is not what the common
-// case costs.
+// Brown-Conrady is inverted by damped Newton, which stops as soon as it has stopped moving.
 //
 // Newton, not fixed-point iteration, and the difference is not performance.
 //
@@ -67,9 +65,22 @@ constexpr double kInverseToleranceNormalised = 1e-9;
 // from it and stayed there. A quarter of that frame was refused, at 500x the cost of an answer.
 //
 // Newton uses the Jacobian, converges quadratically, and reaches solutions the fixed point cannot
-// approach. Twenty steps is a generous ceiling on a method that lands in four or five; a refusal
-// after twenty is a genuine failure to converge rather than a budget running out.
+// approach. Measured over every accepted in-frame pixel: a median of 1 pass undistorted, 4 to 5 on
+// the barrel, ultra-wide and pincushion lenses in this file's tests, and a longest tail of 12. So
+// twenty is a ceiling with room in it rather than a number anything reaches, and a refusal after
+// twenty is a genuine failure to converge rather than a budget running out.
+//
+// (An earlier draft said "four or five" with no tail, and a reviewer measured the tail at exactly
+// twenty — on the undamped version. Damping shortened it. Both numbers were honestly arrived at and
+// only one of them describes what ships, which is the argument for re-measuring after every change
+// rather than carrying a figure forward.)
 constexpr int kInverseIterations = 20;
+
+// How many halvings a damped step may take, and how many times the initial guess may be pulled
+// toward the optical centre before the model is defined where it stands. Thirty halvings is a factor
+// of a billion: past that the step is not going to become useful, and the round-trip check below is
+// what decides whether where we stopped is an answer.
+constexpr int kBacktrackSteps = 30;
 
 // A Newton step this small has arrived: the method roughly squares its error each pass, so the step
 // and the remaining error are the same size to within that squaring, and a step of 1e-14 leaves
@@ -99,16 +110,41 @@ double RadialSlope(const Intrinsics& lens, double r2) {
 // has folded — two neighbouring points land on one. For a purely radial lens this factors exactly
 // into `Radial(r2) * RadialSlope(r2)`, which is why the radial case can be settled in closed form
 // below; `p1` and `p2` are not radial and nothing about the radial polynomial constrains them.
-double DistortionJacobian(const Intrinsics& lens, double xn, double yn) {
+// Where the distortion sends a point, and its Jacobian there, in one evaluation.
+//
+// One evaluation because there were two: the solver rebuilt these four numbers inline while
+// `DistortionJacobian` computed the determinant separately, and a reviewer pointed out that a fact
+// held in two places will drift — the fold test would then disagree with the solver about where the
+// fold is, which is precisely the disagreement this file exists to prevent.
+struct Distorted {
+  double x = 0, y = 0;          // the distorted point
+  double dxdx = 0, dydy = 0;    // the Jacobian's diagonal
+  double cross = 0;             // both off-diagonal terms — the map is a gradient field, so they
+                                // are equal, which is why there is one of them
+  double radial = 0;
+  double determinant = 0;
+};
+
+Distorted DistortAt(const Intrinsics& lens, double xn, double yn) {
+  Distorted at;
   const double r2 = xn * xn + yn * yn;
-  const double radial = Radial(lens, r2);
+  at.radial = Radial(lens, r2);
+  at.x = xn * at.radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn);
+  at.y = yn * at.radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn;
   const double dRadial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3);   // d(radial)/d(r2)
-  const double dxdx = radial + 2.0 * xn * xn * dRadial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn;
-  const double dydy = radial + 2.0 * yn * yn * dRadial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn;
-  // The map is a gradient field, so the two off-diagonal terms are equal.
-  const double cross = 2.0 * xn * yn * dRadial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn;
-  return dxdx * dydy - cross * cross;
+  at.dxdx = at.radial + 2.0 * xn * xn * dRadial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn;
+  at.dydy = at.radial + 2.0 * yn * yn * dRadial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn;
+  at.cross = 2.0 * xn * yn * dRadial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn;
+  at.determinant = at.dxdx * at.dydy - at.cross * at.cross;
+  return at;
 }
+
+double DistortionJacobian(const Intrinsics& lens, double xn, double yn) {
+  return DistortAt(lens, xn, yn).determinant;
+}
+
+// Whether the model is defined at a point at all — somewhere a Newton step may stand.
+bool DefinedAt(const Distorted& at) { return at.radial > 0.0 && at.determinant > 0.0; }
 
 // Whether the radial map increases over the *whole* way out to this radius, rather than merely at
 // it. The difference is a promise against a coincidence.
@@ -310,40 +346,72 @@ UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel) {
 
   double xn = xd;
   double yn = yd;
+
+  // **The guess is not the answer, and the guards must not judge it as one.** Newton starts from the
+  // distorted coordinate. On a barrel lens (k1 < 0) that sits *inside* the solution and the
+  // iteration walks outward, which is why every lens in this file's tests was fine — all of them had
+  // k1 <= 0. On a pincushion lens it sits outside, and it can already be past the fold. Refusing
+  // there refuses a pixel `Project` itself produced. Pull the guess in until the model is defined
+  // where it stands; the optical centre always qualifies, since radial and the determinant are both
+  // 1 at r = 0, so this terminates.
+  for (int i = 0; i < kBacktrackSteps; ++i) {
+    if (DefinedAt(DistortAt(lens, xn, yn))) break;
+    xn *= 0.5;
+    yn *= 0.5;
+  }
+
   for (int i = 0; i < kInverseIterations; ++i) {
-    const double r2 = xn * xn + yn * yn;
-    const double radial = Radial(lens, r2);
-    if (!(radial > 0.0)) return out;
+    const Distorted at = DistortAt(lens, xn, yn);
+    if (!DefinedAt(at)) return out;
 
-    // Where the distortion currently sends this guess, and how far that is from where we want it.
-    const double atX = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn);
-    const double atY = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn;
-    const double residualX = atX - xd;
-    const double residualY = atY - yd;
+    const double residualX = at.x - xd;
+    const double residualY = at.y - yd;
+    const double residual = residualX * residualX + residualY * residualY;
 
-    const double dRadial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3);
-    const double dxdx = radial + 2.0 * xn * xn * dRadial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn;
-    const double dydy = radial + 2.0 * yn * yn * dRadial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn;
-    const double cross = 2.0 * xn * yn * dRadial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn;
-    const double determinant = dxdx * dydy - cross * cross;
-    // A singular Jacobian is the fold itself: there is no step to take and no preimage to find.
-    if (!(determinant > 0.0)) return out;
+    const double fullX = -(at.dydy * residualX - at.cross * residualY) / at.determinant;
+    const double fullY = -(at.dxdx * residualY - at.cross * residualX) / at.determinant;
+    if (!std::isfinite(fullX) || !std::isfinite(fullY)) return out;
 
-    const double stepX = -(dydy * residualX - cross * residualY) / determinant;
-    const double stepY = -(dxdx * residualY - cross * residualX) / determinant;
-    if (!std::isfinite(stepX) || !std::isfinite(stepY)) return out;
-    xn += stepX;
-    yn += stepY;
+    // **Damped, because a full step can leap the fold.** Newton aims at where the *linearised* map
+    // sends the residual to zero, and near a fold that aim overshoots into territory the model does
+    // not describe. Halving until the trial point is both defined and closer than where we stand is
+    // the standard remedy, and it is what makes the pincushion case converge instead of refusing.
+    // Requiring the residual to *decrease* rather than merely be defined is what stops it cycling.
+    double scale = 1.0;
+    bool stepped = false;
+    double stepX = 0.0;
+    double stepY = 0.0;
+    for (int b = 0; b < kBacktrackSteps; ++b) {
+      stepX = scale * fullX;
+      stepY = scale * fullY;
+      const double tryX = xn + stepX;
+      const double tryY = yn + stepY;
+      const Distorted trial = DistortAt(lens, tryX, tryY);
+      if (DefinedAt(trial)) {
+        const double dx = trial.x - xd;
+        const double dy = trial.y - yd;
+        if (dx * dx + dy * dy < residual) {
+          xn = tryX;
+          yn = tryY;
+          stepped = true;
+          break;
+        }
+      }
+      scale *= 0.5;
+    }
+    // Nowhere better to stand. Not a refusal on its own — the round-trip check below decides
+    // whether where we stopped is an answer.
+    if (!stepped) break;
     if (stepX * stepX + stepY * stepY <= kSettledStepNormalised * kSettledStepNormalised) break;
   }
 
   const Vec3 direction = Normalize(Vec3{xn, -yn, -1.0});
 
   // Checked against the forward model, and by calling `Project` rather than by repeating its
-  // arithmetic here. Two reasons: a fixed point that has stopped moving has not necessarily
-  // stopped at the right place, and a pixel past the fold has to fall out of this check — which
-  // is a property of `Project`, so asking `Project` is the only way the two agree on where the
-  // fold is.
+  // arithmetic here. Two reasons: an iterate that has stopped moving has not necessarily stopped at
+  // the right place — the damping can run out of halvings and leave it where it stands — and a pixel
+  // past the fold has to fall out of this check, which is a property of `Project`, so asking
+  // `Project` is the only way the two agree on where the fold is.
   const ProjectedPixel check = Project(lens, direction);
   if (!check.valid) return out;
   const double errorX = (check.pixel.x - pixel.x) / lens.fx;
