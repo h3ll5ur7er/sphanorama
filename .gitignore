@@ -31,3 +31,6 @@ dist/
 # Agent worktrees. A worktree here is a whole second checkout of this repository, node_modules
 # and all; it is scratch space for a background agent, never something to commit.
 .claude/worktrees/
+
+# the CI cache key is derived from this; it is written by a workflow step, never committed
+.toolchain-identity

@@ -11,36 +11,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+      # uv rather than a bare interpreter: the version and any dependency come from pyproject.toml
+      # and uv.lock, so this job and a developer's machine resolve the same environment.
+      - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       # The checker has its own suite: a broken checker that passes everything is worse than no
       # checker, because it reads as a green light.
       - name: layer checker tests
-        run: python3 tools/test_layer_check.py
+        run: uv run --locked tools/test_layer_check.py
       - name: layer rules
-        run: python3 tools/layer_check.py
+        run: uv run --locked tools/layer_check.py
       - name: contract generator tests
-        run: python3 tools/test_contract_gen.py
+        run: uv run --locked tools/test_contract_gen.py
       - name: codec generator tests
-        run: python3 tools/test_codec_gen.py
+        run: uv run --locked tools/test_codec_gen.py
       # Covers the TypeScript mirror and both halves of the wire codec: a header change that was
       # not regenerated is a red build rather than a boundary that disagrees with itself.
       - name: generated files are not stale
-        run: python3 tools/contract_gen.py --check
+        run: uv run --locked tools/contract_gen.py --check
       - name: size budget checker tests
-        run: python3 tools/test_size_budget.py
+        run: uv run --locked tools/test_size_budget.py
       - name: no-browser checker tests
-        run: python3 tools/test_no_browser_check.py
+        run: uv run --locked tools/test_no_browser_check.py
       - name: no browser assumptions in the core
-        run: python3 tools/no_browser_check.py
+        run: uv run --locked tools/no_browser_check.py
       - name: conflict marker checker tests
-        run: python3 tools/test_conflict_marker_check.py
+        run: uv run --locked tools/test_conflict_marker_check.py
       - name: no conflict markers left behind
-        run: python3 tools/conflict_marker_check.py
+        run: uv run --locked tools/conflict_marker_check.py
       - name: table checker tests
-        run: python3 tools/test_markdown_table_check.py
+        run: uv run --locked tools/test_markdown_table_check.py
       - name: no markdown table broken open
-        run: python3 tools/markdown_table_check.py
+        run: uv run --locked tools/markdown_table_check.py
 
   native:
     name: native build and tests
@@ -49,6 +51,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
+      # rebuilds it. Keyed on `cmake/opencv.cmake`, which carries the pinned commit, so a version bump
+      # misses deliberately; and on the preset, so the debug and sanitizer trees do not overwrite each
+      # other's objects.
+      #
+      # `.ninja_log` is in the path deliberately and the cache did nothing without it. Ninja marks any
+      # output with no log entry dirty, and the log lives beside the build directory rather than
+      # inside `_deps` — so the first version of this cached 946 MB of OpenCV objects and then rebuilt
+      # all 244 of its edges anyway. Restoring the log is safe: ninja still stats every input, so our
+      # own sources, whose objects are not cached, rebuild exactly as they should.
+      #
+      # Which is also why `runner.os` alone was not enough to key it. Restoring the log restores
+      # ninja's belief that those objects are current, and ninja decides that from timestamps rather
+      # than from who compiled them — so a runner image rotating to a different compiler would hand
+      # back objects nothing can notice are stale, and link them. The identity file is the compiler,
+      # ninja and cmake versions, so the miss happens exactly when the toolchain changes and not
+      # weekly on an image number.
+      - name: record the toolchain identity
+        run: |
+          { c++ --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
+      - name: cache the OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/native-debug/_deps
+            build/native-debug/.ninja_log
+          key: opencv-native-debug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/opencv.cmake', '.toolchain-identity') }}
       - name: configure
         run: cmake --preset native-debug
       - name: build
@@ -63,6 +93,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
+      # rebuilds it. Keyed on `cmake/opencv.cmake`, which carries the pinned commit, so a version bump
+      # misses deliberately; and on the preset, so the debug and sanitizer trees do not overwrite each
+      # other's objects.
+      #
+      # `.ninja_log` is in the path deliberately and the cache did nothing without it. Ninja marks any
+      # output with no log entry dirty, and the log lives beside the build directory rather than
+      # inside `_deps` — so the first version of this cached 946 MB of OpenCV objects and then rebuilt
+      # all 244 of its edges anyway. Restoring the log is safe: ninja still stats every input, so our
+      # own sources, whose objects are not cached, rebuild exactly as they should.
+      #
+      # Which is also why `runner.os` alone was not enough to key it. Restoring the log restores
+      # ninja's belief that those objects are current, and ninja decides that from timestamps rather
+      # than from who compiled them — so a runner image rotating to a different compiler would hand
+      # back objects nothing can notice are stale, and link them. The identity file is the compiler,
+      # ninja and cmake versions, so the miss happens exactly when the toolchain changes and not
+      # weekly on an image number.
+      - name: record the toolchain identity
+        run: |
+          { c++ --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
+      - name: cache the OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/native-asan/_deps
+            build/native-asan/.ninja_log
+          key: opencv-native-asan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/opencv.cmake', '.toolchain-identity') }}
       - name: configure
         run: cmake --preset native-asan
       - name: build
@@ -75,6 +133,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       - uses: mymindstorm/setup-emsdk@v14
@@ -92,9 +152,9 @@ jobs:
 
       - name: size budget
         run: |
-          python3 tools/size_budget.py --profile wasm-release \
+          uv run --locked tools/size_budget.py --profile wasm-release \
             --build-dir build/wasm-release/bridge
-          python3 tools/size_budget.py --profile wasm-release-threaded \
+          uv run --locked tools/size_budget.py --profile wasm-release-threaded \
             --build-dir build/wasm-release-threaded/bridge
 
       - uses: actions/setup-node@v4

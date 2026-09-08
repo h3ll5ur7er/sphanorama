@@ -7,7 +7,7 @@ granularity, which is why contracts are one interface per header: at aggregate-h
 a manager calling another manager is indistinguishable from a manager implementing its own
 interface.
 
-Usage:  python3 tools/layer_check.py [repo_root]
+Usage:  uv run tools/layer_check.py [repo_root]
 """
 from __future__ import annotations
 

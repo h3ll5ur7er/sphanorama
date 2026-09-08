@@ -28,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       - uses: mymindstorm/setup-emsdk@v14
@@ -44,7 +46,7 @@ jobs:
       - name: build core
         run: cmake --preset wasm-release && cmake --build build/wasm-release
       - name: size budget
-        run: python3 tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
+        run: uv run --locked tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge
 
       - name: install shell deps
         run: npm ci

@@ -17,6 +17,7 @@ add_library(sphanorama_core
   src/engines/pose_engine/orientation_pose_engine.cpp
   src/engines/registration_engine/null_registration_engine.cpp
   src/utilities/arena.cpp
+  src/utilities/camera_model.cpp
   src/utilities/clock.cpp
   src/utilities/config_store.cpp
   src/utilities/diagnostics.cpp

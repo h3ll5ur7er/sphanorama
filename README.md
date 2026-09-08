@@ -44,5 +44,30 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
   features, geometry and blending from Phase 2 on. Holds all Managers, Engines and ResourceAccess *contracts*.
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
-- **Tooling** — Python for contract codegen and the architecture checks CI runs; synthetic dataset
-  generation and offline ground-truth comparison arrive with Phase 1's accuracy harness.
+- **Tooling** — Python, run through `uv`, for contract codegen and the architecture checks CI runs; synthetic dataset
+  generation and offline ground-truth comparison arrive with Phase 2's accuracy harness.
+
+## Building it
+
+Four things have to be on `PATH`, and the first two are the ones people do not already have:
+
+| Tool | Why |
+| --- | --- |
+| [`uv`](https://docs.astral.sh/uv/) | Every Python tool runs through it (ADR 0048). The interpreter and dependencies come from `pyproject.toml` and `uv.lock`, so your machine resolves what CI resolves |
+| [Emscripten](https://emscripten.org/) 6.0.9 | The WASM builds. `tools/setup_emsdk.sh` installs the pinned version |
+| CMake ≥ 3.24 and Ninja | Both native presets and both WASM ones |
+| Node 22 | The shell, its unit tests and the Playwright suite |
+
+Then:
+
+```sh
+npm ci                 # shell dependencies, including the browser Playwright drives
+tools/setup_emsdk.sh   # once, unless emcc is already on PATH
+tools/gate.sh          # everything CI runs, in the order CI runs it
+```
+
+`tools/gate.sh` is the check. It mirrors `.github/workflows/ci.yml` step for step and prints
+`GATE GREEN` or `GATE RED` on its last line — read that line, not a scrollback of passes.
+
+The first native configure fetches and builds a trimmed OpenCV from source (ADR 0047), which takes
+minutes and is then cached in the build directory. Nothing else about the first run is slow.

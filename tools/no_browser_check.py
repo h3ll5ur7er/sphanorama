@@ -7,7 +7,7 @@ the native build from quietly diverging in behaviour.
 
 bridge/ is the one tree allowed to know Emscripten exists.
 
-Usage:  python3 tools/no_browser_check.py [repo_root]
+Usage:  uv run tools/no_browser_check.py [repo_root]
 """
 from __future__ import annotations
 

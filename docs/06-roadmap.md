@@ -199,10 +199,12 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
    What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
    to correct, 0.5 s to learn an offset — have never met a real phone.
-4. Deferred with reasons, not forgotten: the trimmed OpenCV WASM build (nothing needs it until
-   Phase 2 registration, and the size budget has 8.36 MB of headroom), the `bench/` CLI, and the
-   synthetic-dataset generator — both of which Phase 1's accuracy harness is the first thing to
-   actually need.
+4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (nothing needs it in a
+   browser until Phase 2 registration ships, and the size budget has 8.36 MB of headroom — the
+   native build of the same trimmed subset is in, ADR 0047), the `bench/` CLI, and the
+   synthetic-dataset generator — both of which Phase 2's accuracy harness is the first thing to
+   actually need. (This said Phase 1's, from before the harness had a phase: it measures
+   registration accuracy, and Phase 1 does no registration.)
 
 ---
 
@@ -728,14 +730,29 @@ that has to be ordered.
 ## Phase 2 — Stitching
 *Goal: a real panorama out the other end.*
 
-- `RegistrationEngine`: ORB/AKAZE extraction, ratio-test + geometric matching, sensor-prior-seeded
+- **The lens as maths** — done. `utilities/camera_model` projects a direction to a pixel and back,
+  through Brown-Conrady distortion, refusing rather than guessing wherever there is no answer
+  (ADR 0046). It is the first code here to read a field of `Intrinsics`, and everything below is
+  this transform or its inverse.
+- `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
+
+  **Which detector is a measurement, not a preference.** V7 names ORB, AKAZE and SIFT together on
+  purpose. SIFT's patent expired in March 2020 and it has shipped in `features2d` since OpenCV 4.4,
+  so it costs no new dependency and the reason it was once excluded no longer exists; what remains
+  is a speed-versus-repeatability question on *this* content, at *this* frame size, in
+  single-threaded WASM — and that is a number, not an opinion. The accuracy harness below takes the
+  detector as a parameter from the start, and the ADR that picks one gets written from what it
+  measures, with the speed/quality tiers V7 already anticipates.
 - `CompositionEngine`: gain/vignette exposure compensation, graph-cut seam finding, multi-band
   blending, equirectangular projection with tiled output.
 - `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
-- Accuracy harness on synthetic datasets wired into CI.
+
+Listed in dependency order, which is not build order: **the accuracy harness on synthetic datasets
+comes first**, before any of the above, for the reason in "What to build first" below. It is last in
+this list only because it is the thing that measures the others.
 
 **Exit:** synthetic-dataset registration median error under a stated angular threshold; a real
 capture exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build
@@ -787,7 +804,22 @@ Candidates, in the order they fit the existing seams:
 
 ## What to build first, concretely
 
-The single highest-value first commit after this architecture is **Phase 0's boundary**: the IDL,
-the generated facade, and a null core that a phone can drive with real sensor data. It is the piece
-every later phase depends on, it is where the platform surprises live (cross-origin isolation, iOS
-permissions, heap ceilings), and it is worthless to discover any of that in Phase 3.
+**Phase 0's boundary was this section's answer and it is built** — the IDL, the generated facade,
+and a core a phone drives with real sensor data. It was the right first commit for the reason
+stated at the time: the platform surprises live there (cross-origin isolation, iOS permissions,
+heap ceilings) and discovering them in Phase 3 would have been worthless.
+
+The same question for Phase 2 has the same shape, and the answer is **the harness before the
+algorithm**. Registration accuracy is invisible to the eye — a rotation that is a degree out
+produces a panorama that looks fine until the seam, and by then the cause is three stages back. So
+what comes first is a synthetic dataset with known per-frame ground truth and a scored error bound,
+because it is the only thing that can tell a regression from a re-tuning, and because the detector
+question above is settled by running it rather than by arguing.
+
+The lens (ADR 0046) came before even that, for the same reason again: the harness cannot render a
+frame it does not have a projection for.
+
+Still open, and deliberately not yet started: a **real** capture corpus from a phone. Synthetic
+data proves correctness because it carries truth; real data finds the assumptions, and has no
+ground truth to measure against. They answer different questions and the second is worth nothing
+until the first exists.

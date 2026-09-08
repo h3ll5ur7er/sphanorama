@@ -19,7 +19,7 @@ What it checks, and deliberately no more: that no run of table-shaped lines is s
 header by a blank line. It does not validate column counts, alignment or escaping — a renderer is
 the authority on those, and a checker that half-implements one drifts from it.
 
-Usage:  python3 tools/markdown_table_check.py [repo_root]
+Usage:  uv run tools/markdown_table_check.py [repo_root]
 """
 from __future__ import annotations
 

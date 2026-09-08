@@ -38,7 +38,32 @@ coverage and acceptance are all decided in the core.
 
 **What is real.** Four of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box) and `FrameQuality` (sharpness). `Registration`
-and `Composition` are still null, which is what Phase 1 is for.
+and `Composition` are still null, which is what Phase 2 is for. This line said Phase 1 until Phase 2
+actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
+conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
+build, not finished.
+
+**Phase 2 has started at the bottom.** `utilities/camera_model` projects a direction to the pixel it
+lands on and back again, through Brown-Conrady distortion, and it is the first code in this
+repository to read a field of `Intrinsics` — the struct two engine contracts have been passing
+around unopened since the architecture was written. Every way of having no answer is a refusal
+rather than a pixel: an unusable lens, a direction behind the camera, a radius past the fold where
+the distortion stops being invertible, an inverse that does not land back where it started
+(ADR 0046). Its iteration budget is a measured number, not a chosen one.
+
+**OpenCV is in the build now**, fetched at a pinned tag and trimmed to ADR 0005's six modules,
+native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
+first use is not an engine: it cross-checks the camera model against `cv::projectPoints`, and asks
+our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
+inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
+theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
+`uv run tools/…` and `uv add`, never pip (ADR 0048).
+
+The order from here is **the harness before the algorithm**, because registration accuracy is
+invisible to the eye — a rotation a degree out looks fine until the seam. And which feature
+detector wins is a measurement that harness makes rather than a preference the roadmap states:
+SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
+dependency and the reason it was once excluded is gone.
 
 `FrameQuality` is the one worth describing, because its numbers decide which frame of a burst
 survives: sharpness is the variance of a Laplacian over a downscaled luma plane, exposure agreement
