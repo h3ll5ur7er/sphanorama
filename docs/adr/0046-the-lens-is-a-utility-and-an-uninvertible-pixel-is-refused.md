@@ -136,9 +136,10 @@ Three things about it are easy to get wrong and invisible when wrong:
   which is the one class of error a round-trip check is structurally blind to. Both are fixed above,
   and the record is left here rather than tidied because the pattern is the point: every one of these
   came from a *local* test standing in for a *global* promise.
-- **Most guards in the file have no test of their own** — measured over all twenty-six, one at a
-  time: ten are caught by a test and sixteen are not — and that is the price of a policy rather than
-  an oversight. Each makes the next step's precondition locally true, so correctness never rests on
+- **Most guards in the file have no test of their own** — measured over all twenty-nine, one at a
+  time: thirteen are caught and sixteen are not — and that is the price of a policy rather than an
+  oversight. (The count has been wrong twice: once from a hand-picked subset, once from being right
+  about code the solver then replaced. It is re-measured with every change to the solver now.) Each makes the next step's precondition locally true, so correctness never rests on
   NaN propagating through a polynomial, a guarantee `-ffast-math` withdraws. The implementation says
   so at the top rather than letting each guard imply it is the sole refuser.
 

@@ -616,15 +616,18 @@ TEST(Project, ADistortionThatFoldsTheImageBackOnItselfIsRefusedRatherThanGuessed
 }
 
 TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
-  // A pixel Newton settles on and gets wrong. The round-trip check is the only thing that can tell:
-  // the residual here is 1.6e+18 normalised units, so the answer is nowhere near the question, and
+  // A pixel the solver cannot reach. The damping runs out of useful halvings after seven passes and
+  // leaves the iterate 0.247 normalised units from the answer — not moving slowly, but unable to
+  // find anywhere both defined and closer. A larger budget changes nothing: 20, 63, 200 and 5000 all
+  // stop at the same place. Only comparing the round trip against the input can tell, because
   // neither the fold test nor the Jacobian objects to where it landed.
   //
-  // Two earlier versions of this test used pixels that were merely *hard*: one needing 835
-  // fixed-point passes, one that a fixed point could not approach at all. Newton solves both — I
-  // checked (1010, 260) round-trips to 5.7e-14 px now — so both were false refusals dressed up as
-  // properties of the lens, and a reviewer caught each in turn. This one is refused because there
-  // is genuinely nothing there.
+  // Three earlier versions of this test used pixels that were merely *hard*: one needing 835
+  // fixed-point passes, one a fixed point could not approach, and this same pixel described with a
+  // residual of 1.6e+18 measured before the damping. Each of the first two was a false refusal
+  // dressed up as a property of the lens, and a reviewer caught each in turn; the third was a real
+  // refusal with a stale number attached. Newton solves the first two — (1010, 260) round-trips to
+  // 5.7e-14 px now — and this one is refused because there is genuinely nothing there.
   Intrinsics lens = Phone();
   lens.k1 = -0.6;
   lens.k2 = 0.3;
@@ -711,13 +714,18 @@ TEST(Unproject, EveryPixelOfAnUltraWideFrameIsSolved) {
   EXPECT_EQ(refused, 0);
 }
 
-TEST(Unproject, ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn) {
-  // A pixel that exists, has exactly one preimage, and takes a long time to find it. With
-  // k1 = -0.9 the fold sits at r = 0.609, so a direction at r = 0.55 is comfortably inside it —
-  // but the fixed point converges linearly with a ratio approaching 1 near the fold, so a small
-  // iteration budget lands short and the convergence check then refuses a perfectly well defined
-  // pixel. Measured on this lens: 20 iterations reach 89.6% of the invertible radius, 100 reach
-  // 99.6%, 500 reach 99.98%. This direction sits in the band the first of those refuses.
+TEST(Unproject, ANearFoldPixelIsAnsweredRatherThanGivenUpOn) {
+  // A pixel that exists, has exactly one preimage, and sits close enough to the fold that the old
+  // solver could not reach it. With k1 = -0.9 the fold is at r = 0.609, so a direction at r = 0.55
+  // is comfortably inside — but the fixed point converged linearly with a ratio approaching 1 near
+  // the fold, so a small budget landed short and the convergence check then refused a perfectly
+  // well defined pixel. Measured on that solver: 20 passes reached 89.6% of the invertible radius,
+  // 100 reached 99.6%, 500 reached 99.98%, and this direction sat in the band the first refuses.
+  //
+  // None of that is true of the solver any more, and the test is kept for the pixel rather than the
+  // story: damped Newton answers it immediately. The numbers above are why this test exists and are
+  // labelled as history, not as a description of what runs. It was called
+  // `ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn` while the inverse was slow.
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   const double theta = std::atan(0.55);
@@ -735,12 +743,15 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   // 0.5774 * (1 - 1/3) = 0.3849, i.e. x = cx + 0.3849 * fx = 764.49. Just inside answers; just
   // outside must not, and that boundary is worth pinning whatever enforces it.
   //
-  // What enforces it here is *not* the fold check. Measured: at x = 765 the iteration diverges and
-  // the in-loop `radial > 0` guard fires at pass 58, before `Project` is ever consulted. Two
-  // successive rewrites of this test — 5000, then 765 — only changed which pass that same guard
-  // fired on, and a reviewer caught both. On a radial-only lens past the fold the iteration always
-  // diverges first, so `Unproject` has no route to its own fold refusal and no choice of pixel
-  // creates one.
+  // What enforces it is *not* the fold check, and it has not been the same thing twice. Under the
+  // fixed point, x = 765 diverged and the in-loop `radial > 0` guard fired at pass 58. Under damped
+  // Newton the backtracking finds nowhere both defined and closer, the loop stops where it stands,
+  // and the **round-trip tolerance** refuses — measured, along with x = 5000, which now goes the same
+  // way rather than dying on the first pass.
+  //
+  // Three rewrites of this test have only ever changed which guard says no. On a radial-only lens
+  // past the fold the solver never reaches its own fold refusal, so no choice of pixel makes this a
+  // fold test, which is why it stopped claiming to be one.
   //
   // `Project`'s fold reasoning is pinned instead by `ARadiusPastTheFirstFold...` and
   // `ATangentialLensNeverAnswersWithTheOtherPreimage`, both of which fail when it is removed.

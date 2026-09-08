@@ -7,11 +7,15 @@
 namespace sphanorama {
 
 // **On the layering of the guards below.** Many refusals here are individually removable without a
-// test going red. Measured over all twenty-six of them, one at a time, against the whole suite:
-// **ten are caught by a test and sixteen are not.** (An earlier version of this note said "thirteen
-// of fourteen, the only exception being the depth test" — wrong on the count, because it sampled a
-// subset, and wrong on the exception. A reviewer re-ran it properly. A note about measurement
-// discipline that was not itself measured is worth less than no note.)
+// test going red. Measured over all **twenty-nine** of them, one at a time, against the whole suite:
+// nine fail a test outright, sixteen leave it green, and four cannot be neutralised that way without
+// breaking the build — those four were sabotaged individually and every one is caught. So **thirteen
+// caught, sixteen not.**
+//
+// This count has been wrong twice. It first said "thirteen of fourteen, the only exception being the
+// depth test", from a hand-picked subset. Corrected to "ten of twenty-six", which was right for the
+// code at the time and went stale the moment the solver changed. A note about measurement discipline
+// is worth nothing if the number in it is not re-measured with the thing it describes.
 //
 // They are not redundant checks of the same question. Each one makes the *next* step's precondition
 // locally true, and the reason that matters is what would otherwise be carrying the weight: NaN
