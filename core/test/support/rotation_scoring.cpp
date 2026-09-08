@@ -13,10 +13,19 @@ constexpr double kDegPerRad = 57.295779513082320876798154814105;
 // Cyclic Jacobi sweeps over the 4x4. Measured rather than chosen — see the note at the call site.
 constexpr int kJacobiSweeps = 24;
 
-// The off-diagonal magnitude below which the matrix is diagonal to double precision. Entries are
-// sums of unit-quaternion outer products, so they scale with the frame count; this is compared
-// against a normalised quantity so the threshold does not have to.
-constexpr double kOffDiagonalSettled = 1e-18;
+// The off-diagonal weight below which the matrix counts as diagonal. Entries are sums of
+// unit-quaternion outer products, so they scale with the frame count — M's trace is exactly N —
+// and the sum of their squares therefore scales as N squared. An absolute threshold was wrong for
+// that reason: measured, the sweep-zero off-diagonal runs from 3.2e-01 at one frame to 3.1e+09 at
+// a hundred thousand, so a fixed 1e-18 meant something different at every dataset size. A reviewer
+// found the comment claiming a normalisation that was not there. This compares against the squared
+// trace, which is the scale the entries actually have, so one threshold means one thing.
+constexpr double kOffDiagonalSettled = 1e-30;
+
+// Relative separation below which the top two eigenvalues count as equal, so the maximiser is a
+// continuum rather than a rotation. Exact ties are what this is for — two frames 180 degrees apart
+// give 1.0 and 1.0 — and a threshold this tight claims only that, not a general conditioning test.
+constexpr double kEigenvalueGap = 1e-12;
 
 struct Vec4 {
   double v[4]{};
@@ -39,11 +48,23 @@ bool EveryOneIsARotation(const std::vector<Quat>& frames) {
 // The eigenvector of the largest eigenvalue of a 4x4 symmetric matrix, by cyclic Jacobi.
 //
 // Jacobi rather than power iteration, and the difference is not academic. Power iteration converges
-// as (lambda2/lambda1)^k, so it is fast exactly when the residuals agree and slow exactly when they
-// do not — and "they do not" is what a half-broken registration looks like. Measured over 4,000
-// trials of half-exact-half-garbage input, power iteration exhausted a 200-iteration budget;
-// Jacobi's sweep count does not depend on the gap at all.
-Vec4 DominantEigenvector(double m[4][4]) {
+// as (lambda2/lambda1)^k, so it is fast when the residuals agree and slow when they do not. Measured
+// over 5,000 trials at each frame count: on wholly unrelated estimates it exhausts a 200-iteration
+// budget 13.9% of the time at 12 frames and **45.6% at 60** — which is the size a real sphere plans.
+// Jacobi does not depend on the gap at all: 5 working sweeps, every regime, every frame count from
+// 2 to 60. See ADR 0049, including what the first version of this comment got wrong.
+struct Eigen {
+  Vec4 vector;
+  bool separated = true;   // false when the top two eigenvalues are equal
+};
+
+Eigen DominantEigenvector(double m[4][4]) {
+  // The scale the off-diagonal test is relative to. M's trace is the frame count, and it is
+  // invariant under the rotations below, so this is computed once up front.
+  double trace = 0;
+  for (int k = 0; k < 4; ++k) trace += m[k][k];
+  const double scale = (trace > 0.0) ? trace * trace : 1.0;
+
   double v[4][4]{};
   for (int k = 0; k < 4; ++k) v[k][k] = 1.0;
 
@@ -52,7 +73,7 @@ Vec4 DominantEigenvector(double m[4][4]) {
     for (int p = 0; p < 4; ++p) {
       for (int q = p + 1; q < 4; ++q) offDiagonal += m[p][q] * m[p][q];
     }
-    if (offDiagonal <= kOffDiagonalSettled) break;
+    if (offDiagonal <= kOffDiagonalSettled * scale) break;
 
     for (int p = 0; p < 4; ++p) {
       for (int q = p + 1; q < 4; ++q) {
@@ -89,7 +110,20 @@ Vec4 DominantEigenvector(double m[4][4]) {
   for (int k = 1; k < 4; ++k) {
     if (m[k][k] > m[largest][largest]) largest = k;
   }
-  return Vec4{{v[0][largest], v[1][largest], v[2][largest], v[3][largest]}};
+
+  // Whether the answer is the maximiser or *a* maximiser. When the top two eigenvalues are equal
+  // every unit vector in their eigenspace maximises the objective equally, and which one comes back
+  // is decided by nothing better than the order `largest` scanned in — so the caller is told rather
+  // than handed an arbitrary choice dressed as the answer.
+  int second = -1;
+  for (int k = 0; k < 4; ++k) {
+    if (k == largest) continue;
+    if (second < 0 || m[k][k] > m[second][second]) second = k;
+  }
+  const double top = m[largest][largest];
+  const bool separated = !(top > 0.0) || (top - m[second][second]) > kEigenvalueGap * top;
+
+  return Eigen{Vec4{{v[0][largest], v[1][largest], v[2][largest], v[3][largest]}}, separated};
 }
 
 }  // namespace
@@ -115,10 +149,11 @@ GaugeAlignment BestGaugeAlignment(const std::vector<Quat>& estimated,
     }
   }
 
-  const Vec4 eigenvector = DominantEigenvector(m);
-  const Quat rotation = Normalize(AsQuat(eigenvector));
+  const Eigen eigen = DominantEigenvector(m);
+  const Quat rotation = Normalize(AsQuat(eigen.vector));
   if (!IsUsableRotation(rotation)) return out;
   out.rotation = rotation;
+  out.isUnique = eigen.separated;
   out.valid = true;
   return out;
 }
@@ -129,10 +164,21 @@ RotationScore ScoreRotations(const std::vector<Quat>& estimated, const std::vect
   if (!gauge.valid) return out;
 
   out.alignment = gauge.rotation;
+  out.alignmentIsUnique = gauge.isUnique;
   out.perFrameDeg.reserve(estimated.size());
   double sum = 0;
   for (size_t i = 0; i < estimated.size(); ++i) {
-    const double deg = AngleBetween(Multiply(gauge.rotation, estimated[i]), truth[i]) * kDegPerRad;
+    // Normalised before the product, which `Residual` already does on the same value. A reviewer
+    // read this line as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), and a
+    // product whose squares overflow would make `Normalize` substitute the identity and measure the
+    // angle against that. It is not reachable — `Multiply` is exactly norm-multiplicative, so the
+    // gate's own `Norm` and this product overflow at precisely the same threshold, and 133,266
+    // gate-passing quaternions straddling that boundary produced zero overflows and zero changed
+    // answers. But the line was correct only because `AngleBetween` normalises internally, which is
+    // a fact about a different file that nothing here asserts; an `AngleBetween` optimised to
+    // assume unit input would break this silently, and in the under-reporting direction.
+    const Quat aligned = Normalize(Multiply(gauge.rotation, Normalize(estimated[i])));
+    const double deg = AngleBetween(aligned, truth[i]) * kDegPerRad;
     out.perFrameDeg.push_back(deg);
     sum += deg;
     out.maxDeg = std::max(out.maxDeg, deg);

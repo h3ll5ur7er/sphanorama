@@ -31,18 +31,41 @@ namespace sphanorama::test {
 // measure. That is not a bug in the scorer, it is what "accuracy" means when there is nothing to be
 // accurate *relative to* — and it is why a dataset needs frames that overlap, not merely frames.
 //
-// A single bad frame smears a little error onto the good ones. The alignment is fit to all frames
-// at once, so an outlier drags G slightly off and every other frame inherits a fraction of that.
-// This is inherent to quotienting a gauge rather than a defect: it is why the roadmap's exit
-// criterion names the *median* error, which an outlier cannot move, and why `maxDeg` is reported
-// beside it rather than instead of it.
+// A single bad frame smears error onto the good ones, and the median does **not** escape it. This
+// was stated the other way round at first — "the median, which an outlier cannot move" — and that
+// is wrong for a reason worth understanding, because it is the opposite of how a median usually
+// behaves. A median is robust when outliers are extreme *values* it can step over. Here the outlier
+// does not contribute an extreme value; it drags the alignment, and every good frame then inherits
+// the **same** contamination. The median is therefore not a value the outlier failed to reach — the
+// median *is* the contamination.
+//
+// Measured, with one frame turned by the angle shown and every other frame exact:
+//
+//     outlier      9 frames   31 frames   61 frames
+//        20 deg      2.19        0.63        0.32
+//       120 deg      6.59        1.68        0.83
+//
+// It falls as roughly 1/N but never reaches immunity. At the 30 to 60 cells a real sphere plans,
+// one badly placed frame still moves the median by about a degree on its own — the same order as
+// any plausible value for the threshold the roadmap's exit criterion has yet to state. So the
+// median is the right headline number because it is far steadier than the mean, not because it is
+// immune; and `maxDeg` is reported beside it because that is where a single bad frame is actually
+// legible.
 
 struct RotationScore {
-  std::vector<double> perFrameDeg;   // in input order, after the gauge is removed
+  std::vector<double> perFrameDeg;   // one per input pair, in the order they were given
   double medianDeg = 0;              // the statistic the roadmap's exit criterion names
   double meanDeg = 0;
   double maxDeg = 0;
   Quat alignment;                    // the gauge that was removed, for a caller that wants to see it
+
+  // False when the residuals leave the top two eigenvalues equal, so more than one rotation
+  // maximises the objective and the one returned is an arbitrary member of a continuum. The score
+  // is still a valid maximiser; what is not trustworthy is how the error is *distributed* across
+  // frames. Two frames exactly 180 degrees apart are the reachable case: the honest reading is
+  // 90 degrees each, and depending on input order this reports [0, 180] or [180, 0].
+  bool alignmentIsUnique = true;
+
   bool valid = false;
 };
 
@@ -59,6 +82,7 @@ struct RotationScore {
 // lengths, or any quaternion that is not a rotation (see `IsUsableRotation`).
 struct GaugeAlignment {
   Quat rotation;
+  bool isUnique = true;   // see RotationScore::alignmentIsUnique
   bool valid = false;
 };
 GaugeAlignment BestGaugeAlignment(const std::vector<Quat>& estimated, const std::vector<Quat>& truth);

@@ -32,6 +32,14 @@ wrong place.
 
 Sensor *absence* moved out of V5 and into V1 with ADR 0044. It was V5's while the engine could absorb it — vision-only mode, and nothing above needed to know. It is not an estimation strategy any more but a decision about whether to open a session at all, which is V1's, and `CaptureSessionManager::RequireMotion` is where it lives. `PoseMode::VisionOnly` stays in the contract for the day `RegistrationEngine` can carry one, at which point it comes back to V5.
 
+**How registration accuracy is judged** is an axis this map does not carry a row for, and that is
+deliberate rather than an omission. It varies — the metric could be chordal or geodesic, the summary
+could be median or mean or a percentile, the gauge could be quotiented or pinned — but every one of
+those choices is a fact about how we *test*, not about what the app does on a phone. Nothing in
+`core/src` reads it, and a row here would imply a shipped component that has to exist. ADR 0049
+holds the decision; the day a bench client or a shipped feature needs the same number, it earns a
+row and a `utilities/` home together.
+
 ## 2.2 Axes deliberately *not* given their own component
 
 | Candidate | Why not |

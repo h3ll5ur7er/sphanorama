@@ -65,9 +65,13 @@ harness is in: `core/test/support/rotation_scoring` says how wrong a set of esti
 and the difficulty it exists for is that a panorama's world frame is arbitrary — turn every frame by
 one common rotation and it is the same panorama, so a perfect reconstruction compared frame by frame
 reads as wrong by that angle on every frame at once. The gauge comes off first and the median is the
-number (ADR 0049). Two things it taught, both found by sabotage rather than by reading: power
-iteration does not converge on exactly the half-broken input a harness is consulted about, and two of
-its own tests were satisfied by their arrangement rather than by the behaviour. And which feature
+number (ADR 0049). Two things it taught. Power iteration — the obvious way to find the alignment —
+exhausts a 200-iteration budget on 45.6% of wholly-unrelated inputs at sixty frames, which is the
+size a real sphere plans, while Jacobi takes five sweeps at every size; that is a measurement, and
+the first version of it was a rare tail stated as the norm until a reviewer re-ran it. And four of
+its own tests were satisfied by their arrangement rather than by the behaviour — including a shared
+fixture that could be replaced with the identity rotation without failing anything — every one found
+by sabotage rather than by reading. And which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.

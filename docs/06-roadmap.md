@@ -762,7 +762,10 @@ this list only because it is the thing that measures the others.
 
 **Exit:** synthetic-dataset registration median error under a stated angular threshold — median
 rather than mean because the alignment is fitted to every frame at once, so one outlier smears a
-fraction of its error across all the others and only the median is immune (ADR 0049); a real capture
+fraction of its error across all the others. The median is far steadier than the mean and is **not**
+immune: measured, one frame turned 120 degrees still moves it 0.83 degrees at 61 frames, which is
+the same order as any plausible threshold, so whoever states that number needs to read ADR 0049
+first; a real capture
 exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build time recorded
 per device class.
 

@@ -45,7 +45,8 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
 - **Tooling** — Python, run through `uv`, for contract codegen and the architecture checks CI runs; synthetic dataset
-  generation and offline ground-truth comparison arrive with Phase 2's accuracy harness.
+  generation arrives with Phase 2. Scoring a reconstruction against ground truth is already here and
+  is C++ rather than Python — it belongs beside the tests that read it (ADR 0049).
 
 ## Building it
 
