@@ -50,7 +50,9 @@ one at a time with a confusing message.
 - The checkers stay standard-library-only. That is a separate rule and this ADR does not relax it;
   what changes is that breaking it would now be visible in a lock file.
 - Cost: `uv` becomes a prerequisite for running the gate, and `.venv/` appears in the working tree
-  (already ignored). The first `uv run` on a machine resolves and caches an interpreter.
+  (already ignored). The first `uv run` on a machine resolves and caches an interpreter. That
+  prerequisite was discoverable only by running the gate and reading the failure, which is a poor
+  way to learn it; the README now lists it with the other three.
 
 ## Rejected
 
