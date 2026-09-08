@@ -39,6 +39,8 @@ add_executable(sphanorama_tests
   resource_access/motion_sensor_access_contract_test.cpp
   resource_access/project_store_access_contract_test.cpp
   support/fake_camera_access.cpp
+  support/rotation_scoring.cpp
+  support/rotation_scoring_test.cpp
   support/fake_spill_sink.cpp
   support/fake_export_access.cpp
   support/fake_image_codec_access.cpp

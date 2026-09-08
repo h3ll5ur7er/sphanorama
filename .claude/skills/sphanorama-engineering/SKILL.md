@@ -176,7 +176,8 @@ shell/                TypeScript PWA
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters
   src/bridge/         generated facade + worker plumbing
-tools/                Python: codegen, dataset generation, scoring, layer check
+tools/                Python: codegen, dataset generation, layer check. Scoring a reconstruction
+                      against ground truth is C++, in core/test/support/ (ADR 0049)
 contracts/            IDL + interface headers (source of truth)
 docs/                 principles, architecture, ADRs
 ```

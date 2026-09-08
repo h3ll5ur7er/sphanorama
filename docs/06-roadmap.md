@@ -734,6 +734,12 @@ that has to be ordered.
   through Brown-Conrady distortion, refusing rather than guessing wherever there is no answer
   (ADR 0046). It is the first code here to read a field of `Intrinsics`, and everything below is
   this transform or its inverse.
+- **What "accurate" means** — done, and before anything it measures. `core/test/support/rotation_scoring`
+  turns a set of estimated frame rotations into an angular error against known truth, removing the
+  global gauge rotation first: a panorama is reconstructed from how frames sit relative to each
+  other, so a perfect reconstruction expressed in a world frame 30 degrees from the dataset's would
+  otherwise report 30 degrees of error on every frame at once (ADR 0049). The exit criterion below
+  names a median, and this is what computes it.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
@@ -754,9 +760,18 @@ Listed in dependency order, which is not build order: **the accuracy harness on 
 comes first**, before any of the above, for the reason in "What to build first" below. It is last in
 this list only because it is the thing that measures the others.
 
-**Exit:** synthetic-dataset registration median error under a stated angular threshold; a real
-capture exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build
-time recorded per device class.
+**Exit:** synthetic-dataset registration median error under a stated angular threshold — median
+rather than mean because the alignment is fitted to every frame at once, so one outlier smears a
+fraction of its error across all the others. The median is far steadier than the mean and is **not**
+immune: measured, one frame turned 120 degrees still moves it 0.83 degrees at 61 frames, which is
+the same order as any plausible threshold, so whoever states that number needs to read ADR 0049
+first; a real capture
+exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build time recorded
+per device class.
+
+The threshold itself is deliberately still blank. It gets stated when the first dataset exists and a
+detector has been run against it, because a number chosen before anything can produce one is a number
+the implementation will be tuned to rather than measured against.
 
 ---
 
