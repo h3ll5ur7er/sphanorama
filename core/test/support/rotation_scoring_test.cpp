@@ -69,13 +69,22 @@ TEST(RotationScoring, AWholeReconstructionTurnedByOneRotationScoresZero) {
 // is that check, written out rather than assumed: without removing the gauge, every frame reads as
 // wrong by the gauge's own angle.
 TEST(RotationScoring, WithoutTheGaugeThatSameReconstructionWouldReadAsWrongOnEveryFrame) {
+  // The identical arrangement to the test above, gauge included. It used to be `Yaw(30)` where that
+  // test uses `Yaw(30) (x) Roll(12)`, which meant this controlled a reconstruction nobody scored.
   const std::vector<Quat> truth = ARing(8);
-  const Quat gauge = Yaw(30.0);
+  const Quat gauge = Multiply(Yaw(30.0), Roll(12.0));
   const std::vector<Quat> estimated = TurnedBy(Conjugate(gauge), truth);
+  const double gaugeDeg = DegBetween(gauge, Quat{});
 
+  ASSERT_GT(gaugeDeg, 30.0) << "a gauge worth quotienting";
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(DegBetween(estimated[i], truth[i]), 30.0, 1e-9);
+    EXPECT_NEAR(DegBetween(estimated[i], truth[i]), gaugeDeg, 1e-9);
   }
+  // And the scored version of this same arrangement reports zero, which is the pair of facts that
+  // makes the gauge test mean something.
+  const RotationScore score = ScoreRotations(estimated, truth);
+  ASSERT_TRUE(score.valid);
+  EXPECT_NEAR(score.maxDeg, 0.0, 1e-9);
 }
 
 // With one pair there is always a gauge that lands the estimate exactly on the truth, so nothing
@@ -106,7 +115,11 @@ TEST(RotationScoring, TwoFramesSplitTheirRelativeErrorBetweenThem) {
   EXPECT_NEAR(score.medianDeg, 5.0, 1e-6);
 }
 
-TEST(RotationScoring, OneFrameOffByItselfShowsInTheMaxAndLeavesTheMedianAlone) {
+// One frame off by itself, and the three statistics say three different things about it. The
+// assertions are against the *sorted per-frame values*, not against loose bounds: a reviewer
+// pointed out that the previous version could not tell the median from the minimum, since both are
+// small and both are under any threshold generous enough to pass.
+TEST(RotationScoring, OneFrameOffByItselfMovesTheMaxFarAndTheMedianOnlyALittle) {
   const std::vector<Quat> truth = ARing(9);
   std::vector<Quat> estimated = truth;
   estimated[4] = Multiply(Pitch(20.0), estimated[4]);
@@ -114,9 +127,20 @@ TEST(RotationScoring, OneFrameOffByItselfShowsInTheMaxAndLeavesTheMedianAlone) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  EXPECT_LT(score.medianDeg, 3.0);           // the outlier cannot move the middle value
-  EXPECT_GT(score.maxDeg, 15.0);             // and it is still visible in the worst case
-  EXPECT_GT(score.maxDeg, score.medianDeg);
+  std::vector<double> sorted = score.perFrameDeg;
+  std::sort(sorted.begin(), sorted.end());
+
+  // The median is the middle of nine, which is a specific value and not merely a small one.
+  EXPECT_NEAR(score.medianDeg, sorted[4], 1e-12);
+  EXPECT_GT(score.medianDeg, sorted[0]) << "median is indistinguishable from the minimum";
+  EXPECT_NEAR(score.maxDeg, sorted[8], 1e-12);
+
+  // And the outlier does move the median — it is contamination inherited through the alignment,
+  // not a value the median stepped over. The eight untouched frames all carry it equally.
+  EXPECT_GT(score.medianDeg, 1.0) << "the outlier left no trace at all in the middle value";
+  EXPECT_LT(score.medianDeg, 3.0);
+  EXPECT_GT(score.maxDeg, 15.0);
+  for (size_t i = 0; i < 8; ++i) EXPECT_NEAR(sorted[i], sorted[0], 1e-9);
 }
 
 // q and -q are the same rotation. A sensor stream that flips sign mid-capture is a real thing, and
@@ -198,8 +222,12 @@ TEST(RotationScoring, NoNearbyRotationAlignsBetterThanTheOneChosen) {
       EXPECT_LT(objective(perturbed), atBest) << "a nudge beat the chosen alignment";
     }
   }
-  // Local optimality is not optimality. A rotation far from the chosen one must not do better
-  // either, and only a global check can say so.
+  // A far-field check, and it is the *weaker* of the two — which its first comment had backwards by
+  // claiming "only a global check can say so". Measured on this arrangement: the local nudge above
+  // catches an alignment wrong by 0.5 degrees, while 2,000 uniform draws catch nothing until 13
+  // degrees, where exactly one draw of 2,000 fires. Uniform sampling of a 4-sphere is simply sparse.
+  // It stays because it rules out a distant second maximum that a local probe cannot see at all,
+  // which is a different question from precision — not because it is the more sensitive test.
   std::mt19937_64 rng(11071988);
   std::normal_distribution<double> gaussian(0.0, 1.0);
   for (int trial = 0; trial < 2000; ++trial) {
@@ -251,7 +279,8 @@ TEST(RotationScoring, TheAlignmentIsStillTheBestOneWhenHalfTheEstimatesAreWorthl
       EXPECT_LT(objective(perturbed), atBest) << "a nudge beat the chosen alignment";
     }
   }
-  // And nothing far away does better either, which a local check alone cannot say.
+  // Same caveat as the sibling test: this rules out a distant second maximum, and is far less
+  // sensitive than the nudge probe above. See the note there for the measured thresholds.
   for (int trial = 0; trial < 2000; ++trial) {
     EXPECT_LT(objective(randomRotation()), atBest + 1e-9);
   }
@@ -268,8 +297,16 @@ TEST(RotationScoring, ALargeGaugeIsRemovedJustAsCompletelyAsASmallOne) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  EXPECT_NEAR(score.medianDeg, 0.0, 0.5);
-  EXPECT_LT(score.maxDeg, 2.5);
+  // The answers here are known in closed form rather than approximately: seven frames are exact and
+  // one is out by 2 degrees, so the gauge takes 2/8 of it and the seven inherit that while the
+  // eighth keeps the rest. Loose bounds were hiding that — a reviewer noted this was the least
+  // sensitive test that ought to have caught a wrong alignment.
+  std::vector<double> sorted = score.perFrameDeg;
+  std::sort(sorted.begin(), sorted.end());
+  for (size_t i = 0; i < 7; ++i) EXPECT_NEAR(sorted[i], 2.0 / 8.0, 1e-3) << "frame " << i;
+  EXPECT_NEAR(sorted[7], 2.0 - 2.0 / 8.0, 1e-3);
+  EXPECT_NEAR(score.medianDeg, 2.0 / 8.0, 1e-3);
+  EXPECT_NEAR(score.maxDeg, 2.0 - 2.0 / 8.0, 1e-3);
 }
 
 // The per-frame errors come back against the frames that produced them. Nothing pinned this: a
@@ -460,6 +497,17 @@ TEST(RotationScoring, AQuaternionThatIsNotARotationIsRefused) {
   std::vector<Quat> brokenTruth = truth;
   brokenTruth[0] = Quat{0, 0, 0, 0};
   EXPECT_FALSE(ScoreRotations(truth, brokenTruth).valid);
+
+  // The case a component-wise check would wave through, which is why `IsUsableRotation` tests the
+  // norm as well: every component here is finite and the norm is not, because squaring overflows
+  // on the way. `quaternion.cpp` carries the story of what that cost once.
+  std::vector<Quat> finiteButNotARotation = truth;
+  finiteButNotARotation[1] = Quat{0, 1e200, 0, 0};
+  EXPECT_FALSE(ScoreRotations(finiteButNotARotation, truth).valid);
+
+  std::vector<Quat> infinite = truth;
+  infinite[2] = Quat{std::numeric_limits<double>::infinity(), 0, 0, 0};
+  EXPECT_FALSE(ScoreRotations(infinite, truth).valid);
 }
 
 TEST(RotationScoring, TheMedianOfAnEvenCountIsTheMeanOfTheTwoMiddleValues) {
