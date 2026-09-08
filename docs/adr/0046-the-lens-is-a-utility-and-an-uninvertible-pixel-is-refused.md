@@ -76,12 +76,18 @@ Three things about it are easy to get wrong and invisible when wrong:
   length without that test going red first.
 - **The inverse is solved by Newton's method, and getting there took three tries.** The obvious
   choice is the fixed point `xn ← (xd − tangential) / radial`, which is what shipped first. It is
-  wrong for the problem. Its multiplier at the solution is `|2u·R′(u)/R(u)|`, which for a *pure k₁*
-  lens drops below 1 exactly where the map stops inverting — the two thresholds coincide, which is
-  why the defect survived a round of review conducted against radial-only lenses. Add `k₂` and they
-  separate: a 115° lens with `k₁ = −0.3, k₂ = 0.1` folds **nowhere** at any radius, every pixel has
-  exactly one preimage, and the fixed point sat in a 2-cycle 0.7 normalised units from the answer,
-  refusing a quarter of the frame at 500× the cost of finding it.
+  wrong for the problem. Its multiplier at the solution is `|2u·R′(u)/R(u)|`, and that equals exactly
+  1 *at* the fold — for any radial polynomial, since the fold is defined by `R + 2u·R′ = 0`. So the
+  two conditions share a boundary by algebra rather than by luck, and an earlier draft of this bullet
+  credited `k₁` with a coincidence that was never `k₁`'s to supply; a reviewer caught it.
+
+  What a **pure `k₁`** lens supplies is that the slope has a single root, so "multiplier below 1" and
+  "the map inverts" are the same *interval* and not merely the same boundary. That is why the defect
+  survived a round of review conducted against radial-only lenses. Add `k₂` and the slope can dip and
+  return, the two regions come apart, and the fixed point diverges *inside* the certified one: a 115°
+  lens with `k₁ = −0.3, k₂ = 0.1` folds **nowhere** at any radius, every pixel has exactly one
+  preimage, and it sat in a 2-cycle 0.7 normalised units from the answer, refusing a quarter of the
+  frame at 500× the cost of finding it.
 
   Two rounds were spent raising the budget — 500, then 5000 — against what looked like slow
   convergence near a fold and was actually divergence away from one. Both raises made a wrong answer
