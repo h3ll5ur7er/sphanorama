@@ -74,22 +74,27 @@ Three things about it are easy to get wrong and invisible when wrong:
 - A default `Intrinsics` — the one every capture session is holding right now — answers `false` to
   `IsUsableLens`, and a test says so by name. Nothing can begin quietly trusting a zero focal
   length without that test going red first.
-- **The iteration budget is a resource limit, and it is honest about being one.** On a `k₁ = −0.9`
-  lens a budget of 20 accepts pixels out to only 89.6% of the radius that genuinely has a preimage,
-  100 reaches 99.6%, and the shipped 5000 reaches 99.9999%. The loop exits as soon as it has settled,
-  which on the test suite's distorted lens is a mean of 14 passes and a maximum of 24 over the whole
-  frame — 1 on an undistorted one — so the ceiling is a bound on the pathological case rather than
-  the common cost. (An earlier draft said "about five passes"; that was a guess with a number on it,
-  and the measured figure is three times larger.)
+- **The inverse is solved by Newton's method, and getting there took three tries.** The obvious
+  choice is the fixed point `xn ← (xd − tangential) / radial`, which is what shipped first. It is
+  wrong for the problem. Its multiplier at the solution is `|2u·R′(u)/R(u)|`, which for a *pure k₁*
+  lens drops below 1 exactly where the map stops inverting — the two thresholds coincide, which is
+  why the defect survived a round of review conducted against radial-only lenses. Add `k₂` and they
+  separate: a 115° lens with `k₁ = −0.3, k₂ = 0.1` folds **nowhere** at any radius, every pixel has
+  exactly one preimage, and the fixed point sat in a 2-cycle 0.7 normalised units from the answer,
+  refusing a quarter of the frame at 500× the cost of finding it.
 
-  **Exhaustion and non-invertibility are both refusals, and they are not distinguished.** No budget
-  can be principled: arbitrarily close to a fold the convergence ratio goes to 1 and no finite number
-  of passes arrives. What *can* be said is that a real lens has no fold inside its own frame — an
-  image folded over itself is visible to the eye — so on anything a camera produces the ceiling never
-  binds. This was written the other way round first, with a budget of 500 stated as generous, and a
-  reviewer found a test of ours that had recorded the resulting truncation as though it were a
-  property of the lens: an interior pixel needing 835 passes, refused, on a file whose whole claim is
-  that it does not throw well-defined pixels away.
+  Two rounds were spent raising the budget — 500, then 5000 — against what looked like slow
+  convergence near a fold and was actually divergence away from one. Both raises made a wrong answer
+  more expensive without changing it, and both were written up here as though the number were the
+  finding. Newton uses the Jacobian this ADR already required for the fold test, converges
+  quadratically, lands in four to six passes, and reaches solutions the fixed point cannot approach.
+  The ceiling is 20, and a refusal after 20 is a genuine failure rather than a budget expiring.
+
+  **What the earlier numbers were measuring.** On a `k₁ = −0.9` lens the fixed point accepted pixels
+  out to 89.6% of the invertible radius at a budget of 20 and 99.6% at 100. Those figures were real
+  and they were beside the point: they describe how far a bad solver gets, not what the model can
+  answer.
+
 - **There are two failures here and they have different catchers**, which the first draft of this
   ADR ran together and a reviewer separated:
   - A **settled** fixed point is, by construction, a solution of the forward equation — so it is
@@ -106,11 +111,19 @@ Three things about it are easy to get wrong and invisible when wrong:
   which is the one class of error a round-trip check is structurally blind to. Both are fixed above,
   and the record is left here rather than tidied because the pattern is the point: every one of these
   came from a *local* test standing in for a *global* promise.
-- **Most guards in the file have no test of their own** — thirteen of fourteen are individually
-  removable with the suite green — and that is deliberate. Each makes the next step's precondition
-  locally true, so that correctness never rests on NaN propagating through a polynomial, which is a
-  guarantee `-ffast-math` withdraws. The implementation says so at the top rather than letting each
-  guard imply it is the sole refuser.
+- **Most guards in the file have no test of their own** — measured over all twenty-six, one at a
+  time: ten are caught by a test and sixteen are not — and that is the price of a policy rather than
+  an oversight. Each makes the next step's precondition locally true, so correctness never rests on
+  NaN propagating through a polynomial, a guarantee `-ffast-math` withdraws. The implementation says
+  so at the top rather than letting each guard imply it is the sole refuser.
+
+  Two of them turned out to be load-bearing, both found by sweeping rather than reading, and both
+  now tested: `Unproject`'s `check.valid` (a refused pixel is `(0, 0)`, which compares equal to an
+  input of `(0, 0)`) and `Project`'s `isfinite(u, v)` (with `k3 = 1e293` every intermediate is finite
+  and the overflow happens at `fx * xd` alone — no NaN, no backstop). The second is a counterexample
+  to the policy's own reasoning, which is why the policy is now stated as a policy and not as a
+  proof. An earlier draft of this bullet said "thirteen of fourteen" from a subset measurement; the
+  claim about measurement discipline had not itself been measured.
 - Cost: two conventions now have to be kept in step by hand — this model's, and whatever the
   synthetic-dataset generator uses to render. That is deliberate (see below) and it is why the
   agreement will be a pinned test rather than a shared function.

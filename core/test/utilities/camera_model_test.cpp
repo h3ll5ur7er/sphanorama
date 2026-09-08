@@ -169,13 +169,30 @@ TEST(HorizontalFovDeg, TheAngleIsMeasuredThroughTheLensRatherThanAroundIt) {
   ASSERT_TRUE(right.valid);
   const double subtended = AngleBetweenDirections(left.direction, right.direction) * kDegPerRad;
   EXPECT_GT(subtended, 70.0);
+  // Two assertions doing different jobs, because a reviewer pointed out the second alone restates
+  // the implementation line for line and would hold just as well if both sides were wrong together.
+  //
+  // The first is the one with content: 66 degrees is what the focal length alone says, and barrel
+  // distortion has to widen it. The second is a recorded value — 72.8642, measured from this
+  // implementation, not derived independently — so it is a regression baseline and nothing more.
+  // Labelled as such rather than dressed up: an independent derivation here would mean a second
+  // camera model in the test file, which is the thing the ADR argues against for the harness.
+  EXPECT_GT(HorizontalFovDeg(lens), 66.0);
+  EXPECT_NEAR(HorizontalFovDeg(lens), 72.8642, 1e-3);
   EXPECT_NEAR(HorizontalFovDeg(lens), subtended, 1e-9);
 }
 
 TEST(HorizontalFovDeg, ALensWhoseEdgeHasNoPreimageSaysNothingRatherThanAnAngle) {
-  // With k1 = -1 the frame's own edge is past the fold: no direction lands there. An angle
-  // computed from the focal length would report a confident 66 degrees for a lens whose picture
-  // has no left-hand side.
+  // With k1 = -1 the frame's own edge is past the fold: no direction lands there. An angle computed
+  // from the focal length would report a confident 66 degrees for a lens whose picture has no
+  // left-hand side, which is what the `ASSERT_FALSE` below is really pinning.
+  //
+  // The zero itself is over-determined, and a reviewer was right to say so: deleting the
+  // `left.valid || right.valid` guard also yields zero, because `AngleBetweenDirections` answers a
+  // degenerate vector with zero and a refused direction is exactly that. The guard stays anyway —
+  // relying on a distant utility's degenerate-input policy to produce this file's sentinel is the
+  // dependency the layering note at the top of the implementation exists to avoid — but no test can
+  // separate the two, and pretending otherwise would be the defect this test was written against.
   Intrinsics lens = Phone();
   lens.k1 = -1.0;
   ASSERT_TRUE(IsUsableLens(lens));
@@ -316,6 +333,19 @@ TEST(Project, ADirectionThatIsNotAMeasurementHasNoImage) {
   EXPECT_FALSE(Project(lens, Vec3{1, 1, kInf}).valid);
 }
 
+TEST(Project, AFocalProductThatOverflowsHasNoImage) {
+  // The counterexample to this file's own layering argument, and the reason that argument is now
+  // written more carefully. Distortion this large is finite and so is everything it produces on the
+  // way: r2 = 1e4, radial = 1e305, xd = 1e307 — every upstream guard sees ordinary positive finite
+  // numbers. The overflow happens at `fx * xd` and nowhere earlier, no NaN is involved, and there is
+  // no later check to catch it. Remove the isfinite test on the pixel and this answers
+  // `valid = true, pixel = (inf, 640)`.
+  Intrinsics lens = Phone();
+  lens.k3 = 1e293;
+  ASSERT_TRUE(IsUsableLens(lens));
+  EXPECT_FALSE(Project(lens, Vec3{100, 0, -1}).valid);
+}
+
 TEST(Project, AnUnusableLensProjectsNothing) {
   EXPECT_FALSE(Project(Intrinsics{}, Vec3{0, 0, -1}).valid);
 }
@@ -364,9 +394,40 @@ TEST(Unproject, ATangentialLensNeverAnswersWithTheOtherPreimage) {
       EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3) << h << "," << v;
     }
   }
-  // Refusing everything would satisfy the loop above and prove nothing. This lens is strongly but
-  // not absurdly distorted and most of its frame is real.
+  // Refusing everything would satisfy the loop above and prove nothing, so the count is asserted —
+  // but honestly about how loose it is. The real value is around 1415, so 200 is seven times slacker
+  // than it reads. A reviewer checked whether the slack could hide the bug this test was written
+  // against and it cannot: that bug reaches in to r = 0.0123, well inside any surviving tenth of the
+  // frame. The bound is a tripwire against wholesale refusal, not a measurement.
   EXPECT_GT(accepted, 200);
+}
+
+TEST(Project, CoefficientsThatOverflowTheDiscriminantAreRefusedRatherThanWavedThrough) {
+  // The fold check solves a quadratic to find the slope's turning points, and `b*b - 4ac` can
+  // overflow: both terms reach infinity and `inf - inf` is NaN. Written as `!(disc >= 0)` that NaN
+  // took the "no real roots, so the endpoint settled it" exit and skipped both interior checks —
+  // re-admitting, through a different door, exactly the two-directions-one-pixel state the function
+  // was added to close.
+  //
+  // A NaN discriminant is not "no roots", it is "I could not tell", so it now refuses. Coefficients
+  // this large are not a calibration anyone will produce; the test exists because the guard walks
+  // past the guard, and because the file's stated policy is not to let a value nobody checked reach
+  // the arithmetic.
+  //
+  // The slope here is 1 + M*u*(u - 0.2)*(u - 0.4) with M = 1e155: positive at u = 0.5, negative at
+  // u = 0.3 in between. Before the fix these two directions, 15.75 degrees apart, both came back
+  // valid at the same pixel to within one ulp.
+  constexpr double kM = 1e155;
+  Intrinsics lens = Phone();
+  lens.k1 = 0.08 * kM / 3.0;
+  lens.k2 = -0.6 * kM / 5.0;
+  lens.k3 = kM / 7.0;
+  ASSERT_TRUE(IsUsableLens(lens));
+
+  const ProjectedPixel near = Project(lens, OffAxis(18.588, 0));
+  const ProjectedPixel far = Project(lens, OffAxis(34.342, 0));
+  EXPECT_FALSE(near.valid);
+  EXPECT_FALSE(far.valid);
 }
 
 TEST(Unproject, APixelThatIsNotAMeasurementYieldsNoDirection) {
@@ -477,30 +538,34 @@ TEST(Project, ADistortionThatFoldsTheImageBackOnItselfIsRefusedRatherThanGuessed
   EXPECT_FALSE(Project(lens, OffAxis(33.0, 0)).valid);
 }
 
-TEST(Unproject, APixelTheIterationNeverReachesIsRefusedRatherThanAnswered) {
-  // A pixel the iteration never arrives at. At (1010, 260) on this lens it is still moving when the
-  // budget runs out, and where it stops projects to a perfectly valid pixel 246 pixels away from the
-  // one it was asked about. Only comparing the round trip against the input can tell.
+TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
+  // A pixel Newton settles on and gets wrong. The round-trip check is the only thing that can tell:
+  // the residual here is 1.6e+18 normalised units, so the answer is nowhere near the question, and
+  // neither the fold test nor the Jacobian objects to where it landed.
   //
-  // Note what this is *not*. A settled fixed point satisfies the forward equation by construction,
-  // so it is always a genuine preimage — "converged on a non-preimage" is not a state this
-  // iteration can be in, and a reviewer's 223,608-sample sweep found zero of them. What the
-  // tolerance catches is exhaustion. Landing on the *wrong* preimage of two is a different failure
-  // that this check is structurally blind to, and the fold test is what catches that one.
-  //
-  // The earlier version of this test used a pixel that merely converged *slowly*: 835 passes to a
-  // residual of 6.7e-12, refused only because the budget was 500. A reviewer caught that it was
-  // recording a truncation as though it were a property of the lens — and refusing a well-defined
-  // pixel is what this file's own ADR calls the defect. The budget is now 5000 and that pixel is
-  // accepted, as it always should have been.
+  // Two earlier versions of this test used pixels that were merely *hard*: one needing 835
+  // fixed-point passes, one that a fixed point could not approach at all. Newton solves both — I
+  // checked (1010, 260) round-trips to 5.7e-14 px now — so both were false refusals dressed up as
+  // properties of the lens, and a reviewer caught each in turn. This one is refused because there
+  // is genuinely nothing there.
   Intrinsics lens = Phone();
-  lens.k1 = -0.9;
+  lens.k1 = -0.6;
+  lens.k2 = 0.3;
+  lens.p1 = 0.3;
   lens.p2 = 0.6;
   ASSERT_TRUE(IsUsableLens(lens));
-  EXPECT_FALSE(Unproject(lens, Pixel{1010.0, 260.0}).valid);
+  EXPECT_FALSE(Unproject(lens, Pixel{348.0, 1452.0}).valid);
 
-  // The slow one, for contrast: same lens, and it now answers.
-  EXPECT_TRUE(Unproject(lens, Pixel{lens.cx + 0.38 * lens.fx, lens.cy + 0.30 * lens.fy}).valid);
+  // The pixel two rounds of review spent on, now answered.
+  Intrinsics slow = Phone();
+  slow.k1 = -0.9;
+  slow.p2 = 0.6;
+  const UnprojectedDirection back = Unproject(slow, Pixel{1010.0, 260.0});
+  ASSERT_TRUE(back.valid);
+  const ProjectedPixel there = Project(slow, back.direction);
+  ASSERT_TRUE(there.valid);
+  EXPECT_NEAR(there.pixel.x, 1010.0, 1e-9);
+  EXPECT_NEAR(there.pixel.y, 260.0, 1e-9);
 }
 
 TEST(Unproject, TheTopLeftPixelIsNotAnsweredByTheThingThatMeansRefusal) {
@@ -513,6 +578,10 @@ TEST(Unproject, TheTopLeftPixelIsNotAnsweredByTheThingThatMeansRefusal) {
   // This lens is one of 11,867 in a swept grid where the iteration settles on a point `Project`
   // refuses. Without the `check.valid` line it answers the image's top-left corner with a confident
   // direction that nothing looks in.
+  //
+  // Coupled to `kInverseIterations = 5000`, like
+  // `APixelTheIterationNeverReachesIsRefusedRatherThanAnswered` — see the note there. Raise the
+  // budget to 20000 and this pixel converges, and the pair stops covering what it covers now.
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   lens.k2 = -0.6;
@@ -520,6 +589,49 @@ TEST(Unproject, TheTopLeftPixelIsNotAnsweredByTheThingThatMeansRefusal) {
   lens.p2 = -0.35;
   ASSERT_TRUE(IsUsableLens(lens));
   EXPECT_FALSE(Unproject(lens, Pixel{0.0, 0.0}).valid);
+}
+
+TEST(Unproject, AnUltraWideLensThatNeverFoldsIsSolvedRatherThanRefused) {
+  // The case that showed the solver, not the budget, was wrong. This lens never folds anywhere:
+  // its radial slope 1 - 0.9u + 0.5u^2 has discriminant -1.19, so it is positive for every u, and
+  // every pixel has exactly one preimage. `Project` of that preimage lands back on the pixel
+  // exactly.
+  //
+  // A fixed-point iteration still could not find it. The iterate entered a 2-cycle and sat 0.7
+  // normalised units away — seven orders of magnitude past the tolerance — at pass 5 as much as at
+  // pass 5000, and a quarter of this frame's pixels went the same way. The multiplier at the fixed
+  // point is |2u.R'(u)/R(u)|, which for a pure-k1 lens is below 1 exactly where the map inverts;
+  // add k2 and the two thresholds separate. No budget reaches this, which is why the ceiling is now
+  // a ceiling on Newton steps rather than an argument that divergence cannot happen.
+  Intrinsics lens = LensFromFieldOfView(115.0, 90.0, 960, 1280);
+  lens.k1 = -0.3;
+  lens.k2 = 0.1;
+  ASSERT_TRUE(IsUsableLens(lens));
+
+  const UnprojectedDirection left = Unproject(lens, Pixel{0.0, lens.cy});
+  ASSERT_TRUE(left.valid);
+  const ProjectedPixel back = Project(lens, left.direction);
+  ASSERT_TRUE(back.valid);
+  EXPECT_NEAR(back.pixel.x, 0.0, 1e-6);
+
+  // And so the field of view is a number rather than the contract's silence. 2*atan(1.6691603).
+  EXPECT_NEAR(HorizontalFovDeg(lens), 118.148044, 1e-4);
+}
+
+TEST(Unproject, EveryPixelOfAnUltraWideFrameIsSolved) {
+  // The invariant behind the test above: on a lens that folds nowhere, nothing in the frame may be
+  // refused. A quarter of these were, before the solver changed.
+  Intrinsics lens = LensFromFieldOfView(115.0, 90.0, 960, 1280);
+  lens.k1 = -0.3;
+  lens.k2 = 0.1;
+  int refused = 0;
+  for (int xi = 0; xi <= 24; ++xi) {
+    for (int yi = 0; yi <= 32; ++yi) {
+      const Pixel px{960.0 * xi / 24.0, 1280.0 * yi / 32.0};
+      if (!Unproject(lens, px).valid) ++refused;
+    }
+  }
+  EXPECT_EQ(refused, 0);
 }
 
 TEST(Unproject, ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn) {
@@ -540,15 +652,21 @@ TEST(Unproject, ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn) {
   EXPECT_LT(AngleBetweenDirections(back.direction, d) * kDegPerRad, 1e-3);
 }
 
-TEST(Unproject, APixelBeyondTheFoldIsRefusedRatherThanApproximated) {
-  // The matching refusal on the way back, at the boundary rather than far outside it. With k1 = -1
-  // the fold sits at r = 0.5774 and the largest *pixel* radius that still has a preimage is
+TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
+  // A boundary test, and deliberately no longer claiming to be a fold test. With k1 = -1 the fold
+  // sits at r = 0.5774 and the largest *pixel* radius that still has a preimage is
   // 0.5774 * (1 - 1/3) = 0.3849, i.e. x = cx + 0.3849 * fx = 764.49. Just inside answers; just
-  // outside must not.
+  // outside must not, and that boundary is worth pinning whatever enforces it.
   //
-  // The earlier version of this test used x = 5000, which is refused on the first pass because the
-  // radial polynomial has already gone negative there — nothing to do with the fold the comment
-  // described. A reviewer pointed out it stayed green with the fold reasoning deleted entirely.
+  // What enforces it here is *not* the fold check. Measured: at x = 765 the iteration diverges and
+  // the in-loop `radial > 0` guard fires at pass 58, before `Project` is ever consulted. Two
+  // successive rewrites of this test — 5000, then 765 — only changed which pass that same guard
+  // fired on, and a reviewer caught both. On a radial-only lens past the fold the iteration always
+  // diverges first, so `Unproject` has no route to its own fold refusal and no choice of pixel
+  // creates one.
+  //
+  // `Project`'s fold reasoning is pinned instead by `ARadiusPastTheFirstFold...` and
+  // `ATangentialLensNeverAnswersWithTheOtherPreimage`, both of which fail when it is removed.
   Intrinsics lens = Phone();
   lens.k1 = -1.0;
   const ProjectedPixel inside = Project(lens, OffAxis(20.0, 0));

@@ -6,10 +6,12 @@
 
 namespace sphanorama {
 
-// **On the layering of the guards below.** Almost every refusal in this file is individually
-// removable without a test going red — measured: thirteen of the fourteen guards, the only
-// exception being `Project`'s depth test. A reviewer found this and it is worth answering here
-// rather than on a thread, because the answer is a design position and not an oversight.
+// **On the layering of the guards below.** Many refusals here are individually removable without a
+// test going red. Measured over all twenty-six of them, one at a time, against the whole suite:
+// **ten are caught by a test and sixteen are not.** (An earlier version of this note said "thirteen
+// of fourteen, the only exception being the depth test" — wrong on the count, because it sampled a
+// subset, and wrong on the exception. A reviewer re-ran it properly. A note about measurement
+// discipline that was not itself measured is worth less than no note.)
 //
 // They are not redundant checks of the same question. Each one makes the *next* step's precondition
 // locally true, and the reason that matters is what would otherwise be carrying the weight: NaN
@@ -24,10 +26,19 @@ namespace sphanorama {
 // cannot reach them in isolation. What it buys is that the arithmetic is never asked to run on
 // values nobody checked.
 //
-// The one place the layering is load-bearing rather than defensive is `Unproject`'s `check.valid`:
-// a refused `ProjectedPixel` carries the pixel `(0, 0)`, so folding that test into the tolerance
-// comparison below it would return a confident wrong direction for an input pixel of exactly
-// `(0, 0)`, and for no other input.
+// Two of them are load-bearing rather than defensive, and both took a sweep to find:
+//
+//   - `Unproject`'s `check.valid`. A refused `ProjectedPixel` carries the pixel `(0, 0)`, so folding
+//     that test into the tolerance comparison below it returns a confident wrong direction for an
+//     input pixel of exactly `(0, 0)`, and for no other input.
+//   - `Project`'s `isfinite(u, v)`, which is the counterexample to the paragraph above and the
+//     reason it is stated as a policy rather than as a proof. With `k3 = 1e293` — finite, and a lens
+//     `IsUsableLens` vouches for — every intermediate is finite and positive (`r2` 1e4, `radial`
+//     1e305, `xd` 1e307) and the overflow happens at `fx * xd` alone. No NaN, no later guard, no
+//     backstop. Without it the answer is `valid = true, pixel = (inf, 640)`.
+//
+// Both now have a test. The remaining sixteen do not, and that is the price of the policy rather
+// than evidence for it.
 
 namespace {
 
@@ -44,26 +55,28 @@ constexpr double kInverseToleranceNormalised = 1e-9;
 // an ordinary phone lens settles in about five passes, so the ceiling below is not what the common
 // case costs.
 //
-// The ceiling is large because of what happens near a fold. There the iteration still converges,
-// but linearly with a ratio approaching 1, so it crawls: on a lens with k1 = -0.9 and p2 = 0.6 a
-// perfectly ordinary interior pixel needs 835 passes, and a budget of 500 refuses it — which is not
-// an approximate answer but a well-defined pixel thrown away, the very thing this file claims not
-// to do. That case was found by a reviewer, in a test of mine that had written the truncation down
-// as if it were a property of the lens.
+// Newton, not fixed-point iteration, and the difference is not performance.
 //
-// **Exhaustion and non-invertibility are both refusals here, and they are not distinguished.** No
-// budget can be principled: arbitrarily close to a fold the convergence ratio goes to 1 and no
-// finite number of passes arrives. What can be said is that a real lens does not have a fold inside
-// its own frame — an image folded over itself is visible to the eye — so on anything a camera
-// produces the loop settles in about five passes and this ceiling never binds. It binds on
-// synthetic lenses used to probe the model, and there a refusal near the fold is the right answer
-// for a slightly weaker reason than the file would like.
-constexpr int kInverseIterations = 5000;
+// The obvious inverse for Brown-Conrady is the fixed point xn <- (xd - tangential(xn)) / radial(xn).
+// It is what this file shipped first, and it is wrong for the problem: its multiplier at the
+// solution is |2u.R'(u)/R(u)|, which for a **pure k1** lens drops below 1 exactly where the map
+// stops inverting — the two thresholds coincide, which is why the error survived a round of review
+// against radial-only lenses. Add k2 and they separate. A reviewer produced a 115-degree lens with
+// k1 = -0.3, k2 = 0.1 whose radial slope has discriminant -1.19 and therefore folds *nowhere*: every
+// pixel has exactly one preimage, and the iteration entered a 2-cycle 0.7 normalised units away
+// from it and stayed there. A quarter of that frame was refused, at 500x the cost of an answer.
+//
+// Newton uses the Jacobian, converges quadratically, and reaches solutions the fixed point cannot
+// approach. Twenty steps is a generous ceiling on a method that lands in four or five; a refusal
+// after twenty is a genuine failure to converge rather than a budget running out.
+constexpr int kInverseIterations = 20;
 
-// The iteration has settled when a pass moves it less than this, in normalised image units. Three
-// orders of magnitude tighter than the tolerance the answer is finally judged against, because a
-// linearly converging sequence can still be that ratio away from its limit when a single step has
-// become small — the early exit must not be what decides the answer is good enough.
+// A Newton step this small has arrived: the method roughly squares its error each pass, so the step
+// and the remaining error are the same size to within that squaring, and a step of 1e-14 leaves
+// nothing the 1e-9 tolerance below would object to. The early exit is an optimisation here rather
+// than a judgement — this constant was three orders tighter than the tolerance to cover a *linearly*
+// converging sequence, which could still sit far from its limit while stepping slowly, and that is
+// no longer the method in use.
 constexpr double kSettledStepNormalised = 1e-14;
 
 // The radial polynomial, and its derivative with respect to r rather than to r^2.
@@ -80,18 +93,6 @@ double RadialSlope(const Intrinsics& lens, double r2) {
   return 1.0 + r2 * (3.0 * lens.k1 + r2 * (5.0 * lens.k2 + r2 * 7.0 * lens.k3));
 }
 
-// Whether the radial map increases over the *whole* way out to this radius, rather than merely at
-// it. The difference is a promise against a coincidence.
-//
-// `RadialSlope` is a cubic in r^2, and a cubic can dip below zero and come back. With k1 = -1 and
-// k2 = +0.3 it is negative between r = 0.650 and r = 1.256 and positive on either side, so asking
-// only about the endpoint re-admits radii the image has already folded over: two directions 39
-// degrees apart then land on the same pixel, both accepted, and no round-trip check can tell them
-// apart because both of them really do project there.
-//
-// The slope is 1 at the optical centre, so it is enough to check the endpoint and every local
-// minimum strictly inside the interval. Those sit at the roots of the slope's own derivative,
-// 3k1 + 10k2 u + 21k3 u^2 in u = r^2 — a quadratic at worst, so there are at most two to try.
 // The Jacobian determinant of the distortion map at a normalised point.
 //
 // Distortion maps the plane to the plane, and where the determinant stops being positive the map
@@ -109,6 +110,18 @@ double DistortionJacobian(const Intrinsics& lens, double xn, double yn) {
   return dxdx * dydy - cross * cross;
 }
 
+// Whether the radial map increases over the *whole* way out to this radius, rather than merely at
+// it. The difference is a promise against a coincidence.
+//
+// `RadialSlope` is a cubic in r^2, and a cubic can dip below zero and come back. With k1 = -1 and
+// k2 = +0.3 it is negative between r = 0.650 and r = 1.256 and positive on either side, so asking
+// only about the endpoint re-admits radii the image has already folded over: two directions 39
+// degrees apart then land on the same pixel, both accepted, and no round-trip check can tell them
+// apart because both of them really do project there.
+//
+// The slope is 1 at the optical centre, so it is enough to check the endpoint and every local
+// minimum strictly inside the interval. Those sit at the roots of the slope's own derivative,
+// 3k1 + 10k2 u + 21k3 u^2 in u = r^2 — a quadratic at worst, so there are at most two to try.
 bool RadialMapIncreasesUpTo(const Intrinsics& lens, double r2) {
   if (!(RadialSlope(lens, r2) > 0.0)) return false;
 
@@ -130,7 +143,12 @@ bool RadialMapIncreasesUpTo(const Intrinsics& lens, double r2) {
     return climbsAt(-c / b);
   }
   const double discriminant = b * b - 4.0 * a * c;
-  if (!(discriminant >= 0.0)) return true;   // never turns, so the endpoint settled it
+  // `b*b` and `4ac` can each overflow to infinity, and `inf - inf` is NaN. A NaN is not "no real
+  // roots" — it is "I could not tell", and taking the no-roots exit on it skips both interior
+  // checks and re-admits the folded state this function exists to close. Refuse instead: a lens
+  // whose coefficients overflow a discriminant is not one this model can vouch for.
+  if (!std::isfinite(discriminant)) return false;
+  if (discriminant < 0.0) return true;   // never turns, so the endpoint settled it
   const double root = std::sqrt(discriminant);
   return climbsAt((-b + root) / (2.0 * a)) && climbsAt((-b - root) / (2.0 * a));
 }
@@ -172,11 +190,15 @@ bool IsUsableLens(const Intrinsics& lens) {
   }
   if (lens.fx <= 0.0 || lens.fy <= 0.0) return false;
   if (lens.width <= 0 || lens.height <= 0) return false;
-  // The optical centre has to be inside the image. Not fussiness about realism: each half-angle in
-  // HorizontalFovDeg is measured from the centre out to an edge, so a centre outside makes one of
-  // them negative and cancels the other — far enough out, the two atans round to the same double
-  // just under pi/2 and the field of view comes back as exactly 0, which is the contract's word for
-  // "will not say". A sentinel a usable lens can produce is not a sentinel.
+  // The optical centre has to be inside the image.
+  //
+  // The original reason was a sentinel collision in a version of `HorizontalFovDeg` that computed
+  // two atans from `cx` and `fx`: far enough out, both rounded to the same double just under pi/2
+  // and the field of view came back as exactly 0, which is the contract's word for "will not say".
+  // That arithmetic is gone — the angle is measured through the model now — so this guard is kept on
+  // its own merits rather than that one, and they are: a lens whose optical centre is outside its
+  // own image is not something the fold reasoning, the field of view or the projection below were
+  // written to describe, and refusing it up front is cheaper than reasoning about each in turn.
   return lens.cx > 0.0 && lens.cx < static_cast<double>(lens.width) && lens.cy > 0.0 &&
          lens.cy < static_cast<double>(lens.height);
 }
@@ -220,8 +242,14 @@ Intrinsics LensFromFieldOfView(double horizontalFovDeg, double verticalFovDeg, i
 // is concave and a sum of two of them is largest when they are equal.
 //
 // An edge with no preimage — a barrel strong enough that the frame's own corner is past the fold —
-// answers 0, the contract's word for "will not say" (types.h). That is the honest answer: the lens
-// has no left-hand side to measure to.
+// answers 0, the contract's word for "will not say" (types.h). That is the honest answer when it is
+// true: the lens has no left-hand side to measure to.
+//
+// It is worth knowing that this sentence was briefly false. While `Unproject` used a fixed point it
+// also answered 0 for an ultra-wide lens whose edge had a perfectly good preimage the solver could
+// not reach — and a comfortable explanation for a wrong answer is exactly what stops the next person
+// looking. `RingsCoveragePlannerEngine` refuses to tessellate on a 0, so that reached further than
+// the sentence suggested.
 double HorizontalFovDeg(const Intrinsics& lens) {
   if (!IsUsableLens(lens)) return 0.0;
   const UnprojectedDirection left = Unproject(lens, Pixel{0.0, lens.cy});
@@ -286,15 +314,26 @@ UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel) {
     const double r2 = xn * xn + yn * yn;
     const double radial = Radial(lens, r2);
     if (!(radial > 0.0)) return out;
-    const double tangentialX = 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn);
-    const double tangentialY = lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn;
-    const double nextX = (xd - tangentialX) / radial;
-    const double nextY = (yd - tangentialY) / radial;
-    if (!std::isfinite(nextX) || !std::isfinite(nextY)) return out;
-    const double stepX = nextX - xn;
-    const double stepY = nextY - yn;
-    xn = nextX;
-    yn = nextY;
+
+    // Where the distortion currently sends this guess, and how far that is from where we want it.
+    const double atX = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn);
+    const double atY = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn;
+    const double residualX = atX - xd;
+    const double residualY = atY - yd;
+
+    const double dRadial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3);
+    const double dxdx = radial + 2.0 * xn * xn * dRadial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn;
+    const double dydy = radial + 2.0 * yn * yn * dRadial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn;
+    const double cross = 2.0 * xn * yn * dRadial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn;
+    const double determinant = dxdx * dydy - cross * cross;
+    // A singular Jacobian is the fold itself: there is no step to take and no preimage to find.
+    if (!(determinant > 0.0)) return out;
+
+    const double stepX = -(dydy * residualX - cross * residualY) / determinant;
+    const double stepY = -(dxdx * residualY - cross * residualX) / determinant;
+    if (!std::isfinite(stepX) || !std::isfinite(stepY)) return out;
+    xn += stepX;
+    yn += stepY;
     if (stepX * stepX + stepY * stepY <= kSettledStepNormalised * kSettledStepNormalised) break;
   }
 

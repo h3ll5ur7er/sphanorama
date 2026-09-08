@@ -120,10 +120,15 @@ struct UnprojectedDirection {
 
 // The direction that lands on a pixel — `Project` run backwards.
 //
-// Brown-Conrady has no closed-form inverse, so this iterates, and it **refuses rather than
-// answering approximately** when the iteration does not land back on the pixel it was given. A
-// distortion strong enough not to invert is a lens this model cannot describe, and a best guess
-// there is a wrong rotation later that nothing would attribute to the lens.
+// Brown-Conrady has no closed-form inverse, so this solves for one by **Newton's method** on the
+// full two-dimensional distortion map, and it **refuses rather than answering approximately** when
+// the solution does not land back on the pixel it was given. A best guess would be a wrong rotation
+// later that nothing would attribute to the lens.
+//
+// Newton rather than the obvious fixed point `xn <- (xd - tangential) / radial`, and the difference
+// is correctness rather than speed: that iteration diverges on lenses this model correctly certifies
+// as invertible. A 115-degree lens with k1 = -0.3, k2 = 0.1 folds nowhere at any radius, and the
+// fixed point could not find a quarter of its pixels.
 UnprojectedDirection Unproject(const Intrinsics& lens, const Pixel& pixel);
 
 }  // namespace sphanorama
