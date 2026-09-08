@@ -18,3 +18,8 @@ dependencies = []
 [tool.uv]
 # There is no package to build here — tools/ is a directory of scripts, run directly.
 package = false
+
+[dependency-groups]
+datasets = [
+    "numpy>=2.4.6",
+]

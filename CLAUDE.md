@@ -71,7 +71,18 @@ size a real sphere plans, while Jacobi takes five sweeps at every size; that is 
 the first version of it was a rare tail stated as the norm until a reviewer re-ran it. And four of
 its own tests were satisfied by their arrangement rather than by the behaviour — including a shared
 fixture that could be replaced with the identity rotation without failing anything — every one found
-by sabotage rather than by reading. And which feature
+by sabotage rather than by reading.
+
+**And there are frames to score now.** `tools/synth_dataset.py` renders what a phone would have
+captured from a panorama, with the rotation of every frame. It re-implements the lens instead of
+calling `camera_model`, on purpose: a dataset rendered through the code under test cancels any error
+the two share, so a wrong distortion convention would render wrong, register wrong in exactly the
+compensating way, and score perfect (ADR 0050). The two are pinned to the same hand-worked decimals
+instead. It taught the same lesson again in a new place — a tolerance written in colour components
+was three orders of magnitude looser than the interpolation error it was meant to bound and let a
+render wrong by 0.086 degrees pass, so the assertions are in degrees now, which is the unit the
+thing exists to serve. Geometry only so far: noise, blur, rolling shutter, exposure, bursts and
+movers are each their own increment. Which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.

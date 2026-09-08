@@ -120,10 +120,21 @@ than a browser call.
 
 ## 5.5 Synthetic datasets — the thing that makes any of this verifiable
 
-A Python tool takes an existing high-resolution equirectangular panorama (public-domain HDRIs) and
-renders the exact frames a phone *would* have captured: given a lens FoV, a pose trajectory, a
-noise/blur model, rolling-shutter skew and an exposure ramp, it emits a burst per cell **plus the
-ground-truth rotation of every frame**. Optional composited movers produce known ghost regions.
+`tools/synth_dataset.py` renders the frames a phone *would* have captured from an equirectangular
+panorama: given a lens field of view and a list of camera orientations, it emits one image per
+orientation **plus the ground-truth rotation of every frame**, as binary Netpbm beside a
+`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy — the
+checkers above stay standard-library only (ADR 0050).
+
+**It re-implements the lens rather than calling the core**, and that is the decision the tool turns
+on: a dataset rendered *through* `camera_model` would cancel any error the two share, so a wrong
+distortion convention would render wrong, register wrong in the compensating way, and score perfect.
+Both implementations are pinned to the same hand-worked decimals instead.
+
+Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, and a
+procedural panorama. Still to come, each its own increment with its own invariant: real HDRIs, a
+noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
+movers for known ghost regions.
 
 That gives:
 

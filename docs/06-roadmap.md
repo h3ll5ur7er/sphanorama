@@ -740,6 +740,12 @@ that has to be ordered.
   other, so a perfect reconstruction expressed in a world frame 30 degrees from the dataset's would
   otherwise report 30 degrees of error on every frame at once (ADR 0049). The exit criterion below
   names a median, and this is what computes it.
+- **Frames to score, and the truth of where they were taken** — done for the geometry.
+  `tools/synth_dataset.py` renders the frames a phone would have captured from a panorama and emits
+  the rotation each was taken at. It re-implements the lens rather than calling the core, because a
+  dataset rendered through the code under test cancels any error the two share and would certify a
+  broken projection as accurate (ADR 0050). Noise, blur, rolling shutter, exposure, bursts per cell
+  and movers are each still to come.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
