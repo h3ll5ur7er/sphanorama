@@ -341,10 +341,15 @@ def project(lens: Intrinsics, camera_space: np.ndarray) -> tuple[np.ndarray, np.
     # The core's `Project` refuses a direction past the fold, and this did not — which mattered more
     # here than anywhere, because `unproject` adjudicates its own answer by projecting it back. Two
     # implementations that share a blind spot agree by construction rather than by being right.
-    valid &= inverts_along_the_ray(lens, np.where(valid, xn, 0.0), np.where(valid, yn, 0.0))
-    valid &= np.isfinite(xn) & np.isfinite(yn)
+    # Nothing downstream computes on a row that has already been refused. Substituting here rather
+    # than only at the ray test is what makes the finiteness conjunct above load-bearing: without
+    # it an infinity reaches the cubic and the Jacobian, and the only thing that noticed was a numpy
+    # warning nobody reads. A guard whose effect is invisible is one the next reviewer deletes.
+    safe_xn = np.where(valid, xn, 0.0)
+    safe_yn = np.where(valid, yn, 0.0)
+    valid &= inverts_along_the_ray(lens, safe_xn, safe_yn)
 
-    xd, yd = _distort(lens, xn, yn)
+    xd, yd = _distort(lens, safe_xn, safe_yn)
     u = lens.fx * xd + lens.cx
     v = lens.fy * yd + lens.cy
     valid &= np.isfinite(u) & np.isfinite(v)

@@ -914,6 +914,85 @@ class TheAcceptanceToleranceIsNamedAndInTheCoresUnit(unittest.TestCase):
             self.assertTrue(valid.all(), f"{width}x{height}: the principal point must invert")
 
 
+class GuardsThatAreReachedByTheTestsNamedForThem(unittest.TestCase):
+    """Round 2 deleted four guards one at a time and the suite stayed green on each.
+
+    That is a different complaint from "there is no test": there were tests, and each proved
+    something adjacent. The pattern is worth naming because it has now appeared three times on this
+    branch — a test reaches the behaviour it is named for only if nothing *else* refuses the input
+    first, and the earlier refusal is usually the more obvious one.
+    """
+
+    def test_unproject_refuses_an_unusable_lens_itself_rather_than_via_project(self):
+        """`unproject` calls `project` to adjudicate, and `project` has its own usability guard.
+
+        So deleting `unproject`'s guard left the suite green: with `fx = fy = 0` the arithmetic runs
+        to completion on infinities and the *adjudicator* raises, which the old test could not tell
+        apart. This one asserts that `project` is never reached, which is the only statement that
+        distinguishes them.
+        """
+        honest = synth_dataset.project
+        reached = {"yes": False}
+
+        def note_that_it_was_reached(*args, **kwargs):
+            reached["yes"] = True
+            return honest(*args, **kwargs)
+
+        synth_dataset.project = note_that_it_was_reached
+        try:
+            with self.assertRaises(ValueError):
+                unproject(Intrinsics(), np.array([[1.0, 1.0]]))
+        finally:
+            synth_dataset.project = honest
+        self.assertFalse(reached["yes"],
+                         "unproject reached its adjudicator, so its own guard did nothing")
+
+    def test_a_direction_whose_normalisation_overflows_is_refused(self):
+        """The `isfinite(xn) & isfinite(yn)` conjunct, reached on its own.
+
+        Every other arrangement in the suite refuses earlier — a NaN component is caught by the
+        camera-space test one line up. This one is finite in every component and has a positive,
+        finite depth; it is the *division* that overflows, which is the only way to reach this line
+        without another guard having fired first.
+        """
+        lens = lens_from_fov(66.0, 50.0, 64, 48)
+        overflowing = np.array([[1e300, 0.0, -1e-300]])
+        with np.errstate(over="ignore", invalid="ignore"):
+            u, v, valid = project(lens, overflowing)
+        self.assertFalse(valid.any(), "an overflowing normalisation was answered")
+        self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
+
+        # And the conjunct earns its place by *where* it sits, which is the part a refusal test
+        # cannot see: the `isfinite(u) & isfinite(v)` test further down refuses the same row, so
+        # deleting this one changes no answer. What it changes is whether an infinity reaches
+        # `inverts_along_the_ray`, which iterates a cubic and samples a Jacobian on it. Asserting
+        # the outcome alone left the guard deletable with the suite green; asserting that nothing
+        # invalid is *computed* is what pins it.
+        with np.errstate(over="ignore", invalid="raise"):
+            project(lens, overflowing)
+
+
+class TheSeamWrapsOnBothSides(unittest.TestCase):
+    """`SeamSampling` tested the right-hand wrap and the left-hand one was never reached.
+
+    Measured across the whole suite: 28,071 sampled coordinates, and `x0` was negative in **none**
+    of them. The half-pixel strip `u < 0.5`, where `x0 = -1` and the left neighbour must wrap to the
+    last column, is not visited even by the frame rendered straight through the seam — which is the
+    same "lands on that exact column only by luck" that put `SeamSampling` here in the first place,
+    one side over.
+    """
+
+    def test_the_column_before_the_first_one_is_the_last_one(self):
+        panorama = np.zeros((1, 4, 3), dtype=float)
+        panorama[0, 0] = [1.0, 0.0, 0.0]
+        panorama[0, 3] = [0.0, 0.0, 1.0]        # the column a left wrap has to reach
+
+        # u = 0.25 sits a quarter pixel left of the first pixel centre, so the left neighbour is
+        # column -1, which is column 3.
+        sampled = sample_equirect(panorama, np.array([0.25]), np.array([0.5]))
+        np.testing.assert_allclose(sampled[0], [0.75, 0.0, 0.25], atol=1e-12)
+
+
 class EquirectangularMapping(unittest.TestCase):
     def test_forward_is_the_centre_of_the_panorama(self):
         u, v = direction_to_equirect(np.array([[0.0, 0.0, -1.0]]), 512, 256)
