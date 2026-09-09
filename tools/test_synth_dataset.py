@@ -10,10 +10,16 @@ Two of the cases below carry most of the weight.
 
 `test_distortion_terms_are_opencvs_in_opencvs_order` pins this implementation to the same
 hand-computed decimals as `Project.TheDistortionTermsAreOpenCVsInOpenCVsOrder` in the C++ suite.
-That matters more here than an ordinary agreement test would: this module deliberately re-implements
-the lens rather than calling the core, because a dataset rendered *through* the code under test
-would hide any error the two share. Two independent implementations pinned to the same
-independently-derived numbers is what makes that independence worth having.
+That matters more here than an ordinary agreement test would: this module deliberately implements
+the lens itself rather than calling the core, because a dataset rendered *through* the code under
+test would hide any error the two share.
+
+They are **not** independent re-derivations, and a round-1 reviewer was right to press the claim
+that they were: the arithmetic here is a close port of the core's. What carries the weight is that
+both meet the same hand-worked decimals, taken from the published Brown-Conrady form and derived
+from neither implementation. ADR 0050 records the withdrawal; this docstring stated the withdrawn
+version for a further round, because the correction was made in "the module docstring" and there
+are two.
 
 `test_every_rendered_pixel_lands_where_its_own_ray_points` renders from a panorama whose colour
 encodes the direction it represents, so each rendered pixel carries its own ground truth and the
@@ -35,13 +41,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    is_usable_lens,
     Intrinsics,
-    _corner_radius_squared,
     _to_bytes,
     Pose,
     defined_at,
     direction_to_equirect,
-    lens_folds_in_frame,
+    inverts_along_the_ray,
+    radial_map_increases_up_to,
     lens_from_fov,
     project,
     render_frame,
@@ -403,9 +410,16 @@ class UnprojectionRefuses(unittest.TestCase):
 
         # Every answer has to sit where the forward map is orientation-preserving. This is the
         # check, not the round trip below it.
+        #
+        # This assertion used to read `defined_at(...)` — which `unproject` had just filtered on, so
+        # it asserted the filter against itself and `defined_at` could be replaced by `return True`
+        # with the whole suite green. `TheAnswerIsTheNearBranch` is the test that actually pins this
+        # behaviour, against an oracle built from the forward map alone; what is left here is the
+        # weaker statement that the answers satisfy the *stronger* guard, which at least is not the
+        # one the solver was filtered on.
         xn = directions[valid][:, 0] / -directions[valid][:, 2]
         yn = -directions[valid][:, 1] / -directions[valid][:, 2]
-        self.assertTrue(defined_at(lens, xn, yn).all(),
+        self.assertTrue(inverts_along_the_ray(lens, xn, yn).all(),
                         "an answered pixel came from the far side of the fold")
 
         back_u, back_v, _ = project(lens, directions[valid])
@@ -417,41 +431,62 @@ class UnprojectionRefuses(unittest.TestCase):
         lens = lens_from_fov(66.0, 50.0, 96, 72)
         lens = Intrinsics(**{**lens.__dict__, "k1": -0.9, "k2": 0.6, "k3": -0.4})
 
-        self.assertTrue(lens_folds_in_frame(lens))
         with self.assertRaises(ValueError):
             render_frame(panorama, lens, Pose.identity())
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 write_dataset(Path(directory), panorama, lens, [Pose.identity()])
 
-    def test_a_lens_that_folds_only_in_the_middle_of_the_frame_is_still_refused(self):
-        """The mistake ADR 0046 already made once, in a new place.
+    def test_a_fold_in_the_middle_of_the_interval_is_caught_by_the_interior_branch(self):
+        """The endpoint alone is not enough, and this reaches the branch that says so.
 
         The slope `1 + 3k1*u + 5k2*u^2 + 7k3*u^3` is a cubic in `u = r^2`, so it can dip below zero
-        partway out and come back positive by the corner. Checking the frame's outermost radius
-        alone therefore certifies a lens that folds in a ring inside its own frame. With
-        k1 = -6.0, k2 = 5.5 the endpoint slope is +0.73 — which looks perfectly healthy — while the
-        minimum inside is **-1.95**, at u = 0.327 of the way out.
+        partway out and come back positive by the endpoint. The previous version of this test used
+        k1 = -6.0, k2 = 5.5 and never reached the interior check at all — that lens is caught at the
+        endpoint by `radial` going negative, so the endpoint-only sabotage its docstring claimed to
+        catch was green. A reviewer found that and found a witness the closed form needs; this uses
+        one of the same shape.
 
-        A sabotage that checked only the endpoint left every other test green, which is exactly how
-        the same defect survived in the core until a reviewer found two directions 39 degrees apart
-        landing on one pixel.
+        The arrangement is asserted, not assumed: the endpoint must look healthy, or the interior
+        branch is not what is being tested.
         """
-        lens = lens_from_fov(66.0, 50.0, 320, 240)
-        lens = Intrinsics(**{**lens.__dict__, "k1": -6.0, "k2": 5.5})
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 320, 240).__dict__,
+                             "k1": -9.847065, "k2": 39.478991, "k3": 44.682183})
 
-        corner = _corner_radius_squared(lens)
-        endpoint_slope = 1.0 + corner * (3.0 * lens.k1 + corner * 5.0 * lens.k2)
-        self.assertGreater(endpoint_slope, 0.0, "the endpoint has to look healthy or this proves nothing")
+        endpoint = np.array([0.35])
+        self.assertTrue(bool(radial_map_increases_up_to(lens, endpoint * 0.0).all()),
+                        "the optical centre must be sound or nothing here means anything")
 
-        self.assertTrue(lens_folds_in_frame(lens), "an interior fold was certified as sound")
+        # The endpoint of this interval looks fine on its own terms...
+        far = np.array([0.20])
+        slope_at_far = 1.0 + far * (3.0 * lens.k1 + far * (5.0 * lens.k2 + far * 7.0 * lens.k3))
+        self.assertGreater(float(slope_at_far[0]), 0.0,
+                           "the endpoint has to look healthy or this proves nothing")
+
+        # ...and the interval is still refused, because the slope dips inside it.
+        self.assertFalse(bool(radial_map_increases_up_to(lens, far).all()),
+                         "an interior fold was certified as sound")
+
+    def test_a_non_finite_discriminant_refuses_rather_than_taking_the_no_roots_exit(self):
+        """`>= 0.0` on a NaN is false, which is the same branch as "there are no real roots".
+
+        They are not the same thing. `b*b` and `4ac` can each overflow to infinity and `inf - inf`
+        is NaN, and treating that as "never turns" skips both interior checks and re-admits exactly
+        the folded state this guard exists to close. The core refuses by name here and this dropped
+        that along with the rest of the guards.
+        """
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 64, 48).__dict__,
+                             "k1": 1e200, "k2": 1e200, "k3": 1e200})
+        self.assertFalse(bool(radial_map_increases_up_to(lens, np.array([0.1])).any()))
 
     def test_the_lenses_a_phone_actually_has_are_not_refused(self):
-        """The other half, and the one a fold check gets wrong by being over-eager.
+        """The other half: the guard must not buy its correctness by refusing everything.
 
-        Measured at the frame corner of a 66x50 degree lens: a typical phone's k1 = -0.28 leaves the
-        slope at +0.65 and a strong barrel at +0.55, both comfortably clear of the fold. If this
-        starts failing, the check has become stricter than the optics.
+        The numbers this docstring used to quote — k1 = -0.28 leaving the slope at +0.65 — silently
+        needed the k2 beside them, and every negative k1 in the list below is paired with a positive
+        k2, which is what hid it. `RealisticLensesAreNotAllAnswerable` pins the correction: k1 alone
+        does reach the fold inside a 66 degree frame. So this list is lenses that really are
+        answerable throughout, and it is a statement about these lenses rather than about phones.
         """
         panorama = direction_encoded_panorama(256, 128)
         base = lens_from_fov(66.0, 50.0, 48, 36)
@@ -463,8 +498,6 @@ class UnprojectionRefuses(unittest.TestCase):
             ("mild tangential", {"k1": -0.2, "p1": 0.002, "p2": -0.003}),
         ):
             lens = Intrinsics(**{**base.__dict__, **coefficients})
-            self.assertFalse(lens_folds_in_frame(lens), name)
-
             us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
                                  indexing="xy")
             pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
@@ -506,6 +539,235 @@ class UnprojectionRefuses(unittest.TestCase):
 
         self.assertIn("no ray behind them", str(raised.exception))
         self.assertIn("1 of 48", str(raised.exception))
+
+
+class TheAnswerIsTheNearBranch(unittest.TestCase):
+    """Judged against an oracle that does not call the code under test.
+
+    Round 1's fold tests were their own oracle: they filtered with `defined_at` inside `unproject`
+    and then asserted `defined_at` on what survived, so `defined_at` could be replaced by `return
+    True` with the whole suite green. A reviewer proved that by doing it. The lesson is one this
+    repository had already written down about `Pose.rotate` one round earlier and then repeated
+    inside the fix for it: a function that is its own oracle cannot fail.
+
+    So the expectation here is built from the forward map alone, by brute force. `_near_branch`
+    tabulates `r -> r * radial(r^2)` on a dense grid, cuts the table at the first radius where the
+    map stops increasing, and reads the answer off backwards. It is far too slow to ship and it
+    calls nothing this module is testing, which is exactly what makes it an oracle.
+    """
+
+    @staticmethod
+    def _near_branch(lens, pixels, samples=400_000, r_max=8.0):
+        """(directions, exists) for each pixel, from the forward map only."""
+        xd = (pixels[:, 0] - lens.cx) / lens.fx
+        yd = (pixels[:, 1] - lens.cy) / lens.fy
+        rd = np.hypot(xd, yd)
+
+        r = np.linspace(0.0, r_max, samples)
+        r2 = r * r
+        radial = 1.0 + r2 * (lens.k1 + r2 * (lens.k2 + r2 * lens.k3))
+        slope = 1.0 + r2 * (3.0 * lens.k1 + r2 * (5.0 * lens.k2 + r2 * 7.0 * lens.k3))
+        folded = np.nonzero((slope <= 0.0) | (radial <= 0.0))[0]
+        end = folded[0] if len(folded) else len(r)
+        r, f = r[:end], (r * radial)[:end]
+
+        exists = (rd <= f.max()) if len(f) else np.zeros_like(rd, dtype=bool)
+        solved = np.interp(rd, f, r)                    # f increases on this branch, so this is safe
+        scale = np.where(rd > 0.0, solved / np.where(rd > 0.0, rd, 1.0), 1.0)
+        directions = np.stack([xd * scale, -yd * scale, -np.ones_like(xd)], axis=-1)
+        directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
+        return directions, exists
+
+    def _frame_pixels(self, lens):
+        us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
+                             indexing="xy")
+        return np.stack([us.ravel(), vs.ravel()], axis=-1)
+
+    def test_a_folding_lens_answers_no_pixel_from_the_far_side(self):
+        """The defect round 1 introduced while fixing the defect round 1 found.
+
+        `k1 = -1, k2 = 0.3` folds between r = 0.650 and r = 1.256 — the core's own documented
+        example. Before this was fixed, `unproject` accepted 36,036 pixels whose solved radius sat
+        past the fold, the frame corner among them at r = 1.5832 where the near branch is 0.6499:
+        24.7 degrees apart, both genuine preimages, `valid = True` on the wrong one. The round trip
+        cannot separate them and ADR 0046 says why, so the test has to know the right answer
+        independently rather than ask the solver to mark its own work.
+        """
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 48, 36).__dict__, "k1": -1.0, "k2": 0.3})
+        pixels = self._frame_pixels(lens)
+
+        truth, exists = self._near_branch(lens, pixels)
+        self.assertTrue(exists.any(), "the arrangement must have answerable pixels")
+        self.assertFalse(exists.all(), "and unanswerable ones, or it proves nothing about the fold")
+
+        directions, valid = unproject(lens, pixels)
+
+        self.assertFalse(bool((valid & ~exists).any()),
+                         f"{int((valid & ~exists).sum())} pixels answered that have no near-branch "
+                         "preimage at all")
+        agreed = valid & exists
+        self.assertGreater(int(agreed.sum()), 0, "it refused everything, which proves nothing")
+        self.assertLess(worst_angle_deg(directions[agreed], truth[agreed]), 0.01,
+                        "an answered pixel disagrees with the near branch")
+
+    def test_an_ordinary_lens_is_answered_everywhere_and_correctly(self):
+        """The other half: the fix must not buy its correctness by refusing everything.
+
+        A 66x50 lens with k1 = -0.28 *and* the k2 that a real calibration comes with. Note that
+        k1 = -0.28 on its own does not belong in this list and ADR 0050 used to claim it did --
+        see `RealisticLensesAreNotAllAnswerable`.
+        """
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 48, 36).__dict__, "k1": -0.28, "k2": 0.09})
+        pixels = self._frame_pixels(lens)
+        truth, exists = self._near_branch(lens, pixels)
+        self.assertTrue(exists.all(), "the arrangement is meant to be answerable everywhere")
+
+        directions, valid = unproject(lens, pixels)
+        self.assertTrue(valid.all(), f"{int((~valid).sum())} pixels refused on an ordinary lens")
+        self.assertLess(worst_angle_deg(directions, truth), 0.01)
+
+
+class RealisticLensesAreNotAllAnswerable(unittest.TestCase):
+    """A correction to ADR 0050, pinned so the prose cannot drift back.
+
+    The ADR said the lenses a phone actually has are nowhere near the fold, and offered
+    `k1 = -0.28` leaving the slope at +0.65 as the evidence. That number silently needs the `k2`
+    the sentence omits. With `k1 = -0.28` alone, a 66x50 degree frame's corner is *past the fold*:
+    the largest distorted radius the lens can produce is 0.7275 and the corner sits at 0.8104, so
+    that pixel has no preimage on either branch and refusing it is right.
+    """
+
+    def test_a_negative_k1_with_no_k2_folds_inside_a_sixty_six_degree_frame(self):
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 48, 36).__dict__, "k1": -0.28})
+        us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
+                             indexing="xy")
+        pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
+        _, valid = unproject(lens, pixels)
+        self.assertFalse(valid.all(),
+                         "k1 = -0.28 alone reaches the fold inside the frame; if this passes, the "
+                         "geometry changed and ADR 0050's correction needs revisiting")
+
+    def test_the_same_k1_with_a_real_calibrations_k2_is_answerable_throughout(self):
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 48, 36).__dict__, "k1": -0.28, "k2": 0.09})
+        us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
+                             indexing="xy")
+        pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
+        _, valid = unproject(lens, pixels)
+        self.assertTrue(valid.all(), "the positive k2 is what pulls the fold outside the frame")
+
+
+class ARotationIsRecordedAsTheOneThatWasRendered(unittest.TestCase):
+    """Round 1 normalised `rotate` and left the record alone, which fixed half of one defect.
+
+    The frames were then rendered with a normalised quaternion while `truth.json` wrote down the
+    unnormalised one the caller happened to pass. A consumer that believes the file's own
+    "unit quaternion" claim is handed a rotation the pixels were never taken at. And the degenerate
+    case is worse than a small error: `Pose(0, 0, 0, 0)` renders as the identity and was recorded
+    as `{0, 0, 0, 0}`, which `sphanorama::Normalize` turns back into the identity on the C++ side —
+    so two byte-identical frames sit beside two different recorded rotations and nothing anywhere
+    notices.
+    """
+
+    def _rotation_in(self, directory, index=0):
+        truth = json.loads((Path(directory) / "truth.json").read_text())
+        return truth["frames"][index]["rotation"]
+
+    def test_the_recorded_quaternion_is_the_unit_one_the_frame_was_rendered_with(self):
+        panorama = direction_encoded_panorama(256, 128)
+        lens = lens_from_fov(66.0, 50.0, 32, 24)
+        unit = Pose.from_axis_angle((0.3, 0.5, -0.8), 0.7)
+        long_by_one_percent = Pose(unit.w * 1.01, unit.x * 1.01, unit.y * 1.01, unit.z * 1.01)
+
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [long_by_one_percent])
+            recorded = self._rotation_in(directory)
+
+        norm = math.sqrt(sum(recorded[k] ** 2 for k in "wxyz"))
+        self.assertAlmostEqual(norm, 1.0, places=12,
+                               msg="the file says unit quaternion; this one is not")
+        for component in "wxyz":
+            self.assertAlmostEqual(recorded[component], getattr(unit, component), places=12)
+
+    def test_a_rotation_that_is_not_a_rotation_is_refused_rather_than_recorded(self):
+        panorama = direction_encoded_panorama(256, 128)
+        lens = lens_from_fov(66.0, 50.0, 32, 24)
+        with tempfile.TemporaryDirectory() as directory:
+            for name, pose in (
+                ("all zero", Pose(0.0, 0.0, 0.0, 0.0)),
+                ("not a number", Pose(float("nan"), 0.0, 0.0, 0.0)),
+                ("infinite", Pose(float("inf"), 0.0, 0.0, 0.0)),
+            ):
+                with self.assertRaises(ValueError, msg=name):
+                    write_dataset(Path(directory), panorama, lens, [pose])
+
+    def test_a_component_large_enough_to_square_to_infinity_still_rotates(self):
+        """`sqrt(w*w + x*x + ...)` overflows before it sums, and underflows the same way.
+
+        `Pose(0, 1e200, 0, 0)` is a 180 degree turn about +X. Squaring 1e200 is infinity, so the
+        norm is infinity, every component divides to zero and the rotation silently becomes the
+        identity — while the recorded rotation says the frame was turned over. `Pose(0, 1e-200, 0,
+        0)` is the same turn and underflows to a zero norm, taking the other early exit to the
+        same wrong place. This is PR #49 round 14's `Normalize` overflow, in a second language.
+        """
+        forward = np.array([[0.0, 0.0, -1.0]])
+        turned = np.array([[0.0, 0.0, 1.0]])
+        for name, pose in (("huge", Pose(0.0, 1e200, 0.0, 0.0)),
+                           ("tiny", Pose(0.0, 1e-200, 0.0, 0.0)),
+                           ("ordinary", Pose(0.0, 1.0, 0.0, 0.0))):
+            np.testing.assert_allclose(pose.rotate(forward), turned, atol=1e-12,
+                                       err_msg=f"{name}: a 180 degree turn came back as something else")
+
+
+class RefusalsThatCannotBeMistakenForAnswers(unittest.TestCase):
+    """Every way of having no answer here has been a colour or a plausible number at some point."""
+
+    def test_a_non_finite_colour_is_refused_rather_than_written_as_black(self):
+        """Byte 0 is black, and black is a colour the scene produces.
+
+        This is the sentinel round 1 removed mid-grey 128 for, reintroduced one layer down by the
+        cast: `np.round(nan).astype(np.uint8)` is 0 on this platform, silently, with only a numpy
+        RuntimeWarning that nothing reads.
+        """
+        with self.assertRaises(ValueError):
+            _to_bytes(np.array([[[math.nan, 0.5, 1.0]]]))
+        with self.assertRaises(ValueError):
+            _to_bytes(np.array([[[math.inf, 0.5, 1.0]]]))
+        # and an ordinary frame still encodes
+        np.testing.assert_array_equal(_to_bytes(np.array([[[-1.0, 0.0, 1.0]]])),
+                                      np.array([[[0, 128, 255]]], dtype=np.uint8))
+
+    def test_a_panorama_that_is_not_three_channel_is_refused_before_a_p6_header_lies_about_it(self):
+        """`P6` means three bytes a pixel. The header was hard-coded and the payload was not."""
+        lens = lens_from_fov(66.0, 50.0, 16, 12)
+        for channels in (1, 4):
+            panorama = np.zeros((64, 128, channels), dtype=float)
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError, msg=f"{channels} channels"):
+                    write_dataset(Path(directory), panorama, lens, [Pose.identity()])
+
+    def test_an_empty_batch_is_answered_emptily_rather_than_raising_from_numpy(self):
+        lens = lens_from_fov(66.0, 50.0, 16, 12)
+        directions, valid = unproject(lens, np.zeros((0, 2)))
+        self.assertEqual(directions.shape, (0, 3))
+        self.assertEqual(valid.shape, (0,))
+        u, v, ok = project(lens, np.zeros((0, 3)))
+        self.assertEqual((u.shape, v.shape, ok.shape), ((0,), (0,), (0,)))
+
+    def test_an_optical_centre_outside_the_image_is_not_a_lens(self):
+        """The core's `IsUsableLens` requires it and this claimed to be that function.
+
+        A lens whose optical centre is outside its own image is not something the fold reasoning,
+        the field of view or the projection were written to describe.
+        """
+        base = lens_from_fov(66.0, 50.0, 64, 48)
+        for name, centre in (("cx past the right edge", {"cx": 1e9}),
+                             ("cx on the edge", {"cx": 64.0}),
+                             ("cx at zero", {"cx": 0.0}),
+                             ("cy below the bottom", {"cy": -1.0})):
+            lens = Intrinsics(**{**base.__dict__, **centre})
+            self.assertFalse(is_usable_lens(lens), name)
+            with self.assertRaises(ValueError, msg=name):
+                project(lens, np.array([[0.0, 0.0, -1.0]]))
 
 
 class EquirectangularMapping(unittest.TestCase):
@@ -553,7 +815,7 @@ class Rendering(unittest.TestCase):
 
         # Asserted in degrees, because degrees are what this dataset exists to measure and a
         # tolerance in colour units hides its own meaning. The measured interpolation error at this
-        # panorama size is 0.00003 degrees, so the bound below has thirty times the headroom it
+        # panorama size is 2.54419e-05 degrees, so the bound below has 39 times the headroom it
         # needs — and the first version of this test used `atol=2e-3` on the components instead,
         # which was three orders of magnitude looser than the real error and let a render wrong by
         # 0.086 degrees pass. For a harness whose whole job is measuring rotation error in degrees,

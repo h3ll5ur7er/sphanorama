@@ -22,7 +22,7 @@ itself is not.
 And the danger of a close port is not hypothetical — it is how the fold defect happened. This file
 kept the core's arithmetic and dropped its guards, so it inverted the distortion past the fold and
 answered 468 of 3072 pixels with fabricated directions, while the round-trip check that was supposed
-to notice passed every one of them. See `defined_at` and `lens_folds_in_frame`, and ADR 0050.
+to notice passed every one of them. See `inverts_along_the_ray`, and ADR 0050.
 
 Conventions, matching `contracts/cpp/sphanorama/types.h` and ADR 0046 exactly, because a dataset
 expressed in a different frame from the core that reads it is worse than no dataset:
@@ -119,6 +119,30 @@ class Pose:
             self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
         )
 
+    def normalised(self) -> "Pose":
+        """The unit quaternion naming the same rotation, or a refusal.
+
+        Scaled by the largest component before anything is squared. `sqrt(w*w + x*x + ...)`
+        overflows on a component near 1e200 and underflows near 1e-200, and in both cases the norm
+        comes back useless — infinity or zero — so every component divides to zero or takes an early
+        exit, and a 180 degree turn silently renders as the identity. That is PR #49 round 14's
+        `Normalize` overflow, which the C++ fixed this way and this file then reintroduced.
+
+        Refusing is the other half. A quaternion of all zeros is not a rotation; it used to render
+        as the identity and be *written down* as `{0, 0, 0, 0}`, which `sphanorama::Normalize` turns
+        back into the identity on the far side — so nothing anywhere would have said that two
+        identical frames carried two different rotations.
+        """
+        components = (self.w, self.x, self.y, self.z)
+        if not all(math.isfinite(component) for component in components):
+            raise ValueError(f"a rotation needs four finite components, not {components}")
+        largest = max(abs(component) for component in components)
+        if largest == 0.0:
+            raise ValueError("an all-zero quaternion names no rotation")
+        w, x, y, z = (component / largest for component in components)
+        norm = math.sqrt(w * w + x * x + y * y + z * z)
+        return Pose(w / norm, x / norm, y / norm, z / norm)
+
     def rotate(self, vectors: np.ndarray) -> np.ndarray:
         """Rotate an (N, 3) array of vectors from camera space into world space.
 
@@ -127,10 +151,8 @@ class Pose:
         was *asked* for — so the frames and the ground truth would have disagreed by more than the
         thing the harness is built to measure.
         """
-        norm = math.sqrt(self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z)
-        if norm == 0.0:
-            return np.array(vectors, dtype=float)
-        w, x, y, z = self.w / norm, self.x / norm, self.y / norm, self.z / norm
+        unit = self.normalised()
+        w, x, y, z = unit.w, unit.x, unit.y, unit.z
         u = np.array([x, y, z], dtype=float)
         cross = np.cross(u, vectors)
         return vectors + 2.0 * w * cross + 2.0 * np.cross(u, cross)
@@ -172,7 +194,13 @@ def is_usable_lens(lens: Intrinsics) -> bool:
               lens.k1, lens.k2, lens.k3, lens.p1, lens.p2)
     if not all(math.isfinite(value) for value in values):
         return False
-    return lens.fx > 0.0 and lens.fy > 0.0 and lens.width > 0 and lens.height > 0
+    if not (lens.fx > 0.0 and lens.fy > 0.0 and lens.width > 0 and lens.height > 0):
+        return False
+    # The optical centre has to be inside the image — the core requires it and this claimed to be
+    # the core's function while dropping the clause. A lens whose centre is outside its own frame is
+    # not something the fold reasoning, the field of view or the projection were written to
+    # describe, and refusing it up front is cheaper than reasoning about each in turn.
+    return (0.0 < lens.cx < float(lens.width)) and (0.0 < lens.cy < float(lens.height))
 
 
 def _radial(lens: Intrinsics, r2: np.ndarray) -> np.ndarray:
@@ -198,51 +226,76 @@ def defined_at(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> np.ndarray:
     return (radial > 0.0) & ((dxdx * dydy - cross * cross) > 0.0)
 
 
-def _corner_radius_squared(lens: Intrinsics) -> float:
-    """The largest normalised radius the frame reaches, which is always a corner."""
-    xs = (np.array([0.0, lens.width]) - lens.cx) / lens.fx
-    ys = (np.array([0.0, lens.height]) - lens.cy) / lens.fy
-    return float(max(x * x + y * y for x in xs for y in ys))
+def _radial_slope(lens: Intrinsics, u: np.ndarray) -> np.ndarray:
+    """d/dr of `r * radial(r^2)`, in `u = r^2` — the core's `RadialSlope`."""
+    return 1.0 + u * (3.0 * lens.k1 + u * (5.0 * lens.k2 + u * 7.0 * lens.k3))
 
 
-def lens_folds_in_frame(lens: Intrinsics) -> bool:
-    """Whether this lens stops being invertible somewhere inside its own frame.
+def radial_map_increases_up_to(lens: Intrinsics, r2: np.ndarray) -> np.ndarray:
+    """Whether `r * radial(r^2)` increases over the *whole* way out to this radius.
 
-    `r * radial(r^2)` has to keep increasing for the map to be one-to-one along a ray, and its
-    derivative in `u = r^2` is `1 + 3*k1*u + 5*k2*u^2 + 7*k3*u^3` — a cubic, which is why checking
-    the frame corner alone is not enough: it can dip below zero in the middle of the interval and
-    come back. So this checks the endpoint *and* the cubic's interior turning points, which is the
-    whole interval in closed form. `radial` itself is checked the same way, since a negative one is
-    what flips the projection.
+    The core's `RadialMapIncreasesUpTo`, ported rather than reinvented — which is the correction
+    this function exists to be. What stood here before was a whole-lens check of my own devising
+    that fed the frame corner's **distorted** radius to a cubic in the **undistorted** one, so it
+    was answering a question about the wrong interval and got the answer wrong in both directions.
 
-    Tangential terms do not fold radially and are not covered by that argument, so the Jacobian is
-    sampled across the frame as well.
+    The slope is 1 at the optical centre, so the endpoint and every interior local minimum settle
+    it; those sit at the roots of `3k1 + 10k2 u + 21k3 u^2`. A cubic can dip below zero partway out
+    and return, which is why the endpoint alone is not enough.
     """
-    u_max = _corner_radius_squared(lens)
+    r2 = np.asarray(r2, dtype=float)
+    increases = _radial_slope(lens, r2) > 0.0        # NaN refuses, as the core's `!(x > 0.0)` does
 
-    # Where the slope cubic turns: 3*k1 + 10*k2*u + 21*k3*u^2 = 0.
-    candidates = [0.0, u_max]
     a, b, c = 21.0 * lens.k3, 10.0 * lens.k2, 3.0 * lens.k1
-    if a != 0.0:
+    if a == 0.0:
+        if b == 0.0:
+            return increases                          # affine or constant: it cannot turn
+        turning_points = [-c / b]
+    else:
         discriminant = b * b - 4.0 * a * c
-        if discriminant >= 0.0:
-            root = math.sqrt(discriminant)
-            candidates += [(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)]
-    elif b != 0.0:
-        candidates.append(-c / b)
+        # A NaN discriminant is "I could not tell", not "no real roots". Taking the no-roots exit
+        # on it skips both interior checks and re-admits the folded state this exists to close —
+        # the core refuses by name here and says so in as many words, and this dropped that guard
+        # along with the rest of them.
+        if not math.isfinite(discriminant):
+            return np.zeros_like(increases, dtype=bool)
+        if discriminant < 0.0:
+            return increases                          # never turns: the endpoint settled it
+        root = math.sqrt(discriminant)
+        turning_points = [(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)]
 
-    for u in candidates:
-        if not (0.0 <= u <= u_max):
-            continue
-        slope = 1.0 + u * (3.0 * lens.k1 + u * (5.0 * lens.k2 + u * 7.0 * lens.k3))
-        if slope <= 0.0 or _radial(lens, np.array([u]))[0] <= 0.0:
-            return True
+    for u in turning_points:
+        # A turning point outside (0, r2) says nothing about this interval, and a non-finite one
+        # compares false against both bounds, which is the same answer and the right one.
+        if math.isfinite(u) and u > 0.0:
+            increases &= (r2 <= u) | (_radial_slope(lens, u) > 0.0)
+    return increases
 
-    # And the full Jacobian over the frame, which is what tangential distortion can spoil.
-    xs = np.linspace(0.0, lens.width, 33)
-    ys = np.linspace(0.0, lens.height, 33)
-    gx, gy = np.meshgrid((xs - lens.cx) / lens.fx, (ys - lens.cy) / lens.fy, indexing="ij")
-    return not bool(defined_at(lens, gx.ravel(), gy.ravel()).all())
+
+RAY_SAMPLES = 64
+
+
+def inverts_along_the_ray(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> np.ndarray:
+    """Whether the distortion inverts everywhere from the optical centre out to this point.
+
+    The core's `DistortionInvertsAlongTheRay`. **`defined_at` is not this**, and using it as though
+    it were is the defect that survived round 1: a pointwise test says the map is fine *here* and
+    says nothing about what it did on the way, so a solution that leapt the fold and landed
+    somewhere well-behaved on the far side passes it. Measured on `k1 = -1, k2 = 0.3`, 36,036
+    pixels were answered that way, the frame corner among them, 24.7 degrees from the truth.
+
+    The radial half is exact and closed-form. The tangential half is not — `p1` and `p2` break the
+    reduction to one dimension — so the determinant is sampled along the ray, and a fold thinner
+    than a sixty-fourth of it slips through. That is a limit worth stating rather than a guarantee
+    worth implying, and it is the core's limit too.
+    """
+    inverts = radial_map_increases_up_to(lens, xn * xn + yn * yn)
+    if lens.p1 == 0.0 and lens.p2 == 0.0:
+        return inverts                                # radial only, and that was exact
+    for i in range(1, RAY_SAMPLES + 1):
+        t = i / RAY_SAMPLES
+        inverts &= defined_at(lens, xn * t, yn * t)
+    return inverts
 
 
 def _distort(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -271,6 +324,12 @@ def project(lens: Intrinsics, camera_space: np.ndarray) -> tuple[np.ndarray, np.
     safe_depth = np.where(valid, depth, 1.0)
     xn = camera_space[:, 0] / safe_depth
     yn = -camera_space[:, 1] / safe_depth      # the world's up is the image's down
+    valid &= np.isfinite(xn) & np.isfinite(yn)
+
+    # The core's `Project` refuses a direction past the fold, and this did not — which mattered more
+    # here than anywhere, because `unproject` adjudicates its own answer by projecting it back. Two
+    # implementations that share a blind spot agree by construction rather than by being right.
+    valid &= inverts_along_the_ray(lens, np.where(valid, xn, 0.0), np.where(valid, yn, 0.0))
     valid &= np.isfinite(xn) & np.isfinite(yn)
 
     xd, yd = _distort(lens, xn, yn)
@@ -352,20 +411,26 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
 
         xn = xn + step_x
         yn = yn + step_y
-        if np.max(np.abs(step_x)) < INVERSE_TOLERANCE and np.max(np.abs(step_y)) < INVERSE_TOLERANCE:
+        if (np.max(np.abs(step_x), initial=0.0) < INVERSE_TOLERANCE
+                and np.max(np.abs(step_y), initial=0.0) < INVERSE_TOLERANCE):
             break
 
     directions = np.stack([xn, -yn, -np.ones_like(xn)], axis=-1)
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 
-    # Two checks, and the first is the one this file went without. `_defined_at` is what rules out
-    # an answer from the far side of the fold; the round trip alone cannot, because such an answer
-    # really does project back to the pixel asked about. The round trip stays for the solver that
-    # simply wandered.
+    # `inverts_along_the_ray`, not `defined_at`. The pointwise test was what stood here and it is
+    # not the same question: it asks whether the map is well-behaved *at* the solution and says
+    # nothing about the way out to it, so an answer that leapt the fold and landed somewhere calm
+    # on the far side satisfied it. The round trip cannot separate the two either — ADR 0046 says
+    # why in as many words: past the fold `radial` goes negative, the sign of `xd` flips, and the
+    # wrong preimage really does project back onto the pixel asked about. It stays for the solver
+    # that simply wandered, which is a different failure and still worth catching.
     back_u, back_v, back_valid = project(lens, directions)
     landed = (np.abs(back_u - pixels[:, 0]) < 1e-6) & (np.abs(back_v - pixels[:, 1]) < 1e-6)
-    inside = defined_at(lens, xn, yn)
-    return directions, back_valid & landed & inside & np.isfinite(xn) & np.isfinite(yn)
+    finite = np.isfinite(xn) & np.isfinite(yn)
+    on_the_near_branch = inverts_along_the_ray(lens, np.where(finite, xn, 0.0),
+                                               np.where(finite, yn, 0.0))
+    return directions, back_valid & landed & on_the_near_branch & finite
 
 
 def direction_to_equirect(directions: np.ndarray, width: int,
@@ -416,23 +481,20 @@ def sample_equirect(panorama: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.nd
 def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarray:
     """One frame, as a (height, width, channels) float array.
 
-    **A lens that folds inside its own frame is refused rather than rendered.** Part of such a frame
-    genuinely has no ray behind it, so the alternative is an image with holes — and a dataset built
-    from those would hand the harness a frame whose missing regions are indistinguishable from dark
-    scenery. Refusing names the problem where it is, which is the lens, not the pixel.
+    **A lens with any pixel that has no ray behind it is refused, and the frame is the check.**
+    There is no colour that can mean "no ray": black is a colour the scene produces, and the byte a
+    refusal wrote before this was 128 — mid-grey, which an ordinary checkerboard pixel hits. A
+    sentinel only means something if nothing else can produce it, and in an image nothing can be
+    reserved. So refusing is the only honest answer, and it names the count.
 
-    A pixel still refused under a lens that passed that check raises rather than filling. There is
-    no colour that can mean "no ray": black is a colour the scene produces, and the byte a refusal
-    used to write was 128 — mid-grey, which an ordinary checkerboard pixel hits. A sentinel only
-    means something if nothing else can produce it, and here nothing can be reserved. Since
-    `lens_folds_in_frame` samples the Jacobian on a grid, a pathology between samples could still
-    reach here; loud is the only honest response.
+    There used to be a separate whole-lens test in front of this, `lens_folds_in_frame`, and it is
+    gone rather than fixed. It sampled the Jacobian on a 33x33 grid and tested the frame corner's
+    *distorted* radius against a cubic in the *undistorted* one, so it was both unsound and asking
+    about the wrong interval — measured, it passed lenses whose frames have thousands of rayless
+    pixels and refused lenses that are answerable throughout. Asking `unproject` about every pixel
+    of the actual frame is exact where that was a hope about resolution, and it is the same work
+    the render does anyway. The core has no whole-lens check either, for the same reason.
     """
-    if lens_folds_in_frame(lens):
-        raise ValueError(
-            "this lens stops being invertible inside its own frame, so part of every image would "
-            "have no ray behind it; a dataset needs a lens whose whole frame has a preimage")
-
     us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5, indexing="xy")
     pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
 
@@ -442,9 +504,9 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
     # the lens, which is the wrong diagnosis of the frame and the wrong count in it.
     if not valid.all():
         raise ValueError(
-            f"{int((~valid).sum())} of {valid.size} pixels have no ray behind them under a lens "
-            "that passed the fold check — the sampled Jacobian missed a pathology, and there is no "
-            "colour that could honestly stand for a missing one")
+            f"{int((~valid).sum())} of {valid.size} pixels of this frame have no ray behind them: "
+            "the lens stops being invertible inside its own frame, and no colour could honestly "
+            "stand for a missing direction")
 
     world = pose.rotate(camera_directions)
     u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
@@ -454,6 +516,13 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
 
 def _to_bytes(frame: np.ndarray) -> np.ndarray:
     """Map a signed unit-range frame onto bytes. Shared with the test that reads a file back."""
+    # `np.round(nan).astype(np.uint8)` is 0 — black, which is a colour the scene produces, and the
+    # exact sentinel collision mid-grey 128 was removed for. The clip would hide it: NaN survives
+    # `np.clip` unchanged and only the cast turns it into a plausible pixel.
+    if not np.isfinite(frame).all():
+        raise ValueError(
+            f"{int((~np.isfinite(frame)).sum())} colour components are not finite, and every byte "
+            "this could encode them as is a colour an ordinary scene produces")
     return np.round(np.clip((frame + 1.0) * 0.5, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
@@ -465,6 +534,16 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     consumer can read in a dozen lines and no consumer needs a library for. Datasets are
     regenerated rather than committed, so the size is a cost nobody carries for long.
     """
+    if panorama.ndim != 3 or panorama.shape[2] != 3:
+        raise ValueError(
+            f"a P6 file is three bytes a pixel and this panorama has shape {panorama.shape}; the "
+            "header would describe a frame the payload is not")
+
+    # Normalised here, not only in `rotate`. Round 1 put it in the renderer and left the record
+    # alone, so the frames were made with a unit quaternion and the file wrote down whatever it was
+    # handed — while claiming "unit quaternion" in its own convention block.
+    poses = [pose.normalised() for pose in poses]
+
     out.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     frames = []
