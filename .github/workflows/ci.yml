@@ -43,6 +43,10 @@ jobs:
         run: uv run --locked tools/test_markdown_table_check.py
       - name: no markdown table broken open
         run: uv run --locked tools/markdown_table_check.py
+      # The only tooling step with a dependency, and it names the group that carries it rather than
+      # putting numpy in every job's environment (ADR 0050).
+      - name: dataset renderer tests
+        run: uv run --locked --group datasets tools/test_synth_dataset.py
 
   native:
     name: native build and tests

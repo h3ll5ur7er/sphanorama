@@ -30,9 +30,10 @@ differences are decisions, each with an ADR:
   advance. The measurements were taken and it left the contract — a burst is paced by the manager
   over `PeekPreviewFrame` now (ADR 0018).*
 - The test machinery the rest of the plan depends on: GoogleTest harness and the resource-access
-  fakes behind shared contract suites (ADR 0010). *The synthetic-dataset generator and the frame
-  folder / recorded IMU log the fakes would replay are deferred to Phase 1, which is the first
-  thing that needs them.*
+  fakes behind shared contract suites (ADR 0010). *The frame folder and recorded IMU log the fakes
+  would replay are still deferred. The synthetic-dataset generator arrived in Phase 2 rather than
+  Phase 1 — `tools/synth_dataset.py`, ADR 0050 — because what first needed it was measuring
+  registration accuracy, and Phase 1 does no registration.*
 - CI: layer check, contract-drift check, no-browser native build, size budget — plus a test suite
   for each checker, since a checker that passes everything reads as a green light.
 
@@ -201,10 +202,10 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    to correct, 0.5 s to learn an offset — have never met a real phone.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (nothing needs it in a
    browser until Phase 2 registration ships, and the size budget has 8.36 MB of headroom — the
-   native build of the same trimmed subset is in, ADR 0047), the `bench/` CLI, and the
-   synthetic-dataset generator — both of which Phase 2's accuracy harness is the first thing to
-   actually need. (This said Phase 1's, from before the harness had a phase: it measures
-   registration accuracy, and Phase 1 does no registration.)
+   native build of the same trimmed subset is in, ADR 0047) and the `bench/` CLI, which Phase 2's
+   accuracy harness is the first thing to actually need. (This said Phase 1's, from before the
+   harness had a phase: it measures registration accuracy, and Phase 1 does no registration. The
+   synthetic-dataset generator was listed here too until it was built — ADR 0050.)
 
 ---
 
@@ -740,6 +741,12 @@ that has to be ordered.
   other, so a perfect reconstruction expressed in a world frame 30 degrees from the dataset's would
   otherwise report 30 degrees of error on every frame at once (ADR 0049). The exit criterion below
   names a median, and this is what computes it.
+- **Frames to score, and the truth of where they were taken** — done for the geometry.
+  `tools/synth_dataset.py` renders the frames a phone would have captured from a panorama and emits
+  the rotation each was taken at. It re-implements the lens rather than calling the core, because a
+  dataset rendered through the code under test cancels any error the two share and would certify a
+  broken projection as accurate (ADR 0050). Noise, blur, rolling shutter, exposure, bursts per cell
+  and movers are each still to come.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).

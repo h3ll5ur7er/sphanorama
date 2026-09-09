@@ -1,8 +1,13 @@
 # The Python tooling's environment, so that "it works here" is a fact about the repository rather
 # than about a machine.
 #
-# Everything under tools/ is standard library only and is meant to stay that way for the checkers —
-# they run on every CI job and a dependency there is a dependency on every build. The reason this
+# The checkers under tools/ are standard library only and are meant to stay that way — a dependency
+# there is a dependency on every build that runs them. (An earlier version of this comment said
+# "every CI job"; measured, two of the five set Python up at all, and the count of checkers this
+# repository quotes in three places matches nothing countable — so neither number is stated here.) `dependencies` below is
+# therefore empty and the one tool that needs numpy, the dataset renderer, names the `datasets`
+# group at its call site instead (ADR 0050). What keeps that true is the ordering in ci.yml: the
+# checker steps run before the step that installs the group. The reason this
 # file exists anyway is the interpreter itself: `python3` was whatever the machine happened to have,
 # CI pinned 3.11 in one place, and nothing tied the two together. `uv run` resolves both from here.
 #
@@ -18,3 +23,8 @@ dependencies = []
 [tool.uv]
 # There is no package to build here — tools/ is a directory of scripts, run directly.
 package = false
+
+[dependency-groups]
+datasets = [
+    "numpy>=2.4.6",
+]

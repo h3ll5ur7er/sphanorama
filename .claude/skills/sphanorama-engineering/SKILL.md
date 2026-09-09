@@ -129,7 +129,8 @@ ground truth and an asserted error bound. Write the bound generously first, tigh
 generous bound that exists beats a precise one that doesn't.
 
 Synthetic datasets come from `tools/` — render the frames a phone *would* have captured from a
-known panorama, with known per-frame rotation, optional movers for ghost tests. Use them rather
+known panorama, with known per-frame rotation. (`tools/synth_dataset.py` does the geometry and the
+ground truth today; movers for ghost tests, noise, blur and bursts are each still to come.) Use them rather
 than hand-collecting fixtures; they are reproducible and they carry truth.
 
 ### Where TDD does not apply

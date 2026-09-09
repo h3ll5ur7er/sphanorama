@@ -10,7 +10,7 @@ makes them checkable.
 | -------- | -------- | --------- |
 | **C++20** | Managers, engines, resource-access contracts, native resource-access implementations | The whole point: one implementation of the business logic, compiled to WASM for the browser and to a native binary for the bench. OpenCV is C++ |
 | **TypeScript** | Clients, browser resource-access adapters, PWA shell, service worker | Thin by design. If a `.ts` file contains geometry or pixel maths, it is in the wrong layer |
-| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations, result scoring | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip |
+| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy is in a group so the checkers stay standard-library only (ADR 0050). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
 
 No Rust/Swift/C# — nothing in the design needs them, and each would add a toolchain without
 removing one.
@@ -85,7 +85,7 @@ most of them immediately before the check they guard. The reason is in that file
 the checkers never change while you are working, which is exactly what makes a broken one the
 easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
-checker suites at the top, fourteen steps before the budget it guards, because that budget needs a
+checker suites at the top, fifteen steps before the budget it guards, because that budget needs a
 wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
 
@@ -111,7 +111,7 @@ than a browser call.
 | Level | What | How |
 | ----- | ---- | --- |
 | Engine unit | Pure functions with fixed inputs | GoogleTest, native. Golden outputs checked in as small fixtures |
-| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that would feed it, the threshold it would be asserted against, and the Python/OpenCV cross-reference are all still to come; today it is exercised only by its own suite |
+| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not). Still to come: the threshold it is asserted against, and running the two against each other — today each is exercised only by its own suite |
 | Manager behaviour | Sequencing and state machines | Native tests with **fake** resource accesses (a recorded IMU log + a folder of frames implements `IMotionSensorAccess`/`ICameraAccess` exactly). This is why those are contracts and not `getUserMedia` calls |
 | Boundary | Facade marshalling, error codes | Vitest against the real WASM module in Node |
 | Client | Reticle logic, guidance rendering | Vitest + Testing Library, with a mocked manager proxy |
@@ -120,15 +120,31 @@ than a browser call.
 
 ## 5.5 Synthetic datasets — the thing that makes any of this verifiable
 
-A Python tool takes an existing high-resolution equirectangular panorama (public-domain HDRIs) and
-renders the exact frames a phone *would* have captured: given a lens FoV, a pose trajectory, a
-noise/blur model, rolling-shutter skew and an exposure ramp, it emits a burst per cell **plus the
-ground-truth rotation of every frame**. Optional composited movers produce known ghost regions.
+`tools/synth_dataset.py` renders the frames a phone *would* have captured from an equirectangular
+panorama: given a lens field of view and a list of camera orientations, it emits one image per
+orientation **plus the ground-truth rotation of every frame**, as binary Netpbm beside a
+`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy — the
+checkers above stay standard-library only (ADR 0050).
 
-That gives:
+**It implements the lens itself rather than calling the core**, so a dataset is never rendered by
+the code it will be used to measure — an error the two shared would cancel, and the harness would
+score a broken projection as perfect. What carries the weight is not the separation, though: a
+reviewer showed the arithmetic is close enough to the core's to be called a transcription. It is the
+pinning of both to hand-worked decimals derived from neither (ADR 0050).
 
-- registration accuracy measured in degrees against truth, not eyeballed;
-- ghost detection scored against a known mask;
+Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, and a
+procedural panorama. Still to come, each its own increment with its own invariant: real HDRIs, a
+noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
+movers for known ghost regions.
+
+What it gives today is the first of these; the rest wait on the increments listed above:
+
+- registration accuracy measured in degrees against truth, not eyeballed — the two halves that
+  make it possible are in (`rotation_scoring`, ADR 0049, and `tools/synth_dataset.py`, ADR 0050),
+  and there is **nothing to measure yet**: `RegistrationEngine` is still the null implementation.
+  A round-1 fix wrote "available now" here, which overcorrected a stale sentence into a false one
+  and contradicted §5.4 twelve lines above;
+- ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.
 

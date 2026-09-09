@@ -55,6 +55,9 @@ step "marker checker tests"       uv run --locked tools/test_conflict_marker_che
 step "no conflict markers"        uv run --locked tools/conflict_marker_check.py
 step "table checker tests"        uv run --locked tools/test_markdown_table_check.py
 step "no broken tables"           uv run --locked tools/markdown_table_check.py
+# The one step that needs a dependency, so it names the group that carries it. Everything
+# above is standard-library only and stays that way (ADR 0048, ADR 0050).
+step "dataset renderer tests"     uv run --locked --group datasets tools/test_synth_dataset.py
 
 echo "== native =="
 step "native configure"  cmake --preset native-debug
