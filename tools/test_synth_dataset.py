@@ -849,6 +849,11 @@ class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
                 written = sorted(child.name for child in out.iterdir()) if out.exists() else []
                 self.assertEqual(written, [],
                                  f"a run that refused its third frame left {written} behind")
+                # And nothing beside it either. A sabotage showed the staging cleanup on this path
+                # was untested: asserting `out` is empty says nothing about the hidden sibling the
+                # render was writing into.
+                leaked = [c.name for c in out.parent.iterdir() if c.name.startswith(".")]
+                self.assertEqual(leaked, [], f"staging directories leaked: {leaked}")
         finally:
             synth_dataset.render_frame = honest
 
@@ -889,6 +894,52 @@ class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
             after = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
             self.assertEqual(after, before,
                              "a failed run changed the dataset that was already there")
+            # This is the path where the staging directory exists when the failure happens — the
+            # render is complete by then — so it is the one that pins the cleanup. The
+            # refused-during-rendering test cannot: nothing is staged yet at that point.
+            leaked = [c.name for c in out.parent.iterdir() if c.name.startswith(".")]
+            self.assertEqual(leaked, [], f"staging directories leaked: {leaked}")
+
+    def test_a_failure_while_swapping_leaves_the_old_dataset_whole(self):
+        """The staging fix moved the window rather than closing it, and a reviewer measured it.
+
+        Files were moved into `out` one at a time, so an `OSError` on the second `replace` left the
+        previous dataset partly deleted, `out` holding one new frame and no `truth.json`, and the
+        staging directory leaked. Both properties that were supposed to make it safe were
+        mutation-green — deleting the cleanup, and deleting the truth-first unlink, each left the
+        whole suite passing.
+
+        Two directory renames close it: the old dataset moves aside whole, the new one takes its
+        place whole, and the loser is removed afterwards. A failure at any single step leaves one
+        or the other complete.
+        """
+        panorama = direction_encoded_panorama(128, 64)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            write_dataset(out, panorama, self._lens(), [Pose.identity()] * 3)
+            before = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
+
+            honest = Path.replace
+            calls = {"n": 0}
+
+            def fails_on_the_second_move(self_path, target):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise OSError("the filesystem went away")
+                return honest(self_path, target)
+
+            Path.replace = fails_on_the_second_move
+            try:
+                with self.assertRaises(OSError):
+                    write_dataset(out, panorama, self._lens(), [Pose.identity()] * 2)
+            finally:
+                Path.replace = honest
+
+            self.assertTrue(out.is_dir(), "the output directory vanished entirely")
+            after = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
+            self.assertEqual(after, before, "a failed swap left a mixture of two datasets")
+            leaked = [c.name for c in out.parent.iterdir() if c.name.startswith(".")]
+            self.assertEqual(leaked, [], f"staging directories leaked: {leaked}")
 
     def test_a_shorter_second_run_does_not_leave_the_first_ones_frames(self):
         panorama = direction_encoded_panorama(128, 64)
@@ -1102,13 +1153,36 @@ class APixelThatIsNotAMeasurementGetsNoDirection(unittest.TestCase):
     that is what this asserts, on whatever refuses it.
     """
 
-    def test_a_non_finite_pixel_is_refused(self):
+    def test_a_non_finite_pixel_is_refused_without_computing_on_it(self):
+        """Refused **and** quietly, which is the half I got wrong.
+
+        I removed the core's input guards on a measurement that said they change nothing here, and
+        a round-4 reviewer showed the measurement was false: `unproject([[inf, 24.0]])` raises
+        `FloatingPointError` under `errstate(all="raise")` and emits 311 RuntimeWarnings from that
+        single pixel by default. My probe had suppressed exactly the categories it was meant to be
+        looking for, so it reported silence it had itself arranged.
+
+        `errstate(all="raise")` is therefore the assertion, not a convenience: the contract is that
+        a pixel which is not a measurement is refused without the solver ever computing on it, and
+        that is a property only this can express.
+        """
         lens = lens_from_fov(66.0, 50.0, 64, 48)
-        for name, pixel in (("infinite", [math.inf, 24.0]), ("not a number", [32.0, math.nan])):
-            with np.errstate(over="ignore", invalid="ignore"):
+        for name, pixel in (("infinite", [math.inf, 24.0]),
+                            ("not a number", [32.0, math.nan]),
+                            ("both", [math.nan, math.inf])):
+            with np.errstate(all="raise"):
                 directions, valid = unproject(lens, np.array([pixel]))
             self.assertFalse(valid.any(), name)
             self.assertTrue(np.isnan(directions).all(), name)
+
+    def test_a_refused_pixel_does_not_make_the_others_noisy(self):
+        """One bad row must not drag the whole vectorised batch through invalid arithmetic."""
+        lens = lens_from_fov(66.0, 50.0, 64, 48)
+        batch = np.array([[32.0, 24.0], [math.inf, 24.0], [10.0, 8.0]])
+        with np.errstate(all="raise"):
+            directions, valid = unproject(lens, batch)
+        self.assertTrue(bool(valid[0]) and bool(valid[2]), "the good rows must still be answered")
+        self.assertFalse(bool(valid[1]))
 
     def test_a_finite_but_enormous_pixel_is_refused_rather_than_answered(self):
         """A pixel at 1e300 normalises to a finite 2.03e298, so the guard above does not fire.

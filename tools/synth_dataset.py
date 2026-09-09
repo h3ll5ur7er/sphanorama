@@ -400,15 +400,30 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     pixels = np.asarray(pixels, dtype=float)
 
     # The core refuses a non-finite pixel up front, and a non-finite `xd`/`yd` after the division.
-    # Those are **deliberately not ported**, which is a departure from this file's own rule and so
-    # is recorded rather than assumed: measured, they change nothing here. A non-finite pixel
-    # divides to an infinity, the solver propagates it to NaN, and the round trip below refuses the
-    # row — with `valid` false and a NaN direction, identically, with the guards or without, and
-    # under `np.errstate(all="raise")` as well, because none of that arithmetic is an operation
-    # numpy raises on. In C++ the checks earn their place; here they would be a guard no test can
-    # distinguish, which this repository deletes rather than keeps because it feels safer.
+    # Both are ported, and the story of how they briefly were not is worth keeping.
+    #
+    # I removed them once, on a measurement that said they change nothing in numpy — the infinity
+    # propagates to NaN and the round trip refuses the row either way. The refusal part is true.
+    # The quietness is not: without these, one infinite pixel raises `FloatingPointError` under
+    # `errstate(all="raise")` and emits 311 RuntimeWarnings by default, because a vectorised solver
+    # drags the whole batch through invalid arithmetic on its behalf. My probe had suppressed
+    # exactly the two warning categories it was looking for, so it reported a silence it had
+    # arranged itself, and a reviewer caught it. `project` five lines up is clean on the same input,
+    # which should have been the clue.
+    # **One test, not two.** The core has a pixel check and then a normalised-coordinate check;
+    # ported literally that is two guards which shadow each other here — measured, either was
+    # individually deletable with the suite green and only both together failed. That is round 3's
+    # finding about the ray guards, which I reintroduced while fixing this one, and caught by
+    # sabotaging each separately rather than the pair.
+    #
+    # The second subsumes the first in numpy: a non-finite pixel gives a non-finite `xd`, and so
+    # does a finite pixel that divides to one, and neither subtraction nor division raises on the
+    # way. So this is the whole of it, and deleting it fails the tests below.
     xd = (pixels[:, 0] - lens.cx) / lens.fx
     yd = (pixels[:, 1] - lens.cy) / lens.fy
+    usable_pixel = np.isfinite(xd) & np.isfinite(yd)
+    xd = np.where(usable_pixel, xd, 0.0)
+    yd = np.where(usable_pixel, yd, 0.0)
 
     xn = xd.copy()
     yn = yd.copy()
@@ -500,7 +515,7 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     # Compared in normalised units, so the bound means the same thing at every frame size.
     landed = ((np.abs(back_u - pixels[:, 0]) / lens.fx < INVERSE_ACCEPTANCE_NORMALISED)
               & (np.abs(back_v - pixels[:, 1]) / lens.fy < INVERSE_ACCEPTANCE_NORMALISED))
-    finite = np.isfinite(xn) & np.isfinite(yn)
+    finite = np.isfinite(xn) & np.isfinite(yn) & usable_pixel
     valid = back_valid & landed & finite
 
     # A refused direction comes back as NaN rather than as a unit vector. It used to have norm
@@ -690,22 +705,32 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    # Everything is on disk. Only now does what was already there get touched, and `truth.json`
-    # goes first: while it is absent no consumer can read stale ground truth attached to frames,
-    # which is the state that has to be unreachable rather than merely brief.
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "truth.json").unlink(missing_ok=True)
-    for stale in out.glob("frame_*.ppm"):
-        stale.unlink()
-
-    written: list[Path] = []
-    for source in sorted(staging.glob("frame_*.ppm")):
-        destination = out / source.name
-        source.replace(destination)
-        written.append(destination)
-    (staging / "truth.json").replace(out / "truth.json")
-    shutil.rmtree(staging, ignore_errors=True)
-    return written
+    # Everything is on disk. The swap is **two directory renames**, not a file-by-file move: the
+    # old dataset steps aside whole and the new one takes its place whole, so a failure at any
+    # single step leaves one or the other complete rather than a mixture of both.
+    #
+    # Moving the files one at a time was the previous attempt and it only moved the window: an
+    # error on the second `replace` left the old dataset partly deleted, `out` holding one new
+    # frame and no `truth.json`, and the staging directory leaked. A reviewer measured that, and
+    # both properties meant to make it safe were mutation-green — which is what a window looks like
+    # when it has been narrowed rather than closed.
+    displaced = out.parent / f".{out.name}.replaced"
+    shutil.rmtree(displaced, ignore_errors=True)
+    try:
+        if out.exists():
+            out.replace(displaced)
+        staging.replace(out)
+    except BaseException:
+        # Put back whatever was there and leave nothing else behind. Keeping the staged copy "for
+        # inspection" was the first version of this and it is the wrong trade: it leaves a hidden
+        # directory the caller did not ask for and cannot easily interpret, to save a render that
+        # costs seconds at the size this tool is usable at.
+        if displaced.exists() and not out.exists():
+            displaced.replace(out)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(displaced, ignore_errors=True)
+    return [out / f"frame_{index:04d}.ppm" for index in range(len(frames))]
 
 
 def _checkerboard_panorama(width: int, height: int, squares: int = 64) -> np.ndarray:
