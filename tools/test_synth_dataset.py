@@ -836,6 +836,44 @@ class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
         finally:
             synth_dataset.render_frame = honest
 
+    def test_a_failed_second_run_does_not_destroy_the_first_ones_dataset(self):
+        """The round-2 fix swept stale frames *before* writing, so a failure destroyed both.
+
+        All-or-nothing covered rendering and stopped there: the unlink loop ran between the render
+        and the write, so an I/O failure during writing left the previous dataset deleted and the
+        new one half-present — `truth.json` describing frames that are gone, beside files from
+        neither run. That is "ground truth silently attached to the wrong frames", which the comment
+        three lines above the sweep calls the one failure this tool exists to prevent, reintroduced
+        by the commit that quoted it.
+        """
+        panorama = direction_encoded_panorama(128, 64)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            write_dataset(out, panorama, self._lens(), [Pose.identity()] * 3)
+            before = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
+            self.assertEqual(len(before), 4, "three frames and a truth file")
+
+            honest = Path.open
+            calls = {"n": 0}
+
+            def fails_on_the_second_frame(self_path, *args, **kwargs):
+                if "frame_" in self_path.name and "w" in str(args[0] if args else kwargs.get("mode", "")):
+                    calls["n"] += 1
+                    if calls["n"] == 2:
+                        raise OSError("no space left on device")
+                return honest(self_path, *args, **kwargs)
+
+            Path.open = fails_on_the_second_frame
+            try:
+                with self.assertRaises(OSError):
+                    write_dataset(out, panorama, self._lens(), [Pose.identity()] * 3)
+            finally:
+                Path.open = honest
+
+            after = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
+            self.assertEqual(after, before,
+                             "a failed run changed the dataset that was already there")
+
     def test_a_shorter_second_run_does_not_leave_the_first_ones_frames(self):
         panorama = direction_encoded_panorama(128, 64)
         with tempfile.TemporaryDirectory() as directory:
@@ -1033,6 +1071,67 @@ class TheTangentialTermsAreLoadBearing(unittest.TestCase):
         self.assertFalse(np.array_equal((at.determinant > 0.0), (without_the_coupling > 0.0)),
                          "dropping the off-diagonal term changed no verdict, so this lens does not "
                          "exercise it")
+
+
+class APixelThatIsNotAMeasurementGetsNoDirection(unittest.TestCase):
+    """A non-finite pixel is refused. **This pins the contract, not a mechanism.**
+
+    Said explicitly because a round-3 reviewer reported the core's two input guards as missing from
+    the port, and porting them turned out to change nothing: with them or without, a non-finite
+    pixel comes back `valid = False` with a NaN direction, and no arithmetic on the way raises even
+    under `np.errstate(all="raise")`. The infinity propagates to NaN and the round trip refuses it.
+
+    So the guards are deliberately not here and the reason is in `unproject`. What is worth pinning
+    is the promise a caller depends on — a pixel that is not a measurement gets no direction — and
+    that is what this asserts, on whatever refuses it.
+    """
+
+    def test_a_non_finite_pixel_is_refused(self):
+        lens = lens_from_fov(66.0, 50.0, 64, 48)
+        for name, pixel in (("infinite", [math.inf, 24.0]), ("not a number", [32.0, math.nan])):
+            with np.errstate(over="ignore", invalid="ignore"):
+                directions, valid = unproject(lens, np.array([pixel]))
+            self.assertFalse(valid.any(), name)
+            self.assertTrue(np.isnan(directions).all(), name)
+
+    def test_a_finite_but_enormous_pixel_is_refused_rather_than_answered(self):
+        """A pixel at 1e300 normalises to a finite 2.03e298, so the guard above does not fire.
+
+        It is refused further down, by the round trip, which is also what the core does — its
+        `isfinite(xd)` check passes on this input too. The reviewer who found this reported it as
+        `unproject` computing on infinities, and the refusal is right; what was wrong was only the
+        missing *input* guard above, for a pixel that is itself non-finite.
+
+        Deliberately not asserted under `errstate(all="raise")`: the intermediate overflow is real
+        and the C++ has it too, where it produces an infinity rather than an exception. Promising
+        that no floating-point event occurs would be a stricter contract than the thing this file
+        is pinned to.
+        """
+        lens = lens_from_fov(66.0, 50.0, 64, 48)
+        with np.errstate(over="ignore", invalid="ignore"):
+            directions, valid = unproject(lens, np.array([[1e300, 24.0]]))
+        self.assertFalse(valid.any())
+        self.assertTrue(np.isnan(directions).all())
+
+
+class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
+    """`camera_model.cpp` names this guard as the one with no backstop, and the port had no test.
+
+    Its own witness, reproduced here: a `k3` large enough that `radial` overflows the distorted
+    coordinate while every earlier guard passes. `is_usable_lens` says yes, the fold test says yes,
+    and `u` comes out infinite — so without this the answer is `valid = True` at pixel `(inf, cy)`.
+    """
+
+    def test_a_lens_whose_radial_term_overflows_the_pixel_is_refused(self):
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 64, 48).__dict__, "k3": 1e305})
+        direction = np.array([[1.8, 0.0, -1.0]])
+        self.assertTrue(is_usable_lens(lens), "the arrangement must survive the earlier guards")
+        with np.errstate(over="ignore", invalid="ignore"):
+            self.assertTrue(inverts_along_the_ray(lens, np.array([1.8]), np.array([0.0])).all(),
+                            "the fold test must pass, or this proves nothing about finiteness")
+            u, v, valid = project(lens, direction)
+        self.assertFalse(valid.any(), f"answered pixel ({u[0]}, {v[0]})")
+        self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
 
 
 class TheSeamWrapsOnBothSides(unittest.TestCase):

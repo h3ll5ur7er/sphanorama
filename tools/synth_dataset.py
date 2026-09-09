@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -397,6 +398,15 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
         raise ValueError("this is not a lens: fx, fy, width and height must all be positive")
 
     pixels = np.asarray(pixels, dtype=float)
+
+    # The core refuses a non-finite pixel up front, and a non-finite `xd`/`yd` after the division.
+    # Those are **deliberately not ported**, which is a departure from this file's own rule and so
+    # is recorded rather than assumed: measured, they change nothing here. A non-finite pixel
+    # divides to an infinity, the solver propagates it to NaN, and the round trip below refuses the
+    # row — with `valid` false and a NaN direction, identically, with the guards or without, and
+    # under `np.errstate(all="raise")` as well, because none of that arithmetic is an operation
+    # numpy raises on. In C++ the checks earn their place; here they would be a guard no test can
+    # distinguish, which this repository deletes rather than keeps because it feels safer.
     xd = (pixels[:, 0] - lens.cx) / lens.fx
     yd = (pixels[:, 1] - lens.cy) / lens.fy
 
@@ -424,6 +434,26 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
         safe = np.where(usable, determinant, 1.0)
         full_x = np.where(usable, -(dydy * fx_ - cross * fy_) / safe, 0.0)
         full_y = np.where(usable, -(dxdx * fy_ - cross * fx_) / safe, 0.0)
+
+        # Arrived. Tested on the **full** step, before the damping, which is where the core puts it
+        # and where the port did not. When Newton converges exactly the full step is zero; every
+        # halving of zero puts the trial exactly where the iterate already stands, so its residual
+        # is not *smaller*, the strict test below rejects all thirty in turn, and the exit that
+        # exists for this sat after the loop where it could never be reached. `camera_model.cpp`
+        # describes this defect in its own words, with its own measurement — and the port kept the
+        # loop and dropped the exit, which is the fourth incomplete port this branch has found.
+        #
+        # No test pins it and none should pretend to. The core says removing its line changes no
+        # answer; here that is **not quite true** and the difference is worth stating rather than
+        # inheriting the C++'s claim. On an undistorted lens the accepted directions are
+        # bit-identical. On a distorting one 87,368 of 307,200 rows move by one ULP — 3.33e-16 in a
+        # component, 1.7e-06 degrees — because the iterate now stops a refinement earlier. That is
+        # four orders inside the 0.001-degree bound the render tests assert and nine inside the
+        # acceptance tolerance, so it is noise rather than a behaviour change; it is simply not the
+        # word "identical".
+        if float(np.max(full_x * full_x + full_y * full_y, initial=0.0)) <= (
+                INVERSE_TOLERANCE * INVERSE_TOLERANCE):
+            break
 
         # Damped, and the damping is what keeps a step from crossing the fold: halve until the
         # trial point is both defined and strictly closer than where it stands.
@@ -456,21 +486,22 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     directions = np.stack([xn, -yn, -np.ones_like(xn)], axis=-1)
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 
-    # `inverts_along_the_ray`, not `defined_at`. The pointwise test was what stood here and it is
-    # not the same question: it asks whether the map is well-behaved *at* the solution and says
-    # nothing about the way out to it, so an answer that leapt the fold and landed somewhere calm
-    # on the far side satisfied it. The round trip cannot separate the two either — ADR 0046 says
-    # why in as many words: past the fold `radial` goes negative, the sign of `xd` flips, and the
-    # wrong preimage really does project back onto the pixel asked about. It stays for the solver
-    # that simply wandered, which is a different failure and still worth catching.
+    # The fold test lives in `project`, and this asks `project`. That is the core's shape: its
+    # `Unproject` has no ray check of its own, because `Project` carries one and the round trip
+    # goes through it.
+    #
+    # A second copy stood here for one round and had to go. Not because it was wrong — because the
+    # two shadowed each other, so either was individually deletable with the whole suite green,
+    # *including* replacing this one with `defined_at`, which is the round-1 defect verbatim. A
+    # guard that cannot be tested alone is a guard nobody can maintain, and the test written this
+    # round specifically so a fold check could not be its own oracle was only ever exercising the
+    # pair. One check, in the place the core puts it, and deleting it now fails that test.
     back_u, back_v, back_valid = project(lens, directions)
     # Compared in normalised units, so the bound means the same thing at every frame size.
     landed = ((np.abs(back_u - pixels[:, 0]) / lens.fx < INVERSE_ACCEPTANCE_NORMALISED)
               & (np.abs(back_v - pixels[:, 1]) / lens.fy < INVERSE_ACCEPTANCE_NORMALISED))
     finite = np.isfinite(xn) & np.isfinite(yn)
-    on_the_near_branch = inverts_along_the_ray(lens, np.where(finite, xn, 0.0),
-                                               np.where(finite, yn, 0.0))
-    valid = back_valid & landed & on_the_near_branch & finite
+    valid = back_valid & landed & finite
 
     # A refused direction comes back as NaN rather than as a unit vector. It used to have norm
     # exactly 1.0, so nothing about the value itself said it was not an answer — see `project`.
@@ -607,53 +638,73 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     # a whole one.
     rendered = [_to_bytes(render_frame(panorama, lens, pose)) for pose in poses]
 
+    # Written into a staging directory first, and moved into place only once every byte is on
+    # disk. The previous version swept the old frames *before* the write loop, so all-or-nothing
+    # covered rendering and stopped there: a failure while writing left the earlier dataset deleted
+    # and this one half-present — a `truth.json` describing frames that are gone, beside files from
+    # neither run. That is the failure the paragraph below is about, reintroduced by the commit
+    # that wrote the paragraph.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging = out.parent / f".{out.name}.partial"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+
+    frames = []
+    try:
+        for index, (pose, frame) in enumerate(zip(poses, rendered)):
+            name = f"frame_{index:04d}.ppm"
+            with (staging / name).open("wb") as handle:
+                handle.write(b"P6\n%d %d\n255\n" % (lens.width, lens.height))
+                handle.write(frame.tobytes())
+            frames.append({
+                "file": name,
+                "rotation": {"w": pose.w, "x": pose.x, "y": pose.y, "z": pose.z},
+            })
+
+        truth = {
+            # Prose, and nothing parses it — a reviewer is right that it cannot drift-check itself. It
+            # is here because a consumer that reads these frames in another language needs the frame
+            # conventions written down somewhere, and the equirectangular one below exists nowhere else:
+            # the other three are mirrored from `types.h`, so a C++ reader already has them.
+            "convention": {
+                "camera_space": "-Z forward, +Y up, +X right",
+                "image_space": "+x right, +y down, origin at the top-left corner",
+                "principal_point": "this generator's lenses are built with cx = width / 2, half a pixel "
+                                   "from OpenCV's (width - 1) / 2; read the value from intrinsics rather "
+                                   "than assuming it",
+                "equirectangular": "longitude 0 is -Z and increases toward +X; latitude +90 is +Y at "
+                                   "row 0; an integer coordinate is a pixel edge, so forward lands on "
+                                   "the corner at (width / 2, height / 2)",
+                "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
+                "pixel_encoding": "each byte b is a signed component: value = b / 255 * 2 - 1, so 0 is "
+                                  "-1.0, 128 is +0.00392 and 255 is +1.0; there is no gamma and no "
+                                  "colour space. A consumer that assumes unsigned [0, 1] reads every "
+                                  "frame with its contrast halved and its zero in the wrong place",
+            },
+            "intrinsics": asdict(lens),
+            "frames": frames,
+        }
+        (staging / "truth.json").write_text(json.dumps(truth, indent=2) + "\n")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    # Everything is on disk. Only now does what was already there get touched, and `truth.json`
+    # goes first: while it is absent no consumer can read stale ground truth attached to frames,
+    # which is the state that has to be unreachable rather than merely brief.
     out.mkdir(parents=True, exist_ok=True)
-    # And the frames of a previous, longer run go. They are named exactly like this run's, so
-    # leaving them puts pixels from a different capture beside a truth file that does not mention
-    # them: ground truth silently attached to the wrong frames, which is the one failure this tool
-    # exists to prevent.
+    (out / "truth.json").unlink(missing_ok=True)
     for stale in out.glob("frame_*.ppm"):
         stale.unlink()
 
     written: list[Path] = []
-    frames = []
-
-    for index, (pose, frame) in enumerate(zip(poses, rendered)):
-        name = f"frame_{index:04d}.ppm"
-        path = out / name
-        with path.open("wb") as handle:
-            handle.write(b"P6\n%d %d\n255\n" % (lens.width, lens.height))
-            handle.write(frame.tobytes())
-        written.append(path)
-        frames.append({
-            "file": name,
-            "rotation": {"w": pose.w, "x": pose.x, "y": pose.y, "z": pose.z},
-        })
-
-    truth = {
-        # Prose, and nothing parses it — a reviewer is right that it cannot drift-check itself. It
-        # is here because a consumer that reads these frames in another language needs the frame
-        # conventions written down somewhere, and the equirectangular one below exists nowhere else:
-        # the other three are mirrored from `types.h`, so a C++ reader already has them.
-        "convention": {
-            "camera_space": "-Z forward, +Y up, +X right",
-            "image_space": "+x right, +y down, origin at the top-left corner",
-            "principal_point": "this generator's lenses are built with cx = width / 2, half a pixel "
-                               "from OpenCV's (width - 1) / 2; read the value from intrinsics rather "
-                               "than assuming it",
-            "equirectangular": "longitude 0 is -Z and increases toward +X; latitude +90 is +Y at "
-                               "row 0; an integer coordinate is a pixel edge, so forward lands on "
-                               "the corner at (width / 2, height / 2)",
-            "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
-            "pixel_encoding": "each byte b is a signed component: value = b / 255 * 2 - 1, so 0 is "
-                              "-1.0, 128 is +0.00392 and 255 is +1.0; there is no gamma and no "
-                              "colour space. A consumer that assumes unsigned [0, 1] reads every "
-                              "frame with its contrast halved and its zero in the wrong place",
-        },
-        "intrinsics": asdict(lens),
-        "frames": frames,
-    }
-    (out / "truth.json").write_text(json.dumps(truth, indent=2) + "\n")
+    for source in sorted(staging.glob("frame_*.ppm")):
+        destination = out / source.name
+        source.replace(destination)
+        written.append(destination)
+    (staging / "truth.json").replace(out / "truth.json")
+    shutil.rmtree(staging, ignore_errors=True)
     return written
 
 
