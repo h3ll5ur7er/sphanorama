@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    INVERSE_ACCEPTANCE_NORMALISED,
     is_usable_lens,
     Intrinsics,
     _to_bytes,
@@ -768,6 +769,149 @@ class RefusalsThatCannotBeMistakenForAnswers(unittest.TestCase):
             self.assertFalse(is_usable_lens(lens), name)
             with self.assertRaises(ValueError, msg=name):
                 project(lens, np.array([[0.0, 0.0, -1.0]]))
+
+
+class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
+    """Frames are written as they render, and `truth.json` last, so a refusal splits the pair.
+
+    The pitch for P6 is that "any consumer can read it in a dozen lines and no consumer needs a
+    library" — and the dozen-line consumer globs `frame_*.ppm`. A run that raises part way left it
+    frames with no truth at all, and a second, shorter run into the same directory left it frames
+    from a *previous* capture, named exactly like the current ones, beside a truth file that does
+    not mention them. Ground truth silently attached to the wrong pixels is the one failure this
+    whole tool exists to prevent.
+    """
+
+    def _lens(self):
+        return lens_from_fov(66.0, 50.0, 16, 12)
+
+    def test_a_pose_that_is_not_a_rotation_is_refused_before_any_file_exists(self):
+        panorama = direction_encoded_panorama(128, 64)
+        good = Pose.identity()
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            with self.assertRaises(ValueError):
+                write_dataset(out, panorama, self._lens(),
+                              [good, good, Pose(math.nan, 0.0, 0.0, 0.0)])
+            written = sorted(child.name for child in out.iterdir()) if out.exists() else []
+            self.assertEqual(written, [], f"a refused run left {written} behind")
+
+    def test_a_refusal_during_rendering_also_leaves_nothing_behind(self):
+        """The previous test does not reach this, and I only found that by sabotage.
+
+        It refuses on the *pose*, which `normalised()` rejects before anything renders — so making
+        the render lazy again left it green. `render_frame`'s own refusal depends on the lens rather
+        than the pose, so no list of poses can fail part way through today; the state is reachable
+        only if a future modifier (noise, movers, an exposure ramp) can refuse per frame, which is
+        exactly what §5.5 has queued.
+
+        So the arrangement forces it, rather than pretending a lens could. Keeping the guard with a
+        test that reaches it is the alternative to keeping an untested guard because it feels safer.
+        """
+        panorama = direction_encoded_panorama(128, 64)
+        honest = synth_dataset.render_frame
+        calls = {"n": 0}
+
+        def refuses_the_third_frame(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise ValueError("a modifier refused this frame")
+            return honest(*args, **kwargs)
+
+        synth_dataset.render_frame = refuses_the_third_frame
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                out = Path(directory) / "ds"
+                with self.assertRaises(ValueError):
+                    write_dataset(out, panorama, self._lens(), [Pose.identity()] * 4)
+                written = sorted(child.name for child in out.iterdir()) if out.exists() else []
+                self.assertEqual(written, [],
+                                 f"a run that refused its third frame left {written} behind")
+        finally:
+            synth_dataset.render_frame = honest
+
+    def test_a_shorter_second_run_does_not_leave_the_first_ones_frames(self):
+        panorama = direction_encoded_panorama(128, 64)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            write_dataset(out, panorama, self._lens(), [Pose.identity()] * 5)
+            write_dataset(out, panorama, self._lens(), [Pose.identity()] * 2)
+
+            frames = sorted(child.name for child in out.glob("frame_*.ppm"))
+            listed = json.loads((out / "truth.json").read_text())["frames"]
+            self.assertEqual(len(frames), len(listed),
+                             f"{len(frames)} frames on disk, {len(listed)} in truth.json")
+
+
+class ARefusedRowDoesNotLookLikeAnAnswer(unittest.TestCase):
+    """The flag was closed in round 1 and the value beside it was not.
+
+    `safe_depth = 1.0` is not a neutral placeholder — it is "pretend this direction is one unit in
+    front of the camera", which for a direction lying in or behind the optical plane lands on the
+    principal point: the single most plausible-looking pixel available. And a refused `unproject`
+    row came back as a *unit* vector, indistinguishable by inspection from an answered one.
+
+    That the one in-tree caller reads the mask is not the argument for leaving it: this file already
+    shipped a caller that consumed the directions before reading the mask, and the only reason that
+    was survivable is that the fabricated rows happened to be NaN. Under a lens where they are not,
+    the same mistake reads as a rendered frame.
+    """
+
+    def test_a_refused_projection_is_not_answered_at_the_principal_point(self):
+        lens = lens_from_fov(66.0, 50.0, 320, 240)
+        behind_and_worse = np.array([[0.0, 0.0, 1.0],          # behind the camera
+                                     [0.0, 0.0, 0.0],          # in the optical plane
+                                     [0.3, -0.2, math.inf]])   # not a measurement
+        u, v, valid = project(lens, behind_and_worse)
+        self.assertFalse(valid.any(), "the arrangement must be refused, or this tests nothing")
+        self.assertTrue(np.isnan(u).all() and np.isnan(v).all(),
+                        f"refused pixels came back as {list(zip(u, v))}, which are pixels")
+
+    def test_a_refused_unprojection_is_not_answered_as_a_unit_direction(self):
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 48, 36).__dict__, "k1": -1.0, "k2": 0.3})
+        us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
+                             indexing="xy")
+        pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
+        directions, valid = unproject(lens, pixels)
+        self.assertFalse(valid.all(), "the arrangement must refuse something")
+        self.assertTrue(np.isnan(directions[~valid]).all(),
+                        "a refused direction came back finite, so it reads as an answer")
+        self.assertTrue(np.isfinite(directions[valid]).all(),
+                        "and an answered one must still be a direction")
+
+
+class TheAcceptanceToleranceIsNamedAndInTheCoresUnit(unittest.TestCase):
+    """An unnamed `1e-6` in pixels made the refusal boundary move with the focal length.
+
+    The core accepts a round trip within `kInverseToleranceNormalised = 1e-9`, in normalised units.
+    This file compared pixels against a literal, so the same lens family drew the line in different
+    places depending on frame size — 27x looser than the core at 48x36, 3x tighter at 4000x3000.
+    Two implementations ADR 0050 pins to each other should not disagree about where a refusal is.
+
+    `INVERSE_TOLERANCE` was also named for a job it does not do: it is the settled-step early exit,
+    which the core calls `kSettledStepNormalised`.
+    """
+
+    def test_the_constant_is_the_cores_number(self):
+        """**This pins the constant, not a behaviour, and that is a real limitation.**
+
+        Say so plainly, because a sabotage proved it: putting the old unnamed `1e-6`-in-pixels back
+        leaves all 58 tests green. The two bounds differ by 27x at 48x36 and 3x the other way at
+        4000x3000, but the solver converges around 1e-12 normalised, which is four orders inside
+        both — so no input I could construct lands in the gap between them.
+
+        The fix is therefore latent correctness rather than a behaviour change, and this test is
+        documentation with an assertion attached. It still earns its place: it fails if someone
+        retunes the constant without meeting the core, which is the drift ADR 0050's pinning exists
+        to catch, and the docstring is the only place that records why a stronger test is not here.
+        """
+        self.assertEqual(INVERSE_ACCEPTANCE_NORMALISED, 1e-9,
+                         "the core's kInverseToleranceNormalised is what this pins to")
+        # And the bound is applied in normalised units, so it is the same statement at every size.
+        for width, height in ((48, 36), (320, 240), (1600, 1200)):
+            lens = lens_from_fov(66.0, 50.0, width, height)
+            _, valid = unproject(lens, np.array([[lens.cx, lens.cy]]))
+            self.assertTrue(valid.all(), f"{width}x{height}: the principal point must invert")
 
 
 class EquirectangularMapping(unittest.TestCase):

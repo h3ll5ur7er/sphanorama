@@ -53,7 +53,19 @@ import numpy as np
 # its own budget; this one is generous because it runs offline on whole images at a time and an
 # extra pass costs nothing a person would notice.
 INVERSE_ITERATIONS = 30
+
+# The settled-step early exit — what the core calls `kSettledStepNormalised`. The name says
+# `TOLERANCE` for historical reasons and it is *not* the round-trip bound; that is the constant
+# below, which is the one that decides refusals.
 INVERSE_TOLERANCE = 1e-12
+
+# The round-trip acceptance bound, in **normalised** units, which is the core's
+# `kInverseToleranceNormalised` and the same number. This used to be an unnamed `1e-6` compared
+# against *pixels*, so the refusal boundary moved with the focal length: 27 times looser than the
+# core at 48x36 and 3 times tighter at 4000x3000. Two implementations pinned to each other should
+# not disagree about where a refusal is, and a bound in the wrong unit is how that happens — the
+# same lesson the render tolerance taught in colour components (ADR 0050).
+INVERSE_ACCEPTANCE_NORMALISED = 1e-9
 
 # How far a step may be halved, and how far a starting guess may be pulled toward the optical
 # centre, before the pixel is given up on.
@@ -336,7 +348,13 @@ def project(lens: Intrinsics, camera_space: np.ndarray) -> tuple[np.ndarray, np.
     u = lens.fx * xd + lens.cx
     v = lens.fy * yd + lens.cy
     valid &= np.isfinite(u) & np.isfinite(v)
-    return u, v, valid
+
+    # Last, and after the finiteness test above has read the real values. A refused row then carries
+    # no number that could be mistaken for a pixel: `safe_depth = 1.0` is not a neutral placeholder
+    # — for a direction in or behind the optical plane it lands on the principal point, the most
+    # plausible-looking answer available. Round 1 closed the flag and left the value beside it, and
+    # this file has already shipped a caller that read the value before the flag.
+    return np.where(valid, u, np.nan), np.where(valid, v, np.nan), valid
 
 
 def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -426,11 +444,17 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     # wrong preimage really does project back onto the pixel asked about. It stays for the solver
     # that simply wandered, which is a different failure and still worth catching.
     back_u, back_v, back_valid = project(lens, directions)
-    landed = (np.abs(back_u - pixels[:, 0]) < 1e-6) & (np.abs(back_v - pixels[:, 1]) < 1e-6)
+    # Compared in normalised units, so the bound means the same thing at every frame size.
+    landed = ((np.abs(back_u - pixels[:, 0]) / lens.fx < INVERSE_ACCEPTANCE_NORMALISED)
+              & (np.abs(back_v - pixels[:, 1]) / lens.fy < INVERSE_ACCEPTANCE_NORMALISED))
     finite = np.isfinite(xn) & np.isfinite(yn)
     on_the_near_branch = inverts_along_the_ray(lens, np.where(finite, xn, 0.0),
                                                np.where(finite, yn, 0.0))
-    return directions, back_valid & landed & on_the_near_branch & finite
+    valid = back_valid & landed & on_the_near_branch & finite
+
+    # A refused direction comes back as NaN rather than as a unit vector. It used to have norm
+    # exactly 1.0, so nothing about the value itself said it was not an answer — see `project`.
+    return np.where(valid[:, None], directions, np.nan), valid
 
 
 def direction_to_equirect(directions: np.ndarray, width: int,
@@ -544,12 +568,24 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     # handed — while claiming "unit quaternion" in its own convention block.
     poses = [pose.normalised() for pose in poses]
 
+    # Everything renders before anything is written, so a refusal part way through leaves no files
+    # rather than frames with no truth to describe them. A dozen-line consumer globs
+    # `frame_*.ppm` — which is the whole pitch for P6 — and cannot tell a half-written dataset from
+    # a whole one.
+    rendered = [_to_bytes(render_frame(panorama, lens, pose)) for pose in poses]
+
     out.mkdir(parents=True, exist_ok=True)
+    # And the frames of a previous, longer run go. They are named exactly like this run's, so
+    # leaving them puts pixels from a different capture beside a truth file that does not mention
+    # them: ground truth silently attached to the wrong frames, which is the one failure this tool
+    # exists to prevent.
+    for stale in out.glob("frame_*.ppm"):
+        stale.unlink()
+
     written: list[Path] = []
     frames = []
 
-    for index, pose in enumerate(poses):
-        frame = _to_bytes(render_frame(panorama, lens, pose))
+    for index, (pose, frame) in enumerate(zip(poses, rendered)):
         name = f"frame_{index:04d}.ppm"
         path = out / name
         with path.open("wb") as handle:
