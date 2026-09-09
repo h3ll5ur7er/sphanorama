@@ -1,8 +1,10 @@
 # The Python tooling's environment, so that "it works here" is a fact about the repository rather
 # than about a machine.
 #
-# The checkers under tools/ are standard library only and are meant to stay that way — they run on
-# every CI job and a dependency there is a dependency on every build. `dependencies` below is
+# The checkers under tools/ are standard library only and are meant to stay that way — a dependency
+# there is a dependency on every build that runs them. (An earlier version of this comment said
+# "every CI job"; measured, two of the five set Python up at all, and the count of checkers this
+# repository quotes in three places matches nothing countable — so neither number is stated here.) `dependencies` below is
 # therefore empty and the one tool that needs numpy, the dataset renderer, names the `datasets`
 # group at its call site instead (ADR 0050). What keeps that true is the ordering in ci.yml: the
 # checker steps run before the step that installs the group. The reason this

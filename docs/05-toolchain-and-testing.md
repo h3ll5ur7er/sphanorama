@@ -10,7 +10,7 @@ makes them checkable.
 | -------- | -------- | --------- |
 | **C++20** | Managers, engines, resource-access contracts, native resource-access implementations | The whole point: one implementation of the business logic, compiled to WASM for the browser and to a native binary for the bench. OpenCV is C++ |
 | **TypeScript** | Clients, browser resource-access adapters, PWA shell, service worker | Thin by design. If a `.ts` file contains geometry or pixel maths, it is in the wrong layer |
-| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations, result scoring | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip |
+| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy is in a group so the checkers stay standard-library only (ADR 0050). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
 
 No Rust/Swift/C# — nothing in the design needs them, and each would add a toolchain without
 removing one.
@@ -85,7 +85,7 @@ most of them immediately before the check they guard. The reason is in that file
 the checkers never change while you are working, which is exactly what makes a broken one the
 easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
-checker suites at the top, fourteen steps before the budget it guards, because that budget needs a
+checker suites at the top, fifteen steps before the budget it guards, because that budget needs a
 wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
 
@@ -139,7 +139,11 @@ movers for known ghost regions.
 
 What it gives today is the first of these; the rest wait on the increments listed above:
 
-- registration accuracy measured in degrees against truth, not eyeballed — **available now**;
+- registration accuracy measured in degrees against truth, not eyeballed — the two halves that
+  make it possible are in (`rotation_scoring`, ADR 0049, and `tools/synth_dataset.py`, ADR 0050),
+  and there is **nothing to measure yet**: `RegistrationEngine` is still the null implementation.
+  A round-1 fix wrote "available now" here, which overcorrected a stale sentence into a false one
+  and contradicted §5.4 twelve lines above;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.

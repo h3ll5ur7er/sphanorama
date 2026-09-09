@@ -98,10 +98,13 @@ Dotted edges are the one sanctioned exception to "engines are pure" — see the 
 **Clients** own *what the user is trying to do and how it is presented*. The Capture Client renders
 the viewfinder, reticles, and guidance; the Review Client renders the sphere, per-cell inspection
 and retake requests. Clients hold **no** stitching or capture logic — they translate gestures into
-manager calls and manager events into pixels on screen. A third client, a native CLI **Bench**,
-exists from day one so every engine can be exercised on a desktop against real datasets without a
-browser. Its existence is an architectural constraint: it forces the core to be free of browser
-assumptions.
+manager calls and manager events into pixels on screen. A third client, a native CLI **Bench**, is
+designed in so every engine can be exercised on a desktop against real datasets without a browser.
+Its existence is an architectural constraint rather than a description of the tree: `bench/` is not
+built yet — the roadmap defers it, and what enforces the constraint meanwhile is the no-browser
+checker plus the native build and its sanitizers, which compile and run the whole core with no
+Emscripten in sight. It becomes worth building now that `tools/synth_dataset.py` produces the real
+datasets it was meant to consume.
 
 **Managers** own *sequence*. They are the only stateful business components. There are three, one
 per use-case family, and they do not call each other synchronously (§3.3).

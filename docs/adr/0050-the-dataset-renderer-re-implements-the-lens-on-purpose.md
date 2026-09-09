@@ -45,8 +45,10 @@ opt-in dependency group.**
   different frame from the core that reads it would be worse than no dataset.
 - **numpy lives in a `datasets` dependency group**, not in `dependencies`. Measured rather than
   assumed: in a fresh environment `uv run --locked` leaves numpy absent and
-  `uv run --locked --group datasets` installs it, so the fourteen checkers keep the property ADR
-  0048 gave them and one step pays for the group.
+  `uv run --locked --group datasets` installs it, so the checkers keep the property ADR 0048 gave
+  them and one step pays for the group. (This said "the fourteen checkers"; the count is quoted in
+  three places in this repository and matches nothing countable — six checker scripts, seven
+  invocations, eight test suites, thirteen steps — so it is dropped rather than replaced.)
 - Output is **binary Netpbm (P6)** and a `truth.json` carrying the rotation, the lens and the
   conventions. A P6 file is a header and the pixels; any consumer reads it in a dozen lines and
   none needs a library.
@@ -111,21 +113,67 @@ opt-in dependency group.**
   if the trial point is *both* defined and strictly closer; and the answer is checked against
   `defined_at` before it is returned. Measured: 468 fabricated answers become 0, and the count of
   genuinely answered pixels falls from 2104 to 1636, which is the honest number for that lens.
+  (Round 2 showed that `defined_at` is the wrong test to end on — see below. These numbers stand as
+  what was measured at the time, which is what a consequences section is for.)
 
-- **A lens that folds inside its own frame is now refused outright**, by `render_frame` and
-  `write_dataset` both. The alternative is a dataset whose images have holes, and no colour can
-  honestly stand for "no ray" — black is a colour the scene produces, and the byte a refusal used to
-  write was 128, mid-grey, which an ordinary checkerboard pixel hits. Measured, the lenses a phone
-  actually has are nowhere near this: at the corner of a 66x50 degree frame, k1 = -0.28 leaves the
-  slope at +0.65 and a strong barrel at +0.55. Only a deliberately pathological lens is refused.
+- **A lens with a rayless pixel is refused, and the frame is the check.** No colour can honestly
+  stand for "no ray" — black is a colour the scene produces, and the byte a refusal used to write
+  was 128, mid-grey, which an ordinary checkerboard pixel hits.
 
-- **Checking the fold at the frame's outermost radius alone is not enough**, and that is the mistake
-  ADR 0046 already made once. The slope `1 + 3*k1*u + 5*k2*u^2 + 7*k3*u^3` is a cubic in `u = r^2`,
-  so it can dip below zero partway out and return positive by the corner: with k1 = -6.0, k2 = 5.5
-  the endpoint reads a healthy +0.73 while the minimum inside is **-1.95**. The check evaluates the
-  cubic's interior turning points too. It is belt-and-braces with the sampled Jacobian that follows
-  it — either alone catches every lens that could be constructed here — and the closed form is kept
-  because sampling a 33x33 grid is a hope about resolution rather than a proof.
+  How that refusal is *decided* is the part this ADR got wrong twice, and the correction is below.
+
+- **The whole-lens fold check was wrong in both directions and is gone rather than fixed.** Two
+  round-2 reviewers found it independently. `lens_folds_in_frame` took the frame corner's
+  **distorted** normalised radius — `(pixel - c) / f`, which is the quantity `unproject` itself
+  calls `xd` — and fed it to a slope cubic and a sampled Jacobian that are functions of the
+  **undistorted** radius. It was answering a question about the wrong interval. Measured:
+  `k1 = -1, k2 = 0.3` passed while 48,108 of 307,200 pixels have no ray, and `k1 = 2, k2 = -1` was
+  refused while every one of its 307,200 pixels is answerable.
+
+  It is deleted, not repaired. Asking `unproject` about every pixel of the actual frame is exact
+  where a 33x33 grid was a hope about resolution, and it is work the render does anyway. **The core
+  has no whole-lens check either** — which should have been the clue that inventing one was the
+  wrong move, and is the fourth consequence in this file of the same root cause.
+
+- **The guards were ported halfway, and the half that was left out is the one that matters.**
+  `defined_at` is `DefinedAt`: a *pointwise* test, true when the map is well behaved at a point. The
+  core never uses it as the answer. `Unproject` and `Project` both ask
+  `DistortionInvertsAlongTheRay` — exact radial via `RadialMapIncreasesUpTo`, plus 64 samples along
+  the ray for the tangential terms that do not reduce to one dimension — because a solution that
+  *leapt* the fold and landed somewhere calm on the far side satisfies the pointwise test and is
+  still the wrong preimage.
+
+  Measured on `k1 = -1, k2 = 0.3`: **36,036 pixels answered from the far side**, the frame corner
+  among them at r = 1.5832 where the near branch is 0.6499 — 24.7 degrees apart, both genuine
+  preimages, `valid = True` on the wrong one. The round trip cannot separate them and this ADR
+  already said why. `project` had no fold guard at all, which made it worse than useless as the
+  adjudicator `unproject` trusts: the two agreed by sharing a blind spot.
+
+  Both are ported now, and `radial_map_increases_up_to` carries the core's refusal on a non-finite
+  discriminant, which had also been dropped — `>= 0.0` is false on a NaN, which is the same branch
+  as "there are no real roots", and they are not the same thing.
+
+- **The fix for the fold was itself untested, and that is the finding worth keeping.** A reviewer
+  replaced `defined_at` with `return True` and all 40 tests stayed green. The test written for it
+  filtered with `defined_at` inside `unproject` and then asserted `defined_at` on the survivors — so
+  the function was its own oracle. Every arm of the fix was individually deletable; three removed
+  together produced a bit-identical mask.
+
+  That is the same sentence this repository wrote down one round earlier about `Pose.rotate`, whose
+  defect was that every test computed its expectation by calling it. **It was written, and then
+  committed again inside the fix for it.** The tests are judged against a brute-force near-branch
+  solve now — far too slow to ship, calling nothing under test, which is what makes it an oracle.
+
+- **The reassurance about phone lenses was wrong, and its numbers silently needed a coefficient the
+  sentence omitted.** This ADR said k1 = -0.28 leaves the corner slope at +0.65 and that only a
+  deliberately pathological lens is refused. Both halves fail: +0.65 requires the `k2` beside it,
+  and with `k1 = -0.28` *alone* a 66x50 degree frame's corner is past the fold — the largest
+  distorted radius the lens can produce is 0.7275 and the corner sits at 0.8104, so that pixel has
+  no preimage on either branch. Refusing it is correct; claiming it would never happen was not.
+
+  The true statement is narrower and worth having: a real calibration's positive `k2` is what pulls
+  the fold outside the frame, and a `k1` quoted without one says nothing. The suite's lens list hid
+  this because every negative `k1` in it was paired with a positive `k2`.
 
 - **Four more things had no guard at all**, each found by the arithmetic lens and each the same
   shape: a value that is not a measurement being answered rather than refused. A default
@@ -147,8 +195,9 @@ opt-in dependency group.**
   pixels are affected. The check moved ahead of both consumers.
 
   Worth recording because it is the third time in this repository that a fix was the defect. The
-  test for it forces the state rather than finding it — no lens surviving `lens_folds_in_frame` is
-  known to leave a NaN there, which is exactly why the raise is a backstop — so it substitutes an
+  test for it forces the state rather than finding it — no lens whose frame is answerable
+  throughout is known to leave a NaN there, which is exactly why the raise is a backstop — so it
+  substitutes an
   `unproject` that refuses one row. Removing the raise entirely fails that test and nothing else,
   which is the honest description of a backstop: one test stands on that path, and it is there
   because the path is reachable in principle rather than because it has been reached.
