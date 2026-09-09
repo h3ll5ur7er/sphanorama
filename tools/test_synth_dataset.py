@@ -978,6 +978,63 @@ class GuardsThatAreReachedByTheTestsNamedForThem(unittest.TestCase):
             project(lens, overflowing)
 
 
+class TheTangentialTermsAreLoadBearing(unittest.TestCase):
+    """Nothing in the suite had tangential distortion strong enough to matter.
+
+    Measured by sabotage at `0cef5fe`: `RAY_SAMPLES = 1` and zeroing the Jacobian's off-diagonal
+    `cross` term each left every test green. Both are specifically about `p1` and `p2` — the radial
+    part factors exactly and is settled in closed form, so the 64 samples along the ray exist *only*
+    for the tangential half, and `cross` is the coupling that half introduces.
+
+    A lens list where every entry is radial, or where the tangential coefficients are the 0.002 of a
+    real calibration, cannot reach either. So this uses one that is frankly pathological, and says
+    so: the point is not that a phone has this lens, it is that these two lines have a job and no
+    arrangement in the file asked them to do it.
+    """
+
+    def _pathological(self):
+        return Intrinsics(**{**lens_from_fov(66.0, 50.0, 64, 48).__dict__,
+                             "k1": -0.1, "p1": 1.2, "p2": 1.2})
+
+    def _grid(self):
+        xs = np.linspace(-0.7, 0.7, 21)
+        ys = np.linspace(-0.55, 0.55, 21)
+        gx, gy = np.meshgrid(xs, ys, indexing="ij")
+        return gx.ravel(), gy.ravel()
+
+    def test_a_tangential_fold_is_caught_only_by_sampling_along_the_ray(self):
+        lens = self._pathological()
+        xn, yn = self._grid()
+
+        radial_sound = radial_map_increases_up_to(lens, xn * xn + yn * yn)
+        endpoint_sound = defined_at(lens, xn, yn)
+        refused = ~inverts_along_the_ray(lens, xn, yn)
+
+        # Points the closed form calls sound and the endpoint calls sound, which the ray sampling
+        # still refuses: the fold is *between* the optical centre and the point.
+        only_the_ray = radial_sound & endpoint_sound & refused
+        self.assertGreater(int(only_the_ray.sum()), 0,
+                           "the arrangement no longer has a tangential-only fold, so this proves "
+                           "nothing about the ray sampling")
+
+    def test_the_jacobians_off_diagonal_term_changes_the_answer(self):
+        """`cross` is what tangential distortion contributes to the determinant.
+
+        Zeroing it left the whole suite green, because no lens in the file had a `p1` or `p2` large
+        enough for the coupling to decide anything.
+        """
+        lens = self._pathological()
+        xn, yn = self._grid()
+        at = distort_at(lens, xn, yn)
+
+        self.assertGreater(float(np.max(np.abs(at.cross))), 0.5,
+                           "the arrangement must have a substantial off-diagonal term")
+        without_the_coupling = at.dxdx * at.dydy
+        self.assertFalse(np.array_equal((at.determinant > 0.0), (without_the_coupling > 0.0)),
+                         "dropping the off-diagonal term changed no verdict, so this lens does not "
+                         "exercise it")
+
+
 class TheSeamWrapsOnBothSides(unittest.TestCase):
     """`SeamSampling` tested the right-hand wrap and the left-hand one was never reached.
 
