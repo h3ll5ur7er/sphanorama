@@ -324,9 +324,11 @@ class SeamSampling(unittest.TestCase):
 
     A render that crosses the seam does *not* reliably reach it: the interpolation only differs on
     the single column whose right-hand neighbour must wrap to column zero, and a 64x48 frame lands
-    on that exact column only by luck. Replacing the wrap with a clamp left twenty-two tests green
+    on that exact column only by luck. Replacing the wrap with a clamp left every other test green
     including one written specifically to look through the seam — so this asserts on the sampler
-    directly, which is the unit that actually has the behaviour.
+    directly, which is the unit that actually has the behaviour. (Counts are deliberately not
+    quoted: the suite grows, and a stale number reads as a contradiction of the same sabotage
+    recorded elsewhere. The claim that carries the meaning is that only this class caught it.)
     """
 
     def test_the_column_past_the_last_one_is_the_first_one(self):
@@ -371,7 +373,7 @@ class UnprojectionRefuses(unittest.TestCase):
     """A lens strong enough to fold has pixels with no ray behind them, and they are refused.
 
     Nothing exercised this: every other test uses a lens whose whole frame inverts, so removing the
-    refusal entirely left all nineteen tests green. ADR 0046 makes refusal the rule for the core and
+    refusal entirely left every other test green. ADR 0046 makes refusal the rule for the core and
     a dataset renderer that quietly invented directions instead would put fabricated geometry into
     the ground truth everything downstream is measured against.
     """
@@ -543,8 +545,9 @@ class Rendering(unittest.TestCase):
 
     def test_a_frame_straddling_the_seam_renders_as_correctly_as_any_other(self):
         # The ordinary case for a sphere, and the one the sampler's wrap exists for. Nothing tested
-        # it: clamping the seam instead of wrapping left all nineteen tests green, because every
-        # other render looks forward and never crosses longitude ±180.
+        # it: clamping the seam instead of wrapping left every other test green, because every
+        # other render looks forward and never crosses longitude ±180 — see `SeamSampling`, which
+        # is where that sabotage now dies.
         panorama = direction_encoded_panorama(2048, 1024)
         lens = lens_from_fov(66.0, 50.0, 64, 48)
         looking_back = Pose.from_axis_angle((0.0, 1.0, 0.0), math.pi)   # straight through the seam

@@ -32,7 +32,9 @@ expressed in a different frame from the core that reads it is worse than no data
   half a pixel away from OpenCV's `(width - 1) / 2`, and a residual is measured in pixels.
 - **World space**: the same axes; a `Pose` is device -> world, as `Quat` is.
 - **Equirectangular**: longitude 0 is -Z (forward) and increases toward +X; latitude +90 is +Y and
-  sits at row 0. So the panorama's centre pixel is the direction a camera at identity looks along.
+  sits at row 0. So forward lands at exactly `(width / 2, height / 2)` in the panorama's own
+  coordinates -- which is a pixel *corner*, not a pixel centre, since an integer here is an edge
+  (see `direction_to_equirect`). On a 2048x1024 panorama that is where pixels 1023 and 1024 meet.
 
 Run it: `uv run --group datasets tools/synth_dataset.py --out datasets/ring` (the `datasets` group
 is what carries numpy; the checkers stay standard-library only — ADR 0048, ADR 0050).
@@ -489,8 +491,8 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
                                "from OpenCV's (width - 1) / 2; read the value from intrinsics rather "
                                "than assuming it",
             "equirectangular": "longitude 0 is -Z and increases toward +X; latitude +90 is +Y at "
-                               "row 0, so the panorama's centre is the direction a camera at "
-                               "identity looks along",
+                               "row 0; an integer coordinate is a pixel edge, so forward lands on "
+                               "the corner at (width / 2, height / 2)",
             "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
         },
         "intrinsics": asdict(lens),
