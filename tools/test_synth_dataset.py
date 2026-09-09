@@ -22,6 +22,7 @@ rather than something to look at.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sys
@@ -34,8 +35,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from synth_dataset import (  # noqa: E402
     Intrinsics,
+    _corner_radius_squared,
+    _to_bytes,
     Pose,
+    defined_at,
     direction_to_equirect,
+    lens_folds_in_frame,
     lens_from_fov,
     project,
     render_frame,
@@ -161,6 +166,158 @@ class Projection(unittest.TestCase):
         np.testing.assert_allclose(np.linalg.norm(directions, axis=-1), 1.0, atol=1e-12)
 
 
+class ALensHasToBeALens(unittest.TestCase):
+    """A default `Intrinsics` is not a camera, and nothing here noticed.
+
+    With `fx = fy = 0` the whole world maps to pixel (0, 0) and every direction reports valid,
+    because a constant map is its own inverse everywhere — the round trip agrees with itself
+    perfectly. The arithmetic is all finite, so no guard fired.
+    """
+
+    def test_a_default_intrinsics_is_refused_by_both_directions(self):
+        with self.assertRaises(ValueError):
+            project(Intrinsics(), np.array([[0.0, 0.0, -1.0]]))
+        with self.assertRaises(ValueError):
+            unproject(Intrinsics(), np.array([[0.0, 0.0]]))
+
+    def test_a_lens_with_no_focal_length_or_no_size_is_refused(self):
+        base = lens_from_fov(66.0, 50.0, 320, 240)
+        for broken in ({"fx": 0.0}, {"fy": -1.0}, {"width": 0}, {"height": -4},
+                       {"fx": float("nan")}, {"k1": float("inf")}):
+            lens = Intrinsics(**{**base.__dict__, **broken})
+            with self.assertRaises(ValueError, msg=str(broken)):
+                project(lens, np.array([[0.0, 0.0, -1.0]]))
+
+    def test_a_direction_that_is_not_a_measurement_has_no_pixel(self):
+        lens = lens_from_fov(66.0, 50.0, 320, 240)
+        # An infinite depth is greater than zero and divides to the principal point, which would
+        # have answered a direction nobody measured with the middle of the frame.
+        _, _, valid = project(lens, np.array([[0.0, 0.0, -float("inf")],
+                                              [float("nan"), 0.0, -1.0],
+                                              [0.0, float("inf"), -1.0]]))
+        self.assertFalse(valid.any())
+
+    def test_a_zero_vector_names_no_direction(self):
+        with self.assertRaises(ValueError):
+            direction_to_equirect(np.array([[0.0, 0.0, 0.0]]), 512, 256)
+        with self.assertRaises(ValueError):
+            direction_to_equirect(np.array([[0.0, float("nan"), -1.0]]), 512, 256)
+
+
+class PoseArithmetic(unittest.TestCase):
+    def test_a_quaternion_off_unit_still_names_its_own_rotation(self):
+        """`sphanorama::Rotate` normalises and this did not.
+
+        One percent off unit turned a direction 0.69 degrees while `truth.json` recorded the
+        rotation that was *asked* for — so the frames and the ground truth would have disagreed by
+        more than the quantity the whole harness exists to measure.
+        """
+        exact = Pose.from_axis_angle((0.3, 0.8, -0.5), 0.9)
+        scaled = Pose(exact.w * 1.01, exact.x * 1.01, exact.y * 1.01, exact.z * 1.01)
+        vectors = np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.2, -0.7, -0.4]])
+
+        np.testing.assert_allclose(scaled.rotate(vectors), exact.rotate(vectors), atol=1e-12)
+
+    def test_rotation_preserves_length(self):
+        pose = Pose.from_axis_angle((0.1, -0.9, 0.4), 2.1)
+        vectors = np.array([[0.0, 0.0, -1.0], [3.0, 0.0, 0.0]])
+        np.testing.assert_allclose(np.linalg.norm(pose.rotate(vectors), axis=-1),
+                                   np.linalg.norm(vectors, axis=-1), atol=1e-12)
+
+
+class RotationIsAnchoredToNumbersNobodyComputed(unittest.TestCase):
+    """`Pose.rotate` could be replaced by `return vectors` and every test still passed.
+
+    That is the worst thing that was wrong with this file, and the cause is structural rather than
+    careless: every other test worked out its expected value by *calling* `rotate`, so the identity
+    satisfied all of them. What it produced is precisely the failure a harness cannot have —
+    `truth.json` recording three distinct rotations beside three byte-identical frames, so a
+    registration that recovered them perfectly would have been scored 40 and 80 degrees wrong.
+
+    Every other stage had an outside anchor: `project` against OpenCV's hand-worked decimals,
+    `unproject` against the round trip, `direction_to_equirect` against hand-written coordinates,
+    `sample_equirect` against explicit blends. Rotation had none. These are the numbers it was
+    missing, worked out from the right-hand rule and written down rather than computed.
+    """
+
+    def test_a_quarter_turn_about_each_axis_sends_forward_where_it_should(self):
+        quarter = math.pi / 2.0
+        forward = np.array([[0.0, 0.0, -1.0]])
+
+        # About +Y, forward swings to the left of the world frame, which is -X.
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((0.0, 1.0, 0.0), quarter).rotate(forward),
+            [[-1.0, 0.0, 0.0]], atol=1e-12)
+        # About +X, forward lifts to +Y.
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((1.0, 0.0, 0.0), quarter).rotate(forward),
+            [[0.0, 1.0, 0.0]], atol=1e-12)
+        # About +Z, forward is on the axis and does not move.
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((0.0, 0.0, 1.0), quarter).rotate(forward),
+            [[0.0, 0.0, -1.0]], atol=1e-12)
+
+    def test_a_quarter_turn_about_each_axis_sends_right_where_it_should(self):
+        quarter = math.pi / 2.0
+        right = np.array([[1.0, 0.0, 0.0]])
+
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((0.0, 1.0, 0.0), quarter).rotate(right),
+            [[0.0, 0.0, -1.0]], atol=1e-12)      # right swings to forward
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((0.0, 0.0, 1.0), quarter).rotate(right),
+            [[0.0, 1.0, 0.0]], atol=1e-12)       # right lifts to up
+        np.testing.assert_allclose(
+            Pose.from_axis_angle((1.0, 0.0, 0.0), quarter).rotate(right),
+            [[1.0, 0.0, 0.0]], atol=1e-12)       # right is on the axis
+
+    def test_a_half_turn_reverses_the_two_axes_it_is_not_about(self):
+        half = Pose.from_axis_angle((0.0, 1.0, 0.0), math.pi)
+        np.testing.assert_allclose(
+            half.rotate(np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])),
+            [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], atol=1e-12)
+
+    def test_the_identity_is_the_only_rotation_that_moves_nothing(self):
+        vectors = np.array([[0.0, 0.0, -1.0], [0.6, -0.3, 0.2]])
+        np.testing.assert_allclose(Pose.identity().rotate(vectors), vectors, atol=1e-15)
+        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+            moved = Pose.from_axis_angle(axis, 0.4).rotate(vectors)
+            self.assertGreater(float(np.max(np.abs(moved - vectors))), 0.05,
+                               "a rotation that changes nothing is the defect this class exists for")
+
+    def test_composition_applies_the_second_rotation_in_the_first_ones_frame(self):
+        # Both axes have every component non-zero, and that is the point rather than decoration.
+        # The first version used a yaw and a pitch — one about +Y, one about +X — so a mutation of
+        # `then` that corrupted a term involving `self.x` multiplied by zero and changed nothing.
+        a = Pose.from_axis_angle((0.3, 0.8, -0.5), 0.9)
+        b = Pose.from_axis_angle((-0.6, 0.2, 0.7), 1.3)
+        vectors = np.array([[0.0, 0.0, -1.0], [0.3, 0.5, -0.8], [1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(a.then(b).rotate(vectors), a.rotate(b.rotate(vectors)),
+                                   atol=1e-12)
+        # And the two orders genuinely differ, so the assertion above is not vacuous.
+        self.assertGreater(float(np.max(np.abs(a.then(b).rotate(vectors)
+                                               - b.then(a).rotate(vectors)))), 0.1)
+
+    def test_an_azimuth_turns_about_up_and_an_elevation_lifts_toward_it(self):
+        # The convention `FromAzimuthElevation` states, checked against directions written down
+        # rather than computed: a quarter turn of azimuth puts the camera's forward axis at -X.
+        np.testing.assert_allclose(
+            Pose.from_azimuth_elevation(90.0, 0.0).rotate(np.array([[0.0, 0.0, -1.0]])),
+            [[-1.0, 0.0, 0.0]], atol=1e-12)
+        np.testing.assert_allclose(
+            Pose.from_azimuth_elevation(0.0, 90.0).rotate(np.array([[0.0, 0.0, -1.0]])),
+            [[0.0, 1.0, 0.0]], atol=1e-12)
+
+        # Both at once, which is the only case that can see the composition order. With azimuth 0
+        # or elevation 0 the two orderings agree, so a `then` reversed between them survives every
+        # pure-axis case. Worked out by hand: elevation 45 lifts forward to (0, sin45, -cos45), and
+        # a 90-degree azimuth then swings that to -X, giving up-and-left.
+        root_half = math.sqrt(0.5)
+        np.testing.assert_allclose(
+            Pose.from_azimuth_elevation(90.0, 45.0).rotate(np.array([[0.0, 0.0, -1.0]])),
+            [[-root_half, root_half, 0.0]], atol=1e-12)
+
+
 class SeamSampling(unittest.TestCase):
     """The one column where wrapping and clamping differ, tested where the behaviour lives.
 
@@ -218,37 +375,98 @@ class UnprojectionRefuses(unittest.TestCase):
     the ground truth everything downstream is measured against.
     """
 
-    def test_a_folding_lens_refuses_the_pixels_past_its_fold(self):
+    def test_nothing_answered_lies_past_the_fold(self):
+        """The assertion this class was missing, and the reason it was missing is worth keeping.
+
+        A round trip cannot catch a wrong answer here: past the fold `radial` goes negative, which
+        flips the sign of `xd`, so the far-side point really does project back to the pixel asked
+        about. ADR 0046 says a round-trip check is structurally blind to this and it was right —
+        with only that check, **468 of these 3072 pixels came back with fabricated directions**,
+        the frame corner among them, answered 52 degrees off axis pointing the opposite way to the
+        one it should. The two tests that were here both derived their expectation from the same
+        missing guard, so both passed.
+        """
         lens = lens_from_fov(66.0, 50.0, 320, 240)
         lens = Intrinsics(**{**lens.__dict__, "k1": -0.9, "k2": 0.6, "k3": -0.4})
 
         us, vs = np.meshgrid(np.linspace(0.5, 319.5, 64), np.linspace(0.5, 239.5, 48),
                              indexing="ij")
         pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
-        _, valid = unproject(lens, pixels)
+        directions, valid = unproject(lens, pixels)
 
         self.assertFalse(valid.all(), "a lens this strong should fold somewhere in frame")
         self.assertTrue(valid.any(), "and it should still answer near the optical centre")
 
-        # Whatever it does answer has to be right, not merely present.
-        directions, valid = unproject(lens, pixels)
+        # Every answer has to sit where the forward map is orientation-preserving. This is the
+        # check, not the round trip below it.
+        xn = directions[valid][:, 0] / -directions[valid][:, 2]
+        yn = -directions[valid][:, 1] / -directions[valid][:, 2]
+        self.assertTrue(defined_at(lens, xn, yn).all(),
+                        "an answered pixel came from the far side of the fold")
+
         back_u, back_v, _ = project(lens, directions[valid])
         np.testing.assert_allclose(back_u, pixels[valid][:, 0], atol=1e-6)
         np.testing.assert_allclose(back_v, pixels[valid][:, 1], atol=1e-6)
 
-    def test_a_refused_pixel_is_left_black_rather_than_guessed(self):
+    def test_a_lens_that_folds_in_frame_is_refused_rather_than_rendered_with_holes(self):
         panorama = direction_encoded_panorama(512, 256)
         lens = lens_from_fov(66.0, 50.0, 96, 72)
         lens = Intrinsics(**{**lens.__dict__, "k1": -0.9, "k2": 0.6, "k3": -0.4})
 
-        frame = render_frame(panorama, lens, Pose.identity())
+        self.assertTrue(lens_folds_in_frame(lens))
+        with self.assertRaises(ValueError):
+            render_frame(panorama, lens, Pose.identity())
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                write_dataset(Path(directory), panorama, lens, [Pose.identity()])
 
-        us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
-                             indexing="xy")
-        pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
-        _, valid = unproject(lens, pixels)
-        self.assertFalse(valid.all())
-        np.testing.assert_array_equal(frame.reshape(-1, 3)[~valid], 0.0)
+    def test_a_lens_that_folds_only_in_the_middle_of_the_frame_is_still_refused(self):
+        """The mistake ADR 0046 already made once, in a new place.
+
+        The slope `1 + 3k1*u + 5k2*u^2 + 7k3*u^3` is a cubic in `u = r^2`, so it can dip below zero
+        partway out and come back positive by the corner. Checking the frame's outermost radius
+        alone therefore certifies a lens that folds in a ring inside its own frame. With
+        k1 = -6.0, k2 = 5.5 the endpoint slope is +0.73 — which looks perfectly healthy — while the
+        minimum inside is **-1.95**, at u = 0.327 of the way out.
+
+        A sabotage that checked only the endpoint left every other test green, which is exactly how
+        the same defect survived in the core until a reviewer found two directions 39 degrees apart
+        landing on one pixel.
+        """
+        lens = lens_from_fov(66.0, 50.0, 320, 240)
+        lens = Intrinsics(**{**lens.__dict__, "k1": -6.0, "k2": 5.5})
+
+        corner = _corner_radius_squared(lens)
+        endpoint_slope = 1.0 + corner * (3.0 * lens.k1 + corner * 5.0 * lens.k2)
+        self.assertGreater(endpoint_slope, 0.0, "the endpoint has to look healthy or this proves nothing")
+
+        self.assertTrue(lens_folds_in_frame(lens), "an interior fold was certified as sound")
+
+    def test_the_lenses_a_phone_actually_has_are_not_refused(self):
+        """The other half, and the one a fold check gets wrong by being over-eager.
+
+        Measured at the frame corner of a 66x50 degree lens: a typical phone's k1 = -0.28 leaves the
+        slope at +0.65 and a strong barrel at +0.55, both comfortably clear of the fold. If this
+        starts failing, the check has become stricter than the optics.
+        """
+        panorama = direction_encoded_panorama(256, 128)
+        base = lens_from_fov(66.0, 50.0, 48, 36)
+        for name, coefficients in (
+            ("no distortion", {}),
+            ("typical phone", {"k1": -0.28, "k2": 0.09}),
+            ("strong barrel", {"k1": -0.5, "k2": 0.25}),
+            ("pincushion", {"k1": 0.3, "k2": 0.1}),
+            ("mild tangential", {"k1": -0.2, "p1": 0.002, "p2": -0.003}),
+        ):
+            lens = Intrinsics(**{**base.__dict__, **coefficients})
+            self.assertFalse(lens_folds_in_frame(lens), name)
+
+            us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5,
+                                 indexing="xy")
+            pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
+            _, valid = unproject(lens, pixels)
+            self.assertTrue(valid.all(), f"{name}: a lens that does not fold refused a pixel")
+            render_frame(panorama, lens, Pose.identity())   # and it renders
 
 
 class EquirectangularMapping(unittest.TestCase):
@@ -372,6 +590,18 @@ class GroundTruth(unittest.TestCase):
             # The lens travels with the frames, because a rotation is not enough to reproject one.
             self.assertAlmostEqual(truth["intrinsics"]["fx"], lens.fx, places=12)
             self.assertEqual(truth["intrinsics"]["width"], lens.width)
+
+            # And each file holds the frame its own entry claims. Checking only that the files
+            # exist let two separate mutations through — rendering every frame from `poses[0]`,
+            # and writing all three to one name — either of which produces a dataset whose images
+            # and ground truth describe different captures.
+            digests = [hashlib.sha256((Path(directory) / entry["file"]).read_bytes()).hexdigest()
+                       for entry in truth["frames"]]
+            self.assertEqual(len(set(digests)), 3, "distinct poses produced identical frames")
+            for entry, pose in zip(truth["frames"], poses):
+                expected = _to_bytes(render_frame(panorama, lens, pose)).tobytes()
+                body = (Path(directory) / entry["file"]).read_bytes().split(b"255\n", 1)[1]
+                self.assertEqual(body, expected, entry["file"])
 
     def test_a_written_frame_reads_back_as_the_pixels_that_were_rendered(self):
         panorama = direction_encoded_panorama(256, 128)

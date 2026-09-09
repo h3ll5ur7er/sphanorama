@@ -111,7 +111,7 @@ than a browser call.
 | Level | What | How |
 | ----- | ---- | --- |
 | Engine unit | Pure functions with fixed inputs | GoogleTest, native. Golden outputs checked in as small fixtures |
-| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that would feed it, the threshold it would be asserted against, and the Python/OpenCV cross-reference are all still to come; today it is exercised only by its own suite |
+| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not). Still to come: the threshold it is asserted against, and running the two against each other — today each is exercised only by its own suite |
 | Manager behaviour | Sequencing and state machines | Native tests with **fake** resource accesses (a recorded IMU log + a folder of frames implements `IMotionSensorAccess`/`ICameraAccess` exactly). This is why those are contracts and not `getUserMedia` calls |
 | Boundary | Facade marshalling, error codes | Vitest against the real WASM module in Node |
 | Client | Reticle logic, guidance rendering | Vitest + Testing Library, with a mocked manager proxy |

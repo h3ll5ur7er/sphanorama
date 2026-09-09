@@ -57,7 +57,9 @@ first use is not an engine: it cross-checks the camera model against `cv::projec
 our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
 inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
 theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
-`uv run tools/…` and `uv add`, never pip (ADR 0048).
+`uv run tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the
+line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy is in a group so
+the checkers stay standard-library only (ADR 0050).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that

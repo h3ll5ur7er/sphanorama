@@ -5,14 +5,24 @@ Phase 2 measures registration accuracy in degrees against known rotations, and t
 them. It takes an equirectangular panorama and a list of camera orientations, and emits one image
 per orientation plus a `truth.json` carrying the rotation and the lens that produced each.
 
-**It re-implements the lens rather than calling the core, and that is the point.** `camera_model` in
+**It implements the lens itself rather than calling the core.** `camera_model` in
 `core/src/utilities/` does the same arithmetic, and rendering a dataset *through* it would mean any
 error the two share cancels out — the harness would certify a broken projection as accurate, which
-is the one failure a measuring instrument must not have. So this is a second, independent
-implementation, and both are pinned to the same hand-worked decimals (see
-`test_distortion_terms_are_opencvs_in_opencvs_order`, and its twin in the C++ suite). Two
-implementations that agree with an outside number are evidence; one implementation checked against
+is the one failure a measuring instrument must not have.
+
+Be precise about what that buys, because the first version of this paragraph was not. This is **not
+an independent re-derivation**: the term-by-term form below is the core's, closely enough that a
+reviewer could point at matching expression names and a comment copied word for word. What carries
+the weight is that both implementations are pinned to the same hand-worked decimals, taken from the
+published Brown-Conrady definition and derived from neither of them (see
+`test_distortion_terms_are_opencvs_in_opencvs_order` and its twin in the C++ suite). Two
+implementations agreeing with an outside number is evidence; one implementation checked against
 itself is not.
+
+And the danger of a close port is not hypothetical — it is how the fold defect happened. This file
+kept the core's arithmetic and dropped its guards, so it inverted the distortion past the fold and
+answered 468 of 3072 pixels with fabricated directions, while the round-trip check that was supposed
+to notice passed every one of them. See `defined_at` and `lens_folds_in_frame`, and ADR 0050.
 
 Conventions, matching `contracts/cpp/sphanorama/types.h` and ADR 0046 exactly, because a dataset
 expressed in a different frame from the core that reads it is worse than no dataset:
@@ -32,7 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +52,10 @@ import numpy as np
 # extra pass costs nothing a person would notice.
 INVERSE_ITERATIONS = 30
 INVERSE_TOLERANCE = 1e-12
+
+# How far a step may be halved, and how far a starting guess may be pulled toward the optical
+# centre, before the pixel is given up on.
+BACKTRACK_STEPS = 30
 
 
 @dataclass
@@ -104,10 +118,20 @@ class Pose:
         )
 
     def rotate(self, vectors: np.ndarray) -> np.ndarray:
-        """Rotate an (N, 3) array of vectors from camera space into world space."""
-        u = np.array([self.x, self.y, self.z], dtype=float)
+        """Rotate an (N, 3) array of vectors from camera space into world space.
+
+        Normalised first, which `sphanorama::Rotate` also does and this did not. A quaternion 1%
+        off unit rotated a direction 0.69 degrees wrong while `truth.json` recorded the rotation it
+        was *asked* for — so the frames and the ground truth would have disagreed by more than the
+        thing the harness is built to measure.
+        """
+        norm = math.sqrt(self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z)
+        if norm == 0.0:
+            return np.array(vectors, dtype=float)
+        w, x, y, z = self.w / norm, self.x / norm, self.y / norm, self.z / norm
+        u = np.array([x, y, z], dtype=float)
         cross = np.cross(u, vectors)
-        return vectors + 2.0 * self.w * cross + 2.0 * np.cross(u, cross)
+        return vectors + 2.0 * w * cross + 2.0 * np.cross(u, cross)
 
 
 def lens_from_fov(horizontal_fov_deg: float, vertical_fov_deg: float, width: int,
@@ -135,8 +159,88 @@ def lens_from_fov(horizontal_fov_deg: float, vertical_fov_deg: float, width: int
     )
 
 
+def is_usable_lens(lens: Intrinsics) -> bool:
+    """Whether this describes a camera at all — the core's `IsUsableLens`.
+
+    A default `Intrinsics` has `fx = fy = 0`, which maps the entire world onto pixel (0, 0) and
+    reports every one of them valid. Nothing here caught that: the arithmetic is all finite and the
+    round trip agrees with itself, because a constant map is its own inverse everywhere.
+    """
+    values = (lens.fx, lens.fy, lens.cx, lens.cy,
+              lens.k1, lens.k2, lens.k3, lens.p1, lens.p2)
+    if not all(math.isfinite(value) for value in values):
+        return False
+    return lens.fx > 0.0 and lens.fy > 0.0 and lens.width > 0 and lens.height > 0
+
+
 def _radial(lens: Intrinsics, r2: np.ndarray) -> np.ndarray:
     return 1.0 + r2 * (lens.k1 + r2 * (lens.k2 + r2 * lens.k3))
+
+
+def defined_at(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> np.ndarray:
+    """Whether the forward map is orientation-preserving here — the core's `DefinedAt`.
+
+    Both halves are needed and the first is the one this file went without. A radius past the fold
+    has `radial < 0`, which flips the sign of `xd` and makes the point map to a pixel it has no
+    business at; the round trip then *passes*, because that wrong answer really is a preimage. ADR
+    0046 says in as many words that a round-trip check is structurally blind to this, and it was
+    right: without this test, 468 of 3072 grid pixels on a folding lens came back with fabricated
+    directions, the frame corner among them, 52 degrees off axis and pointing the opposite way.
+    """
+    r2 = xn * xn + yn * yn
+    radial = _radial(lens, r2)
+    d_radial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3)
+    dxdx = radial + 2.0 * xn * xn * d_radial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn
+    dydy = radial + 2.0 * yn * yn * d_radial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn
+    cross = 2.0 * xn * yn * d_radial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn
+    return (radial > 0.0) & ((dxdx * dydy - cross * cross) > 0.0)
+
+
+def _corner_radius_squared(lens: Intrinsics) -> float:
+    """The largest normalised radius the frame reaches, which is always a corner."""
+    xs = (np.array([0.0, lens.width]) - lens.cx) / lens.fx
+    ys = (np.array([0.0, lens.height]) - lens.cy) / lens.fy
+    return float(max(x * x + y * y for x in xs for y in ys))
+
+
+def lens_folds_in_frame(lens: Intrinsics) -> bool:
+    """Whether this lens stops being invertible somewhere inside its own frame.
+
+    `r * radial(r^2)` has to keep increasing for the map to be one-to-one along a ray, and its
+    derivative in `u = r^2` is `1 + 3*k1*u + 5*k2*u^2 + 7*k3*u^3` — a cubic, which is why checking
+    the frame corner alone is not enough: it can dip below zero in the middle of the interval and
+    come back. So this checks the endpoint *and* the cubic's interior turning points, which is the
+    whole interval in closed form. `radial` itself is checked the same way, since a negative one is
+    what flips the projection.
+
+    Tangential terms do not fold radially and are not covered by that argument, so the Jacobian is
+    sampled across the frame as well.
+    """
+    u_max = _corner_radius_squared(lens)
+
+    # Where the slope cubic turns: 3*k1 + 10*k2*u + 21*k3*u^2 = 0.
+    candidates = [0.0, u_max]
+    a, b, c = 21.0 * lens.k3, 10.0 * lens.k2, 3.0 * lens.k1
+    if a != 0.0:
+        discriminant = b * b - 4.0 * a * c
+        if discriminant >= 0.0:
+            root = math.sqrt(discriminant)
+            candidates += [(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)]
+    elif b != 0.0:
+        candidates.append(-c / b)
+
+    for u in candidates:
+        if not (0.0 <= u <= u_max):
+            continue
+        slope = 1.0 + u * (3.0 * lens.k1 + u * (5.0 * lens.k2 + u * 7.0 * lens.k3))
+        if slope <= 0.0 or _radial(lens, np.array([u]))[0] <= 0.0:
+            return True
+
+    # And the full Jacobian over the frame, which is what tangential distortion can spoil.
+    xs = np.linspace(0.0, lens.width, 33)
+    ys = np.linspace(0.0, lens.height, 33)
+    gx, gy = np.meshgrid((xs - lens.cx) / lens.fx, (ys - lens.cy) / lens.fy, indexing="ij")
+    return not bool(defined_at(lens, gx.ravel(), gy.ravel()).all())
 
 
 def _distort(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -150,12 +254,18 @@ def _distort(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> tuple[np.ndarr
 
 def project(lens: Intrinsics, camera_space: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Camera-space directions to pixels. Returns (u, v, valid), one entry per input row."""
+    if not is_usable_lens(lens):
+        raise ValueError("this is not a lens: fx, fy, width and height must all be positive")
+
     camera_space = np.asarray(camera_space, dtype=float)
     depth = -camera_space[:, 2]
 
     # `> 0` rather than `<= 0`, so a NaN refuses rather than passes — the same shape as the core's
-    # guard, and for the same reason.
-    valid = depth > 0.0
+    # guard, and for the same reason. Finiteness is separate and was missing: an infinite depth is
+    # greater than zero, divides to `xn = yn = 0`, and answers the principal point for a direction
+    # that is not a measurement.
+    valid = np.isfinite(depth) & (depth > 0.0)
+    valid &= np.isfinite(camera_space).all(axis=-1)
     safe_depth = np.where(valid, depth, 1.0)
     xn = camera_space[:, 0] / safe_depth
     yn = -camera_space[:, 1] / safe_depth      # the world's up is the image's down
@@ -174,12 +284,26 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     Returns (directions, valid). A pixel whose distortion does not invert is refused rather than
     answered with the nearest thing that iterated, which is the rule ADR 0046 sets for the core.
     """
+    if not is_usable_lens(lens):
+        raise ValueError("this is not a lens: fx, fy, width and height must all be positive")
+
     pixels = np.asarray(pixels, dtype=float)
     xd = (pixels[:, 0] - lens.cx) / lens.fx
     yd = (pixels[:, 1] - lens.cy) / lens.fy
 
     xn = xd.copy()
     yn = yd.copy()
+
+    # Pull the starting guess in until it is somewhere the map is defined. Without this a pincushion
+    # lens starts outside its own answer and the first step leaps the fold — ADR 0046 records the
+    # core refusing pixels its own `Project` had just produced for exactly that reason.
+    for _ in range(BACKTRACK_STEPS):
+        outside = ~defined_at(lens, xn, yn)
+        if not outside.any():
+            break
+        xn = np.where(outside, xn * 0.5, xn)
+        yn = np.where(outside, yn * 0.5, yn)
+
     for _ in range(INVERSE_ITERATIONS):
         r2 = xn * xn + yn * yn
         radial = _radial(lens, r2)
@@ -187,16 +311,43 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
 
         fx_ = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn) - xd
         fy_ = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn - yd
+        residual = fx_ * fx_ + fy_ * fy_
 
         dxdx = radial + 2.0 * xn * xn * d_radial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn
         dydy = radial + 2.0 * yn * yn * d_radial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn
         cross = 2.0 * xn * yn * d_radial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn
         determinant = dxdx * dydy - cross * cross
 
-        usable = np.abs(determinant) > 1e-15
+        usable = determinant > 0.0        # not `abs(...) > eps`: a negative one is the fold
         safe = np.where(usable, determinant, 1.0)
-        step_x = np.where(usable, -(dydy * fx_ - cross * fy_) / safe, 0.0)
-        step_y = np.where(usable, -(dxdx * fy_ - cross * fx_) / safe, 0.0)
+        full_x = np.where(usable, -(dydy * fx_ - cross * fy_) / safe, 0.0)
+        full_y = np.where(usable, -(dxdx * fy_ - cross * fx_) / safe, 0.0)
+
+        # Damped, and the damping is what keeps a step from crossing the fold: halve until the
+        # trial point is both defined and strictly closer than where it stands.
+        scale = np.ones_like(xn)
+        taken = np.zeros_like(xn, dtype=bool)
+        step_x = np.zeros_like(xn)
+        step_y = np.zeros_like(yn)
+        for _ in range(BACKTRACK_STEPS):
+            trial_x = np.where(taken, xn + step_x, xn + scale * full_x)
+            trial_y = np.where(taken, yn + step_y, yn + scale * full_y)
+            tr2 = trial_x * trial_x + trial_y * trial_y
+            t_radial = _radial(lens, tr2)
+            t_fx = (trial_x * t_radial + 2.0 * lens.p1 * trial_x * trial_y
+                    + lens.p2 * (tr2 + 2.0 * trial_x * trial_x) - xd)
+            t_fy = (trial_y * t_radial + lens.p1 * (tr2 + 2.0 * trial_y * trial_y)
+                    + 2.0 * lens.p2 * trial_x * trial_y - yd)
+            better = (defined_at(lens, trial_x, trial_y)
+                      & ((t_fx * t_fx + t_fy * t_fy) < residual))
+            accept = better & ~taken
+            step_x = np.where(accept, scale * full_x, step_x)
+            step_y = np.where(accept, scale * full_y, step_y)
+            taken |= accept
+            if taken.all():
+                break
+            scale = np.where(taken, scale, scale * 0.5)
+
         xn = xn + step_x
         yn = yn + step_y
         if np.max(np.abs(step_x)) < INVERSE_TOLERANCE and np.max(np.abs(step_y)) < INVERSE_TOLERANCE:
@@ -205,11 +356,14 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
     directions = np.stack([xn, -yn, -np.ones_like(xn)], axis=-1)
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 
-    # The answer has to survive being projected again, which is what turns a solver that wandered
-    # into a refusal rather than a plausible-looking direction.
+    # Two checks, and the first is the one this file went without. `_defined_at` is what rules out
+    # an answer from the far side of the fold; the round trip alone cannot, because such an answer
+    # really does project back to the pixel asked about. The round trip stays for the solver that
+    # simply wandered.
     back_u, back_v, back_valid = project(lens, directions)
     landed = (np.abs(back_u - pixels[:, 0]) < 1e-6) & (np.abs(back_v - pixels[:, 1]) < 1e-6)
-    return directions, back_valid & landed & np.isfinite(xn) & np.isfinite(yn)
+    inside = defined_at(lens, xn, yn)
+    return directions, back_valid & landed & inside & np.isfinite(xn) & np.isfinite(yn)
 
 
 def direction_to_equirect(directions: np.ndarray, width: int,
@@ -221,7 +375,9 @@ def direction_to_equirect(directions: np.ndarray, width: int,
     """
     directions = np.asarray(directions, dtype=float)
     norms = np.linalg.norm(directions, axis=-1, keepdims=True)
-    unit = directions / np.where(norms > 0.0, norms, 1.0)
+    if not np.all(np.isfinite(norms) & (norms > 0.0)):
+        raise ValueError("a zero or non-finite vector names no direction, so it has no pixel")
+    unit = directions / norms
 
     longitude = np.arctan2(unit[:, 0], -unit[:, 2])
     latitude = np.arcsin(np.clip(unit[:, 1], -1.0, 1.0))
@@ -258,17 +414,36 @@ def sample_equirect(panorama: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.nd
 def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarray:
     """One frame, as a (height, width, channels) float array.
 
-    A pixel whose direction the lens cannot produce is left black rather than guessed at — with a
-    distortion strong enough to fold, part of the frame genuinely has no ray behind it.
+    **A lens that folds inside its own frame is refused rather than rendered.** Part of such a frame
+    genuinely has no ray behind it, so the alternative is an image with holes — and a dataset built
+    from those would hand the harness a frame whose missing regions are indistinguishable from dark
+    scenery. Refusing names the problem where it is, which is the lens, not the pixel.
+
+    A pixel still refused under a lens that passed that check raises rather than filling. There is
+    no colour that can mean "no ray": black is a colour the scene produces, and the byte a refusal
+    used to write was 128 — mid-grey, which an ordinary checkerboard pixel hits. A sentinel only
+    means something if nothing else can produce it, and here nothing can be reserved. Since
+    `lens_folds_in_frame` samples the Jacobian on a grid, a pathology between samples could still
+    reach here; loud is the only honest response.
     """
+    if lens_folds_in_frame(lens):
+        raise ValueError(
+            "this lens stops being invertible inside its own frame, so part of every image would "
+            "have no ray behind it; a dataset needs a lens whose whole frame has a preimage")
+
     us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5, indexing="xy")
     pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
 
     camera_directions, valid = unproject(lens, pixels)
     world = pose.rotate(camera_directions)
     u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
+    if not valid.all():
+        raise ValueError(
+            f"{int((~valid).sum())} of {valid.size} pixels have no ray behind them under a lens "
+            "that passed the fold check — the sampled Jacobian missed a pathology, and there is no "
+            "colour that could honestly stand for a missing one")
+
     colours = sample_equirect(panorama, u, v)
-    colours[~valid] = 0.0
     return colours.reshape(lens.height, lens.width, panorama.shape[2])
 
 
