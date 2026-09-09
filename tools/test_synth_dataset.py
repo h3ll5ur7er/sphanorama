@@ -41,6 +41,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    _distort,
+    distort_at,
     INVERSE_ACCEPTANCE_NORMALISED,
     is_usable_lens,
     Intrinsics,
@@ -363,10 +365,14 @@ class SeamSampling(unittest.TestCase):
         np.testing.assert_allclose(first[0], [1.0, 0.0, 0.0], atol=1e-12)
         np.testing.assert_allclose(last[0], [0.0, 0.0, 1.0], atol=1e-12)
 
-    def test_latitude_clamps_where_longitude_wraps(self):
+    def test_a_row_past_the_pole_holds_the_edge_where_a_column_past_the_seam_wraps(self):
         # The poles are not periodic — a ray past the top edge has to hold the top row rather than
-        # reappear at the bottom, which is the opposite rule from the one above and one line away
-        # from it in the implementation.
+        # reappear at the bottom, which is the opposite rule from the one above.
+        #
+        # Renamed: this was `test_latitude_clamps_where_longitude_wraps`, and the clamp it named is
+        # gone. It was bit-for-bit redundant with the row clip that follows it — measured difference
+        # 0.0 across v in [-3, 9] — so what this actually pins, and always did, is the *clipping*,
+        # which is the thing that produces the behaviour.
         panorama = np.zeros((4, 8, 3))
         panorama[0, :] = [0.0, 1.0, 0.0]
         panorama[3, :] = [1.0, 1.0, 0.0]
@@ -1014,6 +1020,62 @@ class EquirectangularMapping(unittest.TestCase):
         just_after = direction_to_equirect(np.array([[1e-9, 0.0, 1.0]]), 512, 256)[0][0]
         self.assertLess(just_before, 1e-4)
         self.assertGreater(just_after, 512.0 - 1e-4)
+
+
+class ADirectionNeedNotArriveNormalised(unittest.TestCase):
+    """`direction_to_equirect` normalises, and nothing in the suite ever gave it a reason to.
+
+    Every caller hands it unit vectors — `unproject` normalises, `Pose.rotate` preserves length,
+    and the hand-written cases all use unit axes — so replacing the normalisation with a pass-through
+    left the whole suite green. Longitude is `arctan2(x, -z)`, invariant under positive scaling, so
+    it never notices; latitude is `arcsin(clip(y, -1, 1))` and very much does.
+    """
+
+    def test_a_long_vector_names_the_same_pixel_as_its_unit_direction(self):
+        up_thirty = np.array([[0.0, math.sin(math.radians(30.0)), -math.cos(math.radians(30.0))]])
+        unit_u, unit_v = direction_to_equirect(up_thirty, 512, 256)
+        long_u, long_v = direction_to_equirect(up_thirty * 2.0, 512, 256)
+
+        np.testing.assert_allclose(long_u, unit_u, atol=1e-12)
+        # Without the normalisation `y = 1.0` clips to the pole and this lands on row 0 instead.
+        np.testing.assert_allclose(long_v, unit_v, atol=1e-12)
+        self.assertGreater(float(unit_v[0]), 1.0, "the arrangement must not already be at the pole")
+
+
+class TheDistortionIsWrittenDownOnce(unittest.TestCase):
+    """Brown-Conrady was written out four times in this file and the Jacobian twice more.
+
+    The core hit this first and consolidated to one `DistortAt` returning a struct, with a comment
+    on `Project`'s use of it saying why: that is the copy which *adjudicates* the solver's answer,
+    so of the places the arithmetic lived it was the one that could least afford to drift. This
+    file's copies were the solver's residual, the backtracking trial, `_distort`, and `defined_at`.
+
+    A fact held in two places will drift, and the drift here would be silent in the worst way — the
+    fold test disagreeing with the solver about where the fold is, which is precisely the
+    disagreement `camera_model` exists to prevent. So this asserts the pieces agree, and it is
+    written to fail if a future edit re-splits them.
+    """
+
+    def test_every_consumer_reads_the_same_distortion(self):
+        lens = Intrinsics(**{**lens_from_fov(66.0, 50.0, 64, 48).__dict__,
+                            "k1": -0.31, "k2": 0.14, "k3": -0.02, "p1": 0.003, "p2": -0.004})
+        xn = np.array([0.21, -0.44, 0.05, 0.63])
+        yn = np.array([-0.17, 0.38, 0.02, -0.51])
+
+        at = distort_at(lens, xn, yn)
+
+        # `_distort` is the same map.
+        xd, yd = _distort(lens, xn, yn)
+        np.testing.assert_allclose(at.x, xd, rtol=0, atol=0)
+        np.testing.assert_allclose(at.y, yd, rtol=0, atol=0)
+
+        # `defined_at` is the same Jacobian, to the bit.
+        np.testing.assert_array_equal(defined_at(lens, xn, yn),
+                                      (at.radial > 0.0) & (at.determinant > 0.0))
+
+        # And the determinant really is the quantity the guard tests, rather than a lookalike.
+        np.testing.assert_allclose(at.determinant,
+                                   at.dxdx * at.dydy - at.cross * at.cross, rtol=0, atol=0)
 
 
 class Rendering(unittest.TestCase):

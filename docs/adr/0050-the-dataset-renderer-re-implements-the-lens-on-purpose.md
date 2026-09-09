@@ -202,6 +202,15 @@ opt-in dependency group.**
   which is the honest description of a backstop: one test stands on that path, and it is there
   because the path is reachable in principle rather than because it has been reached.
 
+- **Brown-Conrady was written out four times and is written once now.** `_distort`, `defined_at`,
+  the Newton residual and the backtracking trial each rebuilt it, and the Jacobian appeared twice
+  more. The core hit this first and consolidated to one `DistortAt` returning a struct, with a
+  comment on `Project`'s use of it saying why: that is the copy which *adjudicates* the solver's
+  answer, so of the places the arithmetic lived it was the one that could least afford to drift.
+  The port copied the expressions and not the lesson. `distort_at` is that struct here, and the
+  consolidation is bit-for-bit: the same accepted count and the same hash of directions and of a
+  rendered frame, before and after.
+
 - **The frames are uncompressed and the datasets are large.** A 640x480 frame is 921,615 bytes, so
   a 60-cell ring measures 55.3 MB on disk. `datasets/` is gitignored and regenerated rather than committed, so this
   is disk rather than repository weight; if it becomes a nuisance, PNG through `zlib` is about
@@ -221,10 +230,20 @@ defeats the purpose: the dataset would be rendered by the code the dataset exist
 a shared error in the distortion convention would cancel exactly. The whole value of the harness is
 that it can disagree with the core.
 
-***Porting `camera_model.cpp` line by line into Python.*** Independent in form and not in substance —
-a transcription reproduces the original's misunderstandings faithfully, which is the one property
-that must not carry over. Working from the published form and meeting the C++ at a hand-computed
-number is what makes agreement mean something.
+***Porting `camera_model.cpp` line by line into Python.*** **This is what happened, and leaving it
+in the rejected list was a claim contradicted by this ADR's own first consequence.** A reviewer
+pressed it in round 2 and was right.
+
+The original argument was that a transcription reproduces the original's misunderstandings
+faithfully. That is true, and it is precisely what went wrong: the port kept the arithmetic and
+dropped the guards, which is worse than either a clean port or a genuine re-derivation. Round 2
+then found that the *repair* had repeated it one level down — `DefinedAt` ported, and
+`RadialMapIncreasesUpTo`, `DistortionInvertsAlongTheRay` and `IsUsableLens`'s centre rule not.
+
+So the position has moved rather than been restated. Porting is what this file does; what makes
+agreement mean something is not the manner of writing it but the pinning to hand-worked decimals
+neither implementation derived, and the discipline that a port is *complete or not attempted* —
+half a port is the failure mode this ADR has now recorded three times.
 
 ***Leaving ADR 0048's "visible in a lock file" protection as it was.*** That protection is spent:
 numpy is in `uv.lock` now, so a future dependency added to the `datasets` group would not stand out
@@ -233,6 +252,17 @@ there. What actually keeps the checkers standard-library-only is the *position o
 invocation placed after it imports numpy and exits 0. ADR 0048's decision stands and does not need
 superseding; this is the erosion of one of its consequences, recorded here because nothing else
 would say so.
+
+***Leaving ADR 0046's "independent implementations are the point" premise unmarked.*** ADR 0046
+rejected sharing one implementation with this generator on the grounds that independent ones are
+what give agreement meaning. That premise is spent in the same way ADR 0048's lock-file protection
+is, and for the same reason recorded above: these implementations are not independent, so what
+0046 was buying is not what it got. It is noted here rather than in 0046, and 0046 is not
+superseded — its decision (the lens is a utility, an uninvertible pixel is refused) stands
+untouched and is if anything strengthened by round 2, which found this file wrong in exactly the
+places it had not copied 0046's guards. This ADR recorded 0048's erosion because nothing else
+would say so; the same argument applies here, and omitting it while including the other was the
+inconsistency a reviewer named.
 
 ***numpy in `dependencies`, not a group.*** Simpler to invoke and it puts a 16 MB wheel into every
 CI job for the benefit of one step, undoing the property ADR 0048 was written to establish. The

@@ -219,6 +219,39 @@ def _radial(lens: Intrinsics, r2: np.ndarray) -> np.ndarray:
     return 1.0 + r2 * (lens.k1 + r2 * (lens.k2 + r2 * lens.k3))
 
 
+@dataclass
+class Distorted:
+    """Where the distortion sends a point, and its Jacobian there, in one evaluation.
+
+    One evaluation because there were four. `_distort`, `defined_at`, the Newton residual and the
+    backtracking trial each wrote Brown-Conrady out again, and the core carries a comment recording
+    that it removed exactly this duplication for exactly this reason: a fact held in two places will
+    drift, and the drift here is the fold test disagreeing with the solver about where the fold is —
+    which is the disagreement `camera_model` exists to prevent.
+    """
+    x: np.ndarray
+    y: np.ndarray
+    radial: np.ndarray
+    dxdx: np.ndarray
+    dydy: np.ndarray
+    cross: np.ndarray
+    determinant: np.ndarray
+
+
+def distort_at(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> Distorted:
+    """The core's `DistortAt`: the distorted point and the Jacobian at it, together."""
+    r2 = xn * xn + yn * yn
+    radial = _radial(lens, r2)
+    x = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn)
+    y = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn
+    d_radial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3)   # d(radial)/d(r2)
+    dxdx = radial + 2.0 * xn * xn * d_radial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn
+    dydy = radial + 2.0 * yn * yn * d_radial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn
+    cross = 2.0 * xn * yn * d_radial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn
+    return Distorted(x=x, y=y, radial=radial, dxdx=dxdx, dydy=dydy, cross=cross,
+                     determinant=dxdx * dydy - cross * cross)
+
+
 def defined_at(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> np.ndarray:
     """Whether the forward map is orientation-preserving here — the core's `DefinedAt`.
 
@@ -229,13 +262,8 @@ def defined_at(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> np.ndarray:
     right: without this test, 468 of 3072 grid pixels on a folding lens came back with fabricated
     directions, the frame corner among them, 52 degrees off axis and pointing the opposite way.
     """
-    r2 = xn * xn + yn * yn
-    radial = _radial(lens, r2)
-    d_radial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3)
-    dxdx = radial + 2.0 * xn * xn * d_radial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn
-    dydy = radial + 2.0 * yn * yn * d_radial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn
-    cross = 2.0 * xn * yn * d_radial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn
-    return (radial > 0.0) & ((dxdx * dydy - cross * cross) > 0.0)
+    at = distort_at(lens, xn, yn)
+    return (at.radial > 0.0) & (at.determinant > 0.0)
 
 
 def _radial_slope(lens: Intrinsics, u: np.ndarray) -> np.ndarray:
@@ -311,12 +339,9 @@ def inverts_along_the_ray(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> n
 
 
 def _distort(lens: Intrinsics, xn: np.ndarray, yn: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Brown-Conrady forward, in the same term order as `DistortAt`."""
-    r2 = xn * xn + yn * yn
-    radial = _radial(lens, r2)
-    xd = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn)
-    yd = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn
-    return xd, yd
+    """Brown-Conrady forward. Through `distort_at`, which *is* `DistortAt`."""
+    at = distort_at(lens, xn, yn)
+    return at.x, at.y
 
 
 def project(lens: Intrinsics, camera_space: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -389,18 +414,11 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
         yn = np.where(outside, yn * 0.5, yn)
 
     for _ in range(INVERSE_ITERATIONS):
-        r2 = xn * xn + yn * yn
-        radial = _radial(lens, r2)
-        d_radial = lens.k1 + r2 * (2.0 * lens.k2 + r2 * 3.0 * lens.k3)
-
-        fx_ = xn * radial + 2.0 * lens.p1 * xn * yn + lens.p2 * (r2 + 2.0 * xn * xn) - xd
-        fy_ = yn * radial + lens.p1 * (r2 + 2.0 * yn * yn) + 2.0 * lens.p2 * xn * yn - yd
+        at = distort_at(lens, xn, yn)
+        fx_ = at.x - xd
+        fy_ = at.y - yd
         residual = fx_ * fx_ + fy_ * fy_
-
-        dxdx = radial + 2.0 * xn * xn * d_radial + 2.0 * lens.p1 * yn + 6.0 * lens.p2 * xn
-        dydy = radial + 2.0 * yn * yn * d_radial + 6.0 * lens.p1 * yn + 2.0 * lens.p2 * xn
-        cross = 2.0 * xn * yn * d_radial + 2.0 * lens.p1 * xn + 2.0 * lens.p2 * yn
-        determinant = dxdx * dydy - cross * cross
+        dxdx, dydy, cross, determinant = at.dxdx, at.dydy, at.cross, at.determinant
 
         usable = determinant > 0.0        # not `abs(...) > eps`: a negative one is the fold
         safe = np.where(usable, determinant, 1.0)
@@ -416,13 +434,10 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
         for _ in range(BACKTRACK_STEPS):
             trial_x = np.where(taken, xn + step_x, xn + scale * full_x)
             trial_y = np.where(taken, yn + step_y, yn + scale * full_y)
-            tr2 = trial_x * trial_x + trial_y * trial_y
-            t_radial = _radial(lens, tr2)
-            t_fx = (trial_x * t_radial + 2.0 * lens.p1 * trial_x * trial_y
-                    + lens.p2 * (tr2 + 2.0 * trial_x * trial_x) - xd)
-            t_fy = (trial_y * t_radial + lens.p1 * (tr2 + 2.0 * trial_y * trial_y)
-                    + 2.0 * lens.p2 * trial_x * trial_y - yd)
-            better = (defined_at(lens, trial_x, trial_y)
+            trial = distort_at(lens, trial_x, trial_y)
+            t_fx = trial.x - xd
+            t_fy = trial.y - yd
+            better = ((trial.radial > 0.0) & (trial.determinant > 0.0)
                       & ((t_fx * t_fx + t_fy * t_fy) < residual))
             accept = better & ~taken
             step_x = np.where(accept, scale * full_x, step_x)
@@ -490,7 +505,13 @@ def sample_equirect(panorama: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.nd
     """
     height, width = panorama.shape[:2]
     x = u - 0.5
-    y = np.clip(v - 0.5, 0.0, height - 1.0)
+    # `v - 0.5` without a clamp: the row indices are clipped four lines down, and a
+    # measurement across v in [-3, 9] on a four-row panorama put the difference between
+    # clamping here and not at exactly 0.0 — top and bottom collapse to the same row past
+    # either edge, so the blend weight cannot matter. A reviewer deleted the clamp and the
+    # whole suite stayed green, which is the definition this repository uses for a guard
+    # that should go rather than be kept because it feels safer.
+    y = v - 0.5
 
     x0 = np.floor(x).astype(np.int64)
     y0 = np.floor(y).astype(np.int64)
@@ -544,7 +565,14 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
 
 
 def _to_bytes(frame: np.ndarray) -> np.ndarray:
-    """Map a signed unit-range frame onto bytes. Shared with the test that reads a file back."""
+    """Map a signed unit-range frame onto bytes: `b = round((value + 1) / 2 * 255)`.
+
+    The docstring used to say "shared with the test that reads a file back", which named the one
+    caller that must never share it: `test_a_written_frame_reads_back_as_the_pixels_that_were_
+    rendered` re-derives this arithmetic by hand on purpose, so that four byte-path mutations fail
+    it. A future reader taking the sentence at its word would have replaced that derivation with a
+    call and quietly removed the only check on this function.
+    """
     # `np.round(nan).astype(np.uint8)` is 0 — black, which is a colour the scene produces, and the
     # exact sentinel collision mid-grey 128 was removed for. The clip would hide it: NaN survives
     # `np.clip` unchanged and only the cast turns it into a plausible pixel.
@@ -617,6 +645,10 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
                                "row 0; an integer coordinate is a pixel edge, so forward lands on "
                                "the corner at (width / 2, height / 2)",
             "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
+            "pixel_encoding": "each byte b is a signed component: value = b / 255 * 2 - 1, so 0 is "
+                              "-1.0, 128 is +0.00392 and 255 is +1.0; there is no gamma and no "
+                              "colour space. A consumer that assumes unsigned [0, 1] reads every "
+                              "frame with its contrast halved and its zero in the wrong place",
         },
         "intrinsics": asdict(lens),
         "frames": frames,
