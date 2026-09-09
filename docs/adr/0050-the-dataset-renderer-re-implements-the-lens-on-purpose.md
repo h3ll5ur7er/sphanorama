@@ -137,6 +137,22 @@ opt-in dependency group.**
   rotation that was asked for — frames and ground truth disagreeing by more than the quantity the
   harness exists to measure.
 
+- **The fix for the fold had an ordering defect of its own, and self-review rather than a reviewer
+  found it.** The refusal, the guard in `direction_to_equirect` and the `defined_at` check all
+  arrived in one commit, and nothing considered the order between them: `render_frame` read `valid`
+  *after* rotating the directions and mapping them to panorama coordinates. A refused row's
+  direction can be non-finite, so the frame was diagnosed one line too early — as "a zero or
+  non-finite vector names no direction", which is true of that row and the wrong statement about
+  the frame, naming a direction where the problem is a lens, and losing the count of how many
+  pixels are affected. The check moved ahead of both consumers.
+
+  Worth recording because it is the third time in this repository that a fix was the defect. The
+  test for it forces the state rather than finding it — no lens surviving `lens_folds_in_frame` is
+  known to leave a NaN there, which is exactly why the raise is a backstop — so it substitutes an
+  `unproject` that refuses one row. Removing the raise entirely fails that test and nothing else,
+  which is the honest description of a backstop: one test stands on that path, and it is there
+  because the path is reachable in principle rather than because it has been reached.
+
 - **The frames are uncompressed and the datasets are large.** A 640x480 frame is 921,615 bytes, so
   a 60-cell ring measures 55.3 MB on disk. `datasets/` is gitignored and regenerated rather than committed, so this
   is disk rather than repository weight; if it becomes a nuisance, PNG through `zlib` is about
