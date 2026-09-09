@@ -461,8 +461,11 @@ def unproject(lens: Intrinsics, pixels: np.ndarray) -> tuple[np.ndarray, np.ndar
         # No test pins it and none should pretend to. The core says removing its line changes no
         # answer; here that is **not quite true** and the difference is worth stating rather than
         # inheriting the C++'s claim. On an undistorted lens the accepted directions are
-        # bit-identical. On a distorting one 87,368 of 307,200 rows move by one ULP — 3.33e-16 in a
-        # component, 1.7e-06 degrees — because the iterate now stops a refinement earlier. That is
+        # bit-identical. On `k1=-0.28, k2=0.09, p1=0.002` at 640x480 — the lens is named because a
+        # reviewer rightly could not reproduce the count without it, and got a different one —
+        # 87,368 of 307,200 rows move by one ULP: 3.33e-16 in a component, 1.7e-06 degrees, because
+        # the iterate stops a refinement earlier. The count is a property of the lens, not a
+        # constant. That is
         # four orders inside the 0.001-degree bound the render tests assert and nine inside the
         # acceptance tolerance, so it is noise rather than a behaviour change; it is simply not the
         # word "identical".
@@ -766,8 +769,23 @@ def main() -> int:
     for name, value in (("--width", args.width), ("--height", args.height)):
         if value < 1:
             parser.error(f"{name} must be at least 1, not {value}")
+    for name, value in (("--hfov", args.hfov), ("--vfov", args.vfov)):
+        if not 0.0 < value < 180.0:
+            parser.error(f"{name} must be between 0 and 180 degrees, not {value}")
+
+    # Every shape of unusable `--out`, not just the one the first version thought of. A reviewer
+    # found three more, each of which spent the whole render and then raised the very error this
+    # exists to pre-empt. `Path.exists()` follows symlinks, so it answers a question about the
+    # *target* — False for a dangling one — which is not the question being asked.
+    if args.out.is_symlink() and not args.out.exists():
+        parser.error(f"--out is a symlink to nothing: {args.out}")
     if args.out.exists() and not args.out.is_dir():
         parser.error(f"--out must be a directory, and {args.out} is not one")
+    if not args.out.parent.is_dir():
+        parser.error(f"--out's parent must be an existing directory, and {args.out.parent} is not")
+    staging = args.out.parent / f".{args.out.name}.partial"
+    if staging.exists() and not staging.is_dir():
+        parser.error(f"{staging} is in the way and is not a directory this can clear")
 
     panorama = _checkerboard_panorama(2048, 1024)
     lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height)

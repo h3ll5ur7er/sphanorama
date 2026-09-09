@@ -606,6 +606,23 @@ class TheAnswerIsTheNearBranch(unittest.TestCase):
                              indexing="xy")
         return np.stack([us.ravel(), vs.ravel()], axis=-1)
 
+    def test_the_oracle_refuses_a_lens_it_cannot_describe(self):
+        """The refusal added last round was itself deletable with the suite green.
+
+        Which is the same defect it was added to prevent, one level up: a guard whose state nothing
+        reaches. Both other callers pass radial lenses on purpose, so nothing ever handed the oracle
+        a tangential one — and a guard nobody triggers is indistinguishable from a guard that does
+        not work.
+        """
+        tangential = Intrinsics(**{**lens_from_fov(66.0, 50.0, 16, 12).__dict__, "p1": 0.002})
+        with self.assertRaises(ValueError):
+            self._near_branch(tangential, np.array([[8.0, 6.0]]))
+
+        radial = lens_from_fov(66.0, 50.0, 16, 12)
+        directions, exists = self._near_branch(radial, np.array([[8.0, 6.0]]))
+        self.assertTrue(exists.all(), "and it still answers for a lens it can describe")
+        self.assertEqual(directions.shape, (1, 3))
+
     def test_a_folding_lens_answers_no_pixel_from_the_far_side(self):
         """The defect round 1 introduced while fixing the defect round 1 found.
 
@@ -1269,6 +1286,57 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
 
             self.assertEqual(rendered["n"], 0, "it rendered before checking where the output goes")
             self.assertEqual(occupied.read_text(), "something else lives here\n")
+
+    def test_every_shape_of_unusable_out_is_refused_before_rendering(self):
+        """The first version of this check covered one shape and a reviewer found three more.
+
+        `out.exists()` is False for a **dangling symlink**, so that slipped through; a `--out` whose
+        parent is a file, and a `.<name>.partial` already occupied by a file, were not considered at
+        all. Each spent the entire render and then raised the very error the check was added to
+        pre-empt — measured at two renders each here, hours at the scale the roadmap plans.
+
+        The lesson is the one this branch keeps relearning in different clothes: a guard written
+        against the example in a bug report covers the example. `Path.exists()` follows symlinks and
+        answers a question about the *target*, which is not the question being asked.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "afile").write_text("not a directory\n")
+            (root / ".occupied.partial").write_text("in the way\n")
+            dangling = root / "dangling"
+            dangling.symlink_to(root / "does-not-exist")
+
+            cases = {
+                "a file": root / "afile",
+                "a dangling symlink": dangling,
+                "under a file": root / "afile" / "ds",
+                "staging occupied": root / "occupied",
+            }
+            for name, out in cases.items():
+                rendered = {"n": 0}
+                honest = synth_dataset.render_frame
+
+                def count(*args, **kwargs):
+                    rendered["n"] += 1
+                    return honest(*args, **kwargs)
+
+                synth_dataset.render_frame = count
+                try:
+                    with self.assertRaises(SystemExit, msg=name):
+                        self._run("--out", str(out), "--frames", "2",
+                                  "--width", "16", "--height", "12")
+                finally:
+                    synth_dataset.render_frame = honest
+                self.assertEqual(rendered["n"], 0, f"{name}: rendered before refusing")
+
+    def test_a_lens_that_is_not_a_lens_is_refused_by_the_parser(self):
+        """`--hfov 0` used to reach `lens_from_fov` and traceback rather than say what was wrong."""
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            for flag, value in (("--hfov", "0"), ("--vfov", "-10"), ("--hfov", "180"),
+                                ("--width", "0"), ("--height", "-4")):
+                with self.assertRaises(SystemExit, msg=f"{flag} {value}"):
+                    self._run("--out", str(out), flag, value)
 
     def test_a_frame_count_that_is_not_a_count_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
