@@ -1134,6 +1134,77 @@ class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
         self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
 
 
+class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
+    """A smoke test over `main()`, which two rounds of deferral had left with none.
+
+    Round 1 deferred this: `_ring_of_poses` and the defaults are placeholders that §5.5's
+    trajectory work replaces, and the risk being weighed was `from_azimuth_elevation`, which round 1
+    then anchored. That reasoning has expired. The risk that remains is in the argument plumbing the
+    deferral left uncovered, and a reviewer measured both halves of it: `--out` naming a file spends
+    the entire render before raising `FileExistsError` — ten seconds at twelve frames, hours at the
+    scale the roadmap plans — and `--frames 0` deletes an existing dataset, prints "wrote 0 frames"
+    and exits 0.
+
+    These assertions are about the CLI's contract rather than the ring's shape, so they survive the
+    trajectory rewrite that the deferral was waiting for.
+    """
+
+    def _run(self, *argv):
+        argv = ["synth_dataset.py", *argv]
+        old = sys.argv
+        sys.argv = argv
+        try:
+            return synth_dataset.main()
+        finally:
+            sys.argv = old
+
+    def test_an_out_that_is_a_file_is_refused_before_a_single_frame_renders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            occupied = Path(directory) / "not-a-directory"
+            occupied.write_text("something else lives here\n")
+
+            rendered = {"n": 0}
+            honest = synth_dataset.render_frame
+
+            def count(*args, **kwargs):
+                rendered["n"] += 1
+                return honest(*args, **kwargs)
+
+            synth_dataset.render_frame = count
+            try:
+                with self.assertRaises(SystemExit):
+                    self._run("--out", str(occupied), "--frames", "2")
+            finally:
+                synth_dataset.render_frame = honest
+
+            self.assertEqual(rendered["n"], 0, "it rendered before checking where the output goes")
+            self.assertEqual(occupied.read_text(), "something else lives here\n")
+
+    def test_a_frame_count_that_is_not_a_count_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            self._run("--out", str(out), "--frames", "2")
+            before = sorted(child.name for child in out.iterdir())
+
+            for count in ("0", "-3"):
+                with self.assertRaises(SystemExit, msg=count):
+                    self._run("--out", str(out), "--frames", count)
+
+            self.assertEqual(sorted(child.name for child in out.iterdir()), before,
+                             "a refused run changed the dataset that was there")
+
+    def test_an_ordinary_invocation_writes_what_it_says_it_wrote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "ds"
+            self.assertEqual(self._run("--out", str(out), "--frames", "3",
+                                       "--width", "32", "--height", "24"), 0)
+            frames = sorted(out.glob("frame_*.ppm"))
+            truth = json.loads((out / "truth.json").read_text())
+            self.assertEqual(len(frames), 3)
+            self.assertEqual(len(truth["frames"]), 3)
+            self.assertEqual(truth["intrinsics"]["width"], 32)
+
+
 class TheSeamWrapsOnBothSides(unittest.TestCase):
     """`SeamSampling` tested the right-hand wrap and the left-hand one was never reached.
 

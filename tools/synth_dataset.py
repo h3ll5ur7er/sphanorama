@@ -731,6 +731,19 @@ def main() -> int:
     parser.add_argument("--vfov", type=float, default=50.0)
     args = parser.parse_args()
 
+    # Checked before anything is rendered, because rendering is the expensive part and these are
+    # the two ways to get it wrong that cost the whole of it. `--out` naming a file used to raise
+    # `FileExistsError` *after* the full render — ten seconds at twelve frames and hours at the
+    # scale the roadmap plans — and `--frames 0` deleted the dataset that was there, printed
+    # "wrote 0 frames" and exited 0.
+    if args.frames < 1:
+        parser.error(f"--frames must be at least 1, not {args.frames}")
+    for name, value in (("--width", args.width), ("--height", args.height)):
+        if value < 1:
+            parser.error(f"{name} must be at least 1, not {value}")
+    if args.out.exists() and not args.out.is_dir():
+        parser.error(f"--out must be a directory, and {args.out} is not one")
+
     panorama = _checkerboard_panorama(2048, 1024)
     lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height)
     written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))

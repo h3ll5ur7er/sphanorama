@@ -211,6 +211,21 @@ opt-in dependency group.**
   consolidation is bit-for-bit: the same accepted count and the same hash of directions and of a
   rendered frame, before and after.
 
+- **The renderer costs about 430 MiB and 11 seconds per megapixel, so it is a 640x480 tool.**
+  Measured on one frame, and linear: 0.3 MP takes 2.6 s and peaks at 159 MiB, 1.2 MP takes 12.7 s
+  and 550 MiB, 3.0 MP takes 32.6 s and 1,305 MiB. Extrapolated to a 4000x3000 phone frame that is
+  roughly 5,200 MiB and 130 s, which a reviewer measured directly at 5,111 MiB and 126-137 s. A
+  60-frame sphere at that resolution would be about two hours, and the list of rendered frames
+  alone — held whole so a dataset is all-or-nothing — would be 2.16 GB rather than the 55.3 MB it
+  is at 640x480.
+
+  Nothing needs it: registration accuracy is measured in degrees and does not want full-resolution
+  frames. It is recorded because the number is not guessable from the code and because the two
+  round-3 reviewers reported figures that look contradictory and are not — one measured the
+  all-or-nothing list (55.3 MB, correct), the other a single 12 MP render's peak (5,111 MiB, also
+  correct). They are different quantities, and a reader meeting both without this note would try to
+  reconcile them.
+
 - **The frames are uncompressed and the datasets are large.** A 640x480 frame is 921,615 bytes, so
   a 60-cell ring measures 55.3 MB on disk. `datasets/` is gitignored and regenerated rather than committed, so this
   is disk rather than repository weight; if it becomes a nuisance, PNG through `zlib` is about
