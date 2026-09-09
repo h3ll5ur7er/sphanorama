@@ -57,9 +57,14 @@ def phone_lens() -> Intrinsics:
 def direction_encoded_panorama(width: int = 512, height: int = 256) -> np.ndarray:
     """A panorama whose pixel value *is* the direction that pixel represents.
 
-    Each channel holds one component of the unit direction, mapped from [-1, 1] onto [0, 1]. Decode
-    a rendered pixel and you recover the world direction the camera was looking along when it drew
-    it, to within the sampling error — which turns "does this render correctly" into arithmetic.
+    Each channel holds one component of the unit direction, in [-1, 1] and **not** remapped — an
+    earlier version of this docstring described a [0, 1] encoding that the code never performed, and
+    a `decode` helper that was the identity function, which together implied a round trip nobody
+    was doing. Read a rendered pixel and you have the world direction the camera was looking along
+    when it drew it, to within the sampling error, with no step in between. That is what turns
+    "does this render correctly" into arithmetic.
+
+    Only `write_dataset` maps to bytes, and only on the way to disk, where [-1, 1] becomes 0..255.
     """
     v, u = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     longitude = (u + 0.5) / width * 2.0 * math.pi - math.pi
@@ -68,10 +73,6 @@ def direction_encoded_panorama(width: int = 512, height: int = 256) -> np.ndarra
     y = np.sin(latitude)
     z = -np.cos(latitude) * np.cos(longitude)
     return np.stack([x, y, z], axis=-1)
-
-
-def decode(pixels: np.ndarray) -> np.ndarray:
-    return pixels
 
 
 def worst_angle_deg(a: np.ndarray, b: np.ndarray) -> float:
@@ -510,7 +511,7 @@ class Rendering(unittest.TestCase):
         self.assertTrue(valid.all())
         expected = pose.rotate(camera_directions)
 
-        rendered = decode(frame.reshape(-1, 3))
+        rendered = frame.reshape(-1, 3)
 
         # Asserted in degrees, because degrees are what this dataset exists to measure and a
         # tolerance in colour units hides its own meaning. The measured interpolation error at this

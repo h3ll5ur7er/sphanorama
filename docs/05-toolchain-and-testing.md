@@ -126,20 +126,21 @@ orientation **plus the ground-truth rotation of every frame**, as binary Netpbm 
 `truth.json`. It runs through the `datasets` dependency group, which is what carries numpy — the
 checkers above stay standard-library only (ADR 0050).
 
-**It re-implements the lens rather than calling the core**, and that is the decision the tool turns
-on: a dataset rendered *through* `camera_model` would cancel any error the two share, so a wrong
-distortion convention would render wrong, register wrong in the compensating way, and score perfect.
-Both implementations are pinned to the same hand-worked decimals instead.
+**It implements the lens itself rather than calling the core**, so a dataset is never rendered by
+the code it will be used to measure — an error the two shared would cancel, and the harness would
+score a broken projection as perfect. What carries the weight is not the separation, though: a
+reviewer showed the arithmetic is close enough to the core's to be called a transcription. It is the
+pinning of both to hand-worked decimals derived from neither (ADR 0050).
 
 Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, and a
 procedural panorama. Still to come, each its own increment with its own invariant: real HDRIs, a
 noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
 movers for known ghost regions.
 
-That gives:
+What it gives today is the first of these; the rest wait on the increments listed above:
 
-- registration accuracy measured in degrees against truth, not eyeballed;
-- ghost detection scored against a known mask;
+- registration accuracy measured in degrees against truth, not eyeballed — **available now**;
+- ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.
 
