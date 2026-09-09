@@ -478,9 +478,19 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
         })
 
     truth = {
+        # Prose, and nothing parses it — a reviewer is right that it cannot drift-check itself. It
+        # is here because a consumer that reads these frames in another language needs the frame
+        # conventions written down somewhere, and the equirectangular one below exists nowhere else:
+        # the other three are mirrored from `types.h`, so a C++ reader already has them.
         "convention": {
             "camera_space": "-Z forward, +Y up, +X right",
-            "image_space": "+x right, +y down, origin at the top-left corner, cx = width / 2",
+            "image_space": "+x right, +y down, origin at the top-left corner",
+            "principal_point": "this generator's lenses are built with cx = width / 2, half a pixel "
+                               "from OpenCV's (width - 1) / 2; read the value from intrinsics rather "
+                               "than assuming it",
+            "equirectangular": "longitude 0 is -Z and increases toward +X; latitude +90 is +Y at "
+                               "row 0, so the panorama's centre is the direction a camera at "
+                               "identity looks along",
             "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
         },
         "intrinsics": asdict(lens),
