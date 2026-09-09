@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
     Intrinsics,
     _corner_radius_squared,
@@ -470,6 +471,41 @@ class UnprojectionRefuses(unittest.TestCase):
             _, valid = unproject(lens, pixels)
             self.assertTrue(valid.all(), f"{name}: a lens that does not fold refused a pixel")
             render_frame(panorama, lens, Pose.identity())   # and it renders
+
+    def test_a_refused_pixel_is_reported_as_a_refusal_and_not_as_a_bad_direction(self):
+        """`render_frame` must read `valid` before it consumes the directions, not after.
+
+        The refusal is raised where the count is known; `direction_to_equirect` raises on a
+        non-finite vector one line earlier in the pipeline. A refused pixel whose solver left NaN
+        behind reaches that second raise first and reports "a zero or non-finite vector names no
+        direction" — true of the row, and the wrong diagnosis of the frame, because it names a
+        direction rather than the lens that could not produce one.
+
+        Forced rather than found: no lens surviving `lens_folds_in_frame` is known to leave a NaN
+        here, so the arrangement substitutes an `unproject` that refuses one row with a NaN. That
+        is the state the ordering exists for, and constructing it is the only way to reach it.
+        """
+        panorama = direction_encoded_panorama(256, 128)
+        lens = lens_from_fov(66.0, 50.0, 8, 6)
+        honest = synth_dataset.unproject
+
+        def refuses_one_row_with_a_nan(lens_, pixels):
+            directions, valid = honest(lens_, pixels)
+            directions = directions.copy()
+            valid = valid.copy()
+            directions[0] = np.nan
+            valid[0] = False
+            return directions, valid
+
+        synth_dataset.unproject = refuses_one_row_with_a_nan
+        try:
+            with self.assertRaises(ValueError) as raised:
+                render_frame(panorama, lens, Pose.identity())
+        finally:
+            synth_dataset.unproject = honest
+
+        self.assertIn("no ray behind them", str(raised.exception))
+        self.assertIn("1 of 48", str(raised.exception))
 
 
 class EquirectangularMapping(unittest.TestCase):

@@ -437,14 +437,17 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
     pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
 
     camera_directions, valid = unproject(lens, pixels)
-    world = pose.rotate(camera_directions)
-    u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
+    # Before the directions are used for anything. A refused row's direction can be non-finite, and
+    # `direction_to_equirect` refuses those too — with a message that names the vector rather than
+    # the lens, which is the wrong diagnosis of the frame and the wrong count in it.
     if not valid.all():
         raise ValueError(
             f"{int((~valid).sum())} of {valid.size} pixels have no ray behind them under a lens "
             "that passed the fold check — the sampled Jacobian missed a pathology, and there is no "
             "colour that could honestly stand for a missing one")
 
+    world = pose.rotate(camera_directions)
+    u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
     colours = sample_equirect(panorama, u, v)
     return colours.reshape(lens.height, lens.width, panorama.shape[2])
 
