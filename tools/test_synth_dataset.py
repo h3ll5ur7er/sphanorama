@@ -565,7 +565,23 @@ class TheAnswerIsTheNearBranch(unittest.TestCase):
 
     @staticmethod
     def _near_branch(lens, pixels, samples=400_000, r_max=8.0):
-        """(directions, exists) for each pixel, from the forward map only."""
+        """(directions, exists) for each pixel, from the forward map only.
+
+        **Radial lenses only, and it refuses rather than answering for others.** The table below is
+        a function of `r` alone, so `p1` and `p2` appear nowhere in it: on a lens with tangential
+        distortion this would return the truth of a *different* lens, and the tests using it would
+        compare against a wrong answer that looks entirely reasonable. Both current callers pass
+        purely radial lenses, which is the arrangement doing the work of a check — the pattern this
+        oracle exists to defend against, one level up in the oracle itself. A reviewer spotted it.
+
+        Refusing keeps the limitation loud. The tangential half is covered by a different route:
+        `TheTangentialTermsAreLoadBearing` uses a lens where the closed form and the endpoint both
+        pass and only the sampling along the ray refuses.
+        """
+        if lens.p1 != 0.0 or lens.p2 != 0.0:
+            raise ValueError(
+                f"this oracle is radial only and cannot describe p1={lens.p1}, p2={lens.p2}; "
+                "answering would compare the code against the truth of a different lens")
         xd = (pixels[:, 0] - lens.cx) / lens.fx
         yd = (pixels[:, 1] - lens.cy) / lens.fy
         rd = np.hypot(xd, yd)
