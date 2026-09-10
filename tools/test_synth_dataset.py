@@ -456,10 +456,18 @@ class TheRotationConventionMeetsTheCore(unittest.TestCase):
         for index, pose in enumerate(poses):
             azimuth = 360.0 * index / 6
             a, e = math.radians(azimuth), math.radians(elevation)
-            expected = (-math.cos(e) * math.sin(a), math.sin(e), -math.cos(e) * math.cos(a))
-            got = pose.rotate(np.array([[0.0, 0.0, -1.0]]))[0]
-            np.testing.assert_allclose(got, expected, atol=1e-12,
-                                       err_msg=f"cell {index} at azimuth {azimuth}")
+            forward = (-math.cos(e) * math.sin(a), math.sin(e), -math.cos(e) * math.cos(a))
+            # And the +X axis, which the pitch leaves alone. Asserting forward alone was the second
+            # thing wrong with this test: a reviewer rolled every cell 17.2 degrees about its own
+            # forward axis and all eighty stayed green. The class three tests up says in as many
+            # words that a convention with forward right and roll wrong passes on forward alone —
+            # so this was the stated principle being broken twelve lines under the statement.
+            right = (math.cos(a), 0.0, -math.sin(a))
+            got = pose.rotate(np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]))
+            np.testing.assert_allclose(got[0], forward, atol=1e-12,
+                                       err_msg=f"forward of cell {index} at azimuth {azimuth}")
+            np.testing.assert_allclose(got[1], right, atol=1e-12,
+                                       err_msg=f"+X of cell {index} at azimuth {azimuth}")
 
         # And the elevation is honoured rather than ignored, which the zero-elevation ring could
         # not have shown: every cell sits above the horizon by exactly the angle asked for.

@@ -106,8 +106,18 @@ opt-in dependency group.**
   What is true is narrower and still worth the test: the four that catch it diagnose it as a
   coverage count and a wrong cell id — `EveryDirectionOnTheSphereIsInsideSomeCell` reports 270 of
   4000 directions uncovered — which says the planner is broken and not which convention moved. The
-  three tests *about* `FromAzimuthElevation` all pass under it. So the value is a direct diagnosis
+  four *pre-existing* tests of `FromAzimuthElevation` itself all pass under it. (The first
+  correction said "three", carried over from the retracted sentence's hand-written list; there are
+  five in that suite now, four of them older than this branch.) So the value is a direct diagnosis
   where there was only an indirect one, and that is a smaller claim than the one first made here.
+
+  **And the parallel claim about the Python side was false too**, asserted in the same breath and
+  never run. `main`'s 77-test Python suite *does* catch a reversed composition order, through
+  `test_an_azimuth_turns_about_up_and_an_elevation_lifts_toward_it` — a test written in an earlier
+  round precisely because pure azimuth and pure elevation cases do not separate the two orders. So
+  the asymmetry this bullet describes is C++-side only. Three claims of mine in this ADR have now
+  been corrected by someone re-running a measurement, and all three failed the same way: a result
+  measured under some restriction, and then stated without it.
 
 - **A tolerance in the wrong unit hid a 0.086-degree error.** The render test first asserted colour
   components to `atol=2e-3`, which sounds tight and is 868 times looser than the interpolation error

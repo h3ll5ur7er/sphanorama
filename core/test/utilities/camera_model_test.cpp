@@ -578,29 +578,29 @@ TEST(Project, MeetsTheDatasetGeneratorAcrossLensFamilies) {
   // That is the whole of what ADR 0050 says carries the weight here, since the independence claim
   // it originally rested on was withdrawn.
   struct Case {
-    double k1, k2, k3, p1, p2, xn, yn, xd, yd, dxdx, dydy, cross;
+    double k1, k2, k3, p1, p2, xn, yn, xd, yd;
   };
   const Case cases[] = {
       // no distortion
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000, 1.0000000000, 1.0000000000, 0.0000000000},
-      {0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000, 1.0000000000, 1.0000000000, 0.0000000000},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000, 1.0000000000, 1.0000000000, 0.0000000000},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000},
+      {0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000},
       // typical phone
-      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000, 0.9143330000, 0.9451930000, -0.0307920000},
-      {-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526, 0.8544941149, 0.9407025145, 0.0235034640},
-      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375, 0.9187467500, 0.7798867500, 0.0158805000},
+      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000},
+      {-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526},
+      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375},
       // strong barrel
-      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300, 0.8603588500, 0.9041123500, -0.0525042000},
-      {-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431, 0.7413654221, 0.8913213158, 0.0430495389},
-      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903, 0.8675303500, 0.6506581000, 0.0198799562},
+      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300},
+      {-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431},
+      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903},
       // pincushion
-      {0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940, 1.1026832300, 1.0668325300, 0.0393808400},
-      {0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924, 1.2038771071, 1.0772865943, -0.0358574678},
-      {0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244, 1.1046051800, 1.3246796300, -0.0223084912},
+      {0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940},
+      {0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924},
+      {0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244},
       // tangential heavy
-      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000, 1.1150000000, 1.0810000000, 0.0460000000},
-      {-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000, 0.7608100000, 0.9484300000, -0.0174000000},
-      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000, 0.9350000000, 0.7510000000, -0.0665000000},
+      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000},
+      {-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000},
+      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000},
   };
 
   for (const Case& c : cases) {
@@ -618,9 +618,14 @@ TEST(Project, MeetsTheDatasetGeneratorAcrossLensFamilies) {
     EXPECT_NEAR((pixel.pixel.x - lens.cx) / lens.fx, c.xd, 1e-9);
     EXPECT_NEAR((pixel.pixel.y - lens.cy) / lens.fy, c.yd, 1e-9);
 
-    // The table carries `dxdx`, `dydy` and `cross` so the Python twin can assert them, and this
-    // side deliberately does not. `DistortAt` lives in an anonymous namespace here, so a C++
-    // assertion would have to recompute the formula inline — which would agree with the table by
+    // The Python twin's table carries three more columns — `dxdx`, `dydy` and `cross` — and this
+    // one deliberately does not carry them at all. They were here briefly, unread, and a reviewer
+    // pointed out that a column nothing asserts is a column that drifts: nothing compares the two
+    // tables, so the copies would diverge silently and the next reader would not know which was
+    // right. Better to have one table shorter than two that disagree.
+    //
+    // The reason C++ cannot assert them: `DistortAt` lives in an anonymous namespace here, so an
+    // assertion would have to recompute the formula inline — agreeing with the table by
     // construction and with the implementation not at all, i.e. a test that cannot fail, in the
     // very PR whose subject is tests that cannot fail.
     //
