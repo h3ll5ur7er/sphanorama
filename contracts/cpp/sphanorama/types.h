@@ -491,11 +491,23 @@ struct NodeContext {
   std::span<const Candidate> neighbours;    // selected candidates of adjacent cells
 };
 
+// Features extracted from one frame, with the bytes left in the frame store.
+//
+// `descriptors` and `keypoints` are `FrameRef`s rather than bare buffers, and ADR 0051 says why:
+// the store allocates frames and nothing else, so a `BufferId` here named a resource nothing could
+// produce. They are `Gray8` allocations of `count` rows — which is honest about the layout, tightly
+// packed with `stride == width`, and a lie about the content, since a descriptor is not a pixel.
+// That is a cost the ADR records rather than hides; the alternative was a `PixelFormat::Opaque`.
+//
+// **Both of these frames belong to the caller, who must `Forget` each.** The frame they were
+// extracted from is untouched and was the caller's already; these two are new, and this is the only
+// place in the contracts where one call hands back frames the caller never asked the store for by
+// name. A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;
   int32_t count = 0;
-  BufferId descriptors;      // opaque, lives in the frame store
-  BufferId keypoints;
+  FrameRef descriptors;      // count rows x descriptor bytes, Gray8
+  FrameRef keypoints;        // count rows x keypoint bytes, Gray8
 };
 
 struct PairwiseResult {

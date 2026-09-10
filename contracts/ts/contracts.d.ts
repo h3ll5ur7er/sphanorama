@@ -462,12 +462,25 @@ export interface NodeContext {
   neighbours: Candidate[];
 }
 
+/**
+ * Features extracted from one frame, with the bytes left in the frame store.
+ * `descriptors` and `keypoints` are `FrameRef`s rather than bare buffers, and ADR 0051 says why:
+ * the store allocates frames and nothing else, so a `BufferId` here named a resource nothing could
+ * produce. They are `Gray8` allocations of `count` rows — which is honest about the layout, tightly
+ * packed with `stride == width`, and a lie about the content, since a descriptor is not a pixel.
+ * That is a cost the ADR records rather than hides; the alternative was a `PixelFormat::Opaque`.
+ * **Both of these frames belong to the caller, who must `Forget` each.** The frame they were
+ * extracted from is untouched and was the caller's already; these two are new, and this is the only
+ * place in the contracts where one call hands back frames the caller never asked the store for by
+ * name. A `count` of zero means no frames were allocated and there is nothing to forget.
+ */
 export interface FeatureSet {
   frame: FrameId;
   count: number;
-  /** opaque, lives in the frame store */
-  descriptors: BufferId;
-  keypoints: BufferId;
+  /** count rows x descriptor bytes, Gray8 */
+  descriptors: FrameRef;
+  /** count rows x keypoint bytes, Gray8 */
+  keypoints: FrameRef;
 }
 
 export interface PairwiseResult {
