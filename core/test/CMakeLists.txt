@@ -17,7 +17,11 @@ include(GoogleTest)
 # if() around add_executable, so there is one source list rather than two that drift.
 set(SPHANORAMA_OPENCV_TESTS "")
 if(SPHANORAMA_WITH_OPENCV)
-  set(SPHANORAMA_OPENCV_TESTS "utilities/camera_model_opencv_test.cpp")
+  set(SPHANORAMA_OPENCV_TESTS
+      "utilities/camera_model_opencv_test.cpp"
+      # Registration exists only where OpenCV does (ADR 0052), so its tests do too. A reader looking
+      # for registration coverage in a WASM-only checkout will find none, and that is the reason.
+      "engines/registration_engine_test.cpp")
 endif()
 
 add_executable(sphanorama_tests

@@ -55,3 +55,5 @@ and the alternative we rejected and why.
 | [0048](0048-the-python-tooling-runs-through-uv.md) | The Python tooling runs through `uv` with a committed lock file, so the interpreter and any future dependency are facts about the repository rather than about a machine |
 | [0049](0049-accuracy-is-measured-with-the-gauge-removed.md) | Registration accuracy is scored with the global gauge rotation removed first, by Markley's chordal average found with Jacobi rather than power iteration, and the headline number is the median |
 | [0050](0050-the-dataset-renderer-re-implements-the-lens-on-purpose.md) | The synthetic dataset renderer re-implements the lens rather than calling the core, because a dataset rendered through the code under test cancels any error the two share — and numpy arrives in an opt-in group so the checkers stay standard-library only |
+| [0051](0051-a-feature-set-points-at-frames-not-at-buffers.md) | A `FeatureSet` points at frames, not at buffers |
+| [0052](0052-opencv-enters-the-core-behind-a-build-flag.md) | OpenCV enters the core behind a build flag; the browser gets a null registration |

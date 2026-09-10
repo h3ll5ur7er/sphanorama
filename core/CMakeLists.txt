@@ -27,6 +27,18 @@ add_library(sphanorama_core
   src/utilities/quaternion.cpp
 )
 
+# The registration engine is the first shipped core code that depends on OpenCV, and the WASM build
+# does not have it (ADR 0047, ADR 0052). So it compiles only where OpenCV does, and a build without
+# it gets `NullRegistrationEngine` — which is already in the sources above, unconditionally, because
+# the null object is what the composition root falls back to rather than a stand-in for a missing
+# file.
+if(SPHANORAMA_WITH_OPENCV)
+  target_sources(sphanorama_core
+    PRIVATE src/engines/registration_engine/feature_registration_engine.cpp)
+  target_link_libraries(sphanorama_core PRIVATE sphanorama_opencv)
+  target_compile_definitions(sphanorama_core PUBLIC SPHANORAMA_WITH_OPENCV=1)
+endif()
+
 target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts)
 

@@ -64,7 +64,29 @@ FetchContent_Declare(opencv
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
 )
+# OpenCV's SIMD lookup-table gathers are exempt from the alignment check, and nothing else is.
+#
+# `hlineResizeCn` — the bit-exact 8-bit linear resize that `cv::ORB::detectAndCompute` uses to build
+# its pyramid — reads a pair of source pixels through `v_lut_pairs(const uchar* tab, const int* idx)`,
+# which does `*(const short*)(tab + idx[k])`. `idx[k]` is a *pixel* index into an 8-bit row, so that
+# address is odd for half of all inputs no matter how the row's base is aligned: this is not a
+# misalignment we could fix by allocating differently, and the read is in bounds — ASan reports
+# nothing, only `-fsanitize=alignment` does. Undefined by the letter of the standard, correct on every
+# target OpenCV compiles this path for.
+#
+# It is scoped by saving and restoring CMAKE_CXX_FLAGS around the `add_subdirectory` that
+# FetchContent performs, so the exemption reaches OpenCV's translation units and stops there. Our own
+# code keeps the check, which matters: the flag is appended rather than the check dropped from the
+# preset precisely so that a misaligned load *we* write still fails the build. The alignment check is
+# the only one lifted — ASan, and every other UBSan check, still cover OpenCV.
+#
+# It is appended unconditionally rather than only under the sanitizer preset, so there is one
+# rule instead of a branch: OpenCV is always compiled with this check off, and in a tree with no
+# sanitizers on — `native-debug` — the flag simply does nothing.
+set(SPHANORAMA_CXX_FLAGS_BEFORE_OPENCV "${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-sanitize=alignment")
 FetchContent_MakeAvailable(opencv)
+set(CMAKE_CXX_FLAGS "${SPHANORAMA_CXX_FLAGS_BEFORE_OPENCV}")
 
 # What was actually checked out, rather than what was asked for. A pin nobody verifies is a wish:
 # the SHA above closes the mutable-ref hole only if the tree on disk is that commit, and a shallow
