@@ -93,9 +93,21 @@ opt-in dependency group.**
   Three azimuth/elevation pairs, both the forward axis and the camera's +X, asserted against the
   same decimals in `tools/test_synth_dataset.py` and `core/test/utilities/quaternion_test.cpp`. The
   +X row is what makes it more than a restatement of `Direction`: a convention with forward right
-  and roll wrong passes on forward alone. Measured, the C++ suite could not previously detect a
-  reversed composition order at all — `ElevationLooksUpAndDown`, `AzimuthSweepsTheHorizon` and
-  `IsPeriodicInAzimuth` all pass under one, and only the new test fails.
+  and roll wrong passes on forward alone.
+
+  **The first version of this bullet claimed the C++ suite could not detect a reversed composition
+  order at all, and that was false.** Reverting `Multiply(yaw, pitch)` fails five tests: the new one
+  and four `CoveragePlanner` tests that predate this work. The error was in how it was measured — I
+  ran the suite under `--gtest_filter='FromAzimuthElevation.*:Rotate.*'`, saw only the new test
+  fail, and wrote a sentence about *the suite*. Constraining an observation and then stating the
+  conclusion unconstrained is the second time that shape of mistake has been caught on this project
+  by someone re-running the measurement rather than reading the code.
+
+  What is true is narrower and still worth the test: the four that catch it diagnose it as a
+  coverage count and a wrong cell id — `EveryDirectionOnTheSphereIsInsideSomeCell` reports 270 of
+  4000 directions uncovered — which says the planner is broken and not which convention moved. The
+  three tests *about* `FromAzimuthElevation` all pass under it. So the value is a direct diagnosis
+  where there was only an indirect one, and that is a smaller claim than the one first made here.
 
 - **A tolerance in the wrong unit hid a 0.086-degree error.** The render test first asserted colour
   components to `atol=2e-3`, which sounds tight and is 868 times looser than the interpolation error

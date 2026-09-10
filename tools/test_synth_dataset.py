@@ -121,29 +121,30 @@ class LensFromFieldOfView(unittest.TestCase):
 
 class Projection(unittest.TestCase):
     DISTORTION_TABLE = (
-        # (k1, k2, k3, p1, p2, xn, yn, xd, yd) -- computed from the published Brown-Conrady form in
+        # (k1, k2, k3, p1, p2, xn, yn, xd, yd, dxdx, dydy, cross) -- computed from the published
+        # Brown-Conrady form and its derivative in
         # exact decimal arithmetic, calling neither implementation. The C++ suite's
         # `Project.MeetsTheDatasetGeneratorAcrossLensFamilies` asserts this same table.
         # no distortion
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000),
-        (0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000),
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000, 1.0000000000, 1.0000000000, 0.0000000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000, 1.0000000000, 1.0000000000, 0.0000000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000, 1.0000000000, 1.0000000000, 0.0000000000),
         # typical phone
-        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000),
-        (-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526),
-        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000, 0.9143330000, 0.9451930000, -0.0307920000),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526, 0.8544941149, 0.9407025145, 0.0235034640),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375, 0.9187467500, 0.7798867500, 0.0158805000),
         # strong barrel
-        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300),
-        (-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431),
-        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300, 0.8603588500, 0.9041123500, -0.0525042000),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431, 0.7413654221, 0.8913213158, 0.0430495389),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903, 0.8675303500, 0.6506581000, 0.0198799562),
         # pincushion
-        (0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940),
-        (0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924),
-        (0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244),
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940, 1.1026832300, 1.0668325300, 0.0393808400),
+        (0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924, 1.2038771071, 1.0772865943, -0.0358574678),
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244, 1.1046051800, 1.3246796300, -0.0223084912),
         # tangential heavy
-        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000),
-        (-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000),
-        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000, 1.1150000000, 1.0810000000, 0.0460000000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000, 0.7608100000, 0.9484300000, -0.0174000000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000, 0.9350000000, 0.7510000000, -0.0665000000),
     )
 
     def test_the_distortion_matches_the_core_across_lens_families(self):
@@ -160,13 +161,23 @@ class Projection(unittest.TestCase):
         carries the weight, now that the independence claim has been withdrawn.
         """
         base = lens_from_fov(66.0, 50.0, 64, 48).__dict__
-        for k1, k2, k3, p1, p2, xn, yn, xd, yd in self.DISTORTION_TABLE:
+        for k1, k2, k3, p1, p2, xn, yn, xd, yd, dxdx, dydy, cross in self.DISTORTION_TABLE:
             coefficients = {"k1": k1, "k2": k2, "k3": k3, "p1": p1, "p2": p2}
             lens = Intrinsics(**{**base, **coefficients})
             got_x, got_y = _distort(lens, np.array([xn]), np.array([yn]))
             where = f"{coefficients} at ({xn}, {yn})"
             self.assertAlmostEqual(float(got_x[0]), xd, places=9, msg="xd for " + where)
             self.assertAlmostEqual(float(got_y[0]), yd, places=9, msg="yd for " + where)
+
+            # The Jacobian too. A reviewer measured that the table read 2 of the 7 values
+            # `distort_at` returns, and the other five are what decide where the fold is -- the
+            # exact quantity this module's docstring recounts getting wrong. Four mutations to
+            # those five were invisible to the whole suite; two were invisible to the C++ suite as
+            # well. Three more columns on a table that already existed closes it.
+            at = distort_at(lens, np.array([xn]), np.array([yn]))
+            self.assertAlmostEqual(float(at.dxdx[0]), dxdx, places=9, msg="dxdx for " + where)
+            self.assertAlmostEqual(float(at.dydy[0]), dydy, places=9, msg="dydy for " + where)
+            self.assertAlmostEqual(float(at.cross[0]), cross, places=9, msg="cross for " + where)
 
     def test_distortion_terms_are_opencvs_in_opencvs_order(self):
         # The same point and the same hand-worked decimals as the C++ suite's
@@ -428,22 +439,32 @@ class TheRotationConventionMeetsTheCore(unittest.TestCase):
     def test_the_ring_the_cli_writes_uses_that_convention(self):
         """`_ring_of_poses` is the only path a generated dataset's rotations travel.
 
-        It was deferred through three rounds as a placeholder, and it is a thin loop over
-        `from_azimuth_elevation` — so with the convention pinned above, what is left to check is
-        that the ring actually calls it and spaces the cells evenly around the horizon.
-        """
-        poses = _ring_of_poses(8)
-        self.assertEqual(len(poses), 8)
-        forwards = np.array([p.rotate(np.array([[0.0, 0.0, -1.0]]))[0] for p in poses])
+        The first version of this test could not fail for what it claimed. It used the default
+        elevation of zero — where the pitch factor is exactly the identity, so `_ring_of_poses` need
+        not call `from_azimuth_elevation` at all — and every assertion was symmetric under azimuth
+        negation, because `worst_angle_deg` is unsigned. A reviewer replaced the body with a bare
+        `from_axis_angle` about +Y, dropping the elevation argument entirely, and all 80 tests
+        stayed green.
 
-        np.testing.assert_allclose(forwards[:, 1], 0.0, atol=1e-12,
-                                   err_msg="an elevation-zero ring must stay on the horizon")
-        np.testing.assert_allclose(forwards[0], [0.0, 0.0, -1.0], atol=1e-12,
-                                   err_msg="the ring must start at forward")
-        # Evenly spaced: consecutive separations are all 360/8 degrees.
-        separations = [worst_angle_deg(forwards[i][None, :], forwards[(i + 1) % 8][None, :])
-                       for i in range(8)]
-        np.testing.assert_allclose(separations, 45.0, atol=1e-9)
+        So: a non-zero elevation, and directions asserted against the convention's closed form with
+        their signs, rather than separations asserted against a magnitude.
+        """
+        elevation = 20.0
+        poses = _ring_of_poses(6, elevation)
+        self.assertEqual(len(poses), 6)
+
+        for index, pose in enumerate(poses):
+            azimuth = 360.0 * index / 6
+            a, e = math.radians(azimuth), math.radians(elevation)
+            expected = (-math.cos(e) * math.sin(a), math.sin(e), -math.cos(e) * math.cos(a))
+            got = pose.rotate(np.array([[0.0, 0.0, -1.0]]))[0]
+            np.testing.assert_allclose(got, expected, atol=1e-12,
+                                       err_msg=f"cell {index} at azimuth {azimuth}")
+
+        # And the elevation is honoured rather than ignored, which the zero-elevation ring could
+        # not have shown: every cell sits above the horizon by exactly the angle asked for.
+        heights = np.array([p.rotate(np.array([[0.0, 0.0, -1.0]]))[0][1] for p in poses])
+        np.testing.assert_allclose(heights, math.sin(math.radians(elevation)), atol=1e-12)
 
 
 class SeamSampling(unittest.TestCase):
