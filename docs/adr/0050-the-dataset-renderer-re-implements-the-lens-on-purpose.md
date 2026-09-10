@@ -106,10 +106,20 @@ opt-in dependency group.**
   What is true is narrower and still worth the test: the four that catch it diagnose it as a
   coverage count and a wrong cell id — `EveryDirectionOnTheSphereIsInsideSomeCell` reports 270 of
   4000 directions uncovered — which says the planner is broken and not which convention moved. The
-  four *pre-existing* tests of `FromAzimuthElevation` itself all pass under it. (The first
-  correction said "three", carried over from the retracted sentence's hand-written list; there are
-  five in that suite now, four of them older than this branch.) So the value is a direct diagnosis
-  where there was only an indirect one, and that is a smaller claim than the one first made here.
+  four *pre-existing* tests of `FromAzimuthElevation` itself all pass under it — and **why** each is
+  blind is worth more than their number, which this bullet has now got wrong twice:
+
+  - `PointsForwardAtTheOrigin` — (0, 0), so both factors are the identity.
+  - `ElevationLooksUpAndDown` — azimuth 0, so the yaw factor is the identity.
+  - `AzimuthSweepsTheHorizon` — elevation 0, so the pitch factor is the identity.
+  - `IsPeriodicInAzimuth` — compares the function against itself, which is self-consistent under
+    *any* composition order.
+
+  Three pure-axis cases where one factor vanishes, and one self-comparison. Only a case with both
+  angles non-zero can see the order at all, which is exactly what the Python twin already says at
+  `test_an_azimuth_turns_about_up_and_an_elevation_lifts_toward_it`. So the value is a direct
+  diagnosis where there was only an indirect one, and that is a smaller claim than the one first
+  made here.
 
   **And the parallel claim about the Python side was false too**, asserted in the same breath and
   never run. `main`'s 77-test Python suite *does* catch a reversed composition order, through

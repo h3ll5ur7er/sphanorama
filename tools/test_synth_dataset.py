@@ -469,10 +469,11 @@ class TheRotationConventionMeetsTheCore(unittest.TestCase):
             np.testing.assert_allclose(got[1], right, atol=1e-12,
                                        err_msg=f"+X of cell {index} at azimuth {azimuth}")
 
-        # And the elevation is honoured rather than ignored, which the zero-elevation ring could
-        # not have shown: every cell sits above the horizon by exactly the angle asked for.
-        heights = np.array([p.rotate(np.array([[0.0, 0.0, -1.0]]))[0][1] for p in poses])
-        np.testing.assert_allclose(heights, math.sin(math.radians(elevation)), atol=1e-12)
+        # The elevation is honoured rather than ignored — which the zero-elevation ring could not
+        # have shown, since there the pitch factor is the identity. That is asserted by the loop
+        # above rather than here: `forward[1]` is `sin(e)` for every cell. A trailing block
+        # re-asserting it read as a second guard and was a restatement, which a reviewer pointed
+        # out no mutation could reach without failing the loop first.
 
 
 class SeamSampling(unittest.TestCase):
