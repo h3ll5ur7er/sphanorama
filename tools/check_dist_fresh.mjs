@@ -20,7 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build'])) {
+function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']),
+                accept = () => true) {
   let latest = 0;
   let latestPath = path;
   const walk = (at) => {
@@ -34,6 +35,7 @@ function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']))
       if (skip.has(entry.name)) continue;
       const full = join(at, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
+      if (!accept(full)) continue;
       const mtime = statSync(full).mtimeMs;
       if (mtime > latest) { latest = mtime; latestPath = full; }
     }
@@ -91,6 +93,33 @@ function canReachBridgeSpecs(argv) {
  * repository in a temp directory and run the real thing against it, rather than re-implementing
  * the arithmetic in a test and asserting the two agree.
  */
+/**
+ * The C++ translation units the wasm builds actually compile, as absolute paths — read from the
+ * compile database CMake exports (`CMAKE_EXPORT_COMPILE_COMMANDS` is on repo-wide).
+ *
+ * `null` means there was nothing to read, and the caller then counts every source. That fallback is
+ * the conservative direction on purpose: a check that quietly stops asking because a build
+ * directory is missing is worse than one that asks too often.
+ */
+function compiledTranslationUnits(repoRoot) {
+  const files = new Set();
+  let read = false;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const db = join(repoRoot, 'build', preset, 'compile_commands.json');
+    if (!existsSync(db)) continue;
+    try {
+      for (const entry of JSON.parse(readFileSync(db, 'utf8'))) {
+        if (entry && typeof entry.file === 'string') files.add(resolve(repoRoot, entry.file));
+      }
+      read = true;
+    } catch {
+      // Unreadable or half-written: treat it as absent rather than as an empty list, which would
+      // read as "the wasm build compiles nothing" and switch the check off entirely.
+    }
+  }
+  return read ? files : null;
+}
+
 export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
@@ -156,9 +185,25 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
     // The build files are in the list too, and a reviewer had to point that out: a preset, a
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
     // does, and three of them are outside every source directory named here.
+    //
+    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that is no longer
+    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, which the wasm
+    // build does not have, so it is compiled natively and nowhere else. Without this narrowing,
+    // touching that file made the core stale in a way nothing could clear — ninja has no work to do
+    // for a source it does not compile, so the wasm never becomes newer and the instruction this
+    // error gives cannot be followed. A deadlock rather than a false alarm, which is why it is a
+    // fix here and not a note in the message.
+    //
+    // Headers and the three CMake files are deliberately not narrowed: a header is not a
+    // translation unit and never appears in a compile database, and a preset or a compile flag
+    // changes the core exactly as a `.cpp` does.
+    const compiled = compiledTranslationUnits(repoRoot);
+    const accept = compiled === null
+      ? () => true
+      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
     const cxx = ['core/src', 'bridge', 'contracts/cpp',
                  'core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles'])) }))
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }))
       .filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
       const worst = cxx.reduce((a, b) => (a.mtime > b.mtime ? a : b));

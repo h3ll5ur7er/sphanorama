@@ -104,6 +104,51 @@ describe('the dist freshness check', () => {
     }
   });
 
+  it('ignores a C++ source the wasm build does not compile', () => {
+    // ADR 0052 put the first core source behind a build flag: `feature_registration_engine.cpp`
+    // needs OpenCV, which the wasm build does not have, so it is compiled natively and nowhere
+    // else. Before this, touching it made the core permanently stale — ninja had no work to do,
+    // so the wasm could never become newer than it, and the check could not be cleared by doing
+    // what it asked. A deadlock, not a false alarm.
+    const tree = aFreshTree();
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
+                             { file: join(tree.root, 'bridge/b.cpp') }]));
+    tree.put('core/src/engines/registration_engine/native_only.cpp', Date.now());
+    expect(complaint(tree.root)).toBeNull();
+  });
+
+  it('still catches a C++ source the wasm build does compile', () => {
+    // The other half, without which the check above is just the check switched off.
+    const tree = aFreshTree();
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
+                             { file: join(tree.root, 'bridge/b.cpp') }]));
+    tree.put('core/src/a.cpp', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('counts every C++ source when there is no compile database to narrow it', () => {
+    // The fallback is the conservative one. A tree with no `compile_commands.json` — a different
+    // generator, or a build directory that was never configured — gets the old behaviour rather
+    // than a check that quietly stops asking.
+    const tree = aFreshTree();
+    tree.put('core/src/engines/registration_engine/native_only.cpp', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('keeps asking about headers and build files, which no compile database lists', () => {
+    // A header is not a translation unit, so it never appears in a compile database — narrowing by
+    // one must not turn the header check off. Same for the three CMake files.
+    for (const source of ['contracts/cpp/c.h', 'core/CMakeLists.txt', 'CMakePresets.json']) {
+      const tree = aFreshTree();
+      tree.put('build/wasm-release/compile_commands.json', undefined,
+               JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') }]));
+      tree.put(source, Date.now());
+      expect(complaint(tree.root), source).toMatch(/compiled core is older than the C\+\+/);
+    }
+  });
+
   it('catches a threaded core older than the C++, not only the single-threaded one', () => {
     // Existence alone was what this build got at first, which a reviewer pointed out buys less
     // than it looks: a threaded core from before the change passes that, and its two browser tests
