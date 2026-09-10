@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    _ring_of_poses,
     _distort,
     distort_at,
     INVERSE_ACCEPTANCE_NORMALISED,
@@ -119,6 +120,54 @@ class LensFromFieldOfView(unittest.TestCase):
 
 
 class Projection(unittest.TestCase):
+    DISTORTION_TABLE = (
+        # (k1, k2, k3, p1, p2, xn, yn, xd, yd) -- computed from the published Brown-Conrady form in
+        # exact decimal arithmetic, calling neither implementation. The C++ suite's
+        # `Project.MeetsTheDatasetGeneratorAcrossLensFamilies` asserts this same table.
+        # no distortion
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000),
+        # typical phone
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375),
+        # strong barrel
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903),
+        # pincushion
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940),
+        (0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924),
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244),
+        # tangential heavy
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000),
+    )
+
+    def test_the_distortion_matches_the_core_across_lens_families(self):
+        """Fifteen points, five lens families -- the widening ADR 0050 said was owed.
+
+        The single pinned point below is real and narrow: one lens, one quadrant, both `xn` and `yn`
+        positive. It catches a swapped `k2`/`k3` and a swapped `p1`/`p2`, and a round-2 reviewer
+        showed it catches a flipped `yn` too. What it cannot speak to is whether the two
+        implementations agree *away* from that point -- across sign quadrants, at radii where `k3`
+        starts to matter, and on a lens where the tangential terms dominate.
+
+        This is the coverage half. Both suites assert the same table, so agreement is with the
+        published form rather than with each other -- which is the whole of what ADR 0050 says
+        carries the weight, now that the independence claim has been withdrawn.
+        """
+        base = lens_from_fov(66.0, 50.0, 64, 48).__dict__
+        for k1, k2, k3, p1, p2, xn, yn, xd, yd in self.DISTORTION_TABLE:
+            coefficients = {"k1": k1, "k2": k2, "k3": k3, "p1": p1, "p2": p2}
+            lens = Intrinsics(**{**base, **coefficients})
+            got_x, got_y = _distort(lens, np.array([xn]), np.array([yn]))
+            where = f"{coefficients} at ({xn}, {yn})"
+            self.assertAlmostEqual(float(got_x[0]), xd, places=9, msg="xd for " + where)
+            self.assertAlmostEqual(float(got_y[0]), yd, places=9, msg="yd for " + where)
+
     def test_distortion_terms_are_opencvs_in_opencvs_order(self):
         # The same point and the same hand-worked decimals as the C++ suite's
         # Project.TheDistortionTermsAreOpenCVsInOpenCVsOrder. At xn = 0.3, yn = 0.2 with
@@ -328,6 +377,73 @@ class RotationIsAnchoredToNumbersNobodyComputed(unittest.TestCase):
         np.testing.assert_allclose(
             Pose.from_azimuth_elevation(90.0, 45.0).rotate(np.array([[0.0, 0.0, -1.0]])),
             [[-root_half, root_half, 0.0]], atol=1e-12)
+
+
+class TheRotationConventionMeetsTheCore(unittest.TestCase):
+    """The twin of `FromAzimuthElevation.MeetsTheDatasetGeneratorAtNumbersNeitherDerived`.
+
+    This module's docstring promises that a pose written here names the same direction the coverage
+    planner would. Until now nothing executable checked it: each side was pinned to hand-derived
+    vectors *separately*, which catches a mistake in one implementation but not a convention both
+    share. And a shared convention error is the one that matters most here — a dataset rendered in
+    the wrong rotation convention registers wrong in exactly the compensating way and scores
+    perfect, which is the failure ADR 0050 exists to prevent.
+
+    So both suites now assert these same decimals, worked out from the right-hand rule and derived
+    from neither implementation. `from_azimuth_elevation(az, el)` is a yaw about +Y followed by a
+    pitch about +X in the yawed frame, so applied to forward (0, 0, -1):
+
+        pitch about +X:     (0, +sin el, -cos el)
+        then yaw about +Y:  (-cos el * sin az, sin el, -cos el * cos az)
+
+    and applied to the camera's +X axis, which the pitch leaves alone: (cos az, 0, -sin az).
+
+    The second row is what makes this more than a restatement of the first: a convention with the
+    forward axis right and the roll wrong passes on forward alone. Together they also separate a
+    reversed composition order, which at (37, -12) differs by 0.0419 in its largest component —
+    seven orders over the tolerance here.
+    """
+
+    CASES = (
+        (37.0, -12.0,
+         (-0.5886639210, -0.2079116908, -0.7811834080),
+         (0.7986355100, 0.0000000000, -0.6018150232)),
+        (120.0, 40.0,
+         (-0.6634139482, 0.6427876097, 0.3830222216),
+         (-0.5000000000, 0.0000000000, -0.8660254038)),
+        (250.0, -63.0,
+         (0.4266115225, -0.8910065242, 0.1552738958),
+         (-0.3420201433, 0.0000000000, 0.9396926208)),
+    )
+
+    def test_from_azimuth_elevation_meets_the_core_at_numbers_neither_derived(self):
+        for azimuth, elevation, forward, right in self.CASES:
+            pose = Pose.from_azimuth_elevation(azimuth, elevation)
+            axes = pose.rotate(np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]))
+            np.testing.assert_allclose(axes[0], forward, atol=1e-9,
+                                       err_msg=f"forward at ({azimuth}, {elevation})")
+            np.testing.assert_allclose(axes[1], right, atol=1e-9,
+                                       err_msg=f"right at ({azimuth}, {elevation})")
+
+    def test_the_ring_the_cli_writes_uses_that_convention(self):
+        """`_ring_of_poses` is the only path a generated dataset's rotations travel.
+
+        It was deferred through three rounds as a placeholder, and it is a thin loop over
+        `from_azimuth_elevation` — so with the convention pinned above, what is left to check is
+        that the ring actually calls it and spaces the cells evenly around the horizon.
+        """
+        poses = _ring_of_poses(8)
+        self.assertEqual(len(poses), 8)
+        forwards = np.array([p.rotate(np.array([[0.0, 0.0, -1.0]]))[0] for p in poses])
+
+        np.testing.assert_allclose(forwards[:, 1], 0.0, atol=1e-12,
+                                   err_msg="an elevation-zero ring must stay on the horizon")
+        np.testing.assert_allclose(forwards[0], [0.0, 0.0, -1.0], atol=1e-12,
+                                   err_msg="the ring must start at forward")
+        # Evenly spaced: consecutive separations are all 360/8 degrees.
+        separations = [worst_angle_deg(forwards[i][None, :], forwards[(i + 1) % 8][None, :])
+                       for i in range(8)]
+        np.testing.assert_allclose(separations, 45.0, atol=1e-9)
 
 
 class SeamSampling(unittest.TestCase):

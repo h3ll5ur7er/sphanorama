@@ -72,9 +72,30 @@ opt-in dependency group.**
   credited. It catches a swapped `k2`/`k3` (7.5e-05 against a 1e-09 tolerance) and a swapped
   `p1`/`p2` (3.8e-03) — and also a flipped `yn`, which the first version of this bullet named as the
   example it *could not* catch: the tangential term `2*p1*xn*yn` moves `xd` by 0.012 under a sign
-  flip, four orders over the tolerance. Widening it is still worth doing before the detector
-  comparison leans on the geometry, but for coverage across lens families rather than because a
-  convention error would slip through.
+  flip, four orders over the tolerance.
+
+  **Widened, and the widening earned itself.** It is fifteen points over five lens families now — no
+  distortion, a typical phone, a strong barrel, a pincushion and one the tangential terms dominate —
+  across three sign quadrants, with both suites asserting the same decimals computed from the
+  published form in exact decimal arithmetic. The single point remains and is still the sharper
+  instrument for a coefficient swap. What it could not see is a mutation that is invisible in one
+  quadrant: replacing `xn` with `abs(xn)` in the tangential cross term passes the single point
+  exactly, because that point has both coordinates positive, and fails the table. That is the whole
+  argument for coverage rather than sharpness, and it is a measured example rather than a worry.
+
+- **The rotation convention had a written promise and nothing executable behind it, and now has
+  both.** The module docstring said a pose written in the generator names the same direction the
+  coverage planner would. Each side was pinned to hand-derived vectors *separately*, which catches a
+  mistake in one implementation and not a convention both share — and a shared rotation-convention
+  error is the worst case this ADR exists to prevent, since a dataset rendered in the wrong one
+  registers wrong in exactly the compensating way and scores perfect.
+
+  Three azimuth/elevation pairs, both the forward axis and the camera's +X, asserted against the
+  same decimals in `tools/test_synth_dataset.py` and `core/test/utilities/quaternion_test.cpp`. The
+  +X row is what makes it more than a restatement of `Direction`: a convention with forward right
+  and roll wrong passes on forward alone. Measured, the C++ suite could not previously detect a
+  reversed composition order at all — `ElevationLooksUpAndDown`, `AzimuthSweepsTheHorizon` and
+  `IsPeriodicInAzimuth` all pass under one, and only the new test fails.
 
 - **A tolerance in the wrong unit hid a 0.086-degree error.** The render test first asserted colour
   components to `atol=2e-3`, which sounds tight and is 868 times looser than the interpolation error

@@ -563,6 +563,63 @@ TEST(Unproject, TheRoundTripSurvivesDistortion) {
   }
 }
 
+TEST(Project, MeetsTheDatasetGeneratorAcrossLensFamilies) {
+  // The twin of `test_the_distortion_matches_the_core_across_lens_families` in
+  // `tools/test_synth_dataset.py`, and the widening ADR 0050 recorded as owed.
+  //
+  // `TheDistortionTermsAreOpenCVsInOpenCVsOrder` below pins one point on one lens with both `xn`
+  // and `yn` positive. That is enough to catch a swapped `k2`/`k3`, a swapped `p1`/`p2` and a
+  // flipped `yn`, and it is not enough to say the two implementations agree away from it: across
+  // sign quadrants, at radii where `k3` starts to matter, or on a lens the tangential terms
+  // dominate. This is fifteen points over five families.
+  //
+  // Every value is computed from the published Brown-Conrady form in exact decimal arithmetic,
+  // calling neither implementation, so the two meet an outside reference rather than each other.
+  // That is the whole of what ADR 0050 says carries the weight here, since the independence claim
+  // it originally rested on was withdrawn.
+  struct Case {
+    double k1, k2, k3, p1, p2, xn, yn, xd, yd;
+  };
+  const Case cases[] = {
+      // no distortion
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000},
+      {0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000},
+      // typical phone
+      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000},
+      {-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526},
+      {-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375},
+      // strong barrel
+      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300},
+      {-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431},
+      {-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903},
+      // pincushion
+      {0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940},
+      {0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924},
+      {0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244},
+      // tangential heavy
+      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000},
+      {-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000},
+      {-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000},
+  };
+
+  for (const Case& c : cases) {
+    Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 64, 48);
+    lens.k1 = c.k1;
+    lens.k2 = c.k2;
+    lens.k3 = c.k3;
+    lens.p1 = c.p1;
+    lens.p2 = c.p2;
+    SCOPED_TRACE(::testing::Message() << "k=(" << c.k1 << ", " << c.k2 << ", " << c.k3 << ") p=("
+                                      << c.p1 << ", " << c.p2 << ") at (" << c.xn << ", " << c.yn
+                                      << ")");
+    const ProjectedPixel pixel = Project(lens, Vec3{c.xn, -c.yn, -1.0});
+    ASSERT_TRUE(pixel.valid);
+    EXPECT_NEAR((pixel.pixel.x - lens.cx) / lens.fx, c.xd, 1e-9);
+    EXPECT_NEAR((pixel.pixel.y - lens.cy) / lens.fy, c.yd, 1e-9);
+  }
+}
+
 TEST(Project, TheDistortionTermsAreOpenCVsInOpenCVsOrder) {
   // The header invites `k1 k2 p1 p2 k3` from a calibration done elsewhere, which is a promise about
   // which coefficient multiplies what. `DistortionIsNotQuietlyIgnored` below cannot check it: a
