@@ -74,14 +74,17 @@ wider change buying a label.
   The correction to that correction, from the next round, is the part worth keeping. The first fix
   also named `IImageCodecAccess::Decode` and `ICompositionEngine::BlendTile` as further precedents,
   and they are not: they hand back frames the same way and say **nothing** about ownership.
-  `ICompositionEngine::RenderPreview` is a third, and `IPanoramaBuildManager::Panorama` and
-  `ICaptureSessionManager::Candidates` a fourth and fifth. So there is exactly one documented
-  precedent and five undocumented surfaces beside it — a gap this ADR does not close, since widening
-  it to four more contracts would be scope this change did not ask for.
+  `ICompositionEngine::RenderPreview`, `IPanoramaBuildManager::Panorama`,
+  `ICaptureSessionManager::Candidates` and `IFrameStoreAccess::Allocate` itself are more. So there is
+  exactly one documented precedent and a handful of undocumented surfaces beside it — a gap this ADR
+  does not close, since widening it to four more contracts would be scope this change did not ask
+  for. The count is deliberately not given: four attempts at one were each short by one, and the
+  argument never rested on it.
 
-  Two of those five are not leaks at all, which is why the total kept moving: a `Panorama`'s tiles
-  and a cell's candidates are frames the core still holds, so a caller reading this ADR's rule onto
-  them would be double-freeing. That is a better argument for documenting them than the count was. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
+  Some of them are not leaks at all, which is the part worth carrying: a `Panorama`'s tiles and a
+  cell's candidates are frames the core still holds, so a caller reading this ADR's rule onto them
+  would forget a frame still in use. A *second* `Forget` answers `NotFound`; the first is the one
+  nothing catches. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
   overclaim is the failure this repository keeps making, and it is only legible if the sequence
   survives.
 

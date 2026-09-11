@@ -840,20 +840,43 @@ TEST_P(Extraction, ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem) {
 }
 
 TEST_P(Extraction, LeavesThePixelsItReadExactlyAsItFoundThem) {
-  // `FeatureSet` promises the frame's pixels are unchanged, and nothing asked. It is the one place
-  // `LumaOf` aliases the pinned span *mutably* — `cv::Mat` over `bytes.data()` — so a detector or a
-  // conversion writing in place would go unnoticed by every other test here.
-  const FrameRef source = Textured();
-  const Result<uint64_t> before = store.ContentHash(source);
-  ASSERT_TRUE(before.ok()) << before.status.detail;
+  // `FeatureSet` promises the frame's pixels are unchanged, and nothing asked.
+  //
+  // **Both formats, because only one of them aliases.** An RGBA8 frame goes through `cvtColor` into
+  // a fresh Mat, so a detector writing in place would scribble on the copy; the `Gray8` branch hands
+  // `cv::Mat` the pinned span itself, which is the case the promise is actually about and the one an
+  // earlier version of this test never reached — a scribble there left every test green.
+  for (const PixelFormat format : {PixelFormat::RGBA8, PixelFormat::Gray8}) {
+    const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, format);
+    ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+    {
+      const Result<std::span<uint8_t>> bytes = store.Pin(allocated.value);
+      ASSERT_TRUE(bytes.ok()) << bytes.status.detail;
+      for (int32_t y = 0; y < kHeight; ++y) {
+        for (int32_t x = 0; x < kWidth; ++x) {
+          const uint8_t v = TexturedLuma(x, y);
+          uint8_t* px = bytes.value.data() + static_cast<size_t>(y) * allocated.value.stride
+                      + static_cast<size_t>(x) * (format == PixelFormat::RGBA8 ? 4 : 1);
+          px[0] = v;
+          if (format == PixelFormat::RGBA8) { px[1] = v; px[2] = v; px[3] = 255; }
+        }
+      }
+      EXPECT_TRUE(store.Release(allocated.value).ok());
+    }
 
-  const Result<FeatureSet> features = Engine().ExtractFeatures(source);
-  ASSERT_TRUE(features.ok()) << features.status.detail;
+    const Result<uint64_t> before = store.ContentHash(allocated.value);
+    ASSERT_TRUE(before.ok()) << before.status.detail;
+    const Result<FeatureSet> features = Engine().ExtractFeatures(allocated.value);
+    ASSERT_TRUE(features.ok()) << features.status.detail;
+    const Result<uint64_t> after = store.ContentHash(allocated.value);
+    ASSERT_TRUE(after.ok()) << after.status.detail;
 
-  const Result<uint64_t> after = store.ContentHash(source);
-  ASSERT_TRUE(after.ok()) << after.status.detail;
-  EXPECT_EQ(before.value, after.value) << "extraction wrote into the frame it was reading";
-  ForgetOutputs(features.value);
+    EXPECT_EQ(before.value, after.value)
+        << "extraction wrote into the frame it was reading ("
+        << (format == PixelFormat::RGBA8 ? "RGBA8" : "Gray8") << ")";
+    ForgetOutputs(features.value);
+    EXPECT_TRUE(store.Forget(allocated.value).ok());
+  }
 }
 
 TEST_P(Extraction, ReadingASpilledFrameLeavesItInTheHeap) {

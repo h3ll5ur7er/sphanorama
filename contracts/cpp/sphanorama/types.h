@@ -511,13 +511,16 @@ struct NodeContext {
 // `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
 // the first of its kind — it hands back a frame the caller never asked the store for by name, says
 // so in nearly these words, and has a contract-suite assertion behind it. It is the *only* one that
-// says it. Across the contract headers there are five calls that hand a frame back without saying
-// who owns it — `IImageCodecAccess::Decode`, `ICompositionEngine::BlendTile` and `RenderPreview`,
-// `IPanoramaBuildManager::Panorama` and `ICaptureSessionManager::Candidates` — which is a gap and
-// not a set of precedents. The count has been revised upward three times; it is written out here
-// rather than totalled because the last two are not even the same shape: a `Panorama`'s tiles and a
-// cell's candidates are frames the *core* is still holding, so a caller applying this rule to them
-// would be double-freeing rather than tidying up.
+// says it. Several other calls hand a frame back without saying who owns it —
+// `IFrameStoreAccess::Allocate` itself, `IImageCodecAccess::Decode`,
+// `ICompositionEngine::BlendTile` and `RenderPreview`, `IPanoramaBuildManager::Panorama` and
+// `ICaptureSessionManager::Candidates`. No total is given, because four attempts at one were each
+// short by one and the argument never depended on it.
+//
+// They are not all the same shape, which is the part worth carrying: a `Panorama`'s tiles and a
+// cell's candidates are frames the *core* is still holding, so a caller reading this rule onto them
+// would forget a frame still in use. The store answers a *second* `Forget` with `NotFound`, so what
+// is undetectable is the first one — the frames are gone and the holder finds out later.
 // A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;

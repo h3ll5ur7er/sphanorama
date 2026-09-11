@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.24)
+# 3.25 rather than 3.24 because `CMakePresets.json` declares `"version": 6`, which CMake's own
+# manual dates to 3.25 — so 3.24 could configure this project by hand and not by preset, which is
+# the only way anything here is built.
+cmake_minimum_required(VERSION 3.25)
 project(sphanorama LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

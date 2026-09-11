@@ -16,6 +16,7 @@ manager *implementing* its own interface.
 ```
 cpp/sphanorama/
   types.h                    every value type, plus Status / Result<T> and SPH_TRY
+  wire.h · codec.h           the binary wire format and its generated codec (ADR 0013)
   utilities/                 logger · clock · config_store · arena · diagnostics · event_bus
   engines/                   coverage_planner · pose · frame_preview · frame_quality ·
                              registration · composition

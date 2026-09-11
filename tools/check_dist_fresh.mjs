@@ -194,6 +194,49 @@ function presetsMatchTheBuildDirectories(repoRoot) {
   } catch {
     return false;
   }
+
+  // Every key a configure preset may carry, split by whether it can change a build.
+  //
+  // The unknown-key rule is what makes this safe to leave alone. A preset field nobody here has
+  // heard of — a new CMake version's, or one this file simply missed — refuses the forgiveness
+  // rather than being skipped, so the failure mode of not keeping up with CMake is a checker that
+  // asks too often rather than one that quietly stops asking. Four of these keys were being ignored
+  // before that rule existed, which is how `toolchainFile` and `generator` went uncompared.
+  const documentationOnly = new Set(['name', 'displayName', 'description']);
+  const comparedAgainstTheCache = new Map([
+    ['generator', 'CMAKE_GENERATOR'],
+    ['toolchainFile', 'CMAKE_TOOLCHAIN_FILE'],
+  ]);
+  const handledElsewhere = new Set(['cacheVariables', 'inherits', 'binaryDir']);
+
+  /** A preset's cache variables with everything it inherits folded in, nearest declaration winning. */
+  const resolved = (name, seen = new Set()) => {
+    if (seen.has(name)) return null;   // a cycle; refuse rather than loop
+    seen.add(name);
+    const entry = (declared.configurePresets ?? []).find((p) => p && p.name === name);
+    if (!entry) return null;
+    for (const key of Object.keys(entry)) {
+      if (!documentationOnly.has(key) && !comparedAgainstTheCache.has(key)
+          && !handledElsewhere.has(key)) {
+        return null;
+      }
+    }
+    const parents = entry.inherits === undefined
+      ? []
+      : (Array.isArray(entry.inherits) ? entry.inherits : [entry.inherits]);
+    const variables = new Map();
+    for (const parent of parents) {
+      const inherited = resolved(parent, seen);
+      if (inherited === null) return null;
+      for (const [k, v] of inherited.variables) variables.set(k, v);
+    }
+    for (const [k, v] of Object.entries(entry.cacheVariables ?? {})) variables.set(k, v);
+    for (const [key, cacheName] of comparedAgainstTheCache) {
+      if (entry[key] !== undefined) variables.set(cacheName, entry[key]);
+    }
+    return { variables };
+  };
+
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const cachePath = join(repoRoot, 'build', preset, 'CMakeCache.txt');
     if (!existsSync(cachePath)) return false;
@@ -203,14 +246,19 @@ function presetsMatchTheBuildDirectories(repoRoot) {
     } catch {
       return false;
     }
-    const entry = (declared.configurePresets ?? []).find((p) => p && p.name === preset);
-    if (!entry) return false;
-    for (const [name, value] of Object.entries(entry.cacheVariables ?? {})) {
+    const entry = resolved(preset);
+    if (entry === null) return false;
+    for (const [name, declaredValue] of entry.variables) {
+      // CMake lets a cache variable be a bare value or a `{ type, value }` object. Stringifying the
+      // object gave `[object Object]`, which matched nothing and made the forgiveness permanently
+      // unavailable for any preset written the documented way.
+      const wanted = declaredValue !== null && typeof declaredValue === 'object'
+        ? declaredValue.value
+        : declaredValue;
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
       // `line === null` is a variable the preset declares and this build directory has never held —
-      // a *newly added* one, which is exactly a configure that has not happened. Dropping this
-      // clause forgave it, which is the wrong way round.
-      if (line === null || line[1].trim() !== String(value).trim()) return false;
+      // a *newly added* one, which is exactly a configure that has not happened.
+      if (line === null || line[1].trim() !== String(wanted).trim()) return false;
     }
   }
   return true;

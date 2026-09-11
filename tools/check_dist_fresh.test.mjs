@@ -384,6 +384,67 @@ describe('the dist freshness check', () => {
     expect(message).toMatch(/compiled core is older than the C\+\+/);
   });
 
+  it('does not forgive a preset whose generator or toolchain changed', () => {
+    // Neither is a `cacheVariable`, so comparing only those ignored two fields that decide what
+    // gets built — and a preset carrying a `toolchainFile` is exactly how the wasm builds are
+    // configured here.
+    for (const [field, value] of [['generator', 'Unix Makefiles'], ['toolchainFile', '/elsewhere.cmake']]) {
+      const tree = aFreshTree();
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0][field] = value;
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true), field)
+        .toMatch(/compiled core is older than the C\+\+/);
+    }
+  });
+
+  it('does not forgive a preset carrying a field this checker has never heard of', () => {
+    // The rule that keeps the others honest. A preset key nobody here knows — a newer CMake's, or
+    // one simply missed — refuses forgiveness rather than being skipped, so falling behind CMake
+    // makes this ask too often instead of quietly stopping.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0].someFutureCMakeField = { that: 'changes the build' };
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('reads the variables a preset inherits, not only the ones it restates', () => {
+    // `inherits` is how three of this repository's six presets are written. Reading only a preset's
+    // own `cacheVariables` compared fewer things than the configure used, which forgives too
+    // readily — the unsafe direction.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets.push({ name: 'base', cacheVariables: { CMAKE_CXX_FLAGS: '-msimd128' } });
+    presets.configurePresets[0] = { name: 'wasm-release', inherits: 'base' };
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+
+    const changed = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    changed.configurePresets.find((p) => p.name === 'base').cacheVariables.CMAKE_CXX_FLAGS = '-O0';
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(changed));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('reads a cache variable written the documented {type, value} way', () => {
+    // CMake documents both forms. Stringifying the object gave `[object Object]`, which matched
+    // nothing — so a preset written the documented way could never be forgiven at all.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = { type: 'STRING', value: '-msimd128' };
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
+  it('does not forgive a preset that inherits in a circle', () => {
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0] = { name: 'wasm-release', inherits: 'loop' };
+    presets.configurePresets.push({ name: 'loop', inherits: 'wasm-release' });
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
   it('does not forgive a preset that declares a variable the build directory has never held', () => {
     // A newly added cache variable is a configure that has not happened. Treating "not in the cache"
     // as agreement forgave exactly that.
