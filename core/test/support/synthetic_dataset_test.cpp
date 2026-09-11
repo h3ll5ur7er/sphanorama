@@ -765,6 +765,22 @@ TEST_F(Dataset, ReadsAWidthOpenCvHasAlreadyWrappedAndCannotBeToldAbout) {
   ForgetAll(loaded.value);
 }
 
+TEST_F(Dataset, RefusesAHeaderNumberThatOnlyStartsOutAsOne) {
+  // `ReadNumber`'s digit check, which the "wide" case above does not reach: `std::stoll` throws on
+  // `"wide"` and returns the same `false`, so that test proves the `catch`, not the check. The
+  // difference is an *outcome*, not a message — `std::stoll("48x")` returns 48 without complaint, so
+  // without the pre-check this header parses as a perfectly ordinary 48-wide frame and the file is
+  // read as something it does not say it is.
+  Scratch scratch;
+  std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+  out << "P6\n48x 36\n255\n";
+  out.close();
+  WriteTruth(scratch, TruthWith(kLens, kOneFrame));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "has a header this reader cannot parse"));
+}
+
 TEST_F(Dataset, RefusesAHeaderNumberTooLargeForTheTypeThatHoldsIt) {
   // `ReadNumber`'s `catch (...)` had no test and no written reason while its two neighbours had
   // theirs. It is reachable from a file anyone can write: all-digits passes the character check,

@@ -84,6 +84,13 @@ class OwnedFrames {
  * Comments are part of the format even though this generator never writes one, and a reader that
  * choked on them would be refusing a valid file. Everything else about the header is checked
  * strictly, so accepting the one thing the standard requires costs nothing.
+ *
+ * **A `#` inside a token is not skipped, and that is a known gap rather than a decision.** Netpbm
+ * allows a comment anywhere in the header, so `P6\n4#c\n8 36\n255\n` is a valid file this reader
+ * refuses: the accumulation loop below has no comment branch, only the whitespace-skipping loop
+ * above does. Written down rather than fixed because no generator produces that shape and the fix
+ * restructures the loop — but a reader meeting a refused file that looks fine deserves to find this
+ * sentence rather than work it out.
  */
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
