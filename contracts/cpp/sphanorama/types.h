@@ -194,7 +194,19 @@ struct FrameRef {
   PixelFormat format = PixelFormat::Unknown;
   int32_t width = 0, height = 0, stride = 0;
   int64_t timestampNs = 0;
-  uint64_t contentHash = 0;   // build-graph fingerprinting
+  // Build-graph fingerprinting — and **nothing populates it yet**, which is worth knowing before
+  // anything is built on it. `Allocate` leaves it 0 and no other writer exists outside the generated
+  // wire decoder, so a session serialised and restored carries 0 for every frame. The store's own
+  // `ContentHash` answers a real hash for a resident or spilled frame (it computes one when a frame
+  // is demoted) and 0 for an adopted one, because `Adopt` takes this field on trust.
+  //
+  // A reviewer measured the pair: 10201025586445714307 before a reload, 0 after. Nothing consumes it
+  // today — the incremental build graph is Phase 3 — which is why this is a note rather than a fix.
+  // But that graph's central invariant is "an incremental rebuild equals a full rebuild", and it is
+  // going to be written against a field that is 0 for exactly the frames a retake is about. Closing
+  // it is a decision with two shapes (populate it at `Allocate`, or have `Adopt` refuse a 0 the way
+  // it already refuses a 0 `id`) and belongs to whoever writes that graph.
+  uint64_t contentHash = 0;
 };
 
 // A frame reduced to something a screen can take — and the one place pixel bytes are a value in

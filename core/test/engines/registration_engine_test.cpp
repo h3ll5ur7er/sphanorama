@@ -1112,6 +1112,30 @@ TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
   EXPECT_TRUE(store.Release(frame).ok());
 }
 
+TEST(DetectorDefaults, TheAkazeParametersCopiedFromOpenCvAreStillOpenCvs) {
+  // `Make()` restates seven of OpenCV's AKAZE defaults because the cap is the eighth argument, and
+  // the oracle in this file restates the same seven a second time. Those two copies are compared
+  // with each other on every run — and never with the authority they were copied from.
+  //
+  // The direction that leaves open is the one that matters: if OpenCV's defaults move under an SHA
+  // bump, both copies keep the old values, agree perfectly, and every test here passes while AKAZE
+  // runs with parameters nobody chose. "Which detector wins is a measurement" would then be
+  // measuring a non-default AKAZE against a default ORB and a default SIFT.
+  //
+  // So this asks OpenCV. It does not loosen ADR 0005's pin — it makes a bump of that pin arrive as
+  // a red test naming the parameter, instead of as a silent change to what "AKAZE" means here.
+  // `max_points` is deliberately absent: that is the one value this project means to override.
+  const cv::Ptr<cv::AKAZE> theirs = cv::AKAZE::create();
+  ASSERT_TRUE(theirs);
+  EXPECT_EQ(theirs->getDescriptorType(), cv::AKAZE::DESCRIPTOR_MLDB);
+  EXPECT_EQ(theirs->getDescriptorSize(), 0);
+  EXPECT_EQ(theirs->getDescriptorChannels(), 3);
+  EXPECT_FLOAT_EQ(theirs->getThreshold(), 0.001F);
+  EXPECT_EQ(theirs->getNOctaves(), 4);
+  EXPECT_EQ(theirs->getNOctaveLayers(), 4);
+  EXPECT_EQ(theirs->getDiffusivity(), cv::KAZE::DIFF_PM_G2);
+}
+
 TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // Kept beside the real one so the pair is visible: the null engine is what a WASM build gets
   // (ADR 0052), and it refuses rather than returning an identity that would look like a stitch.

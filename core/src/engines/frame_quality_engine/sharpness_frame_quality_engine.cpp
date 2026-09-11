@@ -44,6 +44,29 @@ LumaKind LumaKindOf(PixelFormat format) {
   }
 }
 
+/**
+ * Bytes one pixel occupies in the row this engine reads.
+ *
+ * Derived from `LumaKindOf` rather than from `BytesPerPixel`, so the width the bounds below are
+ * computed from and the width the read actually steps come from **one** authority. They agreed
+ * before — 4 for the two four-channel formats, and 1 for the three planar ones, where
+ * `BytesPerPixel` answers 0 and a `std::max(..., 1)` floor rescued it — but nothing made them, and
+ * a reviewer named the shape that breaks it: a packed 4:2:2 format handled here as a new kind
+ * stepping two bytes, while `BytesPerPixel` goes on answering 0 and the floor makes it 1. Every
+ * guard would then pass on a span half the size the read needs.
+ */
+int64_t LumaRowBytesPerPixel(PixelFormat format) {
+  switch (LumaKindOf(format)) {
+    case LumaKind::FourChannel:
+      return 4;
+    case LumaKind::Planar:
+      return 1;
+    case LumaKind::None:
+      break;
+  }
+  return 0;
+}
+
 /** Luma at (x, y) for the formats a camera port can currently produce. */
 double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int64_t stride, int64_t x,
               int64_t y) {
@@ -111,7 +134,7 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   // One byte per pixel for the planar formats, which is what `LumaAt` reads of them: the luma
   // plane comes first and is all this engine touches. `BytesPerPixel` answers 0 for those, hence
   // the floor.
-  const int64_t bytesPerPixel = std::max(BytesPerPixel(frame.format), 1);
+  const int64_t bytesPerPixel = LumaRowBytesPerPixel(frame.format);
   const int64_t rowBytes = static_cast<int64_t>(frame.width) * bytesPerPixel;
   const int64_t stride = frame.stride > 0 ? frame.stride : rowBytes;
 
