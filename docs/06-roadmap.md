@@ -40,7 +40,9 @@ differences are decisions, each with an ADR:
 
 **Exit:** a phone opens the PWA, sees a live viewfinder with a reticle whose position is driven by
 real sensor data routed *through the WASM core*, and the whole round trip stays under budget.
-The core binary is under 8 MB and the same core compiles as the native bench.
+The core binary is under 8 MB. (This sentence also claimed the same core "compiles as the native
+bench"; it does compile natively — that is what every test run does — but there is no `bench/`
+client for it to compile *as*, and saying so implied one existed.)
 
 *Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
 tells the core what it got, and the core plans a real tessellation for it — 32 cells across 7
@@ -222,8 +224,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   met one.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
-  agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the bench now
-  use, and `Rank` normalises sharpness across the candidate set before weighting it, so every
+  agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
+  tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`
+  normalises sharpness across the candidate set before weighting it, so every
   weight in `SelectionPolicy` changes an answer rather than only the sharpness one. The
   motion-blur proxy is **not**: turning an angular rate into pixels of smear needs the exposure
   time and the focal length in pixels, and the engine is handed neither. It reports zero and the

@@ -50,6 +50,34 @@ class FrameQuality : public ::testing::Test {
     return allocated.value;
   }
 
+  /**
+   * A planar frame whose *luma* carries the detail, and whose chroma is flat.
+   *
+   * The mirror image of `PlanarFrame` above, which is flat where this is busy. That one exists to
+   * make a relabelled handle read chroma as picture; this one exists to score a planar frame that
+   * is telling the truth — which, until a reviewer sabotaged it, nothing did.
+   */
+  template <typename Paint>
+  FrameRef PlanarFrameWithDetail(PixelFormat format, Paint paint, int32_t width = kWidth,
+                                 int32_t height = kHeight) {
+    auto allocated = store.Allocate(width, height, format);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    auto pinned = store.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    const size_t luma = static_cast<size_t>(width) * height;
+    // Mid-grey chroma, so a measure that strayed past the luma plane would read flatness and score
+    // *lower* — the direction that shows up, rather than one that flatters the result.
+    std::fill(pinned.value.begin(), pinned.value.end(), static_cast<uint8_t>(128));
+    for (int32_t y = 0; y < height; ++y) {
+      for (int32_t x = 0; x < width; ++x) {
+        pinned.value[static_cast<size_t>(y) * allocated.value.stride + x] = paint(x, y);
+      }
+    }
+    EXPECT_LE(luma, pinned.value.size());
+    EXPECT_TRUE(store.Release(allocated.value).ok());
+    return allocated.value;
+  }
+
   /** A frame whose luma at (x, y) is whatever `paint` says. RGBA8, so grey means r == g == b. */
   template <typename Paint>
   FrameRef Frame(Paint paint, int32_t width = kWidth, int32_t height = kHeight) {
@@ -159,6 +187,36 @@ TEST_F(FrameQuality, SharpnessDoesNotDependOnWhereTheDetailSits) {
   const FrameRef nearTheBottomRight = Frame(patchAt(40, 40));
   EXPECT_NEAR(Sharpness(nearTheTopLeft), Sharpness(nearTheBottomRight),
               Sharpness(nearTheTopLeft) * 0.05);
+}
+
+TEST_F(FrameQuality, EveryPlanarFormatIsScoredFromItsOwnLumaPlane) {
+  // **Nothing here ever scored a planar frame that was telling the truth.** `PlanarFrame` is used
+  // by two tests and both hand in a *relabelled* handle expecting a refusal, so `LumaAt`'s planar
+  // arm was never reached on a success path for NV12 or I420. A reviewer deleted those two formats
+  // from it — leaving them to `default: return 0.0` — and all 711 tests stayed green. The drifted
+  // answer is `sharpness 0.0`, which is exactly what a genuinely flat frame scores, on the number
+  // that decides which frame of a burst survives.
+  //
+  // I had declined this the round before, on a sabotage that removed `Gray8` alone and was caught.
+  // Gray8 is the one planar format a success-path test does use, so the check generalised from the
+  // single case that could not fail — three formats, one of them covered, and I read that as three.
+  //
+  // The assertion is equality with RGBA8 rather than "greater than zero", which would pass on any
+  // number at all. Rec. 601 over `r == g == b == v` is exactly `v`, so a grey RGBA8 frame and a
+  // planar frame carrying the same luma must score *identically* — same plane, same stride, same
+  // downscale. That also pins the planar arm to the right bytes rather than merely to some bytes.
+  const auto detail = [](int32_t x, int32_t y) -> uint8_t {
+    return ((x / 4) + (y / 4)) % 2 == 0 ? 0 : 255;
+  };
+  const double reference = Sharpness(Frame(detail));
+  ASSERT_GT(reference, 0.0) << "the reference frame has to have detail for this to ask anything";
+
+  for (const PixelFormat format : {PixelFormat::Gray8, PixelFormat::NV12, PixelFormat::I420}) {
+    const FrameRef planar = PlanarFrameWithDetail(format, detail);
+    EXPECT_DOUBLE_EQ(Sharpness(planar), reference)
+        << "format " << static_cast<int>(format)
+        << " is not being read from its luma plane the way RGBA8 is";
+  }
 }
 
 TEST_F(FrameQuality, ScoringIsDeterministic) {

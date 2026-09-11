@@ -661,6 +661,21 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
+  it('does not read a nested build directory as a source', () => {
+    // `newest`'s default skip list is `node_modules`, `.git`, `dist`, `build`. The source walk needed
+    // to skip two *more* directories and passed its own set, which replaced those four rather than
+    // adding to them — so anything generated under a walked root counted as a source, and a file the
+    // build itself writes is always newer than the core built before it. That is the permanently-red
+    // shape this checker has twice been fixed for: nothing a developer does can make it green.
+    for (const buried of ['bridge/node_modules/pkg/generated.cpp',
+                          'bridge/build/scratch/generated.cpp',
+                          'core/src/dist/generated.cpp']) {
+      const tree = aFreshTree();
+      tree.put(buried, Date.now());
+      expect(complaint(tree.root, undefined, () => true), buried).toBeNull();
+    }
+  });
+
   it('checks a CMakeLists nobody wrote down', () => {
     // The list was written out four times and was one short every time. This one is in a directory
     // the source walk covers and is named by no build graph, so both the walk and the build-file

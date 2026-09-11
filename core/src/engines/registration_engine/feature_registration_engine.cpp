@@ -23,9 +23,14 @@ constexpr int32_t kKeypointBytes = 8;
 
 // `kMaxFeaturesPerFrame` is in the header, because a test has to build the same detector with the
 // same cap to check this engine against. Measured on this repository's own test texture at
-// 2048x2048, uncapped: ORB flatlines at 500, SIFT returns 7,567 (3.87 MB of descriptors for one
-// frame, 232 MB over the sixty a sphere plans) and AKAZE returns 14,656 — decimal megabytes, as
-// ADR 0051 counts them. A capture frame is several times that again in pixels.
+// 2048x2048, uncapped: SIFT returns 7,567 (3.87 MB of descriptors for one frame, 232 MB over the
+// sixty a sphere plans) and AKAZE returns 14,656 — decimal megabytes, as ADR 0051 counts them. A
+// capture frame is several times that again in pixels.
+//
+// ORB used to be listed beside them as "flatlines at 500", which was its own default being reported
+// back as though it were a measurement: there is no uncapped ORB to take. `cv::ORB::create()`
+// defaults `nfeatures` to 500 and `create(0)` means *zero* rather than unlimited, so the only way to
+// ask is to name a big number — 622,433 on that texture.
 
 /**
  * How a format carries its luma, and the one place that is decided.
@@ -263,7 +268,18 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // the overflow really is the boundary ties. ORB is a different mechanism entirely: `orb.cpp`
   // applies `retainBest(keypoints, featuresNum)` **per pyramid level** and concatenates the levels,
   // so the total is capped nowhere, the order is level-major rather than response-major, and the
-  // surplus is whole octaves. A reviewer measured 772 for a request of 500 on a tie-rich image.
+  // surplus is whole octaves. `Ruled` is the fixture that shows it: asked for 500 at 768 square, ORB
+  // returns **1,145**, which is the number the cap test below is built on.
+  //
+  // An earlier version of this line cited "772 on a tie-rich image", from a review that named no
+  // fixture, size or configuration. It reproduces at none of them — a swept measurement nobody can
+  // re-run is worth less than no number at all, and it sat two lines from one that is anchored to a
+  // fixture in this repository.
+  //
+  // The overrun is also not monotonic, which is the part that makes reasoning about it a mistake
+  // rather than merely hard: the same `Ruled` pattern at 2048 square returns **395** for a request
+  // of 500 — *under* the cap, because the per-level budgets are computed from the pyramid and not
+  // from what the image can supply.
   //
   // Neither is a safe thing to reason about, so the code stops reasoning about it. Rather than keep
   // the first `n` and argue about what the detector put there, it keeps the best `n` by response —

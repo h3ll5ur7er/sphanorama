@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include "sphanorama/resource_access/frame_store_access.h"
 #include "sphanorama/engines/registration_engine.h"
@@ -16,6 +17,14 @@ namespace sphanorama {
 // holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
 // in earnest is the one that runs the accuracy harness, and it does not exist yet.
 enum class FeatureDetector { Orb, Akaze, Sift };
+
+// Every detector, once, beside the enum — because the parameterised tests are the one copy of this
+// list that no compiler polices. `Make()` and the test oracle are `default`-less switches, so a new
+// enumerator breaks the `-Werror` build until both are visited; `::testing::Values(...)` would
+// simply have gone on covering three of four, and a detector nothing ever runs is worse than one
+// that does not build.
+inline constexpr std::array<FeatureDetector, 3> kAllFeatureDetectors{
+    FeatureDetector::Orb, FeatureDetector::Akaze, FeatureDetector::Sift};
 
 // The most features any detector may return for one frame.
 //

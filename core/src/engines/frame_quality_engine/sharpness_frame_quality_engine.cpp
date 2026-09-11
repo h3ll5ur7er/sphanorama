@@ -19,6 +19,31 @@ constexpr const char* kComponent = "SharpnessFrameQualityEngine";
 // structure, and it makes the cost independent of what the camera happened to hand over.
 constexpr int32_t kMeasureEdge = 256;
 
+/**
+ * How a format carries its luma, and the one place that is decided.
+ *
+ * `LumaAt` and `HasReadableLuma` below used to list the same five formats independently, and the
+ * drift that allows is not theoretical: a reviewer deleted NV12 and I420 from `LumaAt`'s planar arm,
+ * leaving them to answer `0.0`, and all 711 tests stayed green. `FeatureRegistrationEngine` collapsed
+ * the same duplication a commit earlier; leaving it standing here is how "the fix went into one
+ * engine and not the other" happens, which is a sentence this file's own comments already carry.
+ */
+enum class LumaKind { None, Planar, FourChannel };
+
+LumaKind LumaKindOf(PixelFormat format) {
+  switch (format) {
+    case PixelFormat::Gray8:
+    case PixelFormat::NV12:
+    case PixelFormat::I420:
+      return LumaKind::Planar;
+    case PixelFormat::RGBA8:
+    case PixelFormat::BGRA8:
+      return LumaKind::FourChannel;
+    default:
+      return LumaKind::None;
+  }
+}
+
 /** Luma at (x, y) for the formats a camera port can currently produce. */
 double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int64_t stride, int64_t x,
               int64_t y) {
@@ -26,9 +51,8 @@ double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int64_t stride
   // past 2^31 bytes in at four bytes a pixel, so the multiply has to be wide even though the
   // result always fits a size_t on the platforms this runs on.
   const int64_t row = y * stride;
-  switch (format) {
-    case PixelFormat::RGBA8:
-    case PixelFormat::BGRA8: {
+  switch (LumaKindOf(format)) {
+    case LumaKind::FourChannel: {
       const size_t at = static_cast<size_t>(row + x * 4);
       // Rec. 601 luma, in the frame's own channel order. Red and blue carry very different
       // weights — 0.299 against 0.114 — so reading BGRA as RGBA makes a blue frame look two and a
@@ -40,29 +64,20 @@ double LumaAt(std::span<const uint8_t> bytes, PixelFormat format, int64_t stride
       const double blue = bytes[at + (bgra ? 0 : 2)];
       return 0.299 * red + 0.587 * bytes[at + 1] + 0.114 * blue;
     }
-    case PixelFormat::Gray8:
-    case PixelFormat::NV12:
-    case PixelFormat::I420:
+    case LumaKind::Planar:
       // The luma plane comes first in both planar layouts and is the whole of Gray8, so the
       // chroma that follows is simply never read.
       return bytes[static_cast<size_t>(row + x)];
-    default:
-      return 0.0;
+    case LumaKind::None:
+      // `Measure` refuses this format before pinning, so this arm is how the switch stays total
+      // rather than a state anything reaches. It answers a number rather than a refusal, which is
+      // why it must stay unreachable: a `0.0` here would be indistinguishable from a flat frame.
+      break;
   }
+  return 0.0;
 }
 
-bool HasReadableLuma(PixelFormat format) {
-  switch (format) {
-    case PixelFormat::RGBA8:
-    case PixelFormat::BGRA8:
-    case PixelFormat::Gray8:
-    case PixelFormat::NV12:
-    case PixelFormat::I420:
-      return true;
-    default:
-      return false;
-  }
-}
+bool HasReadableLuma(PixelFormat format) { return LumaKindOf(format) != LumaKind::None; }
 
 }  // namespace
 

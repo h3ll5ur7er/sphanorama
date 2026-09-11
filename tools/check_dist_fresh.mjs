@@ -21,7 +21,14 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']),
+// Directories no walk in this file should ever descend into. Named rather than inlined as a default
+// because the one caller that needed to skip *more* passed its own set, which **replaced** these
+// instead of adding to them — so the source walk was free to descend into a nested `build/` or
+// `node_modules/` and take a generated file's mtime as a source's. That is the permanently-stale
+// shape this checker has already been bitten by twice.
+const kNeverWalked = ['node_modules', '.git', 'dist', 'build'];
+
+function newest(path, skip = new Set(kNeverWalked),
                 accept = () => true) {
   let latest = 0;
   let latestPath = path;
@@ -455,7 +462,8 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // four back, which left a fifth invisible in both directions.
     const acceptSource = (full) => !/CMakeLists\.txt$/.test(full) && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), acceptSource) }));
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel),
+                                      new Set([...kNeverWalked, 'test', 'CMakeFiles']), acceptSource) }));
 
     // Build files are forgiven by two different rules, each applied where it is the only one that
     // can answer — and neither of them by a list anybody wrote down, because four such lists on this

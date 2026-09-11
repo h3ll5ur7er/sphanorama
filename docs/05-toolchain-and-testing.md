@@ -26,10 +26,13 @@ removing one.
   probe" until seven rounds of review on PR #67 swept the file — neither name nor probe has ever
   existed. `IComputeDeviceAccess::Capabilities` does report `threads`, which is probably where the
   idea came from, but nothing chooses an artefact from it.
-- **CMake** presets, all six: `native-debug` (the default for TDD), `native-release` (what the
-  bench measures), `native-asan` (the sanitizer job), `wasm-release` and `wasm-release-threaded`
-  (both built by the gate and by CI), and `wasm-debug`, which nothing builds automatically and is
-  there for a person chasing something in the browser.
+- **CMake** presets, all six: `native-debug` (the default for TDD), `native-asan` (the sanitizer
+  job), `wasm-release` and `wasm-release-threaded` (both built by the gate and by CI), and two that
+  nothing builds automatically — `wasm-debug`, for a person chasing something in the browser, and
+  `native-release`, for a timing run somebody does by hand. This line used to gloss the latter as
+  "what the bench measures", which was false twice over: `bench/` does not exist (ADR 0052 says so
+  while explaining why no composition root selects the OpenCV engine), and neither `tools/gate.sh`
+  nor CI configures that preset at all.
 - **OpenCV** built from source as a trimmed static subset — `core`, `imgproc`, `features2d`,
   `calib3d`, `photo`, `flann` — fetched at a pinned *commit* by `cmake/opencv.cmake`, and verified
   against that commit after checkout rather than trusted (ADR 0047). The

@@ -177,7 +177,8 @@ bridge/               the WASM boundary: a C ABI over the shared heap, and the o
                       resource_access/ subtree holds browser-backed ports and is judged as
                       resource access. runtime.* is the composition root, exempt from the
                       layer rules by name (ADR 0014)
-bench/                native CLI client — runs the core on datasets, prints timings
+bench/                native CLI client — runs the core on datasets, prints timings.
+                      Planned, not written: no such directory exists yet
 shell/                TypeScript PWA
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters

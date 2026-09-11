@@ -59,6 +59,15 @@ that would discard better features than it kept — for ORB, whole octaves of th
 sorts by response and then truncates, which makes the cap keep the best rather than the first and
 gives every detector one order a caller can rely on instead of three a caller cannot tell apart.
 
+**The frames a `FeatureSet` carries *into* a call belong to the caller too.** `EstimatePairwise`
+takes two of them, so four store allocations, and may pin and release their frames but must not
+`Forget` any — on a refusal either. A reviewer pointed out that this ADR wrote an ownership rule for
+the frames coming *out* of `ExtractFeatures` and left the inbound direction unstated, which was
+unstatable before this change (they were `BufferId`s naming nothing) and is live now. It matters
+because `Refine` reuses each `FeatureSet` across several pairs, so an implementation that tidied up
+after itself would pull the bytes out from under every later pair naming the same frame — and the
+store answers the *second* `Forget` with `NotFound`, so the undetectable one is the first.
+
 The sort is stable, and the reason is the tie order rather than repeatability. `std::sort` would be
 exactly as repeatable; what it would not preserve is the detector's own order among equal responses,
 which is the half of the promise a caller has no way to predict for itself.
@@ -119,6 +128,16 @@ wider change buying a label.
   nothing catches. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
   overclaim is the failure this repository keeps making, and it is only legible if the sequence
   survives.
+
+**One instance of the defect this ADR is named for is still in the contracts.** `SeamMap` carries
+`BufferId labelBuffer` (`types.h`), which names exactly the resource this ADR established nothing can
+produce or resolve — the frame store allocates frames and there is no `AllocateBuffer`. It is not
+reached today because `ICompositionEngine` is null, but it is the return type of the engine Phase 2
+builds next, so the next person to implement seam finding meets the same dead end `FeatureSet` met.
+It is left rather than fixed here because changing it is a contract change for an engine this PR does
+not touch, and bundling it would make this ADR about two things. Recorded so it is inherited as a
+known gap rather than rediscovered — the same treatment ADR 0052 gives the geometry-versus-byte-count
+seam.
 
 ## Rejected
 

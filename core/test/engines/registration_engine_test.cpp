@@ -1063,8 +1063,10 @@ TEST_P(Extraction, RefusesAStoreThatHandsBackFewerBytesThanItWasAskedFor) {
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,
-                         ::testing::Values(FeatureDetector::Orb, FeatureDetector::Akaze,
-                                           FeatureDetector::Sift),
+                         // From the engine's own list rather than restated here: a fourth detector
+                         // added to the enum reaches every test in this file without anyone
+                         // remembering to widen a `Values(...)` nothing checks.
+                         ::testing::ValuesIn(kAllFeatureDetectors),
                          [](const ::testing::TestParamInfo<FeatureDetector>& info) {
                            switch (info.param) {
                              case FeatureDetector::Orb: return "Orb";
