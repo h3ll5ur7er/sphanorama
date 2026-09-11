@@ -751,6 +751,13 @@ that has to be ordered.
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
 
+  *Feature extraction is in* — `FeatureRegistrationEngine::ExtractFeatures` over ORB, AKAZE or SIFT,
+  writing descriptors and keypoints into frames the caller owns (ADR 0051). Matching and refinement
+  still refuse rather than returning an identity that would look like a registration. It compiles
+  only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
+  detectors share one feature cap — without it two of them are unbounded, which would make the
+  comparison below meaningless as well as the memory unbounded.
+
   **Which detector is a measurement, not a preference.** V7 names ORB, AKAZE and SIFT together on
   purpose. SIFT's patent expired in March 2020 and it has shipped in `features2d` since OpenCV 4.4,
   so it costs no new dependency and the reason it was once excluded no longer exists; what remains
@@ -767,7 +774,13 @@ Listed in dependency order, which is not build order: **the accuracy harness on 
 comes first**, before any of the above, for the reason in "What to build first" below. It is last in
 this list only because it is the thing that measures the others.
 
-**Exit:** synthetic-dataset registration median error under a stated angular threshold — median
+**Exit:** measured on a **native** build, and this needs saying now rather than being assumed.
+Registration compiles only where OpenCV does (ADR 0052) and the WASM cross-compile is still deferred
+(ADR 0047), so the number below comes from the native build. Whether it transfers to a WASM build of
+the same code is a second measurement nobody has taken, and it is not implied by the first: the
+single-threaded WASM speed question is explicitly part of what "which detector wins" means here.
+
+Synthetic-dataset registration median error under a stated angular threshold — median
 rather than mean because the alignment is fitted to every frame at once, so one outlier smears a
 fraction of its error across all the others. The median is far steadier than the mean and is **not**
 immune: measured, one frame turned 120 degrees still moves it 0.83 degrees at 61 frames, which is

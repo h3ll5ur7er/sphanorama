@@ -19,7 +19,15 @@ so a core that depends on it unconditionally does not compile for the browser at
 ## Decision
 
 **The OpenCV registration engine is compiled only when `SPHANORAMA_WITH_OPENCV` is on.
-`NullRegistrationEngine` is what the composition root gets otherwise.**
+`NullRegistrationEngine` is what a build without it gets.**
+
+Said precisely, because an earlier draft of this sentence said "what the composition root gets
+otherwise" and asserted a branch with no first arm: `bridge/runtime.h` holds a
+`NullRegistrationEngine` unconditionally, and nothing outside the tests constructs the OpenCV one.
+That is not an oversight to fix here. The only composition root in the repository is the WASM
+runtime, where `SPHANORAMA_WITH_OPENCV` is off — a selection there would be dead code today, and the
+native client that will make it live (`bench/`) does not exist yet. What is decided now is where the
+dependency may be linked; which root selects it is decided when there is a root that could.
 
 This is the shape `core/src/engines/` already uses: two implementations of one contract sharing a
 directory, chosen at composition rather than by the caller. `pose_engine` and `coverage_planner_engine`
@@ -30,6 +38,29 @@ each do it today; this adds a build condition to that selection rather than a ne
   frame store already owns, so nothing about OpenCV's presence is visible above the engine.
 - **The flag already exists and already means this.** `SPHANORAMA_WITH_OPENCV` is off for WASM and
   on natively; adding a second axis would be inventing configuration.
+
+**And the two things ADR 0047 left for this ADR to settle, settled.**
+
+***The exception boundary is built.*** 0047 named it and deferred it: "when an engine calls OpenCV it
+cannot be compiled `-fno-exceptions`, because `cv::Exception` is how OpenCV reports ordinary
+failure… the OpenCV-backed implementation is its own component, compiled with exceptions, catching
+at its own edge and returning `Result<T>`. That is a decision for the ADR that introduces the first
+such engine." This is that ADR, and that is the shape taken: `feature_registration_engine.cpp` alone
+carries `-fexceptions` (a source-file property in `core/CMakeLists.txt`, verified to land after the
+target's `-fno-exceptions` and on no other translation unit), and `ExtractFeatures` converts
+`cv::Exception` to a `Result` at its edge. It is not theoretical: a one-pixel frame passes every
+guard the engine has and then throws out of `cv::resize` under ORB and `setSize` under AKAZE, while
+SIFT answers normally — which is why the boundary cannot be a list of the detectors that need one.
+
+***The sanitizer remedy 0047 named is not available, and this supersedes it.*** 0047 said the remedy
+for OpenCV tripping the sanitizers would be "a suppressions file scoped to `_deps/opencv-src`, not
+turning recovery back on". Those two cannot both hold. A UBSan suppressions file is consulted only
+for *recoverable* errors, and this repository's preset is `-fno-sanitize-recover=all`. Measured
+rather than reasoned: the same misaligned load, with a `alignment:*` suppressions file, still aborts
+under `-fno-sanitize-recover=all` (exit 1) and is suppressed without it (exit 0). So the suppressions
+route requires exactly the thing 0047 refused. The compile-time flag reaches 0047's real goal —
+OpenCV exempt, our own code strict, recovery still off everywhere — without that trade, and it is
+narrower in one way too: it lifts one check rather than silencing one report.
 
 ## Consequences
 

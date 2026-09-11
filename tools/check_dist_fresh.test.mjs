@@ -149,6 +149,30 @@ describe('the dist freshness check', () => {
     }
   });
 
+  it('falls back to counting everything when the compile database cannot be parsed', () => {
+    // The `catch` in `compiledTranslationUnits` is the whole reason it returns `null` rather than
+    // an empty set, and nothing reached it. A reviewer made that branch do exactly what its own
+    // comment forbids — treat a half-written file as a successful read — and the suite stayed
+    // green, which means the conservative fallback was a comment rather than a behaviour.
+    const tree = aFreshTree();
+    tree.put('build/wasm-release/compile_commands.json', undefined, '[{"file": "truncated...');
+    tree.put('core/src/engines/registration_engine/native_only.cpp', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('reads the threaded preset\'s compile database too, not only the first one', () => {
+    // Both wasm builds compile the core, and the check takes the older of the two. A reviewer
+    // misspelled `wasm-release-threaded` in the preset list and the suite stayed green, because
+    // every fake tree happened to carry the single-threaded database as well. This one carries
+    // only the threaded database, so a list that does not read it narrows nothing and the source
+    // below — which that database does list — stops being noticed.
+    const tree = aFreshTree();
+    tree.put('build/wasm-release-threaded/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') }]));
+    tree.put('core/src/engines/registration_engine/native_only.cpp', Date.now());
+    expect(complaint(tree.root)).toBeNull();
+  });
+
   it('catches a threaded core older than the C++, not only the single-threaded one', () => {
     // Existence alone was what this build got at first, which a reviewer pointed out buys less
     // than it looks: a threaded core from before the change passes that, and its two browser tests

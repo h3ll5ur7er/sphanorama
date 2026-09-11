@@ -31,7 +31,16 @@ frames already use.
   growing both and adding cases to that suite. `FeatureSet` is produced and consumed inside the
   engine layer.
 - **The budget is the point, not an accident.** Descriptors are not small: sixty frames of ORB at
-  ~500 features is roughly 1 MB, and SIFT's 128 floats per feature is fifteen times that. Under
+  ~500 features is roughly 1 MB, and SIFT's 128 floats per feature is sixteen times that — 512 bytes
+  a row against 32, so 15.36 MB. An earlier draft said "fifteen times", which was the megabytes read
+  as a multiplier.
+
+  That arithmetic also assumed 500 features for *every* detector, and a reviewer showed the code did
+  not: ORB caps itself at 500 by default, while `cv::SIFT::create()` and `cv::AKAZE::create()` are
+  unbounded, returning 1,328 and 2,547 on this repository's test texture at 768 square. The engine
+  now caps all three at one shared budget, which is what makes the paragraph above true rather than
+  aspirational — and asking for a cap turned out not to be getting one, since `retainBest` keeps
+  every keypoint tied at the cutoff, so it truncates as well as asks. Under
   memory pressure the store must be able to evict them, and only a store-managed allocation can be.
 
 **`Gray8` names the container, not the contents, and that is the ordinary way this is done.** In
@@ -55,7 +64,15 @@ wider change buying a label.
   reader meeting one should find the convention stated rather than infer a mistake.
 - The engine now owns frame lifetimes it did not before: whoever calls `ExtractFeatures` owns two
   more `FrameRef`s and must `Forget` them. That is a new leak surface, and the contract header has
-  to say who owns them, which it currently does not for anything.
+  to say who owns them.
+
+  An earlier draft of this ADR added "which it currently does not for anything", and a reviewer
+  showed that was false when it was written: `ICameraAccess::PeekPreviewFrame` says it in nearly the
+  same words and has a contract-suite assertion behind it, and `IImageCodecAccess::Decode` and
+  `ICompositionEngine::BlendTile` are three and four. The rule this follows is established, not new
+  — which is a better argument for the shape than the one it replaced, and the correction is left
+  here rather than tidied away because a decision is only inheritable if what was got wrong on the
+  way to it is visible.
 
 ## Rejected
 

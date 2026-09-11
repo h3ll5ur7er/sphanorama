@@ -49,27 +49,55 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
 
   FeatureRegistrationEngine Engine() { return FeatureRegistrationEngine{store, GetParam()}; }
 
-  /** A frame whose RGBA8 luma at (x, y) is whatever `paint` says. */
-  template <typename Paint>
-  FrameRef Painted(Paint paint) {
-    const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
-    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+  /**
+   * A frame of `edge` square whose RGBA8 luma at (x, y) is whatever `paint` says.
+   *
+   * Void with an out-parameter rather than returning the frame, because the assertions have to be
+   * `ASSERT_*` and `ASSERT_*` cannot appear in a function that returns a value. With `EXPECT_*` a
+   * refused `Allocate` left `pinned.value` an empty span and the loop wrote 65,536 pixels through
+   * its null `data()` — killing the binary with no `[  FAILED  ]` line, which is exactly the
+   * crash-reads-as-clean case this file's own comments warn about. The tight-ceiling fixtures below
+   * make a refused `Allocate` an ordinary event rather than a hypothetical.
+   */
+  template <typename Painter>
+  void Paint(FrameRef* out, Painter paint, int32_t edge = kWidth) {
+    ASSERT_NE(out, nullptr);
+    const Result<FrameRef> allocated = store.Allocate(edge, edge, PixelFormat::RGBA8);
+    ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
     const FrameRef frame = allocated.value;
     const Result<std::span<uint8_t>> pinned = store.Pin(frame);
-    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
-    for (int32_t y = 0; y < kHeight; ++y) {
-      for (int32_t x = 0; x < kWidth; ++x) {
+    ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+    ASSERT_NE(pinned.value.data(), nullptr);
+    for (int32_t y = 0; y < edge; ++y) {
+      for (int32_t x = 0; x < edge; ++x) {
         const uint8_t v = paint(x, y);
         uint8_t* px = pinned.value.data() + static_cast<size_t>(y) * frame.stride + x * 4;
         px[0] = px[1] = px[2] = v;
         px[3] = 255;
       }
     }
-    store.Release(frame);
-    return frame;
+    EXPECT_TRUE(store.Release(frame).ok());
+    *out = frame;
   }
 
-  FrameRef Textured() { return Painted(TexturedLuma); }
+  /** Both frames a successful extraction hands over, forgotten as the contract says they must be. */
+  void ForgetOutputs(const FeatureSet& features) {
+    if (features.count == 0) return;
+    EXPECT_TRUE(store.Forget(features.descriptors).ok());
+    EXPECT_TRUE(store.Forget(features.keypoints).ok());
+  }
+
+  int64_t HeapUsed() {
+    const Result<FrameStoreBudget> budget = store.Budget();
+    EXPECT_TRUE(budget.ok()) << budget.status.detail;
+    return budget.value.heapUsedBytes;
+  }
+
+  FrameRef Textured(int32_t edge = kWidth) {
+    FrameRef frame;
+    Paint(&frame, TexturedLuma, edge);
+    return frame;
+  }
 
   /** The same detector, made independently of the engine's own `Make()`. */
   static cv::Ptr<cv::Feature2D> OpenCvDetector(FeatureDetector detector) {
@@ -82,7 +110,9 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
   }
 
   FrameRef Blank() {
-    return Painted([](int32_t, int32_t) -> uint8_t { return 128; });
+    FrameRef frame;
+    Paint(&frame, [](int32_t, int32_t) -> uint8_t { return 128; });
+    return frame;
   }
 };
 
@@ -176,6 +206,221 @@ TEST_P(Extraction, RefusesAFrameTheStoreDoesNotHave) {
   EXPECT_EQ(features.status.code, StatusCode::NotFound) << features.status.detail;
 }
 
+TEST_P(Extraction, RefusesAFrameClaimingMorePixelsThanTheStoreHolds) {
+  // A `FrameRef` is a plain value the caller passes in, and `Pin` resolves it by `id` alone — so
+  // the width, height and stride are the *caller's* account of a frame and nothing upstream makes
+  // them describe the allocation. Without a check, every read below indexes the store's real span
+  // with that account. `SharpnessFrameQualityEngine` has the same guard for the same reason, and a
+  // reviewer reproduced this exact overflow under AddressSanitizer there before it did.
+  FeatureRegistrationEngine engine = Engine();
+  FrameRef inflated = Textured();
+  inflated.height = kHeight + 1;
+
+  const Result<FeatureSet> features = engine.ExtractFeatures(inflated);
+  ASSERT_FALSE(features.ok());
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+}
+
+TEST_P(Extraction, RefusesAStrideNarrowerThanOneRow) {
+  // Not because it reads out of bounds — it does not. Rows that overlap are not a frame anybody
+  // allocated. It also matters that *we* refuse it rather than OpenCV: `cv::Mat` asserts its step
+  // against the row and **throws**, and the core is built `-fno-exceptions`, so an OpenCV refusal
+  // here is a `terminate` where the contract promises a `Result`.
+  FeatureRegistrationEngine engine = Engine();
+  FrameRef sheared = Textured();
+  sheared.stride = 4;
+
+  const Result<FeatureSet> features = engine.ExtractFeatures(sheared);
+  ASSERT_FALSE(features.ok());
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+}
+
+TEST_P(Extraction, TheKeypointFrameHoldsACoordinatePairPerFeature) {
+  // The other half of ADR 0051's shape, which nothing asserted. A reviewer zeroed every coordinate,
+  // handed back `features.keypoints = FrameRef{}` and dropped `features.frame`, and the whole file
+  // stayed green. The keypoint-to-descriptor row correspondence is what matching will be built on,
+  // so it is worth more than the descriptors on their own.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef source = Textured();
+  const Result<FeatureSet> features = engine.ExtractFeatures(source);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  ASSERT_GT(features.value.count, 0);
+  EXPECT_EQ(features.value.frame.value, source.id.value)
+      << "a FeatureSet that does not name the frame it came from cannot be matched against another";
+
+  const FrameRef keypoints = features.value.keypoints;
+  EXPECT_NE(keypoints.id.value, 0U) << "a handle nobody can resolve is not an answer";
+  EXPECT_EQ(keypoints.height, features.value.count);
+  EXPECT_EQ(keypoints.width, 8) << "two float32s, x then y";
+  EXPECT_EQ(keypoints.stride, keypoints.width) << "tightly packed, per ADR 0051";
+  EXPECT_EQ(keypoints.format, PixelFormat::Gray8);
+  EXPECT_NE(keypoints.id.value, features.value.descriptors.id.value)
+      << "two frames, not the same one twice";
+
+  const Result<std::span<uint8_t>> pinned = store.Pin(keypoints);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  ASSERT_EQ(pinned.value.size(), static_cast<size_t>(features.value.count) * 8);
+
+  // Every coordinate lands inside the frame it was found in, and they are not all the same point —
+  // which is what zeroing the buffer would leave behind.
+  int32_t distinct = 0;
+  float firstX = 0.0F;
+  float firstY = 0.0F;
+  for (int32_t row = 0; row < features.value.count; ++row) {
+    float xy[2] = {0.0F, 0.0F};
+    std::memcpy(xy, pinned.value.data() + static_cast<size_t>(row) * 8, sizeof(xy));
+    EXPECT_GE(xy[0], 0.0F);
+    EXPECT_GE(xy[1], 0.0F);
+    EXPECT_LE(xy[0], static_cast<float>(kWidth));
+    EXPECT_LE(xy[1], static_cast<float>(kHeight));
+    if (row == 0) {
+      firstX = xy[0];
+      firstY = xy[1];
+    } else if (xy[0] != firstX || xy[1] != firstY) {
+      ++distinct;
+    }
+  }
+  EXPECT_GT(distinct, 0) << "every keypoint at the same coordinate is a zeroed buffer, not features";
+
+  EXPECT_TRUE(store.Release(keypoints).ok());
+  ForgetOutputs(features.value);
+}
+
+TEST_P(Extraction, NoDetectorReturnsMoreFeaturesThanTheBudget) {
+  // Two of the three are unbounded by default: `cv::SIFT::create()` takes `nfeatures = 0` meaning
+  // retain everything, and `cv::AKAZE::create()` takes `max_points = -1` meaning the same. The cap
+  // bounds the store, and it is also what makes "which detector wins" a measurement rather than a
+  // comparison between one asked for 500 features and another asked for all of them.
+  //
+  // **The frame is 768 square because at 128 this test could not fail.** Uncapped on this texture
+  // at 128, SIFT returns 99 and AKAZE 107 — both under the cap, so the assertion held no matter
+  // what the engine did. At 768 they return 1,328 and 2,547. Counted before this test was believed.
+  //
+  // For ORB it is trivially true and stays here only so the suite covers all three: OpenCV's ORB
+  // has always capped itself, and `nfeatures = 0` means *zero* features to it rather than
+  // unlimited, so there is no uncapped ORB for this to be measured against.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> features = engine.ExtractFeatures(Textured(768));
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  EXPECT_LE(features.value.count, 500);
+  if (GetParam() != FeatureDetector::Orb) {
+    EXPECT_GT(features.value.count, 0) << "a frame this size has features; a zero here means the "
+                                          "cap was applied as a floor rather than a ceiling";
+  }
+  ForgetOutputs(features.value);
+}
+
+TEST_P(Extraction, ReleasesTheFrameItWasGivenWhetherItSucceedsOrRefuses) {
+  // "Released on every path out" is what the `Unpin` holder promises, and nothing asked. A reviewer
+  // deleted the holder outright and every test in this file still passed. `Release` on an unpinned
+  // frame answers `FailedPrecondition`, so an extra one is a question the store can answer: if the
+  // engine left its pin behind, this succeeds instead.
+  FeatureRegistrationEngine engine = Engine();
+
+  const FrameRef good = Textured();
+  const Result<FeatureSet> features = engine.ExtractFeatures(good);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  EXPECT_EQ(store.Release(good).code, StatusCode::FailedPrecondition)
+      << "the engine kept a pin on the frame it succeeded with";
+  ForgetOutputs(features.value);
+
+  // And the refusal path, which is the one an exception would unwind through.
+  FrameRef sheared = Textured();
+  sheared.stride = 4;
+  EXPECT_FALSE(engine.ExtractFeatures(sheared).ok());
+  EXPECT_EQ(store.Release(sheared).code, StatusCode::FailedPrecondition)
+      << "the engine kept a pin on the frame it refused";
+}
+
+TEST_P(Extraction, ARefusedExtractionLeavesTheStoreExactlyAsItFoundIt) {
+  // The rollback, which was reachable and untested: a reviewer deleted the `Forget` that unwinds
+  // the descriptor frame and all 640 tests passed, while the deleted line leaked 50,688 bytes per
+  // refused SIFT extraction — permanently, since the only handle naming that frame is dropped.
+  //
+  // The ceiling is set so the input frame and the descriptors fit and the keypoints do not, which
+  // is the one ordering that reaches the second allocation's failure.
+  const FrameRef frame = Textured();
+  const Result<FeatureSet> sized = Engine().ExtractFeatures(frame);
+  ASSERT_TRUE(sized.ok()) << sized.status.detail;
+  ASSERT_GT(sized.value.count, 0);
+  const int64_t descriptorBytes =
+      static_cast<int64_t>(sized.value.descriptors.width) * sized.value.descriptors.height;
+  const int64_t keypointBytes =
+      static_cast<int64_t>(sized.value.keypoints.width) * sized.value.keypoints.height;
+  ForgetOutputs(sized.value);
+
+  const int64_t frameBytes = HeapUsed();
+  MemoryFrameStoreAccess tight{frameBytes + descriptorBytes + keypointBytes - 1};
+  const Result<FrameRef> copied = tight.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(copied.ok()) << copied.status.detail;
+  {
+    const Result<std::span<uint8_t>> from = store.Pin(frame);
+    const Result<std::span<uint8_t>> to = tight.Pin(copied.value);
+    ASSERT_TRUE(from.ok() && to.ok());
+    ASSERT_EQ(from.value.size(), to.value.size());
+    std::memcpy(to.value.data(), from.value.data(), from.value.size());
+    EXPECT_TRUE(store.Release(frame).ok());
+    EXPECT_TRUE(tight.Release(copied.value).ok());
+  }
+
+  const Result<FrameStoreBudget> before = tight.Budget();
+  ASSERT_TRUE(before.ok());
+  FeatureRegistrationEngine engine{tight, GetParam()};
+  const Result<FeatureSet> refused = engine.ExtractFeatures(copied.value);
+  ASSERT_FALSE(refused.ok()) << "the ceiling was meant to be one byte short of the second frame";
+  const Result<FrameStoreBudget> after = tight.Budget();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.heapUsedBytes, before.value.heapUsedBytes)
+      << "a refused extraction kept bytes nobody holds a handle to";
+}
+
+TEST_P(Extraction, AnswersADegenerateFrameRatherThanLettingOpenCvThrowThroughIt) {
+  // The exception boundary ADR 0047 named and ADR 0052 builds. A one-pixel frame passes every guard
+  // this engine has — the format is readable, the dimensions are positive, the stride is a full row
+  // and the span holds it — and then `cv::ORB` throws `inv_scale_x > 0` out of `resize` and
+  // `cv::AKAZE` throws `s >= 0` out of `setSize`. SIFT answers with nothing and does not throw,
+  // which is the reason the boundary cannot be a list of the detectors that need it.
+  //
+  // What is asserted is that a `Result` comes back at all. Without the `catch`, the exception
+  // unwinds out of the engine: in this binary gtest reports it as a failure, and in the shipped core
+  // it is worse than that, since only this one translation unit is compiled `-fexceptions`.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef onePixel = Textured(1);
+
+  const Result<FeatureSet> features = engine.ExtractFeatures(onePixel);
+  if (features.ok()) {
+    EXPECT_EQ(features.value.count, 0) << "one pixel has no features in it";
+    ForgetOutputs(features.value);
+  } else {
+    EXPECT_EQ(features.status.code, StatusCode::Internal) << features.status.detail;
+    EXPECT_NE(features.status.detail.find("OpenCV"), std::string::npos)
+        << "an OpenCV refusal should say so: " << features.status.detail;
+  }
+  EXPECT_EQ(store.Release(onePixel).code, StatusCode::FailedPrecondition)
+      << "the pin was not released on the way out of a throwing call";
+}
+
+TEST_P(Extraction, MatchingAndRefinementRefuseRatherThanAnswer) {
+  // The two methods this increment does not implement. A reviewer made both return `Ok` — the
+  // identity result the header calls dangerous — and the whole file stayed green, so "refuses
+  // rather than pretending" was a sentence with nothing behind it.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, Quat{});
+  EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
+  EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
+
+  const Result<GlobalSolution> refined = engine.Refine({}, {}, Intrinsics{});
+  EXPECT_FALSE(refined.ok());
+  EXPECT_EQ(refined.status.code, StatusCode::Unsupported);
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,
                          ::testing::Values(FeatureDetector::Orb, FeatureDetector::Akaze,
                                            FeatureDetector::Sift),
@@ -188,26 +433,40 @@ INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,
                            return "Unknown";
                          });
 
-TEST(TexturedFrame, NoTwoTilesAreIdentical) {
+TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
   // The property `Textured()` exists to have, asserted rather than described. Matching arrives in
   // the next increment and a repeating texture would let a wrong correspondence score as a right
   // one — so this is the test that has to be here before that code is, not after it.
+  //
+  // It reads back the **pixels of the frame `Textured()` paints**, not `TexturedLuma` directly. The
+  // first version called the function, which left `Textured()` free to paint something else
+  // entirely: a reviewer replaced its body with a plain repeating checkerboard, left `TexturedLuma`
+  // untouched, and every test in this file still passed. A test of the ingredient is not a test of
+  // the dish.
+  const FrameRef frame = Textured();
+  const Result<std::span<uint8_t>> pinned = store.Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+
   std::vector<std::vector<uint8_t>> tiles;
   for (int32_t ty = 0; ty < kHeight / kTile; ++ty) {
     for (int32_t tx = 0; tx < kWidth / kTile; ++tx) {
       std::vector<uint8_t> tile;
       tile.reserve(static_cast<size_t>(kTile) * kTile);
       for (int32_t j = 0; j < kTile; ++j) {
-        for (int32_t i = 0; i < kTile; ++i) tile.push_back(TexturedLuma(tx * kTile + i, ty * kTile + j));
+        for (int32_t i = 0; i < kTile; ++i) {
+          const size_t at = static_cast<size_t>(ty * kTile + j) * frame.stride +
+                            static_cast<size_t>(tx * kTile + i) * 4;
+          tile.push_back(pinned.value[at]);   // the red channel; the painter writes luma to all three
+        }
       }
-      for (size_t earlier = 0; earlier < tiles.size(); ++earlier) {
-        EXPECT_NE(tiles[earlier], tile)
-            << "tile (" << tx << ", " << ty << ") repeats an earlier tile";
+      for (const std::vector<uint8_t>& earlier : tiles) {
+        EXPECT_NE(earlier, tile) << "tile (" << tx << ", " << ty << ") repeats an earlier tile";
       }
       tiles.push_back(std::move(tile));
     }
   }
-  ASSERT_EQ(tiles.size(), static_cast<size_t>((kWidth / kTile) * (kHeight / kTile)));
+  EXPECT_EQ(tiles.size(), static_cast<size_t>((kWidth / kTile) * (kHeight / kTile)));
+  EXPECT_TRUE(store.Release(frame).ok());
 }
 
 TEST(NullRegistration, RefusesEverythingRatherThanPretending) {

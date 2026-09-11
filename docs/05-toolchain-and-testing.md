@@ -56,10 +56,20 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    objects are current, and a runner image rotating to a different compiler would otherwise link
    objects nothing can notice are stale.
 
-   The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so those 296 OpenCV translation units are
-   instrumented too, under `-fno-sanitize-recover=all`. It is green today and the first engine to
-   call into `features2d` may make it red inside third-party code; ADR 0047 records what to do then
-   and why it is not "turn recovery back on".
+   The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so OpenCV's translation units are
+   instrumented too, under `-fno-sanitize-recover=all` — with exactly one check lifted from them.
+   That day arrived: the first engine to call into `features2d` did turn it red, in `cv::resize`
+   inside ORB's pyramid, where OpenCV gathers source pixels through `*(const short*)(row + index)`
+   at an index that is odd for half of all inputs. `cmake/opencv.cmake` appends
+   `-fno-sanitize=alignment` around OpenCV's `add_subdirectory` and restores the flags after, so our
+   own translation units keep the check — measured both ways, present on OpenCV's command lines and
+   absent from ours.
+
+   ADR 0047 predicted the day and named a different remedy, a suppressions file scoped to
+   `_deps/opencv-src`, "not turning recovery back on". ADR 0052 records why that pair is not
+   available: a UBSan suppressions file is only consulted for *recoverable* errors, so it does
+   nothing under `-fno-sanitize-recover=all` — measured, and the compile-time flag is what reaches
+   0047's actual goal without trading the thing it did not want to trade.
 4. **No-browser check** — `tools/no_browser_check.py` rejects any reference to Emscripten,
    inline JavaScript or WebAssembly build macros outside `bridge/`. Deliberately blunt: the bare
    word in a comment counts, because "on Emscripten we do X" means the core is reasoning about a
@@ -71,7 +81,10 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    COOP/COEP, which is the only way to find out what the deployment target does with them.
    `tools/check_dist_fresh.mjs` is their precondition rather than a step of its own: Playwright's
    `globalSetup`, refusing to run the suite against a bundle or a core older than the sources it
-   was built from. It compares both wasm presets and the glue `.js` against the C++ and the build
+   was built from. It compares both wasm presets and the glue `.js` against the C++ that the wasm
+   build actually compiles — read from each preset's `compile_commands.json`, because since ADR 0052
+   a core source can be native-only, and a source ninja never builds could otherwise make the core
+   permanently stale — and the build
    files, and it exists because two false-green sabotage runs got through — one after
    `npm run build` had exited non-zero on a typecheck error and left the previous `dist` standing.
 7. **Conflict markers** — `tools/conflict_marker_check.py`, because a merge marker in a tracked

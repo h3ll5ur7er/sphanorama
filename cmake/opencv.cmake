@@ -71,14 +71,18 @@ FetchContent_Declare(opencv
 # which does `*(const short*)(tab + idx[k])`. `idx[k]` is a *pixel* index into an 8-bit row, so that
 # address is odd for half of all inputs no matter how the row's base is aligned: this is not a
 # misalignment we could fix by allocating differently, and the read is in bounds — ASan reports
-# nothing, only `-fsanitize=alignment` does. Undefined by the letter of the standard, correct on every
-# target OpenCV compiles this path for.
+# nothing, only `-fsanitize=alignment` does. Undefined by the letter of the standard, and fine on the
+# one instruction set this was measured on — x86-64, where unaligned loads are architectural. That is
+# a statement about where we run the sanitizers, not a promise about every target: the WASM
+# cross-compile ADR 0047 defers has its own answer to give when it arrives, and this comment is not
+# it.
 #
 # It is scoped by saving and restoring CMAKE_CXX_FLAGS around the `add_subdirectory` that
 # FetchContent performs, so the exemption reaches OpenCV's translation units and stops there. Our own
 # code keeps the check, which matters: the flag is appended rather than the check dropped from the
-# preset precisely so that a misaligned load *we* write still fails the build. The alignment check is
-# the only one lifted — ASan, and every other UBSan check, still cover OpenCV.
+# preset precisely so that a misaligned load *we* write still aborts the run — the check is a runtime
+# one, so what it fails is the sanitizer job, not the compile. The alignment check is the only one
+# lifted; ASan, and every other UBSan check, still cover OpenCV.
 #
 # It is appended unconditionally rather than only under the sanitizer preset, so there is one
 # rule instead of a branch: OpenCV is always compiled with this check off, and in a tree with no

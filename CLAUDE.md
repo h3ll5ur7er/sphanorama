@@ -36,9 +36,12 @@ deploy are in and green. A phone opens the app, the core plans a real tessellati
 page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
 coverage and acceptance are all decided in the core.
 
-**What is real.** Four of the six engine contracts have a real implementation — `CoveragePlanner`
-(rings), `Pose` (orientation), `FramePreview` (box) and `FrameQuality` (sharpness). `Registration`
-and `Composition` are still null, which is what Phase 2 is for. This line said Phase 1 until Phase 2
+**What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
+(rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
+`Registration`, in part. `Registration` needs the care of a qualified sentence: one of its three
+methods is implemented (`ExtractFeatures`), it exists only where OpenCV does so a browser build
+still gets the null one, and no composition root selects it yet — it is reached from tests. Matching
+and refinement still refuse. `Composition` is untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
 build, not finished.
@@ -53,7 +56,7 @@ the distortion stops being invertible, an inverse that does not land back where 
 
 **OpenCV is in the build now**, fetched at a pinned tag and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
-first use is not an engine: it cross-checks the camera model against `cv::projectPoints`, and asks
+its first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, and asks
 our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
 inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
 theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so

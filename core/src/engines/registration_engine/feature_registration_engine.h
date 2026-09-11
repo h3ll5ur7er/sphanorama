@@ -10,8 +10,11 @@ namespace sphanorama {
 // measurement rather than an opinion. SIFT's patent expired in 2020 and it has been in `features2d`
 // since OpenCV 4.4, so it costs no new dependency and the reason it was once excluded is gone.
 //
-// It is a construction-time choice rather than a contract type, so the composition root picks one
-// and no caller above the engine layer learns that detectors exist.
+// It is a construction-time choice rather than a contract type, so whoever composes this engine
+// picks one and no caller above the engine layer learns that detectors exist. Today that is the
+// tests: the only composition root in the repository is the WASM runtime, which has no OpenCV and
+// holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
+// in earnest is the one that runs the accuracy harness, and it does not exist yet.
 enum class FeatureDetector { Orb, Akaze, Sift };
 
 // V7 — feature extraction, matching and global refinement over OpenCV.
@@ -36,6 +39,11 @@ class FeatureRegistrationEngine final : public IRegistrationEngine {
                                 const Intrinsics& initial) override;
 
  private:
+  // The whole of extraction, written as if exceptions did not exist — every failure it knows about
+  // is a `Result`. `ExtractFeatures` wraps it in the one `try` this component has, because OpenCV
+  // reports failures we do not know about by throwing (ADR 0047, ADR 0052).
+  Result<FeatureSet> Extract(const FrameRef& frame);
+
   IFrameStoreAccess& frames_;
   FeatureDetector detector_;
 };

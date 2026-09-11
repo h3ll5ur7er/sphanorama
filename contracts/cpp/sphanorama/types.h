@@ -499,10 +499,18 @@ struct NodeContext {
 // packed with `stride == width`, and a lie about the content, since a descriptor is not a pixel.
 // That is a cost the ADR records rather than hides; the alternative was a `PixelFormat::Opaque`.
 //
-// **Both of these frames belong to the caller, who must `Forget` each.** The frame they were
-// extracted from is untouched and was the caller's already; these two are new, and this is the only
-// place in the contracts where one call hands back frames the caller never asked the store for by
-// name. A `count` of zero means no frames were allocated and there is nothing to forget.
+// **Both of these frames belong to the caller, who must `Forget` each.** They are new; the frame
+// they were extracted from stays the caller's and its pixels are unchanged — but *not* untouched,
+// which an earlier draft of this comment claimed. Extraction pins it, and pinning faults a spilled
+// frame back into the heap and leaves it resident there afterwards. `IFramePreviewEngine::Reduce`
+// has the same mechanics and is careful to promise only that the frame is released; this promises
+// the same and no more. A caller extracting over a sphere's worth of cold frames should expect the
+// heap to fill, and cool them again itself.
+//
+// `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
+// the first of its kind — it hands back a frame the caller never asked the store for by name, says
+// so in nearly these words, and has a contract-suite assertion behind it. `IImageCodecAccess::Decode`
+// is a third. A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;
   int32_t count = 0;
