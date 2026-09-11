@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    _checkerboard_panorama,
     _ring_of_poses,
     _distort,
     distort_at,
@@ -1805,6 +1806,40 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
         for entry in truth["frames"]:
             self.assertEqual(set(entry), {"file", "rotation"})
             self.assertEqual(set(entry["rotation"]), {"w", "x", "y", "z"})
+
+    def test_the_committed_fixture_is_still_this_generator_s_output(self):
+        """The whole argument for committing 22,570 bytes, checked rather than asserted once.
+
+        ADR 0053 commits `core/test/data/synthetic-ring-4` on the grounds that the loader is then
+        read against bytes *this* writer produced rather than against the author's idea of the
+        format. That was true on the day of the commit and nothing re-checked it afterwards: change
+        the file naming, the pixel encoding or the pose the ring starts at, and the C++ suite keeps
+        passing against bytes no writer produces any more — the very error the fixture exists to
+        remove, reappearing one level up.
+
+        Rendering four 48x36 frames costs about a fifth of a second, so there is no reason to take
+        it on trust. When this fails, regenerate the fixture; do not edit the expectation.
+        """
+        fixture = Path(__file__).resolve().parents[1] / "core" / "test" / "data" / "synthetic-ring-4"
+        panorama = _checkerboard_panorama(2048, 1024)
+        lens = lens_from_fov(66.0, 50.0, 48, 36)
+        with tempfile.TemporaryDirectory() as directory:
+            fresh = Path(directory) / "synthetic-ring-4"
+            write_dataset(fresh, panorama, lens, _ring_of_poses(4))
+
+            self.assertEqual(
+                sorted(p.name for p in fresh.iterdir()),
+                sorted(p.name for p in fixture.iterdir()),
+                "the generator writes a different set of files than the fixture holds",
+            )
+            for produced in sorted(fresh.iterdir()):
+                committed = fixture / produced.name
+                self.assertEqual(
+                    produced.read_bytes(),
+                    committed.read_bytes(),
+                    f"{produced.name} no longer matches what this generator writes; regenerate "
+                    f"core/test/data/synthetic-ring-4 rather than changing this test",
+                )
 
     def test_a_half_turn_is_written_with_the_sign_it_has(self):
         # The loader records the quaternion as spelled, negative scalar part included, because a

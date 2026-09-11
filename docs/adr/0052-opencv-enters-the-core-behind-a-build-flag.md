@@ -49,9 +49,8 @@ cannot be compiled `-fno-exceptions`, because `cv::Exception` is how OpenCV repo
 failure… the OpenCV-backed implementation is its own component, compiled with exceptions, catching
 at its own edge and returning `Result<T>`. That is a decision for the ADR that introduces the first
 such engine." This is that ADR, and that is the shape taken: `feature_registration_engine.cpp` alone
-carries `-fexceptions` **in `core/src`** (a source-file property in `core/CMakeLists.txt`, verified
-to land after the target's `-fno-exceptions`; ADR 0053 added three more under `core/test`, which
-ship nowhere), and `ExtractFeatures` converts
+carries `-fexceptions` (a source-file property in `core/CMakeLists.txt`, verified to land after the
+target's `-fno-exceptions` and on no other translation unit), and `ExtractFeatures` converts
 `cv::Exception` to a `Result` at its edge. It is not theoretical: a one-pixel frame passes every
 guard the engine has and then throws out of `cv::resize` under ORB and `setSize` under AKAZE, while
 SIFT answers normally — which is why the boundary cannot be a list of the detectors that need one.
@@ -153,3 +152,15 @@ thing the platform provides; OpenCV is a library we chose.
 ***Shipping the native engine and letting the WASM build fail to link.*** Would at least be loud.
 Rejected because the browser is the product's actual target, and a core that does not build for it
 is not a core that is nearly done — it is one that has stopped being buildable while it waits.
+
+## Extended by ADR 0053
+
+*Added later, not edited above.* The sentence "on no other translation unit" was true of the whole
+tree when it was written and is now true only of `core/src`. ADR 0053 gives `-fexceptions` to three
+files under `core/test` — the synthetic-dataset loader, its test and its allocation sweep — for the
+same reason and with the same shape: OpenCV throws, and the boundary converts at its own edge. They
+ship nowhere, so the shipped error model is unchanged.
+
+Recorded here rather than by rewriting the paragraph, because what we thought when only one
+translation unit needed this is the part worth keeping. A reviewer pointed out that this ADR used
+exactly that shape on ADR 0047, and that a first attempt at this note edited the sentence instead.

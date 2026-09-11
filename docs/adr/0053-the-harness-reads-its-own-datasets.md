@@ -46,7 +46,11 @@ already present and a new hand-rolled parser in the one language that had no rea
 
 That sentence first read "nothing in this repository parses JSON", which a reviewer showed is plainly
 false: `shell/src/access/spill-host.ts` parses the spill index on the product path, and
-`tools/check_dist_fresh.mjs` and `tools/test_synth_dataset.py` both parse it in the tooling. The
+`tools/check_dist_fresh.mjs` and `tools/test_synth_dataset.py` both parse JSON in the tooling —
+`CMakePresets.json` and `compile_commands.json` for the first, `truth.json` for the second. (An
+earlier version of this sentence said "both parse **it**", whose only antecedent was the spill index,
+which neither of them touches. A correction paragraph naming counterexamples, itself wrong about
+which file reads what.) The
 claim that carried the argument was always the narrower one, and overstating it made the decision
 look better supported than it was. Every consumer of this loader is on the registration
 path, which exists only where OpenCV does (ADR 0052), so the dependency costs nothing that was not
@@ -74,11 +78,9 @@ components rather than the unsigned [0, 1] a reader would assume.
 is four 48x36 frames plus the `truth.json` that describes them: **22,570 bytes on disk in total** —
 20,788 of frames at 5,197 bytes each, and 1,782 of JSON.
 
-An earlier version of this line attached that total to "four 48x36 frames", which is 1,782 bytes
-more than the frames are, and separately claimed git stores it "compressed at about 13.2 KiB" — a
-figure that measured 13.27 and was stated in the wrong direction against a `du` reading of 40 KiB
-that counts 4 KiB blocks and the directory entry. The sizes above are the file sizes, which is the
-only one of those numbers that means something without a footnote.
+An earlier version of this line attached that whole total to "four 48x36 frames", which is 1,782
+bytes more than the frames are. The sizes above are file sizes — the only figure here that means
+something without a footnote, for the reason the paragraph below spends four sentences on.
 
 This is a deliberate exception to "datasets are regenerated rather than committed", and the
 distinction is what the file is *for*. A measurement dataset is large, regenerated, and its pixel
@@ -95,9 +97,17 @@ hand-written fixture is written to match whatever the author believes the format
 catch a belief that is wrong — and no evidence here shows that risk being realised.
 
 The first version of this paragraph said forty, and made the cost argument on that number. It was
-`du`'s block figure — five files rounded up to whole 4 KiB blocks — reported as the size of the
-bytes. The real cost is 1.8x smaller on disk and 3.0x smaller in the repository, so the argument was
-sound and the evidence for it was inflated, which is the combination that is easiest to let through.
+`du`'s block figure reported as the size of the bytes — four 5,197-byte files and one 1,782-byte file
+rounded up to whole 4 KiB blocks is 36 KiB, and the fortieth kilobyte is the directory entry `du`
+also counts. The content is **1.8x smaller than `du` reported** and **3.0x smaller again in the
+repository**, where git stores the five objects in 13,589 bytes (13.3 KiB). So the argument was sound
+and the evidence for it was inflated, which is the combination that is easiest to let through.
+
+A second reviewer then found that the correction itself needed correcting on all three of its
+numbers: it rounded 13.27 KiB to 13.2, it described the block figure as the disk figure and the
+content figure as "on disk" — the labels swapped, in a paragraph whose entire subject is a number
+reported as something it was not — and it attributed 40 KiB to five files that account for 36.
+Measuring the magnitude and not the referent is the shape of every wrong number on this branch.
 `tools/synth_dataset.py`'s own docstring carried the uncommitted-datasets claim too, and now records
 this exception.
 

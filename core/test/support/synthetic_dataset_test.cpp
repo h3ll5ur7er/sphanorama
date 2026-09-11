@@ -114,7 +114,13 @@ class AwkwardStore final : public IFrameStoreAccess {
   int refusePinAfter = -1;
   int refuseReleaseAfter = -1;
   int refuseForgetAfter = -1;
+  // Signed on purpose. A positive pad makes the handle claim a *wider* row than the span holds, and
+  // a negative one makes it claim a narrower one — which is the quieter failure of the two: the
+  // write loop then overlaps its rows and produces a sheared frame instead of crashing.
   int32_t padStrideBy = 0;
+  // Bytes withheld from the pinned span, so the store can hand back less than a frame of this shape
+  // needs. Nothing else can reach the guard's one-row arm, where the row itself is the whole bound.
+  size_t shortenPinBy = 0;
 
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
     if (refuseAllocateAfter >= 0 && allocations_++ >= refuseAllocateAfter) {
@@ -130,7 +136,11 @@ class AwkwardStore final : public IFrameStoreAccess {
     }
     FrameRef honest = frame;
     honest.stride -= padStrideBy;
-    return real_.Pin(honest);
+    Result<std::span<uint8_t>> pinned = real_.Pin(honest);
+    if (pinned.ok() && shortenPinBy > 0 && pinned.value.size() > shortenPinBy) {
+      pinned.value = pinned.value.first(pinned.value.size() - shortenPinBy);
+    }
+    return pinned;
   }
   Status Release(const FrameRef& frame) override {
     if (refuseReleaseAfter >= 0 && releases_++ >= refuseReleaseAfter) {
@@ -494,6 +504,10 @@ TEST_F(Dataset, GivesBackTheFrameWhenTheStoreRefusesToPinIt) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
   EXPECT_FALSE(loaded.ok());
+  // The code the store answered with, not merely that something refused. `ReadFrame` forwards
+  // `Pin`'s own code, and the header promises specific codes for specific causes — an implementation
+  // that flattened every `Pin` failure to `InvalidArgument` would otherwise pass this.
+  EXPECT_EQ(loaded.status.code, StatusCode::Internal) << loaded.status.detail;
   EXPECT_EQ(HeapUsed(), before) << "the allocation it could not pin was left charged";
 }
 
@@ -585,8 +599,11 @@ TEST_F(Dataset, RefusesTruthWhoseFramesAreNotASequence) {
 }
 
 TEST_F(Dataset, RefusesAFrameEntryMissingItsFileOrItsRotation) {
+  // The third case is the `!fileNode.isString()` arm, which no case reached: a `file` that is
+  // present and is not a string. Without it that disjunct could be deleted with the suite green.
   for (const char* frames : {R"([{"rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])",
-                             R"([{"file": "frame_0000.ppm"}])"}) {
+                             R"([{"file": "frame_0000.ppm"}])",
+                             R"([{"file": 7, "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"}) {
     Scratch scratch;
     WriteTruth(scratch, TruthWith(kLens, frames));
     const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
@@ -838,6 +855,73 @@ TEST_F(Dataset, RefusesADatasetWithNoConventionBlockAtAll) {
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
                           "does not state the rotation convention this reader assumes"));
+}
+
+TEST_F(Dataset, RefusesAStoreThatHandsBackANarrowerRowThanItPromised) {
+  // The stride guard's *first* arm, which `padStrideBy` could not reach while it only ever widened.
+  // A store under-reporting stride is the quieter of the two failures: the write loop overlaps its
+  // rows and hands back a sheared frame rather than crashing, so every feature is in the wrong place
+  // and nothing says so.
+  AwkwardStore awkward{store};
+  awkward.padStrideBy = -64;
+  const int64_t before = HeapUsed();
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "the store handed back fewer bytes"));
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+TEST_F(Dataset, RefusesAShortSpanForALensOfOneRow) {
+  // The guard's *third* arm. It exists because the middle arm divides by `height - 1` and so says
+  // nothing at all when the height is one — the row is then the whole bound. Reaching it needs both
+  // a one-row lens and a store that hands back less than it allocated, which is why `AwkwardStore`
+  // grew `shortenPinBy`: no real store can be persuaded to do this.
+  Scratch scratch;
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n48 1\n255\n";
+    const std::vector<uint8_t> row(48 * 3, 17);
+    out.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
+  }
+  WriteTruth(scratch, TruthWith(R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 24.0, "cy": 0.5,
+    "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": 48, "height": 1})", kOneFrame));
+
+  AwkwardStore awkward{store};
+  const int64_t before = HeapUsed();
+  {
+    // First without the lie, so the arrangement is known to be otherwise valid — a refusal test
+    // whose input is malformed in some second way proves only the second way.
+    const Result<SyntheticDataset> fine = LoadSyntheticDataset(awkward, scratch.path());
+    ASSERT_TRUE(fine.ok()) << fine.status.detail;
+    ForgetAll(fine.value);
+  }
+  awkward.shortenPinBy = 4;
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "the store handed back fewer bytes"));
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
+  // `ReadToken`'s comment branch could be deleted outright with the suite green, because the
+  // generator never writes one and every damaged copy in this file is hand-written without one. The
+  // docstring claims a reader that choked on a comment would be refusing a valid file; this is the
+  // only case here that is green *because* the branch is present rather than because something else
+  // refused first.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n# rendered by hand, which Netpbm allows anywhere in the header\n"
+        << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ForgetAll(loaded.value);
 }
 }  // namespace
 }  // namespace sphanorama

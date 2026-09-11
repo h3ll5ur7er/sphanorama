@@ -354,10 +354,15 @@ void Blame(std::string* trouble, const char* name, const char* how) {
 /**
  * An integer field, refusing anything OpenCV did not parse *as* an integer.
  *
- * `static_cast<int>` of a `FileNode` that is not a number answers **`0x7FFFFFFF`** — measured, not
- * assumed — and `INT_MAX` sails past a `<= 0` guard, so `"width": "not a number"` used to become a
- * lens 2,147,483,647 pixels wide. Every other intrinsic already went through `NodeDouble`'s flag;
+ * `static_cast<int>` of a **string, sequence or map** `FileNode` answers **`0x7FFFFFFF`** — measured,
+ * not assumed — and `INT_MAX` sails past a `<= 0` guard, so `"width": "not a number"` used to become
+ * a lens 2,147,483,647 pixels wide. Every other intrinsic already went through `NodeDouble`'s flag;
  * these two were checked only for presence.
+ *
+ * Named by node kind rather than as "anything that is not a number", which is what this said and is
+ * broader than what was measured: an **absent** node is not a number either and answers `0`, and a
+ * real answers the rounded integer. Neither reaches the cast, because `empty()` and `isInt()` are
+ * checked first — so the code was right and the sentence covered cases nobody had run.
  *
  * **A withdrawn claim.** This comment used to say that width then reached
  * `Allocate(2147483647, 3, RGBA8)` and came back `FrameStoreExhausted`. It does not and never did:
