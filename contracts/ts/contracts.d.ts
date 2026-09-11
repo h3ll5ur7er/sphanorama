@@ -159,7 +159,27 @@ export interface FrameRef {
   height: number;
   stride: number;
   timestampNs: number;
-  /** build-graph fingerprinting */
+  /**
+   * Build-graph fingerprinting — and **nothing populates it yet**, which is worth knowing before
+   * anything is built on it. `Allocate` leaves it 0 and no other writer exists outside the generated
+   * wire decoder, so a session serialised and restored carries 0 for every frame. The store's own
+   * `ContentHash` answers a real hash for a resident or spilled frame (it computes one when a frame
+   * is demoted). An *adopted* frame answers 0 — but only while it is still cold: `ContentHash`
+   * returns the carried value for a spilled frame and hashes the bytes for a resident one, so the
+   * first `Pin` faults the frame in and the answer silently becomes a real hash. A reviewer
+   * measured that pair too: 0 adopted-and-cold, 11223140263402054339 after a pin, with no write in
+   * between. `IFrameStoreAccess::ContentHash` carries the other half of this note.
+   * A reviewer measured the pair: 10201025586445714307 before a reload, 0 after. Nothing consumes it
+   * today — the incremental build graph is Phase 3 — which is why this is a note rather than a fix.
+   * But that graph's central invariant is "an incremental rebuild equals a full rebuild", and it is
+   * going to be written against a field that is 0 for exactly the frames a retake is about.
+   * Two closures suggest themselves and **only one of them works**, which a reviewer had to say
+   * after this note first offered them as equivalent. Populating the field — at `Allocate`, or
+   * wherever the bytes first exist — closes it. Having `Adopt` refuse a 0, the way it already
+   * refuses a 0 `id`, does not: `ContentHash` branches on *residency*, so a cold frame and a
+   * faulted-in one still answer differently whatever value was carried. That residency branch is
+   * the third shape the decision has, and it is named on `IFrameStoreAccess::ContentHash`.
+   */
   contentHash: bigint;
 }
 
@@ -225,7 +245,15 @@ export interface QualityScore {
   alignmentResidual: number;
   /** from intra-cell disagreement */
   moverPenalty: number;
-  /** the single number selection sorts on */
+  /**
+   * A per-frame readout, **not** the number selection sorts on — which this line claimed until a
+   * reviewer read it against the engine that fills it. `IFrameQualityEngine::Rank` normalises
+   * sharpness across the candidate set before weighting it, and the set is the only place that
+   * range can be known, so a value computed here from one frame is not on the same scale as the one
+   * Rank orders by. `SharpnessFrameQualityEngine` says so in its own comment; the contract was
+   * written before that tension was visible. Rank takes the policy and `Score` does not, so Rank is
+   * the authority and this is a number to look at beside it.
+   */
   aggregate: number;
 }
 
@@ -462,12 +490,68 @@ export interface NodeContext {
   neighbours: Candidate[];
 }
 
+/**
+ * Features extracted from one frame, with the bytes left in the frame store.
+ * `descriptors` and `keypoints` are `FrameRef`s rather than bare buffers, and ADR 0051 says why:
+ * the store allocates frames and nothing else, so a `BufferId` here named a resource nothing could
+ * produce. They are `Gray8` allocations of `count` rows — which is honest about the layout, tightly
+ * packed with `stride == width`, and a lie about the content, since a descriptor is not a pixel.
+ * That is a cost the ADR records rather than hides; the alternative was a `PixelFormat::Opaque`.
+ * **Both of these frames belong to the caller, who must `Forget` each.** They are new; the frame
+ * they were extracted from stays the caller's and its pixels are unchanged — but *not* untouched,
+ * which an earlier draft of this comment claimed. Extraction pins it, and a pin/release cycle
+ * leaves a frame resident in the heap whatever tier it was in before: a spilled frame is faulted
+ * back in, and `Release` assigns the resident tier rather than restoring the one it found. `IFramePreviewEngine::Reduce`
+ * has the same mechanics and is careful to promise only that the frame is released; this promises
+ * the same and no more. A caller extracting over a sphere's worth of cold frames should expect the
+ * heap to fill, and cool them again itself.
+ * `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
+ * the first of its kind — it hands back a frame the caller never asked the store for by name, says
+ * so in nearly these words, and has a contract-suite assertion behind it. It is the *only* one that
+ * says it. Several other calls hand a frame back without saying who owns it —
+ * `IFrameStoreAccess::Allocate` itself, `IImageCodecAccess::Decode`,
+ * `ICompositionEngine::BlendTile` and `RenderPreview`, `IPanoramaBuildManager::Panorama` and
+ * `ICaptureSessionManager::Candidates`. No total is given, because four attempts at one were each
+ * short by one and the argument never depended on it.
+ * They are not all the same shape, which is the part worth carrying: a `Panorama`'s tiles and a
+ * cell's candidates are frames the *core* is still holding, so a caller reading this rule onto them
+ * would forget a frame still in use. The store answers a *second* `Forget` with `NotFound`, so what
+ * is undetectable is the first one — the frames are gone and the holder finds out later.
+ * A `count` of zero means no frames were allocated and there is nothing to forget.
+ */
 export interface FeatureSet {
   frame: FrameId;
+  /**
+   * Rows are **best-first**: descending by the detector's own response, ties in the order it found
+   * them.
+   * The engine sorts rather than trusting the detector, because the detectors do not agree on this
+   * and two of them do not do it at all. It is also what makes the cap honest: keeping the first
+   * `count` of an unsorted list would discard better features than it kept, which for ORB — whose
+   * pyramid levels are capped separately and concatenated — is not hypothetical. Asked for 500 on a
+   * frame ruled into eight-pixel squares at 768 square, ORB returns 1,145 and SIFT 740.
+   * **"Best" is the detector's own word, and it is not a promise about scale.** ORB's response is a
+   * Harris score computed at each pyramid level and never normalised across them, so ordering by it
+   * orders largely by octave: on this repository's texture at 768 square, where the full set spans
+   * eight octaves, the top 50 rows are 48 octave-0 features and the top 100 are 85. An earlier
+   * version of this comment told a matcher it "can take the first `k` rows and stop", which is true
+   * about strength and misleading about everything else — those `k` are the strongest responses and
+   * they are nearly all at one scale. A caller wanting features spread across scales has to arrange
+   * that itself; this order will not give it.
+   */
   count: number;
-  /** opaque, lives in the frame store */
-  descriptors: BufferId;
-  keypoints: BufferId;
+  /** count rows x the detector's descriptor width */
+  descriptors: FrameRef;
+  /**
+   * Eight bytes a row: two little-endian `float32`s, x then y, in pixels of the frame named above.
+   * Written down here because it was a constant in the engine's anonymous namespace and nowhere a
+   * caller could read it, which made a row of this frame undecodable from the contract alone.
+   * The response the rows are ordered *by* is not carried. That is deliberate — its scale is
+   * detector-specific and not comparable between frames, so a caller thresholding on it would be
+   * reading a number that means something different for every detector — but the cost is real and
+   * belongs here rather than in a commit message: the best-first promise above is one a caller has
+   * to take on trust, because nothing in this struct lets them check it.
+   */
+  keypoints: FrameRef;
 }
 
 export interface PairwiseResult {

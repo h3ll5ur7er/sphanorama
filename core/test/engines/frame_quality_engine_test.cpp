@@ -7,6 +7,8 @@
 // written down, and it is the shape that survives the algorithm being tuned.
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -26,6 +28,55 @@ class FrameQuality : public ::testing::Test {
  protected:
   MemoryFrameStoreAccess store{1 << 22};
   SharpnessFrameQualityEngine engine{store};
+
+  /**
+   * An I420 frame: flat luma, and chroma full of edges.
+   *
+   * The layout is what makes the planar guard matter — a full-resolution luma plane followed by two
+   * quarter-resolution chroma planes — so a handle claiming more rows than the picture has reads
+   * chroma and calls it detail. Flat luma and busy chroma is the arrangement that makes the
+   * difference visible in the score rather than merely present.
+   */
+  FrameRef PlanarFrame(int32_t width, int32_t height) {
+    const Result<FrameRef> allocated = store.Allocate(width, height, PixelFormat::I420);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    const Result<std::span<uint8_t>> pinned = store.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    const size_t luma = static_cast<size_t>(width) * height;
+    for (size_t at = 0; at < pinned.value.size(); ++at) {
+      pinned.value[at] = at < luma ? 128 : static_cast<uint8_t>(((at / 4) % 2) == 0 ? 16 : 240);
+    }
+    EXPECT_TRUE(store.Release(allocated.value).ok());
+    return allocated.value;
+  }
+
+  /**
+   * A planar frame whose *luma* carries the detail, and whose chroma is flat.
+   *
+   * The mirror image of `PlanarFrame` above, which is flat where this is busy. That one exists to
+   * make a relabelled handle read chroma as picture; this one exists to score a planar frame that
+   * is telling the truth — which, until a reviewer sabotaged it, nothing did.
+   */
+  template <typename Paint>
+  FrameRef PlanarFrameWithDetail(PixelFormat format, Paint paint, int32_t width = kWidth,
+                                 int32_t height = kHeight) {
+    auto allocated = store.Allocate(width, height, format);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    auto pinned = store.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    const size_t luma = static_cast<size_t>(width) * height;
+    // Mid-grey chroma, so a measure that strayed past the luma plane would read flatness and score
+    // *lower* — the direction that shows up, rather than one that flatters the result.
+    std::fill(pinned.value.begin(), pinned.value.end(), static_cast<uint8_t>(128));
+    for (int32_t y = 0; y < height; ++y) {
+      for (int32_t x = 0; x < width; ++x) {
+        pinned.value[static_cast<size_t>(y) * allocated.value.stride + x] = paint(x, y);
+      }
+    }
+    EXPECT_LE(luma, pinned.value.size());
+    EXPECT_TRUE(store.Release(allocated.value).ok());
+    return allocated.value;
+  }
 
   /** A frame whose luma at (x, y) is whatever `paint` says. RGBA8, so grey means r == g == b. */
   template <typename Paint>
@@ -112,15 +163,103 @@ TEST_F(FrameQuality, ASharpEdgeScoresAboveTheSameStructureSmearedOut) {
 }
 
 TEST_F(FrameQuality, SharpnessDoesNotDependOnWhereTheDetailSits) {
-  // A frame and the same frame shifted by one square. Selection compares frames of the same
-  // scene taken moments apart, so a measure that moved with the content would rank hand-shake.
-  const FrameRef left = Frame([](int32_t x, int32_t y) -> uint8_t {
+  // Selection compares frames of the same scene taken moments apart, so a measure that moved with
+  // the content would rank hand-shake.
+  //
+  // **This test used to assert nothing of the kind.** It painted a full-frame checkerboard and the
+  // same checkerboard "shifted by one square" — but a shift of one square is a shift of half a
+  // period, and half a period of a two-colour checkerboard is its exact photographic negative:
+  // `(x + 4) / 4 == x / 4 + 1`, so the parity flipped on all 4,096 pixels and none stayed the same.
+  // A Laplacian is linear, so negating the image negates every response and leaves the variance
+  // bit-identical. A reviewer confirmed it by restricting the variance to the frame's left half —
+  // as position-dependent as a measure can get — and the whole suite stayed green.
+  //
+  // Detail in one *place*, moved to another place, is what the name claims and what this now does.
+  // Both patches sit clear of the border so neither is clipped by the Laplacian's edge handling.
+  const auto patchAt = [](int32_t originX, int32_t originY) {
+    return [originX, originY](int32_t x, int32_t y) -> uint8_t {
+      const bool inside = x >= originX && x < originX + 16 && y >= originY && y < originY + 16;
+      if (!inside) return 128;
+      return ((x / 2) + (y / 2)) % 2 == 0 ? 0 : 255;
+    };
+  };
+  const FrameRef nearTheTopLeft = Frame(patchAt(8, 8));
+  const FrameRef nearTheBottomRight = Frame(patchAt(40, 40));
+  EXPECT_NEAR(Sharpness(nearTheTopLeft), Sharpness(nearTheBottomRight),
+              Sharpness(nearTheTopLeft) * 0.05);
+}
+
+TEST_F(FrameQuality, EveryPlanarFormatIsScoredFromItsOwnLumaPlane) {
+  // **Nothing here ever scored a planar frame that was telling the truth.** `PlanarFrame` is used
+  // by two tests and both hand in a *relabelled* handle expecting a refusal, so `LumaAt`'s planar
+  // arm was never reached on a success path for NV12 or I420. A reviewer deleted those two formats
+  // from it — leaving them to `default: return 0.0` — and all 711 tests stayed green. The drifted
+  // answer is `sharpness 0.0`, which is exactly what a genuinely flat frame scores, on the number
+  // that decides which frame of a burst survives.
+  //
+  // I had declined this the round before, on a sabotage that removed `Gray8` alone and was caught.
+  // Gray8 is the one planar format a success-path test does use, so the check generalised from the
+  // single case that could not fail — three formats, one of them covered, and I read that as three.
+  //
+  // The assertion is equality with RGBA8 rather than "greater than zero", which would pass on any
+  // number at all. Rec. 601 over `r == g == b == v` is exactly `v`, so a grey RGBA8 frame and a
+  // planar frame carrying the same luma must score *identically* — same plane, same stride, same
+  // downscale. That also pins the planar arm to the right bytes rather than merely to some bytes.
+  const auto detail = [](int32_t x, int32_t y) -> uint8_t {
     return ((x / 4) + (y / 4)) % 2 == 0 ? 0 : 255;
-  });
-  const FrameRef shifted = Frame([](int32_t x, int32_t y) -> uint8_t {
-    return (((x + 4) / 4) + (y / 4)) % 2 == 0 ? 0 : 255;
-  });
-  EXPECT_NEAR(Sharpness(left), Sharpness(shifted), Sharpness(left) * 0.05);
+  };
+  const double reference = Sharpness(Frame(detail));
+  ASSERT_GT(reference, 0.0) << "the reference frame has to have detail for this to ask anything";
+
+  for (const PixelFormat format : {PixelFormat::Gray8, PixelFormat::NV12, PixelFormat::I420}) {
+    const FrameRef planar = PlanarFrameWithDetail(format, detail);
+    EXPECT_DOUBLE_EQ(Sharpness(planar), reference)
+        << "format " << static_cast<int>(format)
+        << " is not being read from its luma plane the way RGBA8 is";
+  }
+}
+
+TEST_F(FrameQuality, TheSameSceneScoresTheSameWhateverResolutionItArrivesAt) {
+  // **The downscale had nothing holding it down.** A reviewer set `kMeasureEdge` from 256 to 4096 —
+  // turning the reduction off entirely — and all 714 tests stayed green, because every scoring
+  // fixture in this file is 64 or 32 square, so `block` is 1 and the averaging loop is a copy. The
+  // stage its own comment calls load-bearing (a Laplacian on a full-resolution frame answers to
+  // sensor noise as readily as to edges, and a dark frame is mostly noise) was constrained by
+  // nothing at all.
+  //
+  // This is the property the reduction exists to give: the measure is about the scene, not about
+  // what the camera happened to hand over. The same checkerboard at 512 with eight-pixel squares
+  // and at 1024 with sixteen-pixel squares is the same picture sampled twice; both reduce to 256
+  // with four-pixel squares, so they must score alike. Without the reduction they do not — the
+  // finer one carries twice the edge density per pixel and its variance is a different number.
+  MemoryFrameStoreAccess big{1 << 25};
+  SharpnessFrameQualityEngine wide{big};
+
+  const auto scoreOf = [&](int32_t edge, int32_t square) {
+    auto allocated = big.Allocate(edge, edge, PixelFormat::RGBA8);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    auto pinned = big.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    for (int32_t y = 0; y < edge; ++y) {
+      for (int32_t x = 0; x < edge; ++x) {
+        const uint8_t v = ((x / square) + (y / square)) % 2 == 0 ? 0 : 255;
+        const size_t at = (static_cast<size_t>(y) * edge + x) * 4;
+        pinned.value[at] = pinned.value[at + 1] = pinned.value[at + 2] = v;
+        pinned.value[at + 3] = 255;
+      }
+    }
+    EXPECT_TRUE(big.Release(allocated.value).ok());
+    const Result<QualityScore> scored = wide.Score(allocated.value, PoseSample{}, NodeContext{});
+    EXPECT_TRUE(scored.ok()) << scored.status.detail;
+    return scored.value.sharpness;
+  };
+
+  const double coarse = scoreOf(1024, 16);
+  const double fine = scoreOf(512, 8);
+  ASSERT_GT(coarse, 0.0) << "the fixture has to have detail for this to ask anything";
+  EXPECT_NEAR(coarse, fine, coarse * 0.05)
+      << "the same scene scored differently at two resolutions, so the reduction to "
+         "kMeasureEdge is not doing the work its comment claims";
 }
 
 TEST_F(FrameQuality, ScoringIsDeterministic) {
@@ -140,6 +279,135 @@ TEST_F(FrameQuality, AFrameTheStoreCannotProduceIsAFailureRatherThanAZero) {
   stranger.height = kHeight;
   stranger.format = PixelFormat::RGBA8;
   EXPECT_FALSE(engine.Score(stranger, PoseSample{}, NodeContext{}).ok());
+}
+
+TEST_F(FrameQuality, AHandleWhoseOwnArithmeticWouldOverflowIsRefused) {
+  // The geometry guard above computes `(height - 1) * stride + rowBytes` and never asks whether
+  // that product fits. With `stride <= 0` the fallback step is `width * 4`, bounded by 2^33 rather
+  // than by `int32_t`, so `INT32_MAX` rows of it reaches ~1.8e19 and wraps **negative** — and a
+  // negative `needed` is smaller than any size, so the guard passes the handle it exists to refuse.
+  //
+  // Here that is not a near miss. There is no allocator between the bypass and the pointer
+  // arithmetic, so `LumaAt` indexes a 16 KB span with a stride of 8,589,934,588 and the process
+  // dies. Found by a reviewer of the registration engine, which copied this function's guard —
+  // which is why a one-line fix in a file this branch does not otherwise touch is in this commit.
+  const FrameRef honest = Frame([](int32_t, int32_t) -> uint8_t { return 128; });
+  FrameRef absurd = honest;
+  absurd.width = std::numeric_limits<int32_t>::max();
+  absurd.height = std::numeric_limits<int32_t>::max();
+  absurd.stride = 0;
+
+  const Result<QualityScore> scored = engine.Score(absurd, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok());
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
+}
+
+TEST_F(FrameQuality, APlanarHandleClaimingChromaIsPictureIsRefused) {
+  // The guard that stops this went into `FeatureRegistrationEngine` and not into here, which is the
+  // wrong way round: this is the engine that ships, and `CaptureSessionManager::OfferFrame` is
+  // `@facade`, so the caller's `FrameRef` reaches it from the page unexamined.
+  //
+  // It is a wrong number rather than a crash, which is worse for this engine in particular, because
+  // this number is what picks which frame of a burst survives. Measured on the frame below, whose
+  // luma is flat and whose chroma is full of edges: **0.0 honestly, 8,532.0 through a handle
+  // claiming half again as many rows.** Not a drift — a frame with no detail in it reported as the
+  // sharpest thing in the burst.
+  //
+  // An earlier version of this comment carried 102,297 against 38,337, which are numbers from a
+  // reviewer's probe on a different frame, quoted here above a test that allocated its frame and
+  // never painted it — so the real answer under both handles was 0.000 and the comment described
+  // nothing. The commit that wrote it had, in the same diff, rewritten another comment to warn
+  // against exactly that.
+  const FrameRef honest = PlanarFrame(kWidth, kHeight);
+  FrameRef overclaimed = honest;
+  overclaimed.height = kHeight + kHeight / 2;
+
+  const Result<QualityScore> scored = engine.Score(overclaimed, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok());
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
+}
+
+TEST_F(FrameQuality, AFrameWithNoPixelsInItIsRefused) {
+  // **This holds the behaviour, not the guard, and the difference is worth stating.** Removing
+  // `width <= 0 || height <= 0` from this engine leaves this test passing, because the grid-size
+  // rule further down refuses a frame with no pixels anyway and refuses it with the same code. So
+  // this is a contract test — a frame with no pixels is an `InvalidArgument`, by whatever route —
+  // and it cannot tell you which line did it.
+  //
+  // The guard is kept regardless, for the same reason as the single-row branch above it: the two
+  // engines' guards are kept in step, and its redundancy here rests on an unrelated rule about grid
+  // sizes that is not this guard's to depend on. In `FeatureRegistrationEngine` the same line is
+  // load-bearing — removing it there turns a refusal a caller can branch on into OpenCV's assertion
+  // text arriving as `Internal` — and that is where the sabotage bites.
+  //
+  // I found this out by sabotaging both engines at once and watching only one test fail, which is
+  // the trap this file exists to avoid and which I walked into while closing it.
+  const FrameRef source = Frame([](int32_t, int32_t) -> uint8_t { return 128; });
+  for (const auto& [width, height] : std::vector<std::pair<int32_t, int32_t>>{
+           {0, kHeight}, {kWidth, 0}, {-1, kHeight}, {kWidth, -1}}) {
+    FrameRef empty = source;
+    empty.width = width;
+    empty.height = height;
+    const Result<QualityScore> scored = engine.Score(empty, PoseSample{}, NodeContext{});
+    ASSERT_FALSE(scored.ok()) << width << "x" << height;
+    EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument)
+        << width << "x" << height << ": " << scored.status.detail;
+    // The *detail*, not only the code, which is what makes this bite after all: both guards refuse
+    // with `InvalidArgument`, so the code alone cannot say which answered, and the comment above
+    // said this test could not tell them apart. One string does. The precedent is already in this
+    // repository — `frame_store_spill_test.cpp` distinguishes two refusals the same way.
+    EXPECT_NE(scored.status.detail.find("no pixels"), std::string::npos)
+        << "refused, but by the grid-size rule rather than the guard this test is for: "
+        << scored.status.detail;
+  }
+}
+
+TEST_F(FrameQuality, AFrameTooSmallToHoldALaplacianIsRefused) {
+  // The rule the guard above is redundant with, and which `grep` finds no test for anywhere. It is
+  // not spare: with it disabled a real 2x2 checkerboard is *accepted* and scored 0.0 — the value of
+  // the empty sum its own comment says it exists to avoid, and a zero that a selection policy would
+  // read as "no detail" rather than "not a photograph".
+  // Three shapes, because the rule is `cols < 3 || rows < 3` and a square frame exercises the two
+  // clauses as one: with only a 2x2 here, deleting either half alone left the whole suite green. A
+  // long thin frame is also the realistic one — 4096x20 is accepted and scored 0.0 with the row
+  // clause gone.
+  for (const auto& [width, height] : std::vector<std::pair<int32_t, int32_t>>{
+           {2, 2}, {2, 64}, {64, 2}}) {
+    const FrameRef tiny = Frame([](int32_t x, int32_t y) -> uint8_t {
+      return static_cast<uint8_t>(((x + y) % 2) == 0 ? 0 : 255);
+    }, width, height);
+
+    const Result<QualityScore> scored = engine.Score(tiny, PoseSample{}, NodeContext{});
+    ASSERT_FALSE(scored.ok()) << width << "x" << height
+                              << ": not a photograph; scoring it reports an empty sum";
+    EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument)
+        << width << "x" << height << ": " << scored.status.detail;
+  }
+}
+
+TEST_F(FrameQuality, APlanarHandleWithAWideStrideIsRefused) {
+  // The packed-rows half of the planar guard, which had no test here while the identical block in
+  // `FeatureRegistrationEngine` had two. Deleting it leaves every test in the repository green, and
+  // it is load-bearing: measured on the frame below, **0.0 honestly and 26,940.9 through the
+  // smuggled handle**.
+  //
+  // The frame is 640x480 rather than the fixture's 64x64 because at 64x64 this claim is refused by
+  // the size bound before the packing check is reached — which would have made this a test of the
+  // wrong guard.
+  //
+  // The two engines' guards are kept in step, which is exactly what hid this — "the fix went into
+  // one engine and not the other" became "the test went into one and not the other". Not
+  // *identical*: they differ in the `Result` type each returns and in one local's name, so a `diff`
+  // between them is not a check anybody can run.
+  const FrameRef honest = PlanarFrame(640, 480);
+  FrameRef smuggled = honest;
+  smuggled.width = 400;
+  smuggled.height = 720;
+  smuggled.stride = 640;
+
+  const Result<QualityScore> scored = engine.Score(smuggled, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok()) << "chroma was scored as picture";
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 
 TEST_F(FrameQuality, AFormatWithNoPixelsToReadIsRefused) {

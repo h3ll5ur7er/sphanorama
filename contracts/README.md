@@ -16,8 +16,10 @@ manager *implementing* its own interface.
 ```
 cpp/sphanorama/
   types.h                    every value type, plus Status / Result<T> and SPH_TRY
+  wire.h · codec.h           the binary wire format and its generated codec (ADR 0013)
   utilities/                 logger · clock · config_store · arena · diagnostics · event_bus
-  engines/                   coverage_planner · pose · frame_quality · registration · composition
+  engines/                   coverage_planner · pose · frame_preview · frame_quality ·
+                             registration · composition
   managers/                  capture_session · panorama_build · project
   resource_access/           camera · motion_sensor · frame_store · project_store ·
                              image_codec · compute_device · export
@@ -51,7 +53,10 @@ and dispatching one would generate a call into a runtime that has no such thing.
    frame store to resolve a handle against. The rule is about cost, and the reduction is what pays
    it (ADR 0038).
 3. **No exceptions.** Everything fallible returns `Result<T>`; a bare `return status;` propagates
-   a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates.
+   a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates. The
+   core is compiled `-fno-exceptions` with one translation unit excepted by name — the OpenCV-backed
+   registration engine, which catches `cv::Exception` at its own edge so that nothing above it ever
+   sees one (ADR 0052). No contract changes shape because of it.
 4. **Managers are the client's only surface.** If a client needs an engine, either the client is
    doing business logic, or a manager method is missing.
 5. **Resource access is implemented twice** — TypeScript for the browser, native for the bench and

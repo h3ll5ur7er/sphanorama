@@ -27,11 +27,34 @@ add_library(sphanorama_core
   src/utilities/quaternion.cpp
 )
 
+# The registration engine is the first shipped core code that depends on OpenCV, and the WASM build
+# does not have it (ADR 0047, ADR 0052). So it compiles only where OpenCV does, and a build without
+# it gets `NullRegistrationEngine` — which is already in the sources above, unconditionally, because
+# the null object is what the composition root falls back to rather than a stand-in for a missing
+# file.
+if(SPHANORAMA_WITH_OPENCV)
+  target_sources(sphanorama_core
+    PRIVATE src/engines/registration_engine/feature_registration_engine.cpp)
+  # The one translation unit in the core that may throw, and the one that has to catch.
+  #
+  # ADR 0047 named this and left the decision to the ADR introducing the first OpenCV-backed engine:
+  # `cv::Exception` is how OpenCV reports ordinary failure, so an engine calling it cannot be
+  # compiled `-fno-exceptions` and still keep the `Result<T>` every contract here promises. ADR 0052
+  # takes that decision — this file converts at its own edge and nothing above it learns that
+  # OpenCV throws. `-fexceptions` is appended after the target's own options, so it wins.
+  set_source_files_properties(src/engines/registration_engine/feature_registration_engine.cpp
+    PROPERTIES COMPILE_OPTIONS "-fexceptions")
+  target_link_libraries(sphanorama_core PRIVATE sphanorama_opencv)
+  target_compile_definitions(sphanorama_core PUBLIC SPHANORAMA_WITH_OPENCV=1)
+endif()
+
 target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts)
 
 # Exceptions and RTTI are off in the core: nothing may throw across the WASM boundary (ADR 0006),
-# and both cost binary size we have budgeted away.
+# and both cost binary size we have budgeted away. One translation unit takes `-fexceptions` back —
+# see the `SPHANORAMA_WITH_OPENCV` block above, which grants it and says why — because `cv::Exception`
+# is how OpenCV reports ordinary failure, and it converts at its own edge (ADR 0052).
 #
 # -fno-rtti is PUBLIC rather than PRIVATE because it changes what the compiler emits for a class,
 # not just how this library is built. A consumer compiled with RTTI references type info the core

@@ -160,6 +160,7 @@ core/                 C++: managers, engines, resource-access implementations, n
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. Layer-wise a client
 bench/                native CLI client: runs the core on datasets, prints timings
+                      — **planned, not written**; nothing in the repository builds it yet
 shell/                TypeScript PWA
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters

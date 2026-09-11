@@ -24,7 +24,8 @@ differences are decisions, each with an ADR:
   planned: `CoveragePlannerEngine` tessellates for real, and `OrientationPoseEngine` folds the
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
   criterion. `FrameQuality` followed once a burst had real frames to judge; `Registration` and
-  `Composition` are still null.
+  `Composition` were still null at the end of Phase 1, and `Registration` is partly real now — see
+  Phase 2 below.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
   (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
   advance. The measurements were taken and it left the contract — a burst is paced by the manager
@@ -39,7 +40,9 @@ differences are decisions, each with an ADR:
 
 **Exit:** a phone opens the PWA, sees a live viewfinder with a reticle whose position is driven by
 real sensor data routed *through the WASM core*, and the whole round trip stays under budget.
-The core binary is under 8 MB and the same core compiles as the native bench.
+The core binary is under 8 MB. (This sentence also claimed the same core "compiles as the native
+bench"; it does compile natively — that is what every test run does — but there is no `bench/`
+client for it to compile *as*, and saying so implied one existed.)
 
 *Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
 tells the core what it got, and the core plans a real tessellation for it — 32 cells across 7
@@ -221,8 +224,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   met one.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
-  agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the bench now
-  use, and `Rank` normalises sharpness across the candidate set before weighting it, so every
+  agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
+  tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`
+  normalises sharpness across the candidate set before weighting it, so every
   weight in `SelectionPolicy` changes an answer rather than only the sharpness one. The
   motion-blur proxy is **not**: turning an angular rate into pixels of smear needs the exposure
   time and the focal length in pixels, and the engine is handed neither. It reports zero and the
@@ -344,8 +348,10 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   What it produced is the reason it is gone. Cells filled in coverage order with whatever the
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
-  `RegistrationEngine` is what would make the labels true and it is null; getting there is far
-  future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
+  `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
+  feature extraction landed in Phase 2 — natively only, so not in the browser where this use case
+  lives (ADR 0052) — while the matching and frame-to-frame tracking this argument rests on have not.
+  Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
 
@@ -751,6 +757,13 @@ that has to be ordered.
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
 
+  *Feature extraction is in* — `FeatureRegistrationEngine::ExtractFeatures` over ORB, AKAZE or SIFT,
+  writing descriptors and keypoints into frames the caller owns (ADR 0051). Matching and refinement
+  still refuse rather than returning an identity that would look like a registration. It compiles
+  only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
+  detectors share one feature cap — without it two of them are unbounded, which would make the
+  comparison below meaningless as well as the memory unbounded.
+
   **Which detector is a measurement, not a preference.** V7 names ORB, AKAZE and SIFT together on
   purpose. SIFT's patent expired in March 2020 and it has shipped in `features2d` since OpenCV 4.4,
   so it costs no new dependency and the reason it was once excluded no longer exists; what remains
@@ -767,7 +780,13 @@ Listed in dependency order, which is not build order: **the accuracy harness on 
 comes first**, before any of the above, for the reason in "What to build first" below. It is last in
 this list only because it is the thing that measures the others.
 
-**Exit:** synthetic-dataset registration median error under a stated angular threshold — median
+**Exit:** measured on a **native** build, and this needs saying now rather than being assumed.
+Registration compiles only where OpenCV does (ADR 0052) and the WASM cross-compile is still deferred
+(ADR 0047), so the number below comes from the native build. Whether it transfers to a WASM build of
+the same code is a second measurement nobody has taken, and it is not implied by the first: the
+single-threaded WASM speed question is explicitly part of what "which detector wins" means here.
+
+Synthetic-dataset registration median error under a stated angular threshold — median
 rather than mean because the alignment is fitted to every frame at once, so one outlier smears a
 fraction of its error across all the others. The median is far steadier than the mean and is **not**
 immune: measured, one frame turned 120 degrees still moves it 0.83 degrees at 61 frames, which is

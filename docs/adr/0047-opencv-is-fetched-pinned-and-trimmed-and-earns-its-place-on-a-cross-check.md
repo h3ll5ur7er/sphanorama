@@ -1,6 +1,37 @@
 # 0047 — OpenCV is fetched, pinned and trimmed, and earns its place on a cross-check
 
-**Status:** accepted
+**Status:** accepted; one consequence superseded by
+[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md)
+
+> **The sanitizer remedy named below is superseded.** This ADR said that when OpenCV tripped the
+> sanitizers the answer would be "a suppressions file scoped to `_deps/opencv-src`, not turning
+> recovery back on". Those two cannot both hold: a UBSan suppressions file is only consulted for
+> *recoverable* errors, so under this repository's `-fno-sanitize-recover=all` it never applies.
+> Measured, after an earlier draft of this banner got the mechanism wrong twice: the file is read
+> **lazily, at the first diagnostic**, not at startup. A clean binary with a malformed suppressions
+> file exits 0 in silence; only a binary that trips UBSan reports `failed to parse suppressions`. So
+> a stale or mistyped file sits in a green job indefinitely and announces itself on the day something
+> else breaks — which is the opposite of the reassurance the previous wording offered.
+> ADR 0052 records the measurement and takes a compile-time `-fno-sanitize=alignment` scoped to
+> OpenCV's subdirectory instead, which reaches the goal this ADR actually wanted — OpenCV exempt,
+> our own code strict, recovery still off everywhere.
+>
+> The exception-boundary shape this ADR named and left for a later ADR to build also stands, and
+> 0052 built it as described.
+>
+> The bullet carrying the superseded remedy is stale throughout, not in two details, and saying "two
+> smaller claims" undercounted it. Its headline — that instrumenting OpenCV was a bill that had not
+> arrived — is exactly what this branch collected: 295 of 295 OpenCV translation units now carry
+> `-fno-sanitize=alignment`, against 0 of ours. Its prediction was wrong about the mechanism too. It
+> expected an unsigned overflow in `features2d`, which `-fsanitize=undefined` does not even enable;
+> what fired was an alignment fault in `imgproc`, from a lookup-table gather in `cv::resize`. And the
+> translation-unit count in it is 295 rather than 296. Its opening clause is false too, and is named
+> here because an earlier version of this banner corrected it and this one dropped it, which invites
+> a reader to assume the unlisted claims survive: "nothing calls into OpenCV outside
+> `camera_model_opencv_test.cpp`" is now wrong two ways over — the registration engine and its
+> tests. Three files in the repository include `opencv2/`, and the frame-quality tests are not among
+> them, which an earlier draft of this sentence assumed without looking. The reasoning that recovery should stay off is the part that
+> survived, and it is why the remedy had to change rather than the policy.
 
 ## Context
 

@@ -104,6 +104,33 @@ TYPED_TEST(FrameStoreAccessContract, FaultingInIsRefusedWhenTheHeapHasNoRoomLeft
   EXPECT_LE(after.value.heapUsedBytes, after.value.heapCeilingBytes);
 }
 
+TYPED_TEST(FrameStoreAccessContract, AFrameWhoseReleaseWasRefusedCanStillBeForgotten) {
+  // The other side of the rule above, and the one a recovery path depends on. `Release` refuses a
+  // frame that is *not* pinned; `Forget` refuses one that *is*. The two conditions are disjoint, so
+  // the `Forget` that follows a refused `Release` — which is how `BrowserCameraAccess` and the
+  // registration engine's rollback both unwind — frees the bytes rather than bouncing off the same
+  // state twice.
+  //
+  // Written because a reviewer read it the other way round, as a recovery guaranteed to be a no-op
+  // that orphans the allocation. That would be a real leak if it were true, and nothing in the suite
+  // said which way it went.
+  const FrameRef frame = this->Allocate();
+  EXPECT_EQ(this->store->Release(frame).code, StatusCode::FailedPrecondition)
+      << "a frame nobody pinned cannot be released";
+
+  auto budgetBefore = this->store->Budget();
+  ASSERT_TRUE(budgetBefore.ok());
+  EXPECT_GT(budgetBefore.value.heapUsedBytes, 0) << "the bytes are still charged at this point";
+
+  EXPECT_TRUE(this->store->Forget(frame).ok())
+      << "the refused Release left the frame unpinned, which is exactly what Forget requires";
+  EXPECT_EQ(this->store->ResidencyOf(frame).status.code, StatusCode::NotFound);
+  auto budgetAfter = this->store->Budget();
+  ASSERT_TRUE(budgetAfter.ok());
+  EXPECT_LT(budgetAfter.value.heapUsedBytes, budgetBefore.value.heapUsedBytes)
+      << "the bytes were not given back, so the recovery really was a no-op";
+}
+
 TYPED_TEST(FrameStoreAccessContract, ForgettingAPinnedFrameIsRefused) {
   // Pin hands out a span and promises it stays valid until Release. Forget erasing the entry
   // underneath that promise is a use-after-free for whoever is still holding the span — and the

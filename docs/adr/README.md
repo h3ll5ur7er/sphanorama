@@ -10,7 +10,7 @@ and the alternative we rejected and why.
 | [0003](0003-candidate-sets-not-frames.md) | A capture cell owns a set of candidates, not a frame |
 | [0004](0004-build-as-incremental-graph.md) | A build is a fingerprinted DAG, not a pipeline run |
 | [0005](0005-opencv-piecemeal-not-stitching-module.md) | Use OpenCV algorithms piecemeal; do not use its `stitching` module |
-| [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary |
+| [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary — **narrowed by [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)**, which compiles one OpenCV-calling file with exceptions and converts at its edge |
 | [0007](0007-tests-and-docs-are-gated.md) | Tests and documentation are gated in CI, not left to discipline |
 | [0008](0008-contracts-are-the-include-path.md) | One interface per header; `contracts/cpp` is the include root |
 | [0009](0009-the-cpp-header-is-the-idl.md) | The C++ header is the IDL; a strict parser generates the TypeScript mirror |
@@ -51,7 +51,9 @@ and the alternative we rejected and why.
 | [0044](0044-a-capture-needs-a-motion-sensor.md) | A capture requires a motion sensor: `Begin` and `Resume` refuse without one and the page says what is missing, superseding 0042's degraded path |
 | [0045](0045-a-capability-that-changes-is-re-asked.md) | A capability is re-asked where it is consumed: `ICameraAccess` grows `Capabilities()` and `ArmBurst` calls it after `SetLocks`, while the page keeps the resident port true by re-reporting the camera it has just changed |
 | [0046](0046-the-lens-is-a-utility-and-an-uninvertible-pixel-is-refused.md) | The lens is a utility rather than an engine, and every way of having no answer — an unusable lens, a direction behind the camera, a radius past the fold, an inverse that does not land — is a refusal rather than a pixel |
-| [0047](0047-opencv-is-fetched-pinned-and-trimmed-and-earns-its-place-on-a-cross-check.md) | OpenCV is fetched from source at a pinned tag, trimmed to ADR 0005's six modules, linked natively only — and its first use is a cross-check of the camera model against `cv::projectPoints` rather than an engine |
+| [0047](0047-opencv-is-fetched-pinned-and-trimmed-and-earns-its-place-on-a-cross-check.md) | OpenCV is fetched from source at a pinned **commit**, trimmed to ADR 0005's six modules, linked natively only — and its first use is a cross-check of the camera model against `cv::projectPoints` rather than an engine. Its sanitizer remedy is **superseded by [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)** |
 | [0048](0048-the-python-tooling-runs-through-uv.md) | The Python tooling runs through `uv` with a committed lock file, so the interpreter and any future dependency are facts about the repository rather than about a machine |
 | [0049](0049-accuracy-is-measured-with-the-gauge-removed.md) | Registration accuracy is scored with the global gauge rotation removed first, by Markley's chordal average found with Jacobi rather than power iteration, and the headline number is the median |
 | [0050](0050-the-dataset-renderer-re-implements-the-lens-on-purpose.md) | The synthetic dataset renderer re-implements the lens rather than calling the core, because a dataset rendered through the code under test cancels any error the two share — and numpy arrives in an opt-in group so the checkers stay standard-library only |
+| [0051](0051-a-feature-set-points-at-frames-not-at-buffers.md) | A `FeatureSet` points at frames, not at buffers |
+| [0052](0052-opencv-enters-the-core-behind-a-build-flag.md) | OpenCV enters the core behind a build flag; the browser gets a null registration — and it builds the exception boundary 0047 named, and supersedes 0047's suppressions-file remedy |

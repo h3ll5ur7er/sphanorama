@@ -222,7 +222,11 @@ it; pixels never cross this way in any case.
 
 ## 4.7 Error model
 
-No exceptions cross the WASM boundary and none are used in the core. Every fallible call returns
+No exceptions cross the WASM boundary, and the core is compiled `-fno-exceptions` with one named
+exception: `feature_registration_engine.cpp`, which calls OpenCV. `cv::Exception` is how OpenCV
+reports ordinary failure, so that one translation unit takes `-fexceptions` back and converts at its
+own edge — nothing above it learns that OpenCV throws (ADR 0047 named the shape, ADR 0052 built it).
+Every fallible call returns
 `Result<T>` carrying a `Status { code, component, detail }`. Codes are a closed enum shared with
 TypeScript, so the client can react to `SensorPermissionDenied` or `FrameStoreExhausted`
 specifically rather than parsing strings. Panics in the core are logged through the utilities bar

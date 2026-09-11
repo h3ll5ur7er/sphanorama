@@ -18,9 +18,21 @@ removing one.
 ## 5.2 Build
 
 - **Emscripten** (pinned via `emsdk`) with `-msimd128`, `-pthread`, `-sALLOW_MEMORY_GROWTH`,
-  `-sEXPORT_ES6`. Two artefacts from one source tree: `core.wasm` (threaded, cross-origin isolated)
-  and `core.st.wasm` (single-threaded fallback), selected at runtime by capability probe.
-- **CMake** presets: `wasm-release`, `wasm-debug`, `native-debug` (bench + tests), `native-asan`.
+  `-sEXPORT_ES6`. Two builds from one source tree — `wasm-release` and `wasm-release-threaded` —
+  each producing `sphanorama-core.wasm` and its glue `sphanorama-core.js` in its own build
+  directory. **Which one ships is a deploy decision, not a runtime one**: GitHub Pages serves no
+  COOP/COEP headers, so it gets the single-threaded build (ADR 0011), and `npm run build` stages
+  that one. This paragraph described `core.wasm` / `core.st.wasm` "selected at runtime by capability
+  probe" until seven rounds of review on PR #67 swept the file — neither name nor probe has ever
+  existed. `IComputeDeviceAccess::Capabilities` does report `threads`, which is probably where the
+  idea came from, but nothing chooses an artefact from it.
+- **CMake** presets, all six: `native-debug` (the default for TDD), `native-asan` (the sanitizer
+  job), `wasm-release` and `wasm-release-threaded` (both built by the gate and by CI), and two that
+  nothing builds automatically — `wasm-debug`, for a person chasing something in the browser, and
+  `native-release`, for a timing run somebody does by hand. This line used to gloss the latter as
+  "what the bench measures", which was false twice over: `bench/` does not exist (ADR 0052 says so
+  while explaining why no composition root selects the OpenCV engine), and neither `tools/gate.sh`
+  nor CI configures that preset at all.
 - **OpenCV** built from source as a trimmed static subset — `core`, `imgproc`, `features2d`,
   `calib3d`, `photo`, `flann` — fetched at a pinned *commit* by `cmake/opencv.cmake`, and verified
   against that commit after checkout rather than trusted (ADR 0047). The
@@ -56,10 +68,20 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    objects are current, and a runner image rotating to a different compiler would otherwise link
    objects nothing can notice are stale.
 
-   The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so those 296 OpenCV translation units are
-   instrumented too, under `-fno-sanitize-recover=all`. It is green today and the first engine to
-   call into `features2d` may make it red inside third-party code; ADR 0047 records what to do then
-   and why it is not "turn recovery back on".
+   The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so OpenCV's translation units are
+   instrumented too, under `-fno-sanitize-recover=all` — with exactly one check lifted from them.
+   That day arrived: the first engine to call into `features2d` did turn it red, in `cv::resize`
+   inside ORB's pyramid, where OpenCV gathers source pixels through `*(const short*)(row + index)`
+   at an index that is odd for half of all inputs. `cmake/opencv.cmake` appends
+   `-fno-sanitize=alignment` around OpenCV's `add_subdirectory` and restores the flags after, so our
+   own translation units keep the check — measured both ways, present on OpenCV's command lines and
+   absent from ours.
+
+   ADR 0047 predicted the day and named a different remedy, a suppressions file scoped to
+   `_deps/opencv-src`, "not turning recovery back on". ADR 0052 records why that pair is not
+   available: a UBSan suppressions file is only consulted for *recoverable* errors, so it does
+   nothing under `-fno-sanitize-recover=all` — measured, and the compile-time flag is what reaches
+   0047's actual goal without trading the thing it did not want to trade.
 4. **No-browser check** — `tools/no_browser_check.py` rejects any reference to Emscripten,
    inline JavaScript or WebAssembly build macros outside `bridge/`. Deliberately blunt: the bare
    word in a comment counts, because "on Emscripten we do X" means the core is reasoning about a
@@ -71,7 +93,10 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    COOP/COEP, which is the only way to find out what the deployment target does with them.
    `tools/check_dist_fresh.mjs` is their precondition rather than a step of its own: Playwright's
    `globalSetup`, refusing to run the suite against a bundle or a core older than the sources it
-   was built from. It compares both wasm presets and the glue `.js` against the C++ and the build
+   was built from. It compares both wasm presets and the glue `.js` against the C++ that the wasm
+   build actually compiles — read from each preset's `compile_commands.json`, because since ADR 0052
+   a core source can be native-only, and a source ninja never builds could otherwise make the core
+   permanently stale — and the build
    files, and it exists because two false-green sabotage runs got through — one after
    `npm run build` had exited non-zero on a typecheck error and left the previous `dist` standing.
 7. **Conflict markers** — `tools/conflict_marker_check.py`, because a merge marker in a tracked
@@ -141,9 +166,10 @@ What it gives today is the first of these; the rest wait on the increments liste
 
 - registration accuracy measured in degrees against truth, not eyeballed — the two halves that
   make it possible are in (`rotation_scoring`, ADR 0049, and `tools/synth_dataset.py`, ADR 0050),
-  and there is **nothing to measure yet**: `RegistrationEngine` is still the null implementation.
-  A round-1 fix wrote "available now" here, which overcorrected a stale sentence into a false one
-  and contradicted §5.4 twelve lines above;
+  and there is **not much to measure yet**: `FeatureRegistrationEngine` extracts features, but
+  matching and refinement still refuse, so no rotation comes out to be scored. An earlier round
+  wrote "available now" here, which overcorrected a stale sentence into a false one and
+  contradicted §5.4 further up this file;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.

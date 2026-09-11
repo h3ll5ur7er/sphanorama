@@ -15,12 +15,21 @@
  * code changed" and a fresh checkout has no `dist` at all — the missing case is the loud one.
  */
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build'])) {
+// Directories no walk in this file should ever descend into. Named rather than inlined as a default
+// because the one caller that needed to skip *more* passed its own set, which **replaced** these
+// instead of adding to them — so the source walk was free to descend into a nested `build/` or
+// `node_modules/` and take a generated file's mtime as a source's. That is the permanently-stale
+// shape this checker has already been bitten by twice.
+const kNeverWalked = ['node_modules', '.git', 'dist', 'build'];
+
+function newest(path, skip = new Set(kNeverWalked),
+                accept = () => true) {
   let latest = 0;
   let latestPath = path;
   const walk = (at) => {
@@ -34,6 +43,7 @@ function newest(path, skip = new Set(['node_modules', '.git', 'dist', 'build']))
       if (skip.has(entry.name)) continue;
       const full = join(at, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
+      if (!accept(full)) continue;
       const mtime = statSync(full).mtimeMs;
       if (mtime > latest) { latest = mtime; latestPath = full; }
     }
@@ -91,7 +101,315 @@ function canReachBridgeSpecs(argv) {
  * repository in a temp directory and run the real thing against it, rather than re-implementing
  * the arithmetic in a test and asserting the two agree.
  */
-export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
+/**
+ * The C++ translation units the wasm builds actually compile, as absolute paths — read from the
+ * compile database CMake exports (`CMAKE_EXPORT_COMPILE_COMMANDS` is on repo-wide).
+ *
+ * `null` means there was nothing to read, and the caller then counts every source. That fallback is
+ * the conservative direction on purpose: a check that quietly stops asking because a build
+ * directory is missing is worse than one that asks too often.
+ */
+/**
+ * Whether either wasm build has work it has not done — asked of ninja, which is the only thing that
+ * knows, and which can only answer for the files in its own regeneration edge.
+ *
+ * This is what lets a build-file edit be forgiven. An edit that is *inert* for a preset — a comment,
+ * or a branch that preset does not take — reconfigures, produces no work, never relinks the core,
+ * and so can never stop being newer than it: the error below would ask for a rebuild ninja
+ * correctly refuses to do, which is a deadlock rather than a warning.
+ *
+ * An earlier version inferred this from `build.ninja`'s mtime, and a reviewer showed the inference
+ * was wrong in both directions: ninja regenerates `build.ninja` *before* compiling, so a build that
+ * was configured and then failed looks identical to one with nothing to do; and `CMakePresets.json`
+ * is not in either preset's regeneration edge at all, so a changed preset need not rewrite it.
+ * Asking is cheap and exact where guessing was neither.
+ *
+ * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
+ * caller then treats a build file the old way, which is the conservative direction.
+ */
+/**
+ * Every `CMakeLists.txt` in the tree, as absolute paths — found by walking, not by being listed.
+ *
+ * The list was written down four times on this branch and was one short every time, most recently
+ * by excluding all of them from the source walk and naming four back. A fifth anywhere — say
+ * `bridge/resource_access/CMakeLists.txt` — was then invisible to this check in both directions:
+ * skipped as a source and never re-added as a build file.
+ */
+function cmakeFilesInTree(repoRoot) {
+  const found = [];
+  // `test` for the same reason the source walk skips it, and it is not a nicety: the wasm presets
+  // set `SPHANORAMA_BUILD_TESTS=OFF`, so `core/test/CMakeLists.txt` is named by no wasm build graph
+  // — `grep -c core/test/CMakeLists.txt build/wasm-release/build.ninja` is 0, against 3 for the
+  // native one. Walking for it therefore filed it as permanently suspect, and nothing could clear
+  // it: editing it gives the wasm build no work, so the core is never relinked and the complaint
+  // stands until some unrelated C++ change happens along. This branch edits that exact file.
+  const skip = new Set([...kNeverWalked, 'test']);
+  const walk = (at) => {
+    let entries;
+    try {
+      entries = readdirSync(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (skip.has(entry.name)) continue;
+      const full = join(at, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === 'CMakeLists.txt') found.push(full);
+    }
+  };
+  walk(repoRoot);
+  return found;
+}
+
+/**
+ * The CMake files each wasm build's own graph says it was generated from, as absolute paths.
+ *
+ * Read out of `build.ninja` rather than listed here, because every list of them written on this
+ * branch has been one short: two named, three real (the root, `core/` and `bridge/`). A file the
+ * build graph names is one ninja re-reads before answering, which is what makes its "nothing to do"
+ * mean "cmake looked and found nothing" for that file and not for others.
+ */
+function buildFilesTheGraphNames(repoRoot) {
+  const named = new Set();
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const graph = join(repoRoot, 'build', preset, 'build.ninja');
+    if (!existsSync(graph)) continue;
+    let text;
+    try {
+      text = readFileSync(graph, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const match of text.matchAll(/(\S*CMakeLists\.txt)/g)) {
+      named.add(resolve(join(repoRoot, 'build', preset), match[1]));
+    }
+  }
+  return named;
+}
+
+/**
+ * A preset value with CMake's macros expanded, or `null` for a macro this checker does not know.
+ *
+ * The reason this exists: a preset stores `$env{EMSDK}/upstream/...` and `CMakeCache.txt` stores the
+ * path CMake resolved that to, so comparing the two as text matched nothing. Both wasm presets are
+ * written that way, which made the forgiveness `presetsMatchTheBuildDirectories` exists to grant
+ * unreachable in this repository from the commit that added it -- while the suite stayed green,
+ * because its fake tree had no macro in it anywhere. Two reviewers found it independently.
+ *
+ * Unknown macros refuse rather than expand, on the same principle as the unknown-key rule below:
+ * falling behind CMake makes this ask too often rather than quietly stop asking. Comparing the
+ * unexpanded text instead is exactly the defect being fixed here.
+ *
+ * **An unset environment variable is a third answer, not the empty string.** The first version of
+ * this expanded `$env{EMSDK}` to `''` on the reasoning that CMake does, which is true and was the
+ * wrong call here: the cache holds `/root/emsdk/...`, a path only a configure with the variable
+ * *set* could have written, so with it unset every comparison failed and any edit to
+ * `CMakePresets.json` produced a complaint nothing could clear — ninja has no work to do for an
+ * inert preset edit, so the printed remedy cannot change the core's mtime. `gate.sh` sources
+ * `emsdk_env.sh` and never sees it; `npx playwright test` on its own does, which is the invocation
+ * this file exists for. It is the same deadlock the forgiveness was written to prevent, re-entered
+ * through the fix for it.
+ */
+export const kUnknownMacro = Symbol('a macro this checker does not know how to expand');
+export const kEnvironmentDependent = Symbol('a macro this environment holds no value for');
+
+export function expandPresetMacros(text, { presetName, repoRoot }) {
+  let unknown = false;
+  let environmental = false;
+  const out = String(text).replace(/\$([A-Za-z]*)\{([^}]*)\}/g, (whole, kind, name) => {
+    // `$penv{}` differs from `$env{}` only when the preset's own `environment` block sets the
+    // variable -- and `environment` is not a key this checker forgives, so here they are the same.
+    if (kind === 'env' || kind === 'penv') {
+      if (process.env[name] === undefined) { environmental = true; return whole; }
+      return process.env[name];
+    }
+    if (kind === '') {
+      if (name === 'sourceDir') return repoRoot;
+      if (name === 'presetName') return presetName;
+      if (name === 'dollar') return '$';
+    }
+    unknown = true;
+    return whole;
+  });
+  if (unknown) return kUnknownMacro;
+  if (environmental) return kEnvironmentDependent;
+  return out;
+}
+
+/**
+ * Whether each wasm build directory holds the cache variables its preset declares.
+ *
+ * `CMakePresets.json` is in no build graph, so ninja can never answer for it — and no mtime can
+ * either: `cmake --preset` rewrites `CMakeCache.txt` only when a value changes, measured over three
+ * consecutive no-op runs. What answers is the content. A documentation-only edit (`displayName`,
+ * `description` — one preset here carries 700 characters of prose) leaves every declared variable
+ * where it was and is forgiven; a changed flag the build directory has not been reconfigured for is
+ * not.
+ *
+ * `false` whenever anything cannot be read or parsed, which forgives nothing.
+ */
+function presetsMatchTheBuildDirectories(repoRoot) {
+  let declared;
+  try {
+    declared = JSON.parse(readFileSync(join(repoRoot, 'CMakePresets.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+
+  // Every key a configure preset may carry, split by whether it can change a build.
+  //
+  // The unknown-key rule is what makes this safe to leave alone. A preset field nobody here has
+  // heard of — a new CMake version's, or one this file simply missed — refuses the forgiveness
+  // rather than being skipped, so the failure mode of not keeping up with CMake is a checker that
+  // asks too often rather than one that quietly stops asking. Four of these keys were being ignored
+  // before that rule existed, which is how `toolchainFile` and `generator` went uncompared.
+  const documentationOnly = new Set(['name', 'displayName', 'description']);
+  // Keys that exist, are known, and cannot change a byte of what gets built. `hidden` is CMake's
+  // documented way to mark a preset as a base not meant for direct use, so refusing it as unknown
+  // killed forgiveness for every preset inheriting from one; `vendor` is reserved for IDEs; the rest
+  // only affect what CMake prints. `condition` decides whether a preset is *available*, which is a
+  // different question from whether its declarations match a cache this function is reading.
+  //
+  // The unknown-key rule below is worth keeping exactly because it is this easy to be wrong about.
+  // The answer to being wrong about a key is to learn the key, not to soften the rule.
+  const cannotChangeTheBuild = new Set([
+    'hidden', 'vendor', 'condition', 'warnings', 'errors', 'debug', 'trace',
+  ]);
+  const comparedAgainstTheCache = new Map([
+    ['generator', 'CMAKE_GENERATOR'],
+    ['toolchainFile', 'CMAKE_TOOLCHAIN_FILE'],
+  ]);
+  const handledElsewhere = new Set(['cacheVariables', 'inherits']);
+
+  /** A preset's cache variables with everything it inherits folded in, nearest declaration winning. */
+  const resolved = (name, ancestry = new Set()) => {
+    if (ancestry.has(name)) return null;   // the same preset twice on one path: a cycle
+    const entry = (declared.configurePresets ?? []).find((p) => p && p.name === name);
+    if (!entry) return null;
+    for (const key of Object.keys(entry)) {
+      if (!documentationOnly.has(key) && !cannotChangeTheBuild.has(key)
+          && !comparedAgainstTheCache.has(key) && !handledElsewhere.has(key)
+          && key !== 'binaryDir') {
+        return null;
+      }
+    }
+    // A fresh copy per branch, not one set for the whole walk. Sharing it meant the second parent to
+    // reach a base both parents inherit was told it had already been visited, so a diamond -- which
+    // CMake allows and which is the ordinary way to factor a preset file -- resolved as a cycle and
+    // refused. A cycle is a name repeating along one path.
+    const below = new Set(ancestry).add(name);
+    const parents = entry.inherits === undefined
+      ? []
+      : (Array.isArray(entry.inherits) ? entry.inherits : [entry.inherits]);
+    const variables = new Map();
+    let binaryDir;
+    // Reversed because CMake inherits a field from the *first* preset in the list that defines it,
+    // so applying them back to front leaves the earliest declaration in place.
+    for (const parent of [...parents].reverse()) {
+      const inherited = resolved(parent, below);
+      if (inherited === null) return null;
+      for (const [k, v] of inherited.variables) variables.set(k, v);
+      if (inherited.binaryDir !== undefined) binaryDir = inherited.binaryDir;
+    }
+    for (const [k, v] of Object.entries(entry.cacheVariables ?? {})) variables.set(k, v);
+    for (const [key, cacheName] of comparedAgainstTheCache) {
+      if (entry[key] !== undefined) variables.set(cacheName, entry[key]);
+    }
+    if (entry.binaryDir !== undefined) binaryDir = entry.binaryDir;
+    return { variables, binaryDir };
+  };
+
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const cachePath = join(repoRoot, 'build', preset, 'CMakeCache.txt');
+    if (!existsSync(cachePath)) return false;
+    let cache;
+    try {
+      cache = readFileSync(cachePath, 'utf8');
+    } catch {
+      return false;
+    }
+    const entry = resolved(preset);
+    if (entry === null) return false;
+    // `binaryDir` says which directory the preset configures, and this function reads
+    // `build/<preset>`. A preset pointing somewhere else declares nothing about the cache being read
+    // here, so its agreement would be an accident -- which is what filing the key "handled
+    // elsewhere" and then handling it nowhere forgave. A preset that declares no `binaryDir` is left
+    // alone rather than refused: it is CMake's own default layout, which is this one.
+    if (entry.binaryDir !== undefined) {
+      const where = expandPresetMacros(entry.binaryDir, { presetName: preset, repoRoot });
+      // Both refusals, and neither is a string. This read `where === null` until a reviewer noticed
+      // the expander had stopped returning `null` two commits earlier and only two of its three
+      // call sites were updated — so the branch was dead and `resolve()` was handed a Symbol, which
+      // throws `TypeError: paths[0] must be of type string` out of the Playwright global setup. A
+      // `binaryDir` carrying `$env{}` of an unset variable is all it takes.
+      if (where === kUnknownMacro || where === kEnvironmentDependent) return false;
+      if (resolve(where) !== resolve(join(repoRoot, 'build', preset))) return false;
+    }
+    for (const [name, declaredValue] of entry.variables) {
+      // CMake lets a cache variable be a bare value or a `{ type, value }` object. Stringifying the
+      // object gave `[object Object]`, which matched nothing and made the forgiveness permanently
+      // unavailable for any preset written the documented way.
+      const wanted = declaredValue !== null && typeof declaredValue === 'object'
+        ? declaredValue.value
+        : declaredValue;
+      // The cache holds what CMake resolved, so the declaration has to be resolved too before the
+      // two can be compared at all.
+      const expanded = expandPresetMacros(wanted, { presetName: preset, repoRoot });
+      // A macro this checker does not know is a value it cannot vouch for, so nothing is forgiven.
+      if (expanded === kUnknownMacro) return false;
+      // A macro whose *environment* is missing is different, and the difference is the whole of the
+      // note on `expandPresetMacros`: the file has not told us anything we can disbelieve, so this
+      // one variable is skipped and every other one is still compared. A real flag change is still
+      // caught; what is given up is noticing a `toolchainFile` edit made by someone who could not
+      // have built with it anyway.
+      if (expanded === kEnvironmentDependent) continue;
+      const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
+      // `line === null` is a variable the preset declares and this build directory has never held —
+      // a *newly added* one, which is exactly a configure that has not happened.
+      if (line === null || line[1].trim() !== expanded.trim()) return false;
+    }
+  }
+  return true;
+}
+
+export function wasmBuildsAreUpToDate(repoRoot) {
+  let asked = false;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const dir = join(repoRoot, 'build', preset);
+    if (!existsSync(join(dir, 'build.ninja'))) continue;
+    const probe = spawnSync('ninja', ['-C', dir, '-n'], { encoding: 'utf8' });
+    // `status !== 0` covers a ninja that failed *and* a ninja that never ran: `spawnSync` reports
+    // ENOENT as `status === null`, so an explicit `probe.error ||` in front of this was a clause no
+    // input could reach. Both mean the same thing here anyway — nobody answered, so forgive nothing.
+    if (probe.status !== 0) return null;
+    asked = true;
+    if (!`${probe.stdout}${probe.stderr}`.includes('no work to do')) return false;
+  }
+  return asked ? true : null;
+}
+
+function compiledTranslationUnits(repoRoot) {
+  const files = new Set();
+  let read = false;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const db = join(repoRoot, 'build', preset, 'compile_commands.json');
+    if (!existsSync(db)) continue;
+    try {
+      for (const entry of JSON.parse(readFileSync(db, 'utf8'))) {
+        if (entry && typeof entry.file === 'string') files.add(resolve(repoRoot, entry.file));
+      }
+      read = true;
+    } catch {
+      // Unreadable or half-written: treat it as absent rather than as an empty list, which would
+      // read as "the wasm build compiles nothing" and switch the check off entirely.
+    }
+  }
+  return read ? files : null;
+}
+
+export function checkDistIsFreshIn(repoRoot, argv = process.argv,
+                                   upToDateProbe = wasmBuildsAreUpToDate) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -118,7 +436,14 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
   // `host_camera_metric`'s switch included, which is the seam an e2e test exists to pin — can be
   // changed with the `.wasm` coming out byte for byte identical. A reviewer sabotaged `case 8`,
   // rebuilt, and this check had nothing to say.
-  const coreBuild = join(repoRoot, 'build', 'wasm-release', 'bridge');
+  // The profile `stage_core.mjs` actually stages from, not a second guess at it. This was hard-coded
+  // to `wasm-release` while the stager reads `SPHANORAMA_CORE_PROFILE`, so setting that variable
+  // made the two disagree permanently: `npm run build` stages the threaded core, exits 0, and this
+  // check goes on comparing the single-threaded one and complaining that they differ. The remedy it
+  // prints is "run `npm run build` and read its exit status", and the exit status is 0 — another
+  // instruction that cannot clear the state it is printed for.
+  const coreProfile = process.env.SPHANORAMA_CORE_PROFILE ?? 'wasm-release';
+  const coreBuild = join(repoRoot, 'build', coreProfile, 'bridge');
   const coreStage = join(repoRoot, 'shell', 'public', 'core');
   for (const file of ['sphanorama-core.wasm', 'sphanorama-core.js']) {
     const compiled = join(coreBuild, file);
@@ -156,10 +481,72 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
     // The build files are in the list too, and a reviewer had to point that out: a preset, a
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
     // does, and three of them are outside every source directory named here.
-    const cxx = ['core/src', 'bridge', 'contracts/cpp',
-                 'core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles'])) }))
-      .filter((s) => s.mtime > compiledCore.mtime);
+    //
+    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that is no longer
+    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, which the wasm
+    // build does not have, so it is compiled natively and nowhere else. Without this narrowing,
+    // touching that file made the core stale in a way nothing could clear — ninja has no work to do
+    // for a source it does not compile, so the wasm never becomes newer and the instruction this
+    // error gives cannot be followed. A deadlock rather than a false alarm, which is why it is a
+    // fix here and not a note in the message.
+    //
+    // Headers and the three CMake files are deliberately not narrowed: a header is not a
+    // translation unit and never appears in a compile database, and a preset or a compile flag
+    // changes the core exactly as a `.cpp` does.
+    const upToDate = upToDateProbe(repoRoot);
+    const compiled = compiledTranslationUnits(repoRoot);
+    const accept = compiled === null
+      ? () => true
+      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
+    // Every `CMakeLists.txt` is judged by the build-file rule below instead of here, and *all* of
+    // them are — `cmakeFilesInTree` walks for them, so one in a directory this source walk covers is
+    // handled once rather than twice or not at all. An earlier version excluded them here and named
+    // four back, which left a fifth invisible in both directions.
+    // **A header is ninja's business once ninja has answered.** `upToDate === true` means both wasm
+    // builds were asked and had no work to do, and ninja knows exactly which headers matter —
+    // `.ninja_deps` records every one that any translation unit it compiles included. The walk
+    // cannot know that: a header never appears in a compile database, so the narrowing above covers
+    // `.cpp` only, and every header under these roots counted as a source of the wasm core.
+    //
+    // This branch produced the instance. `feature_registration_engine.h` is included by a single
+    // translation unit the wasm build does not compile, so no wasm graph names it and no rebuild can
+    // make the core newer than it — touching it was a complaint nothing could clear, which is the
+    // fifth time that shape has been found in this file.
+    //
+    // Only headers, and only when ninja answered. A `.cpp` the wasm build *does* compile stays a
+    // staleness whatever ninja says — an inert source edit is not a thing, and the case beside this
+    // one in the suite says so deliberately.
+    const headerSettled = upToDate === true;
+    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full)
+      && !(headerSettled && /\.(h|hh|hpp|hxx|inc)$/.test(full))
+      && accept(full);
+    const sources = ['core/src', 'bridge', 'contracts/cpp']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel),
+                                      new Set([...kNeverWalked, 'test', 'CMakeFiles']), acceptSource) }));
+
+    // Build files are forgiven by two different rules, each applied where it is the only one that
+    // can answer — and neither of them by a list anybody wrote down, because four such lists on this
+    // branch have each been one short.
+    //
+    // **The CMake files the build graph names** — the root, `core/` and `bridge/`, read out of
+    // `build.ninja` — are ones ninja re-reads before answering, so its "nothing to do" means cmake
+    // looked and found nothing. That is the case where the error below would demand a rebuild ninja
+    // correctly refuses to perform.
+    //
+    // **`CMakePresets.json`** is in no graph, so ninja is blind to it and no mtime helps either;
+    // what answers is whether the build directories hold the variables it declares.
+    const graphNames = upToDate === true ? buildFilesTheGraphNames(repoRoot) : new Set();
+    const presetSettled = upToDate === true && presetsMatchTheBuildDirectories(repoRoot);
+    const stillSuspect = [
+      ...cmakeFilesInTree(repoRoot)
+        .map((path) => ({ rel: path.slice(repoRoot.length + 1), ...newest(path) }))
+        .filter((s) => !graphNames.has(s.path)),
+      ...(presetSettled
+        ? []
+        : [{ rel: 'CMakePresets.json', ...newest(join(repoRoot, 'CMakePresets.json')) }]),
+    ];
+
+    const cxx = [...sources, ...stillSuspect].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
       const worst = cxx.reduce((a, b) => (a.mtime > b.mtime ? a : b));
       throw new Error(

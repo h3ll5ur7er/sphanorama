@@ -83,7 +83,12 @@ decoded, since there is nothing owning the bytes. The generator refuses it.
   resolve a handle against, and because the rule is about cost: a cell's frames are 39 MB and its
   previews are 384 KB (ADR 0038). Anything full-resolution still crosses as a handle.
 - **No exceptions.** Everything fallible returns `Result<T>` with a closed `StatusCode` enum, so a
-  client can branch on `SensorPermissionDenied` specifically. Exceptions are disabled in the core.
+  client can branch on `SensorPermissionDenied` specifically. Exceptions are disabled in the core,
+  with one translation unit excepted by name: the OpenCV-backed registration engine takes
+  `-fexceptions` back and converts `cv::Exception` to a `Result` at its own edge, because throwing is
+  how OpenCV reports ordinary failure (ADR 0052). A component adapting something foreign catching at
+  its own boundary is the shape the layer rules already ask for; a second one needs the same
+  justification and its own line here.
 - **Managers are the client's entire surface.**
 - **Resource access is implemented twice** — TypeScript for the browser, native for the bench and
   tests — behind one contract. Anything that cannot be implemented natively is not a resource
@@ -172,7 +177,8 @@ bridge/               the WASM boundary: a C ABI over the shared heap, and the o
                       resource_access/ subtree holds browser-backed ports and is judged as
                       resource access. runtime.* is the composition root, exempt from the
                       layer rules by name (ADR 0014)
-bench/                native CLI client — runs the core on datasets, prints timings
+bench/                native CLI client — runs the core on datasets, prints timings.
+                      Planned, not written: no such directory exists yet
 shell/                TypeScript PWA
   src/clients/{capture,review}/
   src/access/         browser resource-access adapters
