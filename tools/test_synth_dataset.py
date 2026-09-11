@@ -1778,15 +1778,28 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
                                                             Pose.from_azimuth_elevation(90.0, 0.0)])
             truth = json.loads((Path(directory) / "truth.json").read_text())
 
-        self.assertIn("intrinsics", truth)
-        self.assertIn("frames", truth)
+        # The exact key set, not merely presence — and the difference has teeth. `write_dataset`
+        # builds this object with `asdict`, so a field added to the `Intrinsics` dataclass appears
+        # in `truth.json` the moment it is declared, while the C++ loader reads a fixed list and
+        # drops it without a word. `assertIn` per field would stay green through exactly that, which
+        # is the silence this test exists to break: it fails here, next to the writer, rather than
+        # never.
+        self.assertEqual(set(truth), {"intrinsics", "frames", "convention"})
+        # The C++ loader reads `convention.rotation` and refuses a dataset that does not spell this
+        # exactly, because a rotation convention is the one thing whose violation is invisible: the
+        # frames still load, the scorer still runs, and every number it produces is wrong. Rewording
+        # this string is therefore a change the C++ has to be told about, and this line is where that
+        # is noticed — next to the writer, rather than in a seam three phases later.
+        self.assertEqual(truth["convention"]["rotation"],
+                         "device -> world, unit quaternion, matching sphanorama::Quat")
         # Every field of `sphanorama::Intrinsics` the loader fills from this file. The two it does
-        # not fill — `rollingShutterLineTimeNs` and `estimated` — are deliberately absent here: these
-        # are the true intrinsics, and a synthetic capture has no rolling shutter yet.
-        for field in ("fx", "fy", "cx", "cy", "k1", "k2", "k3", "p1", "p2", "width", "height"):
-            self.assertIn(field, truth["intrinsics"], f"the C++ loader reads intrinsics.{field}")
-        self.assertNotIn("rollingShutterLineTimeNs", truth["intrinsics"])
-        self.assertNotIn("estimated", truth["intrinsics"])
+        # not fill — `rollingShutterLineTimeNs` and `estimated` — are deliberately absent: these are
+        # the true intrinsics, and a synthetic capture has no rolling shutter yet.
+        self.assertEqual(
+            set(truth["intrinsics"]),
+            {"fx", "fy", "cx", "cy", "k1", "k2", "k3", "p1", "p2", "width", "height"},
+            "the C++ loader reads exactly these; a field added here is dropped silently there",
+        )
 
         self.assertIsInstance(truth["frames"], list)
         for entry in truth["frames"]:

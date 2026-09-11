@@ -39,16 +39,26 @@ struct SyntheticDataset {
 };
 
 /**
- * Read the dataset in `directory`, allocating one frame per rendered image in `store`.
+ * Read the dataset in `directory`, allocating one frame per entry in its `truth.json`.
+ *
+ * Per entry rather than per rendered image: a file in the directory that no entry names is not
+ * read, and an entry naming a file that is not there is a refusal.
  *
  * Refuses with `NotFound` for a directory, a `truth.json` or a named frame file that is not there,
  * and `InvalidArgument` for a file that is there and is not what it claims — a header disagreeing
  * with the recorded lens, a payload shorter or longer than the header accounts for, a Netpbm that
- * is not `P6`, or a maximum value this reader cannot read. `FrameStoreExhausted` comes straight
- * from the store.
+ * is not `P6`, a first token too long to be a magic number, a maximum value this reader cannot
+ * read, or an intrinsic that is not a finite number. `FrameStoreExhausted` and the codes `Pin` and
+ * `Release` answer with come straight from the store. `Internal` is the last resort: an exception
+ * escaping the parse, or a store that read a frame and then would not release the pin taken to
+ * write it.
  *
- * **A refusal allocates nothing.** Frames read before the failure are given back, so a caller that
- * gets an error has nothing to clean up and the store's totals are where they started.
+ * **A refusal gives back every frame it allocated, and says so when it cannot.** That second half
+ * is not pedantry. `Forget` is allowed to refuse — `MemoryFrameStoreAccess` returns a spill sink's
+ * refusal and keeps the entry on its books — and the caller of a failed load holds no handles, so
+ * a silent failure to roll back would leave bytes only `Clear` could recover with nothing saying
+ * so. When every frame goes back, which is the ordinary case, the store's totals are where they
+ * started and there is nothing to clean up.
  */
 Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store, const std::string& directory);
 

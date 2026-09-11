@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -35,9 +36,25 @@ std::string Fixture() { return std::string(SPHANORAMA_TEST_DATA_DIR) + "/synthet
 class Scratch {
  public:
   Scratch() {
-    root_ = fs::temp_directory_path() / fs::path(std::tmpnam(nullptr)).filename();
+    // Not `std::tmpnam`: it may answer `nullptr`, and `fs::path(nullptr)` is undefined behaviour
+    // rather than an error anybody would see. A counter is enough here — these directories live
+    // inside one test process and are removed by the destructor below.
+    static int serial = 0;
+    root_ = fs::temp_directory_path() /
+            ("sphanorama-dataset-" + std::to_string(serial++) + "-" +
+             std::to_string(static_cast<long long>(::getpid())));
+    fs::remove_all(root_);
     fs::create_directories(root_);
-    fs::copy(Fixture(), root_, fs::copy_options::recursive);
+    try {
+      fs::copy(Fixture(), root_, fs::copy_options::recursive);
+    } catch (...) {
+      // A constructor that throws gets no destructor, so the directory it had already made would
+      // outlive the run. `fs::copy` throws — this translation unit is `-fexceptions` precisely
+      // because of that — so the window is real and one line wide.
+      std::error_code ignored;
+      fs::remove_all(root_, ignored);
+      throw;
+    }
   }
   ~Scratch() { std::error_code ignored; fs::remove_all(root_, ignored); }
   Scratch(const Scratch&) = delete;
@@ -95,6 +112,8 @@ class AwkwardStore final : public IFrameStoreAccess {
 
   int refuseAllocateAfter = -1;   // -1 never refuses
   int refusePinAfter = -1;
+  int refuseReleaseAfter = -1;
+  int refuseForgetAfter = -1;
   int32_t padStrideBy = 0;
 
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
@@ -114,11 +133,17 @@ class AwkwardStore final : public IFrameStoreAccess {
     return real_.Pin(honest);
   }
   Status Release(const FrameRef& frame) override {
+    if (refuseReleaseAfter >= 0 && releases_++ >= refuseReleaseAfter) {
+      return Fail(StatusCode::Internal, "AwkwardStore", "refused on purpose");
+    }
     FrameRef honest = frame;
     honest.stride -= padStrideBy;
     return real_.Release(honest);
   }
   Status Forget(const FrameRef& frame) override {
+    if (refuseForgetAfter >= 0 && forgets_++ >= refuseForgetAfter) {
+      return Fail(StatusCode::FailedPrecondition, "AwkwardStore", "refused on purpose");
+    }
     FrameRef honest = frame;
     honest.stride -= padStrideBy;
     return real_.Forget(honest);
@@ -137,7 +162,35 @@ class AwkwardStore final : public IFrameStoreAccess {
   IFrameStoreAccess& real_;
   int allocations_ = 0;
   int pins_ = 0;
+  int releases_ = 0;
+  int forgets_ = 0;
 };
+
+/**
+ * A refusal that names itself.
+ *
+ * Asserting the code alone proves that *something* refused, and this loader has a dozen ways to
+ * answer `InvalidArgument`. A reviewer deleted eleven of its guards one at a time and the suite
+ * stayed exit 0 every time, because the next guard downstream produced the same pair — nine of the
+ * tests that could not fail were added by round 1, which is what makes this a pattern rather than
+ * an oversight. Every refusal in the loader now carries a phrase only its own guard writes, and
+ * every test below asserts that phrase.
+ */
+::testing::AssertionResult RefusedWith(const Result<SyntheticDataset>& loaded, StatusCode code,
+                                       const std::string& phrase) {
+  if (loaded.ok()) return ::testing::AssertionFailure() << "the load succeeded";
+  if (loaded.status.code != code) {
+    return ::testing::AssertionFailure()
+           << "refused with code " << static_cast<int>(loaded.status.code) << " rather than "
+           << static_cast<int>(code) << "; it said: " << loaded.status.detail;
+  }
+  if (loaded.status.detail.find(phrase) == std::string::npos) {
+    return ::testing::AssertionFailure()
+           << "the right code came from the wrong guard.\n  it said: " << loaded.status.detail
+           << "\n  expected to contain: " << phrase;
+  }
+  return ::testing::AssertionSuccess();
+}
 
 class Dataset : public ::testing::Test {
  protected:
@@ -243,7 +296,7 @@ TEST_F(Dataset, RefusesADirectoryThatIsNotThere) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, Fixture() + "-does-not-exist");
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::NotFound);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::NotFound, "no such dataset directory"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -253,7 +306,7 @@ TEST_F(Dataset, RefusesADatasetWithNoTruthToDescribeIt) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::NotFound);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::NotFound, "no truth.json in"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -266,7 +319,7 @@ TEST_F(Dataset, RefusesAFrameTheTruthNamesAndTheDirectoryDoesNotHold) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::NotFound);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::NotFound, "cannot open"));
   EXPECT_EQ(HeapUsed(), before)
       << "the two frames it had already read were left in the store by a refusal";
 }
@@ -289,7 +342,7 @@ TEST_F(Dataset, RefusesAFrameWhoseHeaderDisagreesWithTheLens) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json records a"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -309,7 +362,7 @@ TEST_F(Dataset, RefusesAFrameWithFewerPixelsThanItsHeaderPromises) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "ends before the pixels its header promises"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -333,7 +386,7 @@ TEST_F(Dataset, RefusesAFrameWithMorePixelsThanItsHeaderPromises) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "carries more bytes than its header accounts for"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -356,7 +409,7 @@ TEST_F(Dataset, RefusesAFileThatIsNotANetpbmAtAll) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "is not a P6 Netpbm"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -372,8 +425,13 @@ const char* kLens = R"("intrinsics": {"fx": 36.95675913154999, "fy": 38.60112456
   "cx": 24.0, "cy": 18.0, "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0,
   "width": 48, "height": 36})";
 
+// The rotation convention the loader insists on. Spelled here so the damaged-truth cases below
+// carry a valid one and are refused by the thing they are named for rather than by this.
+const char* kConvention =
+    R"("convention": {"rotation": "device -> world, unit quaternion, matching sphanorama::Quat"})";
+
 std::string TruthWith(const std::string& lens, const std::string& frames) {
-  return "{" + lens + ", \"frames\": " + frames + "}";
+  return "{" + std::string(kConvention) + ", " + lens + ", \"frames\": " + frames + "}";
 }
 const char* kOneFrame = R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])";
 
@@ -384,7 +442,7 @@ TEST_F(Dataset, RefusesAHeaderNumberThatIsNotOne) {
   out.close();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "has a header this reader cannot parse"));
 }
 
 TEST_F(Dataset, RefusesAFrameWhoseSamplesAreTwoBytesWide) {
@@ -401,7 +459,7 @@ TEST_F(Dataset, RefusesAFrameWhoseSamplesAreTwoBytesWide) {
   out.close();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "only 8-bit samples are read"));
 }
 
 TEST_F(Dataset, RefusesAHeaderTokenLongerThanAnyRealOne) {
@@ -414,7 +472,8 @@ TEST_F(Dataset, RefusesAHeaderTokenLongerThanAnyRealOne) {
   out.close();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "opens with a token longer than any real header token"));
 }
 
 TEST_F(Dataset, GivesBackEveryFrameItHadWhenTheStoreRefusesAnAllocation) {
@@ -425,7 +484,7 @@ TEST_F(Dataset, GivesBackEveryFrameItHadWhenTheStoreRefusesAnAllocation) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::FrameStoreExhausted, "refused on purpose"));
   EXPECT_EQ(HeapUsed(), before) << "the two frames it had already read were left behind";
 }
 
@@ -447,7 +506,7 @@ TEST_F(Dataset, RefusesAStoreThatPadsAStrideItNeverPromised) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "the store handed back fewer bytes"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -456,7 +515,7 @@ TEST_F(Dataset, RefusesTruthThatIsNotJsonAtAll) {
   WriteTruth(scratch, "this is not JSON, and was never going to be");
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json is not readable JSON"));
 }
 
 TEST_F(Dataset, RefusesTruthWhoseShapeMakesOpenCvThrowPartWayThrough) {
@@ -465,20 +524,21 @@ TEST_F(Dataset, RefusesTruthWhoseShapeMakesOpenCvThrowPartWayThrough) {
   // converted one. `FileStorage` opens this file happily and then throws on `operator[]` — measured:
   // "Assertion failed (isMap())" — because `intrinsics` is a scalar where a map was indexed.
   Scratch scratch;
-  WriteTruth(scratch, std::string(R"({"intrinsics": 5, "frames": )") + kOneFrame + "}");
+  WriteTruth(scratch, "{" + std::string(kConvention) +
+                          R"(, "intrinsics": 5, "frames": )" + kOneFrame + "}");
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok()) << "an OpenCV assertion escaped as an exception instead of a Result";
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json is shaped unexpectedly"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
 TEST_F(Dataset, RefusesTruthThatDescribesNoLens) {
   Scratch scratch;
-  WriteTruth(scratch, std::string("{\"frames\": ") + kOneFrame + "}");
+  WriteTruth(scratch, "{" + std::string(kConvention) + ", \"frames\": " + kOneFrame + "}");
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "records no intrinsics"));
 }
 
 TEST_F(Dataset, RefusesALensMissingAFieldTheReaderNeeds) {
@@ -487,21 +547,24 @@ TEST_F(Dataset, RefusesALensMissingAFieldTheReaderNeeds) {
                                 kOneFrame));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "intrinsics: fy is not in the file"));
 }
 
 TEST_F(Dataset, RefusesAWidthThatIsNotANumber) {
-  // `static_cast<int>` of a non-numeric node answers `0x7FFFFFFF` — measured — which walked past a
-  // `<= 0` guard and reached `Allocate(2147483647, 3)`. The caller was then told the store was
-  // exhausted, when the truth was that the file was malformed.
+  // `static_cast<int>` of a non-numeric node answers `0x7FFFFFFF` — measured — which walked past
+  // the `<= 0` guard and made a lens 2,147,483,647 pixels wide.
+  //
+  // **The rest of what this comment used to say is withdrawn.** It claimed the width then reached
+  // `Allocate(2147483647, 3)` and came back `FrameStoreExhausted`. It did not: the frame/lens
+  // dimension check refuses first, in this commit and in the one that wrote the claim. The guard is
+  // right; the story about it was not measured, and a reviewer was the one who ran it.
   Scratch scratch;
   WriteTruth(scratch, TruthWith(R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 24.0, "cy": 18.0,
     "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0,
     "width": "not a number", "height": 36})", kOneFrame));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument)
-      << "a malformed file must not be reported as a full store";
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "intrinsics: width is not a whole number")) << "a malformed file must not be reported as a full store";
 }
 
 TEST_F(Dataset, RefusesALensWithNoPixelsInIt) {
@@ -510,7 +573,7 @@ TEST_F(Dataset, RefusesALensWithNoPixelsInIt) {
     "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": 0, "height": 36})", kOneFrame));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "records a lens with no pixels in it"));
 }
 
 TEST_F(Dataset, RefusesTruthWhoseFramesAreNotASequence) {
@@ -518,7 +581,7 @@ TEST_F(Dataset, RefusesTruthWhoseFramesAreNotASequence) {
   WriteTruth(scratch, TruthWith(kLens, R"({"file": "frame_0000.ppm"})"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "records no sequence of frames"));
 }
 
 TEST_F(Dataset, RefusesAFrameEntryMissingItsFileOrItsRotation) {
@@ -528,7 +591,7 @@ TEST_F(Dataset, RefusesAFrameEntryMissingItsFileOrItsRotation) {
     WriteTruth(scratch, TruthWith(kLens, frames));
     const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
     EXPECT_FALSE(loaded.ok()) << frames;
-    EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument) << frames;
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "has no file or no rotation")) << frames;
   }
 }
 
@@ -538,7 +601,7 @@ TEST_F(Dataset, RefusesARotationMissingAComponent) {
       R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0}}])"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "rotation: z is not in the file"));
 }
 
 TEST_F(Dataset, RefusesAFrameEntryThatNamesAPathRatherThanAFile) {
@@ -551,7 +614,7 @@ TEST_F(Dataset, RefusesAFrameEntryThatNamesAPathRatherThanAFile) {
                                          R"(", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
     const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
     EXPECT_FALSE(loaded.ok()) << named;
-    EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument) << named;
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "names a path rather than a file")) << named;
   }
 }
 
@@ -562,7 +625,7 @@ TEST_F(Dataset, RefusesADatasetWithNoFramesInIt) {
   WriteTruth(scratch, TruthWith(kLens, "[]"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.code, StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "names no frames"));
 }
 
 TEST_F(Dataset, ReadsAnIntrinsicWrittenWithoutADecimalPoint) {
@@ -592,5 +655,189 @@ TEST_F(Dataset, GivesTheFramesBackToACallerThatForgetsThem) {
   EXPECT_EQ(HeapUsed(), before);
 }
 
+
+// ---------------------------------------------------------------- what the numbers land in
+//
+// Everything above asks whether the loader *refuses* the right files. These ask whether the numbers
+// it accepts go where they say they go — which nothing asked before, and which is the only thing
+// Phase 2 actually consumes. A reviewer set all five distortion coefficients to 42.0 inside the
+// loader and the whole suite stayed green, because every fixture spells them 0.0; the same reviewer
+// transposed `x` and `z` in every rotation and nothing failed, because the committed ring turns
+// about `+Y` and both are zero in all four frames. A field that is zero everywhere is a field no
+// test is reading.
+
+TEST_F(Dataset, EveryIntrinsicLandsInTheFieldItIsNamedFor) {
+  // Eleven values, all different, none zero, and none a plausible substitute for another. Any
+  // transposition, any dropped field and any constant substituted for the file's value shows up as
+  // a specific failure rather than as a suite that stays green.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(R"("intrinsics": {"fx": 11.5, "fy": 22.5, "cx": 33.5, "cy": 44.5,
+    "k1": 0.11, "k2": 0.22, "k3": 0.33, "p1": 0.44, "p2": 0.55, "width": 48, "height": 36})",
+                                kOneFrame));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  const Intrinsics& lens = loaded.value.lens;
+  EXPECT_DOUBLE_EQ(lens.fx, 11.5);
+  EXPECT_DOUBLE_EQ(lens.fy, 22.5);
+  EXPECT_DOUBLE_EQ(lens.cx, 33.5);
+  EXPECT_DOUBLE_EQ(lens.cy, 44.5);
+  EXPECT_DOUBLE_EQ(lens.k1, 0.11);
+  EXPECT_DOUBLE_EQ(lens.k2, 0.22);
+  EXPECT_DOUBLE_EQ(lens.k3, 0.33);
+  EXPECT_DOUBLE_EQ(lens.p1, 0.44);
+  EXPECT_DOUBLE_EQ(lens.p2, 0.55);
+  EXPECT_EQ(lens.width, 48);
+  EXPECT_EQ(lens.height, 36);
+  // The two fields the file does not carry, which the header promises are left meaning "not known".
+  EXPECT_EQ(lens.rollingShutterLineTimeNs, 0);
+  EXPECT_FALSE(lens.estimated);
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, EveryRotationComponentLandsInTheFieldItIsNamedFor) {
+  // Two frames, eight distinct components, no zeros and no repeats — so a transposition of any pair
+  // within a frame, and any confusion between the two frames, is visible. Not unit quaternions: the
+  // loader records what the file spells and normalising is not its job.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(kLens,
+      R"([{"file": "frame_0000.ppm", "rotation": {"w": 0.11, "x": 0.22, "y": 0.33, "z": 0.44}},
+          {"file": "frame_0001.ppm", "rotation": {"w": -0.55, "x": 0.66, "y": -0.77, "z": 0.88}}])"));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ASSERT_EQ(loaded.value.frames.size(), 2u);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.w, 0.11);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.x, 0.22);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.y, 0.33);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.z, 0.44);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.w, -0.55);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.x, 0.66);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.y, -0.77);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.z, 0.88);
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, RefusesAnIntrinsicThatIsNotAFiniteNumber) {
+  // `"cx": 1e400` parses as a real node holding `inf` — measured, not assumed — and an infinite
+  // principal point would travel into every projection the harness computes without a word.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 1e400, "cy": 18.0,
+    "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": 48, "height": 36})", kOneFrame));
+  const int64_t before = HeapUsed();
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "cx is not a finite number"));
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+TEST_F(Dataset, ReadsAWidthOpenCvHasAlreadyWrappedAndCannotBeToldAbout) {
+  // **A limitation pinned, not a behaviour wanted.** OpenCV's JSON parser wraps an integer outside
+  // `int`'s range to 32 bits before the node exists, and `isInt()` stays true — so 4294967344
+  // arrives at `NodeInt` as 48, and as 48.0 if read as a double. No accessor on `cv::FileNode` sees
+  // the original text, so there is nothing here that could refuse it.
+  //
+  // It loads, and this test says so, because the alternative is a reader that looks guarded and is
+  // not. What saves it in practice is the line below: the wrapped width still has to agree with the
+  // PPM header, and a 48-wide frame is the only thing that will.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 24.0, "cy": 18.0,
+    "k1": 0.0, "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0,
+    "width": 4294967344, "height": 36})", kOneFrame));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  EXPECT_EQ(loaded.value.lens.width, 48) << "if this ever refuses instead, the limitation is gone "
+                                            "and this test should become a refusal";
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, RefusesAHeaderNumberTooLargeForTheTypeThatHoldsIt) {
+  // `ReadNumber`'s `catch (...)` had no test and no written reason while its two neighbours had
+  // theirs. It is reachable from a file anyone can write: all-digits passes the character check,
+  // width is bounded only by the 32-byte token cap, and twenty digits overflow `long long` so
+  // `std::stoll` throws `std::out_of_range`.
+  Scratch scratch;
+  std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+  out << "P6\n99999999999999999999 36\n255\n";
+  out.close();
+  WriteTruth(scratch, TruthWith(kLens, kOneFrame));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "has a header this reader cannot parse"));
+}
+
+TEST_F(Dataset, RefusesAFrameFileWithNoMagicNumberAtAll) {
+  // The other half of `ReadToken`'s refusal, separated from the length cap so that the cap's test
+  // cannot be satisfied by this one. An empty file has no token; a 40-byte first token has one that
+  // is too long; before they were split, both said the same thing and neither test could tell which
+  // guard had answered.
+  Scratch scratch;
+  std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+  out.close();
+  WriteTruth(scratch, TruthWith(kLens, kOneFrame));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "has no Netpbm magic number at all"));
+}
+
+TEST_F(Dataset, RefusesWhenTheStoreWillNotReleaseThePinItTook) {
+  // A leak that arrives through the *success* path, which is the worst kind because nothing is
+  // looking. `HeldFrame::Release` used to clear its flag whichever way the store went, so a refused
+  // release looked finished: the destructor skipped its retry, `Commit` suppressed the `Forget`, and
+  // the load returned four frames that were still pinned — which `Forget` refuses and which makes
+  // `Clear` refuse for the whole store. No real store reaches this; `IFrameStoreAccess::Release`
+  // returns a `Status` because an implementation may, so a test store supplies one.
+  AwkwardStore awkward{store};
+  awkward.refuseReleaseAfter = 0;
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+  ASSERT_FALSE(loaded.ok()) << "a frame nobody can release was handed over as if it were usable";
+  EXPECT_NE(loaded.status.detail.find("would not release the pin"), std::string::npos)
+      << loaded.status.detail;
+}
+
+TEST_F(Dataset, SaysSoWhenTheStoreWillNotTakeItsFramesBack) {
+  // `Forget` is allowed to refuse — `MemoryFrameStoreAccess` returns a spill sink's refusal and
+  // keeps the entry, so its totals go on accounting for bytes nobody holds a handle to. The caller
+  // of a failed load holds no handles at all, so a rollback that quietly failed would be
+  // unobservable. The header promises a refusal gives every frame back *and says so when it cannot*.
+  AwkwardStore awkward{store};
+  awkward.refuseForgetAfter = 0;
+  // Two frames read, then a third entry naming a file that is not there: the rollback has something
+  // to give back and the store will not take it.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(kLens,
+      R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}},
+          {"file": "frame_0001.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}},
+          {"file": "absent.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, scratch.path());
+  ASSERT_FALSE(loaded.ok());
+  EXPECT_NE(loaded.status.detail.find("still account for bytes no handle names"), std::string::npos)
+      << loaded.status.detail;
+  EXPECT_TRUE(store.Clear().ok());
+}
+
+TEST_F(Dataset, RefusesADatasetThatDoesNotStateTheRotationConventionThisReaderAssumes) {
+  // The one field whose violation is invisible. `truth.json` has always carried a `convention`
+  // block, and until a reviewer asserted the *set* of its keys rather than the presence of the two
+  // the loader wanted, nothing in C++ had ever read a word of it — including the line saying which
+  // way round the quaternions go. A dataset written the other way round loads perfectly, scores
+  // perfectly, and every number is wrong by an inverse.
+  for (const char* convention : {R"("convention": {"rotation": "world -> device"})",
+                                 R"("convention": {"rotation": 7})",
+                                 R"("convention": {})",
+                                 R"("convention": "device -> world")"}) {
+    Scratch scratch;
+    WriteTruth(scratch, "{" + std::string(convention) + ", " + kLens + ", \"frames\": " +
+                            kOneFrame + "}");
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                            "does not state the rotation convention this reader assumes"))
+        << convention;
+  }
+}
+
+TEST_F(Dataset, RefusesADatasetWithNoConventionBlockAtAll) {
+  Scratch scratch;
+  WriteTruth(scratch, "{" + std::string(kLens) + ", \"frames\": " + kOneFrame + "}");
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "does not state the rotation convention this reader assumes"));
+}
 }  // namespace
 }  // namespace sphanorama

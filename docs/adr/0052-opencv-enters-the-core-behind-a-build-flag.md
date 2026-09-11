@@ -49,8 +49,9 @@ cannot be compiled `-fno-exceptions`, because `cv::Exception` is how OpenCV repo
 failure… the OpenCV-backed implementation is its own component, compiled with exceptions, catching
 at its own edge and returning `Result<T>`. That is a decision for the ADR that introduces the first
 such engine." This is that ADR, and that is the shape taken: `feature_registration_engine.cpp` alone
-carries `-fexceptions` (a source-file property in `core/CMakeLists.txt`, verified to land after the
-target's `-fno-exceptions` and on no other translation unit), and `ExtractFeatures` converts
+carries `-fexceptions` **in `core/src`** (a source-file property in `core/CMakeLists.txt`, verified
+to land after the target's `-fno-exceptions`; ADR 0053 added three more under `core/test`, which
+ship nowhere), and `ExtractFeatures` converts
 `cv::Exception` to a `Result` at its edge. It is not theoretical: a one-pixel frame passes every
 guard the engine has and then throws out of `cv::resize` under ORB and `setSize` under AKAZE, while
 SIFT answers normally — which is why the boundary cannot be a list of the detectors that need one.

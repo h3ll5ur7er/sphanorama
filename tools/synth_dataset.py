@@ -641,7 +641,8 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     regenerated rather than committed, so the size is a cost nobody carries for long.
 
     One output of this function *is* committed, and it is the exception that proves the rule:
-    `core/test/data/synthetic-ring-4` is four 48x36 frames, 22,570 bytes, read by the C++ loader's
+    `core/test/data/synthetic-ring-4` is four 48x36 frames and their `truth.json`, 22,570 bytes
+    on disk altogether (20,788 of frames, 1,782 of JSON), read by the C++ loader's
     tests. It is a **format** fixture rather than a measurement — it exists so that loader is read
     against bytes this writer produced rather than against its author's idea of the format
     (ADR 0053). The stronger claim, that this catches bugs a hand-written fixture would miss, was

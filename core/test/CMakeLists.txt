@@ -96,6 +96,39 @@ if(SPHANORAMA_WITH_OPENCV)
   # harness exists to avoid.
   target_compile_definitions(sphanorama_tests
     PRIVATE SPHANORAMA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+  # Its own binary, and the reason is the thing it does: it replaces global `operator new` so a
+  # chosen allocation fails, which is not something to do to a process 700 other tests share. Nor
+  # is it a gtest — gtest allocates while it runs, so the sweep's counter would move under it.
+  #
+  # What it buys is the one property no fake store can reach: "a refusal allocates nothing" needs an
+  # allocation to fail inside `std::vector`, not inside the store. Two windows were open in round 1
+  # because nothing could ask that question, and three reviewers each built this instrument by hand
+  # to find them. Keeping it costs one small executable.
+  add_executable(sphanorama_dataset_alloc_test support/synthetic_dataset_alloc_test.cpp
+                                               support/synthetic_dataset.cpp)
+  target_include_directories(sphanorama_dataset_alloc_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(sphanorama_dataset_alloc_test PRIVATE sphanorama_core sphanorama_opencv)
+  target_compile_options(sphanorama_dataset_alloc_test PRIVATE -Wall -Wextra -Werror)
+  # Through the source property, not `target_compile_options`, and the difference is the trap this
+  # file already documents twenty lines up: a target's own options are emitted *before* the
+  # INTERFACE options it inherits, so a `-fexceptions` put there would read as
+  # `-fexceptions … -fno-exceptions` and lose to the flag the core exports.
+  # `synthetic_dataset.cpp` already carries the property from the call above — source file
+  # properties are directory-scoped, so it is set once for both targets that compile it.
+  set_source_files_properties(support/synthetic_dataset_alloc_test.cpp
+    PROPERTIES COMPILE_OPTIONS "-fexceptions")
+  target_compile_definitions(sphanorama_dataset_alloc_test
+    PRIVATE SPHANORAMA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+  add_test(NAME DatasetRefusalAllocatesNothing COMMAND sphanorama_dataset_alloc_test)
+  # Leak detection off for this one test, with the measurement behind it written at the top of the
+  # source: the sweep makes an allocation fail inside `MemoryFrameStoreAccess`, which is compiled
+  # `-fno-exceptions`, so the throw runs no destructors on its way out and orphans a frame before
+  # the loader sees anything. The real program cannot do that — there the same failure terminates —
+  # so the leak is the instrument's, not the loader's. ASan's other checks stay on, and the test's
+  # own assertion is the store's accounting, which is what the header actually promises.
+  set_tests_properties(DatasetRefusalAllocatesNothing PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 endif()
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)

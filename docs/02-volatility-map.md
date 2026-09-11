@@ -43,9 +43,14 @@ row and a `utilities/` home together.
 **How a synthetic dataset is produced** — the panorama it is rendered from, the lens model, the pose
 trajectory, the noise and blur and rolling-shutter and exposure models still to come — varies as much
 as anything in this map and has no component here either, for the same reason as the axis above it:
-it is a fact about how we test, `tools/synth_dataset.py` owns it, and nothing in `core/src` reads it.
-ADR 0050 holds the decision, including why that tool implements the lens itself rather than calling
-`camera_model`.
+it is a fact about how we test, and nothing in `core/src` reads it. ADR 0050 holds the decision,
+including why that tool implements the lens itself rather than calling `camera_model`.
+
+The axis has **two** owners now rather than one, and deliberately: `tools/synth_dataset.py` writes a
+dataset and `core/test/support/synthetic_dataset` reads one, so the format is spelled in two
+languages and a change to it has to be made twice. ADR 0053 takes that cost knowingly — the whole
+point of the loader is to be checked against bytes the generator wrote rather than against bytes its
+own author wrote — and names the pair of tests, one on each side, that fail when the two drift.
 
 ## 2.2 Axes deliberately *not* given their own component
 

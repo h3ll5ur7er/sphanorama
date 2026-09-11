@@ -53,9 +53,32 @@ path, which exists only where OpenCV does (ADR 0052), so the dependency costs no
 already paid. It was measured against the real `truth.json` before being chosen, not assumed: it
 reads the nested `intrinsics`, the `frames` sequence and each `rotation`.
 
+**The rotation convention is checked, not assumed.** `truth.json` carries a `convention` block —
+camera space, image space, principal point, equirectangular layout, rotation, pixel encoding — and
+the loader refuses any dataset whose `convention.rotation` is not the exact string it was written
+against. By exact text, because the field is prose and prose that changed meaning is precisely what a
+reader must not accept quietly; rewording it is a decision, so it fails in the loader and again in
+`tools/test_synth_dataset.py` beside the writer.
+
+This is checked because its violation is the one that leaves no trace. A dataset written the other
+way round loads cleanly, scores cleanly, and every number it produces is wrong by an inverse — which
+is the exact failure mode `docs/00-principles.md` opens with, a rotation slightly wrong looking fine
+until the seam. The block had been written by the generator since ADR 0050 and read by nothing; it
+took a reviewer asking for the *set* of `truth.json`'s top-level keys rather than the presence of the
+two the loader wanted to notice that a third had been there all along. The remaining entries are
+carried and not checked here, because this loader copies bytes and consumes none of them; the first
+thing to compute on those pixels owes `pixel_encoding` the same treatment, since the bytes are signed
+components rather than the unsigned [0, 1] a reader would assume.
+
 **A small dataset is committed, and read by the loader's tests.** `core/test/data/synthetic-ring-4`
-is four 48x36 frames written by the real generator: **22,570 bytes** of content, which git stores
-compressed at about 13.2 KiB.
+is four 48x36 frames plus the `truth.json` that describes them: **22,570 bytes on disk in total** —
+20,788 of frames at 5,197 bytes each, and 1,782 of JSON.
+
+An earlier version of this line attached that total to "four 48x36 frames", which is 1,782 bytes
+more than the frames are, and separately claimed git stores it "compressed at about 13.2 KiB" — a
+figure that measured 13.27 and was stated in the wrong direction against a `du` reading of 40 KiB
+that counts 4 KiB blocks and the directory entry. The sizes above are the file sizes, which is the
+only one of those numbers that means something without a footnote.
 
 This is a deliberate exception to "datasets are regenerated rather than committed", and the
 distinction is what the file is *for*. A measurement dataset is large, regenerated, and its pixel
@@ -107,6 +130,32 @@ fixture problem it is.
   numpy changes its rounding is not a contract, and a test that went red on an unrelated dependency
   bump would be noise. What the fixture pins is shape, and the loader's own tests read its pixels
   back through an independent parser rather than trusting them.
+- **The "a refusal allocates nothing" promise gets its own test binary, because nothing else could
+  ask.** `sphanorama_dataset_alloc_test` replaces global `operator new` and sweeps a failure across
+  every allocation of a full load, checking the store's totals return to baseline each time. It is a
+  separate executable for two reasons: replacing `operator new` is not something to do to a process
+  seven hundred other tests share, and gtest allocates while it runs, which would move the sweep's
+  own counter. Round 2 found two windows with exactly this instrument — one of them inside round 1's
+  fix for the same promise — and three reviewers each built it by hand before it was kept.
+- **Leak detection is off for that one test, and the measurement behind that is worth the space.**
+  With LeakSanitizer on, the sweep reports its own totals clean and LSan still finds one 6,912-byte
+  frame unfreed. Bisected to a single point and backtraced, it is the red-black-tree node allocation
+  inside `entries_.emplace` in `MemoryFrameStoreAccess::Allocate` — which is compiled
+  `-fno-exceptions` (ADR 0012), so GCC emits no cleanup landing pads and a throw travelling through
+  it never runs the destructor of that function's local `Entry`. The bytes are orphaned before the
+  loader is reached. That is a fact about the instrument: making an allocation fail *inside* code
+  that has opted out of exceptions is not something the real program can do, since there the same
+  failure terminates. The property the test asserts is the store's accounting, which stays correct at
+  that point and every other.
+- **Three files under `core/test` now carry `-fexceptions`**, where ADR 0052 had said
+  `feature_registration_engine.cpp` alone carried it "and no other translation unit". That sentence
+  was true of `core/src` and is now qualified there; the three added here are test support and ship
+  nowhere. Being test support bought no leniency in practice — both of round 2's worst findings were
+  in this loader's own exception boundary.
+- **The format is spelled in two languages, so `docs/02-volatility-map.md`'s axis has two owners.**
+  A change to the dataset format has to be made in `tools/synth_dataset.py` and again here. That cost
+  is the point rather than an oversight: a loader checked only against bytes its own author wrote is
+  checked against its author's idea of the format. One test on each side fails when the two drift.
 - **A dataset costs the heap what its frames cost.** Four 48x36 frames are nothing; sixty frames of a
   real capture are not. The frames belong to the caller, who must `Forget` each — the same rule
   `ExtractFeatures` states, and for the same reason: a harness leaking a dataset per run would

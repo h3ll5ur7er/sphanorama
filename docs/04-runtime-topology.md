@@ -223,7 +223,9 @@ it; pixels never cross this way in any case.
 ## 4.7 Error model
 
 No exceptions cross the WASM boundary, and the core is compiled `-fno-exceptions` with one named
-exception: `feature_registration_engine.cpp`, which calls OpenCV. `cv::Exception` is how OpenCV
+exception in `core/src`: `feature_registration_engine.cpp`, which calls OpenCV. (Three files in
+`core/test` take `-fexceptions` too — the synthetic-dataset loader, its test and its allocation
+sweep — for the same reason and with no bearing on what ships.) `cv::Exception` is how OpenCV
 reports ordinary failure, so that one translation unit takes `-fexceptions` back and converts at its
 own edge — nothing above it learns that OpenCV throws (ADR 0047 named the shape, ADR 0052 built it).
 Every fallible call returns
