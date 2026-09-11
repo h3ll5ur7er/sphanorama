@@ -40,21 +40,43 @@ is not 255 — each is a refusal. The longer case matters as much as the shorter
 spare is not the frame its header describes, and reading the first `w * h * 3` of it succeeds
 silently while quietly picking a different picture.
 
-**JSON comes from `cv::FileStorage` rather than a parser written here.** Nothing in this repository
+**JSON comes from `cv::FileStorage` rather than a parser written here.** No *C++* in this repository
 parses JSON — the session document has its own text format — so the choice was between a dependency
-already present and a new hand-rolled parser. Every consumer of this loader is on the registration
+already present and a new hand-rolled parser in the one language that had no reader.
+
+That sentence first read "nothing in this repository parses JSON", which a reviewer showed is plainly
+false: `shell/src/access/spill-host.ts` parses the spill index on the product path, and
+`tools/check_dist_fresh.mjs` and `tools/test_synth_dataset.py` both parse it in the tooling. The
+claim that carried the argument was always the narrower one, and overstating it made the decision
+look better supported than it was. Every consumer of this loader is on the registration
 path, which exists only where OpenCV does (ADR 0052), so the dependency costs nothing that was not
 already paid. It was measured against the real `truth.json` before being chosen, not assumed: it
 reads the nested `intrinsics`, the `frames` sequence and each `rotation`.
 
 **A small dataset is committed, and read by the loader's tests.** `core/test/data/synthetic-ring-4`
-is four 48x36 frames, 40 KB, written by the real generator.
+is four 48x36 frames written by the real generator: **22,570 bytes** of content, which git stores
+compressed at about 13.2 KiB.
 
 This is a deliberate exception to "datasets are regenerated rather than committed", and the
 distinction is what the file is *for*. A measurement dataset is large, regenerated, and its pixel
 values are the point. This one is a **format** fixture: it exists so the loader is read against bytes
-its own writer produced, rather than against the author's idea of the format, which is the one thing
-a hand-written fixture cannot do. Forty kilobytes is a cheap price for removing that class of error.
+its own writer produced, rather than against the author's idea of the format. Twenty-two kilobytes is
+a cheap price for removing that class of error.
+
+***And the first version of this ADR claimed more for it than it earns.*** It said the fixture caught
+an off-by-one in the header reader "which a hand-written fixture would not have", and a reviewer
+disproved that directly: a hand-typed 4x3 fixture dies to the same sabotage, in the same run. The bug
+was in the reader, not in the author's understanding of the format, so the one thing a real fixture
+uniquely guards against is not what caught it. What remains true is narrower and worth keeping: a
+hand-written fixture is written to match whatever the author believes the format is, so it cannot
+catch a belief that is wrong — and no evidence here shows that risk being realised.
+
+The first version of this paragraph said forty, and made the cost argument on that number. It was
+`du`'s block figure — five files rounded up to whole 4 KiB blocks — reported as the size of the
+bytes. The real cost is 1.8x smaller on disk and 3.0x smaller in the repository, so the argument was
+sound and the evidence for it was inflated, which is the combination that is easiest to let through.
+`tools/synth_dataset.py`'s own docstring carried the uncommitted-datasets claim too, and now records
+this exception.
 
 **The format is pinned from the writer's side too.** `tools/test_synth_dataset.py` asserts the header
 shape and the `truth.json` keys the C++ loader reads, naming that consumer. The format is written
@@ -101,7 +123,15 @@ did.
 ***Generating the fixture at build time from `synth_dataset.py`.*** The strongest version of the
 format check, and rejected for this increment on coupling: it would make `cmake --build` of the
 native tests require `uv` and numpy, so a contributor without them gets a broken build rather than a
-skipped check. Named in the consequences above as the thing to revisit when CI measures accuracy.
+skipped check.
+
+Two corrections a reviewer is owed here. The coupling argument is about *build* time and was written
+as though it settled *test* time as well, which it does not — and `tools/gate.sh` already refuses to
+run without `uv` and already invokes `--group datasets`, so the gate specifically pays that cost
+today. A third option was never weighed: a ctest fixture that generates a dataset when the tooling is
+present and skips when it is not. That is probably the right answer, and it is left out of this
+increment rather than argued away — the honest reason is scope, not cost. Named in the consequences
+above as the thing to revisit when CI measures accuracy.
 
 ***Asserting the fixture is byte-identical to a fresh render.*** Would catch every drift, including
 the numeric ones — and would go red on a numpy upgrade that changed a rounding mode, which is an

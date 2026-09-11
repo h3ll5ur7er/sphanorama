@@ -637,8 +637,15 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     """Render every pose and write the frames beside the truth that describes them.
 
     Binary Netpbm rather than PNG, deliberately: a P6 file is a header and the pixels, which any
-    consumer can read in a dozen lines and no consumer needs a library for. Datasets are
+    consumer can read in a dozen lines and no consumer needs a library for. Measurement datasets are
     regenerated rather than committed, so the size is a cost nobody carries for long.
+
+    One output of this function *is* committed, and it is the exception that proves the rule:
+    `core/test/data/synthetic-ring-4` is four 48x36 frames, 22,570 bytes, read by the C++ loader's
+    tests. It is a **format** fixture rather than a measurement — it exists so that loader is read
+    against bytes this writer produced rather than against its author's idea of the format
+    (ADR 0053). The stronger claim, that this catches bugs a hand-written fixture would miss, was
+    written here and then disproved by a reviewer; the ADR records what survives of it.
     """
     if panorama.ndim != 3 or panorama.shape[2] != 3:
         raise ValueError(

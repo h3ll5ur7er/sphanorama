@@ -49,6 +49,12 @@ class OwnedFrames {
  * choked on them would be refusing a valid file. Everything else about the header is checked
  * strictly, so accepting the one thing the standard requires costs nothing.
  */
+// Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
+// is what stops a file with no whitespace byte in it from being read *whole* into memory before
+// `magic != "P6"` ever runs — measured by a reviewer at 988 MB resident for a 512 MiB file, in a
+// function whose own payload loop twenty lines below exists to avoid precisely that.
+constexpr size_t kLongestHeaderToken = 32;
+
 bool ReadToken(std::istream& in, std::string* token) {
   token->clear();
   int c = in.get();
@@ -62,6 +68,7 @@ bool ReadToken(std::istream& in, std::string* token) {
   }
   if (!in.good()) return false;
   while (in.good() && !std::isspace(static_cast<unsigned char>(c))) {
+    if (token->size() >= kLongestHeaderToken) return false;
     token->push_back(static_cast<char>(c));
     c = in.get();
   }
@@ -85,6 +92,46 @@ bool ReadNumber(std::istream& in, int64_t* value) {
   }
   return true;
 }
+
+/**
+ * One frame, released and forgotten unless the read commits it.
+ *
+ * `OwnedFrames` below covers the frames a *dataset* collected; this covers the window inside one
+ * read, which the first version left open. Between `Pin` succeeding and the last row being copied
+ * there is an allocation, and this translation unit is `-fexceptions` — so a `std::bad_alloc` there
+ * escaped with the frame still **pinned**, which is worse than an ordinary leak: `Forget` refuses a
+ * pinned frame and `Clear` refuses while any frame is pinned, so those bytes were unrecoverable.
+ * `FeatureRegistrationEngine::OwnedFrame` exists for this exact window; the outer holder was
+ * mirrored from it and the inner rollback was written by hand, which is how the gap got in.
+ */
+class HeldFrame {
+ public:
+  HeldFrame(IFrameStoreAccess& store, const FrameRef& frame) : store_(store), frame_(frame) {}
+  ~HeldFrame() {
+    if (pinned_) (void)store_.Release(frame_);
+    if (!committed_) (void)store_.Forget(frame_);
+  }
+  HeldFrame(const HeldFrame&) = delete;
+  HeldFrame& operator=(const HeldFrame&) = delete;
+
+  Result<std::span<uint8_t>> Pin() {
+    Result<std::span<uint8_t>> pinned = store_.Pin(frame_);
+    if (pinned.ok()) pinned_ = true;
+    return pinned;
+  }
+  void Release() {
+    if (!pinned_) return;
+    (void)store_.Release(frame_);
+    pinned_ = false;
+  }
+  void Commit() { committed_ = true; }
+
+ private:
+  IFrameStoreAccess& store_;
+  FrameRef frame_;
+  bool pinned_ = false;
+  bool committed_ = false;
+};
 
 /** One P6 file, read into a frame of `lens`'s shape. */
 Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const Intrinsics& lens) {
@@ -127,11 +174,23 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   const Result<FrameRef> allocated = store.Allocate(lens.width, lens.height, PixelFormat::RGBA8);
   if (!allocated.ok()) return allocated;
   const FrameRef frame = allocated.value;
+  HeldFrame held(store, frame);
 
-  const Result<std::span<uint8_t>> pinned = store.Pin(frame);
-  if (!pinned.ok()) {
-    (void)store.Forget(frame);
-    return Err<FrameRef>(pinned.status.code, kComponent, pinned.status.detail);
+  const Result<std::span<uint8_t>> pinned = held.Pin();
+  if (!pinned.ok()) return Err<FrameRef>(pinned.status.code, kComponent, pinned.status.detail);
+
+  // **What the store actually handed over, against what the handle claims.** `Allocate` promises
+  // nothing about stride, so the span and `frame.stride` are two different authorities and the
+  // write loop below indexes by the second. A reviewer reproduced an ASan heap-buffer-*write*
+  // overflow with a forwarding store that padded the stride by 64. Asked by subtraction rather than
+  // by forming `height * stride`, which is the product this check exists to avoid trusting.
+  const int64_t rowBytes = static_cast<int64_t>(lens.width) * 4;
+  const int64_t held_bytes = static_cast<int64_t>(pinned.value.size());
+  const int64_t rows = static_cast<int64_t>(lens.height) - 1;
+  if (frame.stride < rowBytes || (rows > 0 && frame.stride > (held_bytes - rowBytes) / rows) ||
+      (rows == 0 && rowBytes > held_bytes)) {
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                         "the store handed back fewer bytes than a frame of this shape needs");
   }
 
   // Row at a time, straight into the pinned span. Reading the whole file first and copying would
@@ -158,15 +217,34 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   // Strict in both directions. A file with bytes to spare is not the frame its header describes,
   // and taking the first `w * h * 3` of it succeeds silently while reading a different picture.
   const bool trailing = !short_read && in.peek() != std::char_traits<char>::eof();
-  (void)store.Release(frame);
+  held.Release();
   if (short_read || trailing) {
-    (void)store.Forget(frame);
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
                          path.filename().string() + (short_read
                              ? " ends before the pixels its header promises"
                              : " carries more bytes than its header accounts for"));
   }
+  held.Commit();
   return Ok(frame);
+}
+
+/**
+ * An integer field, refusing anything that is not one.
+ *
+ * `static_cast<int>` of a `FileNode` that is not a number answers **`0x7FFFFFFF`** — measured, not
+ * assumed — and `INT_MAX` sails past a `<= 0` guard. So `"width": "not a number"` reached
+ * `Allocate(2147483647, 3, RGBA8)` and came back `FrameStoreExhausted`, telling the caller the store
+ * was full when the truth was that the file was malformed, and breaking the `InvalidArgument` this
+ * header promises. Every other intrinsic already went through `NodeDouble`'s flag; these two were
+ * checked only for presence.
+ */
+int32_t NodeInt(const cv::FileNode& node, const char* name, bool* ok) {
+  const cv::FileNode field = node[name];
+  if (field.empty() || !field.isInt()) {
+    *ok = false;
+    return 0;
+  }
+  return static_cast<int32_t>(static_cast<int>(field));
 }
 
 double NodeDouble(const cv::FileNode& node, const char* name, bool* ok) {
@@ -205,6 +283,13 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   // sequence and each `rotation` correctly.
   cv::FileStorage file;
   try {
+    // **Kept, and no test reaches it — measured rather than assumed.** `open` returns `bool` in
+    // OpenCV's API, and in 4.10.0 it does not use it for malformed input: an empty file, a file of
+    // prose and a truncated object each *throw* and land in the catch below. Nothing this loader can
+    // be handed reaches the `false`, and a permissions failure does not either where the tests run
+    // as root. It stays because the signature is the contract — a version that returns `false`
+    // instead would otherwise leave this reading an unopened `FileStorage` — and this comment is
+    // here so the next reader can tell a guard that was considered from one nobody noticed.
     if (!file.open(truthPath.string(), cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON)) {
       return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
                                    "truth.json could not be opened as JSON");
@@ -233,14 +318,13 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     dataset.lens.k3 = NodeDouble(intrinsics, "k3", &ok);
     dataset.lens.p1 = NodeDouble(intrinsics, "p1", &ok);
     dataset.lens.p2 = NodeDouble(intrinsics, "p2", &ok);
-    const cv::FileNode widthNode = intrinsics["width"];
-    const cv::FileNode heightNode = intrinsics["height"];
-    if (!ok || widthNode.empty() || heightNode.empty()) {
+    dataset.lens.width = NodeInt(intrinsics, "width", &ok);
+    dataset.lens.height = NodeInt(intrinsics, "height", &ok);
+    if (!ok) {
       return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
-                                   "truth.json's intrinsics are missing a field this reader needs");
+                                   "truth.json's intrinsics are missing a field this reader needs, "
+                                   "or one of them is not a number");
     }
-    dataset.lens.width = static_cast<int32_t>(static_cast<int>(widthNode));
-    dataset.lens.height = static_cast<int32_t>(static_cast<int>(heightNode));
     if (dataset.lens.width <= 0 || dataset.lens.height <= 0) {
       return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
                                    "truth.json records a lens with no pixels in it");
@@ -270,8 +354,18 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
                                      "a frame's rotation is missing a component");
       }
 
-      const Result<FrameRef> read =
-          ReadFrame(store, fs::path(directory) / static_cast<std::string>(fileNode), dataset.lens);
+      // A name, not a path. `fs::path(dir) / "/etc/passwd"` *replaces* rather than appends, so an
+      // absolute `file` silently reads from outside the dataset, and `..` walks out of it. Nothing
+      // writes such a dataset, and a directory is not a boundary anybody has promised to hold — but
+      // a loader that follows whatever a file tells it to is the wrong default even in test support.
+      const std::string named = static_cast<std::string>(fileNode);
+      if (fs::path(named).has_parent_path() || named.find("..") != std::string::npos) {
+        return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
+                                     "a frame entry names a path rather than a file in the dataset: "
+                                         + named);
+      }
+
+      const Result<FrameRef> read = ReadFrame(store, fs::path(directory) / named, dataset.lens);
       if (!read.ok()) return Err<SyntheticDataset>(read.status.code, kComponent, read.status.detail);
       owned.Keep(read.value);
       frame.frame = read.value;
@@ -280,6 +374,25 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   } catch (const cv::Exception& thrown) {
     return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
                                  std::string("truth.json is shaped unexpectedly: ") + thrown.what());
+  } catch (const std::exception& thrown) {
+    // Not only OpenCV's. Every caller of this is compiled `-fno-exceptions`, so anything escaping
+    // here is a terminate rather than a failure — and `push_back` on the frame vector allocates, so
+    // `std::bad_alloc` is a real way out of this block and not a theoretical one. The engine this
+    // boundary is modelled on catches both for the same reason.
+    //
+    // No test reaches this one, and that is a gap rather than a comfort: reaching it needs a
+    // throwing allocator, which is how a reviewer demonstrated the leak this arm now closes. The
+    // state is reachable in life — a sixty-frame dataset of real captures is where an allocation
+    // fails — so the arm stays and the missing test is named here instead of being implied.
+    return Err<SyntheticDataset>(StatusCode::Internal, kComponent,
+                                 std::string("reading the dataset failed: ") + thrown.what());
+  }
+
+  // An empty `frames` array parsed cleanly and loaded as a *successful* dataset of nothing, which a
+  // harness would go on to score: a median over no frames is a number nobody should be shown.
+  if (dataset.frames.empty()) {
+    return Err<SyntheticDataset>(StatusCode::InvalidArgument, kComponent,
+                                 "truth.json names no frames, so there is nothing here to score");
   }
 
   owned.Commit();

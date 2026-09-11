@@ -172,6 +172,7 @@ contracts/cpp/        the include root — headers consumed directly, never mirr
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest, mirroring src/; fakes in test/support/
+  test/data/          the one committed dataset — a format fixture, not a measurement (ADR 0053)
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. A client at its root; its
                       resource_access/ subtree holds browser-backed ports and is judged as
