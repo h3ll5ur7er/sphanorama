@@ -207,9 +207,14 @@ struct FrameRef {
   // A reviewer measured the pair: 10201025586445714307 before a reload, 0 after. Nothing consumes it
   // today — the incremental build graph is Phase 3 — which is why this is a note rather than a fix.
   // But that graph's central invariant is "an incremental rebuild equals a full rebuild", and it is
-  // going to be written against a field that is 0 for exactly the frames a retake is about. Closing
-  // it is a decision with two shapes (populate it at `Allocate`, or have `Adopt` refuse a 0 the way
-  // it already refuses a 0 `id`) and belongs to whoever writes that graph.
+  // going to be written against a field that is 0 for exactly the frames a retake is about.
+  //
+  // Two closures suggest themselves and **only one of them works**, which a reviewer had to say
+  // after this note first offered them as equivalent. Populating the field — at `Allocate`, or
+  // wherever the bytes first exist — closes it. Having `Adopt` refuse a 0, the way it already
+  // refuses a 0 `id`, does not: `ContentHash` branches on *residency*, so a cold frame and a
+  // faulted-in one still answer differently whatever value was carried. That residency branch is
+  // the third shape the decision has, and it is named on `IFrameStoreAccess::ContentHash`.
   uint64_t contentHash = 0;
 };
 
