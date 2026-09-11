@@ -115,8 +115,17 @@ narrower in one way too: it lifts one check rather than silencing one report.
   and reads 239 rows of chroma as picture — in bounds, so the sanitizers are silent, and what comes
   back is a wrong number rather than a crash.
 
-  Four review rounds have now spent their worst findings on this one seam, in two engines that hold
-  the same check by duplication. The structural answer is for the store to describe what it
+  Five review rounds have now spent their worst findings on this one seam, and the count of engines
+  holding the same check by duplication is three rather than two. `BoxFramePreviewEngine::Reduce` is
+  the third, and it does not even spell the question the same way: it bounds `stride * height <=
+  available`, which is strictly tighter than the `(height - 1) * stride + rowBytes <= held` the other
+  two use, and it answers `FailedPrecondition` where they answer `InvalidArgument`. Neither
+  difference is a defect — both formulas are sound, and both accept every frame
+  `MemoryFrameStoreAccess::Allocate` produces, because that store makes `stride * height == size`
+  exactly. What they are is evidence: the same question, written by hand three times, has already
+  drifted in its bound and in its status code without anybody deciding it should.
+
+  The structural answer is for the store to describe what it
   allocated — a `Describe`-style accessor on `IFrameStoreAccess`, against which a handle can be
   checked once instead of approximated in every engine. That is a contract change and its own ADR,
   and doing it inside this one would be a second architecture decision smuggled into a PR about
