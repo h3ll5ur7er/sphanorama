@@ -50,7 +50,10 @@ The axis has **two** owners now rather than one, and deliberately: `tools/synth_
 dataset and `core/test/support/synthetic_dataset` reads one, so the format is spelled in two
 languages and a change to it has to be made twice. ADR 0053 takes that cost knowingly — the whole
 point of the loader is to be checked against bytes the generator wrote rather than against bytes its
-own author wrote — and names the pair of tests, one on each side, that fail when the two drift.
+own author wrote. One test on each side fails when the two drift:
+`test_the_committed_fixture_is_still_this_generator_s_output` re-renders the committed ring and
+compares it byte for byte, and `Dataset.RefusesADatasetThatDoesNotStateTheRotationConventionThisReaderAssumes`
+refuses a dataset whose convention is not the one the reader was written against.
 
 ## 2.2 Axes deliberately *not* given their own component
 

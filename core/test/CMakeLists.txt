@@ -121,14 +121,14 @@ if(SPHANORAMA_WITH_OPENCV)
   target_compile_definitions(sphanorama_dataset_alloc_test
     PRIVATE SPHANORAMA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
   add_test(NAME DatasetRefusalAllocatesNothing COMMAND sphanorama_dataset_alloc_test)
-  # Leak detection off for this one test, with the measurement behind it written at the top of the
-  # source: the sweep makes an allocation fail inside `MemoryFrameStoreAccess`, which is compiled
-  # `-fno-exceptions`, so the throw runs no destructors on its way out and orphans a frame before
-  # the loader sees anything. The real program cannot do that — there the same failure terminates —
-  # so the leak is the instrument's, not the loader's. ASan's other checks stay on, and the test's
-  # own assertion is the store's accounting, which is what the header actually promises.
+  # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
+  # first version of this disabled leak detection for the whole binary, which is process-wide on the
+  # only test that reaches the loader's exception arms — a real leak planted anywhere in it would
+  # have been green. That matters concretely: LeakSanitizer is what caught this instrument's own
+  # first defect, a sweep that stayed armed through its own cleanup.
   set_tests_properties(DatasetRefusalAllocatesNothing PROPERTIES
-    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+    ENVIRONMENT
+      "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/support/dataset_alloc_test.lsan-suppressions")
 endif()
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)

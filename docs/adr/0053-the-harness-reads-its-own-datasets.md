@@ -75,8 +75,10 @@ thing to compute on those pixels owes `pixel_encoding` the same treatment, since
 components rather than the unsigned [0, 1] a reader would assume.
 
 **A small dataset is committed, and read by the loader's tests.** `core/test/data/synthetic-ring-4`
-is four 48x36 frames plus the `truth.json` that describes them: **22,570 bytes on disk in total** —
-20,788 of frames at 5,197 bytes each, and 1,782 of JSON.
+is four 48x36 frames plus the `truth.json` that describes them: **22,570 bytes of content** —
+20,788 of frames at 5,197 bytes each, and 1,782 of JSON. Not "on disk": what it occupies on disk is
+40 KiB, which is the whole subject of the paragraph below, and writing "on disk" against the content
+figure is the same mislabel that paragraph exists to record.
 
 An earlier version of this line attached that whole total to "four 48x36 frames", which is 1,782
 bytes more than the frames are. The sizes above are file sizes — the only figure here that means
@@ -99,8 +101,9 @@ catch a belief that is wrong — and no evidence here shows that risk being real
 The first version of this paragraph said forty, and made the cost argument on that number. It was
 `du`'s block figure reported as the size of the bytes — four 5,197-byte files and one 1,782-byte file
 rounded up to whole 4 KiB blocks is 36 KiB, and the fortieth kilobyte is the directory entry `du`
-also counts. The content is **1.8x smaller than `du` reported** and **3.0x smaller again in the
-repository**, where git stores the five objects in 13,589 bytes (13.3 KiB). So the argument was sound
+also counts. The content is **1.8x smaller than `du` reported**, and git stores the five objects in 13,589 bytes
+(13.3 KiB) — **1.7x below the content figure, 3.0x below `du`'s**. Both ratios are written out
+because "3.0x smaller again" reads as a further reduction from 22,570, which would be 1.7. So the argument was sound
 and the evidence for it was inflated, which is the combination that is easiest to let through.
 
 A second reviewer then found that the correction itself needed correcting on all three of its
@@ -117,7 +120,7 @@ down in two languages whether anybody likes it or not; what this buys is that a 
 file that made it, with a message about the schema, rather than in a C++ test whose message is about
 a frame.
 
-**Two test translation units take `-fexceptions`**, extending ADR 0052's boundary to test support for
+**Three test translation units take `-fexceptions`**, extending ADR 0052's boundary to test support for
 the same reason: `cv::Exception` is how OpenCV reports ordinary failure, and the loader converts it
 to a `Result` at its own edge. The test file takes it too, because it copies and deletes directories
 to build the damaged datasets its refusal cases need and `std::filesystem` reports those failures by
@@ -132,7 +135,11 @@ fixture problem it is.
   one is a number the implementation gets tuned to.
 - **The loader is checked against a committed fixture, not a freshly generated one.** If the
   generator's output shape changed, the Python cases above would fail — but the committed fixture
-  would keep the C++ tests green on a format nothing writes any more. Running the two together at
+  would once have kept the C++ tests green on a format nothing writes any more. **That half is
+  closed**: `test_the_committed_fixture_is_still_this_generator_s_output` re-renders the ring and
+  compares it byte for byte, so a generator change fails on the Python side and names the fixture as
+  the thing to regenerate. What is still open is the narrower thing — the C++ never reads a freshly
+  generated dataset, only a committed one. Running the two together at
   test time is the stronger check and it is not done here: it would make the native test build depend
   on `uv` and numpy, which is a real coupling to buy with a real argument, and the argument is better
   made when something actually measures accuracy in CI.
@@ -147,16 +154,24 @@ fixture problem it is.
   seven hundred other tests share, and gtest allocates while it runs, which would move the sweep's
   own counter. Round 2 found two windows with exactly this instrument — one of them inside round 1's
   fix for the same promise — and three reviewers each built it by hand before it was kept.
-- **Leak detection is off for that one test, and the measurement behind that is worth the space.**
-  With LeakSanitizer on, the sweep reports its own totals clean and LSan still finds one 6,912-byte
-  frame unfreed. Bisected to a single point and backtraced, it is the red-black-tree node allocation
-  inside `entries_.emplace` in `MemoryFrameStoreAccess::Allocate` — which is compiled
-  `-fno-exceptions` (ADR 0012), so GCC emits no cleanup landing pads and a throw travelling through
-  it never runs the destructor of that function's local `Entry`. The bytes are orphaned before the
-  loader is reached. That is a fact about the instrument: making an allocation fail *inside* code
-  that has opted out of exceptions is not something the real program can do, since there the same
-  failure terminates. The property the test asserts is the store's accounting, which stays correct at
-  that point and every other.
+- **Leak detection stays on for that binary, with one suppression, and the reasoning is a
+  measurement.** Left unsuppressed, the sweep reports its own totals clean while LeakSanitizer finds
+  frames unfreed: the throw lands on the red-black-tree node allocation inside `entries_.emplace` in
+  `MemoryFrameStoreAccess::Allocate`, and the block orphaned is the local `Entry`'s pixel buffer
+  allocated a line earlier. That function is compiled `-fno-exceptions` (ADR 0012), so GCC emits no
+  cleanup landing pads and the throw never runs its destructor. Making an allocation fail *inside*
+  code that has opted out of exceptions is not something the real program can do — there the same
+  failure terminates — so the leak is the instrument's rather than the loader's, and
+  `support/dataset_alloc_test.lsan-suppressions` names that one frame.
+
+  Two corrections are recorded here rather than smoothed over, because both are about how the first
+  version was *measured*. It said "one 6,912-byte frame … allocation 82 of 119", read off a bisect
+  against an earlier state of the file — the committed binary strands a frame per dataset frame at
+  several points — and it named the tree node as the leaked block, conflating where the throw fires
+  with what it orphans. And it disabled leak detection for the whole binary, which is process-wide
+  on the only test that reaches the loader's exception arms: a leak planted anywhere in it would
+  have been green. Reviewers found all three, and the narrow suppression is theirs.
+
 - **Three files under `core/test` now carry `-fexceptions`**, where ADR 0052 had said
   `feature_registration_engine.cpp` alone carried it "and no other translation unit". That sentence
   was true of `core/src` and is now qualified there; the three added here are test support and ship
@@ -192,6 +207,20 @@ present and skips when it is not. That is probably the right answer, and it is l
 increment rather than argued away — the honest reason is scope, not cost. Named in the consequences
 above as the thing to revisit when CI measures accuracy.
 
-***Asserting the fixture is byte-identical to a fresh render.*** Would catch every drift, including
-the numeric ones — and would go red on a numpy upgrade that changed a rounding mode, which is an
-unrelated event. The structural assertions catch the changes that matter to a reader of the format.
+***Asserting the fixture is byte-identical to a fresh render — rejected here, and then adopted.***
+The original argument was that it would go red on a numpy upgrade that changed a rounding mode,
+which is an unrelated event, and that the structural assertions catch what matters to a reader of
+the format.
+
+The second half turned out to be false, and a reviewer showed how: the structural assertions say
+nothing about the file naming, the pixel encoding, or the pose the ring starts at. Change any of
+those and the C++ suite keeps passing against bytes no writer produces any more — which is the class
+of error this fixture was committed to remove, reappearing one level up. So the check is in, as
+`test_the_committed_fixture_is_still_this_generator_s_output`, and the cost named above is now an
+accepted cost rather than a reason: a numpy change that moves a pixel will turn it red, and the
+failure message says to regenerate the fixture rather than to edit the expectation. It runs in a
+fifth of a second.
+
+This paragraph is kept in `Rejected` rather than deleted, because what was thought at the time is
+the point of the section — but a reviewer had to point out that the branch had implemented the thing
+this section rejects, in a commit that edited this very file and did not touch these lines.

@@ -16,20 +16,28 @@
 // `-fexceptions`, and every other consumer of the loader is `-fno-exceptions`, where an allocation
 // failure terminates at the throw site whatever any `catch` here would have done.
 //
-// **LeakSanitizer is off for this test, and the reason is a measurement rather than a convenience.**
-// With it on, the sweep reports its own totals clean and LSan still finds one 6,912-byte frame
-// unfreed. Bisected to a single point — allocation 82 of 119 — and backtraced there, it is the
-// red-black-tree node allocation inside `entries_.emplace` in `MemoryFrameStoreAccess::Allocate`.
-// That function is compiled `-fno-exceptions` (ADR 0012), so GCC emits no cleanup landing pads for
-// it: a throw travelling through it never runs the destructor of its local `Entry`, and the frame's
-// bytes are orphaned before the loader is ever reached.
+// **LeakSanitizer stays on, with one suppression**, in
+// `support/dataset_alloc_test.lsan-suppressions`. With nothing suppressed, the sweep reports its own
+// totals clean and LSan still finds frames unfreed: the throw lands on the red-black-tree node
+// allocation inside `entries_.emplace` in `MemoryFrameStoreAccess::Allocate`, and the block left
+// behind is the local `Entry`'s pixel buffer allocated a line earlier. That function is compiled
+// `-fno-exceptions` (ADR 0012), so GCC emits no cleanup landing pads and the throw never runs that
+// destructor.
 //
-// That is a fact about this instrument, not about the loader. Making an allocation fail *inside*
-// code that has opted out of exceptions is not something the real program can do — there, the same
-// failure terminates — so a leak produced that way says nothing about whether a refusal gives its
-// frames back. The store's own accounting, which this asserts, stays correct at that point and at
-// every other. The two windows this sweep was written to find are both in `-fexceptions` code and
-// are both still covered.
+// That is a fact about this instrument, not about the loader: making an allocation fail *inside*
+// code that has opted out of exceptions is not something the real program can do, since there the
+// same failure terminates. So the one frame is suppressed and everything else stays checked.
+//
+// **Two corrections, both from reviewers, both about how the first version of this comment was
+// measured.** It said "one 6,912-byte frame … allocation 82 of 119", which was read off a bisect
+// against an earlier state of this file; the committed binary strands one frame *per dataset frame*
+// at several sweep points. And it named the tree node as the leaked block, conflating where the
+// throw fires with what it orphans. The count is deliberately not restated here — see
+// `OwnedFrames::Reserve` for why a number in a comment about this instrument can only go stale.
+//
+// It also said `detect_leaks=0`, which was process-wide on the only test that reaches these arms —
+// so a real leak planted anywhere in this binary would have been green. A reviewer demonstrated the
+// narrow suppression, and it is strictly better: LSan is what caught this file's own first defect.
 #include "support/synthetic_dataset.h"
 
 #include <cstdio>
@@ -46,13 +54,24 @@ namespace {
 long gAllocations = 0;
 long gThrowAt = -1;
 bool gArmed = false;
+// A second failure, so one can land *inside* a handler. Until this existed the sweep armed a single
+// exact allocation, so nothing ever failed while `refuse()` was building its message or
+// `Rollback()` was giving frames back — which is the one path where `~OwnedFrames` is not already
+// preceded by an explicit rollback, and therefore the only thing that makes that destructor
+// reachable at all. A reviewer filed both halves: that the sweep cannot reach handlers, and that
+// the destructor's body can be emptied with the whole suite green.
+long gThrowAgainAt = -1;
+
+// How many frames a clean load of the fixture hands back. Measured by the counting pass rather than
+// written down as 4, so the sweep's "a success must be whole" check cannot drift from the fixture.
+size_t gFramesInACleanLoad = 0;
 
 }  // namespace
 
 void* operator new(size_t bytes) {
   if (gArmed) {
     ++gAllocations;
-    if (gAllocations == gThrowAt) throw std::bad_alloc();
+    if (gAllocations == gThrowAt || gAllocations == gThrowAgainAt) throw std::bad_alloc();
   }
   void* memory = std::malloc(bytes != 0 ? bytes : 1);
   if (memory == nullptr) throw std::bad_alloc();
@@ -84,12 +103,16 @@ using namespace sphanorama;
  */
 class Armed {
  public:
-  explicit Armed(long at) {
+  explicit Armed(long at, long again = -1) {
     gAllocations = 0;
     gThrowAt = at;
+    gThrowAgainAt = again;
     gArmed = true;
   }
-  ~Armed() { gArmed = false; }
+  ~Armed() {
+    gArmed = false;
+    gThrowAgainAt = -1;
+  }
   Armed(const Armed&) = delete;
   Armed& operator=(const Armed&) = delete;
 };
@@ -121,6 +144,7 @@ long CountAllocationsOfACleanLoad() {
     std::fprintf(stderr, "the fixture does not load at all: %s\n", refusal.c_str());
     return -1;
   }
+  gFramesInACleanLoad = taken->frames.size();
   for (const SyntheticFrame& frame : taken->frames) {
     const Status given = store.Forget(frame.frame);
     if (!given.ok()) {
@@ -145,6 +169,7 @@ int main() {
   if (total <= 0) return 1;
 
   int stranded = 0;
+  int wrong = 0;
   for (long at = 1; at <= total; ++at) {
     MemoryFrameStoreAccess store(64 * 1024 * 1024);
     const int64_t before = HeapUsed(store);
@@ -165,6 +190,19 @@ int main() {
     // cannot be the thing that fails.
     const bool succeeded = taken.has_value();
     if (succeeded) {
+      // **A success must be a whole dataset.** The store's totals cannot tell a complete load from
+      // a partial one — three frames of a four-frame ring balance just as neatly as four — so
+      // without this the sweep is green when the loader hands back a truncated dataset as `Ok`,
+      // which `OwnedFrames`'s own docstring calls worse than a refusal. A reviewer demonstrated it
+      // by replacing the traversal's refusal with `Commit(); return Ok(...)`: 43 gtest tests and
+      // every sweep point stayed green.
+      if (taken->frames.size() != gFramesInACleanLoad) {
+        std::fprintf(stderr,
+                     "allocation %ld: the load succeeded with %zu frames, and a clean load gives "
+                     "%zu\n",
+                     at, taken->frames.size(), gFramesInACleanLoad);
+        ++wrong;
+      }
       for (const SyntheticFrame& frame : taken->frames) (void)store.Forget(frame.frame);
     }
 
@@ -181,7 +219,44 @@ int main() {
   // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
   // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
   // where this file's own first defect was found.
-  std::fprintf(stderr, "swept %ld allocation points of a full load; %d stranded frames in the store\n",
-               total, stranded);
-  return stranded == 0 ? 0 : 1;
+  // **Second pass: a failure while the first one is being handled.** Each point of the first sweep
+  // is re-run with another allocation failing shortly after, which is how the throw reaches
+  // `refuse()`'s string building and `Rollback()`'s loop. The invariant is the same and so is the
+  // arithmetic; only the arming differs.
+  int strandedTwice = 0;
+  for (long at = 1; at <= total; ++at) {
+    for (long gap = 1; gap <= 4; ++gap) {
+      MemoryFrameStoreAccess store(64 * 1024 * 1024);
+      const int64_t before = HeapUsed(store);
+      std::optional<SyntheticDataset> taken;
+      {
+        Armed armed(at, at + gap);
+        try {
+          Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, kDataset);
+          if (loaded.ok()) taken = std::move(loaded.value);
+        } catch (const std::bad_alloc&) {
+          // Expected here rather than exceptional: a throw inside a handler has nowhere to be
+          // converted, and the point of this pass is that the store is still clean afterwards.
+        }
+      }
+      if (taken) {
+        for (const SyntheticFrame& frame : taken->frames) (void)store.Forget(frame.frame);
+      }
+      if (HeapUsed(store) != before) {
+        ++strandedTwice;
+        std::fprintf(stderr, "allocations %ld and %ld: the store kept %lld bytes\n", at, at + gap,
+                     static_cast<long long>(HeapUsed(store) - before));
+      }
+    }
+  }
+
+  // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
+  // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
+  // where this file's own first defect was found.
+  std::fprintf(stderr,
+               "swept %ld allocation points of a full load; %d stranded, %d partial datasets "
+               "returned as successes; %d stranded with a second failure during the first's "
+               "handling\n",
+               total, stranded, wrong, strandedTwice);
+  return stranded == 0 && wrong == 0 && strandedTwice == 0 ? 0 : 1;
 }

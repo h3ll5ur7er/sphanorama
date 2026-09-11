@@ -113,7 +113,14 @@ class AwkwardStore final : public IFrameStoreAccess {
   int refuseAllocateAfter = -1;   // -1 never refuses
   int refusePinAfter = -1;
   int refuseReleaseAfter = -1;
+  // Refuses the first N releases and then behaves. Distinct from `refuseReleaseAfter`, which
+  // refuses for ever: a store that declines once and relents leaves nothing behind, and a refusal
+  // message claiming otherwise is wrong for exactly that case.
+  int refuseReleaseTimes = 0;
   int refuseForgetAfter = -1;
+  // Refuses the first N forgets and then behaves — the counterpart of `refuseReleaseTimes`, and the
+  // only way to see whether a rollback retries what the store declined or simply drops it.
+  int refuseForgetTimes = 0;
   // Signed on purpose. A positive pad makes the handle claim a *wider* row than the span holds, and
   // a negative one makes it claim a narrower one — which is the quieter failure of the two: the
   // write loop then overlaps its rows and produces a sheared frame instead of crashing.
@@ -143,6 +150,10 @@ class AwkwardStore final : public IFrameStoreAccess {
     return pinned;
   }
   Status Release(const FrameRef& frame) override {
+    if (refuseReleaseTimes > 0) {
+      --refuseReleaseTimes;
+      return Fail(StatusCode::Internal, "AwkwardStore", "refused on purpose, once");
+    }
     if (refuseReleaseAfter >= 0 && releases_++ >= refuseReleaseAfter) {
       return Fail(StatusCode::Internal, "AwkwardStore", "refused on purpose");
     }
@@ -151,6 +162,10 @@ class AwkwardStore final : public IFrameStoreAccess {
     return real_.Release(honest);
   }
   Status Forget(const FrameRef& frame) override {
+    if (refuseForgetTimes > 0) {
+      --refuseForgetTimes;
+      return Fail(StatusCode::FailedPrecondition, "AwkwardStore", "refused on purpose, once");
+    }
     if (refuseForgetAfter >= 0 && forgets_++ >= refuseForgetAfter) {
       return Fail(StatusCode::FailedPrecondition, "AwkwardStore", "refused on purpose");
     }
@@ -352,7 +367,10 @@ TEST_F(Dataset, RefusesAFrameWhoseHeaderDisagreesWithTheLens) {
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json records a"));
+  // "and truth.json records a", not "truth.json records a": the shorter phrase is also written by
+  // the no-pixels guard, and it was the one assertion out of twenty-five whose phrase two guards
+  // could produce — so `RefusedWith`'s whole promise did not hold for it.
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "and truth.json records a"));
   EXPECT_EQ(HeapUsed(), before);
 }
 
@@ -452,7 +470,8 @@ TEST_F(Dataset, RefusesAHeaderNumberThatIsNotOne) {
   out.close();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
-  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "has a header this reader cannot parse"));
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "has a header field that is not a number"));
 }
 
 TEST_F(Dataset, RefusesAFrameWhoseSamplesAreTwoBytesWide) {
@@ -503,11 +522,11 @@ TEST_F(Dataset, GivesBackTheFrameWhenTheStoreRefusesToPinIt) {
   awkward.refusePinAfter = 0;
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
-  EXPECT_FALSE(loaded.ok());
-  // The code the store answered with, not merely that something refused. `ReadFrame` forwards
-  // `Pin`'s own code, and the header promises specific codes for specific causes — an implementation
-  // that flattened every `Pin` failure to `InvalidArgument` would otherwise pass this.
-  EXPECT_EQ(loaded.status.code, StatusCode::Internal) << loaded.status.detail;
+  // Through the same helper as every other refusal, and asserting the store's own words. Asserting
+  // the code alone left this green when `Pin`'s status was flattened to a hard-coded `Internal`
+  // with a generic detail — the code matched and the forwarding did not happen, which is the thing
+  // the comment claims is being tested.
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::Internal, "refused on purpose"));
   EXPECT_EQ(HeapUsed(), before) << "the allocation it could not pin was left charged";
 }
 
@@ -532,19 +551,41 @@ TEST_F(Dataset, RefusesTruthThatIsNotJsonAtAll) {
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json is not readable JSON"));
 }
 
-TEST_F(Dataset, RefusesTruthWhoseShapeMakesOpenCvThrowPartWayThrough) {
-  // The `cv::Exception` catch around the traversal, which is the entire justification for compiling
-  // this translation unit with exceptions (ADR 0052, 0053) and which a reviewer showed had never
-  // converted one. `FileStorage` opens this file happily and then throws on `operator[]` — measured:
-  // "Assertion failed (isMap())" — because `intrinsics` is a scalar where a map was indexed.
+TEST_F(Dataset, RefusesAScalarWhereAMapBelongsWithoutQuotingOpenCvAtTheUser) {
+  // **What this test used to be, and why it changed.** It fed `{"intrinsics": 5}` in to reach the
+  // `cv::Exception` arm around the traversal, which until then had converted nothing — `operator[]`
+  // asserted inside OpenCV with "Assertion failed (isMap())" and the arm turned that text into the
+  // refusal the caller saw, after OpenCV printed its own error to stderr.
+  //
+  // Every indexing site now checks the node's shape first, so this input refuses in our own words
+  // and the arm has no input left. That is the outcome the `isSeq` guard's own thread argued for a
+  // round earlier — the guard's value is partly the *silence* — and it means the arm is a backstop
+  // rather than a route. It is kept for the reason named where it sits: the guards enumerate what
+  // today's OpenCV asserts on, and an upgrade may assert somewhere new.
+  //
+  // So this asserts the property that actually matters and survives that change: whatever refuses,
+  // the user is never handed an OpenCV assertion as the explanation.
+  for (const char* truth : {R"("intrinsics": 5)", R"("intrinsics": [1, 2])"}) {
+    Scratch scratch;
+    WriteTruth(scratch, "{" + std::string(kConvention) + ", " + truth + R"(, "frames": )" +
+                            kOneFrame + "}");
+    const int64_t before = HeapUsed();
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                            "truth.json's intrinsics are not a JSON object")) << truth;
+    EXPECT_EQ(loaded.status.detail.find("Assertion failed"), std::string::npos)
+        << loaded.status.detail;
+    EXPECT_EQ(HeapUsed(), before);
+  }
+}
+
+TEST_F(Dataset, RefusesARotationThatIsNotAJsonObject) {
   Scratch scratch;
-  WriteTruth(scratch, "{" + std::string(kConvention) +
-                          R"(, "intrinsics": 5, "frames": )" + kOneFrame + "}");
-  const int64_t before = HeapUsed();
+  WriteTruth(scratch, TruthWith(kLens,
+      R"([{"file": "frame_0000.ppm", "rotation": 5}])"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
-  EXPECT_FALSE(loaded.ok()) << "an OpenCV assertion escaped as an exception instead of a Result";
-  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "truth.json is shaped unexpectedly"));
-  EXPECT_EQ(HeapUsed(), before);
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "a frame's rotation in truth.json is not a JSON object"));
 }
 
 TEST_F(Dataset, RefusesTruthThatDescribesNoLens) {
@@ -778,7 +819,7 @@ TEST_F(Dataset, RefusesAHeaderNumberThatOnlyStartsOutAsOne) {
   WriteTruth(scratch, TruthWith(kLens, kOneFrame));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
-                          "has a header this reader cannot parse"));
+                          "has a header field that is not a number"));
 }
 
 TEST_F(Dataset, RefusesAHeaderNumberTooLargeForTheTypeThatHoldsIt) {
@@ -793,7 +834,7 @@ TEST_F(Dataset, RefusesAHeaderNumberTooLargeForTheTypeThatHoldsIt) {
   WriteTruth(scratch, TruthWith(kLens, kOneFrame));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
-                          "has a header this reader cannot parse"));
+                          "has a header number too large for the type that holds it"));
 }
 
 TEST_F(Dataset, RefusesAFrameFileWithNoMagicNumberAtAll) {
@@ -938,6 +979,142 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
   ForgetAll(loaded.value);
+}
+
+// ------------------------------------------------- refusing in our own words, at every site
+
+TEST_F(Dataset, RefusesTruthThatIsNotAJsonObject) {
+  Scratch scratch;
+  WriteTruth(scratch, "[1, 2, 3]");
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  // Whatever answers, it must not be an OpenCV assertion forwarded as our message.
+  ASSERT_FALSE(loaded.ok());
+  EXPECT_EQ(loaded.status.detail.find("Assertion failed"), std::string::npos) << loaded.status.detail;
+}
+
+TEST_F(Dataset, RefusesIntrinsicsThatAreNotAJsonObject) {
+  // `{"intrinsics": 5}` used to refuse by letting `operator[]` assert inside OpenCV and converting
+  // the assertion text into our refusal — and printing OpenCV's error to stderr on the way. Round 2
+  // put an `isMap()` guard on `convention` and left this site and three others forwarding.
+  Scratch scratch;
+  WriteTruth(scratch, "{" + std::string(kConvention) + R"(, "intrinsics": 5, "frames": )" +
+                          kOneFrame + "}");
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "truth.json's intrinsics are not a JSON object"));
+}
+
+TEST_F(Dataset, RefusesAFrameEntryThatIsNotAJsonObject) {
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(kLens, "[5]"));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "a frame entry in truth.json is not a JSON object"));
+}
+
+TEST_F(Dataset, EachWayAHeaderNumberCanFailSaysWhichOneItWas) {
+  // Four structurally different files that all used to produce "has a header this reader cannot
+  // parse". `ReadNumber` declared a reason and discarded it, so no test could tell them apart and
+  // any one of the four guards could answer for the others.
+  struct Case { const char* header; const char* says; };
+  for (const Case& one : {Case{"P6\n48", "stops before its three numbers"},
+                          Case{"P6\n123456789012345678901234567890123456 36\n255\n",
+                               "field longer than any real one"},
+                          Case{"P6\n48x 36\n255\n", "field that is not a number"},
+                          Case{"P6\n99999999999999999999 36\n255\n",
+                               "number too large for the type that holds it"}}) {
+    Scratch scratch;
+    {
+      std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+      out << one.header;
+    }
+    WriteTruth(scratch, TruthWith(kLens, kOneFrame));
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, one.says)) << one.header;
+  }
+}
+
+// ------------------------------------------------- what a refusal leaves behind, and what it says
+
+TEST_F(Dataset, SaysSoWhenTheStoreKeepsTheFrameItWasReading) {
+  // The frame being read is in no `OwnedFrames` — it joins the dataset's list only once the read
+  // commits — so the loader's rollback never covered it, and the header's "says so when it cannot"
+  // was broken for exactly one frame: the one in hand when the failure happened. A reviewer probed
+  // it at 6,912 bytes charged with the refusal saying nothing.
+  AwkwardStore awkward{store};
+  awkward.refusePinAfter = 0;
+  awkward.refuseForgetAfter = 0;
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+  ASSERT_FALSE(loaded.ok());
+  EXPECT_NE(loaded.status.detail.find("refused to give this frame back"), std::string::npos)
+      << loaded.status.detail;
+  EXPECT_TRUE(store.Clear().ok());
+}
+
+TEST_F(Dataset, AStoreThatRefusesOneReleaseAndRelentsLeavesNothingBehind) {
+  // The transient case, which the permanent one cannot distinguish. `Rollback` retries the release,
+  // so a store that declines once and then behaves leaves the store exactly as it was — and the
+  // refusal must not claim the frame is stranded, which the first wording did unconditionally
+  // because its only test used a store that refuses for ever.
+  AwkwardStore awkward{store};
+  awkward.refuseReleaseTimes = 1;
+  const int64_t before = HeapUsed();
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+  ASSERT_FALSE(loaded.ok()) << "a frame whose pin was refused must not be handed over";
+  EXPECT_EQ(HeapUsed(), before) << "the retry should have given this frame back";
+  EXPECT_EQ(loaded.status.detail.find("refused to give this frame back"), std::string::npos)
+      << "nothing was left behind, so the refusal must not say there was: " << loaded.status.detail;
+  EXPECT_TRUE(store.Clear().ok()) << "and the store must still be clearable";
+}
+
+TEST_F(Dataset, ARollbackKeepsWhatTheStoreRefusedSoTheBackstopCanTryAgain) {
+  // `OwnedFrames::Rollback` used to clear its list whatever `Forget` answered, which made
+  // `~OwnedFrames` — the backstop the class documents — a no-op over an empty vector. A store that
+  // declines one `Forget` and then behaves is the only arrangement that can tell the two apart:
+  // with the frames kept, the destructor's second pass gives them back and the store ends where it
+  // started; with the list cleared, those bytes stay charged for ever.
+  //
+  // Permanent-refusal tests cannot see this, which is why the bug survived a round: the message is
+  // identical either way, and only the store's totals afterwards differ.
+  const int64_t before = HeapUsed();
+  {
+    AwkwardStore awkward{store};
+    awkward.refuseForgetTimes = 1;
+    Scratch scratch;
+    WriteTruth(scratch, TruthWith(kLens,
+        R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}},
+            {"file": "frame_0001.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}},
+            {"file": "absent.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, scratch.path());
+    ASSERT_FALSE(loaded.ok());
+  }
+  EXPECT_EQ(HeapUsed(), before)
+      << "the frame the store declined once was dropped instead of retried";
+}
+
+TEST_F(Dataset, TheRollbackRetriesARefusedReleaseRatherThanBelievingIt) {
+  // Two refusals, not one, and the number is the whole test. With one, `ReadFrame`'s explicit
+  // `Release` consumes the refusal and the rollback's own call succeeds either way — so a rollback
+  // that *believed* a refused release would look identical. With two, the difference is everything:
+  //
+  //   keeping the flag honest: the rollback's release is refused too, so `pinned_` stays true and
+  //     `Forget` is skipped (it refuses a pinned frame anyway); the destructor tries once more, the
+  //     store has stopped refusing, and the frame goes back.
+  //   believing the refusal: `pinned_` is cleared while the frame is still pinned, `Forget` is
+  //     attempted and refused, and the destructor — seeing nothing pinned — never releases. The
+  //     bytes are charged for ever and `Clear` refuses for the life of the store.
+  //
+  // A sabotage of the flag left the one-refusal test green, which is how this gap was found.
+  const int64_t before = HeapUsed();
+  {
+    AwkwardStore awkward{store};
+    awkward.refuseReleaseTimes = 2;
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+    ASSERT_FALSE(loaded.ok());
+  }
+  EXPECT_EQ(HeapUsed(), before) << "the destructor's retry never happened, so the frame is pinned "
+                                   "for ever and Clear will refuse for the life of this store";
+  EXPECT_TRUE(store.Clear().ok());
 }
 }  // namespace
 }  // namespace sphanorama

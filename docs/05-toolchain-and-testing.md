@@ -162,14 +162,16 @@ procedural panorama. Still to come, each its own increment with its own invarian
 noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
 movers for known ghost regions.
 
-What it gives today is the first of these; the rest wait on the increments listed above:
+It gives none of these *yet*, and the first is the only one whose machinery is complete. A reviewer
+pointed out that "what it gives today is the first of these" — which is what this line used to say —
+is contradicted by the bullet immediately under it:
 
 - registration accuracy measured in degrees against truth, not eyeballed — all three parts that
   make it possible are in now (`rotation_scoring`, ADR 0049; `tools/synth_dataset.py`, ADR 0050;
   and `core/test/support/synthetic_dataset`, ADR 0053, which reads what the second writes into a
   frame store the first can be run over). What is missing is no longer plumbing:
-  `FeatureRegistrationEngine` extracts features, but matching and refinement still refuse, so **no rotation comes out to
-  be scored**. An earlier round wrote "available now" here, which overcorrected a stale sentence into
+  `FeatureRegistrationEngine` extracts features, but matching and refinement still refuse, so
+  **no rotation comes out to be scored**. An earlier round wrote "available now" here, which overcorrected a stale sentence into
   a false one and contradicted §5.4 further up this file;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;

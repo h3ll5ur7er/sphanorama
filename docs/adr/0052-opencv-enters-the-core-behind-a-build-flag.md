@@ -1,6 +1,14 @@
 # 0052 — OpenCV enters the core behind a build flag, and the browser gets a null registration
 
-**Status:** accepted
+**Status:** accepted; extended by
+[ADR 0053](0053-the-harness-reads-its-own-datasets.md)
+
+> **The exception boundary below covers four translation units, not one.** The sentence further down
+> says `feature_registration_engine.cpp` carries `-fexceptions` "and no other translation unit",
+> which was true of the whole tree when it was written and is now true only of `core/src`. ADR 0053
+> added three under `core/test` — the synthetic-dataset loader, its test and its allocation sweep.
+> They ship nowhere. The note at the end of this file has the detail; it is repeated here because a
+> reviewer pointed out that a reader meets the stale sentence a hundred lines before the correction.
 
 ## Context
 

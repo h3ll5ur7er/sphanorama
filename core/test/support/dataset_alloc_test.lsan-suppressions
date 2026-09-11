@@ -1,0 +1,13 @@
+# Why this file exists, and why it is one line rather than `detect_leaks=0`.
+#
+# `sphanorama_dataset_alloc_test` makes a chosen allocation fail and checks the loader strands
+# nothing. Some of those allocations are inside `MemoryFrameStoreAccess::Allocate`, which is
+# compiled `-fno-exceptions` (ADR 0012): GCC emits no cleanup landing pads for it, so a throw
+# travelling through never runs the destructor of its local `Entry` and the frame's pixel buffer is
+# orphaned before the loader sees anything. The real program cannot do that — there the same
+# allocation failure terminates — so those leaks are the instrument's, not the loader's.
+#
+# Suppressing that one frame keeps LeakSanitizer on for everything else in the binary, which matters
+# because LSan is what caught this file's own first defect: a sweep that stayed armed during its own
+# cleanup and leaked the frames it was written to notice. `detect_leaks=0` would have hidden that.
+leak:sphanorama::MemoryFrameStoreAccess::Allocate

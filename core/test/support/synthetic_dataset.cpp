@@ -42,8 +42,13 @@ class OwnedFrames {
    * it — and a *growing* `push_back` allocates inside that window, so a `std::bad_alloc` there
    * leaves the frame held by nothing and the rollback below gives back every frame except the one
    * just read. Three reviewers found this window independently; a throwing allocator swept over a
-   * full load of the committed fixture put it at 3 of 123 allocation points, each leaving exactly
-   * one 48x36 frame — 6,912 bytes — in a store the caller was told was untouched.
+   * full load of the committed fixture found three such points, each leaving exactly one 48x36
+   * frame — 6,912 bytes — in a store the caller was told was untouched.
+   *
+   * No denominator here on purpose. It was written down three times on this branch as 123, 120 and
+   * 119, all correct for the instrument's shape at the moment they were taken and all describing
+   * the *instrument* rather than the loader. `sphanorama_dataset_alloc_test` prints the count it
+   * actually swept; a number in a comment can only go stale.
    *
    * Round 1 closed this same window one level down, inside `ReadFrame`, and opened this one
    * directly above it. `dataset.frames` is reserved beside this for the same reason: it grows in
@@ -64,11 +69,22 @@ class OwnedFrames {
    * instead of a `(void)` swallowing it.
    */
   bool Rollback() {
-    bool all = true;
+    // **Keeps what the store would not take.** The first version cleared the list whatever `Forget`
+    // answered, which made `~OwnedFrames` — the backstop this class documents — a no-op over an
+    // empty vector, so a refused `Forget` was never retried. A rollback destroying what it was
+    // protecting is a row in the engineering skill's own mistakes table, and eleven lines below
+    // this `HeldFrame`'s destructor carries the retry argument spelled out. It was reasoned
+    // correctly for the inner holder in the same commit and not applied to this one.
+    //
+    // Compacted in place rather than into a second vector: this runs on the error path, and a
+    // `push_back` here would be an allocation inside a rollback, which is the window `Reserve`
+    // exists to close.
+    auto kept = frames_.begin();
     for (const FrameRef& frame : frames_) {
-      if (!store_.Forget(frame).ok()) all = false;
+      if (!store_.Forget(frame).ok()) *kept++ = frame;
     }
-    frames_.clear();
+    const bool all = kept == frames_.begin();
+    frames_.erase(kept, frames_.end());
     return all;
   }
 
@@ -97,10 +113,10 @@ class OwnedFrames {
 // `magic != "P6"` ever runs — in a function whose own payload loop twenty lines below exists to
 // avoid precisely that.
 //
-// Measured, twice. A 512 MiB file of non-whitespace bytes takes the uncapped reader to a peak RSS
-// of **986,740 KiB — 964 MiB**. The first version of this comment said "988 MB", which was
-// `ru_maxrss` divided by 1000: `ru_maxrss` is in KiB, so the number was neither MiB nor MB. The
-// guard was always justified; the unit was wrong, and a reviewer re-ran it.
+// Measured, twice, by two people. A 512 MiB file of non-whitespace bytes takes the uncapped reader
+// to a peak RSS of **986,740 KiB — 964 MiB**, or 1,010 MB decimal. The first version of this said
+// "988 MB", which is close to `ru_maxrss / 1000` (that is 987) and is neither MiB nor MB:
+// `ru_maxrss` is already in KiB. The guard was always justified; only the unit was wrong.
 constexpr size_t kLongestHeaderToken = 32;
 
 /**
@@ -110,7 +126,7 @@ constexpr size_t kLongestHeaderToken = 32;
  * into one sentence, the test for the length cap was satisfied by whichever of them fired — the
  * same defect, in the same file, that round 1 found and round 1's own fix reproduced.
  */
-enum class TokenTrouble { kNone, kNothingThere, kTooLong };
+enum class TokenTrouble { kNone, kNothingThere, kTooLong, kNotANumber, kTooLargeForTheType };
 
 bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   *why = TokenTrouble::kNone;
@@ -149,11 +165,16 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   return true;
 }
 
-bool ReadNumber(std::istream& in, int64_t* value) {
+bool ReadNumber(std::istream& in, int64_t* value, TokenTrouble* why) {
   std::string token;
-  TokenTrouble why = TokenTrouble::kNone;
-  if (!ReadToken(in, &token, &why)) return false;
-  if (token.find_first_not_of("0123456789") != std::string::npos) return false;
+  if (!ReadToken(in, &token, why)) return false;
+  if (token.find_first_not_of("0123456789") != std::string::npos) {
+    // Its own reason, rather than leaving the caller with whatever `ReadToken` last set. The first
+    // version declared a `TokenTrouble` here and threw it away, so four structurally different bad
+    // headers produced one sentence between them.
+    *why = TokenTrouble::kNotANumber;
+    return false;
+  }
   try {
     *value = std::stoll(token);
   } catch (...) {
@@ -162,6 +183,7 @@ bool ReadNumber(std::istream& in, int64_t* value) {
     // `std::stoll` throws `std::out_of_range`. The cap on token length is 32, which leaves plenty
     // of room for one. A reviewer found this arm carrying no reason while its two neighbours
     // carried theirs, which is what a reason is for.
+    *why = TokenTrouble::kTooLargeForTheType;
     return false;
   }
   return true;
@@ -181,12 +203,42 @@ bool ReadNumber(std::istream& in, int64_t* value) {
 class HeldFrame {
  public:
   HeldFrame(IFrameStoreAccess& store, const FrameRef& frame) : store_(store), frame_(frame) {}
-  ~HeldFrame() {
-    // Retried here, because `Release` clears `pinned_` only when the store agreed. A destructor has
-    // nowhere to report a second refusal, but a frame this leaves pinned is one `Forget` and
-    // `Clear` will both go on refusing, so the retry is worth its line.
-    if (pinned_) (void)store_.Release(frame_);
-    if (!committed_) (void)store_.Forget(frame_);
+  // The backstop. `Rollback` is idempotent and remembers what the store has already taken, so
+  // calling it explicitly on a refusal path and again here costs one no-op.
+  ~HeldFrame() { (void)Rollback(); }
+
+  /**
+   * Gives the frame back, and answers whether the store took it.
+   *
+   * **This frame is in no `OwnedFrames`.** It is allocated inside `ReadFrame` and only joins the
+   * dataset's list once the read commits, so the loader's rollback cannot cover it and the header's
+   * "a refusal gives back every frame it allocated, and says so when it cannot" was broken for
+   * exactly one frame — the one being read when the failure happened. A reviewer probed it: a store
+   * refusing both `Pin` and `Forget` left 6,912 bytes charged and the refusal said nothing.
+   *
+   * Retries what the store refused, for the reason a destructor cannot: a frame left pinned is one
+   * `Forget` and `Clear` will both go on refusing, so those bytes are unrecoverable.
+   */
+  bool Rollback() {
+    if (committed_ || gone_) return true;
+    bool all = true;
+    if (pinned_) {
+      if (store_.Release(frame_).ok()) {
+        pinned_ = false;
+      } else {
+        all = false;
+      }
+    }
+    // Only once the pin is really gone: `Forget` refuses a pinned frame, so trying anyway would
+    // report a second failure that says nothing the first did not.
+    if (!pinned_) {
+      if (store_.Forget(frame_).ok()) {
+        gone_ = true;
+      } else {
+        all = false;
+      }
+    }
+    return all;
   }
   HeldFrame(const HeldFrame&) = delete;
   HeldFrame& operator=(const HeldFrame&) = delete;
@@ -224,6 +276,9 @@ class HeldFrame {
   FrameRef frame_;
   bool pinned_ = false;
   bool committed_ = false;
+  // Distinct from `committed_`, which means the caller took the frame. This means the store took it
+  // back. Collapsing the two into one flag would make "given away" and "given back" the same state.
+  bool gone_ = false;
 };
 
 /** One P6 file, read into a frame of `lens`'s shape. */
@@ -254,9 +309,31 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   int64_t width = 0;
   int64_t height = 0;
   int64_t maxValue = 0;
-  if (!ReadNumber(in, &width) || !ReadNumber(in, &height) || !ReadNumber(in, &maxValue)) {
+  if (!ReadNumber(in, &width, &why) || !ReadNumber(in, &height, &why) ||
+      !ReadNumber(in, &maxValue, &why)) {
+    // Four ways to fail and four sentences, because they are four different files: a header that
+    // stops early, a field longer than any real one, a field that is not digits, and a field too
+    // large for the type that holds it. They shared one sentence, so a test could not say which
+    // guard had answered — the same defect this file has now had at three different sites.
+    const char* because = " has a header this reader cannot parse";
+    switch (why) {
+      case TokenTrouble::kNothingThere:
+        because = " has a header that stops before its three numbers";
+        break;
+      case TokenTrouble::kTooLong:
+        because = " has a header field longer than any real one";
+        break;
+      case TokenTrouble::kNotANumber:
+        because = " has a header field that is not a number";
+        break;
+      case TokenTrouble::kTooLargeForTheType:
+        because = " has a header number too large for the type that holds it";
+        break;
+      case TokenTrouble::kNone:
+        break;
+    }
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
-                         path.filename().string() + " has a header this reader cannot parse");
+                         path.filename().string() + because);
   }
   // Exactly one whitespace byte separates the header from the payload, and it is *not* skipped as
   // ordinary whitespace: a payload may legitimately begin with a byte that looks like one.
@@ -283,8 +360,19 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   const FrameRef frame = allocated.value;
   HeldFrame held(store, frame);
 
+  // Every refusal from here down goes through this, for the reason `LoadSyntheticDataset`'s own
+  // `refuse` exists: the frame is allocated now, it is in no `OwnedFrames` until the read commits,
+  // and a rollback the store declines has to be *said* rather than swallowed by a destructor.
+  auto refuse = [&held](StatusCode code, std::string detail) {
+    if (!held.Rollback()) {
+      detail += " (and the store then refused to give this frame back, so its totals still account "
+                "for bytes no handle names)";
+    }
+    return Err<FrameRef>(code, kComponent, std::move(detail));
+  };
+
   const Result<std::span<uint8_t>> pinned = held.Pin();
-  if (!pinned.ok()) return Err<FrameRef>(pinned.status.code, kComponent, pinned.status.detail);
+  if (!pinned.ok()) return refuse(pinned.status.code, pinned.status.detail);
 
   // **What the store actually handed over, against what the handle claims.** `Allocate` promises
   // nothing about stride, so the span and `frame.stride` are two different authorities and the
@@ -296,8 +384,8 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   const int64_t rows = static_cast<int64_t>(lens.height) - 1;
   if (frame.stride < rowBytes || (rows > 0 && frame.stride > (held_bytes - rowBytes) / rows) ||
       (rows == 0 && rowBytes > held_bytes)) {
-    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
-                         "the store handed back fewer bytes than a frame of this shape needs");
+    return refuse(StatusCode::InvalidArgument,
+                  "the store handed back fewer bytes than a frame of this shape needs");
   }
 
   // Row at a time, straight into the pinned span. Reading the whole file first and copying would
@@ -326,19 +414,23 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   const bool trailing = !short_read && in.peek() != std::char_traits<char>::eof();
   const Status released = held.Release();
   if (!released.ok()) {
-    // The pixels are read and correct, and the frame is unusable anyway: it is still pinned, so the
-    // caller can neither `Forget` it nor `Clear` the store. Answering `Ok` here is what turned this
-    // into a leak through the success path.
-    return Err<FrameRef>(released.code, kComponent,
-                         path.filename().string() + " was read, but the store would not release "
-                         "the pin taken to write it, so the frame cannot be handed over or given "
-                         "back: " + released.detail);
+    // The pixels are read and correct, and the frame is not usable anyway while it is pinned: the
+    // caller could neither `Forget` it nor `Clear` the store. Answering `Ok` here is what turned
+    // this into a leak through the success path.
+    //
+    // Says only what it knows. `refuse` retries the release, and a store that refused once and then
+    // relents leaves nothing behind at all — so claiming the frame "cannot be given back" would be
+    // false for the transient case, which the earlier wording asserted unconditionally because its
+    // only test used a store that refuses for ever.
+    return refuse(released.code,
+                  path.filename().string() + " was read, but the store would not release the pin "
+                  "taken to write it: " + released.detail);
   }
   if (short_read || trailing) {
-    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
-                         path.filename().string() + (short_read
-                             ? " ends before the pixels its header promises"
-                             : " carries more bytes than its header accounts for"));
+    return refuse(StatusCode::InvalidArgument,
+                  path.filename().string() + (short_read
+                      ? " ends before the pixels its header promises"
+                      : " carries more bytes than its header accounts for"));
   }
   held.Commit();
   return Ok(frame);
@@ -476,16 +568,35 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
                   std::string("truth.json is not readable JSON: ") + thrown.what());
   } catch (const std::exception& thrown) {
     // Widened to match the traversal's arm below, which had it and this did not. `open` parses the
-    // whole file, so every allocation the parser makes is an escape route from here: a throwing
-    // allocator swept over a full load reached the caller from 69 of 123 allocation points, most of
-    // them in this call. Under `-fno-exceptions`, which is what every consumer other than this
-    // file's own test is compiled with, an escape is a terminate rather than a failure.
+    // whole file, so every allocation the parser makes is an escape route from here: before this
+    // arm existed, a throwing allocator swept over a full load reached the caller from well over
+    // half the load's allocation points, most of them in this call. Under `-fno-exceptions`, which
+    // is what every consumer other than this file's own test is compiled with, an escape is a
+    // terminate rather than a failure.
     return refuse(StatusCode::Internal,
                   std::string("reading truth.json failed: ") + thrown.what());
   }
 
   try {
+    // **Shape checked before indexing, at every site rather than one.** `cv::FileNode::operator[]`
+    // asserts when the node is not a map, and the assertion escapes as a `cv::Exception` that the
+    // catch arm below turns into a refusal whose *text is an OpenCV assertion*. Round 2 established
+    // on the `isSeq` guard that forwarding a library assertion — and printing it to stderr on the
+    // way — is the thing these guards exist to avoid, then applied that reasoning to `convention`
+    // and to none of the other four sites. The catch arm stays as the backstop it was always meant
+    // to be, rather than the first line of defence it had become.
+    if (!file.root().isMap()) {
+      return refuse(StatusCode::InvalidArgument,
+                    "truth.json is not a JSON object, so it names nothing this can read");
+    }
     const cv::FileNode intrinsics = file["intrinsics"];
+    if (!intrinsics.isMap()) {
+      return refuse(StatusCode::InvalidArgument,
+                    intrinsics.empty()
+                        ? "truth.json records no intrinsics, so nothing knows what lens these "
+                          "frames were rendered through"
+                        : "truth.json's intrinsics are not a JSON object");
+    }
     if (intrinsics.empty()) {
       return refuse(StatusCode::InvalidArgument,
                     "truth.json records no intrinsics, so nothing knows what lens these frames "
@@ -541,21 +652,36 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     if (!frames.isSeq()) {
       return refuse(StatusCode::InvalidArgument, "truth.json records no sequence of frames");
     }
-    // Reserved before the first frame is read, and walked by iterator rather than by index. The
-    // reserve is what keeps `Keep` from allocating in the window where a frame is owned by nothing
-    // (see `OwnedFrames::Reserve`); `dataset.frames` grows in the same window and gets the same
-    // treatment. The iterator is a separate point: `frames[i]` on a `cv::FileNode` sequence walks
-    // from the front every time, so indexing a sequence in a loop is quadratic — a reviewer watched
-    // 200,000 entries fail to finish in two minutes where 50,000 took seconds.
+    // Reserved before the first frame is read, and walked by iterator rather than by index.
+    //
+    // **Only `owned.Reserve` closes a window.** `Keep` records a frame that `ReadFrame` has already
+    // committed, so a growing `push_back` there loses it — measured at 3 of the sweep's allocation
+    // points. `dataset.frames.reserve` is *not* load-bearing and a reviewer showed it can be
+    // deleted with everything green: by the time it grows, `owned` holds the frame and the rollback
+    // covers it. It stays because reserving a vector whose final size is known costs a line, but
+    // the comment that said both close the same window was wrong and is the kind of wrong that
+    // makes the next reader delete the one that matters.
+    //
+    // The iterator is a separate point: `frames[i]` on a `cv::FileNode` sequence walks from the
+    // front every time, so indexing a sequence in a loop is quadratic — a reviewer watched 200,000
+    // entries fail to finish in two minutes where 50,000 took seconds.
     owned.Reserve(frames.size());
     dataset.frames.reserve(frames.size());
     for (cv::FileNodeIterator at = frames.begin(); at != frames.end(); ++at) {
       const cv::FileNode entry = *at;
+      if (!entry.isMap()) {
+        return refuse(StatusCode::InvalidArgument,
+                      "a frame entry in truth.json is not a JSON object");
+      }
       const cv::FileNode fileNode = entry["file"];
       const cv::FileNode rotation = entry["rotation"];
       if (fileNode.empty() || !fileNode.isString() || rotation.empty()) {
         return refuse(StatusCode::InvalidArgument,
                       "a frame entry in truth.json has no file or no rotation");
+      }
+      if (!rotation.isMap()) {
+        return refuse(StatusCode::InvalidArgument,
+                      "a frame's rotation in truth.json is not a JSON object");
       }
       std::string spelling;
       SyntheticFrame frame;
@@ -584,6 +710,16 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
       dataset.frames.push_back(frame);
     }
   } catch (const cv::Exception& thrown) {
+    // **A backstop now, where it used to be the first line of defence.** Every place this traversal
+    // indexes a `cv::FileNode` checks the node's shape first and refuses in our own words, so no
+    // input this loader can be handed is known to reach here — which is a change from round 2, when
+    // four of the five indexing sites let `CV_Assert` fire and this arm turned the assertion text
+    // into the user's error message, printing OpenCV's own error to stderr on the way.
+    //
+    // Kept, and deliberately. It is the boundary ADR 0052 compiles this translation unit with
+    // exceptions *for*: `cv::Exception` is how OpenCV reports ordinary failure, the guards above
+    // enumerate what today's OpenCV asserts on, and an upgrade is free to assert somewhere new.
+    // A boundary that only holds while the enumeration is complete is not a boundary.
     return refuse(StatusCode::InvalidArgument,
                   std::string("truth.json is shaped unexpectedly: ") + thrown.what());
   } catch (const std::exception& thrown) {

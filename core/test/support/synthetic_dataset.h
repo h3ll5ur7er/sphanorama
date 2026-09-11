@@ -45,20 +45,29 @@ struct SyntheticDataset {
  * read, and an entry naming a file that is not there is a refusal.
  *
  * Refuses with `NotFound` for a directory, a `truth.json` or a named frame file that is not there,
- * and `InvalidArgument` for a file that is there and is not what it claims — a header disagreeing
- * with the recorded lens, a payload shorter or longer than the header accounts for, a Netpbm that
- * is not `P6`, a first token too long to be a magic number, a maximum value this reader cannot
- * read, or an intrinsic that is not a finite number. `FrameStoreExhausted` and the codes `Pin` and
- * `Release` answer with come straight from the store. `Internal` is the last resort: an exception
- * escaping the parse, or a store that read a frame and then would not release the pin taken to
- * write it.
+ * and `InvalidArgument` for a file that is there and is not what it claims — JSON that is not an
+ * object, or whose `intrinsics` or a `frames` entry is not one; a `convention.rotation` that is not
+ * the one this reader was written against; a header disagreeing with the recorded lens; a payload
+ * shorter or longer than the header accounts for; a Netpbm that is not `P6`; a header field
+ * missing, over-long, non-numeric or too large for the type that holds it; a maximum value this
+ * reader cannot read; or an intrinsic that is not a finite number.
+ *
+ * **Codes from the store are forwarded, not translated.** `FrameStoreExhausted` from `Allocate`,
+ * and whatever `Pin` or `Release` answered — so a store refusing `Release` with
+ * `FailedPrecondition` refuses this call with `FailedPrecondition`. `Internal` is this reader's own
+ * last resort and means one thing: an exception escaped the parse.
  *
  * **A refusal gives back every frame it allocated, and says so when it cannot.** That second half
  * is not pedantry. `Forget` is allowed to refuse — `MemoryFrameStoreAccess` returns a spill sink's
  * refusal and keeps the entry on its books — and the caller of a failed load holds no handles, so
- * a silent failure to roll back would leave bytes only `Clear` could recover with nothing saying
- * so. When every frame goes back, which is the ordinary case, the store's totals are where they
- * started and there is nothing to clean up.
+ * a silent failure to roll back would leave bytes with nothing saying so. When every frame goes
+ * back, which is the ordinary case, the store's totals are where they started and there is nothing
+ * to clean up.
+ *
+ * **One recovery is not always available, and the difference is worth knowing.** Bytes left behind
+ * by a refused `Forget` can be reclaimed with `Clear`. Bytes left behind by a refused *`Release`*
+ * cannot: the frame stays pinned, and `Clear` refuses while any frame is pinned. A refusal that
+ * mentions the pin is telling you the store needs rebuilding, not tidying.
  */
 Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store, const std::string& directory);
 
