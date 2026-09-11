@@ -17,7 +17,8 @@ manager *implementing* its own interface.
 cpp/sphanorama/
   types.h                    every value type, plus Status / Result<T> and SPH_TRY
   utilities/                 logger · clock · config_store · arena · diagnostics · event_bus
-  engines/                   coverage_planner · pose · frame_quality · registration · composition
+  engines/                   coverage_planner · pose · frame_preview · frame_quality ·
+                             registration · composition
   managers/                  capture_session · panorama_build · project
   resource_access/           camera · motion_sensor · frame_store · project_store ·
                              image_codec · compute_device · export

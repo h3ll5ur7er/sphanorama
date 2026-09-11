@@ -501,8 +501,9 @@ struct NodeContext {
 //
 // **Both of these frames belong to the caller, who must `Forget` each.** They are new; the frame
 // they were extracted from stays the caller's and its pixels are unchanged — but *not* untouched,
-// which an earlier draft of this comment claimed. Extraction pins it, and pinning faults a spilled
-// frame back into the heap and leaves it resident there afterwards. `IFramePreviewEngine::Reduce`
+// which an earlier draft of this comment claimed. Extraction pins it, and a pin/release cycle
+// leaves a frame resident in the heap whatever tier it was in before: a spilled frame is faulted
+// back in, and `Release` assigns the resident tier rather than restoring the one it found. `IFramePreviewEngine::Reduce`
 // has the same mechanics and is careful to promise only that the frame is released; this promises
 // the same and no more. A caller extracting over a sphere's worth of cold frames should expect the
 // heap to fill, and cool them again itself.
@@ -510,9 +511,13 @@ struct NodeContext {
 // `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
 // the first of its kind — it hands back a frame the caller never asked the store for by name, says
 // so in nearly these words, and has a contract-suite assertion behind it. It is the *only* one that
-// says it: `IImageCodecAccess::Decode`, `ICompositionEngine::BlendTile` and its neighbour
-// `RenderPreview` all return frames the same way and document nothing about who owns them, which is
-// a gap rather than a set of precedents.
+// says it. Across the contract headers there are five calls that hand a frame back without saying
+// who owns it — `IImageCodecAccess::Decode`, `ICompositionEngine::BlendTile` and `RenderPreview`,
+// `IPanoramaBuildManager::Panorama` and `ICaptureSessionManager::Candidates` — which is a gap and
+// not a set of precedents. The count has been revised upward three times; it is written out here
+// rather than totalled because the last two are not even the same shape: a `Panorama`'s tiles and a
+// cell's candidates are frames the *core* is still holding, so a caller applying this rule to them
+// would be double-freeing rather than tidying up.
 // A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;

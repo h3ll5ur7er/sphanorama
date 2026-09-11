@@ -18,8 +18,14 @@ removing one.
 ## 5.2 Build
 
 - **Emscripten** (pinned via `emsdk`) with `-msimd128`, `-pthread`, `-sALLOW_MEMORY_GROWTH`,
-  `-sEXPORT_ES6`. Two artefacts from one source tree: `core.wasm` (threaded, cross-origin isolated)
-  and `core.st.wasm` (single-threaded fallback), selected at runtime by capability probe.
+  `-sEXPORT_ES6`. Two builds from one source tree — `wasm-release` and `wasm-release-threaded` —
+  each producing `sphanorama-core.wasm` and its glue `sphanorama-core.js` in its own build
+  directory. **Which one ships is a deploy decision, not a runtime one**: GitHub Pages serves no
+  COOP/COEP headers, so it gets the single-threaded build (ADR 0011), and `npm run build` stages
+  that one. This paragraph described `core.wasm` / `core.st.wasm` "selected at runtime by capability
+  probe" until seven rounds of review on PR #67 swept the file — neither name nor probe has ever
+  existed. `IComputeDeviceAccess::Capabilities` does report `threads`, which is probably where the
+  idea came from, but nothing chooses an artefact from it.
 - **CMake** presets: `wasm-release`, `wasm-debug`, `native-debug` (bench + tests), `native-asan`.
 - **OpenCV** built from source as a trimmed static subset — `core`, `imgproc`, `features2d`,
   `calib3d`, `photo`, `flann` — fetched at a pinned *commit* by `cmake/opencv.cmake`, and verified

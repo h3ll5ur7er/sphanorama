@@ -63,7 +63,7 @@ Four things have to be on `PATH`, and the first two are the ones people do not a
 | --- | --- |
 | [`uv`](https://docs.astral.sh/uv/) | Every Python tool runs through it (ADR 0048). The interpreter and dependencies come from `pyproject.toml` and `uv.lock`, so your machine resolves what CI resolves |
 | [Emscripten](https://emscripten.org/) 6.0.9 | The WASM builds. `tools/setup_emsdk.sh` installs the pinned version |
-| CMake ≥ 3.24 and Ninja | Both native presets and both WASM ones |
+| CMake ≥ 3.25 and Ninja | Both native presets and both WASM ones |
 | Node 22 | The shell, its unit tests and the Playwright suite |
 
 Then:

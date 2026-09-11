@@ -74,9 +74,14 @@ wider change buying a label.
   The correction to that correction, from the next round, is the part worth keeping. The first fix
   also named `IImageCodecAccess::Decode` and `ICompositionEngine::BlendTile` as further precedents,
   and they are not: they hand back frames the same way and say **nothing** about ownership.
-  `ICompositionEngine::RenderPreview`, three lines below `BlendTile`, is a third. So there is exactly
-  one documented precedent and three undocumented leak surfaces beside it — a gap this ADR does not
-  close, since widening it to two more contracts would be scope this change did not ask for. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
+  `ICompositionEngine::RenderPreview` is a third, and `IPanoramaBuildManager::Panorama` and
+  `ICaptureSessionManager::Candidates` a fourth and fifth. So there is exactly one documented
+  precedent and five undocumented surfaces beside it — a gap this ADR does not close, since widening
+  it to four more contracts would be scope this change did not ask for.
+
+  Two of those five are not leaks at all, which is why the total kept moving: a `Panorama`'s tiles
+  and a cell's candidates are frames the core still holds, so a caller reading this ADR's rule onto
+  them would be double-freeing. That is a better argument for documenting them than the count was. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
   overclaim is the failure this repository keeps making, and it is only legible if the sequence
   survives.
 

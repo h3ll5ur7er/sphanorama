@@ -120,13 +120,80 @@ function canReachBridgeSpecs(argv) {
  * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
  * caller then treats a build file the old way, which is the conservative direction.
  */
+/**
+ * The CMake files each wasm build's own graph says it was generated from, as absolute paths.
+ *
+ * Read out of `build.ninja` rather than listed here, because every list of them written on this
+ * branch has been one short: two named, three real (the root, `core/` and `bridge/`). A file the
+ * build graph names is one ninja re-reads before answering, which is what makes its "nothing to do"
+ * mean "cmake looked and found nothing" for that file and not for others.
+ */
+function buildFilesTheGraphNames(repoRoot) {
+  const named = new Set();
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const graph = join(repoRoot, 'build', preset, 'build.ninja');
+    if (!existsSync(graph)) continue;
+    let text;
+    try {
+      text = readFileSync(graph, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const match of text.matchAll(/(\S*CMakeLists\.txt)/g)) {
+      named.add(resolve(join(repoRoot, 'build', preset), match[1]));
+    }
+  }
+  return named;
+}
+
+/**
+ * Whether each wasm build directory holds the cache variables its preset declares.
+ *
+ * `CMakePresets.json` is in no build graph, so ninja can never answer for it — and no mtime can
+ * either: `cmake --preset` rewrites `CMakeCache.txt` only when a value changes, measured over three
+ * consecutive no-op runs. What answers is the content. A documentation-only edit (`displayName`,
+ * `description` — one preset here carries 700 characters of prose) leaves every declared variable
+ * where it was and is forgiven; a changed flag the build directory has not been reconfigured for is
+ * not.
+ *
+ * `false` whenever anything cannot be read or parsed, which forgives nothing.
+ */
+function presetsMatchTheBuildDirectories(repoRoot) {
+  let declared;
+  try {
+    declared = JSON.parse(readFileSync(join(repoRoot, 'CMakePresets.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const cachePath = join(repoRoot, 'build', preset, 'CMakeCache.txt');
+    if (!existsSync(cachePath)) return false;
+    let cache;
+    try {
+      cache = readFileSync(cachePath, 'utf8');
+    } catch {
+      return false;
+    }
+    const entry = (declared.configurePresets ?? []).find((p) => p && p.name === preset);
+    if (!entry) return false;
+    for (const [name, value] of Object.entries(entry.cacheVariables ?? {})) {
+      const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
+      if (line === null || line[1].trim() !== String(value).trim()) return false;
+    }
+  }
+  return true;
+}
+
 export function wasmBuildsAreUpToDate(repoRoot) {
   let asked = false;
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const dir = join(repoRoot, 'build', preset);
     if (!existsSync(join(dir, 'build.ninja'))) continue;
     const probe = spawnSync('ninja', ['-C', dir, '-n'], { encoding: 'utf8' });
-    if (probe.error || probe.status !== 0) return null;
+    // `status !== 0` covers a ninja that failed *and* a ninja that never ran: `spawnSync` reports
+    // ENOENT as `status === null`, so an explicit `probe.error ||` in front of this was a clause no
+    // input could reach. Both mean the same thing here anyway — nobody answered, so forgive nothing.
+    if (probe.status !== 0) return null;
     asked = true;
     if (!`${probe.stdout}${probe.stderr}`.includes('no work to do')) return false;
   }
@@ -234,32 +301,33 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const accept = compiled === null
       ? () => true
       : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
+    // `bridge/CMakeLists.txt` lives inside a directory this walk covers, so without this it would be
+    // counted here whatever the build-file rule below decided — which is how the previous version
+    // left it deadlocking while believing it had been handled.
+    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full) && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }));
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), acceptSource) }));
 
-    // Build files split in two, by whether ninja can answer for them.
+    // Build files are forgiven by two different rules, each applied where it is the only one that
+    // can answer — and neither of them by a list anybody wrote down, because four such lists on this
+    // branch have each been one short.
     //
-    // Both `CMakeLists.txt` files are in each preset's regeneration edge — measured, they appear in
-    // every `build.ninja` here — so ninja re-runs cmake before answering and "nothing to do" means
-    // cmake looked and found nothing. That is the one case where the error below would demand a
-    // rebuild ninja correctly refuses to perform, so it is forgiven.
+    // **The CMake files the build graph names** — the root, `core/` and `bridge/`, read out of
+    // `build.ninja` — are ones ninja re-reads before answering, so its "nothing to do" means cmake
+    // looked and found nothing. That is the case where the error below would demand a rebuild ninja
+    // correctly refuses to perform.
     //
-    // `CMakePresets.json` is in no regeneration edge, so ninja never reads it and cannot be asked.
-    // It is therefore treated like a source and never forgiven — which costs nothing, because the
-    // deadlock forgiveness exists for cannot arise in a JSON file: there are no comments to edit,
-    // and every other change to a preset changes a build.
-    //
-    // An earlier version forgave all three on a second mtime record, on the premise that cmake
-    // rewrites `CMakeCache.txt` whenever it reads a preset. That is true of an explicit
-    // `cmake --preset` and false of the regeneration ninja performs itself, and a rule spanning
-    // both paths was one nobody could state — the threaded tree in this checkout has a cache 2.8
-    // days older than its manifest, which would have made the forgiveness silently stop working.
+    // **`CMakePresets.json`** is in no graph, so ninja is blind to it and no mtime helps either;
+    // what answers is whether the build directories hold the variables it declares.
     const upToDate = upToDateProbe(repoRoot);
-    const forgivable = upToDate === true ? ['CMakePresets.json']
-                                         : ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json'];
-    const buildFiles = forgivable.map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }));
+    const graphNames = upToDate === true ? buildFilesTheGraphNames(repoRoot) : new Set();
+    const presetSettled = upToDate === true && presetsMatchTheBuildDirectories(repoRoot);
+    const stillSuspect = ['core/CMakeLists.txt', 'CMakeLists.txt', 'bridge/CMakeLists.txt',
+                          'CMakePresets.json']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
+      .filter((s) => (s.rel === 'CMakePresets.json' ? !presetSettled : !graphNames.has(s.path)));
 
-    const cxx = [...sources, ...buildFiles].filter((s) => s.mtime > compiledCore.mtime);
+    const cxx = [...sources, ...stillSuspect].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
       const worst = cxx.reduce((a, b) => (a.mtime > b.mtime ? a : b));
       throw new Error(

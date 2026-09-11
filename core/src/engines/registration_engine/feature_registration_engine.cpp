@@ -248,8 +248,18 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // time a test asserted the bound instead of assuming it. One over is harmless; the number is not
   // bounded by anything we control, which is the part that matters for an allocation sized from it.
   //
-  // Truncating is safe because the detectors return their features best-first — that ordering is
-  // what `retainBest` exists to produce — so the ones dropped are the ones a matcher wanted least.
+  // Truncating is safe, but **not** because the detectors return their features best-first: they do
+  // not. Measured on this repository's texture with `std::is_sorted` by descending response, ORB and
+  // SIFT are unsorted at every size tried and AKAZE only at 768 and above. An earlier version of
+  // this comment said otherwise, which would have been a bad thing for a future cap change to lean
+  // on.
+  //
+  // What makes it safe is narrower and is the same fact that causes the overflow: `retainBest`
+  // selects the best `n` and then keeps everyone *tied with the last of them*, so the surplus is
+  // exactly the boundary ties. SIFT's 501 at 768 square has `maxDropped == minKept == 0.064919` —
+  // the one dropped feature is not weaker than the weakest kept, it is equal to it. Dropping from
+  // the end therefore discards a tied feature and never a better one, whatever order they arrive
+  // in.
   if (keypoints.size() > static_cast<size_t>(kMaxFeaturesPerFrame)) {
     keypoints.resize(static_cast<size_t>(kMaxFeaturesPerFrame));
   }
@@ -340,10 +350,15 @@ Result<FeatureSet> FeatureRegistrationEngine::ExtractFeatures(const FrameRef& fr
   // edge, which is what the layer rules already ask of a component adapting something foreign.
   //
   // The guards in `Extract` are not made redundant by this and are not a duplicate of it. They
-  // answer the two cases we know about with `InvalidArgument` and a sentence naming what was wrong;
-  // this answers the ones we do not, and can only say `Internal` and repeat OpenCV's text. A
-  // refusal a caller can branch on is worth more than a catch-all — and the catch-all is worth
-  // having because the list of things OpenCV asserts is not ours to know.
+  // answer the cases we know about with `InvalidArgument` and a sentence naming what was wrong; this
+  // answers OpenCV's own refusals, and can only say `Internal` and repeat its text. A refusal a
+  // caller can branch on is worth more than a catch-all — and the catch-all is worth having because
+  // the list of things OpenCV asserts is not ours to know.
+  //
+  // "The ones we do not know about" would be claiming more than these handlers do. They catch what
+  // derives from `std::exception`, which is what OpenCV throws; a `catch (...)` would cover the rest
+  // and is deliberately absent, because there is nothing useful to say about a throw of unknown type
+  // and swallowing it would hide a fault this engine cannot describe.
   try {
     return Extract(frame);
   } catch (const cv::Exception& e) {

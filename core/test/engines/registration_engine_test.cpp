@@ -780,6 +780,23 @@ TEST_P(Extraction, ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem) {
       << "the rollback forgot a frame while it was still pinned, so the store kept the bytes";
 }
 
+TEST_P(Extraction, LeavesThePixelsItReadExactlyAsItFoundThem) {
+  // `FeatureSet` promises the frame's pixels are unchanged, and nothing asked. It is the one place
+  // `LumaOf` aliases the pinned span *mutably* — `cv::Mat` over `bytes.data()` — so a detector or a
+  // conversion writing in place would go unnoticed by every other test here.
+  const FrameRef source = Textured();
+  const Result<uint64_t> before = store.ContentHash(source);
+  ASSERT_TRUE(before.ok()) << before.status.detail;
+
+  const Result<FeatureSet> features = Engine().ExtractFeatures(source);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+
+  const Result<uint64_t> after = store.ContentHash(source);
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_EQ(before.value, after.value) << "extraction wrote into the frame it was reading";
+  ForgetOutputs(features.value);
+}
+
 TEST_P(Extraction, ReadingASpilledFrameLeavesItInTheHeap) {
   // Extraction pins, and pinning faults a spilled frame back in and leaves it resident. That is
   // what `FeatureSet`'s header means by "unchanged but not untouched", and it has a sharp edge

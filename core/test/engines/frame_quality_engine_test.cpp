@@ -236,7 +236,28 @@ TEST_F(FrameQuality, AFrameWithNoPixelsInItIsRefused) {
     ASSERT_FALSE(scored.ok()) << width << "x" << height;
     EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument)
         << width << "x" << height << ": " << scored.status.detail;
+    // The *detail*, not only the code, which is what makes this bite after all: both guards refuse
+    // with `InvalidArgument`, so the code alone cannot say which answered, and the comment above
+    // said this test could not tell them apart. One string does. The precedent is already in this
+    // repository — `frame_store_spill_test.cpp` distinguishes two refusals the same way.
+    EXPECT_NE(scored.status.detail.find("no pixels"), std::string::npos)
+        << "refused, but by the grid-size rule rather than the guard this test is for: "
+        << scored.status.detail;
   }
+}
+
+TEST_F(FrameQuality, AFrameTooSmallToHoldALaplacianIsRefused) {
+  // The rule the guard above is redundant with, and which `grep` finds no test for anywhere. It is
+  // not spare: with it disabled a real 2x2 checkerboard is *accepted* and scored 0.0 — the value of
+  // the empty sum its own comment says it exists to avoid, and a zero that a selection policy would
+  // read as "no detail" rather than "not a photograph".
+  const FrameRef tiny = Frame([](int32_t x, int32_t y) -> uint8_t {
+    return static_cast<uint8_t>(((x + y) % 2) == 0 ? 0 : 255);
+  }, 2, 2);
+
+  const Result<QualityScore> scored = engine.Score(tiny, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok()) << "a 2x2 frame is not a photograph; scoring it reports an empty sum";
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 
 TEST_F(FrameQuality, APlanarHandleWithAWideStrideIsRefused) {

@@ -8,7 +8,7 @@
 //
 // Each case builds a whole fake repository in a temp directory and runs the real check against it,
 // so what is asserted is the check's behaviour rather than a re-implementation of its arithmetic.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -43,8 +43,18 @@ function aFreshTree() {
   put('core/CMakeLists.txt', t);
   put('CMakeLists.txt', t);
   put('CMakePresets.json', t);
-  put('build/wasm-release/CMakeCache.txt', t + 1000);
-  put('build/wasm-release-threaded/CMakeCache.txt', t + 1000);
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    put(`build/${preset}/CMakeCache.txt`, t + 1000, 'CMAKE_CXX_FLAGS:STRING=-msimd128\n');
+    put(`build/${preset}/build.ninja`, t + 1000,
+        'build build.ninja: RERUN_CMAKE | ../../CMakeLists.txt ../../core/CMakeLists.txt '
+        + '../../bridge/CMakeLists.txt\n');
+  }
+  put('CMakePresets.json', t, JSON.stringify({
+    configurePresets: [
+      { name: 'wasm-release', cacheVariables: { CMAKE_CXX_FLAGS: '-msimd128' } },
+      { name: 'wasm-release-threaded', cacheVariables: { CMAKE_CXX_FLAGS: '-msimd128' } },
+    ],
+  }));
   put('build/wasm-release/bridge/sphanorama-core.wasm', t + 1000);
   put('build/wasm-release/bridge/sphanorama-core.js', t + 1000);
   put('build/wasm-release-threaded/bridge/sphanorama-core.wasm', t + 1000);
@@ -237,8 +247,9 @@ describe('the dist freshness check', () => {
     });
 
     it('says nothing at all when ninja is not on PATH', () => {
-      // `spawnSync` reports this as `error` rather than a non-zero exit, which is a different branch
-      // from a ninja that ran and failed.
+      // Not a separate branch from a failing ninja, which is worth saying: `spawnSync` reports a
+      // missing command as `status === null`, so the same comparison catches both. The case is kept
+      // because it is a state that happens to people, not because it reaches its own line.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
       made.push(root);
       treeWithNinja(root, 'echo "ninja: no work to do."');
@@ -252,13 +263,16 @@ describe('the dist freshness check', () => {
     });
 
     it('skips a preset with no build.ninja rather than failing on it', () => {
-      // One configured preset and one that was never configured: the configured one still answers,
-      // and the missing directory is passed over rather than turning the whole probe into a `null`.
-      const root = mkdtempSync(join(tmpdir(), 'probe-'));
-      made.push(root);
-      const shim = treeWithNinja(root, 'echo "ninja: no work to do."');
-      rmSync(join(root, 'build', 'wasm-release-threaded'), { recursive: true, force: true });
-      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(true);
+      // Both orders, because removing only the *last* preset leaves `continue` and `break`
+      // indistinguishable — the loop was finished either way. With the first preset missing, a
+      // `break` would skip the second and answer for neither.
+      for (const missing of ['wasm-release', 'wasm-release-threaded']) {
+        const root = mkdtempSync(join(tmpdir(), 'probe-'));
+        made.push(root);
+        const shim = treeWithNinja(root, 'echo "ninja: no work to do."');
+        rmSync(join(root, 'build', missing), { recursive: true, force: true });
+        expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root)), missing).toBe(true);
+      }
     });
 
     it('asks about both presets, not just the first', () => {
@@ -271,6 +285,40 @@ describe('the dist freshness check', () => {
     });
   });
 
+  it('forgives every CMakeLists the build graph names, not a list someone wrote down', () => {
+    // `bridge/CMakeLists.txt` is in every preset's regeneration edge exactly as the other two are,
+    // and an enumeration naming only two left it deadlocking — the fourth enumeration on this branch
+    // to come up one short. The set is read out of `build.ninja` now, so a CMakeLists added anywhere
+    // is covered without anyone remembering to add it here.
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'bridge/CMakeLists.txt']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now());
+      expect(complaint(tree.root, undefined, () => true), source).toBeNull();
+    }
+  });
+
+  it('forgives a preset edit that changes no cache variable', () => {
+    // `displayName` and `description` are documentation-only preset fields — one of this repo's
+    // presets carries 700 characters of prose — so "JSON has no comments, therefore no inert edit"
+    // was wrong. And there is no mtime that answers here: `cmake --preset` rewrites `CMakeCache.txt`
+    // only when a value changes, measured over three consecutive no-op runs. What answers is the
+    // content: the preset's declared cache variables against the ones the build directory holds.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0].description = 'a newly written explanation, changing no build';
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
+  it('does not forgive a preset edit that changes a cache variable', () => {
+    // The half that matters: a flag change the build directory has not been reconfigured for.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = '-msimd128 -O0';
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
   it('never forgives CMakePresets.json, however idle ninja is', () => {
     // Ninja is blind to this one file: it appears in neither wasm `build.ninja` (measured, `grep -c`
     // is 0 in both), so no edit to it can produce outstanding work and ninja answers "nothing to do"
@@ -280,22 +328,41 @@ describe('the dist freshness check', () => {
     // It is not forgiven at all rather than forgiven on some other evidence, because the deadlock
     // forgiveness exists for cannot arise here: `CMakePresets.json` is JSON, and JSON has no
     // comments, so there is no such thing as an edit to it that is inert for a build.
+    // Still true when the preset's *content* has moved: ninja is blind to this file, so its answer
+    // says nothing about it either way.
     const tree = aFreshTree();
-    tree.put('CMakePresets.json', Date.now());
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[1].cacheVariables.CMAKE_CXX_FLAGS = '-msimd128 -pthread';
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
     expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('runs the real probe when none is injected', () => {
     // The blind spot that hid a production regression for a whole round: every other case here
-    // passes a stub, and the stub's default return is a value the real function cannot produce — so
-    // the real binding was reached by nothing. This case calls the two-argument form, which is what
-    // production calls, against a tree with no build directory: the real probe answers "cannot ask",
-    // and a build file is therefore not forgiven.
+    // passes a stub, so the default binding was reached by nothing and a mutant making production
+    // forgive everything stayed green.
+    //
+    // It has to exercise the **forgiving** direction to pin that binding. An earlier version put a
+    // build file in a tree with no build directory and asserted a complaint, which a default of
+    // `() => null` *or* `() => false` satisfies just as well — it pinned "the default refuses",
+    // which is not the same claim. Here the tree has a ninja shim that reports idle, so only the
+    // real probe can produce the forgiveness this asserts.
     const tree = aFreshTree();
+    mkdirSync(join(tree.root, 'bin'), { recursive: true });
+    const shim = join(tree.root, 'bin', 'ninja');
+    writeFileSync(shim, '#!/bin/sh\necho "ninja: no work to do."\n');
+    chmodSync(shim, 0o755);
     tree.put('core/CMakeLists.txt', Date.now());
-    let message = null;
-    try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
-    expect(message).toMatch(/compiled core is older than the C\+\+/);
+
+    const saved = process.env.PATH;
+    process.env.PATH = `${join(tree.root, 'bin')}:${saved}`;
+    try {
+      let message = null;
+      try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
+      expect(message).toBeNull();
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 
   it('forgives a build file when ninja says there is nothing left to do', () => {
