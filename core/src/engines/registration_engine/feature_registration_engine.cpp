@@ -27,18 +27,33 @@ constexpr int32_t kKeypointBytes = 8;
 // frame, 232 MB over the sixty a sphere plans) and AKAZE returns 14,656 — decimal megabytes, as
 // ADR 0051 counts them. A capture frame is several times that again in pixels.
 
-bool HasReadableLuma(PixelFormat format) {
+/**
+ * How a format carries its luma, and the one place that is decided.
+ *
+ * There were three copies of this fact: this list, `LumaOf`'s switch over the same five formats,
+ * and a `luma.empty()` check after the call. A reviewer showed the third could never fire — the
+ * only way `LumaOf` answers empty is a format this function has already refused — which is what a
+ * fact held in three places looks like just before one of them drifts. Deriving the other two from
+ * this leaves one list to get wrong.
+ */
+enum class LumaKind { None, Planar, FourChannel };
+
+LumaKind LumaKindOf(PixelFormat format) {
   switch (format) {
-    case PixelFormat::RGBA8:
-    case PixelFormat::BGRA8:
+    case PixelFormat::Gray8:
     case PixelFormat::NV12:
     case PixelFormat::I420:
-    case PixelFormat::Gray8:
-      return true;
+      // All three lead with a full-resolution luma plane, which is all a detector reads.
+      return LumaKind::Planar;
+    case PixelFormat::RGBA8:
+    case PixelFormat::BGRA8:
+      return LumaKind::FourChannel;
     default:
-      return false;
+      return LumaKind::None;
   }
 }
+
+bool HasReadableLuma(PixelFormat format) { return LumaKindOf(format) != LumaKind::None; }
 
 cv::Ptr<cv::Feature2D> Make(FeatureDetector detector) {
   switch (detector) {
@@ -57,23 +72,22 @@ cv::Ptr<cv::Feature2D> Make(FeatureDetector detector) {
 
 // The luma plane as a single-channel Mat, without copying where the layout already allows it.
 cv::Mat LumaOf(const FrameRef& frame, std::span<uint8_t> bytes, size_t stride) {
-  switch (frame.format) {
-    case PixelFormat::Gray8:
-    case PixelFormat::NV12:
-    case PixelFormat::I420:
-      // All three lead with a full-resolution luma plane, which is all a detector reads.
+  switch (LumaKindOf(frame.format)) {
+    case LumaKind::Planar:
       return cv::Mat(frame.height, frame.width, CV_8UC1, bytes.data(), stride);
-    case PixelFormat::RGBA8:
-    case PixelFormat::BGRA8: {
+    case LumaKind::FourChannel: {
       const cv::Mat colour(frame.height, frame.width, CV_8UC4, bytes.data(), stride);
       cv::Mat grey;
       cv::cvtColor(colour, grey,
                    frame.format == PixelFormat::RGBA8 ? cv::COLOR_RGBA2GRAY : cv::COLOR_BGRA2GRAY);
       return grey;
     }
-    default:
-      return {};
+    case LumaKind::None:
+      // `Extract` refuses this format before pinning, so this arm is how the switch stays total
+      // rather than a state anything reaches.
+      break;
   }
+  return {};
 }
 
 /**
@@ -228,10 +242,9 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     }
   }
 
+  // No `empty()` check: `HasReadableLuma` above and this call now read the same list, so the only
+  // format that could produce an empty `Mat` is one that was refused before the frame was pinned.
   const cv::Mat luma = LumaOf(frame, pinned.value, static_cast<size_t>(stride));
-  if (luma.empty()) {
-    return Err<FeatureSet>(StatusCode::Unsupported, kComponent, "no luma plane in this format");
-  }
 
   cv::Ptr<cv::Feature2D> detector = Make(detector_);
   if (!detector) {

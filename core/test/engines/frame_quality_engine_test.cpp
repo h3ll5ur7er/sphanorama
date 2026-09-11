@@ -135,15 +135,30 @@ TEST_F(FrameQuality, ASharpEdgeScoresAboveTheSameStructureSmearedOut) {
 }
 
 TEST_F(FrameQuality, SharpnessDoesNotDependOnWhereTheDetailSits) {
-  // A frame and the same frame shifted by one square. Selection compares frames of the same
-  // scene taken moments apart, so a measure that moved with the content would rank hand-shake.
-  const FrameRef left = Frame([](int32_t x, int32_t y) -> uint8_t {
-    return ((x / 4) + (y / 4)) % 2 == 0 ? 0 : 255;
-  });
-  const FrameRef shifted = Frame([](int32_t x, int32_t y) -> uint8_t {
-    return (((x + 4) / 4) + (y / 4)) % 2 == 0 ? 0 : 255;
-  });
-  EXPECT_NEAR(Sharpness(left), Sharpness(shifted), Sharpness(left) * 0.05);
+  // Selection compares frames of the same scene taken moments apart, so a measure that moved with
+  // the content would rank hand-shake.
+  //
+  // **This test used to assert nothing of the kind.** It painted a full-frame checkerboard and the
+  // same checkerboard "shifted by one square" — but a shift of one square is a shift of half a
+  // period, and half a period of a two-colour checkerboard is its exact photographic negative:
+  // `(x + 4) / 4 == x / 4 + 1`, so the parity flipped on all 4,096 pixels and none stayed the same.
+  // A Laplacian is linear, so negating the image negates every response and leaves the variance
+  // bit-identical. A reviewer confirmed it by restricting the variance to the frame's left half —
+  // as position-dependent as a measure can get — and the whole suite stayed green.
+  //
+  // Detail in one *place*, moved to another place, is what the name claims and what this now does.
+  // Both patches sit clear of the border so neither is clipped by the Laplacian's edge handling.
+  const auto patchAt = [](int32_t originX, int32_t originY) {
+    return [originX, originY](int32_t x, int32_t y) -> uint8_t {
+      const bool inside = x >= originX && x < originX + 16 && y >= originY && y < originY + 16;
+      if (!inside) return 128;
+      return ((x / 2) + (y / 2)) % 2 == 0 ? 0 : 255;
+    };
+  };
+  const FrameRef nearTheTopLeft = Frame(patchAt(8, 8));
+  const FrameRef nearTheBottomRight = Frame(patchAt(40, 40));
+  EXPECT_NEAR(Sharpness(nearTheTopLeft), Sharpness(nearTheBottomRight),
+              Sharpness(nearTheTopLeft) * 0.05);
 }
 
 TEST_F(FrameQuality, ScoringIsDeterministic) {

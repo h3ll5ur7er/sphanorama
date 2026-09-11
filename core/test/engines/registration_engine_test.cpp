@@ -479,6 +479,32 @@ TEST_P(Extraction, RefusesAPlanarHandleThatHidesChromaBehindAWideStride) {
   EXPECT_TRUE(store.Forget(allocated.value).ok());
 }
 
+TEST_P(Extraction, RefusesAFormatWithNoLumaPlaneToRead) {
+  // The contract promises `Unsupported` for "a format with no luma plane to read", and nothing
+  // asked. Found by sabotage rather than by reading: making the engine's format list claim an
+  // *encoded* frame carries a planar luma passed all 708 tests, because every other case in this
+  // file hands in a format that does have one. The opposite direction was covered six times over.
+  //
+  // `EncodedJpeg` is the real instance — a frame straight off a camera that has not been decoded —
+  // and reading its bytes as a luma plane would score compressed data as picture.
+  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  FrameRef encoded = allocated.value;
+  encoded.format = PixelFormat::EncodedJpeg;
+
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> features = engine.ExtractFeatures(encoded);
+  EXPECT_FALSE(features.ok()) << "an encoded frame's bytes are not a picture";
+  EXPECT_EQ(features.status.code, StatusCode::Unsupported);
+
+  // Refused before the frame was pinned, which is the other half of the promise: an unreadable
+  // format costs nothing and leaves no residency behind.
+  const Result<Residency> residency = store.ResidencyOf(allocated.value);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_EQ(residency.value, Residency::HeapEncoded);
+  EXPECT_TRUE(store.Forget(allocated.value).ok());
+}
+
 TEST_P(Extraction, RefusesAFrameWithNoPixelsInIt) {
   // The first line of the guard pair, and the one nothing asked about — removing `width <= 0 ||
   // height <= 0` from *both* engines leaves every test in the repository green. What it buys is the
@@ -1087,8 +1113,24 @@ TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
 TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // Kept beside the real one so the pair is visible: the null engine is what a WASM build gets
   // (ADR 0052), and it refuses rather than returning an identity that would look like a stitch.
+  //
+  // **"Everything" used to mean one of the three methods.** A reviewer made `EstimatePairwise` and
+  // `Refine` return `Ok` — the identity registration this class's own header calls worse than a
+  // refusal — and all 707 tests passed. The two *are* covered by
+  // `MatchingAndRefinementRefuseRatherThanAnswer`, but that is a `TEST_P` over
+  // `FeatureRegistrationEngine`, which exists only where OpenCV does and which no composition root
+  // selects; `bridge/runtime.h` holds this one. So the engine every browser actually gets had its
+  // two most dangerous methods asserted nowhere.
   NullRegistrationEngine engine;
   EXPECT_FALSE(engine.ExtractFeatures(FrameRef{}).ok());
+
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{});
+  EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
+  EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
+
+  const Result<GlobalSolution> refined = engine.Refine({}, {}, Intrinsics{});
+  EXPECT_FALSE(refined.ok()) << "an empty solution here would look like a solved sphere";
+  EXPECT_EQ(refined.status.code, StatusCode::Unsupported);
 }
 
 }  // namespace

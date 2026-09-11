@@ -793,7 +793,21 @@ describe('the dist freshness check', () => {
                         // the one direction a fail-closed check must not err in. The second filter
                         // is what makes the two spellings distinguishable: with the list emptied
                         // entirely, "no filter" also answers "reaching" and hides the difference.
-                        ['node', 'playwright', 'test', 'test', 'shell/e2e']]) {
+                        ['node', 'playwright', 'test', 'test', 'shell/e2e'],
+                        // Playwright matches a positional as a substring *or* a regular
+                        // expression, and every case above is a substring — so the regex arm and
+                        // its `catch` were reached by nothing in this suite. Two mutants proved it:
+                        // matching by substring alone, and a `catch` returning `false`, each left
+                        // all 53 tests green while flipping these three from reaching to not
+                        // reaching. Every flip drops the threaded demand for a run that does load
+                        // `bridge/test/module.spec.mjs`, whose absence then skips silently — which
+                        // is the failure this whole file exists to refuse, arriving through the one
+                        // function written to fail closed.
+                        ['node', 'playwright', 'test', 'bridge/test/.*spec'],
+                        ['node', 'playwright', 'test', 'bridge.*module'],
+                        // Unparseable, so `new RegExp` throws. "Reaching" is the fail-closed answer
+                        // to a filter this cannot understand.
+                        ['node', 'playwright', 'test', 'bridge/test/(unclosed']]) {
       const tree = aFreshTree();
       rmSync(join(tree.root, 'build', 'wasm-release-threaded'), { recursive: true });
       expect(complaint(tree.root, argv), argv.join(' '))
