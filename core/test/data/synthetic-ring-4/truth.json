@@ -1,0 +1,61 @@
+{
+  "convention": {
+    "camera_space": "-Z forward, +Y up, +X right",
+    "image_space": "+x right, +y down, origin at the top-left corner",
+    "principal_point": "this generator's lenses are built with cx = width / 2, half a pixel from OpenCV's (width - 1) / 2; read the value from intrinsics rather than assuming it",
+    "equirectangular": "longitude 0 is -Z and increases toward +X; latitude +90 is +Y at row 0; an integer coordinate is a pixel edge, so forward lands on the corner at (width / 2, height / 2)",
+    "rotation": "device -> world, unit quaternion, matching sphanorama::Quat",
+    "pixel_encoding": "each byte b is a signed component: value = b / 255 * 2 - 1, so 0 is -1.0, 128 is +0.00392 and 255 is +1.0; there is no gamma and no colour space. A consumer that assumes unsigned [0, 1] reads every frame with its contrast halved and its zero in the wrong place"
+  },
+  "intrinsics": {
+    "fx": 36.95675913154999,
+    "fy": 38.60112456917206,
+    "cx": 24.0,
+    "cy": 18.0,
+    "k1": 0.0,
+    "k2": 0.0,
+    "k3": 0.0,
+    "p1": 0.0,
+    "p2": 0.0,
+    "width": 48,
+    "height": 36
+  },
+  "frames": [
+    {
+      "file": "frame_0000.ppm",
+      "rotation": {
+        "w": 1.0,
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "file": "frame_0001.ppm",
+      "rotation": {
+        "w": 0.7071067811865476,
+        "x": 0.0,
+        "y": 0.7071067811865475,
+        "z": 0.0
+      }
+    },
+    {
+      "file": "frame_0002.ppm",
+      "rotation": {
+        "w": 6.123233995736766e-17,
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      }
+    },
+    {
+      "file": "frame_0003.ppm",
+      "rotation": {
+        "w": -0.7071067811865475,
+        "x": 0.0,
+        "y": 0.7071067811865476,
+        "z": 0.0
+      }
+    }
+  ]
+}

@@ -1742,5 +1742,71 @@ class GroundTruth(unittest.TestCase):
                                       expected)
 
 
+class TheContractTheCppLoaderReads(unittest.TestCase):
+    """The on-disk shape `core/test/support/synthetic_dataset.cpp` parses.
+
+    That loader is the other half of this format and it lives in another language, so the format is
+    written down twice whether anybody likes it or not. These cases pin the half this file owns, so
+    a change here fails *here* — naming the consumer — rather than in a C++ test whose message is
+    about a frame rather than about the schema that moved under it.
+
+    Deliberately structural and not numeric: a pixel value that shifts when numpy changes its
+    rounding is not a contract, and a test that went red on an unrelated upgrade would be noise.
+    """
+
+    def test_the_header_is_the_three_tokens_the_loader_expects(self):
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [Pose.identity()])
+            raw = (Path(directory) / "frame_0000.ppm").read_bytes()
+
+        # `P6`, width, height, maximum, then exactly one whitespace byte and the payload. The C++
+        # reader consumes that single byte itself rather than skipping whitespace, because a payload
+        # may legitimately begin with a byte that looks like one — and a reader that skipped it ate
+        # the first pixel and failed at the last row, which is how this was found.
+        self.assertEqual(raw[:3], b"P6\n")
+        header, _, body = raw.partition(b"255\n")
+        self.assertEqual(header, b"P6\n12 8\n", "the loader parses three whitespace-separated tokens")
+        self.assertEqual(len(body), 12 * 8 * 3, "no trailing byte; the loader refuses a longer file")
+
+    def test_truth_json_carries_the_keys_the_loader_reads(self):
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [Pose.identity(),
+                                                            Pose.from_azimuth_elevation(90.0, 0.0)])
+            truth = json.loads((Path(directory) / "truth.json").read_text())
+
+        self.assertIn("intrinsics", truth)
+        self.assertIn("frames", truth)
+        # Every field of `sphanorama::Intrinsics` the loader fills from this file. The two it does
+        # not fill — `rollingShutterLineTimeNs` and `estimated` — are deliberately absent here: these
+        # are the true intrinsics, and a synthetic capture has no rolling shutter yet.
+        for field in ("fx", "fy", "cx", "cy", "k1", "k2", "k3", "p1", "p2", "width", "height"):
+            self.assertIn(field, truth["intrinsics"], f"the C++ loader reads intrinsics.{field}")
+        self.assertNotIn("rollingShutterLineTimeNs", truth["intrinsics"])
+        self.assertNotIn("estimated", truth["intrinsics"])
+
+        self.assertIsInstance(truth["frames"], list)
+        for entry in truth["frames"]:
+            self.assertEqual(set(entry), {"file", "rotation"})
+            self.assertEqual(set(entry["rotation"]), {"w", "x", "y", "z"})
+
+    def test_a_half_turn_is_written_with_the_sign_it_has(self):
+        # The loader records the quaternion as spelled, negative scalar part included, because a
+        # quaternion and its negation are the same rotation and tidying one is unasked-for work on
+        # the field every accuracy number is compared against. That only means something if this
+        # file can actually emit one, so: three quarters of a turn does.
+        poses = [Pose.from_azimuth_elevation(270.0, 0.0)]
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, poses)
+            truth = json.loads((Path(directory) / "truth.json").read_text())
+        self.assertLess(truth["frames"][0]["rotation"]["w"], 0.0,
+                        "no negative scalar part is emitted, so the loader's case is unreachable")
+
+
 if __name__ == "__main__":
     unittest.main()
