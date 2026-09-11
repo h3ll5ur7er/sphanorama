@@ -242,31 +242,37 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   cv::Mat descriptors;
   detector->detectAndCompute(luma, cv::noArray(), keypoints, descriptors);
 
-  // **Asking for a cap is not the same as getting one.** `KeyPointsFilter::retainBest` keeps every
-  // keypoint tied with the last one at the cutoff score, so a detector asked for 500 can answer
-  // with more: SIFT returned 501 on this repository's own test texture at 768 square, the first
-  // time a test asserted the bound instead of assuming it. One over is harmless; the number is not
-  // bounded by anything we control, which is the part that matters for an allocation sized from it.
+  // **Asking for a cap is not the same as getting one**, and the surplus is not what two earlier
+  // versions of this comment claimed.
   //
-  // Truncating is safe, but **not** because the detectors return their features best-first: they do
-  // not. Measured on this repository's texture with `std::is_sorted` by descending response, ORB and
-  // SIFT are unsorted at every size tried and AKAZE only at 768 and above. An earlier version of
-  // this comment said otherwise, which would have been a bad thing for a future cap change to lean
-  // on.
+  // SIFT returned 501 for a request of 500 on this repository's texture at 768 square, because
+  // `KeyPointsFilter::retainBest` keeps everyone tied with the last of its selection — so for SIFT
+  // the overflow really is the boundary ties. ORB is a different mechanism entirely: `orb.cpp`
+  // applies `retainBest(keypoints, featuresNum)` **per pyramid level** and concatenates the levels,
+  // so the total is capped nowhere, the order is level-major rather than response-major, and the
+  // surplus is whole octaves. A reviewer measured 772 for a request of 500 on a tie-rich image.
   //
-  // What makes it safe is narrower and is the same fact that causes the overflow: `retainBest`
-  // selects the best `n` and then keeps everyone *tied with the last of them*, so the surplus is
-  // exactly the boundary ties. SIFT's 501 at 768 square has `maxDropped == minKept == 0.064919` —
-  // the one dropped feature is not weaker than the weakest kept, it is equal to it. Dropping from
-  // the end therefore discards a tied feature and never a better one, whatever order they arrive
-  // in.
-  if (keypoints.size() > static_cast<size_t>(kMaxFeaturesPerFrame)) {
-    keypoints.resize(static_cast<size_t>(kMaxFeaturesPerFrame));
+  // Neither is a safe thing to reason about, so the code stops reasoning about it. Rather than keep
+  // the first `n` and argue about what the detector put there, it keeps the best `n` by response —
+  // which is true by construction for every detector, present and future, and makes `FeatureSet`'s
+  // rows best-first, which is what a matcher taking a top-`k` wants anyway.
+  //
+  // Stable, so that equal responses keep the detector's own order and two extractions of one frame
+  // still agree byte for byte.
+  // Always, not only when the cap bites: an order that changes shape at 500 features is a promise
+  // nobody can state, and a caller would have no way to know which one it got.
+  std::vector<int> order(keypoints.size());
+  for (size_t at = 0; at < order.size(); ++at) order[at] = static_cast<int>(at);
+  std::stable_sort(order.begin(), order.end(), [&keypoints](int a, int b) {
+    return keypoints[static_cast<size_t>(a)].response > keypoints[static_cast<size_t>(b)].response;
+  });
+  if (order.size() > static_cast<size_t>(kMaxFeaturesPerFrame)) {
+    order.resize(static_cast<size_t>(kMaxFeaturesPerFrame));
   }
 
   FeatureSet features;
   features.frame = frame.id;
-  features.count = static_cast<int32_t>(keypoints.size());
+  features.count = static_cast<int32_t>(order.size());
 
   // A frame with nothing in it is answered with nothing, rather than with two empty allocations
   // the caller would then have to remember to forget. `count == 0` is the whole answer.
@@ -278,7 +284,7 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // would read past the Mat with no diagnostic in a release build. No detector here disagrees
   // today; this is the same assumption the code below explicitly refuses to make about the store,
   // and it costs one comparison to stop making it here too.
-  if (descriptors.rows < features.count) {
+  if (descriptors.rows < static_cast<int>(keypoints.size())) {
     return Err<FeatureSet>(StatusCode::Internal, kComponent,
                            "the detector returned fewer descriptors than keypoints");
   }
@@ -327,9 +333,13 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   }
 
   for (int32_t row = 0; row < features.count; ++row) {
+    // Through `order`, so a descriptor stays with its keypoint. The two are row-aligned as the
+    // detector produced them, and selecting the best `n` reorders both or neither.
+    const int from = order[static_cast<size_t>(row)];
     std::memcpy(descriptorSpan.value.data() + static_cast<size_t>(row) * descriptorBytes,
-                descriptors.ptr(row), static_cast<size_t>(descriptorBytes));
-    const float xy[2] = {keypoints[row].pt.x, keypoints[row].pt.y};
+                descriptors.ptr(from), static_cast<size_t>(descriptorBytes));
+    const float xy[2] = {keypoints[static_cast<size_t>(from)].pt.x,
+                         keypoints[static_cast<size_t>(from)].pt.y};
     std::memcpy(keypointSpan.value.data() + static_cast<size_t>(row) * kKeypointBytes, xy,
                 sizeof(xy));
   }

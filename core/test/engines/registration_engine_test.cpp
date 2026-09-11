@@ -310,6 +310,62 @@ TEST_P(Extraction, TheDescriptorFrameHoldsExactlyTheDescriptorsItClaims) {
   ForgetOutputs(features.value);
 }
 
+TEST_P(Extraction, EachDescriptorStaysWithItsKeypoint) {
+  // The pairing, which nothing checked: gathering descriptor rows by their position instead of
+  // through the same permutation as the keypoints left every test in the repository green. A
+  // descriptor filed against the wrong keypoint is not a crash and not a leak — it is a matcher
+  // that confidently corresponds the wrong features, which is the one failure this whole engine
+  // exists to avoid and the hardest to see afterwards.
+  //
+  // Checked against the detector run independently, ordered the way `FeatureSet` promises, so both
+  // halves of each row are compared: the coordinates *and* the descriptor bytes that must belong
+  // to them.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef source = Textured();
+  const Result<FeatureSet> features = engine.ExtractFeatures(source);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  ASSERT_GT(features.value.count, 0);
+
+  const cv::Ptr<cv::Feature2D> oracle = OpenCvDetector(GetParam());
+  ASSERT_TRUE(oracle);
+  const Result<std::span<uint8_t>> sourceBytes = store.Pin(source);
+  ASSERT_TRUE(sourceBytes.ok()) << sourceBytes.status.detail;
+  const cv::Mat colour(kHeight, kWidth, CV_8UC4, sourceBytes.value.data(), source.stride);
+  cv::Mat grey;
+  cv::cvtColor(colour, grey, cv::COLOR_RGBA2GRAY);
+  std::vector<cv::KeyPoint> expected;
+  cv::Mat expectedDescriptors;
+  oracle->detectAndCompute(grey, cv::noArray(), expected, expectedDescriptors);
+  EXPECT_TRUE(store.Release(source).ok());
+
+  std::vector<int> order(expected.size());
+  for (size_t at = 0; at < order.size(); ++at) order[at] = static_cast<int>(at);
+  std::stable_sort(order.begin(), order.end(), [&expected](int a, int b) {
+    return expected[static_cast<size_t>(a)].response > expected[static_cast<size_t>(b)].response;
+  });
+  ASSERT_GE(static_cast<int32_t>(order.size()), features.value.count);
+
+  const Result<std::span<uint8_t>> keypointBytes = store.Pin(features.value.keypoints);
+  const Result<std::span<uint8_t>> descriptorBytes = store.Pin(features.value.descriptors);
+  ASSERT_TRUE(keypointBytes.ok() && descriptorBytes.ok());
+  const size_t width = static_cast<size_t>(features.value.descriptors.width);
+
+  for (int32_t row = 0; row < features.value.count; ++row) {
+    const int from = order[static_cast<size_t>(row)];
+    float xy[2] = {0.0F, 0.0F};
+    std::memcpy(xy, keypointBytes.value.data() + static_cast<size_t>(row) * 8, sizeof(xy));
+    ASSERT_FLOAT_EQ(xy[0], expected[static_cast<size_t>(from)].pt.x) << "row " << row;
+    ASSERT_FLOAT_EQ(xy[1], expected[static_cast<size_t>(from)].pt.y) << "row " << row;
+    EXPECT_EQ(0, std::memcmp(descriptorBytes.value.data() + static_cast<size_t>(row) * width,
+                             expectedDescriptors.ptr(from), width))
+        << "row " << row << ": this descriptor belongs to a different keypoint";
+  }
+
+  EXPECT_TRUE(store.Release(features.value.keypoints).ok());
+  EXPECT_TRUE(store.Release(features.value.descriptors).ok());
+  ForgetOutputs(features.value);
+}
+
 TEST_P(Extraction, RefusesAFrameTheStoreDoesNotHave) {
   // A `FrameRef` is a plain value a caller passes in, so it can name a frame that never existed.
   FeatureRegistrationEngine engine = Engine();
@@ -505,11 +561,12 @@ TEST_P(Extraction, TheKeypointFrameHoldsACoordinatePairPerFeature) {
   cv::Mat ignored;
   oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
   EXPECT_TRUE(store.Release(source).ok());
-  // Truncated the same way the engine truncates, because otherwise this comparison quietly assumes
-  // the cap never bites. It does not at this frame size today — engine and oracle both return 246,
-  // 107 and 99 — so `ASSERT_GE` held by equality and the truncation path was never compared at all.
-  // Lowering `kMaxFeaturesPerFrame`, which is a tuning change and not a defect, failed all three
-  // rows with "row 0: x is not this row's x" while the engine was doing exactly the right thing.
+  // Ordered and truncated the way `FeatureSet` says its rows are — best-first, ties in the order the
+  // detector found them — because that is the promise being checked. Comparing against the
+  // detector's raw order would assume the engine hands rows back untouched, which it deliberately
+  // does not: two of the three detectors return an unsorted list.
+  std::stable_sort(expected.begin(), expected.end(),
+                   [](const cv::KeyPoint& a, const cv::KeyPoint& b) { return a.response > b.response; });
   if (expected.size() > static_cast<size_t>(features.value.count)) {
     expected.resize(static_cast<size_t>(features.value.count));
   }
@@ -561,6 +618,8 @@ TEST_P(Extraction, TheCapIsAskedForAndNotOnlyTruncatedTo) {
   cv::Mat ignored;
   oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
   EXPECT_TRUE(store.Release(source).ok());
+  std::stable_sort(expected.begin(), expected.end(),
+                   [](const cv::KeyPoint& a, const cv::KeyPoint& b) { return a.response > b.response; });
   if (expected.size() > static_cast<size_t>(features.value.count)) {
     expected.resize(static_cast<size_t>(features.value.count));
   }

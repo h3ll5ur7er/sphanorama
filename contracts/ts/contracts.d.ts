@@ -491,6 +491,14 @@ export interface NodeContext {
  */
 export interface FeatureSet {
   frame: FrameId;
+  /**
+   * Rows are **best-first**: descending by the detector's own response, ties in the order it found
+   * them. A matcher wanting a top-`k` can take the first `k` rows and stop.
+   * The engine sorts rather than trusting the detector, because the detectors do not agree on this
+   * and two of them do not do it at all. It is also what makes the cap honest: keeping the first
+   * `count` of an unsorted list would discard better features than it kept, which for ORB — whose
+   * pyramid levels are capped separately and concatenated — is not hypothetical.
+   */
   count: number;
   /** count rows x descriptor bytes, Gray8 */
   descriptors: FrameRef;

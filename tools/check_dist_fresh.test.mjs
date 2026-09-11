@@ -193,7 +193,9 @@ describe('the dist freshness check', () => {
     function treeWithNinja(root, script) {
       mkdirSync(join(root, 'bin'), { recursive: true });
       const shim = join(root, 'bin', 'ninja');
-      writeFileSync(shim, `#!/bin/sh\n${script}\n`);
+      // Respects `-C` the way real ninja does — it exits 1 on a directory with no manifest — so a
+      // sabotage that deletes the existence check is not silently answered by the shim instead.
+      writeFileSync(shim, `#!/bin/sh\n[ -f "$2/build.ninja" ] || exit 1\n${script}\n`);
       chmodSync(shim, 0o755);
       for (const preset of ['wasm-release', 'wasm-release-threaded']) {
         mkdirSync(join(root, 'build', preset), { recursive: true });
@@ -337,7 +339,7 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
-  it('runs the real probe when none is injected', () => {
+  it('runs the real probe when none is injected, in the direction that forgives', () => {
     // The blind spot that hid a production regression for a whole round: every other case here
     // passes a stub, so the default binding was reached by nothing and a mutant making production
     // forgive everything stayed green.
@@ -363,6 +365,52 @@ describe('the dist freshness check', () => {
     } finally {
       process.env.PATH = saved;
     }
+  });
+
+  it('runs the real probe when none is injected, in the direction that refuses', () => {
+    // Both directions, because one case cannot pin a binding. The forgiving case above dies to a
+    // default of `() => null` or `() => false`; this one dies to `() => true` — the "production
+    // forgives everything" mutant, which is the one an earlier version of the case above was written
+    // to catch and did not. A binding needs a test on each side of it or it has a blind spot
+    // whichever way you point the single case.
+    // The manifests stay in place so the graph set is populated — that is what makes this
+    // discriminating. Real ninja refuses the fixture's stub manifest and exits non-zero, so the real
+    // probe answers "cannot ask" and nothing is forgiven, while a default of `() => true` would
+    // forgive the file on a graph it never checked.
+    const tree = aFreshTree();
+    tree.put('core/CMakeLists.txt', Date.now());
+    let message = null;
+    try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
+    expect(message).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('does not forgive a preset that declares a variable the build directory has never held', () => {
+    // A newly added cache variable is a configure that has not happened. Treating "not in the cache"
+    // as agreement forgave exactly that.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets[0].cacheVariables.SPHANORAMA_NEW_KNOB = 'ON';
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('does not forgive a preset the build directories do not name at all', () => {
+    // A preset removed or renamed while its build directory still exists: nothing declares what that
+    // directory holds, so nothing can vouch for it.
+    const tree = aFreshTree();
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    presets.configurePresets = presets.configurePresets.filter((p) => p.name !== 'wasm-release');
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('checks a CMakeLists nobody wrote down', () => {
+    // The list was written out four times and was one short every time. This one is in a directory
+    // the source walk covers and is named by no build graph, so both the walk and the build-file
+    // rule have to agree it is theirs — which, when they did not, made it invisible to each.
+    const tree = aFreshTree();
+    tree.put('bridge/resource_access/CMakeLists.txt', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('forgives a build file when ninja says there is nothing left to do', () => {
@@ -396,8 +444,13 @@ describe('the dist freshness check', () => {
   it('does not forgive a build file when ninja could not be asked', () => {
     // No answer is not a yes. Missing build directory, no ninja on PATH, a non-zero exit: the
     // conservative comparison stands, which is the behaviour every other case here assumes.
+    //
+    // The preset stays valid JSON on purpose. An earlier version wrote the literal string
+    // `CMakePresets.json` into it, so `JSON.parse` refused it before the probe was consulted and the
+    // case passed without ever reaching what it was about.
     const tree = aFreshTree();
-    tree.put('CMakePresets.json', Date.now());
+    const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+    tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
     expect(complaint(tree.root, undefined, () => null)).toMatch(/compiled core is older than the C\+\+/);
   });
 

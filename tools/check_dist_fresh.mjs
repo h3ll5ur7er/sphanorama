@@ -121,6 +121,35 @@ function canReachBridgeSpecs(argv) {
  * caller then treats a build file the old way, which is the conservative direction.
  */
 /**
+ * Every `CMakeLists.txt` in the tree, as absolute paths — found by walking, not by being listed.
+ *
+ * The list was written down four times on this branch and was one short every time, most recently
+ * by excluding all of them from the source walk and naming four back. A fifth anywhere — say
+ * `bridge/resource_access/CMakeLists.txt` — was then invisible to this check in both directions:
+ * skipped as a source and never re-added as a build file.
+ */
+function cmakeFilesInTree(repoRoot) {
+  const found = [];
+  const skip = new Set(['node_modules', '.git', 'build', 'dist']);
+  const walk = (at) => {
+    let entries;
+    try {
+      entries = readdirSync(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (skip.has(entry.name)) continue;
+      const full = join(at, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === 'CMakeLists.txt') found.push(full);
+    }
+  };
+  walk(repoRoot);
+  return found;
+}
+
+/**
  * The CMake files each wasm build's own graph says it was generated from, as absolute paths.
  *
  * Read out of `build.ninja` rather than listed here, because every list of them written on this
@@ -178,6 +207,9 @@ function presetsMatchTheBuildDirectories(repoRoot) {
     if (!entry) return false;
     for (const [name, value] of Object.entries(entry.cacheVariables ?? {})) {
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
+      // `line === null` is a variable the preset declares and this build directory has never held —
+      // a *newly added* one, which is exactly a configure that has not happened. Dropping this
+      // clause forgave it, which is the wrong way round.
       if (line === null || line[1].trim() !== String(value).trim()) return false;
     }
   }
@@ -301,9 +333,10 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const accept = compiled === null
       ? () => true
       : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
-    // `bridge/CMakeLists.txt` lives inside a directory this walk covers, so without this it would be
-    // counted here whatever the build-file rule below decided — which is how the previous version
-    // left it deadlocking while believing it had been handled.
+    // Every `CMakeLists.txt` is judged by the build-file rule below instead of here, and *all* of
+    // them are — `cmakeFilesInTree` walks for them, so one in a directory this source walk covers is
+    // handled once rather than twice or not at all. An earlier version excluded them here and named
+    // four back, which left a fifth invisible in both directions.
     const acceptSource = (full) => !/CMakeLists\.txt$/.test(full) && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']
       .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), acceptSource) }));
@@ -322,10 +355,14 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const upToDate = upToDateProbe(repoRoot);
     const graphNames = upToDate === true ? buildFilesTheGraphNames(repoRoot) : new Set();
     const presetSettled = upToDate === true && presetsMatchTheBuildDirectories(repoRoot);
-    const stillSuspect = ['core/CMakeLists.txt', 'CMakeLists.txt', 'bridge/CMakeLists.txt',
-                          'CMakePresets.json']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
-      .filter((s) => (s.rel === 'CMakePresets.json' ? !presetSettled : !graphNames.has(s.path)));
+    const stillSuspect = [
+      ...cmakeFilesInTree(repoRoot)
+        .map((path) => ({ rel: path.slice(repoRoot.length + 1), ...newest(path) }))
+        .filter((s) => !graphNames.has(s.path)),
+      ...(presetSettled
+        ? []
+        : [{ rel: 'CMakePresets.json', ...newest(join(repoRoot, 'CMakePresets.json')) }]),
+    ];
 
     const cxx = [...sources, ...stillSuspect].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
