@@ -89,6 +89,20 @@ class IFrameStoreAccess {
   // document written against it, and the manager's checkpoint declines to write one.
   virtual Result<uint64_t> TierGeneration() = 0;
 
+  // A fingerprint of what this frame holds, for the build graph to key cached work on.
+  //
+  // **It is not currently stable across a residency change, and that is a defect rather than a
+  // design.** Measured on `MemoryFrameStoreAccess`: a resident frame answers a hash of its bytes; a
+  // spilled one answers the hash recorded when it was demoted, because the bytes are not in memory
+  // to hash; and an *adopted* one answers whatever `FrameRef::contentHash` carried — which nothing
+  // populates, so zero — until something pins it, after which it answers a real hash of the
+  // faulted-in bytes. So the same frame can answer 0 and then 11223140263402054339 with no write
+  // in between.
+  //
+  // Nothing consumes this yet; Phase 3's incremental build graph is the first caller, and the
+  // invariant it needs — an incremental rebuild equal to a full one — is exactly what an answer
+  // that changes under a pin would break. `FrameRef::contentHash` carries the other half of this
+  // note. Whoever writes that graph closes both, and the two shapes are named there.
   virtual Result<uint64_t> ContentHash(const FrameRef&) = 0;
 };
 

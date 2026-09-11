@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkDistIsFreshIn, expandPresetMacros, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
+import { checkDistIsFreshIn, expandPresetMacros, kEnvironmentDependent, kUnknownMacro,
+         wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
 
 const made = [];
 afterEach(() => {
@@ -584,6 +585,32 @@ describe('the dist freshness check', () => {
         .toMatch(/compiled core is older than the C\+\+/);
     });
 
+    it('still forgives a documentation-only edit when the toolchain variable is unset', () => {
+      // The deadlock the macro expansion re-entered while fixing. With `SPHANORAMA_TEST_SDK` unset
+      // there is no value to compare `toolchainFile` against — and refusing on that basis produced
+      // a complaint nothing could clear, because an inert preset edit gives the build no work to do
+      // and so never changes the core's mtime. `gate.sh` sources `emsdk_env.sh` and never sees it;
+      // running the browser suite directly does, which is the case this whole file is written for.
+      const tree = realShaped(aFreshTree());
+      delete process.env.SPHANORAMA_TEST_SDK;
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].displayName = 'a better sentence about the same build';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('still refuses a real flag change when the toolchain variable is unset', () => {
+      // The other half: skipping the variable this environment cannot resolve must not skip the
+      // ones it can. Everything except `toolchainFile` is still compared.
+      const tree = realShaped(aFreshTree());
+      delete process.env.SPHANORAMA_TEST_SDK;
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = '-msimd128 -O0';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true))
+        .toMatch(/compiled core is older than the C\+\+/);
+    });
+
     it('inherits a field from the first preset in the list that defines it', () => {
       // CMake's documented precedence for the array form, and the opposite of what folding the
       // parents in order gives. Both parents here declare the same variable and only the first
@@ -626,8 +653,13 @@ describe('the dist freshness check', () => {
       expect(macros.length).toBeGreaterThan(0);
       for (const macro of macros) {
         const resolved = expandPresetMacros(macro, { presetName: 'wasm-release', repoRoot: '/r' });
-        expect(resolved, macro).not.toBeNull();
-        expect(resolved, macro).not.toMatch(/\$[A-Za-z]*\{/);
+        // Never "I do not know this macro". It may legitimately be "this environment holds no value
+        // for it" — `$env{EMSDK}` is exactly that when the caller has not sourced `emsdk_env.sh` —
+        // and that answer is handled rather than refused, which is what stops it deadlocking.
+        expect(resolved, macro).not.toBe(kUnknownMacro);
+        if (resolved !== kEnvironmentDependent) {
+          expect(resolved, macro).not.toMatch(/\$[A-Za-z]*\{/);
+        }
       }
     });
   });
@@ -674,6 +706,17 @@ describe('the dist freshness check', () => {
       tree.put(buried, Date.now());
       expect(complaint(tree.root, undefined, () => true), buried).toBeNull();
     }
+  });
+
+  it('does not demand a wasm graph name a CMakeLists the wasm build excludes', () => {
+    // The wasm presets set `SPHANORAMA_BUILD_TESTS=OFF`, so `core/test/CMakeLists.txt` appears in no
+    // wasm build graph — measured on the real tree: 0 mentions in `build/wasm-release/build.ninja`
+    // against 3 in the native one. Walking for every `CMakeLists.txt` therefore filed it as
+    // permanently suspect, and the printed remedy could not clear it: editing it gives the wasm
+    // build nothing to do, so the core is never relinked and the complaint outlives the change.
+    const tree = aFreshTree();
+    tree.put('core/test/CMakeLists.txt', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
   });
 
   it('checks a CMakeLists nobody wrote down', () => {

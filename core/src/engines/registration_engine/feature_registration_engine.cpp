@@ -30,7 +30,11 @@ constexpr int32_t kKeypointBytes = 8;
 // ORB used to be listed beside them as "flatlines at 500", which was its own default being reported
 // back as though it were a measurement: there is no uncapped ORB to take. `cv::ORB::create()`
 // defaults `nfeatures` to 500 and `create(0)` means *zero* rather than unlimited, so the only way to
-// ask is to name a big number — 622,433 on that texture.
+// ask is to name a big number — and the number you get back depends on how big. Asked for a million
+// it answers 622,433 on that texture; the count is still climbing there, and saturates at 693,641
+// from two million upward. The first version of this line quoted the 622,433 alone as though it
+// were the ceiling, which is the same mistake one step out from the one this paragraph exists to
+// correct: a figure that is an artefact of what was asked, reported as a property of the detector.
 
 /**
  * How a format carries its luma, and the one place that is decided.
@@ -71,11 +75,14 @@ cv::Ptr<cv::Feature2D> Make(FeatureDetector detector) {
       // OpenCV's own, copied from the declaration rather than chosen here.
       return cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, 0.001f, 4, 4, cv::KAZE::DIFF_PM_G2,
                                kMaxFeaturesPerFrame);
+    case FeatureDetector::Count:
+      // Not a detector — the header says why it exists. Answering null here sends it down the
+      // "no such detector" refusal that already existed, rather than inventing a second one.
+      break;
   }
   return {};
 }
 
-// The luma plane as a single-channel Mat, without copying where the layout already allows it.
 /**
  * Bytes one pixel occupies in the row this engine reads.
  *
@@ -99,6 +106,7 @@ int64_t LumaRowBytesPerPixel(PixelFormat format) {
   return 0;
 }
 
+// The luma plane as a single-channel Mat, without copying where the layout already allows it.
 cv::Mat LumaOf(const FrameRef& frame, std::span<uint8_t> bytes, size_t stride) {
   switch (LumaKindOf(frame.format)) {
     case LumaKind::Planar:

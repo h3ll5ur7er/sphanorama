@@ -198,7 +198,11 @@ struct FrameRef {
   // anything is built on it. `Allocate` leaves it 0 and no other writer exists outside the generated
   // wire decoder, so a session serialised and restored carries 0 for every frame. The store's own
   // `ContentHash` answers a real hash for a resident or spilled frame (it computes one when a frame
-  // is demoted) and 0 for an adopted one, because `Adopt` takes this field on trust.
+  // is demoted). An *adopted* frame answers 0 — but only while it is still cold: `ContentHash`
+  // returns the carried value for a spilled frame and hashes the bytes for a resident one, so the
+  // first `Pin` faults the frame in and the answer silently becomes a real hash. A reviewer
+  // measured that pair too: 0 adopted-and-cold, 11223140263402054339 after a pin, with no write in
+  // between. `IFrameStoreAccess::ContentHash` carries the other half of this note.
   //
   // A reviewer measured the pair: 10201025586445714307 before a reload, 0 after. Nothing consumes it
   // today — the incremental build graph is Phase 3 — which is why this is a note rather than a fix.
@@ -264,7 +268,14 @@ struct QualityScore {
   double exposureAgreement = 0;
   double alignmentResidual = 0;   // px, vs the cell's other candidates
   double moverPenalty = 0;        // from intra-cell disagreement
-  double aggregate = 0;           // the single number selection sorts on
+  // A per-frame readout, **not** the number selection sorts on — which this line claimed until a
+  // reviewer read it against the engine that fills it. `IFrameQualityEngine::Rank` normalises
+  // sharpness across the candidate set before weighting it, and the set is the only place that
+  // range can be known, so a value computed here from one frame is not on the same scale as the one
+  // Rank orders by. `SharpnessFrameQualityEngine` says so in its own comment; the contract was
+  // written before that tension was visible. Rank takes the policy and `Score` does not, so Rank is
+  // the authority and this is a number to look at beside it.
+  double aggregate = 0;
 };
 
 struct Candidate {

@@ -137,7 +137,13 @@ function canReachBridgeSpecs(argv) {
  */
 function cmakeFilesInTree(repoRoot) {
   const found = [];
-  const skip = new Set(['node_modules', '.git', 'build', 'dist']);
+  // `test` for the same reason the source walk skips it, and it is not a nicety: the wasm presets
+  // set `SPHANORAMA_BUILD_TESTS=OFF`, so `core/test/CMakeLists.txt` is named by no wasm build graph
+  // — `grep -c core/test/CMakeLists.txt build/wasm-release/build.ninja` is 0, against 3 for the
+  // native one. Walking for it therefore filed it as permanently suspect, and nothing could clear
+  // it: editing it gives the wasm build no work, so the core is never relinked and the complaint
+  // stands until some unrelated C++ change happens along. This branch edits that exact file.
+  const skip = new Set([...kNeverWalked, 'test']);
   const walk = (at) => {
     let entries;
     try {
@@ -183,18 +189,6 @@ function buildFilesTheGraphNames(repoRoot) {
 }
 
 /**
- * Whether each wasm build directory holds the cache variables its preset declares.
- *
- * `CMakePresets.json` is in no build graph, so ninja can never answer for it — and no mtime can
- * either: `cmake --preset` rewrites `CMakeCache.txt` only when a value changes, measured over three
- * consecutive no-op runs. What answers is the content. A documentation-only edit (`displayName`,
- * `description` — one preset here carries 700 characters of prose) leaves every declared variable
- * where it was and is forgiven; a changed flag the build directory has not been reconfigured for is
- * not.
- *
- * `false` whenever anything cannot be read or parsed, which forgives nothing.
- */
-/**
  * A preset value with CMake's macros expanded, or `null` for a macro this checker does not know.
  *
  * The reason this exists: a preset stores `$env{EMSDK}/upstream/...` and `CMakeCache.txt` stores the
@@ -207,26 +201,54 @@ function buildFilesTheGraphNames(repoRoot) {
  * falling behind CMake makes this ask too often rather than quietly stop asking. Comparing the
  * unexpanded text instead is exactly the defect being fixed here.
  *
- * An unset environment variable expands to the empty string, which is what CMake does -- and what
- * the configure that wrote the cache would have done too, so the comparison stays like-for-like.
+ * **An unset environment variable is a third answer, not the empty string.** The first version of
+ * this expanded `$env{EMSDK}` to `''` on the reasoning that CMake does, which is true and was the
+ * wrong call here: the cache holds `/root/emsdk/...`, a path only a configure with the variable
+ * *set* could have written, so with it unset every comparison failed and any edit to
+ * `CMakePresets.json` produced a complaint nothing could clear — ninja has no work to do for an
+ * inert preset edit, so the printed remedy cannot change the core's mtime. `gate.sh` sources
+ * `emsdk_env.sh` and never sees it; `npx playwright test` on its own does, which is the invocation
+ * this file exists for. It is the same deadlock the forgiveness was written to prevent, re-entered
+ * through the fix for it.
  */
+export const kUnknownMacro = Symbol('a macro this checker does not know how to expand');
+export const kEnvironmentDependent = Symbol('a macro this environment holds no value for');
+
 export function expandPresetMacros(text, { presetName, repoRoot }) {
-  let refused = false;
+  let unknown = false;
+  let environmental = false;
   const out = String(text).replace(/\$([A-Za-z]*)\{([^}]*)\}/g, (whole, kind, name) => {
     // `$penv{}` differs from `$env{}` only when the preset's own `environment` block sets the
     // variable -- and `environment` is not a key this checker forgives, so here they are the same.
-    if (kind === 'env' || kind === 'penv') return process.env[name] ?? '';
+    if (kind === 'env' || kind === 'penv') {
+      if (process.env[name] === undefined) { environmental = true; return whole; }
+      return process.env[name];
+    }
     if (kind === '') {
       if (name === 'sourceDir') return repoRoot;
       if (name === 'presetName') return presetName;
       if (name === 'dollar') return '$';
     }
-    refused = true;
+    unknown = true;
     return whole;
   });
-  return refused ? null : out;
+  if (unknown) return kUnknownMacro;
+  if (environmental) return kEnvironmentDependent;
+  return out;
 }
 
+/**
+ * Whether each wasm build directory holds the cache variables its preset declares.
+ *
+ * `CMakePresets.json` is in no build graph, so ninja can never answer for it — and no mtime can
+ * either: `cmake --preset` rewrites `CMakeCache.txt` only when a value changes, measured over three
+ * consecutive no-op runs. What answers is the content. A documentation-only edit (`displayName`,
+ * `description` — one preset here carries 700 characters of prose) leaves every declared variable
+ * where it was and is forgiven; a changed flag the build directory has not been reconfigured for is
+ * not.
+ *
+ * `false` whenever anything cannot be read or parsed, which forgives nothing.
+ */
 function presetsMatchTheBuildDirectories(repoRoot) {
   let declared;
   try {
@@ -326,10 +348,16 @@ function presetsMatchTheBuildDirectories(repoRoot) {
         ? declaredValue.value
         : declaredValue;
       // The cache holds what CMake resolved, so the declaration has to be resolved too before the
-      // two can be compared at all. `expandPresetMacros` refuses a macro it does not know, and a
-      // value this function cannot resolve is one it cannot vouch for.
+      // two can be compared at all.
       const expanded = expandPresetMacros(wanted, { presetName: preset, repoRoot });
-      if (expanded === null) return false;
+      // A macro this checker does not know is a value it cannot vouch for, so nothing is forgiven.
+      if (expanded === kUnknownMacro) return false;
+      // A macro whose *environment* is missing is different, and the difference is the whole of the
+      // note on `expandPresetMacros`: the file has not told us anything we can disbelieve, so this
+      // one variable is skipped and every other one is still compared. A real flag change is still
+      // caught; what is given up is noticing a `toolchainFile` edit made by someone who could not
+      // have built with it anyway.
+      if (expanded === kEnvironmentDependent) continue;
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
       // `line === null` is a variable the preset declares and this build directory has never held —
       // a *newly added* one, which is exactly a configure that has not happened.

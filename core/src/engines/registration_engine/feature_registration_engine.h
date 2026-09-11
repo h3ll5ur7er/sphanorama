@@ -16,15 +16,28 @@ namespace sphanorama {
 // tests: the only composition root in the repository is the WASM runtime, which has no OpenCV and
 // holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
 // in earnest is the one that runs the accuracy harness, and it does not exist yet.
-enum class FeatureDetector { Orb, Akaze, Sift };
+// `Count` is not a detector. It is here so the list below can be *checked* rather than remembered.
+//
+// The first version of this pair claimed that deriving the test parameters from one list meant "a
+// fourth detector reaches every test without anyone remembering to widen a `Values(...)` nothing
+// checks". A reviewer showed that was still false: they added a fourth enumerator, satisfied the
+// three `default`-less switches the `-Werror` build demanded, and the suite then reported 713
+// passing tests while running `EveryDetector/Extraction` against three detectors and executing the
+// new one nowhere. An array with its size written into its type does not grow when an enum does.
+//
+// The cost is a value that is not a detector, which is the sentinel shape this codebase is
+// otherwise strict about. It is bounded deliberately: `Make()` answers null for it and
+// `ExtractFeatures` turns that into `Unsupported` — a path that already existed for a detector it
+// could not build, and that a test now reaches.
+enum class FeatureDetector { Orb, Akaze, Sift, Count };
 
-// Every detector, once, beside the enum — because the parameterised tests are the one copy of this
-// list that no compiler polices. `Make()` and the test oracle are `default`-less switches, so a new
-// enumerator breaks the `-Werror` build until both are visited; `::testing::Values(...)` would
-// simply have gone on covering three of four, and a detector nothing ever runs is worse than one
-// that does not build.
+// Every detector, once, beside the enum. The `-Werror` switches send you to this header when an
+// enumerator appears; the assertion below is what stops you leaving again without extending this.
 inline constexpr std::array<FeatureDetector, 3> kAllFeatureDetectors{
     FeatureDetector::Orb, FeatureDetector::Akaze, FeatureDetector::Sift};
+static_assert(kAllFeatureDetectors.size() == static_cast<size_t>(FeatureDetector::Count),
+              "a detector was added to FeatureDetector and not to kAllFeatureDetectors, so the "
+              "parameterised tests would silently go on covering the old ones");
 
 // The most features any detector may return for one frame.
 //

@@ -132,8 +132,11 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   // exact bug in its own stride arithmetic and it is worth being consistent about.
   //
   // One byte per pixel for the planar formats, which is what `LumaAt` reads of them: the luma
-  // plane comes first and is all this engine touches. `BytesPerPixel` answers 0 for those, hence
-  // the floor.
+  // plane comes first and is all this engine touches. This used to say "`BytesPerPixel` answers 0
+  // for those, hence the floor" and there is no floor any more — `LumaRowBytesPerPixel` answers
+  // from the same `LumaKindOf` the read switches on, so the bound and the read cannot disagree
+  // rather than merely happening not to. The registration engine's twin paragraph was updated when
+  // that landed and this one was not, which is the shape this file's own comments warn about.
   const int64_t bytesPerPixel = LumaRowBytesPerPixel(frame.format);
   const int64_t rowBytes = static_cast<int64_t>(frame.width) * bytesPerPixel;
   const int64_t stride = frame.stride > 0 ? frame.stride : rowBytes;

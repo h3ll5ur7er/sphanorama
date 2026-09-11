@@ -234,6 +234,8 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       case FeatureDetector::Akaze:
         return cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, 0.001f, 4, 4,
                                  cv::KAZE::DIFF_PM_G2, kMaxFeaturesPerFrame);
+      case FeatureDetector::Count:
+        break;   // not a detector; the engine refuses it and so does this oracle
     }
     return {};
   }
@@ -1063,15 +1065,19 @@ TEST_P(Extraction, RefusesAStoreThatHandsBackFewerBytesThanItWasAskedFor) {
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,
-                         // From the engine's own list rather than restated here: a fourth detector
-                         // added to the enum reaches every test in this file without anyone
-                         // remembering to widen a `Values(...)` nothing checks.
+                         // From the engine's own list rather than restated here, and that list is
+                         // held to the enum's size by a `static_assert`, so a detector added to
+                         // `FeatureDetector` cannot reach `Make()` while reaching none of these
+                         // tests. An earlier version of this comment claimed that was already true
+                         // of `ValuesIn` alone; a reviewer added a fourth enumerator and showed it
+                         // was not.
                          ::testing::ValuesIn(kAllFeatureDetectors),
                          [](const ::testing::TestParamInfo<FeatureDetector>& info) {
                            switch (info.param) {
                              case FeatureDetector::Orb: return "Orb";
                              case FeatureDetector::Akaze: return "Akaze";
                              case FeatureDetector::Sift: return "Sift";
+                             case FeatureDetector::Count: break;
                            }
                            return "Unknown";
                          });
@@ -1110,6 +1116,30 @@ TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
   }
   EXPECT_EQ(tiles.size(), static_cast<size_t>((kWidth / kTile) * (kHeight / kTile)));
   EXPECT_TRUE(store.Release(frame).ok());
+}
+
+TEST(DetectorCoverage, AValueThatIsNotADetectorIsRefusedRatherThanBuilt) {
+  // `FeatureDetector::Count` exists so `kAllFeatureDetectors` can be checked against the enum's
+  // size rather than remembered. That buys a value which is not a detector, and this repository is
+  // strict about sentinels for good reason — so the path it takes is asserted rather than assumed.
+  //
+  // `Make()` answers null for it and `ExtractFeatures` turns that into `Unsupported`, which is the
+  // refusal that already existed for a detector the engine could not build. Before this, that
+  // branch was unreachable: every enumerator named a real detector.
+  MemoryFrameStoreAccess store{1 << 20};
+  const Result<FrameRef> allocated = store.Allocate(64, 64, PixelFormat::RGBA8);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+
+  FeatureRegistrationEngine engine{store, FeatureDetector::Count};
+  const Result<FeatureSet> features = engine.ExtractFeatures(allocated.value);
+  EXPECT_FALSE(features.ok()) << "a value that names no detector must not produce features";
+  EXPECT_EQ(features.status.code, StatusCode::Unsupported);
+
+  // And it gives the frame back on the way out, like every other refusal in this file.
+  const Result<Residency> residency = store.ResidencyOf(allocated.value);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_EQ(residency.value, Residency::HeapEncoded) << "the refused extraction left it pinned";
+  EXPECT_TRUE(store.Forget(allocated.value).ok());
 }
 
 TEST(DetectorDefaults, TheAkazeParametersCopiedFromOpenCvAreStillOpenCvs) {
