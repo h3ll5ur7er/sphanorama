@@ -21,6 +21,7 @@ afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
   // Set by the real-shaped preset fixture, which needs an environment variable to expand.
   delete process.env.SPHANORAMA_TEST_SDK;
+  delete process.env.SPHANORAMA_CORE_PROFILE;
 });
 
 /** A repository where everything is in order, so each test can break exactly one thing. */
@@ -593,6 +594,7 @@ describe('the dist freshness check', () => {
       // running the browser suite directly does, which is the case this whole file is written for.
       const tree = realShaped(aFreshTree());
       delete process.env.SPHANORAMA_TEST_SDK;
+  delete process.env.SPHANORAMA_CORE_PROFILE;
       const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
       presets.configurePresets[0].displayName = 'a better sentence about the same build';
       tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
@@ -604,11 +606,26 @@ describe('the dist freshness check', () => {
       // ones it can. Everything except `toolchainFile` is still compared.
       const tree = realShaped(aFreshTree());
       delete process.env.SPHANORAMA_TEST_SDK;
+  delete process.env.SPHANORAMA_CORE_PROFILE;
       const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
       presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = '-msimd128 -O0';
       tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
       expect(complaint(tree.root, undefined, () => true))
         .toMatch(/compiled core is older than the C\+\+/);
+    });
+
+    it('refuses a binaryDir it cannot resolve instead of throwing on it', () => {
+      // `expandPresetMacros` returns Symbols, and this call site still tested `=== null` two commits
+      // after that changed — so the branch was dead and `resolve()` was handed a Symbol, which throws
+      // `TypeError: paths[0] must be of type string` out of Playwright's global setup rather than
+      // reporting anything. A `binaryDir` carrying a macro this checker does not know is all it takes.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].binaryDir = '${hostSystemName}/build/wasm-release';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      const said = complaint(tree.root, undefined, () => true);
+      expect(said).toMatch(/compiled core is older than the C\+\+/);
+      expect(said).not.toMatch(/must be of type string/);
     });
 
     it('inherits a field from the first preset in the list that defines it', () => {
@@ -767,6 +784,44 @@ describe('the dist freshness check', () => {
     const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
     tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
     expect(complaint(tree.root, undefined, () => null)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('compares the core profile the stager actually stages from', () => {
+    // `stage_core.mjs` reads `SPHANORAMA_CORE_PROFILE`; this check had `wasm-release` written into
+    // it. With the variable set the two disagreed permanently — `npm run build` stages the threaded
+    // core and exits 0, while the check went on comparing the single-threaded one and reporting
+    // that the compiled and staged cores differ. Its printed remedy is "run `npm run build` and
+    // read its exit status", and the exit status is 0.
+    const tree = aFreshTree();
+    process.env.SPHANORAMA_CORE_PROFILE = 'wasm-release-threaded';
+    // The single-threaded core is now the odd one out. Comparing it would complain; comparing the
+    // one actually staged must not.
+    writeFileSync(join(tree.root, 'build/wasm-release/bridge/sphanorama-core.wasm'), 'a different core');
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
+  it('forgives a header ninja has already accounted for', () => {
+    // The fifth instance of this file's recurring defect, and this branch's own doing:
+    // `feature_registration_engine.h` is included only by a translation unit the wasm build does
+    // not compile, so no wasm graph names it and no rebuild can make the core newer than it.
+    // Touching it was a complaint whose printed remedy could not clear it.
+    //
+    // `.ninja_deps` records every header any compiled translation unit included, so when ninja says
+    // there is no work to do it has already answered for them. The walk cannot: a header never
+    // appears in a compile database, so the `.cpp` narrowing does not reach it.
+    const tree = aFreshTree();
+    tree.put('core/src/engines/registration_engine/native_only.h', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
+  it('still asks about a header when nobody can ask ninja', () => {
+    // The other half: the walk is the fallback, not a rule that was deleted. With no build
+    // directory to probe there is no `.ninja_deps` to trust, and a header newer than the core is
+    // the best evidence available.
+    const tree = aFreshTree();
+    tree.put('core/src/engines/registration_engine/native_only.h', Date.now());
+    expect(complaint(tree.root, undefined, () => null))
+      .toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('asks ninja only about build files, never about sources', () => {

@@ -231,9 +231,16 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
     switch (detector) {
       case FeatureDetector::Orb:   return cv::ORB::create(kMaxFeaturesPerFrame);
       case FeatureDetector::Sift:  return cv::SIFT::create(kMaxFeaturesPerFrame);
-      case FeatureDetector::Akaze:
-        return cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, 0.001f, 4, 4,
-                                 cv::KAZE::DIFF_PM_G2, kMaxFeaturesPerFrame);
+      case FeatureDetector::Akaze: {
+        // OpenCV's defaults taken *from OpenCV*, with the one value this project overrides set
+        // afterwards. This used to restate all seven, which made the oracle a second copy of the
+        // engine's list rather than an independent check of it: a reviewer changed `nOctaveLayers`
+        // in `Make()` and here together, and every test passed while AKAZE ran with a number nobody
+        // chose. Now only `Make()` restates them, so that drift fails the row comparisons.
+        cv::Ptr<cv::AKAZE> akaze = cv::AKAZE::create();
+        akaze->setMaxPoints(kMaxFeaturesPerFrame);
+        return akaze;
+      }
       case FeatureDetector::Count:
         break;   // not a detector; the engine refuses it and so does this oracle
     }
@@ -489,22 +496,37 @@ TEST_P(Extraction, RefusesAFormatWithNoLumaPlaneToRead) {
   //
   // `EncodedJpeg` is the real instance — a frame straight off a camera that has not been decoded —
   // and reading its bytes as a luma plane would score compressed data as picture.
-  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  // **Against a cold frame, because that is the only arrangement that can tell where the guard
+  // is.** The first version allocated a resident frame and asserted its residency was still
+  // `HeapEncoded` afterwards — which the `Unpin` holder delivers whether the format is checked
+  // before the pin or after it, so a reviewer moved `HasReadableLuma` to below the pin and all 714
+  // tests stayed green. A spilled frame separates them: `Pin` faults one back into the heap and
+  // leaves it there (`ReadingASpilledFrameLeavesItInTheHeap` is the proof), so a guard that ran
+  // after the pin would un-cool a frame `CaptureSessionManager` deliberately cooled — on a call
+  // whose whole job here is to refuse for free.
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess spilling{1 << 24, &sink};
+  const Result<FrameRef> allocated = spilling.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
   ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  ASSERT_TRUE(spilling.Demote(allocated.value, Residency::Spilled).ok());
+  const Result<Residency> cold = spilling.ResidencyOf(allocated.value);
+  ASSERT_TRUE(cold.ok());
+  ASSERT_EQ(cold.value, Residency::Spilled) << "the fixture did not manage to cool the frame";
+
   FrameRef encoded = allocated.value;
   encoded.format = PixelFormat::EncodedJpeg;
 
-  FeatureRegistrationEngine engine = Engine();
+  FeatureRegistrationEngine engine{spilling, GetParam()};
   const Result<FeatureSet> features = engine.ExtractFeatures(encoded);
   EXPECT_FALSE(features.ok()) << "an encoded frame's bytes are not a picture";
   EXPECT_EQ(features.status.code, StatusCode::Unsupported);
 
-  // Refused before the frame was pinned, which is the other half of the promise: an unreadable
-  // format costs nothing and leaves no residency behind.
-  const Result<Residency> residency = store.ResidencyOf(allocated.value);
-  ASSERT_TRUE(residency.ok());
-  EXPECT_EQ(residency.value, Residency::HeapEncoded);
-  EXPECT_TRUE(store.Forget(allocated.value).ok());
+  const Result<Residency> after = spilling.ResidencyOf(allocated.value);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, Residency::Spilled)
+      << "the refusal faulted the frame in, so the format guard is running after the pin rather "
+         "than before it";
+  EXPECT_TRUE(spilling.Forget(allocated.value).ok());
 }
 
 TEST_P(Extraction, RefusesAFrameWithNoPixelsInIt) {
@@ -697,6 +719,12 @@ TEST_P(Extraction, KeepsTheBestRowsWhenTheDetectorOverrunsTheCapOutright) {
   // which is the difference between keeping the best and keeping the first. On ORB that difference
   // is real rather than theoretical: `orb.cpp` caps each pyramid level separately and concatenates
   // them, so the first 500 of its 1,145 are whole octaves rather than the strongest responses.
+  //
+  // **Only the ORB row catches it**, which is worth saying rather than implying. Truncating before
+  // sorting fails `/Orb` alone: AKAZE is exempt above because it answers exactly the cap here, and
+  // SIFT passes because its `retainBest` list is already response-ordered on this fixture, so
+  // cutting it first removes the same rows either way. Two of the three rows are covering the cap,
+  // not the order.
   FeatureRegistrationEngine engine = Engine();
   const FrameRef source = Ruled(768);
   const Result<FeatureSet> features = engine.ExtractFeatures(source);
@@ -1178,7 +1206,13 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // selects; `bridge/runtime.h` holds this one. So the engine every browser actually gets had its
   // two most dangerous methods asserted nowhere.
   NullRegistrationEngine engine;
-  EXPECT_FALSE(engine.ExtractFeatures(FrameRef{}).ok());
+  // The code, not just the refusal. A reviewer changed this one to `InvalidArgument` and all 714
+  // tests stayed green: the two methods added when this gap was first closed assert their codes and
+  // the one that was already here did not, so the fix covered its own additions and not the line it
+  // was standing next to.
+  const Result<FeatureSet> extracted = engine.ExtractFeatures(FrameRef{});
+  EXPECT_FALSE(extracted.ok());
+  EXPECT_EQ(extracted.status.code, StatusCode::Unsupported);
 
   const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{});
   EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";

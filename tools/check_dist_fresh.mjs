@@ -338,7 +338,13 @@ function presetsMatchTheBuildDirectories(repoRoot) {
     // alone rather than refused: it is CMake's own default layout, which is this one.
     if (entry.binaryDir !== undefined) {
       const where = expandPresetMacros(entry.binaryDir, { presetName: preset, repoRoot });
-      if (where === null || resolve(where) !== resolve(join(repoRoot, 'build', preset))) return false;
+      // Both refusals, and neither is a string. This read `where === null` until a reviewer noticed
+      // the expander had stopped returning `null` two commits earlier and only two of its three
+      // call sites were updated — so the branch was dead and `resolve()` was handed a Symbol, which
+      // throws `TypeError: paths[0] must be of type string` out of the Playwright global setup. A
+      // `binaryDir` carrying `$env{}` of an unset variable is all it takes.
+      if (where === kUnknownMacro || where === kEnvironmentDependent) return false;
+      if (resolve(where) !== resolve(join(repoRoot, 'build', preset))) return false;
     }
     for (const [name, declaredValue] of entry.variables) {
       // CMake lets a cache variable be a bare value or a `{ type, value }` object. Stringifying the
@@ -430,7 +436,14 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
   // `host_camera_metric`'s switch included, which is the seam an e2e test exists to pin — can be
   // changed with the `.wasm` coming out byte for byte identical. A reviewer sabotaged `case 8`,
   // rebuilt, and this check had nothing to say.
-  const coreBuild = join(repoRoot, 'build', 'wasm-release', 'bridge');
+  // The profile `stage_core.mjs` actually stages from, not a second guess at it. This was hard-coded
+  // to `wasm-release` while the stager reads `SPHANORAMA_CORE_PROFILE`, so setting that variable
+  // made the two disagree permanently: `npm run build` stages the threaded core, exits 0, and this
+  // check goes on comparing the single-threaded one and complaining that they differ. The remedy it
+  // prints is "run `npm run build` and read its exit status", and the exit status is 0 — another
+  // instruction that cannot clear the state it is printed for.
+  const coreProfile = process.env.SPHANORAMA_CORE_PROFILE ?? 'wasm-release';
+  const coreBuild = join(repoRoot, 'build', coreProfile, 'bridge');
   const coreStage = join(repoRoot, 'shell', 'public', 'core');
   for (const file of ['sphanorama-core.wasm', 'sphanorama-core.js']) {
     const compiled = join(coreBuild, file);
@@ -480,6 +493,7 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // Headers and the three CMake files are deliberately not narrowed: a header is not a
     // translation unit and never appears in a compile database, and a preset or a compile flag
     // changes the core exactly as a `.cpp` does.
+    const upToDate = upToDateProbe(repoRoot);
     const compiled = compiledTranslationUnits(repoRoot);
     const accept = compiled === null
       ? () => true
@@ -488,7 +502,24 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // them are — `cmakeFilesInTree` walks for them, so one in a directory this source walk covers is
     // handled once rather than twice or not at all. An earlier version excluded them here and named
     // four back, which left a fifth invisible in both directions.
-    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full) && accept(full);
+    // **A header is ninja's business once ninja has answered.** `upToDate === true` means both wasm
+    // builds were asked and had no work to do, and ninja knows exactly which headers matter —
+    // `.ninja_deps` records every one that any translation unit it compiles included. The walk
+    // cannot know that: a header never appears in a compile database, so the narrowing above covers
+    // `.cpp` only, and every header under these roots counted as a source of the wasm core.
+    //
+    // This branch produced the instance. `feature_registration_engine.h` is included by a single
+    // translation unit the wasm build does not compile, so no wasm graph names it and no rebuild can
+    // make the core newer than it — touching it was a complaint nothing could clear, which is the
+    // fifth time that shape has been found in this file.
+    //
+    // Only headers, and only when ninja answered. A `.cpp` the wasm build *does* compile stays a
+    // staleness whatever ninja says — an inert source edit is not a thing, and the case beside this
+    // one in the suite says so deliberately.
+    const headerSettled = upToDate === true;
+    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full)
+      && !(headerSettled && /\.(h|hh|hpp|hxx|inc)$/.test(full))
+      && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']
       .map((rel) => ({ rel, ...newest(join(repoRoot, rel),
                                       new Set([...kNeverWalked, 'test', 'CMakeFiles']), acceptSource) }));
@@ -504,7 +535,6 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     //
     // **`CMakePresets.json`** is in no graph, so ninja is blind to it and no mtime helps either;
     // what answers is whether the build directories hold the variables it declares.
-    const upToDate = upToDateProbe(repoRoot);
     const graphNames = upToDate === true ? buildFilesTheGraphNames(repoRoot) : new Set();
     const presetSettled = upToDate === true && presetsMatchTheBuildDirectories(repoRoot);
     const stillSuspect = [

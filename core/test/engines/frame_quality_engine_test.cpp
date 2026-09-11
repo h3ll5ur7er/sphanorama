@@ -219,6 +219,49 @@ TEST_F(FrameQuality, EveryPlanarFormatIsScoredFromItsOwnLumaPlane) {
   }
 }
 
+TEST_F(FrameQuality, TheSameSceneScoresTheSameWhateverResolutionItArrivesAt) {
+  // **The downscale had nothing holding it down.** A reviewer set `kMeasureEdge` from 256 to 4096 —
+  // turning the reduction off entirely — and all 714 tests stayed green, because every scoring
+  // fixture in this file is 64 or 32 square, so `block` is 1 and the averaging loop is a copy. The
+  // stage its own comment calls load-bearing (a Laplacian on a full-resolution frame answers to
+  // sensor noise as readily as to edges, and a dark frame is mostly noise) was constrained by
+  // nothing at all.
+  //
+  // This is the property the reduction exists to give: the measure is about the scene, not about
+  // what the camera happened to hand over. The same checkerboard at 512 with eight-pixel squares
+  // and at 1024 with sixteen-pixel squares is the same picture sampled twice; both reduce to 256
+  // with four-pixel squares, so they must score alike. Without the reduction they do not — the
+  // finer one carries twice the edge density per pixel and its variance is a different number.
+  MemoryFrameStoreAccess big{1 << 25};
+  SharpnessFrameQualityEngine wide{big};
+
+  const auto scoreOf = [&](int32_t edge, int32_t square) {
+    auto allocated = big.Allocate(edge, edge, PixelFormat::RGBA8);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    auto pinned = big.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    for (int32_t y = 0; y < edge; ++y) {
+      for (int32_t x = 0; x < edge; ++x) {
+        const uint8_t v = ((x / square) + (y / square)) % 2 == 0 ? 0 : 255;
+        const size_t at = (static_cast<size_t>(y) * edge + x) * 4;
+        pinned.value[at] = pinned.value[at + 1] = pinned.value[at + 2] = v;
+        pinned.value[at + 3] = 255;
+      }
+    }
+    EXPECT_TRUE(big.Release(allocated.value).ok());
+    const Result<QualityScore> scored = wide.Score(allocated.value, PoseSample{}, NodeContext{});
+    EXPECT_TRUE(scored.ok()) << scored.status.detail;
+    return scored.value.sharpness;
+  };
+
+  const double coarse = scoreOf(1024, 16);
+  const double fine = scoreOf(512, 8);
+  ASSERT_GT(coarse, 0.0) << "the fixture has to have detail for this to ask anything";
+  EXPECT_NEAR(coarse, fine, coarse * 0.05)
+      << "the same scene scored differently at two resolutions, so the reduction to "
+         "kMeasureEdge is not doing the work its comment claims";
+}
+
 TEST_F(FrameQuality, ScoringIsDeterministic) {
   // The build graph is keyed on the selection, so an unstable score would invalidate cached
   // stages for no reason.
