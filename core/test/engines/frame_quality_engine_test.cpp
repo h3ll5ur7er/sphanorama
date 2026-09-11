@@ -7,6 +7,8 @@
 // written down, and it is the shape that survives the algorithm being tuned.
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -140,6 +142,27 @@ TEST_F(FrameQuality, AFrameTheStoreCannotProduceIsAFailureRatherThanAZero) {
   stranger.height = kHeight;
   stranger.format = PixelFormat::RGBA8;
   EXPECT_FALSE(engine.Score(stranger, PoseSample{}, NodeContext{}).ok());
+}
+
+TEST_F(FrameQuality, AHandleWhoseOwnArithmeticWouldOverflowIsRefused) {
+  // The geometry guard above computes `(height - 1) * stride + rowBytes` and never asks whether
+  // that product fits. With `stride <= 0` the fallback step is `width * 4`, bounded by 2^33 rather
+  // than by `int32_t`, so `INT32_MAX` rows of it reaches ~1.8e19 and wraps **negative** — and a
+  // negative `needed` is smaller than any size, so the guard passes the handle it exists to refuse.
+  //
+  // Here that is not a near miss. There is no allocator between the bypass and the pointer
+  // arithmetic, so `LumaAt` indexes a 16 KB span with a stride of 8,589,934,588 and the process
+  // dies. Found by a reviewer of the registration engine, which copied this function's guard —
+  // which is why a one-line fix in a file this branch does not otherwise touch is in this commit.
+  const FrameRef honest = Frame([](int32_t, int32_t) -> uint8_t { return 128; });
+  FrameRef absurd = honest;
+  absurd.width = std::numeric_limits<int32_t>::max();
+  absurd.height = std::numeric_limits<int32_t>::max();
+  absurd.stride = 0;
+
+  const Result<QualityScore> scored = engine.Score(absurd, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok());
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 
 TEST_F(FrameQuality, AFormatWithNoPixelsToReadIsRefused) {

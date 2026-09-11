@@ -56,9 +56,22 @@ SIFT answers normally — which is why the boundary cannot be a list of the dete
 for OpenCV tripping the sanitizers would be "a suppressions file scoped to `_deps/opencv-src`, not
 turning recovery back on". Those two cannot both hold. A UBSan suppressions file is consulted only
 for *recoverable* errors, and this repository's preset is `-fno-sanitize-recover=all`. Measured
-rather than reasoned: the same misaligned load, with a `alignment:*` suppressions file, still aborts
-under `-fno-sanitize-recover=all` (exit 1) and is suppressed without it (exit 0). So the suppressions
-route requires exactly the thing 0047 refused. The compile-time flag reaches 0047's real goal —
+rather than reasoned — and the first version of this measurement was itself confounded, which is
+worth leaving in. It compared exit codes: 1 with recovery off and a suppressions file, 0 with
+recovery on and one. But a recoverable UBSan error exits 0 whether it is suppressed or not, so the
+exit code was reporting the recovery setting and nothing about the suppression. The discriminating
+question is whether the error is **reported**:
+
+| | exit | reported? |
+| --- | --- | --- |
+| recovery off, no suppressions file | 1 | reported |
+| recovery off, **with** suppressions file | 1 | **reported** |
+| recovery on, no suppressions file | 0 | reported |
+| recovery on, with suppressions file | 0 | silent |
+
+The second row is the whole argument: with recovery off, adding the suppressions file changes
+nothing, because it is never consulted. So the suppressions route requires exactly the thing 0047
+refused. The compile-time flag reaches 0047's real goal —
 OpenCV exempt, our own code strict, recovery still off everywhere — without that trade, and it is
 narrower in one way too: it lifts one check rather than silencing one report.
 

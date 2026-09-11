@@ -56,7 +56,7 @@ the distortion stops being invertible, an inverse that does not land back where 
 
 **OpenCV is in the build now**, fetched at a pinned tag and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
-its first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, and asks
+first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, asking
 our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
 inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
 theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so

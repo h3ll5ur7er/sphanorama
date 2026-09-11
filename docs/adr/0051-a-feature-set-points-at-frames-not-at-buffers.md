@@ -68,11 +68,17 @@ wider change buying a label.
 
   An earlier draft of this ADR added "which it currently does not for anything", and a reviewer
   showed that was false when it was written: `ICameraAccess::PeekPreviewFrame` says it in nearly the
-  same words and has a contract-suite assertion behind it, and `IImageCodecAccess::Decode` and
-  `ICompositionEngine::BlendTile` are three and four. The rule this follows is established, not new
-  — which is a better argument for the shape than the one it replaced, and the correction is left
-  here rather than tidied away because a decision is only inheritable if what was got wrong on the
-  way to it is visible.
+  same words and has a contract-suite assertion behind it. The rule this follows is established, not
+  new.
+
+  The correction to that correction, from the next round, is the part worth keeping. The first fix
+  also named `IImageCodecAccess::Decode` and `ICompositionEngine::BlendTile` as further precedents,
+  and they are not: they hand back frames the same way and say **nothing** about ownership. So there
+  is exactly one documented precedent and two undocumented leak surfaces beside it — a gap this ADR
+  does not close, since widening it to two more contracts would be scope this change did not ask
+  for. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
+  overclaim is the failure this repository keeps making, and it is only legible if the sequence
+  survives.
 
 ## Rejected
 

@@ -122,8 +122,23 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
     return Err<Measured>(StatusCode::InvalidArgument, kComponent,
                          "this frame's stride is narrower than one row of it");
   }
-  const int64_t needed = static_cast<int64_t>(frame.height - 1) * stride + rowBytes;
-  if (needed > static_cast<int64_t>(pinned.value.size())) {
+  // **Asked by division, because the multiply is the thing that overflows.** This guard widened
+  // `width * bytesPerPixel` into int64 and then multiplied again without asking the same question
+  // of the second product. With `stride <= 0` the fallback step is `rowBytes`, bounded by 2^33
+  // rather than by `int32_t`, so `INT32_MAX` rows of it reaches ~1.8e19 and wraps **negative** — and
+  // a negative `needed` is smaller than any size, so the guard passed the handle it exists to
+  // refuse, and `LumaAt` then indexed a 16 KB span with a stride of 8,589,934,588.
+  //
+  // Found by a reviewer of `FeatureRegistrationEngine`, which was written from this function and
+  // inherited the bug along with the guard. Widening one product and not its neighbour is the shape
+  // to watch for; dividing never overflows.
+  const int64_t held = static_cast<int64_t>(pinned.value.size());
+  if (rowBytes > held) {
+    return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                         "this frame claims more pixels than the store is holding for it");
+  }
+  const int64_t claimedRows = static_cast<int64_t>(frame.height) - 1;
+  if (claimedRows > 0 && stride > (held - rowBytes) / claimedRows) {
     return Err<Measured>(StatusCode::InvalidArgument, kComponent,
                          "this frame claims more pixels than the store is holding for it");
   }

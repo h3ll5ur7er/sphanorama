@@ -13,14 +13,17 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "engines/registration_engine/null_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/fake_spill_sink.h"
 
 namespace sphanorama {
 namespace {
@@ -42,6 +45,55 @@ uint8_t TexturedLuma(int32_t x, int32_t y) {
   const int32_t tile = ((x / kTile) + (y / kTile)) % 2 == 0 ? 40 : 210;
   return static_cast<uint8_t>((tile + (x * x + y * y * 3) / 16) % 256);
 }
+
+/**
+ * A frame store that pads every row it allocates, which the contract permits and ours never does.
+ *
+ * It exists to reach the one rollback path that runs with both output frames *pinned*: the packing
+ * guard fires after `Pin`, so `OwnedFrame`'s destructor has to release before it forgets. Nothing
+ * else in the suite gets there — the reachable refusals all happen before the pins are taken — and
+ * a reviewer showed that swapping those two lines leaves every test in the repository green while
+ * orphaning the bytes of every refusal that holds a pin.
+ */
+class PaddingFrameStore : public IFrameStoreAccess {
+ public:
+  explicit PaddingFrameStore(int64_t ceiling) : inner_(ceiling) {}
+
+  Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
+    // Wider than asked, then reported with the original width and a stride that does not match it.
+    Result<FrameRef> allocated = inner_.Allocate(width + kPad, height, format);
+    if (!allocated.ok()) return allocated;
+    padded_.push_back(allocated.value);
+    FrameRef reported = allocated.value;
+    reported.width = width;
+    return Ok(reported);
+  }
+
+  Result<std::span<uint8_t>> Pin(const FrameRef& frame) override { return inner_.Pin(Real(frame)); }
+  Status Release(const FrameRef& frame) override { return inner_.Release(Real(frame)); }
+  Status Forget(const FrameRef& frame) override { return inner_.Forget(Real(frame)); }
+  Result<FrameStoreBudget> Budget() override { return inner_.Budget(); }
+  Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_.ResidencyOf(Real(f)); }
+  Status Demote(const FrameRef& f, Residency t) override { return inner_.Demote(Real(f), t); }
+  Status Adopt(const FrameRef& f) override { return inner_.Adopt(Real(f)); }
+  Status Clear() override { return inner_.Clear(); }
+  Result<uint64_t> TierGeneration() override { return inner_.TierGeneration(); }
+  Result<uint64_t> ContentHash(const FrameRef& f) override { return inner_.ContentHash(Real(f)); }
+
+ private:
+  static constexpr int32_t kPad = 8;
+
+  /** The entry as the inner store knows it — the padded one, keyed by id. */
+  FrameRef Real(const FrameRef& frame) const {
+    for (const FrameRef& padded : padded_) {
+      if (padded.id.value == frame.id.value) return padded;
+    }
+    return frame;
+  }
+
+  MemoryFrameStoreAccess inner_;
+  std::vector<FrameRef> padded_;
+};
 
 class Extraction : public ::testing::TestWithParam<FeatureDetector> {
  protected:
@@ -66,8 +118,14 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
     ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
     const FrameRef frame = allocated.value;
     const Result<std::span<uint8_t>> pinned = store.Pin(frame);
-    ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
-    ASSERT_NE(pinned.value.data(), nullptr);
+    if (!pinned.ok() || pinned.value.data() == nullptr) {
+      // Undone rather than abandoned. An `ASSERT_*` here returns from the helper and leaves the
+      // frame allocated — and, had the pin succeeded, pinned — so a starved-store test that ran
+      // after this one would be measuring bytes this helper forgot to give back.
+      if (pinned.ok()) (void)store.Release(frame);
+      (void)store.Forget(frame);
+      FAIL() << "could not pin a frame this helper just allocated: " << pinned.status.detail;
+    }
     for (int32_t y = 0; y < edge; ++y) {
       for (int32_t x = 0; x < edge; ++x) {
         const uint8_t v = paint(x, y);
@@ -96,6 +154,10 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
   FrameRef Textured(int32_t edge = kWidth) {
     FrameRef frame;
     Paint(&frame, TexturedLuma, edge);
+    // `Paint` is void, so its `ASSERT_*` failures return from *it* and not from the caller: without
+    // this the caller would go on to extract from a default-constructed handle and assert against
+    // whatever that produced, reporting a second, invented failure on top of the real one.
+    EXPECT_NE(frame.id.value, 0U) << "the painter did not produce a frame";
     return frame;
   }
 
@@ -123,6 +185,7 @@ TEST_P(Extraction, FindsFeaturesOnTexturedContent) {
   ASSERT_TRUE(features.ok()) << features.status.detail;
   EXPECT_GT(features.value.count, 0) << "a checkerboard has corners; a detector that finds none "
                                         "cannot register anything";
+  ForgetOutputs(features.value);
 }
 
 TEST_P(Extraction, FindsNothingOnAFlatFrame) {
@@ -134,6 +197,12 @@ TEST_P(Extraction, FindsNothingOnAFlatFrame) {
 
   ASSERT_TRUE(features.ok()) << features.status.detail;
   EXPECT_EQ(features.value.count, 0);
+  // `count == 0` promises there is nothing to forget, and `ForgetOutputs` branches on that promise.
+  // Unasserted, an engine that allocated two empty frames and reported zero would leak them
+  // silently on every flat frame in a capture.
+  EXPECT_EQ(features.value.descriptors.id.value, 0U) << "count == 0 must mean no frame was taken";
+  EXPECT_EQ(features.value.keypoints.id.value, 0U);
+  EXPECT_EQ(store.Forget(features.value.descriptors).code, StatusCode::NotFound);
 }
 
 TEST_P(Extraction, IsDeterministic) {
@@ -154,8 +223,10 @@ TEST_P(Extraction, IsDeterministic) {
   ASSERT_TRUE(b.ok()) << b.status.detail;
   ASSERT_EQ(a.value.size(), b.value.size());
   EXPECT_TRUE(std::equal(a.value.begin(), a.value.end(), b.value.begin()));
-  store.Release(first.value.descriptors);
-  store.Release(second.value.descriptors);
+  EXPECT_TRUE(store.Release(first.value.descriptors).ok());
+  EXPECT_TRUE(store.Release(second.value.descriptors).ok());
+  ForgetOutputs(first.value);
+  ForgetOutputs(second.value);
 }
 
 TEST_P(Extraction, TheDescriptorFrameHoldsExactlyTheDescriptorsItClaims) {
@@ -186,7 +257,8 @@ TEST_P(Extraction, TheDescriptorFrameHoldsExactlyTheDescriptorsItClaims) {
   ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
   EXPECT_EQ(pinned.value.size(),
             static_cast<size_t>(descriptors.width) * descriptors.height);
-  store.Release(descriptors);
+  EXPECT_TRUE(store.Release(descriptors).ok());
+  ForgetOutputs(features.value);
 }
 
 TEST_P(Extraction, RefusesAFrameTheStoreDoesNotHave) {
@@ -217,6 +289,44 @@ TEST_P(Extraction, RefusesAFrameClaimingMorePixelsThanTheStoreHolds) {
   inflated.height = kHeight + 1;
 
   const Result<FeatureSet> features = engine.ExtractFeatures(inflated);
+  ASSERT_FALSE(features.ok());
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+}
+
+TEST_P(Extraction, RefusesAHandleWhoseOwnArithmeticWouldOverflow) {
+  // The guard added last round widened `width * bytesPerPixel` into int64 and then multiplied again
+  // without asking. `(height - 1) * stride` overflows when `stride` falls back to `rowBytes`: with
+  // `stride <= 0` the fallback is `width * 4`, which is bounded by 2^33 rather than by `int32_t`,
+  // so a claim of INT32_MAX by INT32_MAX reaches ~1.8e19 and wraps **negative** — and a negative
+  // `needed` is less than any size, so the guard passes the handle it was written to refuse.
+  //
+  // Under the sanitizer preset it is `-fno-sanitize-recover=all` on a signed overflow, so the job
+  // aborts; without sanitizers it is a silent bypass into a `cv::Mat` over 16 KB. What stops it
+  // being an out-of-bounds read today is an accident — the dimensions are so large that OpenCV's
+  // allocator throws first, into the `catch` this PR happens to have added.
+  FeatureRegistrationEngine engine = Engine();
+  FrameRef absurd = Textured();
+  absurd.format = PixelFormat::RGBA8;
+  absurd.width = std::numeric_limits<int32_t>::max();
+  absurd.height = std::numeric_limits<int32_t>::max();
+  absurd.stride = 0;   // forces the `: rowBytes` half of the ternary, which is the unbounded one
+
+  const Result<FeatureSet> features = engine.ExtractFeatures(absurd);
+  ASSERT_FALSE(features.ok());
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+}
+
+TEST_P(Extraction, RefusesAPlanarHandleClaimingChromaIsPicture) {
+  // For NV12 and I420 the pinned buffer holds chroma after the luma plane, so bounding the claim by
+  // the *bytes pinned* is not the same as bounding it by the *picture*. A real I420 128x128 is
+  // 24,576 bytes; a handle claiming 192 rows needs exactly 24,576 by the luma arithmetic and is
+  // accepted, so 64 rows of chroma get detected as picture — in bounds, so ASan stays silent.
+  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::I420);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  FrameRef overclaimed = allocated.value;
+  overclaimed.height = kHeight + kHeight / 2;
+
+  const Result<FeatureSet> features = Engine().ExtractFeatures(overclaimed);
   ASSERT_FALSE(features.ok());
   EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
 }
@@ -261,26 +371,34 @@ TEST_P(Extraction, TheKeypointFrameHoldsACoordinatePairPerFeature) {
   ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
   ASSERT_EQ(pinned.value.size(), static_cast<size_t>(features.value.count) * 8);
 
-  // Every coordinate lands inside the frame it was found in, and they are not all the same point —
-  // which is what zeroing the buffer would leave behind.
-  int32_t distinct = 0;
-  float firstX = 0.0F;
-  float firstY = 0.0F;
+  // **Row for row against OpenCV's own answer**, not a count of how many rows differ. A reviewer
+  // rewrote these rows in reverse order and the previous version stayed green; so did swapping `x`
+  // with `y`, because the fixture frame is square and the bounds symmetric. Both are exactly the
+  // defects that would make matching correspond the wrong features, and both are invisible to any
+  // assertion that only asks whether the numbers look like coordinates.
+  //
+  // The reference runs the same detector over the same luma independently of the engine, which is
+  // the same trick the descriptor-width assertion uses. It pins the ordering the comment claims
+  // ("x then y") rather than stating it in a string nothing reads.
+  const cv::Ptr<cv::Feature2D> oracle = OpenCvDetector(GetParam());
+  ASSERT_TRUE(oracle);
+  const Result<std::span<uint8_t>> sourceBytes = store.Pin(source);
+  ASSERT_TRUE(sourceBytes.ok()) << sourceBytes.status.detail;
+  const cv::Mat colour(kHeight, kWidth, CV_8UC4, sourceBytes.value.data(), source.stride);
+  cv::Mat grey;
+  cv::cvtColor(colour, grey, cv::COLOR_RGBA2GRAY);
+  std::vector<cv::KeyPoint> expected;
+  cv::Mat ignored;
+  oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
+  EXPECT_TRUE(store.Release(source).ok());
+  ASSERT_GE(static_cast<int32_t>(expected.size()), features.value.count);
+
   for (int32_t row = 0; row < features.value.count; ++row) {
     float xy[2] = {0.0F, 0.0F};
     std::memcpy(xy, pinned.value.data() + static_cast<size_t>(row) * 8, sizeof(xy));
-    EXPECT_GE(xy[0], 0.0F);
-    EXPECT_GE(xy[1], 0.0F);
-    EXPECT_LE(xy[0], static_cast<float>(kWidth));
-    EXPECT_LE(xy[1], static_cast<float>(kHeight));
-    if (row == 0) {
-      firstX = xy[0];
-      firstY = xy[1];
-    } else if (xy[0] != firstX || xy[1] != firstY) {
-      ++distinct;
-    }
+    EXPECT_FLOAT_EQ(xy[0], expected[row].pt.x) << "row " << row << ": x is not this row's x";
+    EXPECT_FLOAT_EQ(xy[1], expected[row].pt.y) << "row " << row << ": y is not this row's y";
   }
-  EXPECT_GT(distinct, 0) << "every keypoint at the same coordinate is a zeroed buffer, not features";
 
   EXPECT_TRUE(store.Release(keypoints).ok());
   ForgetOutputs(features.value);
@@ -303,10 +421,12 @@ TEST_P(Extraction, NoDetectorReturnsMoreFeaturesThanTheBudget) {
   const Result<FeatureSet> features = engine.ExtractFeatures(Textured(768));
   ASSERT_TRUE(features.ok()) << features.status.detail;
   EXPECT_LE(features.value.count, 500);
-  if (GetParam() != FeatureDetector::Orb) {
-    EXPECT_GT(features.value.count, 0) << "a frame this size has features; a zero here means the "
-                                          "cap was applied as a floor rather than a ceiling";
-  }
+  // For every detector, including ORB. The `if (GetParam() != Orb)` this replaces removed the one
+  // assertion the ORB row could ever fail — with the cap as its own `nfeatures`, passing 0 by
+  // mistake means *zero features* to OpenCV's ORB rather than unlimited, and only this catches it.
+  // The upper bound above is the trivial half for ORB; this is the half that is not.
+  EXPECT_GT(features.value.count, 0) << "a frame this size has features; a zero here means the cap "
+                                        "was applied as a floor rather than a ceiling";
   ForgetOutputs(features.value);
 }
 
@@ -324,7 +444,11 @@ TEST_P(Extraction, ReleasesTheFrameItWasGivenWhetherItSucceedsOrRefuses) {
       << "the engine kept a pin on the frame it succeeded with";
   ForgetOutputs(features.value);
 
-  // And the refusal path, which is the one an exception would unwind through.
+  // And a refusal, which unwinds through the same holder. This one is refused by the engine's own
+  // stride guard *before* OpenCV is entered — an earlier comment here called it "the path an
+  // exception would unwind through", which it is not, and the degenerate-frame test below is the
+  // one that actually throws. Both paths are worth holding: a guard's `return` and a throw unwind
+  // the same destructor, but only one of them existed when it was written.
   FrameRef sheared = Textured();
   sheared.stride = 4;
   EXPECT_FALSE(engine.ExtractFeatures(sheared).ok());
@@ -332,10 +456,14 @@ TEST_P(Extraction, ReleasesTheFrameItWasGivenWhetherItSucceedsOrRefuses) {
       << "the engine kept a pin on the frame it refused";
 }
 
-TEST_P(Extraction, ARefusedExtractionLeavesTheStoreExactlyAsItFoundIt) {
+TEST_P(Extraction, ARefusedExtractionGivesBackEveryByteItTook) {
   // The rollback, which was reachable and untested: a reviewer deleted the `Forget` that unwinds
   // the descriptor frame and all 640 tests passed, while the deleted line leaked 50,688 bytes per
   // refused SIFT extraction — permanently, since the only handle naming that frame is dropped.
+  //
+  // This is about the bytes the *engine* took, which is why it is no longer called "leaves the
+  // store exactly as it found it". It does not: reading a frame pins it, and the test below is the
+  // case where that changes something a caller can see.
   //
   // The ceiling is set so the input frame and the descriptors fit and the keypoints do not, which
   // is the one ordering that reaches the second allocation's failure.
@@ -388,13 +516,24 @@ TEST_P(Extraction, AnswersADegenerateFrameRatherThanLettingOpenCvThrowThroughIt)
   const FrameRef onePixel = Textured(1);
 
   const Result<FeatureSet> features = engine.ExtractFeatures(onePixel);
-  if (features.ok()) {
+
+  // Per detector, because the behaviour is per detector and measured. An `if (ok()) … else …` that
+  // accepted either answer could not tell a *converted* throw from a *swallowed* one — a reviewer
+  // replaced the handler with one returning `Ok` and `count == 0`, which for registration is the
+  // opposite answer, and the whole file stayed green.
+  if (GetParam() == FeatureDetector::Sift) {
+    // SIFT does not throw here; it finds nothing. That is why the boundary cannot be a list of the
+    // detectors that need one, and why this row is not evidence about the `catch` either way.
+    ASSERT_TRUE(features.ok()) << features.status.detail;
     EXPECT_EQ(features.value.count, 0) << "one pixel has no features in it";
     ForgetOutputs(features.value);
   } else {
+    // ORB throws `inv_scale_x > 0` out of `resize`, AKAZE `s >= 0` out of `setSize`. A refusal
+    // carrying OpenCV's own text is the proof that the throw was converted rather than absorbed.
+    ASSERT_FALSE(features.ok()) << "a throw was swallowed into a successful empty answer";
     EXPECT_EQ(features.status.code, StatusCode::Internal) << features.status.detail;
     EXPECT_NE(features.status.detail.find("OpenCV"), std::string::npos)
-        << "an OpenCV refusal should say so: " << features.status.detail;
+        << "a converted OpenCV exception should carry its message: " << features.status.detail;
   }
   EXPECT_EQ(store.Release(onePixel).code, StatusCode::FailedPrecondition)
       << "the pin was not released on the way out of a throwing call";
@@ -419,6 +558,86 @@ TEST_P(Extraction, MatchingAndRefinementRefuseRatherThanAnswer) {
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem) {
+  // `OwnedFrame`'s destructor releases and only then forgets, and `Forget` on a pinned frame fails.
+  // Swapping the two lines therefore orphans every frame a *pinned* rollback unwinds — measured at
+  // 7,872 / 6,527 / 50,688 bytes per refusal across ORB, AKAZE and SIFT — while leaving every test
+  // in the repository green, because nothing else reaches a rollback with a pin still held.
+  //
+  // A padding store is what gets there: the packing guard runs after both `Pin`s, so this is the
+  // one refusal in the engine that unwinds with the pins live.
+  const FrameRef source = Textured();
+  const Result<std::span<uint8_t>> bytes = store.Pin(source);
+  ASSERT_TRUE(bytes.ok()) << bytes.status.detail;
+
+  PaddingFrameStore padding{1 << 24};
+  const Result<FrameRef> copied = padding.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(copied.ok()) << copied.status.detail;
+  {
+    const Result<std::span<uint8_t>> into = padding.Pin(copied.value);
+    ASSERT_TRUE(into.ok()) << into.status.detail;
+    ASSERT_GE(into.value.size(), bytes.value.size());
+    std::memcpy(into.value.data(), bytes.value.data(), bytes.value.size());
+    EXPECT_TRUE(padding.Release(copied.value).ok());
+  }
+  EXPECT_TRUE(store.Release(source).ok());
+
+  const Result<FrameStoreBudget> before = padding.Budget();
+  ASSERT_TRUE(before.ok());
+  FeatureRegistrationEngine engine{padding, GetParam()};
+  const Result<FeatureSet> refused = engine.ExtractFeatures(copied.value);
+  ASSERT_FALSE(refused.ok()) << "a padded store should have been refused by the packing guard";
+  EXPECT_EQ(refused.status.code, StatusCode::Internal) << refused.status.detail;
+
+  const Result<FrameStoreBudget> after = padding.Budget();
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.heapUsedBytes, before.value.heapUsedBytes)
+      << "the rollback forgot a frame while it was still pinned, so the store kept the bytes";
+}
+
+TEST_P(Extraction, ReadingASpilledFrameLeavesItInTheHeap) {
+  // Extraction pins, and pinning faults a spilled frame back in and leaves it resident. That is
+  // what `FeatureSet`'s header means by "unchanged but not untouched", and it has a sharp edge
+  // worth pinning down rather than discovering: a refusal for want of heap makes the heap *fuller*,
+  // so extracting across a sphere of cold frames ratchets the ceiling shut one frame at a time.
+  //
+  // Asserted rather than fixed. Demoting the frame again on the way out would be the engine undoing
+  // something it did not set up — the rollback-that-destroys shape this codebase has been bitten by
+  // — and the caller that cooled the frame is the one that knows whether it still wants it cold.
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess spilling{1 << 24, &sink};
+  const Result<FrameRef> frame = spilling.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok()) << frame.status.detail;
+  {
+    const Result<std::span<uint8_t>> bytes = spilling.Pin(frame.value);
+    ASSERT_TRUE(bytes.ok()) << bytes.status.detail;
+    for (size_t at = 0; at < bytes.value.size(); ++at) {
+      bytes.value[at] = static_cast<uint8_t>(TexturedLuma(static_cast<int32_t>(at / 4) % kWidth,
+                                                          static_cast<int32_t>(at / 4) / kWidth));
+    }
+    EXPECT_TRUE(spilling.Release(frame.value).ok());
+  }
+  ASSERT_TRUE(spilling.Demote(frame.value, Residency::Spilled).ok());
+  const Result<Residency> cold = spilling.ResidencyOf(frame.value);
+  ASSERT_TRUE(cold.ok());
+  ASSERT_EQ(cold.value, Residency::Spilled) << "the fixture did not manage to cool the frame";
+
+  FeatureRegistrationEngine engine{spilling, GetParam()};
+  const Result<FeatureSet> features = engine.ExtractFeatures(frame.value);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+
+  const Result<Residency> after = spilling.ResidencyOf(frame.value);
+  ASSERT_TRUE(after.ok());
+  EXPECT_NE(after.value, Residency::Spilled)
+      << "if this ever passes as Spilled, the contract comment on FeatureSet is the thing to fix";
+  // From this store, not the fixture's — `ForgetOutputs` would ask the wrong one and be told the
+  // frames do not exist, which is a failure about the test rather than about the engine.
+  if (features.value.count > 0) {
+    EXPECT_TRUE(spilling.Forget(features.value.descriptors).ok());
+    EXPECT_TRUE(spilling.Forget(features.value.keypoints).ok());
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,

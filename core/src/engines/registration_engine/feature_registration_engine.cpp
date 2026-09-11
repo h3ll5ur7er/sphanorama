@@ -27,7 +27,9 @@ constexpr int32_t kKeypointBytes = 8;
 // itself at 500 by default, `cv::SIFT::create()` takes `nfeatures = 0` meaning retain everything,
 // and `cv::AKAZE::create()` takes `max_points = -1` meaning the same. Measured on this repository's
 // own test texture at 2048x2048: ORB flatlines at 500, SIFT returns 7,567 (3.87 MB of descriptors
-// for one frame, 221 MB over the sixty a sphere plans) and AKAZE returns 14,656. A capture frame is
+// for one frame, 232 MB over the sixty a sphere plans) and AKAZE returns 14,656. Decimal megabytes
+// throughout, as ADR 0051 counts them — an earlier draft said 221, which is the same number in MiB
+// and made one sentence use both units. A capture frame is
 // several times that again in pixels.
 //
 // It bounds the allocation, and it is also what makes the comparison the roadmap wants mean
@@ -170,10 +172,41 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
                            "this frame's stride is narrower than one row of it");
   }
-  const int64_t needed = (static_cast<int64_t>(frame.height) - 1) * stride + rowBytes;
-  if (needed > static_cast<int64_t>(pinned.value.size())) {
+  const int64_t held = static_cast<int64_t>(pinned.value.size());
+  if (rowBytes > held) {
     return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
                            "this frame claims more pixels than the store is holding for it");
+  }
+  // **Asked by division, because the multiply is the thing that overflows.** An earlier version of
+  // this guard widened `width * bytesPerPixel` into int64 and then multiplied again without asking
+  // the same question of the second product: with `stride <= 0` the fallback is `rowBytes`, which is
+  // bounded by 2^33 rather than by `int32_t`, so `INT32_MAX` rows of it reached ~1.8e19 and wrapped
+  // negative — and a negative total is smaller than any size, so the guard passed exactly the handle
+  // it exists to refuse.
+  //
+  // Which of the two checks actually refuses that handle is worth being exact about, because the
+  // test above passes either way and it would be easy to credit the wrong one. It is the row-bytes
+  // check: a width big enough to overflow the product is a width whose single row already exceeds
+  // anything the store is holding. That in turn bounds the fallback stride, so with both checks
+  // present the product below cannot reach the top of `int64_t` from any allocation that fits in
+  // memory. The division form is kept anyway — not as a second guard, but because it is how this
+  // one is written so that nobody has to redo that argument when a caller or a format changes.
+  const int64_t rows = static_cast<int64_t>(frame.height) - 1;
+  if (rows > 0 && stride > (held - rowBytes) / rows) {
+    return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
+                           "this frame claims more pixels than the store is holding for it");
+  }
+  // A planar frame's buffer holds chroma after the luma plane, so the rows above bound the *bytes*
+  // and not the *picture*: a real I420 128x128 is 24,576 bytes, and a handle claiming 192 rows needs
+  // exactly that by luma arithmetic alone. The whole-frame size is what says how much of it is
+  // picture, and it is in bounds either way — so ASan never had anything to say about it.
+  if (BytesPerPixel(frame.format) <= 0) {
+    const int64_t whole = FrameByteSize(frame.width, frame.height, frame.format);
+    if (whole <= 0 || whole > held) {
+      return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
+                             "this frame claims more rows of picture than the store is holding for "
+                             "it; the bytes past the luma plane are chroma");
+    }
   }
 
   const cv::Mat luma = LumaOf(frame, pinned.value, static_cast<size_t>(stride));

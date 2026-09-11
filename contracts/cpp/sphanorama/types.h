@@ -509,8 +509,10 @@ struct NodeContext {
 //
 // `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
 // the first of its kind — it hands back a frame the caller never asked the store for by name, says
-// so in nearly these words, and has a contract-suite assertion behind it. `IImageCodecAccess::Decode`
-// is a third. A `count` of zero means no frames were allocated and there is nothing to forget.
+// so in nearly these words, and has a contract-suite assertion behind it. It is the *only* one that
+// says it: `IImageCodecAccess::Decode` and `ICompositionEngine::BlendTile` return frames the same
+// way and document nothing about who owns them, which is a gap rather than a second precedent.
+// A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;
   int32_t count = 0;

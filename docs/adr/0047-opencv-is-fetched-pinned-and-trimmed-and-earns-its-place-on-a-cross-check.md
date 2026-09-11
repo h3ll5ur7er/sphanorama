@@ -1,6 +1,18 @@
 # 0047 — OpenCV is fetched, pinned and trimmed, and earns its place on a cross-check
 
-**Status:** accepted
+**Status:** accepted; one consequence superseded by
+[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md)
+
+> **The sanitizer remedy named below is superseded.** This ADR said that when OpenCV tripped the
+> sanitizers the answer would be "a suppressions file scoped to `_deps/opencv-src`, not turning
+> recovery back on". Those two cannot both hold: a UBSan suppressions file is only consulted for
+> *recoverable* errors, so under this repository's `-fno-sanitize-recover=all` it is not read at all.
+> ADR 0052 records the measurement and takes a compile-time `-fno-sanitize=alignment` scoped to
+> OpenCV's subdirectory instead, which reaches the goal this ADR actually wanted — OpenCV exempt,
+> our own code strict, recovery still off everywhere.
+>
+> Everything else here stands, including the exception-boundary shape this ADR named and left for a
+> later ADR to build; 0052 built it as described.
 
 ## Context
 

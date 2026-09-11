@@ -154,9 +154,10 @@ What it gives today is the first of these; the rest wait on the increments liste
 
 - registration accuracy measured in degrees against truth, not eyeballed — the two halves that
   make it possible are in (`rotation_scoring`, ADR 0049, and `tools/synth_dataset.py`, ADR 0050),
-  and there is **nothing to measure yet**: `RegistrationEngine` is still the null implementation.
-  A round-1 fix wrote "available now" here, which overcorrected a stale sentence into a false one
-  and contradicted §5.4 twelve lines above;
+  and there is **not much to measure yet**: `FeatureRegistrationEngine` extracts features, but
+  matching and refinement still refuse, so no rotation comes out to be scored. An earlier round
+  wrote "available now" here, which overcorrected a stale sentence into a false one and
+  contradicted §5.4 twelve lines above;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.
