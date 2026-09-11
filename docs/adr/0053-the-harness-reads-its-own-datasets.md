@@ -10,8 +10,14 @@ halves of the machinery to compute it already existed and had never met.
 `tools/synth_dataset.py` renders the frames a phone would have captured from a known panorama and
 writes the rotation each was taken at (ADR 0050). `core/test/support/rotation_scoring` turns a set
 of estimated rotations into an angular error against truth, with the global gauge removed first
-(ADR 0049). Between them sits nothing: no C++ in this repository read a dataset. `grep` for the word
-across `core/test` found the renderer's own tests and the scorer's, and no consumer.
+(ADR 0049). Between them sits nothing: no C++ in this repository read a dataset.
+
+The evidence, stated accurately this time. `git grep -li dataset` across `core/test` at the commit
+before this work finds **six** files — `rotation_scoring.{h,cpp}` and its test, plus
+`frame_quality_engine_test.cpp`, `camera_model_test.cpp` and `quaternion_test.cpp` — and not one of
+them reads a dataset off disk; the last three use the word about something else. The conclusion
+holds and the first version of this sentence described the result as "the renderer's own tests and
+the scorer's", which is tidier than what the command prints. A reviewer ran it.
 
 So the accuracy number Phase 2 is defined by could not be computed at all, and `EstimatePairwise` —
 the next increment, and the first whose correctness is invisible to the eye — would have had nowhere

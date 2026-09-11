@@ -30,6 +30,21 @@ struct SyntheticFrame {
 // It deliberately does **not** re-implement the lens. ADR 0050 keeps the generator's projection
 // independent of `utilities/camera_model` so that a shared error cannot cancel; this reads the
 // recorded `intrinsics` and hands them over unexamined, which keeps that independence intact.
+/**
+ * **The bytes are signed, and nothing in the type system says so.**
+ *
+ * `truth.json`'s `convention.pixel_encoding` records that a frame's byte `b` means
+ * `b / 255 * 2 - 1` — so 0 is -1.0, 128 is +0.00392, 255 is +1.0, with no gamma and no colour
+ * space. The frames below are handed over as ordinary `RGBA8`, because that is what the store
+ * allocates and there is no format that spells "signed unit range"; the loader copies bytes and
+ * interprets none of them, so nothing here is wrong today.
+ *
+ * It is written here because the first thing to *compute* on these pixels will be wrong if it
+ * assumes unsigned [0, 1] — every frame read with its contrast halved and its zero in the wrong
+ * place, which is the kind of error that produces plausible numbers rather than a crash. A reviewer
+ * pointed out that the loader validates one `convention` entry and drops the other five, of which
+ * this is the one a consumer has to know.
+ */
 struct SyntheticDataset {
   // The lens every frame was rendered through. `rollingShutterLineTimeNs` and `estimated` are not
   // in the file and are left at the values that mean "not known" and "not an estimate" — these are
