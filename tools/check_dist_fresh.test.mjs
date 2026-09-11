@@ -8,16 +8,18 @@
 //
 // Each case builds a whole fake repository in a temp directory and runs the real check against it,
 // so what is asserted is the check's behaviour rather than a re-implementation of its arithmetic.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkDistIsFreshIn, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
+import { checkDistIsFreshIn, expandPresetMacros, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
 
 const made = [];
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // Set by the real-shaped preset fixture, which needs an environment variable to expand.
+  delete process.env.SPHANORAMA_TEST_SDK;
 });
 
 /** A repository where everything is in order, so each test can break exactly one thing. */
@@ -434,6 +436,200 @@ describe('the dist freshness check', () => {
     presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = { type: 'STRING', value: '-msimd128' };
     tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
     expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
+
+  describe('presets shaped the way this repository writes them', () => {
+    // Every case above is written against `{ name, cacheVariables }` — a shape none of the six real
+    // presets has. That is not a cosmetic gap. Three mutants survived all 44 tests: dropping
+    // `displayName` from the documentation-only set, dropping `binaryDir` from the handled-elsewhere
+    // set, and emptying the compared-against-the-cache map entirely. Each one makes forgiveness
+    // permanently unavailable for every preset in this repository — the exact failure this function
+    // exists to avoid — and none of them can be caught by a case that asserts a *refusal*, because a
+    // refusal is what they all produce. What catches them is one positive case on a preset carrying
+    // the fields the real ones carry.
+
+    /** This repository's own two wasm presets, field for field, with a cache that agrees. */
+    const realShaped = (tree) => {
+      process.env.SPHANORAMA_TEST_SDK = '/opt/sdk';
+      const t = Date.now() - 99000;
+      const toolchain = '/opt/sdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake';
+      tree.put('CMakePresets.json', t, JSON.stringify({
+        configurePresets: [
+          {
+            name: 'wasm-release',
+            displayName: 'WASM, single-threaded — the build GitHub Pages can serve',
+            binaryDir: '${sourceDir}/build/wasm-release',
+            generator: 'Ninja',
+            toolchainFile:
+              '$env{SPHANORAMA_TEST_SDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake',
+            cacheVariables: { CMAKE_BUILD_TYPE: 'Release', CMAKE_CXX_FLAGS: '-msimd128 -Oz -flto' },
+          },
+          {
+            name: 'wasm-release-threaded',
+            inherits: 'wasm-release',
+            displayName: 'WASM, threaded — needs a host that can serve COOP/COEP',
+            binaryDir: '${sourceDir}/build/wasm-release-threaded',
+            cacheVariables: { CMAKE_CXX_FLAGS: '-msimd128 -pthread -Oz -flto' },
+          },
+        ],
+      }));
+      for (const [preset, flags] of [['wasm-release', '-msimd128 -Oz -flto'],
+                                     ['wasm-release-threaded', '-msimd128 -pthread -Oz -flto']]) {
+        tree.put(`build/${preset}/CMakeCache.txt`, t,
+                 'CMAKE_BUILD_TYPE:STRING=Release\n'
+                 + `CMAKE_CXX_FLAGS:STRING=${flags}\n`
+                 + 'CMAKE_GENERATOR:INTERNAL=Ninja\n'
+                 + `CMAKE_TOOLCHAIN_FILE:FILEPATH=${toolchain}\n`);
+      }
+      return tree;
+    };
+
+    it('forgives a documentation-only edit to one of them', () => {
+      // The case that was missing, and the one that fails without macro expansion: `toolchainFile`
+      // is `$env{EMSDK}/…` in both real presets and the cache holds the path CMake resolved it to,
+      // so comparing the two as text matched nothing. The forgiveness these four fixes were written
+      // to provide was unreachable in this repository from the commit that added it, while the fake
+      // tree above — which has no macro anywhere in it — stayed green.
+      //
+      // It also pins *nearest declaration winning*: `wasm-release-threaded` overrides the flags it
+      // inherits, so reading the base's value instead compares `-Oz -flto` against a cache holding
+      // `-pthread -Oz -flto` and refuses.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].displayName = 'a better sentence about the same build';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('still refuses one of them whose toolchain macro resolves somewhere else', () => {
+      // The other half of the case above: expansion must compare the resolved path, not skip the
+      // field. Same preset, same cache, one different environment.
+      const tree = realShaped(aFreshTree());
+      process.env.SPHANORAMA_TEST_SDK = '/opt/some-other-sdk';
+      tree.put('CMakePresets.json', Date.now(),
+               readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      expect(complaint(tree.root, undefined, () => true))
+        .toMatch(/compiled core is older than the C\+\+/);
+    });
+
+    it('refuses one of them carrying a macro this checker cannot resolve', () => {
+      // The unknown-key rule, one level down. A macro nobody here writes is a value this checker
+      // cannot compare, so it refuses rather than comparing the unexpanded text — which is precisely
+      // the mistake that made `$env{}` unforgivable.
+      //
+      // The cache is given the macro's own text, so the unknown macro is the *only* thing standing
+      // between this preset and forgiveness. The first version of this case put the macro in the
+      // preset alone: the values then disagreed for an ordinary reason, it refused for that reason
+      // instead, and a sabotage that made the expander never refuse left it green.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS = '-msimd128 ${hostSystemName}';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      tree.put('build/wasm-release/CMakeCache.txt', Date.now() - 99000,
+               'CMAKE_BUILD_TYPE:STRING=Release\n'
+               + 'CMAKE_CXX_FLAGS:STRING=-msimd128 ${hostSystemName}\n'
+               + 'CMAKE_GENERATOR:INTERNAL=Ninja\n'
+               + 'CMAKE_TOOLCHAIN_FILE:FILEPATH=/opt/sdk/upstream/emscripten/cmake/Modules/'
+               + 'Platform/Emscripten.cmake\n');
+      expect(complaint(tree.root, undefined, () => true))
+        .toMatch(/compiled core is older than the C\+\+/);
+    });
+
+    it('forgives a base preset marked hidden', () => {
+      // `hidden` is CMake's documented way to say "this one is not for direct use", which is how a
+      // base preset is written. Refusing it as an unknown key killed forgiveness for every preset
+      // that inherits from one — and the unknown-key rule is worth keeping precisely because it is
+      // this easy to be wrong about, so the answer is to know the key rather than to soften the rule.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets.push({
+        name: 'wasm-base', hidden: true, cacheVariables: { CMAKE_BUILD_TYPE: 'Release' },
+      });
+      presets.configurePresets[0].inherits = 'wasm-base';
+      delete presets.configurePresets[0].cacheVariables.CMAKE_BUILD_TYPE;
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('reads a base preset that two parents both inherit', () => {
+      // A diamond is legal CMake and was read as a cycle: the visited set was shared across sibling
+      // parents, so the second branch to reach a shared base was told it had already been there. A
+      // cycle is a name repeating on one *path*, not a name repeating anywhere in the walk.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets.push(
+        { name: 'wasm-base', cacheVariables: { CMAKE_BUILD_TYPE: 'Release' } },
+        { name: 'wasm-left', inherits: 'wasm-base' },
+        { name: 'wasm-right', inherits: 'wasm-base' });
+      presets.configurePresets[0].inherits = ['wasm-left', 'wasm-right'];
+      delete presets.configurePresets[0].cacheVariables.CMAKE_BUILD_TYPE;
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('reads every preset named in an array of inherits, not just the first', () => {
+      // The array form is what the diamond above is written with, so a checker that collapsed it to
+      // its first element would pass that case while reading half the declarations — forgiving on
+      // the strength of variables it never compared.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets.push(
+        { name: 'wasm-first', cacheVariables: { CMAKE_BUILD_TYPE: 'Release' } },
+        { name: 'wasm-second', cacheVariables: { CMAKE_CXX_FLAGS: 'not what the cache holds' } });
+      presets.configurePresets[0].inherits = ['wasm-first', 'wasm-second'];
+      delete presets.configurePresets[0].cacheVariables.CMAKE_CXX_FLAGS;
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true))
+        .toMatch(/compiled core is older than the C\+\+/);
+    });
+
+    it('inherits a field from the first preset in the list that defines it', () => {
+      // CMake's documented precedence for the array form, and the opposite of what folding the
+      // parents in order gives. Both parents here declare the same variable and only the first
+      // agrees with the cache, so applying them front to back would refuse a preset CMake configures
+      // exactly as this cache records.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets.push(
+        { name: 'wasm-first', cacheVariables: { CMAKE_BUILD_TYPE: 'Release' } },
+        { name: 'wasm-second', cacheVariables: { CMAKE_BUILD_TYPE: 'Debug' } });
+      presets.configurePresets[0].inherits = ['wasm-first', 'wasm-second'];
+      delete presets.configurePresets[0].cacheVariables.CMAKE_BUILD_TYPE;
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('does not forgive a preset that configures a different directory', () => {
+      // `binaryDir` was filed "handled elsewhere" and handled nowhere. A preset that builds
+      // somewhere else declares nothing about the cache this function reads, so its agreement would
+      // be a coincidence.
+      const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].binaryDir = '${sourceDir}/build/somewhere-else';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true))
+        .toMatch(/compiled core is older than the C\+\+/);
+    });
+
+    it('can resolve every macro this repository actually writes into its presets', () => {
+      // The canary the fake trees cannot be: a macro added to the real file that this checker does
+      // not know would make forgiveness unavailable again, and every case above would stay green
+      // because none of them reads that file. This one does.
+      // Found by walking up rather than resolved against `import.meta.url`, which vitest's
+      // transform does not leave as a `file:` URL, and rather than against the working directory,
+      // which would make this the one case in the suite that fails when launched from elsewhere.
+      let root = process.cwd();
+      while (!existsSync(join(root, 'CMakePresets.json')) && dirname(root) !== root) root = dirname(root);
+      const text = readFileSync(join(root, 'CMakePresets.json'), 'utf8');
+      const macros = [...text.matchAll(/\$[A-Za-z]*\{[^}]*\}/g)].map((m) => m[0]);
+      expect(macros.length).toBeGreaterThan(0);
+      for (const macro of macros) {
+        const resolved = expandPresetMacros(macro, { presetName: 'wasm-release', repoRoot: '/r' });
+        expect(resolved, macro).not.toBeNull();
+        expect(resolved, macro).not.toMatch(/\$[A-Za-z]*\{/);
+      }
+    });
   });
 
   it('does not forgive a preset that inherits in a circle', () => {

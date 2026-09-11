@@ -187,6 +187,39 @@ function buildFilesTheGraphNames(repoRoot) {
  *
  * `false` whenever anything cannot be read or parsed, which forgives nothing.
  */
+/**
+ * A preset value with CMake's macros expanded, or `null` for a macro this checker does not know.
+ *
+ * The reason this exists: a preset stores `$env{EMSDK}/upstream/...` and `CMakeCache.txt` stores the
+ * path CMake resolved that to, so comparing the two as text matched nothing. Both wasm presets are
+ * written that way, which made the forgiveness `presetsMatchTheBuildDirectories` exists to grant
+ * unreachable in this repository from the commit that added it -- while the suite stayed green,
+ * because its fake tree had no macro in it anywhere. Two reviewers found it independently.
+ *
+ * Unknown macros refuse rather than expand, on the same principle as the unknown-key rule below:
+ * falling behind CMake makes this ask too often rather than quietly stop asking. Comparing the
+ * unexpanded text instead is exactly the defect being fixed here.
+ *
+ * An unset environment variable expands to the empty string, which is what CMake does -- and what
+ * the configure that wrote the cache would have done too, so the comparison stays like-for-like.
+ */
+export function expandPresetMacros(text, { presetName, repoRoot }) {
+  let refused = false;
+  const out = String(text).replace(/\$([A-Za-z]*)\{([^}]*)\}/g, (whole, kind, name) => {
+    // `$penv{}` differs from `$env{}` only when the preset's own `environment` block sets the
+    // variable -- and `environment` is not a key this checker forgives, so here they are the same.
+    if (kind === 'env' || kind === 'penv') return process.env[name] ?? '';
+    if (kind === '') {
+      if (name === 'sourceDir') return repoRoot;
+      if (name === 'presetName') return presetName;
+      if (name === 'dollar') return '$';
+    }
+    refused = true;
+    return whole;
+  });
+  return refused ? null : out;
+}
+
 function presetsMatchTheBuildDirectories(repoRoot) {
   let declared;
   try {
@@ -203,38 +236,59 @@ function presetsMatchTheBuildDirectories(repoRoot) {
   // asks too often rather than one that quietly stops asking. Four of these keys were being ignored
   // before that rule existed, which is how `toolchainFile` and `generator` went uncompared.
   const documentationOnly = new Set(['name', 'displayName', 'description']);
+  // Keys that exist, are known, and cannot change a byte of what gets built. `hidden` is CMake's
+  // documented way to mark a preset as a base not meant for direct use, so refusing it as unknown
+  // killed forgiveness for every preset inheriting from one; `vendor` is reserved for IDEs; the rest
+  // only affect what CMake prints. `condition` decides whether a preset is *available*, which is a
+  // different question from whether its declarations match a cache this function is reading.
+  //
+  // The unknown-key rule below is worth keeping exactly because it is this easy to be wrong about.
+  // The answer to being wrong about a key is to learn the key, not to soften the rule.
+  const cannotChangeTheBuild = new Set([
+    'hidden', 'vendor', 'condition', 'warnings', 'errors', 'debug', 'trace',
+  ]);
   const comparedAgainstTheCache = new Map([
     ['generator', 'CMAKE_GENERATOR'],
     ['toolchainFile', 'CMAKE_TOOLCHAIN_FILE'],
   ]);
-  const handledElsewhere = new Set(['cacheVariables', 'inherits', 'binaryDir']);
+  const handledElsewhere = new Set(['cacheVariables', 'inherits']);
 
   /** A preset's cache variables with everything it inherits folded in, nearest declaration winning. */
-  const resolved = (name, seen = new Set()) => {
-    if (seen.has(name)) return null;   // a cycle; refuse rather than loop
-    seen.add(name);
+  const resolved = (name, ancestry = new Set()) => {
+    if (ancestry.has(name)) return null;   // the same preset twice on one path: a cycle
     const entry = (declared.configurePresets ?? []).find((p) => p && p.name === name);
     if (!entry) return null;
     for (const key of Object.keys(entry)) {
-      if (!documentationOnly.has(key) && !comparedAgainstTheCache.has(key)
-          && !handledElsewhere.has(key)) {
+      if (!documentationOnly.has(key) && !cannotChangeTheBuild.has(key)
+          && !comparedAgainstTheCache.has(key) && !handledElsewhere.has(key)
+          && key !== 'binaryDir') {
         return null;
       }
     }
+    // A fresh copy per branch, not one set for the whole walk. Sharing it meant the second parent to
+    // reach a base both parents inherit was told it had already been visited, so a diamond -- which
+    // CMake allows and which is the ordinary way to factor a preset file -- resolved as a cycle and
+    // refused. A cycle is a name repeating along one path.
+    const below = new Set(ancestry).add(name);
     const parents = entry.inherits === undefined
       ? []
       : (Array.isArray(entry.inherits) ? entry.inherits : [entry.inherits]);
     const variables = new Map();
-    for (const parent of parents) {
-      const inherited = resolved(parent, seen);
+    let binaryDir;
+    // Reversed because CMake inherits a field from the *first* preset in the list that defines it,
+    // so applying them back to front leaves the earliest declaration in place.
+    for (const parent of [...parents].reverse()) {
+      const inherited = resolved(parent, below);
       if (inherited === null) return null;
       for (const [k, v] of inherited.variables) variables.set(k, v);
+      if (inherited.binaryDir !== undefined) binaryDir = inherited.binaryDir;
     }
     for (const [k, v] of Object.entries(entry.cacheVariables ?? {})) variables.set(k, v);
     for (const [key, cacheName] of comparedAgainstTheCache) {
       if (entry[key] !== undefined) variables.set(cacheName, entry[key]);
     }
-    return { variables };
+    if (entry.binaryDir !== undefined) binaryDir = entry.binaryDir;
+    return { variables, binaryDir };
   };
 
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
@@ -248,6 +302,15 @@ function presetsMatchTheBuildDirectories(repoRoot) {
     }
     const entry = resolved(preset);
     if (entry === null) return false;
+    // `binaryDir` says which directory the preset configures, and this function reads
+    // `build/<preset>`. A preset pointing somewhere else declares nothing about the cache being read
+    // here, so its agreement would be an accident -- which is what filing the key "handled
+    // elsewhere" and then handling it nowhere forgave. A preset that declares no `binaryDir` is left
+    // alone rather than refused: it is CMake's own default layout, which is this one.
+    if (entry.binaryDir !== undefined) {
+      const where = expandPresetMacros(entry.binaryDir, { presetName: preset, repoRoot });
+      if (where === null || resolve(where) !== resolve(join(repoRoot, 'build', preset))) return false;
+    }
     for (const [name, declaredValue] of entry.variables) {
       // CMake lets a cache variable be a bare value or a `{ type, value }` object. Stringifying the
       // object gave `[object Object]`, which matched nothing and made the forgiveness permanently
@@ -255,10 +318,15 @@ function presetsMatchTheBuildDirectories(repoRoot) {
       const wanted = declaredValue !== null && typeof declaredValue === 'object'
         ? declaredValue.value
         : declaredValue;
+      // The cache holds what CMake resolved, so the declaration has to be resolved too before the
+      // two can be compared at all. `expandPresetMacros` refuses a macro it does not know, and a
+      // value this function cannot resolve is one it cannot vouch for.
+      const expanded = expandPresetMacros(wanted, { presetName: preset, repoRoot });
+      if (expanded === null) return false;
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
       // `line === null` is a variable the preset declares and this build directory has never held —
       // a *newly added* one, which is exactly a configure that has not happened.
-      if (line === null || line[1].trim() !== String(wanted).trim()) return false;
+      if (line === null || line[1].trim() !== expanded.trim()) return false;
     }
   }
   return true;
