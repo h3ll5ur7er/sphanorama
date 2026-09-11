@@ -151,10 +151,16 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
     // before any byte is read, so deleting this line changes nothing: over 347,875 adversarial
     // handles a reviewer measured the accepted set bit-identical with and without it. What it is
     // kept for is that the *same* line in `FeatureRegistrationEngine` is the sole bounds check for
-    // that case — deleting it there is a `heap-buffer-overflow READ of size 400000` — and the two
-    // guards being character-for-character identical is the only thing that has stopped a fix
-    // landing in one and not the other, three rounds running. Its deadness depends on an unrelated
-    // rule about grid sizes, and the day that rule changes is the day this is load-bearing.
+    // that case — deleting it there is a `heap-buffer-overflow READ of size 400000` — and keeping
+    // the two guards in step is the only thing that has stopped a fix landing in one and not the
+    // other, three rounds running. Its deadness depends on an unrelated rule about grid sizes, and
+    // the day that rule changes is the day this is load-bearing.
+    //
+    // "In step" rather than "identical", because they are not identical and cannot be: this one
+    // says `claimedRows` where the other says `rows`, which is already taken further down. An
+    // earlier draft claimed character-for-character sameness, which would make any `diff` between
+    // the two read as a difference that mattered — and a check firing on a renamed local is a check
+    // nobody keeps running.
     return Err<Measured>(StatusCode::InvalidArgument, kComponent,
                          "this frame claims more pixels than the store is holding for it");
   }

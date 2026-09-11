@@ -8,12 +8,12 @@
 //
 // Each case builds a whole fake repository in a temp directory and runs the real check against it,
 // so what is asserted is the check's behaviour rather than a re-implementation of its arithmetic.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkDistIsFreshIn } from './check_dist_fresh.mjs';
+import { checkDistIsFreshIn, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
 
 const made = [];
 afterEach(() => {
@@ -43,6 +43,8 @@ function aFreshTree() {
   put('core/CMakeLists.txt', t);
   put('CMakeLists.txt', t);
   put('CMakePresets.json', t);
+  put('build/wasm-release/CMakeCache.txt', t + 1000);
+  put('build/wasm-release-threaded/CMakeCache.txt', t + 1000);
   put('build/wasm-release/bridge/sphanorama-core.wasm', t + 1000);
   put('build/wasm-release/bridge/sphanorama-core.js', t + 1000);
   put('build/wasm-release-threaded/bridge/sphanorama-core.wasm', t + 1000);
@@ -173,6 +175,87 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root)).toBeNull();
   });
 
+  // The real probe, which every case above replaces with a stub. Nothing executed it, and that is
+  // precisely how a production-only regression sat behind ten green cases: the default stub returns
+  // `null`, which the real function cannot return when a build directory exists.
+  describe('the ninja probe itself', () => {
+    /** A build directory with a `build.ninja` that says what we want it to say. */
+    function treeWithNinja(root, script) {
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      const shim = join(root, 'bin', 'ninja');
+      writeFileSync(shim, `#!/bin/sh\n${script}\n`);
+      chmodSync(shim, 0o755);
+      for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+        mkdirSync(join(root, 'build', preset), { recursive: true });
+        writeFileSync(join(root, 'build', preset, 'build.ninja'), 'rule x\n');
+      }
+      return shim;
+    }
+
+    function withPath(dir, run) {
+      const saved = process.env.PATH;
+      process.env.PATH = `${dir}:${saved}`;
+      try { return run(); } finally { process.env.PATH = saved; }
+    }
+
+    it('says yes only when ninja reports nothing to do', () => {
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, 'echo "ninja: no work to do."');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(true);
+    });
+
+    it('says no when ninja would build something', () => {
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, 'echo "[1/2] Building CXX object foo.o"');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+
+    it('says nothing at all when ninja fails', () => {
+      // A non-zero exit is not a licence to forgive — a broken manifest must not read as idle.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, 'echo "ninja: error: loading build.ninja" >&2; exit 1');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBeNull();
+    });
+
+    it('says nothing at all when there is no build directory to ask about', () => {
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      expect(wasmBuildsAreUpToDate(root)).toBeNull();
+    });
+
+    it('asks about both presets, not just the first', () => {
+      // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root,
+        'case "$2" in *threaded*) echo "[1/2] Building CXX object foo.o";; *) echo "ninja: no work to do.";; esac');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+  });
+
+  it('does not forgive a build file the configure never read, however idle ninja is', () => {
+    // `CMakePresets.json` appears in neither wasm `build.ninja` — measured, `grep -c` is 0 in both —
+    // so ninja cannot have work pending *because of it*, and answers "nothing to do" whether the
+    // preset was configured in or not. Forgiving on that answer alone silently stopped checking the
+    // one build file whose changes ninja is blind to, and the suite could not see it because every
+    // case here injects a probe and the real one never returns the default.
+    //
+    // `CMakeCache.txt` is what cmake rewrites when it reads a preset, so it is the record that the
+    // configure happened *after* the edit.
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
+      const tree = aFreshTree();
+      const now = Date.now();
+      tree.put(source, now);
+      tree.put('build/wasm-release/CMakeCache.txt', now - 1000);
+      tree.put('build/wasm-release-threaded/CMakeCache.txt', now - 1000);
+      expect(complaint(tree.root, undefined, () => true), source)
+        .toMatch(/compiled core is older than the C\+\+/);
+    }
+  });
+
   it('forgives a build file when ninja says there is nothing left to do', () => {
     // A `CMakeLists.txt` edit that is inert for a preset — a comment, or a branch that preset does
     // not take — reconfigures and produces no work, so the core is never relinked and can never
@@ -180,7 +263,10 @@ describe('the dist freshness check', () => {
     // wasm build, then stage it") cannot clear it, because ninja correctly has nothing to do.
     for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
       const tree = aFreshTree();
-      tree.put(source, Date.now());
+      const now = Date.now();
+      tree.put(source, now - 1000);
+      tree.put('build/wasm-release/CMakeCache.txt', now);
+      tree.put('build/wasm-release-threaded/CMakeCache.txt', now);
       expect(complaint(tree.root, undefined, () => true), source).toBeNull();
     }
   });

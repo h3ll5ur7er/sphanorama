@@ -41,7 +41,10 @@ each do it today; this adds a build condition to that selection rather than a ne
 
 **And the two things ADR 0047 left for this ADR to settle, settled.**
 
-***The exception boundary is built.*** 0047 named it and deferred it: "when an engine calls OpenCV it
+***The exception boundary is built, and it narrows ADR 0006.*** That ADR's rule — `Result<T>`
+everywhere, nothing thrown across a layer or the WASM boundary — is unchanged in everything it is
+about; what changes is that one translation unit is now compiled with exceptions so it can convert
+OpenCV's at its own edge. 0006 carries the reciprocal note. 0047 named the shape and deferred it: "when an engine calls OpenCV it
 cannot be compiled `-fno-exceptions`, because `cv::Exception` is how OpenCV reports ordinary
 failure… the OpenCV-backed implementation is its own component, compiled with exceptions, catching
 at its own edge and returning `Result<T>`. That is a decision for the ADR that introduces the first

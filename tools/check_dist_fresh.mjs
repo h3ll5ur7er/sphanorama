@@ -120,7 +120,28 @@ function canReachBridgeSpecs(argv) {
  * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
  * caller then treats a build file the old way, which is the conservative direction.
  */
-function wasmBuildsAreUpToDate(repoRoot) {
+/**
+ * When both wasm presets were last configured, as an mtime — cmake rewrites `CMakeCache.txt` on
+ * every configure, so it is the record that a build file was actually *read*.
+ *
+ * Needed alongside ninja's answer because ninja is blind to one of the three build files:
+ * `CMakePresets.json` appears in neither preset's `build.ninja`, so no edit to it can ever produce
+ * outstanding work, and ninja says "nothing to do" whether the preset was configured in or not.
+ * Forgiving on that alone stopped checking the presets file altogether.
+ *
+ * `0` when either record is missing, which forgives nothing.
+ */
+function lastConfiguredAt(repoRoot) {
+  let earliest = 0;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const cache = newest(join(repoRoot, 'build', preset, 'CMakeCache.txt'));
+    if (cache.mtime === 0) return 0;
+    if (earliest === 0 || cache.mtime < earliest) earliest = cache.mtime;
+  }
+  return earliest;
+}
+
+export function wasmBuildsAreUpToDate(repoRoot) {
   let asked = false;
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const dir = join(repoRoot, 'build', preset);
@@ -237,14 +258,17 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const sources = ['core/src', 'bridge', 'contracts/cpp']
       .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }));
 
-    // A build file newer than the core is forgiven only when ninja says both wasm builds have
-    // nothing left to do, because that is the one case where the demand this check would make is
-    // impossible to satisfy. See `wasmBuildsAreUpToDate` for why its mtime cannot answer this.
+    // A build file newer than the core is forgiven only when **both** records agree: ninja has
+    // nothing outstanding, *and* the configure that produced the current cache happened after the
+    // edit. Ninja alone was not enough — it is blind to `CMakePresets.json` — and the cache alone is
+    // not either, since a configure can be followed by a build that never ran. Together they are
+    // the one case where the demand below is impossible to satisfy, which is what makes forgiving it
+    // right rather than merely convenient.
     const upToDate = upToDateProbe(repoRoot);
-    const buildFiles = upToDate === true
-      ? []
-      : ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
-        .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }));
+    const configuredAt = lastConfiguredAt(repoRoot);
+    const buildFiles = ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
+      .filter((s) => !(upToDate === true && configuredAt > 0 && s.mtime <= configuredAt));
 
     const cxx = [...sources, ...buildFiles].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {

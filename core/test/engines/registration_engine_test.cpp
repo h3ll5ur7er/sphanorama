@@ -408,8 +408,9 @@ TEST_P(Extraction, RefusesOneEnormousRowTheStoreIsNotHolding) {
   // The `else` branch of the geometry bound, which round 3 claimed was load-bearing and no test
   // held. A frame of exactly one row skips the division — there is no product to bound — so this is
   // the only thing between a single enormous row and the span it would be read from. Deleting it
-  // leaves all 686 tests green and gives ASan `heap-buffer-overflow READ of size 400000` out of a
-  // 64-byte region, inside ORB's `copyMakeBorder_8u`.
+  // leaves every test in the repository green and gives ASan `heap-buffer-overflow READ of size
+  // 400000` out of a **16-byte** region — the frame allocated two lines below — inside ORB's
+  // `copyMakeBorder_8u`. An earlier draft said 64, which was not this test's allocation.
   const Result<FrameRef> allocated = store.Allocate(16, 1, PixelFormat::Gray8);
   ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
   FrameRef oneHugeRow = allocated.value;
@@ -501,6 +502,54 @@ TEST_P(Extraction, TheKeypointFrameHoldsACoordinatePairPerFeature) {
   }
 
   EXPECT_TRUE(store.Release(keypoints).ok());
+  ForgetOutputs(features.value);
+}
+
+TEST_P(Extraction, TheCapIsAskedForAndNotOnlyTruncatedTo) {
+  // `EXPECT_LE(count, cap)` cannot tell a detector that was *asked* for the cap from one that
+  // returned everything and got cut down afterwards, because the truncation satisfies it either
+  // way — and the row-for-row comparison runs at 128 square, where no detector reaches the cap at
+  // all. Dropping the cap from `Make()` for SIFT and AKAZE left all 690 tests green.
+  //
+  // At 768 the cap binds, and an uncapped detector is not a prefix of a capped one: `retainBest`
+  // selects across the whole set, so the lists differ from row 0. Measured with the cap dropped:
+  // 500 of 500 AKAZE rows and 424 of 500 SIFT rows disagree with the capped oracle. With it, none.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef source = Textured(768);
+  const Result<FeatureSet> features = engine.ExtractFeatures(source);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  ASSERT_EQ(features.value.count, kMaxFeaturesPerFrame)
+      << "this frame is meant to be big enough that the cap binds; if it no longer does, this test "
+         "has stopped asking anything and the size is what to fix";
+
+  const cv::Ptr<cv::Feature2D> oracle = OpenCvDetector(GetParam());
+  ASSERT_TRUE(oracle);
+  const Result<std::span<uint8_t>> sourceBytes = store.Pin(source);
+  ASSERT_TRUE(sourceBytes.ok()) << sourceBytes.status.detail;
+  const cv::Mat colour(768, 768, CV_8UC4, sourceBytes.value.data(), source.stride);
+  cv::Mat grey;
+  cv::cvtColor(colour, grey, cv::COLOR_RGBA2GRAY);
+  std::vector<cv::KeyPoint> expected;
+  cv::Mat ignored;
+  oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
+  EXPECT_TRUE(store.Release(source).ok());
+  if (expected.size() > static_cast<size_t>(features.value.count)) {
+    expected.resize(static_cast<size_t>(features.value.count));
+  }
+  ASSERT_EQ(static_cast<int32_t>(expected.size()), features.value.count);
+
+  const Result<std::span<uint8_t>> pinned = store.Pin(features.value.keypoints);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  int32_t disagreements = 0;
+  for (int32_t row = 0; row < features.value.count; ++row) {
+    float xy[2] = {0.0F, 0.0F};
+    std::memcpy(xy, pinned.value.data() + static_cast<size_t>(row) * 8, sizeof(xy));
+    if (xy[0] != expected[row].pt.x || xy[1] != expected[row].pt.y) ++disagreements;
+  }
+  EXPECT_EQ(disagreements, 0)
+      << disagreements << " of " << features.value.count
+      << " rows differ from a detector built with the same cap — this engine's detector was not";
+  EXPECT_TRUE(store.Release(features.value.keypoints).ok());
   ForgetOutputs(features.value);
 }
 

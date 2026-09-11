@@ -203,9 +203,14 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     // buys packed budget to pay for extra rows. On a real packed I420 640x480, the handle
     // {width 400, height 720, stride 640} passes every other check here and hands a detector 240
     // rows of chroma as picture. Requiring the rows to be packed is what closes it, and it refuses
-    // nothing real: `MemoryFrameStoreAccess::Allocate` packs planar rows, and the only other place
-    // a stride is ever set is the generated wire decoder, which copies whatever crossed the
-    // boundary — so a padded planar claim can only arrive from outside, which is the case here.
+    // nothing real: `MemoryFrameStoreAccess::Allocate` packs planar rows.
+    //
+    // There are exactly three writers of a `stride` in this repository, and counting them has taken
+    // three attempts — one, then two, now three, each time by someone reading further than the last.
+    // Besides `Allocate` they are `codec.h`'s generated decoder, which copies whatever crossed the
+    // boundary, and `CaptureSessionManager`'s `DecodeSession`, which reads one out of a persisted
+    // project document with `operator>>` and hands the result to an engine. The last is why this is
+    // a guard rather than an assertion: a stride can arrive from a file written by an older build.
     if (stride != rowBytes) {
       return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
                              "a planar frame's rows must be packed; this one claims a stride wider "

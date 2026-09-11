@@ -25,8 +25,12 @@
 > `-fno-sanitize=alignment`, against 0 of ours. Its prediction was wrong about the mechanism too. It
 > expected an unsigned overflow in `features2d`, which `-fsanitize=undefined` does not even enable;
 > what fired was an alignment fault in `imgproc`, from a lookup-table gather in `cv::resize`. And the
-> translation-unit count in it is 295 rather than 296. The reasoning that recovery should stay off
-> is the part that survived, and it is why the remedy had to change rather than the policy.
+> translation-unit count in it is 295 rather than 296. Its opening clause is false too, and is named
+> here because an earlier version of this banner corrected it and this one dropped it, which invites
+> a reader to assume the unlisted claims survive: "nothing calls into OpenCV outside
+> `camera_model_opencv_test.cpp`" is now wrong three ways over — the registration engine, its tests,
+> and the frame-quality tests all do. The reasoning that recovery should stay off is the part that
+> survived, and it is why the remedy had to change rather than the policy.
 
 ## Context
 
