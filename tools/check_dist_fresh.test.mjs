@@ -176,8 +176,8 @@ describe('the dist freshness check', () => {
   });
 
   // The real probe, which every case above replaces with a stub. Nothing executed it, and that is
-  // precisely how a production-only regression sat behind ten green cases: the default stub returns
-  // `null`, which the real function cannot return when a build directory exists.
+  // precisely how a production-only regression sat behind ten green cases — the injected stub made
+  // the *branch* testable and left the *function* untested, and a green suite was the proof.
   describe('the ninja probe itself', () => {
     /** A build directory with a `build.ninja` that says what we want it to say. */
     function treeWithNinja(root, script) {
@@ -226,6 +226,41 @@ describe('the dist freshness check', () => {
       expect(wasmBuildsAreUpToDate(root)).toBeNull();
     });
 
+    it('reads ninja\'s answer on stderr as well as stdout', () => {
+      // Some ninja builds print the message on stderr. Scanning only stdout would read that as
+      // "there is work", which is the conservative direction and therefore silent — a branch that
+      // is wrong and never complains is the kind that survives a review.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, 'echo "ninja: no work to do." >&2');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(true);
+    });
+
+    it('says nothing at all when ninja is not on PATH', () => {
+      // `spawnSync` reports this as `error` rather than a non-zero exit, which is a different branch
+      // from a ninja that ran and failed.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      treeWithNinja(root, 'echo "ninja: no work to do."');
+      const saved = process.env.PATH;
+      process.env.PATH = '/nonexistent-for-this-test';
+      try {
+        expect(wasmBuildsAreUpToDate(root)).toBeNull();
+      } finally {
+        process.env.PATH = saved;
+      }
+    });
+
+    it('skips a preset with no build.ninja rather than failing on it', () => {
+      // One configured preset and one that was never configured: the configured one still answers,
+      // and the missing directory is passed over rather than turning the whole probe into a `null`.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, 'echo "ninja: no work to do."');
+      rmSync(join(root, 'build', 'wasm-release-threaded'), { recursive: true, force: true });
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(true);
+    });
+
     it('asks about both presets, not just the first', () => {
       // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
@@ -236,24 +271,31 @@ describe('the dist freshness check', () => {
     });
   });
 
-  it('does not forgive a build file the configure never read, however idle ninja is', () => {
-    // `CMakePresets.json` appears in neither wasm `build.ninja` — measured, `grep -c` is 0 in both —
-    // so ninja cannot have work pending *because of it*, and answers "nothing to do" whether the
-    // preset was configured in or not. Forgiving on that answer alone silently stopped checking the
-    // one build file whose changes ninja is blind to, and the suite could not see it because every
-    // case here injects a probe and the real one never returns the default.
+  it('never forgives CMakePresets.json, however idle ninja is', () => {
+    // Ninja is blind to this one file: it appears in neither wasm `build.ninja` (measured, `grep -c`
+    // is 0 in both), so no edit to it can produce outstanding work and ninja answers "nothing to do"
+    // whether the preset was configured in or not. Forgiving on that answer silently stopped
+    // checking the only build file whose changes ninja cannot see.
     //
-    // `CMakeCache.txt` is what cmake rewrites when it reads a preset, so it is the record that the
-    // configure happened *after* the edit.
-    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
-      const tree = aFreshTree();
-      const now = Date.now();
-      tree.put(source, now);
-      tree.put('build/wasm-release/CMakeCache.txt', now - 1000);
-      tree.put('build/wasm-release-threaded/CMakeCache.txt', now - 1000);
-      expect(complaint(tree.root, undefined, () => true), source)
-        .toMatch(/compiled core is older than the C\+\+/);
-    }
+    // It is not forgiven at all rather than forgiven on some other evidence, because the deadlock
+    // forgiveness exists for cannot arise here: `CMakePresets.json` is JSON, and JSON has no
+    // comments, so there is no such thing as an edit to it that is inert for a build.
+    const tree = aFreshTree();
+    tree.put('CMakePresets.json', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('runs the real probe when none is injected', () => {
+    // The blind spot that hid a production regression for a whole round: every other case here
+    // passes a stub, and the stub's default return is a value the real function cannot produce — so
+    // the real binding was reached by nothing. This case calls the two-argument form, which is what
+    // production calls, against a tree with no build directory: the real probe answers "cannot ask",
+    // and a build file is therefore not forgiven.
+    const tree = aFreshTree();
+    tree.put('core/CMakeLists.txt', Date.now());
+    let message = null;
+    try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
+    expect(message).toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('forgives a build file when ninja says there is nothing left to do', () => {
@@ -261,12 +303,12 @@ describe('the dist freshness check', () => {
     // not take — reconfigures and produces no work, so the core is never relinked and can never
     // become newer than the file. That deadlocked the gate: the error's own instruction ("run the
     // wasm build, then stage it") cannot clear it, because ninja correctly has nothing to do.
-    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
+    // The two `CMakeLists.txt` files only, because they are the ones ninja can answer for: both
+    // appear in each preset's regeneration edge, so "nothing to do" means cmake re-ran and found
+    // nothing, rather than meaning nobody asked.
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt']) {
       const tree = aFreshTree();
-      const now = Date.now();
-      tree.put(source, now - 1000);
-      tree.put('build/wasm-release/CMakeCache.txt', now);
-      tree.put('build/wasm-release-threaded/CMakeCache.txt', now);
+      tree.put(source, Date.now());
       expect(complaint(tree.root, undefined, () => true), source).toBeNull();
     }
   });
@@ -276,7 +318,7 @@ describe('the dist freshness check', () => {
     // so a build that was configured and then failed reaches exactly the state the old mtime
     // inference read as "absorbed" — and a failed build followed by a browser run is the whole
     // scenario this file exists to refuse.
-    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt']) {
       const tree = aFreshTree();
       tree.put(source, Date.now());
       expect(complaint(tree.root, undefined, () => false), source)

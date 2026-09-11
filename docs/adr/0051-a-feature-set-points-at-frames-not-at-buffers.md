@@ -73,10 +73,10 @@ wider change buying a label.
 
   The correction to that correction, from the next round, is the part worth keeping. The first fix
   also named `IImageCodecAccess::Decode` and `ICompositionEngine::BlendTile` as further precedents,
-  and they are not: they hand back frames the same way and say **nothing** about ownership. So there
-  is exactly one documented precedent and two undocumented leak surfaces beside it — a gap this ADR
-  does not close, since widening it to two more contracts would be scope this change did not ask
-  for. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
+  and they are not: they hand back frames the same way and say **nothing** about ownership.
+  `ICompositionEngine::RenderPreview`, three lines below `BlendTile`, is a third. So there is exactly
+  one documented precedent and three undocumented leak surfaces beside it — a gap this ADR does not
+  close, since widening it to two more contracts would be scope this change did not ask for. Both corrections are left here rather than tidied away: an overclaim repaired with a smaller
   overclaim is the failure this repository keeps making, and it is only legible if the sequence
   survives.
 

@@ -211,6 +211,34 @@ TEST_F(FrameQuality, APlanarHandleClaimingChromaIsPictureIsRefused) {
   EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 
+TEST_F(FrameQuality, AFrameWithNoPixelsInItIsRefused) {
+  // **This holds the behaviour, not the guard, and the difference is worth stating.** Removing
+  // `width <= 0 || height <= 0` from this engine leaves this test passing, because the grid-size
+  // rule further down refuses a frame with no pixels anyway and refuses it with the same code. So
+  // this is a contract test — a frame with no pixels is an `InvalidArgument`, by whatever route —
+  // and it cannot tell you which line did it.
+  //
+  // The guard is kept regardless, for the same reason as the single-row branch above it: the two
+  // engines' guards are kept in step, and its redundancy here rests on an unrelated rule about grid
+  // sizes that is not this guard's to depend on. In `FeatureRegistrationEngine` the same line is
+  // load-bearing — removing it there turns a refusal a caller can branch on into OpenCV's assertion
+  // text arriving as `Internal` — and that is where the sabotage bites.
+  //
+  // I found this out by sabotaging both engines at once and watching only one test fail, which is
+  // the trap this file exists to avoid and which I walked into while closing it.
+  const FrameRef source = Frame([](int32_t, int32_t) -> uint8_t { return 128; });
+  for (const auto& [width, height] : std::vector<std::pair<int32_t, int32_t>>{
+           {0, kHeight}, {kWidth, 0}, {-1, kHeight}, {kWidth, -1}}) {
+    FrameRef empty = source;
+    empty.width = width;
+    empty.height = height;
+    const Result<QualityScore> scored = engine.Score(empty, PoseSample{}, NodeContext{});
+    ASSERT_FALSE(scored.ok()) << width << "x" << height;
+    EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument)
+        << width << "x" << height << ": " << scored.status.detail;
+  }
+}
+
 TEST_F(FrameQuality, APlanarHandleWithAWideStrideIsRefused) {
   // The packed-rows half of the planar guard, which had no test here while the identical block in
   // `FeatureRegistrationEngine` had two. Deleting it leaves every test in the repository green, and
@@ -221,8 +249,10 @@ TEST_F(FrameQuality, APlanarHandleWithAWideStrideIsRefused) {
   // the size bound before the packing check is reached — which would have made this a test of the
   // wrong guard.
   //
-  // The two engines' guards now read identically, which is exactly what hid this — "the fix went
-  // into one engine and not the other" became "the test went into one and not the other".
+  // The two engines' guards are kept in step, which is exactly what hid this — "the fix went into
+  // one engine and not the other" became "the test went into one and not the other". Not
+  // *identical*: they differ in the `Result` type each returns and in one local's name, so a `diff`
+  // between them is not a check anybody can run.
   const FrameRef honest = PlanarFrame(640, 480);
   FrameRef smuggled = honest;
   smuggled.width = 400;

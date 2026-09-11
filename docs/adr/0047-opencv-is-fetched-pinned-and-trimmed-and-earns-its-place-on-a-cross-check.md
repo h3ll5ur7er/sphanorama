@@ -28,8 +28,9 @@
 > translation-unit count in it is 295 rather than 296. Its opening clause is false too, and is named
 > here because an earlier version of this banner corrected it and this one dropped it, which invites
 > a reader to assume the unlisted claims survive: "nothing calls into OpenCV outside
-> `camera_model_opencv_test.cpp`" is now wrong three ways over — the registration engine, its tests,
-> and the frame-quality tests all do. The reasoning that recovery should stay off is the part that
+> `camera_model_opencv_test.cpp`" is now wrong two ways over — the registration engine and its
+> tests. Three files in the repository include `opencv2/`, and the frame-quality tests are not among
+> them, which an earlier draft of this sentence assumed without looking. The reasoning that recovery should stay off is the part that
 > survived, and it is why the remedy had to change rather than the policy.
 
 ## Context

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
@@ -404,6 +405,26 @@ TEST_P(Extraction, RefusesAPlanarHandleThatHidesChromaBehindAWideStride) {
   EXPECT_TRUE(store.Forget(allocated.value).ok());
 }
 
+TEST_P(Extraction, RefusesAFrameWithNoPixelsInIt) {
+  // The first line of the guard pair, and the one nothing asked about — removing `width <= 0 ||
+  // height <= 0` from *both* engines leaves every test in the repository green. What it buys is the
+  // difference between a refusal a caller can branch on and OpenCV's assertion text arriving as
+  // `Internal`: without it, a zero or negative dimension reaches `cv::Mat` and comes back as a
+  // converted exception saying nothing a caller could act on.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef source = Textured();
+  for (const auto& [width, height] : std::vector<std::pair<int32_t, int32_t>>{
+           {0, kHeight}, {kWidth, 0}, {-1, kHeight}, {kWidth, -1}, {-1000000, kHeight}}) {
+    FrameRef empty = source;
+    empty.width = width;
+    empty.height = height;
+    const Result<FeatureSet> features = engine.ExtractFeatures(empty);
+    ASSERT_FALSE(features.ok()) << width << "x" << height;
+    EXPECT_EQ(features.status.code, StatusCode::InvalidArgument)
+        << width << "x" << height << ": " << features.status.detail;
+  }
+}
+
 TEST_P(Extraction, RefusesOneEnormousRowTheStoreIsNotHolding) {
   // The `else` branch of the geometry bound, which round 3 claimed was load-bearing and no test
   // held. A frame of exactly one row skips the division — there is no product to bound — so this is
@@ -514,6 +535,13 @@ TEST_P(Extraction, TheCapIsAskedForAndNotOnlyTruncatedTo) {
   // At 768 the cap binds, and an uncapped detector is not a prefix of a capped one: `retainBest`
   // selects across the whole set, so the lists differ from row 0. Measured with the cap dropped:
   // 500 of 500 AKAZE rows and 424 of 500 SIFT rows disagree with the capped oracle. With it, none.
+  //
+  // **The ORB row cannot catch a dropped cap and is kept anyway.** `cv::ORB::create()`'s default
+  // `nfeatures` is 500, which is what `kMaxFeaturesPerFrame` happens to be, so removing the cap from
+  // ORB's line in `Make()` is a behavioural no-op. What the row does catch is a *wrong* cap — 1,000
+  // there does fail it — and it is the row that will start meaning something the day OpenCV changes
+  // that default or this project changes its number. Saying so is better than letting a reader
+  // count three live rows where there are two.
   FeatureRegistrationEngine engine = Engine();
   const FrameRef source = Textured(768);
   const Result<FeatureSet> features = engine.ExtractFeatures(source);

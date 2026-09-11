@@ -205,12 +205,16 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     // rows of chroma as picture. Requiring the rows to be packed is what closes it, and it refuses
     // nothing real: `MemoryFrameStoreAccess::Allocate` packs planar rows.
     //
-    // There are exactly three writers of a `stride` in this repository, and counting them has taken
-    // three attempts — one, then two, now three, each time by someone reading further than the last.
-    // Besides `Allocate` they are `codec.h`'s generated decoder, which copies whatever crossed the
-    // boundary, and `CaptureSessionManager`'s `DecodeSession`, which reads one out of a persisted
-    // project document with `operator>>` and hands the result to an engine. The last is why this is
-    // a guard rather than an assertion: a stride can arrive from a file written by an older build.
+    // Besides `Allocate`, a stride is written by the generated wire decoder — in both halves,
+    // `codec.h` and `shell/src/bridge/codec.generated.ts` — and by `CaptureSessionManager`'s
+    // `DecodeSession`, which reads one out of a persisted project document with `operator>>` and
+    // hands the result to an engine. That last one is why this is a guard and not an assertion: a
+    // stride can arrive from a file written by an older build.
+    //
+    // The count has been wrong in four successive drafts of this comment — one writer, then two,
+    // then three, now four — each corrected by someone who read further than the last. It is left
+    // unstated on purpose now: an exhaustive count in a comment is a claim that rots the next time
+    // anyone adds a decoder, and the reason for the guard does not depend on the total.
     if (stride != rowBytes) {
       return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
                              "a planar frame's rows must be packed; this one claims a stride wider "
