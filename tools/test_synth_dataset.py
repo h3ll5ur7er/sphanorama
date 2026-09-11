@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    _ring_of_poses,
     _distort,
     distort_at,
     INVERSE_ACCEPTANCE_NORMALISED,
@@ -119,6 +120,65 @@ class LensFromFieldOfView(unittest.TestCase):
 
 
 class Projection(unittest.TestCase):
+    DISTORTION_TABLE = (
+        # (k1, k2, k3, p1, p2, xn, yn, xd, yd, dxdx, dydy, cross) -- computed from the published
+        # Brown-Conrady form and its derivative in
+        # exact decimal arithmetic, calling neither implementation. The C++ suite's
+        # `Project.MeetsTheDatasetGeneratorAcrossLensFamilies` asserts this same table.
+        # no distortion
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.3000000000, 0.2000000000, 1.0000000000, 1.0000000000, 0.0000000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, -0.45, 0.12, -0.4500000000, 0.1200000000, 1.0000000000, 1.0000000000, 0.0000000000),
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.55, 0.0500000000, -0.5500000000, 1.0000000000, 1.0000000000, 0.0000000000),
+        # typical phone
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.3, 0.2, 0.2888463000, 0.1930842000, 0.9143330000, 0.9451930000, -0.0307920000),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, -0.45, 0.12, -0.4266576472, 0.1140356526, 0.8544941149, 0.9407025145, 0.0235034640),
+        (-0.28, 0.09, 0.0, 0.002, -0.003, 0.05, -0.55, 0.0451086125, -0.5056497375, 0.9187467500, 0.7798867500, 0.0158805000),
+        # strong barrel
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.3, 0.2, 0.2817345450, 0.1878230300, 0.8603588500, 0.9041123500, -0.0525042000),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, -0.45, 0.12, -0.4062605368, 0.1083361431, 0.7413654221, 0.8913213158, 0.0430495389),
+        (-0.5, 0.25, -0.05, 0.0, 0.0, 0.05, -0.55, 0.0434668809, -0.4781356903, 0.8675303500, 0.6506581000, 0.0198799562),
+        # pincushion
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.3, 0.2, 0.3127135910, 0.2081723940, 1.1026832300, 1.0668325300, 0.0393808400),
+        (0.3, 0.1, 0.01, -0.001, 0.002, -0.45, 0.12, -0.4800926713, 0.1279234924, 1.2038771071, 1.0772865943, -0.0358574678),
+        (0.3, 0.1, 0.01, -0.001, 0.002, 0.05, -0.55, 0.0557293113, -0.6066174244, 1.1046051800, 1.3246796300, -0.0223084912),
+        # tangential heavy
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.3, 0.2, 0.3238000000, 0.2163000000, 1.1150000000, 1.0810000000, 0.0460000000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, -0.45, 0.12, -0.4021065000, 0.1221222000, 0.7608100000, 0.9484300000, -0.0174000000),
+        (-0.1, 0.0, 0.0, 0.05, 0.07, 0.05, -0.55, 0.0674250000, -0.4915750000, 0.9350000000, 0.7510000000, -0.0665000000),
+    )
+
+    def test_the_distortion_matches_the_core_across_lens_families(self):
+        """Fifteen points, five lens families -- the widening ADR 0050 said was owed.
+
+        The single pinned point below is real and narrow: one lens, one quadrant, both `xn` and `yn`
+        positive. It catches a swapped `k2`/`k3` and a swapped `p1`/`p2`, and a round-2 reviewer
+        showed it catches a flipped `yn` too. What it cannot speak to is whether the two
+        implementations agree *away* from that point -- across sign quadrants, at radii where `k3`
+        starts to matter, and on a lens where the tangential terms dominate.
+
+        This is the coverage half. Both suites assert the same table, so agreement is with the
+        published form rather than with each other -- which is the whole of what ADR 0050 says
+        carries the weight, now that the independence claim has been withdrawn.
+        """
+        base = lens_from_fov(66.0, 50.0, 64, 48).__dict__
+        for k1, k2, k3, p1, p2, xn, yn, xd, yd, dxdx, dydy, cross in self.DISTORTION_TABLE:
+            coefficients = {"k1": k1, "k2": k2, "k3": k3, "p1": p1, "p2": p2}
+            lens = Intrinsics(**{**base, **coefficients})
+            got_x, got_y = _distort(lens, np.array([xn]), np.array([yn]))
+            where = f"{coefficients} at ({xn}, {yn})"
+            self.assertAlmostEqual(float(got_x[0]), xd, places=9, msg="xd for " + where)
+            self.assertAlmostEqual(float(got_y[0]), yd, places=9, msg="yd for " + where)
+
+            # The Jacobian too. A reviewer measured that the table read 2 of the 7 values
+            # `distort_at` returns, and the other five are what decide where the fold is -- the
+            # exact quantity this module's docstring recounts getting wrong. Four mutations to
+            # those five were invisible to the whole suite; two were invisible to the C++ suite as
+            # well. Three more columns on a table that already existed closes it.
+            at = distort_at(lens, np.array([xn]), np.array([yn]))
+            self.assertAlmostEqual(float(at.dxdx[0]), dxdx, places=9, msg="dxdx for " + where)
+            self.assertAlmostEqual(float(at.dydy[0]), dydy, places=9, msg="dydy for " + where)
+            self.assertAlmostEqual(float(at.cross[0]), cross, places=9, msg="cross for " + where)
+
     def test_distortion_terms_are_opencvs_in_opencvs_order(self):
         # The same point and the same hand-worked decimals as the C++ suite's
         # Project.TheDistortionTermsAreOpenCVsInOpenCVsOrder. At xn = 0.3, yn = 0.2 with
@@ -328,6 +388,92 @@ class RotationIsAnchoredToNumbersNobodyComputed(unittest.TestCase):
         np.testing.assert_allclose(
             Pose.from_azimuth_elevation(90.0, 45.0).rotate(np.array([[0.0, 0.0, -1.0]])),
             [[-root_half, root_half, 0.0]], atol=1e-12)
+
+
+class TheRotationConventionMeetsTheCore(unittest.TestCase):
+    """The twin of `FromAzimuthElevation.MeetsTheDatasetGeneratorAtNumbersNeitherDerived`.
+
+    This module's docstring promises that a pose written here names the same direction the coverage
+    planner would. Until now nothing executable checked it: each side was pinned to hand-derived
+    vectors *separately*, which catches a mistake in one implementation but not a convention both
+    share. And a shared convention error is the one that matters most here — a dataset rendered in
+    the wrong rotation convention registers wrong in exactly the compensating way and scores
+    perfect, which is the failure ADR 0050 exists to prevent.
+
+    So both suites now assert these same decimals, worked out from the right-hand rule and derived
+    from neither implementation. `from_azimuth_elevation(az, el)` is a yaw about +Y followed by a
+    pitch about +X in the yawed frame, so applied to forward (0, 0, -1):
+
+        pitch about +X:     (0, +sin el, -cos el)
+        then yaw about +Y:  (-cos el * sin az, sin el, -cos el * cos az)
+
+    and applied to the camera's +X axis, which the pitch leaves alone: (cos az, 0, -sin az).
+
+    The second row is what makes this more than a restatement of the first: a convention with the
+    forward axis right and the roll wrong passes on forward alone. Together they also separate a
+    reversed composition order, which at (37, -12) differs by 0.0419 in its largest component —
+    seven orders over the tolerance here.
+    """
+
+    CASES = (
+        (37.0, -12.0,
+         (-0.5886639210, -0.2079116908, -0.7811834080),
+         (0.7986355100, 0.0000000000, -0.6018150232)),
+        (120.0, 40.0,
+         (-0.6634139482, 0.6427876097, 0.3830222216),
+         (-0.5000000000, 0.0000000000, -0.8660254038)),
+        (250.0, -63.0,
+         (0.4266115225, -0.8910065242, 0.1552738958),
+         (-0.3420201433, 0.0000000000, 0.9396926208)),
+    )
+
+    def test_from_azimuth_elevation_meets_the_core_at_numbers_neither_derived(self):
+        for azimuth, elevation, forward, right in self.CASES:
+            pose = Pose.from_azimuth_elevation(azimuth, elevation)
+            axes = pose.rotate(np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]))
+            np.testing.assert_allclose(axes[0], forward, atol=1e-9,
+                                       err_msg=f"forward at ({azimuth}, {elevation})")
+            np.testing.assert_allclose(axes[1], right, atol=1e-9,
+                                       err_msg=f"right at ({azimuth}, {elevation})")
+
+    def test_the_ring_the_cli_writes_uses_that_convention(self):
+        """`_ring_of_poses` is the only path a generated dataset's rotations travel.
+
+        The first version of this test could not fail for what it claimed. It used the default
+        elevation of zero — where the pitch factor is exactly the identity, so `_ring_of_poses` need
+        not call `from_azimuth_elevation` at all — and every assertion was symmetric under azimuth
+        negation, because `worst_angle_deg` is unsigned. A reviewer replaced the body with a bare
+        `from_axis_angle` about +Y, dropping the elevation argument entirely, and all 80 tests
+        stayed green.
+
+        So: a non-zero elevation, and directions asserted against the convention's closed form with
+        their signs, rather than separations asserted against a magnitude.
+        """
+        elevation = 20.0
+        poses = _ring_of_poses(6, elevation)
+        self.assertEqual(len(poses), 6)
+
+        for index, pose in enumerate(poses):
+            azimuth = 360.0 * index / 6
+            a, e = math.radians(azimuth), math.radians(elevation)
+            forward = (-math.cos(e) * math.sin(a), math.sin(e), -math.cos(e) * math.cos(a))
+            # And the +X axis, which the pitch leaves alone. Asserting forward alone was the second
+            # thing wrong with this test: a reviewer rolled every cell 17.2 degrees about its own
+            # forward axis and all eighty stayed green. The class three tests up says in as many
+            # words that a convention with forward right and roll wrong passes on forward alone —
+            # so this was the stated principle being broken twelve lines under the statement.
+            right = (math.cos(a), 0.0, -math.sin(a))
+            got = pose.rotate(np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]))
+            np.testing.assert_allclose(got[0], forward, atol=1e-12,
+                                       err_msg=f"forward of cell {index} at azimuth {azimuth}")
+            np.testing.assert_allclose(got[1], right, atol=1e-12,
+                                       err_msg=f"+X of cell {index} at azimuth {azimuth}")
+
+        # The elevation is honoured rather than ignored — which the zero-elevation ring could not
+        # have shown, since there the pitch factor is the identity. That is asserted by the loop
+        # above rather than here: `forward[1]` is `sin(e)` for every cell. A trailing block
+        # re-asserting it read as a second guard and was a restatement, which a reviewer pointed
+        # out no mutation could reach without failing the loop first.
 
 
 class SeamSampling(unittest.TestCase):

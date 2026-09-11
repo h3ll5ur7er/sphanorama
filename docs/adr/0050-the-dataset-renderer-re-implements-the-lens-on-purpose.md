@@ -72,9 +72,62 @@ opt-in dependency group.**
   credited. It catches a swapped `k2`/`k3` (7.5e-05 against a 1e-09 tolerance) and a swapped
   `p1`/`p2` (3.8e-03) — and also a flipped `yn`, which the first version of this bullet named as the
   example it *could not* catch: the tangential term `2*p1*xn*yn` moves `xd` by 0.012 under a sign
-  flip, four orders over the tolerance. Widening it is still worth doing before the detector
-  comparison leans on the geometry, but for coverage across lens families rather than because a
-  convention error would slip through.
+  flip, four orders over the tolerance.
+
+  **Widened, and the widening earned itself.** It is fifteen points over five lens families now — no
+  distortion, a typical phone, a strong barrel, a pincushion and one the tangential terms dominate —
+  across three sign quadrants, with both suites asserting the same decimals computed from the
+  published form in exact decimal arithmetic. The single point remains and is still the sharper
+  instrument for a coefficient swap. What it could not see is a mutation that is invisible in one
+  quadrant: replacing `xn` with `abs(xn)` in the tangential cross term passes the single point
+  exactly, because that point has both coordinates positive, and fails the table. That is the whole
+  argument for coverage rather than sharpness, and it is a measured example rather than a worry.
+
+- **The rotation convention had a written promise and nothing executable behind it, and now has
+  both.** The module docstring said a pose written in the generator names the same direction the
+  coverage planner would. Each side was pinned to hand-derived vectors *separately*, which catches a
+  mistake in one implementation and not a convention both share — and a shared rotation-convention
+  error is the worst case this ADR exists to prevent, since a dataset rendered in the wrong one
+  registers wrong in exactly the compensating way and scores perfect.
+
+  Three azimuth/elevation pairs, both the forward axis and the camera's +X, asserted against the
+  same decimals in `tools/test_synth_dataset.py` and `core/test/utilities/quaternion_test.cpp`. The
+  +X row is what makes it more than a restatement of `Direction`: a convention with forward right
+  and roll wrong passes on forward alone.
+
+  **The first version of this bullet claimed the C++ suite could not detect a reversed composition
+  order at all, and that was false.** Reverting `Multiply(yaw, pitch)` fails five tests: the new one
+  and four `CoveragePlanner` tests that predate this work. The error was in how it was measured — I
+  ran the suite under `--gtest_filter='FromAzimuthElevation.*:Rotate.*'`, saw only the new test
+  fail, and wrote a sentence about *the suite*. Constraining an observation and then stating the
+  conclusion unconstrained is the second time that shape of mistake has been caught on this project
+  by someone re-running the measurement rather than reading the code.
+
+  What is true is narrower and still worth the test: the four that catch it diagnose it as a
+  coverage count and a wrong cell id — `EveryDirectionOnTheSphereIsInsideSomeCell` reports 270 of
+  4000 directions uncovered — which says the planner is broken and not which convention moved. The
+  four *pre-existing* tests of `FromAzimuthElevation` itself all pass under it — and **why** each is
+  blind is worth more than their number, which this bullet has now got wrong twice:
+
+  - `PointsForwardAtTheOrigin` — (0, 0), so both factors are the identity.
+  - `ElevationLooksUpAndDown` — azimuth 0, so the yaw factor is the identity.
+  - `AzimuthSweepsTheHorizon` — elevation 0, so the pitch factor is the identity.
+  - `IsPeriodicInAzimuth` — compares the function against itself, which is self-consistent under
+    *any* composition order.
+
+  Three pure-axis cases where one factor vanishes, and one self-comparison. Only a case with both
+  angles non-zero can see the order at all, which is exactly what the Python twin already says at
+  `test_an_azimuth_turns_about_up_and_an_elevation_lifts_toward_it`. So the value is a direct
+  diagnosis where there was only an indirect one, and that is a smaller claim than the one first
+  made here.
+
+  **And the parallel claim about the Python side was false too**, asserted in the same breath and
+  never run. `main`'s 77-test Python suite *does* catch a reversed composition order, through
+  `test_an_azimuth_turns_about_up_and_an_elevation_lifts_toward_it` — a test written in an earlier
+  round precisely because pure azimuth and pure elevation cases do not separate the two orders. So
+  the asymmetry this bullet describes is C++-side only. Three claims of mine in this ADR have now
+  been corrected by someone re-running a measurement, and all three failed the same way: a result
+  measured under some restriction, and then stated without it.
 
 - **A tolerance in the wrong unit hid a 0.086-degree error.** The render test first asserted colour
   components to `atol=2e-3`, which sounds tight and is 868 times looser than the interpolation error

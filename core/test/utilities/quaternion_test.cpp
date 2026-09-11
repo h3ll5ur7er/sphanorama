@@ -171,6 +171,61 @@ TEST(FromAzimuthElevation, AzimuthSweepsTheHorizon) {
   }
 }
 
+TEST(FromAzimuthElevation, MeetsTheDatasetGeneratorAtNumbersNeitherDerived) {
+  // The twin of `test_from_azimuth_elevation_meets_the_core_at_numbers_neither_derived` in
+  // `tools/test_synth_dataset.py`. Both assert these same decimals, so the two implementations meet
+  // an outside reference rather than each other.
+  //
+  // Why this exists: `synth_dataset.py` promises in a docstring that its poses name the same
+  // directions the coverage planner would, and until now nothing executable checked it. Each side
+  // was pinned to hand-derived vectors *separately*, which catches a mistake in one but not a
+  // convention both share — and a dataset rendered in the wrong rotation convention would register
+  // wrong in exactly the compensating way, and score perfect. That is the failure ADR 0050 exists
+  // to prevent, so the promise with the largest consequence should not be the one resting on two
+  // files having been read side by side.
+  //
+  // The numbers are worked out from the right-hand rule, calling neither implementation.
+  // `FromAzimuthElevation(az, el)` is a yaw about +Y followed by a pitch about +X *in the yawed
+  // frame*, so `Rotate(q, v) = yaw(pitch(v))`. Applied to forward (0, 0, -1):
+  //   pitch about +X:  (0, +sin el, -cos el)
+  //   then yaw about +Y: (-cos el * sin az, sin el, -cos el * cos az)
+  // and applied to the camera's +X axis, which the pitch leaves alone:
+  //   (cos az, 0, -sin az)
+  //
+  // The second row is what makes this more than a restatement of `Direction`: a convention that got
+  // the forward axis right and the roll wrong would pass on forward alone. And the pair separates a
+  // *reversed* composition order — pitch-then-yaw at (37, -12) differs by 0.0419 in its largest
+  // component, seven orders over the tolerance here.
+  struct Case {
+    double azimuth, elevation;
+    Vec3 forward, right;
+  };
+  const Case cases[] = {
+      {37.0, -12.0,
+       {-0.5886639210, -0.2079116908, -0.7811834080},
+       {0.7986355100, 0.0000000000, -0.6018150232}},
+      {120.0, 40.0,
+       {-0.6634139482, 0.6427876097, 0.3830222216},
+       {-0.5000000000, 0.0000000000, -0.8660254038}},
+      {250.0, -63.0,
+       {0.4266115225, -0.8910065242, 0.1552738958},
+       {-0.3420201433, 0.0000000000, 0.9396926208}},
+  };
+
+  for (const Case& c : cases) {
+    const Quat q = FromAzimuthElevation(c.azimuth, c.elevation);
+    const Vec3 f = Rotate(q, Vec3{0, 0, -1});
+    const Vec3 r = Rotate(q, Vec3{1, 0, 0});
+    SCOPED_TRACE(::testing::Message() << "azimuth " << c.azimuth << ", elevation " << c.elevation);
+    EXPECT_NEAR(f.x, c.forward.x, 1e-9);
+    EXPECT_NEAR(f.y, c.forward.y, 1e-9);
+    EXPECT_NEAR(f.z, c.forward.z, 1e-9);
+    EXPECT_NEAR(r.x, c.right.x, 1e-9);
+    EXPECT_NEAR(r.y, c.right.y, 1e-9);
+    EXPECT_NEAR(r.z, c.right.z, 1e-9);
+  }
+}
+
 TEST(FromAzimuthElevation, IsPeriodicInAzimuth) {
   EXPECT_NEAR(AngleBetween(FromAzimuthElevation(10, 20), FromAzimuthElevation(370, 20)),
               0.0, 1e-9);
