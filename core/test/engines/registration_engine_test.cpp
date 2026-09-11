@@ -23,6 +23,7 @@
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "engines/registration_engine/null_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "utilities/pixel_format.h"
 #include "support/fake_spill_sink.h"
 
 namespace sphanorama {
@@ -57,15 +58,38 @@ uint8_t TexturedLuma(int32_t x, int32_t y) {
  */
 class PaddingFrameStore : public IFrameStoreAccess {
  public:
-  explicit PaddingFrameStore(int64_t ceiling) : inner_(ceiling) {}
+  /** How this store lies about what it allocated. */
+  enum class Lie {
+    PadRows,     ///< allocate wider than asked and report the asked-for width: stride != width
+    ShortRows,   ///< allocate *fewer* rows than asked and report the asked-for height
+  };
+
+  explicit PaddingFrameStore(int64_t ceiling, Lie lie = Lie::PadRows)
+      : inner_(ceiling), lie_(lie) {}
 
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
-    // Wider than asked, then reported with the original width and a stride that does not match it.
-    Result<FrameRef> allocated = inner_.Allocate(width + kPad, height, format);
+    // Two different lies, because the engine's store check has two halves and `PadRows` reaches
+    // only one of them. A store that pads rows keeps the total large enough for any size check to
+    // pass; one that drops a row keeps `stride == width` and fails only the size check.
+    //
+    // **Only the engine's own allocations are lied to.** The descriptor and keypoint frames are
+    // `Gray8`; the frame a test paints is not. Lying about both made the short-rows case refuse at
+    // the *input* geometry guard instead — the test passed, asserting the wrong status code, for
+    // the wrong reason, and neutering the check it was written for changed nothing. Found by
+    // sabotaging it.
+    const bool engineOwn = format == PixelFormat::Gray8;
+    const int32_t realWidth = (engineOwn && lie_ == Lie::PadRows) ? width + kPad : width;
+    const int32_t realHeight =
+        (engineOwn && lie_ == Lie::ShortRows) ? std::max(1, height - 1) : height;
+    Result<FrameRef> allocated = inner_.Allocate(realWidth, realHeight, format);
     if (!allocated.ok()) return allocated;
     padded_.push_back(allocated.value);
     FrameRef reported = allocated.value;
     reported.width = width;
+    reported.height = height;
+    if (engineOwn && lie_ == Lie::ShortRows) {
+      reported.stride = width * std::max(BytesPerPixel(format), 1);
+    }
     return Ok(reported);
   }
 
@@ -92,6 +116,7 @@ class PaddingFrameStore : public IFrameStoreAccess {
   }
 
   MemoryFrameStoreAccess inner_;
+  Lie lie_;
   std::vector<FrameRef> padded_;
 };
 
@@ -117,15 +142,22 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
     const Result<FrameRef> allocated = store.Allocate(edge, edge, PixelFormat::RGBA8);
     ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
     const FrameRef frame = allocated.value;
+    // Given back on every path out, including the `ASSERT_*` below, which returns from this helper
+    // and not from the caller. An earlier version wrote that cleanup as an `if` — correct, and
+    // unreachable: `Pin` cannot fail for a frame this line just allocated in this store, so nothing
+    // ever entered it. A destructor needs no such branch and is right whether or not one exists.
+    struct GiveBack {
+      IFrameStoreAccess& frames;
+      FrameRef frame;
+      bool keep = false;
+      ~GiveBack() {
+        if (keep) return;
+        (void)frames.Forget(frame);
+      }
+    } giveBack{store, frame};
     const Result<std::span<uint8_t>> pinned = store.Pin(frame);
-    if (!pinned.ok() || pinned.value.data() == nullptr) {
-      // Undone rather than abandoned. An `ASSERT_*` here returns from the helper and leaves the
-      // frame allocated — and, had the pin succeeded, pinned — so a starved-store test that ran
-      // after this one would be measuring bytes this helper forgot to give back.
-      if (pinned.ok()) (void)store.Release(frame);
-      (void)store.Forget(frame);
-      FAIL() << "could not pin a frame this helper just allocated: " << pinned.status.detail;
-    }
+    ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+    ASSERT_NE(pinned.value.data(), nullptr);
     for (int32_t y = 0; y < edge; ++y) {
       for (int32_t x = 0; x < edge; ++x) {
         const uint8_t v = paint(x, y);
@@ -135,6 +167,7 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       }
     }
     EXPECT_TRUE(store.Release(frame).ok());
+    giveBack.keep = true;
     *out = frame;
   }
 
@@ -331,6 +364,31 @@ TEST_P(Extraction, RefusesAPlanarHandleClaimingChromaIsPicture) {
   EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
 }
 
+TEST_P(Extraction, RefusesAPlanarHandleThatHidesChromaBehindAWideStride) {
+  // The planar check bounds `FrameByteSize(width, height, format)`, which is *packed* bytes, while
+  // the luma check above it is in *strided* bytes. A claim whose stride exceeds its width satisfies
+  // both at once, so narrowing the claimed width buys enough packed budget to pay for extra rows.
+  //
+  // Against a real packed I420 640x480 (460,800 bytes, picture ending at 307,200) the handle
+  // {width 400, height 720, stride 640} passes every check — `FrameByteSize(400, 720, I420)` is
+  // 432,000 — and a detector then reads 240 rows of chroma as picture. In bounds, so ASan is silent.
+  //
+  // Refusing a planar frame whose rows are not packed is what closes it, and it refuses nothing
+  // real: `MemoryFrameStoreAccess::Allocate` is the only line in the repository that ever sets a
+  // stride, and it packs planar rows.
+  const Result<FrameRef> allocated = store.Allocate(640, 480, PixelFormat::I420);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  FrameRef smuggled = allocated.value;
+  smuggled.width = 400;
+  smuggled.height = 720;
+  smuggled.stride = 640;
+
+  const Result<FeatureSet> features = Engine().ExtractFeatures(smuggled);
+  ASSERT_FALSE(features.ok()) << "chroma was accepted as picture";
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+  EXPECT_TRUE(store.Forget(allocated.value).ok());
+}
+
 TEST_P(Extraction, RefusesAStrideNarrowerThanOneRow) {
   // Not because it reads out of bounds — it does not. Rows that overlap are not a frame anybody
   // allocated. It also matters that *we* refuse it rather than OpenCV: `cv::Mat` asserts its step
@@ -391,7 +449,15 @@ TEST_P(Extraction, TheKeypointFrameHoldsACoordinatePairPerFeature) {
   cv::Mat ignored;
   oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
   EXPECT_TRUE(store.Release(source).ok());
-  ASSERT_GE(static_cast<int32_t>(expected.size()), features.value.count);
+  // Truncated the same way the engine truncates, because otherwise this comparison quietly assumes
+  // the cap never bites. It does not at this frame size today — engine and oracle both return 246,
+  // 107 and 99 — so `ASSERT_GE` held by equality and the truncation path was never compared at all.
+  // Lowering `kMaxFeaturesPerFrame`, which is a tuning change and not a defect, failed all three
+  // rows with "row 0: x is not this row's x" while the engine was doing exactly the right thing.
+  if (expected.size() > static_cast<size_t>(features.value.count)) {
+    expected.resize(static_cast<size_t>(features.value.count));
+  }
+  ASSERT_EQ(static_cast<int32_t>(expected.size()), features.value.count);
 
   for (int32_t row = 0; row < features.value.count; ++row) {
     float xy[2] = {0.0F, 0.0F};
@@ -562,9 +628,15 @@ TEST_P(Extraction, MatchingAndRefinementRefuseRatherThanAnswer) {
 
 TEST_P(Extraction, ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem) {
   // `OwnedFrame`'s destructor releases and only then forgets, and `Forget` on a pinned frame fails.
-  // Swapping the two lines therefore orphans every frame a *pinned* rollback unwinds — measured at
-  // 7,872 / 6,527 / 50,688 bytes per refusal across ORB, AKAZE and SIFT — while leaving every test
-  // in the repository green, because nothing else reaches a rollback with a pin still held.
+  // Swapping the two lines therefore orphans every frame a *pinned* rollback unwinds — measured
+  // here at 13,776 / 9,095 / 53,064 bytes per refusal across ORB, AKAZE and SIFT — while leaving
+  // every test in the repository green, because nothing else reaches a rollback with a pin held.
+  //
+  // An earlier draft of this comment carried 7,872 / 6,527 / 50,688, which are the figures from the
+  // *other* rollback test: they count one unpadded descriptor frame, and this test unwinds two
+  // frames whose rows the store has padded. Numbers measured on one arrangement and quoted under
+  // another is the mistake this repository keeps making, and it was made here by the commit that
+  // added the comment warning about it.
   //
   // A padding store is what gets there: the packing guard runs after both `Pin`s, so this is the
   // one refusal in the engine that unwinds with the pins live.
@@ -630,14 +702,45 @@ TEST_P(Extraction, ReadingASpilledFrameLeavesItInTheHeap) {
 
   const Result<Residency> after = spilling.ResidencyOf(frame.value);
   ASSERT_TRUE(after.ok());
-  EXPECT_NE(after.value, Residency::Spilled)
-      << "if this ever passes as Spilled, the contract comment on FeatureSet is the thing to fix";
+  // `HeapEncoded` exactly, not merely "not Spilled": a leaked pin leaves it `HeapPinned`, which is
+  // also not Spilled, so the weaker form passed on a defect this suite has a separate test for.
+  EXPECT_EQ(after.value, Residency::HeapEncoded)
+      << "if this ever comes back Spilled, the contract comment on FeatureSet is the thing to fix";
   // From this store, not the fixture's — `ForgetOutputs` would ask the wrong one and be told the
   // frames do not exist, which is a failure about the test rather than about the engine.
   if (features.value.count > 0) {
     EXPECT_TRUE(spilling.Forget(features.value.descriptors).ok());
     EXPECT_TRUE(spilling.Forget(features.value.keypoints).ok());
   }
+}
+
+TEST_P(Extraction, RefusesAStoreThatHandsBackFewerBytesThanItWasAskedFor) {
+  // The other half of the store check, which `PaddingFrameStore`'s row padding could not reach: a
+  // padded frame is always *larger* than asked, so every size comparison passed and only the stride
+  // comparison did any work. Deleting the size half left all 54 registration tests green.
+  //
+  // A store one row short keeps `stride == width` and fails only on the total, which is the exact
+  // shape the `memcpy` loop below it would otherwise walk off the end of.
+  const FrameRef source = Textured();
+  const Result<std::span<uint8_t>> bytes = store.Pin(source);
+  ASSERT_TRUE(bytes.ok()) << bytes.status.detail;
+
+  PaddingFrameStore shorting{1 << 24, PaddingFrameStore::Lie::ShortRows};
+  const Result<FrameRef> copied = shorting.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(copied.ok()) << copied.status.detail;
+  {
+    const Result<std::span<uint8_t>> into = shorting.Pin(copied.value);
+    ASSERT_TRUE(into.ok()) << into.status.detail;
+    std::memcpy(into.value.data(), bytes.value.data(),
+                std::min(into.value.size(), bytes.value.size()));
+    EXPECT_TRUE(shorting.Release(copied.value).ok());
+  }
+  EXPECT_TRUE(store.Release(source).ok());
+
+  const Result<FeatureSet> refused =
+      FeatureRegistrationEngine{shorting, GetParam()}.ExtractFeatures(copied.value);
+  ASSERT_FALSE(refused.ok()) << "a short frame was copied into as though it were the right size";
+  EXPECT_EQ(refused.status.code, StatusCode::Internal) << refused.status.detail;
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,

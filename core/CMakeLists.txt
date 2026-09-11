@@ -52,7 +52,9 @@ target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/s
 target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts)
 
 # Exceptions and RTTI are off in the core: nothing may throw across the WASM boundary (ADR 0006),
-# and both cost binary size we have budgeted away.
+# and both cost binary size we have budgeted away. One translation unit takes `-fexceptions` back —
+# see the `SPHANORAMA_WITH_OPENCV` block above, which grants it and says why — because `cv::Exception`
+# is how OpenCV reports ordinary failure, and it converts at its own edge (ADR 0052).
 #
 # -fno-rtti is PUBLIC rather than PRIVATE because it changes what the compiler emits for a class,
 # not just how this library is built. A consumer compiled with RTTI references type info the core

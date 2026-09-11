@@ -6,13 +6,18 @@
 > **The sanitizer remedy named below is superseded.** This ADR said that when OpenCV tripped the
 > sanitizers the answer would be "a suppressions file scoped to `_deps/opencv-src`, not turning
 > recovery back on". Those two cannot both hold: a UBSan suppressions file is only consulted for
-> *recoverable* errors, so under this repository's `-fno-sanitize-recover=all` it is not read at all.
+> *recoverable* errors, so under this repository's `-fno-sanitize-recover=all` it is read and parsed
+> and then never applied — a malformed one still reddens the job with `failed to parse suppressions`,
+> which is worth knowing before anyone leaves a stale file lying about.
 > ADR 0052 records the measurement and takes a compile-time `-fno-sanitize=alignment` scoped to
 > OpenCV's subdirectory instead, which reaches the goal this ADR actually wanted — OpenCV exempt,
 > our own code strict, recovery still off everywhere.
 >
-> Everything else here stands, including the exception-boundary shape this ADR named and left for a
-> later ADR to build; 0052 built it as described.
+> The exception-boundary shape this ADR named and left for a later ADR to build also stands, and
+> 0052 built it as described. Two smaller claims in the same bullet as the superseded remedy have
+> since gone stale, and are corrected here rather than in the body: "nothing calls into OpenCV
+> outside `camera_model_opencv_test.cpp`" (the registration engine and its tests are two more), and
+> the count of OpenCV translation units, which is 295 rather than 296 in both build trees today.
 
 ## Context
 

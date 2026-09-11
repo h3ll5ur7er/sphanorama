@@ -51,7 +51,10 @@ and dispatching one would generate a call into a runtime that has no such thing.
    frame store to resolve a handle against. The rule is about cost, and the reduction is what pays
    it (ADR 0038).
 3. **No exceptions.** Everything fallible returns `Result<T>`; a bare `return status;` propagates
-   a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates.
+   a failure out of any `Result<U>`-returning function, and `SPH_TRY` unwraps or propagates. The
+   core is compiled `-fno-exceptions` with one translation unit excepted by name — the OpenCV-backed
+   registration engine, which catches `cv::Exception` at its own edge so that nothing above it ever
+   sees one (ADR 0052). No contract changes shape because of it.
 4. **Managers are the client's only surface.** If a client needs an engine, either the client is
    doing business logic, or a manager method is missing.
 5. **Resource access is implemented twice** — TypeScript for the browser, native for the bench and

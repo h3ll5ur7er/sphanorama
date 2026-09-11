@@ -133,14 +133,43 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   // inherited the bug along with the guard. Widening one product and not its neighbour is the shape
   // to watch for; dividing never overflows.
   const int64_t held = static_cast<int64_t>(pinned.value.size());
-  if (rowBytes > held) {
+  const int64_t claimedRows = static_cast<int64_t>(frame.height) - 1;
+  if (claimedRows > 0) {
+    // Exact, and the only check for a frame of more than one row: `stride <= (held - rowBytes) /
+    // rows` is `rows * stride + rowBytes <= held` for positive `rows`, without forming the product.
+    // A claim wider than the whole allocation makes the numerator negative, and every stride is
+    // greater than a negative, so the same line refuses it.
+    if (stride > (held - rowBytes) / claimedRows) {
+      return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                           "this frame claims more pixels than the store is holding for it");
+    }
+  } else if (rowBytes > held) {
+    // One row, so there is no product to bound and the division above is skipped.
     return Err<Measured>(StatusCode::InvalidArgument, kComponent,
                          "this frame claims more pixels than the store is holding for it");
   }
-  const int64_t claimedRows = static_cast<int64_t>(frame.height) - 1;
-  if (claimedRows > 0 && stride > (held - rowBytes) / claimedRows) {
-    return Err<Measured>(StatusCode::InvalidArgument, kComponent,
-                         "this frame claims more pixels than the store is holding for it");
+
+  // **The planar check this engine did not have, and needed more than the one it was ported from.**
+  // For NV12 and I420 the buffer holds chroma after the luma plane, so the rows above bound the
+  // bytes and not the picture: a handle claiming half again as many rows is in bounds, ASan stays
+  // silent, and what comes back is a *wrong number* rather than a crash — on the value that decides
+  // which frame of a burst survives. `OfferFrame` is `@facade`, so the caller's `FrameRef` arrives
+  // here from the page unexamined.
+  //
+  // `FrameByteSize` counts packed bytes while the rows above are strided, so the stride has to be
+  // pinned down too or a narrower claimed width buys budget for extra rows.
+  if (BytesPerPixel(frame.format) <= 0) {
+    if (stride != rowBytes) {
+      return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                           "a planar frame's rows must be packed; this one claims a stride wider "
+                           "than its width, which would hide chroma behind the claim");
+    }
+    const int64_t whole = FrameByteSize(frame.width, frame.height, frame.format);
+    if (whole <= 0 || whole > held) {
+      return Err<Measured>(StatusCode::InvalidArgument, kComponent,
+                           "this frame claims more rows of picture than the store is holding for "
+                           "it; the bytes past the luma plane are chroma");
+    }
   }
 
   // Box-averaged into a grid no larger than kMeasureEdge on its long side. Integer block sizes

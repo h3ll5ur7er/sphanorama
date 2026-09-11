@@ -24,7 +24,8 @@ differences are decisions, each with an ADR:
   planned: `CoveragePlannerEngine` tessellates for real, and `OrientationPoseEngine` folds the
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
   criterion. `FrameQuality` followed once a burst had real frames to judge; `Registration` and
-  `Composition` are still null.
+  `Composition` were still null at the end of Phase 1, and `Registration` is partly real now — see
+  Phase 2 below.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
   (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
   advance. The measurements were taken and it left the contract — a burst is paced by the manager
@@ -344,8 +345,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   What it produced is the reason it is gone. Cells filled in coverage order with whatever the
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
-  `RegistrationEngine` is what would make the labels true and it is null; getting there is far
-  future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
+  `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
+  feature extraction landed in Phase 2, while the matching and frame-to-frame tracking this argument
+  rests on have not. Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
 

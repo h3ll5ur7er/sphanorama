@@ -173,6 +173,38 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root)).toBeNull();
   });
 
+  it('accepts a build file the configure step has already absorbed without work', () => {
+    // A `CMakeLists.txt` edit that changes nothing for a preset — a comment, or a branch that
+    // preset does not take — reconfigures and produces no work, so the core is never relinked and
+    // can never become newer than the file. That deadlocked the gate: the error's own instruction
+    // ("run the wasm build, then stage it") cannot clear it, because ninja correctly has nothing
+    // to do. `build.ninja` is the build system's own record of having absorbed the change.
+    const tree = aFreshTree();
+    const now = Date.now();
+    tree.put('core/CMakeLists.txt', now - 500);
+    tree.put('build/wasm-release/build.ninja', now);
+    tree.put('build/wasm-release-threaded/build.ninja', now);
+    expect(complaint(tree.root)).toBeNull();
+  });
+
+  it('still catches a build file that was never configured in', () => {
+    // The half that keeps the check honest. A build file newer than `build.ninja` means the build
+    // system has not seen it at all, which is the case the mtime comparison was always for.
+    const tree = aFreshTree();
+    const now = Date.now();
+    tree.put('build/wasm-release/build.ninja', now - 500);
+    tree.put('build/wasm-release-threaded/build.ninja', now - 500);
+    tree.put('core/CMakeLists.txt', now);
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('catches a build file when there is no build.ninja to vouch for it', () => {
+    // No record means no evidence, so the conservative answer stands.
+    const tree = aFreshTree();
+    tree.put('CMakePresets.json', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
   it('catches a threaded core older than the C++, not only the single-threaded one', () => {
     // Existence alone was what this build got at first, which a reviewer pointed out buys less
     // than it looks: a threaded core from before the change passes that, and its two browser tests

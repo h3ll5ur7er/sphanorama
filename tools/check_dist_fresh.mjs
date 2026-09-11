@@ -101,6 +101,24 @@ function canReachBridgeSpecs(argv) {
  * the conservative direction on purpose: a check that quietly stops asking because a build
  * directory is missing is worse than one that asks too often.
  */
+/**
+ * When each wasm preset's build system last absorbed a configure, as an mtime — `build.ninja` is
+ * rewritten by every `cmake` run that changes anything it describes.
+ *
+ * `0` means there is no such record, which the caller treats as no evidence rather than as
+ * permission. The earliest of the presets is the one that counts, for the same reason the older of
+ * the two compiled cores does.
+ */
+function buildSystemAbsorbedAt(repoRoot) {
+  let earliest = 0;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const graph = newest(join(repoRoot, 'build', preset, 'build.ninja'));
+    if (graph.mtime === 0) return 0;
+    if (earliest === 0 || graph.mtime < earliest) earliest = graph.mtime;
+  }
+  return earliest;
+}
+
 function compiledTranslationUnits(repoRoot) {
   const files = new Set();
   let read = false;
@@ -201,10 +219,23 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
     const accept = compiled === null
       ? () => true
       : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
-    const cxx = ['core/src', 'bridge', 'contracts/cpp',
-                 'core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }))
-      .filter((s) => s.mtime > compiledCore.mtime);
+    const sources = ['core/src', 'bridge', 'contracts/cpp']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }));
+
+    // The three build files are compared against the build system's own record instead of against
+    // the compiled core, because an edit to one of them can be *inert* for a preset — a comment, or
+    // a branch that preset does not take. Such an edit reconfigures, produces no work, never
+    // relinks the core, and therefore can never become older than it: the error below would then
+    // ask for a rebuild that ninja correctly refuses to do, which is a deadlock and not a warning.
+    // A `build.ninja` newer than the file is the build system saying it has already looked.
+    //
+    // With no `build.ninja` to vouch for it, there is no evidence and the old comparison stands.
+    const absorbed = buildSystemAbsorbedAt(repoRoot);
+    const buildFiles = ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
+      .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
+      .filter((s) => absorbed === 0 || s.mtime > absorbed);
+
+    const cxx = [...sources, ...buildFiles].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {
       const worst = cxx.reduce((a, b) => (a.mtime > b.mtime ? a : b));
       throw new Error(

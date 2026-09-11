@@ -165,6 +165,24 @@ TEST_F(FrameQuality, AHandleWhoseOwnArithmeticWouldOverflowIsRefused) {
   EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 
+TEST_F(FrameQuality, APlanarHandleClaimingChromaIsPictureIsRefused) {
+  // The guard that stops this went into `FeatureRegistrationEngine` and not into here, which is the
+  // wrong way round: this is the engine that ships, and `CaptureSessionManager::OfferFrame` is
+  // `@facade`, so the caller's `FrameRef` reaches it from the page unexamined.
+  //
+  // It is a wrong number rather than a crash, which is worse for this engine in particular: the
+  // same buffer scores 102,297 under a handle claiming 192 rows against 38,337 under the honest
+  // one, and this number is what picks which frame of a burst survives.
+  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::I420);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  FrameRef overclaimed = allocated.value;
+  overclaimed.height = kHeight + kHeight / 2;
+
+  const Result<QualityScore> scored = engine.Score(overclaimed, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok());
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
+}
+
 TEST_F(FrameQuality, AFormatWithNoPixelsToReadIsRefused) {
   // Encoded frames are coming — the frame store's own comment says a JPEG tier is what makes a
   // sphere fit — and scoring one as if it were raster would read the header as image data.

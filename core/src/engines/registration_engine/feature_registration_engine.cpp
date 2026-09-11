@@ -173,10 +173,6 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
                            "this frame's stride is narrower than one row of it");
   }
   const int64_t held = static_cast<int64_t>(pinned.value.size());
-  if (rowBytes > held) {
-    return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
-                           "this frame claims more pixels than the store is holding for it");
-  }
   // **Asked by division, because the multiply is the thing that overflows.** An earlier version of
   // this guard widened `width * bytesPerPixel` into int64 and then multiplied again without asking
   // the same question of the second product: with `stride <= 0` the fallback is `rowBytes`, which is
@@ -192,7 +188,18 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // memory. The division form is kept anyway — not as a second guard, but because it is how this
   // one is written so that nobody has to redo that argument when a caller or a format changes.
   const int64_t rows = static_cast<int64_t>(frame.height) - 1;
-  if (rows > 0 && stride > (held - rowBytes) / rows) {
+  if (rows > 0) {
+    // Exact, and the only check for a frame of more than one row: `stride <= (held - rowBytes) /
+    // rows` is `rows * stride + rowBytes <= held` for positive `rows`, without ever forming the
+    // product. A claim wider than the whole allocation makes the numerator negative, and every
+    // stride is greater than a negative, so it is refused by the same line rather than a second one.
+    if (stride > (held - rowBytes) / rows) {
+      return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
+                             "this frame claims more pixels than the store is holding for it");
+    }
+  } else if (rowBytes > held) {
+    // One row, so there is no product to bound and the division above is skipped. This is the only
+    // thing standing between a single enormous row and the span it would be read from.
     return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
                            "this frame claims more pixels than the store is holding for it");
   }
@@ -201,6 +208,18 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // exactly that by luma arithmetic alone. The whole-frame size is what says how much of it is
   // picture, and it is in bounds either way — so ASan never had anything to say about it.
   if (BytesPerPixel(frame.format) <= 0) {
+    // `FrameByteSize` counts *packed* bytes while the rows above are counted in *strided* ones, so
+    // a claim whose stride exceeds its width satisfies both at once: narrowing the claimed width
+    // buys packed budget to pay for extra rows. On a real packed I420 640x480, the handle
+    // {width 400, height 720, stride 640} passes every other check here and hands a detector 240
+    // rows of chroma as picture. Requiring the rows to be packed is what closes it, and it refuses
+    // nothing real — `MemoryFrameStoreAccess::Allocate` is the only line in this repository that
+    // ever sets a stride, and it packs planar rows.
+    if (stride != rowBytes) {
+      return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
+                             "a planar frame's rows must be packed; this one claims a stride wider "
+                             "than its width, which would hide chroma behind the claim");
+    }
     const int64_t whole = FrameByteSize(frame.width, frame.height, frame.format);
     if (whole <= 0 || whole > held) {
       return Err<FeatureSet>(StatusCode::InvalidArgument, kComponent,
