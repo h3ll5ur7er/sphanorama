@@ -196,6 +196,24 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
   }
 
   /**
+   * A frame ruled into eight-pixel squares — the fixture that makes a detector overrun its cap.
+   *
+   * `Textured` does not: asked for 500 features at 768 square it gets 500 from ORB, 500 from AKAZE
+   * and 501 from SIFT, so the engine's truncation dropped exactly one row in the whole suite. On
+   * this pattern ORB answers 1,145 and SIFT 740, both measured on the pinned OpenCV. AKAZE still
+   * answers exactly 500, which is why the test below names it as the detector that does not overrun
+   * rather than asserting an overrun it would fail.
+   */
+  FrameRef Ruled(int32_t edge) {
+    FrameRef frame;
+    Paint(&frame, [](int32_t x, int32_t y) -> uint8_t {
+      return (x % 8 == 0 || y % 8 == 0) ? 255 : 0;
+    }, edge);
+    EXPECT_NE(frame.id.value, 0U) << "the painter did not produce a frame";
+    return frame;
+  }
+
+  /**
    * The same detector, made independently of the engine's own `Make()` — including its cap.
    *
    * The cap has to be here too, and an earlier version left it out on the reasoning that the engine
@@ -636,6 +654,67 @@ TEST_P(Extraction, TheCapIsAskedForAndNotOnlyTruncatedTo) {
   EXPECT_EQ(disagreements, 0)
       << disagreements << " of " << features.value.count
       << " rows differ from a detector built with the same cap — this engine's detector was not";
+  EXPECT_TRUE(store.Release(features.value.keypoints).ok());
+  ForgetOutputs(features.value);
+}
+
+TEST_P(Extraction, KeepsTheBestRowsWhenTheDetectorOverrunsTheCapOutright) {
+  // The line that makes the cap true when a detector ignores it had never been asked to do anything.
+  // Across the whole suite the truncation dropped exactly one row — SIFT's 501 for a request of 500
+  // on `Textured` at 768 — and the round before this one widened the code feeding it. `Ruled`
+  // overruns properly: ORB answers 1,145 there and SIFT 740.
+  //
+  // The count alone is not the assertion, because truncating to *any* 500 rows satisfies it. What is
+  // asserted is that the 500 kept are the 500 strongest of the list the detector actually returned,
+  // which is the difference between keeping the best and keeping the first. On ORB that difference
+  // is real rather than theoretical: `orb.cpp` caps each pyramid level separately and concatenates
+  // them, so the first 500 of its 1,145 are whole octaves rather than the strongest responses.
+  FeatureRegistrationEngine engine = Engine();
+  const FrameRef source = Ruled(768);
+  const Result<FeatureSet> features = engine.ExtractFeatures(source);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  ASSERT_EQ(features.value.count, kMaxFeaturesPerFrame);
+
+  const cv::Ptr<cv::Feature2D> oracle = OpenCvDetector(GetParam());
+  ASSERT_TRUE(oracle);
+  const Result<std::span<uint8_t>> sourceBytes = store.Pin(source);
+  ASSERT_TRUE(sourceBytes.ok()) << sourceBytes.status.detail;
+  const cv::Mat colour(768, 768, CV_8UC4, sourceBytes.value.data(), source.stride);
+  cv::Mat grey;
+  cv::cvtColor(colour, grey, cv::COLOR_RGBA2GRAY);
+  std::vector<cv::KeyPoint> expected;
+  cv::Mat ignored;
+  oracle->detectAndCompute(grey, cv::noArray(), expected, ignored);
+  EXPECT_TRUE(store.Release(source).ok());
+
+  // The precondition, asserted rather than assumed: if OpenCV's counts move and this frame stops
+  // overrunning the cap, the test has quietly stopped exercising the truncation and the fixture is
+  // what to fix. AKAZE is exempt because it answers exactly the cap here — named, not skipped.
+  if (GetParam() != FeatureDetector::Akaze) {
+    ASSERT_GT(static_cast<int32_t>(expected.size()), kMaxFeaturesPerFrame)
+        << "this fixture exists to overrun the cap and no longer does";
+  }
+
+  // Stable, because `FeatureSet` promises ties come back in the order the detector found them. A
+  // plain sort would be just as deterministic and would break that promise wherever responses tie —
+  // and on this fixture they tie in quantity, which is what makes this comparison pin stability
+  // rather than merely repeatability.
+  std::stable_sort(expected.begin(), expected.end(),
+                   [](const cv::KeyPoint& a, const cv::KeyPoint& b) { return a.response > b.response; });
+  expected.resize(static_cast<size_t>(kMaxFeaturesPerFrame));
+
+  const Result<std::span<uint8_t>> pinned = store.Pin(features.value.keypoints);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  int32_t disagreements = 0;
+  for (int32_t row = 0; row < features.value.count; ++row) {
+    float xy[2] = {0.0F, 0.0F};
+    std::memcpy(xy, pinned.value.data() + static_cast<size_t>(row) * 8, sizeof(xy));
+    if (xy[0] != expected[row].pt.x || xy[1] != expected[row].pt.y) ++disagreements;
+  }
+  EXPECT_EQ(disagreements, 0)
+      << disagreements << " of " << features.value.count
+      << " rows are not the strongest the detector returned — the cap kept the first rows, not the "
+         "best ones";
   EXPECT_TRUE(store.Release(features.value.keypoints).ok());
   ForgetOutputs(features.value);
 }

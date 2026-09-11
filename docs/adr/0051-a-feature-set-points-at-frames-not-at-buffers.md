@@ -39,9 +39,41 @@ frames already use.
   not: ORB caps itself at 500 by default, while `cv::SIFT::create()` and `cv::AKAZE::create()` are
   unbounded, returning 1,328 and 2,547 on this repository's test texture at 768 square. The engine
   now caps all three at one shared budget, which is what makes the paragraph above true rather than
-  aspirational — and asking for a cap turned out not to be getting one, since `retainBest` keeps
-  every keypoint tied at the cutoff, so it truncates as well as asks. Under
+  aspirational — and asking for a cap turned out not to be getting one, for two different reasons
+  this ADR first gave as one. `retainBest` keeps everyone tied with the last of its selection, which
+  is why SIFT answers 501 to a request of 500 on that texture. ORB overruns by another mechanism
+  entirely: `orb.cpp` applies the cap per pyramid level and concatenates the levels, so its total is
+  bounded nowhere. A frame ruled into eight-pixel squares at 768 square shows the difference at
+  scale — asked for 500, ORB returns 1,145 and SIFT 740, while AKAZE returns exactly 500. The engine
+  therefore truncates as well as asks. Under
   memory pressure the store must be able to evict them, and only a store-managed allocation can be.
+
+**The rows come back best-first, always, and that is a promise to the caller rather than an
+implementation detail.** It is recorded here, in the ADR that shaped `FeatureSet`, because
+`FeatureSet`'s own comment now states it and matching will be built on it — a contract-visible
+behaviour that went into the code with no decision written down anywhere.
+
+Three detectors, three native orders: ORB's is level-major, SIFT's is neither sorted nor
+response-major, and AKAZE's is sorted only when its cap binds. Keeping the first `count` rows of
+that would discard better features than it kept — for ORB, whole octaves of them. So the engine
+sorts by response and then truncates, which makes the cap keep the best rather than the first and
+gives every detector one order a caller can rely on instead of three a caller cannot tell apart.
+
+The sort is stable, and the reason is the tie order rather than repeatability. `std::sort` would be
+exactly as repeatable; what it would not preserve is the detector's own order among equal responses,
+which is the half of the promise a caller has no way to predict for itself.
+
+Two costs are accepted rather than hidden:
+
+- **"Best" is not "representative".** The order is by the detector's own response, and ORB's is a
+  per-level Harris score with no normalisation between levels, so the strongest rows cluster at one
+  scale — 48 of the top 50 on this repository's texture at 768 square, out of a set spanning eight
+  octaves. A matcher wanting features spread across scales has to arrange that itself, and
+  `FeatureSet` says so rather than leaving it to be discovered during Phase 2.
+- **The response is not in the output, so the caller cannot check the order it is promised.** That
+  is deliberate: the score's scale is detector-specific and not comparable between frames, so a
+  caller thresholding on it would be reading a different quantity for each detector. The cost is
+  that best-first rests on this engine's tests rather than on anything the caller can verify.
 
 **`Gray8` names the container, not the contents, and that is the ordinary way this is done.** In
 OpenCV a descriptor block is a `cv::Mat` — the same type that holds images — and nobody reads that
@@ -93,6 +125,12 @@ wider change buying a label.
 ***Adding `AllocateBuffer`/`PinBuffer` to `IFrameStoreAccess`.*** The most faithful reading of the
 original comment, and the heaviest: two implementations to grow, a shared contract suite to extend,
 and every residency and budget question answered a second time for a second kind of thing.
+
+***Handing back the detector's own order and letting each caller sort.*** Moves one engine's work
+to every caller, and cannot be done at all without putting the response in the output — the field
+deliberately left out just above. It would also make the cap dishonest, since the truncation happens
+before any caller sees the list: sorting afterwards would order rows that had already been chosen
+for the wrong reason.
 
 ***Returning descriptor bytes by value in `FeatureSet`.*** Simplest to write, and legitimate since
 engines never cross the boundary. Rejected on the budget: sixty frames of descriptors resident with

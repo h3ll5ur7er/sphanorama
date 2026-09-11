@@ -255,10 +255,20 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // Neither is a safe thing to reason about, so the code stops reasoning about it. Rather than keep
   // the first `n` and argue about what the detector put there, it keeps the best `n` by response —
   // which is true by construction for every detector, present and future, and makes `FeatureSet`'s
-  // rows best-first, which is what a matcher taking a top-`k` wants anyway.
+  // rows best-first.
   //
-  // Stable, so that equal responses keep the detector's own order and two extractions of one frame
-  // still agree byte for byte.
+  // What that order is *not* is a spread across scales, and this comment used to end by telling a
+  // matcher it was what one taking a top-`k` wanted anyway. ORB's response is a Harris score
+  // computed per pyramid level and never normalised between them, so the strongest rows are nearly
+  // all one octave — measured at 48 of the top 50 on this repository's texture. `FeatureSet`'s
+  // comment says so, because it is the caller who would otherwise assume otherwise.
+  //
+  // **Stable rather than merely deterministic.** An earlier version of this comment gave
+  // repeatability as the reason, which is a property `std::sort` has just as fully. What a plain
+  // sort would not keep is the detector's own order among equal responses — and that tie order is a
+  // promise `FeatureSet` makes to its caller. It is pinned rather than asserted: on a fixture where
+  // responses tie in quantity, `std::sort` here fails the cap test on all three detectors.
+  //
   // Always, not only when the cap bites: an order that changes shape at 500 features is a promise
   // nobody can state, and a caller would have no way to know which one it got.
   std::vector<int> order(keypoints.size());

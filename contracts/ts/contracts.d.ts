@@ -495,16 +495,34 @@ export interface FeatureSet {
   frame: FrameId;
   /**
    * Rows are **best-first**: descending by the detector's own response, ties in the order it found
-   * them. A matcher wanting a top-`k` can take the first `k` rows and stop.
+   * them.
    * The engine sorts rather than trusting the detector, because the detectors do not agree on this
    * and two of them do not do it at all. It is also what makes the cap honest: keeping the first
    * `count` of an unsorted list would discard better features than it kept, which for ORB — whose
-   * pyramid levels are capped separately and concatenated — is not hypothetical.
+   * pyramid levels are capped separately and concatenated — is not hypothetical. Asked for 500 on a
+   * frame ruled into eight-pixel squares at 768 square, ORB returns 1,145 and SIFT 740.
+   * **"Best" is the detector's own word, and it is not a promise about scale.** ORB's response is a
+   * Harris score computed at each pyramid level and never normalised across them, so ordering by it
+   * orders largely by octave: on this repository's texture at 768 square, where the full set spans
+   * eight octaves, the top 50 rows are 48 octave-0 features and the top 100 are 85. An earlier
+   * version of this comment told a matcher it "can take the first `k` rows and stop", which is true
+   * about strength and misleading about everything else — those `k` are the strongest responses and
+   * they are nearly all at one scale. A caller wanting features spread across scales has to arrange
+   * that itself; this order will not give it.
    */
   count: number;
-  /** count rows x descriptor bytes, Gray8 */
+  /** count rows x the detector's descriptor width */
   descriptors: FrameRef;
-  /** count rows x keypoint bytes, Gray8 */
+  /**
+   * Eight bytes a row: two little-endian `float32`s, x then y, in pixels of the frame named above.
+   * Written down here because it was a constant in the engine's anonymous namespace and nowhere a
+   * caller could read it, which made a row of this frame undecodable from the contract alone.
+   * The response the rows are ordered *by* is not carried. That is deliberate — its scale is
+   * detector-specific and not comparable between frames, so a caller thresholding on it would be
+   * reading a number that means something different for every detector — but the cost is real and
+   * belongs here rather than in a commit message: the best-first promise above is one a caller has
+   * to take on trust, because nothing in this struct lets them check it.
+   */
   keypoints: FrameRef;
 }
 
