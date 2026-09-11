@@ -54,7 +54,7 @@ rather than a pixel: an unusable lens, a direction behind the camera, a radius p
 the distortion stops being invertible, an inverse that does not land back where it started
 (ADR 0046). Its iteration budget is a measured number, not a chosen one.
 
-**OpenCV is in the build now**, fetched at a pinned tag and trimmed to ADR 0005's six modules,
+**OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
 first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, asking
 our inverse to invert *their* forward map, which is a stronger statement than agreeing with their

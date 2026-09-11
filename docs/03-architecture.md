@@ -405,8 +405,9 @@ with whatever the camera happened to be pointing at, nothing anywhere verified t
 came from that cell's direction, and the failure was invisible until a build stage this repo does
 not have yet. Vision-only orientation is what would make those labels true — frame-to-frame
 tracking seeded by `RegistrationEngine` — and what that needs does not exist. `ExtractFeatures` is
-real since Phase 2 began; matching and tracking, which are the parts this argument actually rests
-on, are not. Until they are, the honest answer is a message rather than a sphere.
+real since Phase 2 began, though **only where OpenCV is linked**, which is not the browser this use
+case happens in (ADR 0052); matching and tracking, which are the parts this argument actually rests
+on, are not written anywhere. Until they are, the honest answer is a message rather than a sphere.
 
 `PoseMode::VisionOnly` stays in the contract and nothing selects it. It is what such a capture
 would run in the day the registration engine can carry one; ADR 0044 is the record of why nothing

@@ -17,6 +17,21 @@ namespace sphanorama {
 // in earnest is the one that runs the accuracy harness, and it does not exist yet.
 enum class FeatureDetector { Orb, Akaze, Sift };
 
+// The most features any detector may return for one frame.
+//
+// Named here rather than kept private because a test has to build the *same* detector to check this
+// engine against, and a cap is part of what "the same detector" means: a detector asked for 50
+// features does not return the first 50 an uncapped one would, since `retainBest` selects by
+// response across the whole set. A test that restated the number instead would pass today and fail
+// the day somebody tuned it, blaming the engine.
+//
+// Without it two of the three are unbounded: `cv::ORB::create()` caps itself at 500, while
+// `cv::SIFT::create()` and `cv::AKAZE::create()` retain everything — 1,328 and 2,547 on this
+// repository's test texture at 768 square. It bounds the allocation, and it is also what makes
+// comparing the three a measurement rather than a comparison between one asked for 500 features and
+// another asked for all of them.
+inline constexpr int kMaxFeaturesPerFrame = 500;
+
 // V7 — feature extraction, matching and global refinement over OpenCV.
 //
 // Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build

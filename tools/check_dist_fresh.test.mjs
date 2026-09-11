@@ -61,9 +61,9 @@ function aFreshTree() {
  * `argv` is the Playwright invocation, defaulting to one with no positional filter — every spec in
  * scope, which is the strict reading and what `gate.sh` does.
  */
-function complaint(root, argv = ['node', 'playwright', 'test']) {
+function complaint(root, argv = ['node', 'playwright', 'test'], upToDate = () => null) {
   try {
-    checkDistIsFreshIn(root, argv);
+    checkDistIsFreshIn(root, argv, upToDate);
     return null;
   } catch (error) {
     return error.message;
@@ -173,36 +173,46 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root)).toBeNull();
   });
 
-  it('accepts a build file the configure step has already absorbed without work', () => {
-    // A `CMakeLists.txt` edit that changes nothing for a preset — a comment, or a branch that
-    // preset does not take — reconfigures and produces no work, so the core is never relinked and
-    // can never become newer than the file. That deadlocked the gate: the error's own instruction
-    // ("run the wasm build, then stage it") cannot clear it, because ninja correctly has nothing
-    // to do. `build.ninja` is the build system's own record of having absorbed the change.
-    const tree = aFreshTree();
-    const now = Date.now();
-    tree.put('core/CMakeLists.txt', now - 500);
-    tree.put('build/wasm-release/build.ninja', now);
-    tree.put('build/wasm-release-threaded/build.ninja', now);
-    expect(complaint(tree.root)).toBeNull();
+  it('forgives a build file when ninja says there is nothing left to do', () => {
+    // A `CMakeLists.txt` edit that is inert for a preset — a comment, or a branch that preset does
+    // not take — reconfigures and produces no work, so the core is never relinked and can never
+    // become newer than the file. That deadlocked the gate: the error's own instruction ("run the
+    // wasm build, then stage it") cannot clear it, because ninja correctly has nothing to do.
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now());
+      expect(complaint(tree.root, undefined, () => true), source).toBeNull();
+    }
   });
 
-  it('still catches a build file that was never configured in', () => {
-    // The half that keeps the check honest. A build file newer than `build.ninja` means the build
-    // system has not seen it at all, which is the case the mtime comparison was always for.
-    const tree = aFreshTree();
-    const now = Date.now();
-    tree.put('build/wasm-release/build.ninja', now - 500);
-    tree.put('build/wasm-release-threaded/build.ninja', now - 500);
-    tree.put('core/CMakeLists.txt', now);
-    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  it('does not forgive a build file when ninja still has work pending', () => {
+    // The hole the first version of this had. Ninja regenerates `build.ninja` *before* it compiles,
+    // so a build that was configured and then failed reaches exactly the state the old mtime
+    // inference read as "absorbed" — and a failed build followed by a browser run is the whole
+    // scenario this file exists to refuse.
+    for (const source of ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now());
+      expect(complaint(tree.root, undefined, () => false), source)
+        .toMatch(/compiled core is older than the C\+\+/);
+    }
   });
 
-  it('catches a build file when there is no build.ninja to vouch for it', () => {
-    // No record means no evidence, so the conservative answer stands.
+  it('does not forgive a build file when ninja could not be asked', () => {
+    // No answer is not a yes. Missing build directory, no ninja on PATH, a non-zero exit: the
+    // conservative comparison stands, which is the behaviour every other case here assumes.
     const tree = aFreshTree();
     tree.put('CMakePresets.json', Date.now());
-    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+    expect(complaint(tree.root, undefined, () => null)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('asks ninja only about build files, never about sources', () => {
+    // The forgiveness is scoped. A `.cpp` the wasm build compiles is stale whatever ninja says
+    // about outstanding work, because a source newer than the core is exactly the thing this check
+    // is for — and an inert *source* edit is not a thing.
+    const tree = aFreshTree();
+    tree.put('core/src/a.cpp', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('catches a threaded core older than the C++, not only the single-threaded one', () => {

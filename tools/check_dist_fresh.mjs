@@ -15,6 +15,7 @@
  * code changed" and a fresh checkout has no `dist` at all — the missing case is the loud one.
  */
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -102,21 +103,34 @@ function canReachBridgeSpecs(argv) {
  * directory is missing is worse than one that asks too often.
  */
 /**
- * When each wasm preset's build system last absorbed a configure, as an mtime — `build.ninja` is
- * rewritten by every `cmake` run that changes anything it describes.
+ * Whether either wasm build has work it has not done — asked of ninja, which is the only thing that
+ * knows.
  *
- * `0` means there is no such record, which the caller treats as no evidence rather than as
- * permission. The earliest of the presets is the one that counts, for the same reason the older of
- * the two compiled cores does.
+ * This is what lets a build-file edit be forgiven. An edit that is *inert* for a preset — a comment,
+ * or a branch that preset does not take — reconfigures, produces no work, never relinks the core,
+ * and so can never stop being newer than it: the error below would ask for a rebuild ninja
+ * correctly refuses to do, which is a deadlock rather than a warning.
+ *
+ * An earlier version inferred this from `build.ninja`'s mtime, and a reviewer showed the inference
+ * was wrong in both directions: ninja regenerates `build.ninja` *before* compiling, so a build that
+ * was configured and then failed looks identical to one with nothing to do; and `CMakePresets.json`
+ * is not in either preset's regeneration edge at all, so a changed preset need not rewrite it.
+ * Asking is cheap and exact where guessing was neither.
+ *
+ * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
+ * caller then treats a build file the old way, which is the conservative direction.
  */
-function buildSystemAbsorbedAt(repoRoot) {
-  let earliest = 0;
+function wasmBuildsAreUpToDate(repoRoot) {
+  let asked = false;
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
-    const graph = newest(join(repoRoot, 'build', preset, 'build.ninja'));
-    if (graph.mtime === 0) return 0;
-    if (earliest === 0 || graph.mtime < earliest) earliest = graph.mtime;
+    const dir = join(repoRoot, 'build', preset);
+    if (!existsSync(join(dir, 'build.ninja'))) continue;
+    const probe = spawnSync('ninja', ['-C', dir, '-n'], { encoding: 'utf8' });
+    if (probe.error || probe.status !== 0) return null;
+    asked = true;
+    if (!`${probe.stdout}${probe.stderr}`.includes('no work to do')) return false;
   }
-  return earliest;
+  return asked ? true : null;
 }
 
 function compiledTranslationUnits(repoRoot) {
@@ -138,7 +152,8 @@ function compiledTranslationUnits(repoRoot) {
   return read ? files : null;
 }
 
-export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
+export function checkDistIsFreshIn(repoRoot, argv = process.argv,
+                                   upToDateProbe = wasmBuildsAreUpToDate) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -222,18 +237,14 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv) {
     const sources = ['core/src', 'bridge', 'contracts/cpp']
       .map((rel) => ({ rel, ...newest(join(repoRoot, rel), new Set(['test', 'CMakeFiles']), accept) }));
 
-    // The three build files are compared against the build system's own record instead of against
-    // the compiled core, because an edit to one of them can be *inert* for a preset — a comment, or
-    // a branch that preset does not take. Such an edit reconfigures, produces no work, never
-    // relinks the core, and therefore can never become older than it: the error below would then
-    // ask for a rebuild that ninja correctly refuses to do, which is a deadlock and not a warning.
-    // A `build.ninja` newer than the file is the build system saying it has already looked.
-    //
-    // With no `build.ninja` to vouch for it, there is no evidence and the old comparison stands.
-    const absorbed = buildSystemAbsorbedAt(repoRoot);
-    const buildFiles = ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
-      .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }))
-      .filter((s) => absorbed === 0 || s.mtime > absorbed);
+    // A build file newer than the core is forgiven only when ninja says both wasm builds have
+    // nothing left to do, because that is the one case where the demand this check would make is
+    // impossible to satisfy. See `wasmBuildsAreUpToDate` for why its mtime cannot answer this.
+    const upToDate = upToDateProbe(repoRoot);
+    const buildFiles = upToDate === true
+      ? []
+      : ['core/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json']
+        .map((rel) => ({ rel, ...newest(join(repoRoot, rel)) }));
 
     const cxx = [...sources, ...buildFiles].filter((s) => s.mtime > compiledCore.mtime);
     if (cxx.length > 0) {

@@ -29,6 +29,27 @@ class FrameQuality : public ::testing::Test {
   MemoryFrameStoreAccess store{1 << 22};
   SharpnessFrameQualityEngine engine{store};
 
+  /**
+   * An I420 frame: flat luma, and chroma full of edges.
+   *
+   * The layout is what makes the planar guard matter — a full-resolution luma plane followed by two
+   * quarter-resolution chroma planes — so a handle claiming more rows than the picture has reads
+   * chroma and calls it detail. Flat luma and busy chroma is the arrangement that makes the
+   * difference visible in the score rather than merely present.
+   */
+  FrameRef PlanarFrame(int32_t width, int32_t height) {
+    const Result<FrameRef> allocated = store.Allocate(width, height, PixelFormat::I420);
+    EXPECT_TRUE(allocated.ok()) << allocated.status.detail;
+    const Result<std::span<uint8_t>> pinned = store.Pin(allocated.value);
+    EXPECT_TRUE(pinned.ok()) << pinned.status.detail;
+    const size_t luma = static_cast<size_t>(width) * height;
+    for (size_t at = 0; at < pinned.value.size(); ++at) {
+      pinned.value[at] = at < luma ? 128 : static_cast<uint8_t>(((at / 4) % 2) == 0 ? 16 : 240);
+    }
+    EXPECT_TRUE(store.Release(allocated.value).ok());
+    return allocated.value;
+  }
+
   /** A frame whose luma at (x, y) is whatever `paint` says. RGBA8, so grey means r == g == b. */
   template <typename Paint>
   FrameRef Frame(Paint paint, int32_t width = kWidth, int32_t height = kHeight) {
@@ -170,16 +191,46 @@ TEST_F(FrameQuality, APlanarHandleClaimingChromaIsPictureIsRefused) {
   // wrong way round: this is the engine that ships, and `CaptureSessionManager::OfferFrame` is
   // `@facade`, so the caller's `FrameRef` reaches it from the page unexamined.
   //
-  // It is a wrong number rather than a crash, which is worse for this engine in particular: the
-  // same buffer scores 102,297 under a handle claiming 192 rows against 38,337 under the honest
-  // one, and this number is what picks which frame of a burst survives.
-  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight, PixelFormat::I420);
-  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
-  FrameRef overclaimed = allocated.value;
+  // It is a wrong number rather than a crash, which is worse for this engine in particular, because
+  // this number is what picks which frame of a burst survives. Measured on the frame below, whose
+  // luma is flat and whose chroma is full of edges: **0.0 honestly, 8,532.0 through a handle
+  // claiming half again as many rows.** Not a drift — a frame with no detail in it reported as the
+  // sharpest thing in the burst.
+  //
+  // An earlier version of this comment carried 102,297 against 38,337, which are numbers from a
+  // reviewer's probe on a different frame, quoted here above a test that allocated its frame and
+  // never painted it — so the real answer under both handles was 0.000 and the comment described
+  // nothing. The commit that wrote it had, in the same diff, rewritten another comment to warn
+  // against exactly that.
+  const FrameRef honest = PlanarFrame(kWidth, kHeight);
+  FrameRef overclaimed = honest;
   overclaimed.height = kHeight + kHeight / 2;
 
   const Result<QualityScore> scored = engine.Score(overclaimed, PoseSample{}, NodeContext{});
   ASSERT_FALSE(scored.ok());
+  EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
+}
+
+TEST_F(FrameQuality, APlanarHandleWithAWideStrideIsRefused) {
+  // The packed-rows half of the planar guard, which had no test here while the identical block in
+  // `FeatureRegistrationEngine` had two. Deleting it leaves every test in the repository green, and
+  // it is load-bearing: measured on the frame below, **0.0 honestly and 26,940.9 through the
+  // smuggled handle**.
+  //
+  // The frame is 640x480 rather than the fixture's 64x64 because at 64x64 this claim is refused by
+  // the size bound before the packing check is reached — which would have made this a test of the
+  // wrong guard.
+  //
+  // The two engines' guards now read identically, which is exactly what hid this — "the fix went
+  // into one engine and not the other" became "the test went into one and not the other".
+  const FrameRef honest = PlanarFrame(640, 480);
+  FrameRef smuggled = honest;
+  smuggled.width = 400;
+  smuggled.height = 720;
+  smuggled.stride = 640;
+
+  const Result<QualityScore> scored = engine.Score(smuggled, PoseSample{}, NodeContext{});
+  ASSERT_FALSE(scored.ok()) << "chroma was scored as picture";
   EXPECT_EQ(scored.status.code, StatusCode::InvalidArgument) << scored.status.detail;
 }
 

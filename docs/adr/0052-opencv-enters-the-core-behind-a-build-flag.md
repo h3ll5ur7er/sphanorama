@@ -102,6 +102,24 @@ narrower in one way too: it lifts one check rather than silencing one report.
   `feature_registration_engine.cpp` still aborts the run naming that file. Every other UBSan check,
   and all of ASan, still cover OpenCV. The cost is that a genuine alignment fault inside OpenCV would
   now go unreported, which is accepted because we do not write OpenCV's SIMD kernels.
+- **A frame's geometry is still checked against a byte count, and that is a real limit this ADR
+  accepts rather than closes.** Every guard in the core compares what a `FrameRef` *claims* against
+  the size of the span `Pin` returns, because that is the only thing about the allocation any engine
+  can see: `MemoryFrameStoreAccess::Entry` keeps a size and no geometry, and `IFrameStoreAccess` has
+  no way to ask what a frame was allocated *as*. So a claim that is arithmetically consistent with
+  the byte count is accepted however little it resembles the allocation. A reviewer demonstrated the
+  sharp end: an honest I420 640x480 relabelled `{Gray8, 640, 719, stride 640}` passes both engines
+  and reads 239 rows of chroma as picture — in bounds, so the sanitizers are silent, and what comes
+  back is a wrong number rather than a crash.
+
+  Four review rounds have now spent their worst findings on this one seam, in two engines that hold
+  the same check by duplication. The structural answer is for the store to describe what it
+  allocated — a `Describe`-style accessor on `IFrameStoreAccess`, against which a handle can be
+  checked once instead of approximated in every engine. That is a contract change and its own ADR,
+  and doing it inside this one would be a second architecture decision smuggled into a PR about
+  feature extraction. Named here so the next person meets it as a known gap rather than as a
+  surprise.
+
 - **A conditional engine is a conditional test.** The registration tests exist only under the flag,
   like the OpenCV cross-check before them. A reader looking for registration coverage in a WASM-only
   checkout will find none, and the CMake comment says so where they will be looking.

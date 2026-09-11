@@ -145,6 +145,16 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
     }
   } else if (rowBytes > held) {
     // One row, so there is no product to bound and the division above is skipped.
+    //
+    // **Unreachable here today, and kept anyway** — which is a position this codebase is otherwise
+    // sceptical of, so the reason matters. `cols < 3 || rows < 3` below refuses every one-row frame
+    // before any byte is read, so deleting this line changes nothing: over 347,875 adversarial
+    // handles a reviewer measured the accepted set bit-identical with and without it. What it is
+    // kept for is that the *same* line in `FeatureRegistrationEngine` is the sole bounds check for
+    // that case — deleting it there is a `heap-buffer-overflow READ of size 400000` — and the two
+    // guards being character-for-character identical is the only thing that has stopped a fix
+    // landing in one and not the other, three rounds running. Its deadness depends on an unrelated
+    // rule about grid sizes, and the day that rule changes is the day this is load-bearing.
     return Err<Measured>(StatusCode::InvalidArgument, kComponent,
                          "this frame claims more pixels than the store is holding for it");
   }
@@ -157,7 +167,8 @@ Result<SharpnessFrameQualityEngine::Measured> SharpnessFrameQualityEngine::Measu
   // here from the page unexamined.
   //
   // `FrameByteSize` counts packed bytes while the rows above are strided, so the stride has to be
-  // pinned down too or a narrower claimed width buys budget for extra rows.
+  // pinned down too or a narrower claimed width buys budget for extra rows. Measured: this refuses
+  // a handle that would otherwise score 26,940.9 on a frame whose picture scores 0.0.
   if (BytesPerPixel(frame.format) <= 0) {
     if (stride != rowBytes) {
       return Err<Measured>(StatusCode::InvalidArgument, kComponent,

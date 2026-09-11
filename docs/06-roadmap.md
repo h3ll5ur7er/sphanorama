@@ -346,8 +346,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
   `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
-  feature extraction landed in Phase 2, while the matching and frame-to-frame tracking this argument
-  rests on have not. Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
+  feature extraction landed in Phase 2 — natively only, so not in the browser where this use case
+  lives (ADR 0052) — while the matching and frame-to-frame tracking this argument rests on have not.
+  Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
 

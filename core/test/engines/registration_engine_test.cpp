@@ -194,12 +194,27 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
     return frame;
   }
 
-  /** The same detector, made independently of the engine's own `Make()`. */
+  /**
+   * The same detector, made independently of the engine's own `Make()` — including its cap.
+   *
+   * The cap has to be here too, and an earlier version left it out on the reasoning that the engine
+   * truncates afterwards so the oracle's extra features could just be trimmed. That is false: a
+   * detector *asked* for 50 features does not return the first 50 an uncapped one returns.
+   * `retainBest` selects by response across the whole set, so the two lists differ from row 0. The
+   * comparison was inert only because no frame in this file reaches the cap; lowering
+   * `kMaxFeaturesPerFrame` to 50 failed all three rows while the engine was entirely correct.
+   *
+   * The cap comes from the engine's header rather than being restated here, so tuning it moves both
+   * sides at once. What stays independent is everything this oracle is for: the detector mapping,
+   * the ordering and the coordinates — an oracle sharing `Make()` would agree with a wrong mapping.
+   */
   static cv::Ptr<cv::Feature2D> OpenCvDetector(FeatureDetector detector) {
     switch (detector) {
-      case FeatureDetector::Orb:   return cv::ORB::create();
-      case FeatureDetector::Akaze: return cv::AKAZE::create();
-      case FeatureDetector::Sift:  return cv::SIFT::create();
+      case FeatureDetector::Orb:   return cv::ORB::create(kMaxFeaturesPerFrame);
+      case FeatureDetector::Sift:  return cv::SIFT::create(kMaxFeaturesPerFrame);
+      case FeatureDetector::Akaze:
+        return cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, 0.001f, 4, 4,
+                                 cv::KAZE::DIFF_PM_G2, kMaxFeaturesPerFrame);
     }
     return {};
   }
@@ -389,6 +404,25 @@ TEST_P(Extraction, RefusesAPlanarHandleThatHidesChromaBehindAWideStride) {
   EXPECT_TRUE(store.Forget(allocated.value).ok());
 }
 
+TEST_P(Extraction, RefusesOneEnormousRowTheStoreIsNotHolding) {
+  // The `else` branch of the geometry bound, which round 3 claimed was load-bearing and no test
+  // held. A frame of exactly one row skips the division — there is no product to bound — so this is
+  // the only thing between a single enormous row and the span it would be read from. Deleting it
+  // leaves all 686 tests green and gives ASan `heap-buffer-overflow READ of size 400000` out of a
+  // 64-byte region, inside ORB's `copyMakeBorder_8u`.
+  const Result<FrameRef> allocated = store.Allocate(16, 1, PixelFormat::Gray8);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  FrameRef oneHugeRow = allocated.value;
+  oneHugeRow.width = 400000;
+  oneHugeRow.height = 1;
+  oneHugeRow.stride = 0;   // no stride to fall back on, so the row itself is the whole claim
+
+  const Result<FeatureSet> features = Engine().ExtractFeatures(oneHugeRow);
+  ASSERT_FALSE(features.ok());
+  EXPECT_EQ(features.status.code, StatusCode::InvalidArgument) << features.status.detail;
+  EXPECT_TRUE(store.Forget(allocated.value).ok());
+}
+
 TEST_P(Extraction, RefusesAStrideNarrowerThanOneRow) {
   // Not because it reads out of bounds — it does not. Rows that overlap are not a frame anybody
   // allocated. It also matters that *we* refuse it rather than OpenCV: `cv::Mat` asserts its step
@@ -486,7 +520,7 @@ TEST_P(Extraction, NoDetectorReturnsMoreFeaturesThanTheBudget) {
   FeatureRegistrationEngine engine = Engine();
   const Result<FeatureSet> features = engine.ExtractFeatures(Textured(768));
   ASSERT_TRUE(features.ok()) << features.status.detail;
-  EXPECT_LE(features.value.count, 500);
+  EXPECT_LE(features.value.count, kMaxFeaturesPerFrame);
   // For every detector, including ORB. The `if (GetParam() != Orb)` this replaces removed the one
   // assertion the ORB row could ever fail — with the cap as its own `nfeatures`, passing 0 by
   // mistake means *zero features* to OpenCV's ORB rather than unlimited, and only this catches it.
@@ -741,6 +775,10 @@ TEST_P(Extraction, RefusesAStoreThatHandsBackFewerBytesThanItWasAskedFor) {
       FeatureRegistrationEngine{shorting, GetParam()}.ExtractFeatures(copied.value);
   ASSERT_FALSE(refused.ok()) << "a short frame was copied into as though it were the right size";
   EXPECT_EQ(refused.status.code, StatusCode::Internal) << refused.status.detail;
+  // How this one fails when it fails, recorded because the signature is easy to misread: without
+  // the guard the copy loop runs off the short frame and glibc aborts with `corrupted size vs.
+  // prev_size` — **exit 134, no `[  FAILED  ]` line, and the rest of the suite never runs.** A
+  // sabotage of this check looks like a clean run to anything reading gtest's summary.
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Extraction,
