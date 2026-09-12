@@ -128,6 +128,16 @@ jobs:
             echo "the binary contains no accuracy measurement to run" >&2
             status=1
           fi
+          # `Acceptance` is the other half of the filter and prints no `[accuracy]` line, so the
+          # count above cannot see it — rename it away and this step stays green on a run that lost
+          # the only test reading `PairwiseResult::correspondences`. Its own floor, asked of the
+          # binary the same way.
+          acceptance=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
+          if [ "$acceptance" -lt 1 ]; then
+            echo "the binary contains no acceptance test to run" >&2
+            status=1
+          fi
           if [ "$measured" -ne "$expected" ]; then
             echo "the measurement ran $measured detectors and the binary has $expected" >&2
             status=1
@@ -213,6 +223,16 @@ jobs:
           # the comparison mean something.
           if [ "$expected" -lt 1 ]; then
             echo "the binary contains no accuracy measurement to run" >&2
+            status=1
+          fi
+          # `Acceptance` is the other half of the filter and prints no `[accuracy]` line, so the
+          # count above cannot see it — rename it away and this step stays green on a run that lost
+          # the only test reading `PairwiseResult::correspondences`. Its own floor, asked of the
+          # binary the same way.
+          acceptance=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
+          if [ "$acceptance" -lt 1 ]; then
+            echo "the binary contains no acceptance test to run" >&2
             status=1
           fi
           if [ "$measured" -ne "$expected" ]; then

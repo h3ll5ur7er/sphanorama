@@ -10,16 +10,23 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; eight of the eleven bannered ADRs do not have one at all. For a claim in the body that a
-  reader would otherwise meet and believe. This is the common shape: eleven ADRs carry a banner
-  (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055) and three of those carry a
-  Status chain (0006, 0047, 0052).
+  has one; six of the eleven bannered ADRs do not have a Status line at all. For a claim in the body
+  that a reader would otherwise meet and believe. This is the common shape: eleven ADRs carry a
+  banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055); five of those carry a
+  Status line (0006, 0047, 0052, 0053, 0055), and three of *those* carry a Status **chain** — a
+  "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
 
-  **This census is a maintenance cost the convention does not advertise**, and it has now gone stale
-  twice on one branch. The first correction moved the count from nine to eleven and left the list of
-  nine standing beside it, with the "six" that had been derived from it — so the paragraph disagreed
-  with itself in two directions at once. Both numbers here are computed from the files rather than
-  counted by eye, and anyone adding a banner has to recompute them rather than increment.
+  **This census has now gone wrong three times on one branch, and the third was the worst.** It
+  started stale by omission: the branch added two banners and left the total at nine. The first
+  correction moved the total to eleven and left the list of nine beside it, along with the six
+  derived from it. The second correction then changed that six to an eight — and the six had been
+  *right*, because it counts ADRs with no Status line and both new banners have one. A number was
+  recomputed against the wrong predicate and a correct sentence was broken in the course of fixing
+  an incorrect one.
+
+  So the three quantities are spelled out separately above, because "Status line" and "Status chain"
+  are different things and collapsing them is what did the damage. Anyone adding a banner recomputes
+  all three rather than incrementing one.
 - **A foot note** at the end, under its own heading, when the correction has detail that would
   swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
   sits under that file's banner rather than instead of it: the banner points, the note explains.

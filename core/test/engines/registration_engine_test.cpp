@@ -1152,7 +1152,9 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
 /**
  * Every bounds guard on the way into `EstimatePairwise`, driven.
  *
- * **All five were correct and none was tested.** A reviewer deleted the lot — both keypoint guards
+ * **Seven, and none was tested.** The docblock said five for two rounds and the footer below now
+ * enumerates seven; all seven existed when this test was written, so five was a miscount rather
+ * than a change. A reviewer deleted the lot — both keypoint guards
  * and all three descriptor ones — and 106 tests stayed green, the accuracy measurement included;
  * the same input then gave ASan `heap-buffer-overflow READ of size 8, 0 bytes after a 3768-byte
  * region` inside `ReadBearings`. Correct code with nothing defending it is one careless edit away

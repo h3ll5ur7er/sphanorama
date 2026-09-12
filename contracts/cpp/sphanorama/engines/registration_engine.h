@@ -60,7 +60,12 @@ class IRegistrationEngine {
   // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a prior that
   //   is not a usable rotation, a lens that cannot project, a frame whose declared rows do not fit
   //   the bytes it holds, or two sets made by different detectors.
-  // - Whatever `IFrameStoreAccess::Pin` returned, unchanged, when a frame could not be pinned.
+  // - `Pin`'s own `code` and `detail` when a frame could not be pinned — but **not** its
+  //   `component`, which is replaced by this engine's. So a caller branching on the code sees what
+  //   the store said and a human reading the component sees who was holding it at the time. An
+  //   earlier version of this line claimed the status came back "unchanged", which a reviewer
+  //   disproved by probe: `component = "FeatureRegistrationEngine"` over the store's `code = 2`
+  //   and `detail = "no such frame"`.
   // - `Internal` when the compute library throws, which is how it reports what it does not model.
   //
   // An `Ok` result is not the same as an accepted one: see `PairwiseResult::accepted`, which is

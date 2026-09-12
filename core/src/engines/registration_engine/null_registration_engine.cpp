@@ -12,7 +12,12 @@ Result<FeatureSet> NullRegistrationEngine::ExtractFeatures(const FrameRef&) {
 Result<PairwiseResult> NullRegistrationEngine::EstimatePairwise(const FeatureSet&,
                                                                 const FeatureSet&, const Quat&,
                                                                 const Intrinsics&) {
-  return Err<PairwiseResult>(StatusCode::Unsupported, kComponent, "matching is Phase 2");
+  // "not built here" rather than "not written": `FeatureRegistrationEngine` matches and registers a
+  // pair, and this engine is what a build without OpenCV gets instead (ADR 0052). Saying it is Phase
+  // 2 work stopped being true when that landed, and a browser user reading the message would go
+  // looking for an unwritten feature rather than a missing dependency.
+  return Err<PairwiseResult>(StatusCode::Unsupported, kComponent,
+                             "pairwise registration needs OpenCV, which this build does not have");
 }
 
 Result<GlobalSolution> NullRegistrationEngine::Refine(std::span<const PairwiseResult>,

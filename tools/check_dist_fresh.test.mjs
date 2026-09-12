@@ -737,13 +737,18 @@ describe('the dist freshness check', () => {
     // met from the other side — not a generated file counted as a source, but somebody else's
     // source counted as this build's — and it is worse, because the remedy the message prints
     // (rebuild, restage) cannot clear it: the agent's copy stays newer however often you build.
-    for (const theirs of ['.claude/worktrees/agent-abc123/core/src/engines/thing.cpp',
-                          '.claude/worktrees/agent-abc123/core/CMakeLists.txt',
-                          '.claude/skills/whatever/example.cpp']) {
-      const tree = aFreshTree();
-      tree.put(theirs, Date.now());
-      expect(complaint(tree.root, undefined, () => true), theirs).toBeNull();
-    }
+    // **One path, because only one of them tests the fix.** The first version of this asserted three
+    // — a `.cpp` under a worktree, this `CMakeLists.txt`, and a `.cpp` under `.claude/skills/` — and
+    // a reviewer showed two of them pass with `.claude` removed from the skip list again. They are
+    // excluded a second way: the source walk visits `core/src`, `bridge` and `contracts/cpp` and
+    // nothing else, so a `.cpp` anywhere under `.claude` was never reachable by it. Only
+    // `cmakeFilesInTree`, which globs the whole repository, needed `kNeverWalked` to grow.
+    //
+    // Asserting all three read as three times the coverage and was one test plus two restatements
+    // of a scoping rule that is not what this case is about.
+    const tree = aFreshTree();
+    tree.put('.claude/worktrees/agent-abc123/core/CMakeLists.txt', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
   });
 
   it('does not demand a wasm graph name a CMakeLists the wasm build excludes', () => {

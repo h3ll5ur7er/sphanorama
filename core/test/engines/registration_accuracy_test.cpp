@@ -1,6 +1,8 @@
 /**
  * **How wrong are the rotations?** This is the measurement Phase 2 exits on, and until this file
- * existed nothing in the repository answered it.
+ * existed nothing in the repository answered it. It answers two questions now — this suite measures
+ * the error, and `Acceptance` below asserts that a refusal and a declined answer are different
+ * outcomes in practice, which is the claim ADR 0056 rests on.
  *
  * The three pieces it joins were built separately and on purpose: `tools/synth_dataset.py` renders
  * frames and the truth of where the camera looked (ADR 0050), `support/synthetic_dataset` reads
@@ -288,29 +290,14 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
       static_cast<int>(GetParam()), kFrames, steps - unregistered, steps, score.medianDeg,
       score.meanDeg, score.maxDeg);
 
-  // **The measurement has to beat its own prior, or it is measuring the prior.** Each step is handed
-  // a rotation three degrees from truth; chaining eleven of those unimproved would drift far past
-  // this. Asserting it is what stops the estimator quietly degenerating into an echo again — the
-  // failure this whole test had when it was written, which no assertion in it could see.
-  EXPECT_LT(score.medianDeg, 3.0)
-      << "the chain is no better than the three-degree prior it was seeded with, so this is "
-         "measuring the sensor rather than the registration";
+  // **The anti-echo floor is gone, and the reason is worth keeping.** A `medianDeg < 3.0` assertion
+  // stood here, defended on the grounds that it is tied to the three-degree `nudge` while the
+  // accuracy bound is tied to the detectors. That was arguable at a 0.5 bound and is not at 0.2: it
+  // is strictly subsumed, so it can never be the assertion that fails, and a test that credits it
+  // with catching the prior echo is miscrediting it. What actually catches an echo is the
+  // perturbation itself — a returned prior wins no inliers at three degrees, so the chain refuses
+  // and the registered-pairs conjunct below fails. Verified by sabotage rather than argued.
 
-  // **A majority of the ring, not all of it — and the difference is a measurement rather than a
-  // concession.** The first version of this line demanded every step, and ORB failed three of
-  // eleven. Instrumenting the engine to count inliers under the *truth* rotation settled what those
-  // three were: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
-  // 13 of 154 correspondences, and RANSAC returned 20 and 13 on the two it answered — as well as is
-  // possible. The first is a refusal rather than a declined answer, which is a distinction worth
-  // keeping straight here of all places. Nine in ten of ORB's surviving matches on those pairs are wrong, because a
-  // checkerboard panorama gives it hundreds of corners that are genuinely indistinguishable and
-  // Lowe's ratio cannot separate what is not separable. `accepted` was false because the support
-  // really was a minority, which is the field doing its job.
-  //
-  // So the honest bar is the one a capture actually needs: a detector that cannot register more
-  // than half the consecutive pairs of a clean ring cannot drive a sphere, whatever its accuracy on
-  // the ones it does. That is a statement about usability and not an echo of what was measured —
-  // which is why it is a half and not the eight-elevenths ORB scores.
   EXPECT_GT(steps - unregistered, steps / 2)
       << "only " << (steps - unregistered) << " of " << steps
       << " consecutive pairs produced an accepted rotation";
