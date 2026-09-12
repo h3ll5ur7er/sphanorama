@@ -41,9 +41,14 @@ coverage and acceptance are all decided in the core.
 `Registration`, in part. `Registration` needs the care of a qualified sentence: **two** of its three
 methods are implemented (`ExtractFeatures` and now `EstimatePairwise`), it exists only where OpenCV
 does so a browser build still gets the null one, and no composition root selects it yet — it is
-reached from tests. `Refine` still refuses. And the qualification that matters most: the pair
-estimator *answers*, and nothing has yet scored its answers against a dataset, so "implemented" here
-means it computes a rotation and not that the rotation is known to be right. `Composition` is
+reached from tests. `Refine` still refuses. **The pair estimator is now scored against a dataset**,
+which is what that qualification was waiting for: on a twelve-frame synthetic ring, against a sensor
+prior perturbed three degrees, AKAZE and SIFT register all eleven consecutive pairs and ORB eight,
+with medians under a tenth of a degree (ADR 0056, and the roadmap's table, which retracts the
+figures published before the prior was perturbed — the first harness handed the estimator the exact
+truth and was measuring itself). The three pairs ORB declines are not a defect: the correct rotation
+on those has 11, 19 and 13 correspondences of 128, 141 and 154 behind it, and the search finds as
+many as truth does. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to

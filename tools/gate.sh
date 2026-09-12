@@ -63,6 +63,10 @@ echo "== native =="
 step "native configure"  cmake --preset native-debug
 step "native build"      cmake --build build/native-debug
 step "native test"       ctest --test-dir build/native-debug --output-on-failure
+# Mirrors CI's step of the same name. `ctest` reports a skipped test as a pass, so the line above is
+# green whether the accuracy measurement ran or not — and it needs `uv` and the `datasets` group to
+# run at all.
+step "accuracy measured"  sh -c 'log=$(mktemp); ./build/native-debug/bin/sphanorama_tests --gtest_filter="EveryDetector/Accuracy.*" >"$log" 2>&1; status=$?; cat "$log"; if grep -q SKIPPED "$log"; then echo "the registration accuracy measurement skipped; a skip is not a pass" >&2; status=1; fi; rm -f "$log"; exit $status'
 
 echo "== sanitizers =="
 step "asan configure"    cmake --preset native-asan

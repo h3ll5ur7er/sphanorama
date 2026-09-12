@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -168,6 +169,8 @@ class OwnedFrame {
 };
 
 }  // namespace
+
+
 
 Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   if (!HasReadableLuma(frame.format)) {
@@ -489,10 +492,24 @@ class BorrowedFrame {
   bool pinned_ = false;
 };
 
-/** The bearing a keypoint names, or nothing — `Unproject` refuses rather than guessing (ADR 0046). */
+/**
+ * The bearing a keypoint names, or nothing — `Unproject` refuses rather than guessing (ADR 0046).
+ *
+ * **`usable` rather than omitting the row, and this is a correctness fix rather than a style.** The
+ * first version of `ReadBearings` skipped a refused row with `continue`, so the k-th element was the
+ * k-th *accepted* keypoint while the matcher indexes this vector with *descriptor row* numbers. One
+ * refused row at the top silently shifted every correspondence after it. A reviewer measured what
+ * that costs: a perfect registration of sixty exact correspondences went from 0.0000 to 8.2257
+ * degrees, reported with 43 inliers, a 1.62-pixel median, and `accepted` true.
+ *
+ * It was invisible here because every lens in these tests is distortion-free, so `Unproject` never
+ * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses about 4% of in-frame
+ * pixels, and a 100-degree one with `k1 = -0.35` refuses 38.8%.
+ */
 struct Bearing {
   Vec3 direction;
   Pixel pixel;
+  bool usable = false;
 };
 
 /** A rotation as a matrix, so the prior can be scored by the same code path as a sampled one. */
@@ -561,7 +578,7 @@ bool KabschRotation(const std::vector<Vec3>& from, const std::vector<Vec3>& to, 
   cv::SVD::compute(covariance, w, u, vt);
   // Two bearings span a plane, so the third singular value is legitimately zero there; it is the
   // *second* going to zero that means the bearings are parallel and the fit is unconstrained.
-  if (!(w(1, 0) > 1e-9)) return false;
+  if (!BearingsSpanAPlane(w(0, 0), w(1, 0))) return false;
   cv::Matx33d r = u * vt;
   if (cv::determinant(r) < 0) {
     // A reflection fits the points as well as a rotation does and is not one. Flipping the sign of
@@ -589,7 +606,39 @@ constexpr size_t kMinimumCorrespondences = 8;
 // The inlier gate, in pixels of reprojection error. Generous on purpose, per the skill's advice for
 // a first bound: a bound that exists and is loose beats a precise one that does not.
 constexpr double kInlierPx = 3.0;
-constexpr int kRansacIterations = 200;
+/**
+ * The share of correspondences that must agree before an answer is `accepted`.
+ *
+ * **Set by the gap it has to straddle, not by what was measured.** A wrong correspondence lands
+ * within `kInlierPx` of the right pixel by chance with probability about `pi * 3^2 / (640 * 480)`,
+ * which is one in ten thousand — so agreement at any percentage at all is *structure* rather than
+ * luck, and the question is how much structure to demand.
+ *
+ * The measurement it is checked against, taken by counting inliers under the *truth* rotation
+ * rather than the estimated one: on a twelve-frame ring the correct rotation draws between 0.08 and
+ * 0.38 of the correspondences, detector depending. (An earlier version of this paragraph said 0.31
+ * to 0.46 and was quoting the arrangement that handed the estimator the exact truth as its prior —
+ * so those were inlier counts of a rotation that had been given to it, on the pairs where it
+ * answered at all. The low end is what that arrangement hid.)
+ *
+ * A fifth therefore sits inside the spread rather than below it, and that is the honest position:
+ * it accepts the pairs a detector registers well and declines the ones where nine matches in ten
+ * are wrong, which on this dataset is three of eleven ORB pairs. Those three are not a failure of
+ * the estimator — RANSAC returns as many inliers on them as the truth itself does — they are pairs
+ * whose support really is a minority, and saying so is what `accepted` is for.
+ *
+ * It is deliberately not set to the middle of the measured spread: a threshold set to the
+ * observation is a threshold the next dataset moves. And it is not the gate that catches a
+ * half-turn alias — those gather a real minority following, and the prior's bound is what excludes
+ * them. Different failures, different gates.
+ */
+constexpr double kInlierFraction = 0.2;
+/**
+ * The confidence that the sampling loop draws at least one all-inlier triple.
+ *
+ * Paired with `SampleBudget` below, which turns it into a number of draws.
+ */
+constexpr double kRansacConfidence = 0.99;
 // **How far the pixels may disagree with the sensor before the answer is a different scene rather
 // than a wrong sensor.** This is the "bounds" half of the contract's "seeds and bounds, never
 // truth", and leaving it out was not a simplification: on a panorama with a half-turn symmetry —
@@ -617,41 +666,104 @@ constexpr double kPriorBoundDeg = 45.0;
  */
 Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8_t> rows,
                                           const Intrinsics& lens) {
-  const size_t needed = static_cast<size_t>(set.count) * static_cast<size_t>(kKeypointBytes);
-  if (rows.size() < needed) {
+  // **The frame's own stride, not the row size.** `Allocate` promises nothing about stride, which
+  // is the argument `Extract` already makes when it refuses a padded keypoint frame — this read
+  // assumed 8 and would have walked a padded frame diagonally.
+  const int64_t pitch = set.keypoints.stride > 0 ? set.keypoints.stride : kKeypointBytes;
+  if (pitch < kKeypointBytes) {
+    return Err<std::vector<Bearing>>(StatusCode::InvalidArgument, kComponent,
+                                     "the keypoint frame's stride is narrower than one row");
+  }
+  // Asked by division so the product cannot wrap before the check that would have refused it —
+  // `size_t` is 32 bits on wasm32, where `count * pitch` overflows at a plausible count.
+  if (set.count > 0 && static_cast<int64_t>(rows.size()) / pitch < set.count) {
     return Err<std::vector<Bearing>>(StatusCode::InvalidArgument, kComponent,
                                      "the keypoint frame holds fewer bytes than its own row count "
                                      "needs");
   }
-  std::vector<Bearing> bearings;
-  bearings.reserve(static_cast<size_t>(set.count));
+  std::vector<Bearing> bearings(static_cast<size_t>(set.count));
   for (int32_t row = 0; row < set.count; ++row) {
     float xy[2] = {0, 0};
-    std::memcpy(xy, rows.data() + static_cast<size_t>(row) * kKeypointBytes, sizeof(xy));
+    std::memcpy(xy, rows.data() + static_cast<size_t>(row) * static_cast<size_t>(pitch),
+                sizeof(xy));
     const Pixel pixel{static_cast<double>(xy[0]), static_cast<double>(xy[1])};
     const UnprojectedDirection unprojected = Unproject(lens, pixel);
-    if (!unprojected.valid) continue;
-    bearings.push_back(Bearing{unprojected.direction, pixel});
+    // Kept in place whether or not it is usable, so this vector stays parallel to the descriptor
+    // rows the matcher will index it with. See `Bearing`.
+    bearings[static_cast<size_t>(row)] =
+        Bearing{unprojected.direction, pixel, unprojected.valid};
   }
   return Ok(std::move(bearings));
 }
 
+/**
+ * What one descriptor element is, for the detector that wrote it.
+ *
+ * **Asked of the detector rather than guessed from the width**, which is what the first version did:
+ * `width % 4 == 0 && width >= 512` reads a 512-byte row as 128 floats. A reviewer pointed out that
+ * `AKAZE::DESCRIPTOR_KAZE` and `KAZE` write 256-byte `CV_32F` rows, which that heuristic calls
+ * Hamming bytes — and that `ExtractFeatures` had the real `type()` in hand and threw it away.
+ *
+ * This engine only ever builds the three defaults, so keying off the detector is exact for anything
+ * it produced. It is still a second copy of a fact: the type is decided where the descriptors are
+ * written and re-derived here. The fix that removes the copy is a field on `FeatureSet`, which is a
+ * contract change and is recorded rather than smuggled in beside a bug fix.
+ */
+int DescriptorType(FeatureDetector detector) {
+  switch (detector) {
+    case FeatureDetector::Sift:
+      return CV_32F;
+    case FeatureDetector::Orb:
+    case FeatureDetector::Akaze:
+    case FeatureDetector::Count:
+      break;
+  }
+  return CV_8U;
+}
+
 /** The descriptor rows as a `cv::Mat` over the pinned bytes — a view, copied by nothing. */
-Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows) {
+Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows, int type) {
   if (set.count <= 0 || rows.empty()) {
     return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent, "no descriptor rows to read");
   }
-  const size_t width = rows.size() / static_cast<size_t>(set.count);
-  if (width == 0) {
+  // **The frame's own stride, for the reason `ReadBearings` takes the keypoint frame's.** This
+  // divided the whole pinned span by the row count, which is the row width only when the pin hands
+  // back exactly the rows the set claims — and `FeatureSet` is a value its caller fills in, so the
+  // two can disagree. A set naming half the rows its frame holds made every descriptor twice as
+  // wide, assembled from the bytes of two, and the only thing that noticed was the width comparison
+  // against the other set. Falling back to the division is still right when a store leaves the
+  // stride unset, which is what `MemoryFrameStoreAccess` did before it carried one.
+  const int64_t pitch = set.descriptors.stride > 0
+                            ? set.descriptors.stride
+                            : static_cast<int64_t>(rows.size() / static_cast<size_t>(set.count));
+  if (pitch <= 0) {
     return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
                         "the descriptor frame holds fewer bytes than one row per feature");
   }
-  // SIFT's are 128 `float32`s and the binary detectors' are bytes; the width in bytes tells them
-  // apart, because only the float one is divisible by four *and* four times a plausible row count.
-  if (width % sizeof(float) == 0 && width >= 128 * sizeof(float)) {
-    return Ok(cv::Mat(set.count, static_cast<int>(width / sizeof(float)), CV_32F, rows.data()));
+  // By division, so the product cannot wrap before the check that would have refused it — `size_t`
+  // is 32 bits on wasm32, where `count * pitch` overflows at a plausible count and a wrapped
+  // product would pass a comparison against the span it has already run past.
+  if (static_cast<int64_t>(rows.size()) / pitch < set.count) {
+    return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
+                        "the descriptor frame holds fewer bytes than its own row count needs");
   }
-  return Ok(cv::Mat(set.count, static_cast<int>(width), CV_8U, rows.data()));
+  const int64_t element = type == CV_32F ? static_cast<int64_t>(sizeof(float))
+                                         : static_cast<int64_t>(sizeof(uint8_t));
+  if (pitch % element != 0) {
+    return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
+                        "the descriptor rows are not a whole number of elements wide for the "
+                        "detector that wrote them");
+  }
+  // `cv::Mat` takes its dimensions as `int`. A row wider than that cannot be described to OpenCV,
+  // and narrowing it would be undefined rather than wrong — so it is refused here, where the number
+  // is still 64 bits wide.
+  const int64_t columns = pitch / element;
+  if (columns > std::numeric_limits<int>::max()) {
+    return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
+                        "the descriptor rows are wider than OpenCV can describe");
+  }
+  return Ok(cv::Mat(set.count, static_cast<int>(columns), type, rows.data(),
+                    static_cast<size_t>(pitch)));
 }
 
 /**
@@ -689,14 +801,31 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   std::vector<size_t> bestInliers;
   countInliers(best, &bestInliers);
 
-  // Deterministic, and that is a property the selection tests rely on elsewhere in this core: the
-  // same correspondences and the same prior must give the same rotation, so the sampling walks a
-  // fixed stride rather than a clock-seeded generator.
+  // **Deterministic *and* spread, which the first version was not.** It drew
+  // `(7t+1, 13t+5, 23t+11) mod n`, so all 200 triples lay on one line in index space: about 200
+  // distinct triples out of 4.4 million at 300 features, and at `n = 8` only four of the 56
+  // possible. Theory wants ~34 *independent* triples for 99% confidence at a half-inlier ratio, and
+  // correlated ones do not substitute — a reviewer perturbed the prior by one degree and ORB
+  // refused three steps of eleven with "the best had 0", because no sampled triple was all-inlier.
+  // The truth-shaped prior in the harness had been covering for it.
+  //
+  // A fixed-seed 64-bit LCG keeps the determinism the selection tests elsewhere in this core rely
+  // on — same correspondences and same prior, same rotation — while drawing triples that are
+  // independent of each other. The constants are Knuth's MMIX.
+  uint64_t seed = 0x9E3779B97F4A7C15ULL;
+  const auto next = [&seed](size_t bound) {
+    seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    return static_cast<size_t>((seed >> 33) % bound);
+  };
+  // Shrinks as the search succeeds: once a consensus of a given size is in hand, the draws needed
+  // to be confident of having seen one that large are fewer, so a clean pair stops early and a
+  // hard one is given the full budget the gate implies.
+  int budget = RansacSampleBudget(0.0);
   std::vector<size_t> candidate;
-  for (int iteration = 0; iteration < kRansacIterations; ++iteration) {
-    const size_t i = static_cast<size_t>(iteration * 7 + 1) % from.size();
-    const size_t j = static_cast<size_t>(iteration * 13 + 5) % from.size();
-    const size_t k = static_cast<size_t>(iteration * 23 + 11) % from.size();
+  for (int iteration = 0; iteration < budget; ++iteration) {
+    const size_t i = next(from.size());
+    const size_t j = next(from.size());
+    const size_t k = next(from.size());
     if (i == j || j == k || i == k) continue;
     cv::Matx33d sampled;
     if (!KabschRotation({from[i], from[j], from[k]}, {to[i], to[j], to[k]}, &sampled)) continue;
@@ -705,6 +834,8 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     if (candidate.size() > bestInliers.size()) {
       best = sampled;
       bestInliers = candidate;
+      budget = std::min(budget, RansacSampleBudget(static_cast<double>(bestInliers.size()) /
+                                             static_cast<double>(from.size())));
     }
   }
 
@@ -733,6 +864,15 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     }
   }
 
+  // **Over the inliers, and bounded by `kInlierPx` by construction** — they are exactly the rows at
+  // or under it. So this describes how *tightly* the accepted model fits its own support, which is
+  // worth reporting, and it says nothing about whether that support is large enough, which is why
+  // it is no longer part of `accepted` below.
+  //
+  // Taking it over *every* correspondence was the first attempt at fixing that and was worse: the
+  // matcher leaves a majority of junk matches by design — measured at 181 correspondences to 60
+  // inliers on a clean pair — so the all-correspondence median is an outlier's residual, around 300
+  // pixels, and gating on it refused every step of a ring that registers perfectly well.
   std::vector<double> residuals;
   residuals.reserve(bestInliers.size());
   for (size_t at : bestInliers) residuals.push_back(residualPx(best, at));
@@ -743,12 +883,60 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   answer.relativeRotation = FromMatrix(best);
   answer.inliers = static_cast<int32_t>(bestInliers.size());
   answer.medianResidualPx = median;
-  answer.accepted = bestInliers.size() >= kMinimumCorrespondences && median <= kInlierPx;
+  // **A fraction, because that is the conjunct that can be false.** A reviewer showed the previous
+  // gate could not be: the count was guaranteed by the early return above, and the median was
+  // guaranteed by being taken over the rows that gate selected. Injected noise from zero to four
+  // pixels produced `accepted = true` at every level. What varies with the quality of the answer is
+  // how much of the evidence stands behind it.
+  const double agreeing =
+      from.empty() ? 0.0 : static_cast<double>(bestInliers.size()) / static_cast<double>(from.size());
+  answer.accepted = bestInliers.size() >= kMinimumCorrespondences && agreeing >= kInlierFraction;
   return Ok(answer);
 }
 
 
 }  // namespace
+
+/**
+ * How many triples to draw before giving up, for correspondences of which `agreeing` are inliers.
+ *
+ * **The budget is the acceptance gate turned into a number of draws, rather than a second knob.**
+ * A triple drawn from a set in which a fraction `w` agree is all-inlier with probability `w^3`, so
+ * `log(1 - p) / log(1 - w^3)` draws reach confidence `p` that at least one was. The first version
+ * of this loop wrote 200 — the textbook figure for `w = 0.5` — and on a rendered ring the measured
+ * ratios are a third of that, because a checkerboard panorama hands ORB hundreds of corners that
+ * all look alike and the ratio test cannot separate them. At `w = 0.15` those 200 draws find an
+ * all-inlier triple about half the time, and ORB refused three steps of eleven for exactly that
+ * reason: `the best had 0`, `the best had 2`, and one consensus of 19 out of 141 that was fitted
+ * well (0.82 px) and still under the gate. Nothing about the geometry was wrong; the search gave
+ * up early and the harness could not tell the two apart.
+ *
+ * A ratio below `kInlierFraction` is raised to it, and that is the whole of the clamping: a
+ * consensus smaller than the gate would be *refused* even if it were found, so the draws that
+ * would find one buy nothing. It also makes this total — `ratio >= 0.2` puts `w^3` in
+ * `[0.008, 1)`, where the logarithm is finite and negative — which is what lets the loop hand it
+ * the two-in-a-hundred-and-fifty it is currently sitting on without special-casing.
+ */
+bool BearingsSpanAPlane(double largest, double second) {
+  // A covariance with no leading singular value has no bearings in it worth fitting — every input
+  // was the zero vector, or there were none. Refusing here is what lets the ratio below be a
+  // division that cannot be by zero.
+  if (!(largest > 0.0)) return false;
+  // **Relative, and deliberately still permissive.** This is the degeneracy that makes the fit
+  // *unconstrained* — bearings all on one line, where the rotation about that line is free — and
+  // not a general conditioning test. Bearings a ten-thousandth of a radian apart are badly
+  // conditioned and this will pass them; what rejects those is that the rotation they produce wins
+  // no inliers and loses the sample. Tightening this would be choosing a number with no measurement
+  // behind it, and the search already has a gate that is measured.
+  return second > 1e-9 * largest;
+}
+
+int RansacSampleBudget(double agreeing) {
+  const double ratio = agreeing > kInlierFraction ? agreeing : kInlierFraction;
+  const double all = ratio * ratio * ratio;
+  if (all >= 1.0) return 0;  // every correspondence agrees; there is nothing left to search for
+  return static_cast<int>(std::ceil(std::log(1.0 - kRansacConfidence) / std::log(1.0 - all)));
+}
 
 Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const FeatureSet& a,
                                                                   const FeatureSet& b,
@@ -797,9 +985,10 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       return Err<PairwiseResult>(bearingsB.status.code, kComponent, bearingsB.status.detail);
     }
 
-    const Result<cv::Mat> matA = ReadDescriptors(a, daSpan.value);
+    const int type = DescriptorType(detector_);
+    const Result<cv::Mat> matA = ReadDescriptors(a, daSpan.value, type);
     if (!matA.ok()) return Err<PairwiseResult>(matA.status.code, kComponent, matA.status.detail);
-    const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value);
+    const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value, type);
     if (!matB.ok()) return Err<PairwiseResult>(matB.status.code, kComponent, matB.status.detail);
     if (matA.value.type() != matB.value.type() || matA.value.cols != matB.value.cols) {
       return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
@@ -809,7 +998,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     // **Lowe's ratio test, two nearest neighbours.** A single nearest neighbour always exists, so
     // matching without the ratio produces a full set of correspondences for two frames of unrelated
     // scenery — the shape that makes a registration look successful and be nonsense.
-    const int norm = matA.value.type() == CV_8U ? cv::NORM_HAMMING : cv::NORM_L2;
+    const int norm = type == CV_8U ? cv::NORM_HAMMING : cv::NORM_L2;
     cv::BFMatcher matcher(norm);
     std::vector<std::vector<cv::DMatch>> knn;
     matcher.knnMatch(matA.value, matB.value, knn, 2);
@@ -823,6 +1012,9 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       const size_t ia = static_cast<size_t>(pair[0].queryIdx);
       const size_t ib = static_cast<size_t>(pair[0].trainIdx);
       if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
+      // A row the lens could not turn into a direction is dropped *here*, where dropping it costs
+      // one correspondence, rather than in `ReadBearings`, where it shifted every index after it.
+      if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;
       fromAll.push_back(bearingsA.value[ia].direction);
       toAll.push_back(bearingsB.value[ib].direction);
       observed.push_back(bearingsB.value[ib].pixel);

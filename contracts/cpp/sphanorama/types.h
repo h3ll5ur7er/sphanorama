@@ -587,7 +587,23 @@ struct PairwiseResult {
   FrameId a, b;
   Quat relativeRotation;
   int32_t inliers = 0;
+  // Over the inliers, so it is bounded by the estimator's own inlier radius by construction. It
+  // says how *tightly* the rotation fits the correspondences that back it and nothing at all about
+  // how many those are — taking it over every correspondence instead was tried and is worse, since
+  // a matcher leaves a majority of junk by design and the number became a property of the junk.
   double medianResidualPx = 0;
+  // **Whether a global solve should use this edge, which is not the same question as whether an
+  // answer exists.** A refusal means no rotation gathered enough agreement to be worth returning;
+  // `accepted` false with an answer present means one did, and a minority of the correspondences
+  // back it. Those are different facts and the field earns its place only because they come apart
+  // in practice: on a checkerboard ring, three of eleven ORB pairs produce a rotation that fits its
+  // support to under a pixel and has fewer than a fifth of the correspondences behind it, because
+  // the scene gives the detector hundreds of corners that are genuinely alike.
+  //
+  // So a caller may read `relativeRotation` on an unaccepted result — it is the best the pixels
+  // offered — but should treat it as a weak constraint, or ask for another frame, rather than
+  // chaining it. An earlier implementation set this from the same condition that decided the
+  // refusal, which made it a constant `true` on every returned result and told a caller nothing.
   bool accepted = false;
 };
 

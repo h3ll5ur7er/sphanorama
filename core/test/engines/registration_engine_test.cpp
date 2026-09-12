@@ -1015,9 +1015,18 @@ TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
   // `Project` refuses — and the call refuses rather than picking a side. That is the honest
   // outcome: an engine that silently resolved this would be deciding whether to trust the sensor,
   // which is a policy and not an estimate.
-  EXPECT_FALSE(pair.ok() && pair.value.accepted)
-      << "the sensor and the pixels disagree by a half turn and this answered anyway: "
-      << pair.status.detail;
+  // **And it refuses for *this* reason.** `EXPECT_FALSE(pair.ok() && ...)` alone is satisfied by any
+  // refusal at all — a lens the engine could not use, a frame it could not pin, a descriptor width
+  // it did not recognise — none of which have anything to do with the bound this test is named
+  // after. Naming the status and the sentence pins the refusal to the consensus search coming back
+  // empty, which is the only outcome that means the bound did its work.
+  ASSERT_FALSE(pair.ok()) << "the sensor and the pixels disagree by a half turn and this answered "
+                             "anyway, with "
+                          << pair.value.inliers << " inliers";
+  EXPECT_EQ(pair.status.code, StatusCode::NotFound)
+      << "refused, but not for the reason this test is about: " << pair.status.detail;
+  EXPECT_NE(pair.status.detail.find("agreed on"), std::string::npos)
+      << "refused, but not for the reason this test is about: " << pair.status.detail;
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
@@ -1054,9 +1063,18 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // half an implementation is most likely to get wrong: an error path that "cleans up" is the
   // natural thing to write and is exactly what must not happen here.
   //
-  // Four refusals are driven, each reaching a different exit: before any pin (an empty set), at the
-  // lens guard, at the prior guard, and after the pins are taken and the matching runs out of
-  // correspondences. A count of zero across all of them plus the success is the whole assertion.
+  // Four refusals are driven, and the fourth is the one that matters. **Three of them refuse before
+  // a single `Pin` is taken** — the empty set, the lens guard, the prior guard — so a `Forget` in
+  // the pinned region could not have been reached by any of them, and an earlier version of this
+  // comment claimed otherwise. The fourth hands the engine two feature sets made by *different*
+  // detectors: all four frames are pinned and both keypoint sets are lifted to bearings before the
+  // descriptor widths are compared, so the exit it takes is past every `BorrowedFrame` in the
+  // function. That is the exit an over-helpful rollback would live in.
+  //
+  // Still not covered, and said here rather than implied: the exits inside the matching loop — too
+  // few correspondences surviving the ratio test, and the consensus search coming back empty. Both
+  // are post-pin and both are reached by other tests in this file, but not with a store that counts
+  // `Forget`.
   CountingForgets counting{store};
   FeatureRegistrationEngine engine{counting, GetParam()};
   const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
@@ -1079,6 +1097,22 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // A set with no rows, refused before anything is pinned.
   EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
 
+  // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
+  // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
+  // makes differs in width or in element type and the mismatch guard fires — after four `Pin`s and
+  // two passes of `ReadBearings`.
+  const FeatureDetector other =
+      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
+  FeatureRegistrationEngine foreign{counting, other};
+  const Result<FeatureSet> c = foreign.ExtractFeatures(Textured());
+  ASSERT_TRUE(c.ok()) << c.status.detail;
+  const Result<PairwiseResult> mismatched =
+      engine.EstimatePairwise(a.value, c.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_FALSE(mismatched.ok());
+  EXPECT_NE(mismatched.status.detail.find("same detector"), std::string::npos)
+      << "the mismatch was meant to refuse past the pins, and refused somewhere else: "
+      << mismatched.status.detail;
+
   EXPECT_EQ(counting.forgets, afterExtraction)
       << "EstimatePairwise forgot " << (counting.forgets - afterExtraction)
       << " of the frames it was handed; they belong to the caller, refusal or not";
@@ -1089,6 +1123,45 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
                                                                Lens());
   EXPECT_TRUE(again.ok()) << "the second estimate of the same pair failed, so the first consumed "
                              "its input: " << again.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+  ForgetOutputs(c.value);
+}
+
+/**
+ * A descriptor row is as wide as the frame says, not as wide as the pinned bytes divide out to.
+ *
+ * **The same defect `ReadBearings` was fixed for, in the reader beside it.** The keypoint reader
+ * now takes its pitch from `FrameRef::stride`; the descriptor reader still computed
+ * `pinned.size() / count`, which is the row width only when the pin returns exactly the rows the
+ * set claims. Hand it a set claiming fewer rows than the frame holds — which a caller can do, since
+ * `FeatureSet` is a value it owns and fills in — and every row came out twice as wide, built from
+ * the bytes of two.
+ *
+ * Driven by halving `count` rather than by a padding store, because this is a statement about the
+ * *set* disagreeing with its frame and not about how the store allocates. The two sets are
+ * extracted from identical frames and one is doctored, so under the old reader `a` is 64 bytes a
+ * row against `b`'s 32 and the mismatch guard refuses the pair; under the new one both are 32 and
+ * the pair registers to the identity it should.
+ */
+TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+  ASSERT_GT(a.value.count, 3) << "too few features to halve";
+
+  FeatureSet halved = a.value;
+  halved.count = a.value.count / 2;
+
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(halved, b.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_TRUE(pair.ok()) << "the rows were read at the wrong width: " << pair.status.detail;
+  EXPECT_TRUE(pair.value.accepted);
+  EXPECT_LT(AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 /
+                3.14159265358979323846,
+            0.5);
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
@@ -1112,7 +1185,14 @@ TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
   ASSERT_GT(a.value.count, 0);
   ASSERT_EQ(a.value.count, b.value.count);
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
+  // **A prior that is not the answer**, which is what makes this an assertion about the fit. The
+  // first version passed the identity — and `FitRotation` seeds its search with the prior, so the
+  // correct answer was sitting in `best` before a pixel was read. A reviewer gutted the estimator to
+  // `return the prior` and this test passed on all three detectors, `medianResidualPx` included.
+  // Ten degrees is comfortably inside the 45-degree bound, so the identity still has to be *found*
+  // rather than handed over, and the pixels are unanimous about it.
+  const Quat offset = FromAxisAngle(Vec3{0.577, 0.577, 0.577}, 10.0 * 3.14159265358979323846 / 180.0);
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, offset, Lens());
   ASSERT_TRUE(pair.ok()) << pair.status.detail;
 
   // The rotation, as an angle rather than component by component: the double cover makes -q the
@@ -1350,6 +1430,85 @@ TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
   }
   EXPECT_EQ(tiles.size(), static_cast<size_t>((kWidth / kTile) * (kHeight / kTile)));
   EXPECT_TRUE(store.Release(frame).ok());
+}
+
+/**
+ * The degeneracy test says the same thing about the same bearings however many there are.
+ *
+ * **The point is the invariance, so the test is written as one.** The covariance the Kabsch fit
+ * builds is a sum over correspondences, so doubling the number of bearings roughly doubles every
+ * singular value while the *shape* they describe is unchanged. An absolute threshold — which is
+ * what this was — therefore answers a different question at a three-point minimal sample than at a
+ * sixty-inlier refit, and both are shapes this engine fits on the same call.
+ */
+TEST(Degeneracy, ScalingEveryBearingSetTheSameWayDoesNotChangeTheAnswer) {
+  // A plausible minimal sample: three unit bearings a few degrees apart, so the second axis is
+  // resolved at a few percent of the first.
+  const double largest = 2.9;
+  const double second = 0.04;
+  EXPECT_TRUE(BearingsSpanAPlane(largest, second));
+  // The same shape, sixty inliers instead of three. Under the old absolute bound this was the case
+  // that drifted: everything got twenty times larger and the fixed 1e-9 floor twenty times easier
+  // to clear.
+  EXPECT_TRUE(BearingsSpanAPlane(largest * 20.0, second * 20.0));
+
+  // Bearings on one line: the second axis is a rounding error rather than a direction, and the
+  // rotation about that line is unconstrained.
+  EXPECT_FALSE(BearingsSpanAPlane(3.0, 3.0 * 1e-12));
+  // **The same degenerate shape at twenty times the count, which the absolute bound accepted.**
+  // 60 * 1e-12 is 6e-11 — under 1e-9, so the old predicate refused this one too. Scale it the other
+  // way and the old one breaks: see the next assertion.
+  EXPECT_FALSE(BearingsSpanAPlane(60.0, 60.0 * 1e-12));
+  // Sixty bearings on one line, with the second axis at 1e-10 of the first — which is 6e-9,
+  // *above* the old absolute floor, so the old predicate called this a plane and handed the fit a
+  // rotation with a free axis. This assertion is the whole of the finding.
+  EXPECT_FALSE(BearingsSpanAPlane(60.0, 6e-9));
+
+  // Nothing to fit: no bearings, or every one of them the zero vector. Refused rather than divided
+  // by, which is what makes the ratio above total.
+  EXPECT_FALSE(BearingsSpanAPlane(0.0, 0.0));
+}
+
+/**
+ * The search budget, checked against the textbook it claims to come from.
+ *
+ * **This exists because the accuracy test cannot see the difference.** The budget was a written-down
+ * 200 until a perturbed prior exposed what it cost, and raising it turned one ORB step from a
+ * two-correspondence consensus into a thirteen-correspondence one — but ORB still registers eight
+ * of eleven steps either way, so every assertion in the accuracy test reads the same before and
+ * after. A wrong budget is invisible there, which is the argument for pinning the arithmetic where
+ * it is visible.
+ *
+ * The expected values are worked from `ceil(log(1 - 0.99) / log(1 - w^3))` by hand rather than
+ * printed from the function, since a test that asks the code what it says is a test of nothing.
+ */
+TEST(SampleBudget, TheDrawsAreTheOnesNinetyNinePercentConfidenceNeeds) {
+  // w = 0.5: one triple in eight is all-inlier, and 35 draws miss them all with probability 0.01.
+  // This is the textbook figure the first version wrote down as a constant for every ratio.
+  EXPECT_EQ(RansacSampleBudget(0.5), 35);
+  // w = 0.2 — the acceptance gate. Sixteen times as many draws as w = 0.5, which is the size of the
+  // mistake the constant was making on this dataset.
+  EXPECT_EQ(RansacSampleBudget(0.2), 574);
+  // w = 0.3, between the two, so the interpolation is pinned and not just the ends.
+  EXPECT_EQ(RansacSampleBudget(0.3), 169);
+  // Nearly every correspondence agrees: four draws are enough, and the loop leaves almost at once.
+  EXPECT_EQ(RansacSampleBudget(0.9), 4);
+}
+
+/**
+ * A ratio under the gate asks for the gate's budget, and a perfect one asks for nothing.
+ *
+ * Separate from the arithmetic above because these are the two ends the loop actually hands it:
+ * `RansacSampleBudget(0.0)` opens the search, and the observed ratio it passes in on every
+ * improvement can be anything from two-in-a-hundred-and-fifty to all of them.
+ */
+TEST(SampleBudget, BelowTheGateItAsksForTheGateAndAboveEverythingItAsksForNothing) {
+  // Searching past the draws that would find a 20% consensus buys nothing: a smaller one would be
+  // refused even if found. So these are not "more thorough", they are the same number.
+  EXPECT_EQ(RansacSampleBudget(0.0), RansacSampleBudget(0.2));
+  EXPECT_EQ(RansacSampleBudget(2.0 / 150.0), RansacSampleBudget(0.2));
+  // Total, not clamped-and-hoped: w = 1 puts `1 - w^3` at zero, where the logarithm is not finite.
+  EXPECT_EQ(RansacSampleBudget(1.0), 0);
 }
 
 TEST(DetectorCoverage, AValueThatIsNotADetectorIsRefusedRatherThanBuilt) {

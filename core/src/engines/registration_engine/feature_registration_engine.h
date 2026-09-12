@@ -57,6 +57,29 @@ inline constexpr int kMaxFeaturesPerFrame = 500;
 // V7 — feature extraction, matching and global refinement over OpenCV.
 //
 // Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build
+/**
+ * Whether a set of bearings spans a plane, given the two largest singular values of the covariance
+ * the Kabsch fit builds from them.
+ *
+ * **Declared here for the same reason as the budget below: the scale is the part that was wrong.**
+ * The predicate started life as `second > 1e-9`, an absolute bound on a quantity that is a sum over
+ * the correspondences — so at a three-point minimal sample the singular values are of order one and
+ * at a sixty-inlier refit they are of order sixty, and one written-down number cannot mean the same
+ * thing at both. Comparing the second against the first is scale-free by construction.
+ */
+bool BearingsSpanAPlane(double largest, double second);
+
+/**
+ * How many minimal samples the pairwise fit draws, for a set in which `agreeing` of the
+ * correspondences are inliers.
+ *
+ * **Declared here only so it can be tested**, because the arithmetic is the part of the search that
+ * can be silently wrong: a budget too small refuses a pair the pixels could have registered, and
+ * nothing downstream can tell that apart from a pair with no answer. See the definition for why the
+ * number is derived from the acceptance gate rather than chosen.
+ */
+int RansacSampleBudget(double agreeing);
+
 // gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
 // one of the two resource accesses an engine may touch.
 //

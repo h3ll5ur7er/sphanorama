@@ -811,26 +811,50 @@ per device class.
 until a detector had been run against a dataset, because a number chosen before anything can produce
 one is a number the implementation is tuned to rather than measured against.
 
+**The first figures published here were an artefact, and are retracted.** A table stood in this
+place giving medians of AKAZE 0.063°, ORB 0.099° and SIFT 0.124°. Those came from a harness that
+handed the estimator the *exact truth* of each step as its sensor prior — and the fit seeds its
+search with the prior, so the answer was correct before a pixel was read. A reviewer replaced the
+whole estimator with `return the prior` and every detector passed at `median = 0.0000`, scoring
+better than the real implementation; on 31 of 33 steps the search had never beaten the prior's
+inlier count. The numbers were real measurements of the wrong thing. They are restated below from a
+harness that perturbs the prior by three degrees, which is the order a fused phone orientation is
+out by when it is working.
+
 `core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
-by 50 degree lens, extracts features, estimates each consecutive pair, chains the relative rotations
-into absolute ones and scores them with the gauge removed (ADR 0049). Medians over that chain:
+by 50 degree lens, extracts features, estimates each consecutive pair against a prior three degrees
+from truth, chains the relative rotations into absolute ones and scores them with the gauge removed
+(ADR 0049):
 
-| detector | median | mean | max |
-| -------- | ------ | ---- | --- |
-| AKAZE | 0.063° | 0.085° | 0.204° |
-| ORB | 0.099° | 0.114° | 0.265° |
-| SIFT | 0.124° | 0.166° | 0.303° |
+| detector | pairs registered | median | mean | max |
+| -------- | ---------------- | ------ | ---- | --- |
+| AKAZE | 11 of 11 | 0.063° | 0.085° | 0.204° |
+| SIFT | 11 of 11 | 0.090° | 0.091° | 0.136° |
+| ORB | 8 of 11 | 0.072° | 0.100° | 0.262° |
 
-So 0.5 degrees is about four times the worst detector's median — generous, in the spirit of a first
+So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
 bound that exists beating a precise one that does not.
 
-**Three things this number is not.** It is not a detector ranking worth acting on: the three are
-within a factor of two on one synthetic ring, and the ordering here (AKAZE, then ORB, then SIFT) is
-not the ordering anyone would predict, which is a reason to distrust a gap this small rather than to
-report a winner. It is not a statement about a phone: the dataset has no noise, no blur, no rolling
-shutter, no exposure variation and no distortion, and ADR 0050 lists each of those as its own
-increment. And it is not a whole-sphere number — one ring of twelve frames chained in order is the
-easiest possible topology, with no loop closure and nothing for `Refine` to do.
+**Read the first column before the second.** ORB declines three of eleven pairs, and the median
+beside that is computed over the eight it answered — a detector that declined everything would
+score zero. What those three are was settled by instrumenting the engine to count inliers under the
+truth rotation: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
+13 of 154 correspondences, and the search returned 20 and 13 on the last two, which is as well as is
+possible. Nine of ten of ORB's surviving matches there are wrong, because a checkerboard panorama
+gives it hundreds of corners that are genuinely indistinguishable. The estimator reports that
+honestly as `accepted = false` rather than chaining a minority-backed rotation.
+
+**Three things this number is not.** It is not a detector ranking worth acting on: the medians are
+within a factor of two on one synthetic ring, and the pairs-registered column is the only column
+that separates them at all. It is not a statement about a phone: the dataset has no noise, no blur,
+no rolling shutter, no exposure variation and — the one that has already cost something — **no
+distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bug in which the
+bearing reader dropped the rows the lens could not unproject, desynchronising them from their
+descriptors, was invisible to every test in this repository for exactly that reason: with no
+distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 lists each of
+these as its own increment.
+And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
+possible topology, with no loop closure and nothing for `Refine` to do.
 
 **What the measurement caught, which is the argument for having made it first.** Before the sensor
 prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of

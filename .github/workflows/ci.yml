@@ -53,6 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # **The registration accuracy measurement shells out to the Python renderer and skips without
+      # it.** `uv` is not on the runner by default, so this job ran that test's `GTEST_SKIP` on every
+      # push while ctest reported "100% tests passed, 0 tests failed" — the exact shape of a
+      # measurement nobody is taking and everybody believes is green.
+      - uses: astral-sh/setup-uv@v5
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
@@ -89,12 +94,23 @@ jobs:
         run: cmake --build build/native-debug
       - name: test
         run: ctest --test-dir build/native-debug --output-on-failure
+      # And say so if it skipped anyway. `ctest` reports a skipped test as a pass, so the step above
+      # is green whether the measurement ran or not — which is the failure this job just had. Run
+      # the accuracy cases on their own and fail on gtest's skip count, because the only thing worse
+      # than an unmeasured number is an unmeasured number nobody can tell from a measured one.
+      - name: the accuracy measurement actually ran
+        run: sh -c 'log=$(mktemp); ./build/native-debug/bin/sphanorama_tests --gtest_filter="EveryDetector/Accuracy.*" >"$log" 2>&1; status=$?; cat "$log"; if grep -q SKIPPED "$log"; then echo "the registration accuracy measurement skipped; a skip is not a pass" >&2; status=1; fi; rm -f "$log"; exit $status'
 
   sanitizers:
     name: address and undefined behaviour
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # **The registration accuracy measurement shells out to the Python renderer and skips without
+      # it.** `uv` is not on the runner by default, so this job ran that test's `GTEST_SKIP` on every
+      # push while ctest reported "100% tests passed, 0 tests failed" — the exact shape of a
+      # measurement nobody is taking and everybody believes is green.
+      - uses: astral-sh/setup-uv@v5
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
