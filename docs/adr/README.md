@@ -3,6 +3,39 @@
 One file per decision that is expensive to reverse. Format: context, decision, consequences,
 and the alternative we rejected and why.
 
+**An ADR's body is never edited into agreement with the present.** Where the record needs a pointer
+forward, one is *added* in one of three places, and the body below it is left alone.
+
+- **The Status line** carries the chain of what narrowed, superseded or extended this decision.
+  It is a pointer rather than a claim, so extending it in place is not editing the record —
+  ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
+- **A banner** at the top of the file — under the title, and under the Status line where the file
+  has one; six of the nine bannered ADRs do not have one at all. For a claim in the body that a
+  reader would otherwise meet and believe. This is the common shape: nine ADRs carry a banner
+  (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052) and three of those carry a Status line
+  (0006, 0047, 0052).
+- **A foot note** at the end, under its own heading, when the correction has detail that would
+  swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
+  sits under that file's banner rather than instead of it: the banner points, the note explains.
+
+**A banner covers the body's claims, not the Context's dated observations.** A *Context* sentence
+describes what the world looked like before the decision, and that is its whole job; bannering one
+would put the file's revision history inside the file, and every ADR here would eventually carry a
+banner saying the world has moved on. Worked example, checked rather than recalled: ADR 0052's
+banner corrects a Decision sentence at `:61` about `-fexceptions`, while the Context sentence at
+`:19-21` — "its single consumer cross-checks `camera_model` against `cv::projectPoints`" — is left
+alone, though this branch gave `sphanorama_opencv` a second consumer. That asymmetry is the
+convention rather than an oversight, and it is written down because a reviewer could not tell which
+of the two the file meant.
+
+The exception is a sentence that was **wrong when written**, as opposed to overtaken. That is a
+defect in the record rather than a record of what we thought, and it gets a foot note saying so
+wherever it sits, Context included.
+
+*(The first version of this section, written in the commit that settled the convention, got both of
+its worked examples wrong — it said ADR 0047 carried a foot note, which it does not, and put the
+Context sentence twelve lines above a banner that is in fact above it. Corrected from the files.)*
+
 | ADR | Decision |
 | --- | -------- |
 | [0001](0001-decompose-by-volatility.md) | Decompose by volatility (iDesign), not by function |
@@ -10,7 +43,7 @@ and the alternative we rejected and why.
 | [0003](0003-candidate-sets-not-frames.md) | A capture cell owns a set of candidates, not a frame |
 | [0004](0004-build-as-incremental-graph.md) | A build is a fingerprinted DAG, not a pipeline run |
 | [0005](0005-opencv-piecemeal-not-stitching-module.md) | Use OpenCV algorithms piecemeal; do not use its `stitching` module |
-| [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary — **narrowed by [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)**, which compiles one OpenCV-calling file with exceptions and converts at its edge |
+| [0006](0006-no-exceptions-result-type.md) | `Result<T>` everywhere; no exceptions across layers or the WASM boundary — **narrowed by [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)**, which compiles one OpenCV-calling file with exceptions and converts at its edge, and **extended by [0053](0053-the-harness-reads-its-own-datasets.md)**, which adds three test-support files |
 | [0007](0007-tests-and-docs-are-gated.md) | Tests and documentation are gated in CI, not left to discipline |
 | [0008](0008-contracts-are-the-include-path.md) | One interface per header; `contracts/cpp` is the include root |
 | [0009](0009-the-cpp-header-is-the-idl.md) | The C++ header is the IDL; a strict parser generates the TypeScript mirror |
@@ -57,3 +90,4 @@ and the alternative we rejected and why.
 | [0050](0050-the-dataset-renderer-re-implements-the-lens-on-purpose.md) | The synthetic dataset renderer re-implements the lens rather than calling the core, because a dataset rendered through the code under test cancels any error the two share — and numpy arrives in an opt-in group so the checkers stay standard-library only |
 | [0051](0051-a-feature-set-points-at-frames-not-at-buffers.md) | A `FeatureSet` points at frames, not at buffers |
 | [0052](0052-opencv-enters-the-core-behind-a-build-flag.md) | OpenCV enters the core behind a build flag; the browser gets a null registration — and it builds the exception boundary 0047 named, and supersedes 0047's suppressions-file remedy |
+| [0053](0053-the-harness-reads-its-own-datasets.md) | The accuracy harness reads the datasets its own generator writes, against a small committed fixture that generator produced — so the loader is checked against real bytes rather than against an idea of the format. **Extends [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)**, whose exception boundary now covers three test-support files as well |

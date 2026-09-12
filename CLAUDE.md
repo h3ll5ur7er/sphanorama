@@ -78,6 +78,15 @@ its own tests were satisfied by their arrangement rather than by the behaviour �
 fixture that could be replaced with the identity rotation without failing anything — every one found
 by sabotage rather than by reading.
 
+**The two halves of that harness meet now.** `core/test/support/synthetic_dataset` reads a rendered
+dataset into a frame store — the lens, the frames, and the rotation each was taken at — which until
+this existed nothing in C++ did, so the accuracy number Phase 2 exits on could not be computed
+however good the scorer was. It is read against a four-frame dataset the generator itself wrote and
+this repository commits, because a loader checked against a hand-written fixture is checked against
+the author's idea of the format rather than the format (ADR 0053). It records the quaternion the file
+spells, negative scalar part and all, since tidying the double cover would be unasked-for work on the
+one field every measurement is compared against.
+
 **And there are frames to score now.** `tools/synth_dataset.py` renders what a phone would have
 captured from a panorama, with the rotation of every frame. It re-implements the lens instead of
 calling `camera_model`, on purpose: a dataset rendered through the code under test cancels any error

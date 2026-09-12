@@ -84,11 +84,14 @@ decoded, since there is nothing owning the bytes. The generator refuses it.
   previews are 384 KB (ADR 0038). Anything full-resolution still crosses as a handle.
 - **No exceptions.** Everything fallible returns `Result<T>` with a closed `StatusCode` enum, so a
   client can branch on `SensorPermissionDenied` specifically. Exceptions are disabled in the core,
-  with one translation unit excepted by name: the OpenCV-backed registration engine takes
+  with one shipped translation unit excepted by name: the OpenCV-backed registration engine takes
   `-fexceptions` back and converts `cv::Exception` to a `Result` at its own edge, because throwing is
   how OpenCV reports ordinary failure (ADR 0052). A component adapting something foreign catching at
   its own boundary is the shape the layer rules already ask for; a second one needs the same
-  justification and its own line here.
+  justification and its own line here. Three files under `core/test` also take it — the
+  synthetic-dataset loader, its test and its allocation sweep (ADR 0053) — and they are test
+  support, so they get a clause rather than a line. Being test support is not a licence: the
+  loader's own exception boundary is where two leaks hid.
 - **Managers are the client's entire surface.**
 - **Resource access is implemented twice** — TypeScript for the browser, native for the bench and
   tests — behind one contract. Anything that cannot be implemented natively is not a resource
@@ -159,8 +162,11 @@ architecture is designed to avoid — say so.
 **Write an ADR** (`docs/adr/`, four sections: context, decision, consequences, rejected
 alternative) when you add or move a component, change a contract, add a dependency, take a layer-
 rule exception, or reverse an earlier ADR. Supersede old ADRs; never edit one into agreement with
-the present — the record of what we thought at the time is the point. The rejected alternative is
-the section that pays off later.
+the present — the record of what we thought at the time is the point. Point forward by *adding*: a
+Status-line pointer, a banner, or a foot note. A banner covers the body's claims and leaves a dated
+*Context* observation alone; the exception, either way, is a sentence that was wrong when written
+rather than overtaken. `docs/adr/README.md` has the worked examples. The rejected alternative is the
+section that pays off later.
 
 **Don't** document: what the code already says, a duplicate of a contract header, how to run tests
 in a fifth place, or status updates. A document with no job should be deleted.
@@ -172,6 +178,7 @@ contracts/cpp/        the include root — headers consumed directly, never mirr
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest, mirroring src/; fakes in test/support/
+  test/data/          the one committed dataset — a format fixture, not a measurement (ADR 0053)
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. A client at its root; its
                       resource_access/ subtree holds browser-backed ports and is judged as

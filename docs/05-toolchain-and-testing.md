@@ -135,8 +135,8 @@ than a browser call.
 
 | Level | What | How |
 | ----- | ---- | --- |
-| Engine unit | Pure functions with fixed inputs | GoogleTest, native. Golden outputs checked in as small fixtures |
-| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not). Still to come: the threshold it is asserted against, and running the two against each other — today each is exercised only by its own suite |
+| Engine unit | Pure functions with fixed inputs | GoogleTest, native, with inputs written in the test. One dataset is committed — `core/test/data/synthetic-ring-4`, a *format* fixture for the loader (ADR 0053) — and it is the only one; an earlier version of this row said "golden outputs checked in as small fixtures", which described a practice this repository has never followed: no golden outputs have ever been checked in. It was already false before this branch; what this branch added was a line in `docs/00-principles.md`'s repo map — "the one committed dataset" — that makes the two contradict each other on the page, which is how it was finally noticed |
+| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not), and `core/test/support/synthetic_dataset` now reads one into a frame store, so the two are joined rather than merely both present (ADR 0053). Still to come: something that estimates rotations for it to score, and the threshold that score is asserted against |
 | Manager behaviour | Sequencing and state machines | Native tests with **fake** resource accesses (a recorded IMU log + a folder of frames implements `IMotionSensorAccess`/`ICameraAccess` exactly). This is why those are contracts and not `getUserMedia` calls |
 | Boundary | Facade marshalling, error codes | Vitest against the real WASM module in Node |
 | Client | Reticle logic, guidance rendering | Vitest + Testing Library, with a mocked manager proxy |
@@ -162,14 +162,17 @@ procedural panorama. Still to come, each its own increment with its own invarian
 noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
 movers for known ghost regions.
 
-What it gives today is the first of these; the rest wait on the increments listed above:
+It gives none of these *yet*, and the first is the only one whose machinery is complete. A reviewer
+pointed out that "what it gives today is the first of these" — which is what this line used to say —
+is contradicted by the bullet immediately under it:
 
-- registration accuracy measured in degrees against truth, not eyeballed — the two halves that
-  make it possible are in (`rotation_scoring`, ADR 0049, and `tools/synth_dataset.py`, ADR 0050),
-  and there is **not much to measure yet**: `FeatureRegistrationEngine` extracts features, but
-  matching and refinement still refuse, so no rotation comes out to be scored. An earlier round
-  wrote "available now" here, which overcorrected a stale sentence into a false one and
-  contradicted §5.4 further up this file;
+- registration accuracy measured in degrees against truth, not eyeballed — all three parts that
+  make it possible are in now (`rotation_scoring`, ADR 0049; `tools/synth_dataset.py`, ADR 0050;
+  and `core/test/support/synthetic_dataset`, ADR 0053, which reads what the second writes into a
+  frame store the first can be run over). What is missing is no longer plumbing:
+  `FeatureRegistrationEngine` extracts features, but matching and refinement still refuse, so
+  **no rotation comes out to be scored**. An earlier round wrote "available now" here, which overcorrected a stale sentence into
+  a false one and contradicted §5.4 further up this file;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.

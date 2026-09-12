@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    _checkerboard_panorama,
     _ring_of_poses,
     _distort,
     distort_at,
@@ -1740,6 +1741,128 @@ class GroundTruth(unittest.TestCase):
         expected = np.round(expected * 255.0).astype(np.uint8)
         np.testing.assert_array_equal(np.frombuffer(body, dtype=np.uint8).reshape(16, 24, 3),
                                       expected)
+
+
+class TheContractTheCppLoaderReads(unittest.TestCase):
+    """The on-disk shape `core/test/support/synthetic_dataset.cpp` parses.
+
+    That loader is the other half of this format and it lives in another language, so the format is
+    written down twice whether anybody likes it or not. These cases pin the half this file owns, so
+    a change here fails *here* — naming the consumer — rather than in a C++ test whose message is
+    about a frame rather than about the schema that moved under it.
+
+    Deliberately structural and not numeric: a pixel value that shifts when numpy changes its
+    rounding is not a contract, and a test that went red on an unrelated upgrade would be noise.
+    """
+
+    def test_the_header_is_the_three_tokens_the_loader_expects(self):
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [Pose.identity()])
+            raw = (Path(directory) / "frame_0000.ppm").read_bytes()
+
+        # `P6`, width, height, maximum, then exactly one whitespace byte and the payload. The C++
+        # reader consumes that single byte itself rather than skipping whitespace, because a payload
+        # may legitimately begin with a byte that looks like one — and a reader that skipped it ate
+        # the first pixel and failed at the last row, which is how this was found.
+        self.assertEqual(raw[:3], b"P6\n")
+        header, _, body = raw.partition(b"255\n")
+        self.assertEqual(header, b"P6\n12 8\n", "the loader parses three whitespace-separated tokens")
+        self.assertEqual(len(body), 12 * 8 * 3, "no trailing byte; the loader refuses a longer file")
+
+    def test_truth_json_carries_the_keys_the_loader_reads(self):
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [Pose.identity(),
+                                                            Pose.from_azimuth_elevation(90.0, 0.0)])
+            truth = json.loads((Path(directory) / "truth.json").read_text())
+
+        # The exact key set, not merely presence — and the difference has teeth. `write_dataset`
+        # builds this object with `asdict`, so a field added to the `Intrinsics` dataclass appears
+        # in `truth.json` the moment it is declared, while the C++ loader reads a fixed list and
+        # drops it without a word. `assertIn` per field would stay green through exactly that, which
+        # is the silence this test exists to break: it fails here, next to the writer, rather than
+        # never.
+        self.assertEqual(set(truth), {"intrinsics", "frames", "convention"})
+        # The C++ loader reads `convention.rotation` and refuses a dataset that does not spell this
+        # exactly, because a rotation convention is the one thing whose violation is invisible: the
+        # frames still load, the scorer still runs, and every number it produces is wrong. Rewording
+        # this string is therefore a change the C++ has to be told about, and this line is where that
+        # is noticed — next to the writer, rather than in a seam three phases later.
+        self.assertEqual(truth["convention"]["rotation"],
+                         "device -> world, unit quaternion, matching sphanorama::Quat")
+        # `pixel_encoding` is pinned too, and the reason is the same one `rotation` has: the C++
+        # header now tells a consumer these bytes are signed, so the sentence saying so has become
+        # load-bearing. A reviewer pointed out it was a fourth copy of a fact checked by nothing —
+        # `rotation` drifts detectably in both directions and this did not. The loader does not read
+        # it (it copies bytes and interprets none), so this is the only side that can hold it.
+        self.assertIn("value = b / 255 * 2 - 1", truth["convention"]["pixel_encoding"])
+        # Every field of `sphanorama::Intrinsics` the loader fills from this file. The two it does
+        # not fill — `rollingShutterLineTimeNs` and `estimated` — are deliberately absent: these are
+        # the true intrinsics, and a synthetic capture has no rolling shutter yet.
+        self.assertEqual(
+            set(truth["intrinsics"]),
+            {"fx", "fy", "cx", "cy", "k1", "k2", "k3", "p1", "p2", "width", "height"},
+            "the C++ loader reads exactly these; a field added here is dropped silently there",
+        )
+
+        self.assertIsInstance(truth["frames"], list)
+        for entry in truth["frames"]:
+            self.assertEqual(set(entry), {"file", "rotation"})
+            self.assertEqual(set(entry["rotation"]), {"w", "x", "y", "z"})
+
+    def test_the_committed_fixture_is_still_this_generator_s_output(self):
+        """The whole argument for committing 22,570 bytes, checked rather than asserted once.
+
+        ADR 0053 commits `core/test/data/synthetic-ring-4` on the grounds that the loader is then
+        read against bytes *this* writer produced rather than against the author's idea of the
+        format. That was true on the day of the commit and nothing re-checked it afterwards: change
+        the file naming, the pixel encoding or the pose the ring starts at, and the C++ suite keeps
+        passing against bytes no writer produces any more — the very error the fixture exists to
+        remove, reappearing one level up.
+
+        This costs about half a second — measured 0.25 s to 0.86 s across four runs, median near
+        0.53 s — so there is no reason to take the fixture on trust. Most of that is the 2048x1024
+        checkerboard below and the numpy import rather than the four 48x36 renders, which is why the
+        spread is that wide. It said "a fifth of a second" until a reviewer timed it and got the
+        best of four. When this fails, regenerate the fixture; do not edit the expectation.
+        """
+        fixture = Path(__file__).resolve().parents[1] / "core" / "test" / "data" / "synthetic-ring-4"
+        panorama = _checkerboard_panorama(2048, 1024)
+        lens = lens_from_fov(66.0, 50.0, 48, 36)
+        with tempfile.TemporaryDirectory() as directory:
+            fresh = Path(directory) / "synthetic-ring-4"
+            write_dataset(fresh, panorama, lens, _ring_of_poses(4))
+
+            self.assertEqual(
+                sorted(p.name for p in fresh.iterdir()),
+                sorted(p.name for p in fixture.iterdir()),
+                "the generator writes a different set of files than the fixture holds",
+            )
+            for produced in sorted(fresh.iterdir()):
+                committed = fixture / produced.name
+                self.assertEqual(
+                    produced.read_bytes(),
+                    committed.read_bytes(),
+                    f"{produced.name} no longer matches what this generator writes; regenerate "
+                    f"core/test/data/synthetic-ring-4 rather than changing this test",
+                )
+
+    def test_a_three_quarter_turn_is_written_with_the_sign_it_has(self):
+        # The loader records the quaternion as spelled, negative scalar part included, because a
+        # quaternion and its negation are the same rotation and tidying one is unasked-for work on
+        # the field every accuracy number is compared against. That only means something if this
+        # file can actually emit one, so: three quarters of a turn does.
+        poses = [Pose.from_azimuth_elevation(270.0, 0.0)]
+        panorama = direction_encoded_panorama(64, 32)
+        lens = lens_from_fov(66.0, 50.0, 12, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, poses)
+            truth = json.loads((Path(directory) / "truth.json").read_text())
+        self.assertLess(truth["frames"][0]["rotation"]["w"], 0.0,
+                        "no negative scalar part is emitted, so the loader's case is unreachable")
 
 
 if __name__ == "__main__":

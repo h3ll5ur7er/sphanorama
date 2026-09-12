@@ -1,6 +1,14 @@
 # 0052 — OpenCV enters the core behind a build flag, and the browser gets a null registration
 
-**Status:** accepted
+**Status:** accepted; extended by
+[ADR 0053](0053-the-harness-reads-its-own-datasets.md)
+
+> **The exception boundary below covers four translation units, not one.** The sentence further down
+> says `feature_registration_engine.cpp` carries `-fexceptions` "and on no other translation unit",
+> which was true of the whole tree when it was written and is now true only of `core/src`. ADR 0053
+> added three under `core/test` — the synthetic-dataset loader, its test and its allocation sweep.
+> They ship nowhere. The note at the end of this file has the detail; it is repeated here because a
+> reviewer pointed out that a reader meets the stale sentence a hundred lines before the correction.
 
 ## Context
 
@@ -152,3 +160,15 @@ thing the platform provides; OpenCV is a library we chose.
 ***Shipping the native engine and letting the WASM build fail to link.*** Would at least be loud.
 Rejected because the browser is the product's actual target, and a core that does not build for it
 is not a core that is nearly done — it is one that has stopped being buildable while it waits.
+
+## Extended by ADR 0053
+
+*Added later, not edited above.* The sentence "on no other translation unit" was true of the whole
+tree when it was written and is now true only of `core/src`. ADR 0053 gives `-fexceptions` to three
+files under `core/test` — the synthetic-dataset loader, its test and its allocation sweep — for the
+same reason and with the same shape: OpenCV throws, and the boundary converts at its own edge. They
+ship nowhere, so the shipped error model is unchanged.
+
+Recorded here rather than by rewriting the paragraph, because what we thought when only one
+translation unit needed this is the part worth keeping. A reviewer pointed out that this ADR used
+exactly that shape on ADR 0047, and that a first attempt at this note edited the sentence instead.

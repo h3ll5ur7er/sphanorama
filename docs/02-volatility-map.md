@@ -43,9 +43,53 @@ row and a `utilities/` home together.
 **How a synthetic dataset is produced** — the panorama it is rendered from, the lens model, the pose
 trajectory, the noise and blur and rolling-shutter and exposure models still to come — varies as much
 as anything in this map and has no component here either, for the same reason as the axis above it:
-it is a fact about how we test, `tools/synth_dataset.py` owns it, and nothing in `core/src` reads it.
-ADR 0050 holds the decision, including why that tool implements the lens itself rather than calling
-`camera_model`.
+it is a fact about how we test, and nothing in `core/src` reads it. ADR 0050 holds the decision,
+including why that tool implements the lens itself rather than calling `camera_model`.
+
+The axis has **two** owners now rather than one, and deliberately: `tools/synth_dataset.py` writes a
+dataset and `core/test/support/synthetic_dataset` reads one, so the format is spelled in two
+languages and a change to it has to be made twice. ADR 0053 takes that cost knowingly — the whole
+point of the loader is to be checked against bytes the generator wrote rather than against bytes its
+own author wrote. Both sides have a test that fails when the two drift — in sequence rather than
+together, since the C++ reads a committed fixture and only sees a format change once that fixture is
+regenerated. On the Python side, `test_the_committed_fixture_is_still_this_generator_s_output`
+re-renders the committed ring and compares it byte for byte, and the `truth.json` key-set and
+convention assertions pin the format. On the C++ side it is the loader tests that read `Fixture()`
+— the committed dataset the generator wrote — of which `ReadsEveryFrameAndTheLensThatMadeThem` and
+`ThePixelsInTheStoreAreThePixelsOnDisk` would fail first on a format change.
+
+**The C++ half covers what the loader reads, which is not all of the format.** It reads the frame
+files, `intrinsics`, `frames` and `convention.rotation`, and refuses on each; the rest of the
+`convention` block — camera space, image space, principal point, equirectangular layout, pixel
+encoding — it reads past without checking, and says so at the guard. (Reads past, not carries:
+`SyntheticDataset` has two members, `lens` and `frames`, so nothing of the `convention` block
+survives the call. The header says "drops the other five" and that is the accurate verb.) So a
+drift in `convention.pixel_encoding` reddens the Python side alone, and will go on doing so until something
+computes on those pixels as signed components and checks the entry it relies on. A reviewer had to
+point that out; the paragraph above it had claimed the pair covered the format.
+
+One kind of test is **not** a detector, and this paragraph has named two, in consecutive revisions,
+and was wrong about one of them.
+
+The *refusal* tests were called non-detectors on the grounds that they build their `truth.json` by
+hand. Some do. But `Scratch` **copies the committed fixture** before a test touches it
+(`fs::copy(Fixture(), root_, recursive)`), so a refusal test reads the generator's bytes for
+everything it does not overwrite — the `truth.json` verbatim unless it calls `WriteTruth`, and the
+frames unless it damages them. They are partial detectors, and which part depends on what each one
+replaces. Writing them off wholesale was the fourth wrong answer this paragraph has given, and it
+was wrong in the opposite direction to the previous three: not a test credited with more than it
+does, but a class of test credited with less.
+
+What is genuinely not a detector is the other pair.
+`Project.MeetsTheDatasetGeneratorAcrossLensFamilies` and
+`FromAzimuthElevation.MeetsTheDatasetGeneratorAtNumbersNeitherDerived` — named in the revision before
+this one — are tables of C++ literals fed to `camera_model` and `quaternion`: they pin the two
+implementations to shared decimals, which is valuable and is not drift detection, since neither reads
+a dataset, a `truth.json` key or a Netpbm header.
+
+Three revisions and three wrong answers, so the useful part is why: "which test fails when the
+generator changes" is a question about what a test *reads*, and both wrong answers named tests picked
+for what they are *about*.
 
 ## 2.2 Axes deliberately *not* given their own component
 

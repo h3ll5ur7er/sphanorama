@@ -1,15 +1,23 @@
 # ADR 0006 — `Result<T>` everywhere; no exceptions across layers or the WASM boundary
 
 **Status:** accepted; narrowed by
-[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md)
+[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md), extended by
+[ADR 0053](0053-the-harness-reads-its-own-datasets.md)
 
-> **One translation unit is compiled with exceptions, and this ADR's rule is otherwise unchanged.**
-> `feature_registration_engine.cpp` calls OpenCV, which reports ordinary failure by throwing
-> `cv::Exception`, so it takes `-fexceptions` back and converts at its own edge. Nothing above it
-> learns that OpenCV throws, no contract changes shape, and no exception crosses a layer or the WASM
-> boundary — which are the three things this ADR is actually about. ADR 0047 named the shape and ADR
-> 0052 built it. A second such file would need the same justification and its own line in
-> `core/CMakeLists.txt`, where the exemption is granted by name rather than by pattern.
+> **One *shipped* translation unit is compiled with exceptions, and this ADR's rule is otherwise
+> unchanged.** `feature_registration_engine.cpp` calls OpenCV, which reports ordinary failure by
+> throwing `cv::Exception`, so it takes `-fexceptions` back and converts at its own edge. Nothing
+> above it learns that OpenCV throws, no contract changes shape, and no exception crosses a layer or
+> the WASM boundary — which are the three things this ADR is actually about. ADR 0047 named the
+> shape and ADR 0052 built it. A second such file would need the same justification and its own line
+> in `core/CMakeLists.txt`, where the exemption is granted by name rather than by pattern.
+>
+> **Three more, under `core/test`, were added by [ADR 0053](0053-the-harness-reads-its-own-datasets.md)**:
+> the synthetic-dataset loader, its test, and its allocation sweep, exempted by name in
+> `core/test/CMakeLists.txt`. They ship nowhere, so the error model above is unchanged — but the
+> word "one" in this note was true of the whole tree when it was written and is now true only of
+> `core/src`. ADR 0052 carried the reciprocal note and had its side updated on that branch; this
+> side was missed, which is what a reciprocal note is supposed to prevent.
 
 ## Context
 Emscripten exception support costs binary size and speed, exceptions do not cross into JavaScript

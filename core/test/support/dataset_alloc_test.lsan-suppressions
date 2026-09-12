@@ -1,0 +1,30 @@
+# Why this file exists, and why it is one line rather than `detect_leaks=0`.
+#
+# `sphanorama_dataset_alloc_test` makes a chosen allocation fail and checks the loader strands
+# nothing. Some of those allocations are inside `MemoryFrameStoreAccess::Allocate`, which is
+# compiled `-fno-exceptions` (ADR 0012): GCC emits no cleanup landing pads for it, so a throw
+# travelling through never runs the destructor of its local `Entry` and the frame's pixel buffer is
+# orphaned before the loader sees anything. The real program cannot do that — there the same
+# allocation failure terminates — so those leaks are the instrument's, not the loader's.
+#
+# **It is not one frame, and the rule rather than the count is what to remember**: one frame per
+# sweep point that fails an allocation inside `Allocate`, in both passes. Adding the second pass
+# multiplied it. To see the current figure, run the ASan binary with this file replaced by
+# /dev/null — at the time of writing that prints 138,240 bytes in 20 allocations, four from the
+# first pass and sixteen from the second, every one of them the same `entry.bytes` block.
+#
+# The figure is given as an illustration and not as a fact to maintain: `OwnedFrames::Reserve` bans
+# a written-down count for this instrument because it goes stale, and that applies here. This
+# comment said "that one frame" for four rounds while ADR 0053 carried the correction four lines
+# below its own copy of the same wrong sentence — the correction reached the ADR and the alloc
+# test's header and not the file both are about.
+#
+# Suppressing them keeps LeakSanitizer on for everything else in the binary, which is worth having —
+# but **not for the reason this comment used to give.** It said `detect_leaks=0` would have hidden
+# the sweep's own first defect, a cleanup loop that ran while still armed and leaked the frames it
+# was written to notice. A reviewer pointed out that this suppression would hide that defect too:
+# what it leaked was frames, and every frame's allocation stack passes through
+# `MemoryFrameStoreAccess::Allocate`. So the narrow form is better than `detect_leaks=0` for leaks
+# that are *not* frames, which is most of the binary, and no better for the one case the argument
+# was built on.
+leak:sphanorama::MemoryFrameStoreAccess::Allocate

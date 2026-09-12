@@ -753,6 +753,13 @@ that has to be ordered.
   dataset rendered through the code under test cancels any error the two share and would certify a
   broken projection as accurate (ADR 0050). Noise, blur, rolling shutter, exposure, bursts per cell
   and movers are each still to come.
+- **The two halves of the harness now meet** — `core/test/support/synthetic_dataset` reads a rendered
+  dataset into a frame store, with the lens it was rendered through and the rotation recorded for
+  each frame. Until it existed no C++ here read a dataset, so the median below could not be computed
+  at all, however good the scorer was. It is read against a small dataset the real generator wrote
+  and this repository commits, so the format is checked against its own writer rather than against an
+  idea of it (ADR 0053). What it still does not do is produce a number: that needs something to
+  estimate rotations, which is the next line.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
