@@ -144,6 +144,16 @@ class Armed {
     gThrowAgainAt = again;
     gArmed = true;
   }
+  // **Untested, and said so rather than implied.** A reviewer reinstated the exact defect this
+  // guard was written for — widening the arming over the cleanup loop below — and the sweep's
+  // output was byte-identical, exit 0, same leak set. Nothing today can throw in that loop:
+  // `MemoryFrameStoreAccess::Forget` allocates nothing when it succeeds. And LeakSanitizer would
+  // not catch it either any more, because what such a defect leaks is *frames*, and this binary
+  // suppresses `MemoryFrameStoreAccess::Allocate` — see the suppressions file, which now says so.
+  //
+  // Kept anyway, and this is the `HeldFrame::gone_` case again: the state is reachable in life the
+  // moment a cleanup path allocates, and a guard whose cost is two assignments is not worth trading
+  // for a defect that took LSan to find the first time.
   ~Armed() {
     gArmed = false;
     gThrowAgainAt = -1;

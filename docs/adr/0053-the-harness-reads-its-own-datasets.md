@@ -176,7 +176,11 @@ fixture problem it is.
   cleanup landing pads and the throw never runs its destructor. Making an allocation fail *inside*
   code that has opted out of exceptions is not something the real program can do — there the same
   failure terminates — so the leak is the instrument's rather than the loader's, and
-  `support/dataset_alloc_test.lsan-suppressions` names that one frame.
+  `support/dataset_alloc_test.lsan-suppressions` names the function they come from. **Not one
+  frame**: one per sweep point that fails an allocation inside `Allocate`, in both passes — 138,240
+  bytes in 20 allocations when measured, though the suppression file explains why that figure is an
+  illustration rather than a number to maintain. This sentence said "that one frame" until round 7,
+  four lines above the paragraph below that corrects the same mistake.
 
   Two corrections are recorded here rather than smoothed over, because both are about how the first
   version was *measured*. It said "one 6,912-byte frame … allocation 82 of 119", read off a bisect

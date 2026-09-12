@@ -883,10 +883,35 @@ TEST_F(Dataset, RefusesWhenTheStoreWillNotReleaseThePinItTook) {
   // returns a `Status` because an implementation may, so a test store supplies one.
   AwkwardStore awkward{store};
   awkward.refuseReleaseAfter = 0;
+  const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
   ASSERT_FALSE(loaded.ok()) << "a frame nobody can release was handed over as if it were usable";
   EXPECT_NE(loaded.status.detail.find("would not release the pin"), std::string::npos)
       << loaded.status.detail;
+
+  // **And the consequence, which this test asserted nothing about for six rounds.** The header
+  // calls a permanently unreleasable frame the worst kind of refusal — `Forget` refuses a pinned
+  // frame and so does `Clear`, so those bytes are charged for the life of the store — and that was
+  // prose alone here, in the one test that reaches the state it describes. Its transient twin
+  // `AStoreThatRefusesOneReleaseAndRelentsLeavesNothingBehind` asserts the store's totals and this
+  // one did not, which is the same asymmetry round 5 removed from the `Forget` pair.
+  //
+  // **What these two can and cannot catch, because I got that wrong when I wrote them.** I
+  // predicted both would fail under a `HeldFrame::Release` that believes a refusal
+  // (`pinned_ = false` regardless); neither did, because the *store's* pin count is untouched by
+  // that sabotage, so `Forget` still refuses and the bytes stay charged. Two other tests caught it.
+  // So these assert the state the header describes rather than the loader's own arithmetic: with
+  // `refuseReleaseAfter = 0` the store can never let go, and the only way `HeapUsed()` comes back
+  // to `before` is the loader never pinning at all. That is the arrangement check round 6 said
+  // every test of this shape needs — it fails if this test stops reaching the state it is named
+  // for — and it is not a check on the rollback, which is what the twin below is.
+  EXPECT_GT(HeapUsed(), before)
+      << "nothing is charged, so this test never got as far as pinning a frame and proves nothing "
+         "about a refused release";
+  EXPECT_FALSE(store.Clear().ok())
+      << "Clear is supposed to refuse while anything is pinned, which is what makes these bytes "
+         "unrecoverable rather than merely stranded — if it succeeds, the frame is not pinned and "
+         "the arrangement is gone";
 }
 
 TEST_F(Dataset, SaysSoWhenTheStoreWillNotTakeItsFramesBack) {
