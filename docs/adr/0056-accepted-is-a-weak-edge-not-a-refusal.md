@@ -41,8 +41,11 @@ not separable.
 
 A refusal and an unaccepted answer mean different things, and both are documented on the field.
 
-- **Refusal (`RegistrationFailed`)** — no rotation gathered `kMinimumCorrespondences` agreeing
-  correspondences. There is nothing to return.
+- **Refusal (`RegistrationFailed`)** — the two frames did not register, for either of two reasons:
+  too few correspondences survived matching to fit a rotation at all, or enough survived and no
+  rotation was agreed on by `kMinimumCorrespondences` of them. Both are the same fact to a caller —
+  these frames do not go together — and the detail says which, for a human. Naming only the second,
+  as an earlier version of this bullet did, leaves the commoner one undescribed.
 - **`accepted == false` with an answer present** — a rotation was found and fewer than
   `kInlierFraction` of the correspondences agree with it. `relativeRotation` is the best the pixels
   offered and a caller may read it, but it is a weak constraint: a global solve should down-weight

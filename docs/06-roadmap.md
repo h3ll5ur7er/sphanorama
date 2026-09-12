@@ -837,6 +837,12 @@ from truth, chains the relative rotations into absolute ones and scores them wit
 So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
 bound that exists beating a precise one that does not.
 
+**AKAZE's 0.063° is the same number in both lists, and that is not a copy-paste.** It is the one
+detector whose median the perturbation did not move at three significant figures — which is worth
+noticing rather than glossing: AKAZE was the detector that least needed the prior, so taking the
+truth away cost it least. ORB and SIFT moved, and ORB's pairs-registered column moved from eleven
+to eight, which is where the artefact was hiding.
+
 **Read the first column before the second.** ORB declines three of eleven pairs, and the median
 beside that is *not* computed over the eight it answered — which an earlier version of this sentence
 claimed, wrongly, in the same breath as drawing the right conclusion from it. A declined step carries

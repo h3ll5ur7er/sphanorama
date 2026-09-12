@@ -2,6 +2,13 @@
 
 **Status:** accepted
 
+> **Its first Consequence — "the accuracy number becomes computable, and is still not computed" —
+> stopped being true on the branch that follows this one.** It is computed now:
+> `core/test/engines/registration_accuracy_test.cpp` renders a ring, registers each consecutive pair
+> and scores the chain, and `docs/06-roadmap.md` publishes the table. That Consequence also says the
+> C++ never reads a freshly generated dataset; it does now, since the accuracy test renders its own
+> at test time (ADR 0055). Both paragraphs stand as what was believed when this was written.
+
 ## Context
 
 Phase 2 exits on a measured number: the median registration error over a synthetic dataset. Two
