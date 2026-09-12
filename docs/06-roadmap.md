@@ -349,8 +349,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
   `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
-  feature extraction landed in Phase 2 — natively only, so not in the browser where this use case
-  lives (ADR 0052) — while the matching and frame-to-frame tracking this argument rests on have not.
+  feature extraction and pairwise matching landed in Phase 2 — natively only, so not in the browser
+  where this use case lives (ADR 0052) — while the frame-to-frame tracking this argument rests on has
+  not. Registering two frames a caller hands over is not tracking a camera through a sequence.
   Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
@@ -843,7 +844,9 @@ the true rotation forward into both chains, so it enters the sample as an exact 
 the median. That is why the first column is a conjunct of the test rather than a footnote to it: a
 detector that declined everything would chain pure truth and score zero. What those three are was settled by instrumenting the engine to count inliers under the
 truth rotation: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
-13 of 154 correspondences, and the search returned 20 and 13 on the last two, which is as well as is
+13 of 154 correspondences, and the search returned 20 and 13 on the two it answered at all — the
+first gathers no consensus and is refused outright, which is a different outcome and is why this
+paragraph counts them separately. Where it answers it does as well as is
 possible. Nine of ten of ORB's surviving matches there are wrong, because a checkerboard panorama
 gives it hundreds of corners that are genuinely indistinguishable. The estimator reports that
 honestly as `accepted = false` rather than chaining a minority-backed rotation.

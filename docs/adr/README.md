@@ -10,8 +10,8 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the nine bannered ADRs do not have one at all. For a claim in the body that a
-  reader would otherwise meet and believe. This is the common shape: nine ADRs carry a banner
+  has one; six of the ten bannered ADRs do not have one at all. For a claim in the body that a
+  reader would otherwise meet and believe. This is the common shape: ten ADRs carry a banner
   (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052) and three of those carry a Status line
   (0006, 0047, 0052).
 - **A foot note** at the end, under its own heading, when the correction has detail that would

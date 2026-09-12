@@ -623,9 +623,10 @@ constexpr double kInlierPx = 3.0;
  *
  * A fifth therefore sits inside the spread rather than below it, and that is the honest position:
  * it accepts the pairs a detector registers well and declines the ones where nine matches in ten
- * are wrong, which on this dataset is three of eleven ORB pairs. Those three are not a failure of
- * the estimator — RANSAC returns as many inliers on them as the truth itself does — they are pairs
- * whose support really is a minority, and saying so is what `accepted` is for.
+ * are wrong, which on this dataset is three of eleven ORB pairs — two of them answered and declined,
+ * the third refused for want of any consensus at all. They are not a failure of the estimator: on
+ * the two that answer, RANSAC returns as many inliers as the truth rotation itself does. Their
+ * support really is a minority, and saying so is what `accepted` is for.
  *
  * **It is also the RANSAC search budget's floor**, so lowering it costs cubically: see
  * `RansacSampleBudget`. At 0.2 a call is about twenty milliseconds and at 0.01 it is fifteen

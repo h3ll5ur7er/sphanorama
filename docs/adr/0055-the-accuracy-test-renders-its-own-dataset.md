@@ -66,6 +66,15 @@ not for the definition of done.
   overlap at 30-degree steps for every consecutive pair to share most of a frame, and small enough
   to render in about a second.
 
+  **Half of that is not true of the lens, and a reviewer was right to say so.** The test passes
+  `--frames`, `--width` and `--height`; the field of view comes from `--hfov` and `--vfov`, whose
+  values are argparse defaults in `tools/synth_dataset.py`. So the 66 by 50 degrees this bullet
+  quotes lives in the generator, and a one-line Python change would move every accuracy number in
+  `docs/06-roadmap.md` without touching a line of C++ or appearing anywhere a reader of the test
+  would look. Passing them explicitly is the obvious fix and is not made here — this bullet is
+  amended rather than the code, because the choice of where a measurement's parameters live is the
+  decision this ADR is about and reversing part of it belongs in a new one.
+
 ## Rejected alternative
 
 ***A ctest fixture that renders once for the whole suite.*** Faster — one render instead of three —

@@ -26,18 +26,22 @@ Two candidate meanings were available and they are not the same:
    if that can actually come apart from (1) on real data.
 
 It does come apart, and the measurement is the reason this ADR exists rather than a comment. On a
-twelve-frame checkerboard ring, three of eleven consecutive ORB pairs produce a rotation that fits
-its own support to under a pixel and has fewer than a fifth of the correspondences behind it.
-Counting inliers under the *truth* rotation on those pairs gives 11 of 128, 19 of 141 and 13 of 154
-— so the estimator is not failing; the support genuinely is a minority, because a checkerboard hands
-ORB hundreds of corners that are indistinguishable and Lowe's ratio cannot separate what is not
-separable.
+twelve-frame checkerboard ring, three of eleven consecutive ORB pairs fail the gate — and the three
+do not fail it alike, which is the point. **Two return a rotation** that fits its own support to
+under a pixel, with 20 correspondences of 141 and 13 of 154 behind it. **The third returns nothing**:
+no rotation gathered even the eight agreeing correspondences needed to answer, so it is a refusal.
+
+Counting inliers under the *truth* rotation on those three pairs gives 11 of 128, 19 of 141 and 13
+of 154. So on the two that answer, the search finds as many inliers as the correct rotation itself
+has — the estimator is not failing, the support genuinely is a minority, because a checkerboard
+hands ORB hundreds of corners that are indistinguishable and Lowe's ratio cannot separate what is
+not separable.
 
 ## Decision
 
 A refusal and an unaccepted answer mean different things, and both are documented on the field.
 
-- **Refusal (`NotFound`)** — no rotation gathered `kMinimumCorrespondences` agreeing
+- **Refusal (`RegistrationFailed`)** — no rotation gathered `kMinimumCorrespondences` agreeing
   correspondences. There is nothing to return.
 - **`accepted == false` with an answer present** — a rotation was found and fewer than
   `kInlierFraction` of the correspondences agree with it. `relativeRotation` is the best the pixels
@@ -100,9 +104,9 @@ record, and stating it is better than letting a reader assume a test covers it.
 ## Rejected alternative
 
 **Refuse the minority-backed pairs outright**, folding `accepted` into the status and deleting the
-field. Simpler, and wrong for two reasons. The rotations in question are *correct* — on the three
-ORB pairs the search returns as many inliers as the truth rotation itself does, and the answers are
-within a tenth of a degree — so throwing them away discards good information because the scene was
+field. Simpler, and wrong for two reasons. The rotations in question are *correct* — on the two
+ORB pairs that answer, the search returns as many inliers as the truth rotation itself does, and the
+answers are within a tenth of a degree — so throwing them away discards good information because the scene was
 repetitive. And it would put the decision in the wrong place: whether a weak edge is worth using
 depends on what else the graph has, which the engine cannot see and a global solve can. Reporting
 the strength and letting the caller decide is the same shape as every other refusal-versus-report

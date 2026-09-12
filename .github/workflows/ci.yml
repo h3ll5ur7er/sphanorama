@@ -106,16 +106,29 @@ jobs:
       - name: the accuracy measurement actually ran
         run: |
           log=$(mktemp)
-          ./build/native-debug/bin/sphanorama_tests --gtest_filter='EveryDetector/Accuracy.*' >"$log" 2>&1
+          # Every parameterisation of the measurement, plus the acceptance test that reads
+          # `PairwiseResult::correspondences` — it is a separate suite, so the Accuracy filter alone
+          # never ran it, and it is the only test anywhere that reads that field.
+          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
+          # written down: `-lt 1` passed when one detector of three ran, which is exactly the hole
+          # `ValuesIn(kAllFeatureDetectors)` exists to close.
+          expected=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
+          # `set +e` because this step runs under `bash -e`: without it a failing measurement aborts
+          # here and the step is red with no output at all, which is the opposite of the point.
+          set +e
+          ./build/native-debug/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
           status=$?
+          set -e
           cat "$log"
           measured=$(grep -c '^\[accuracy\]' "$log" || true)
-          if [ "$measured" -lt 1 ]; then
-            echo "no accuracy measurement was taken - the run produced $measured of them" >&2
+          if [ "$measured" -ne "$expected" ]; then
+            echo "the measurement ran $measured detectors and the binary has $expected" >&2
             status=1
           fi
           if grep -q SKIPPED "$log"; then
-            echo "the registration accuracy measurement skipped, and a skip is not a pass" >&2
+            echo "something skipped, and a skip is not a pass" >&2
             status=1
           fi
           rm -f "$log"
@@ -175,16 +188,29 @@ jobs:
       - name: the accuracy measurement actually ran
         run: |
           log=$(mktemp)
-          ./build/native-asan/bin/sphanorama_tests --gtest_filter='EveryDetector/Accuracy.*' >"$log" 2>&1
+          # Every parameterisation of the measurement, plus the acceptance test that reads
+          # `PairwiseResult::correspondences` — it is a separate suite, so the Accuracy filter alone
+          # never ran it, and it is the only test anywhere that reads that field.
+          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
+          # written down: `-lt 1` passed when one detector of three ran, which is exactly the hole
+          # `ValuesIn(kAllFeatureDetectors)` exists to close.
+          expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
+          # `set +e` because this step runs under `bash -e`: without it a failing measurement aborts
+          # here and the step is red with no output at all, which is the opposite of the point.
+          set +e
+          ./build/native-asan/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
           status=$?
+          set -e
           cat "$log"
           measured=$(grep -c '^\[accuracy\]' "$log" || true)
-          if [ "$measured" -lt 1 ]; then
-            echo "no accuracy measurement was taken - the run produced $measured of them" >&2
+          if [ "$measured" -ne "$expected" ]; then
+            echo "the measurement ran $measured detectors and the binary has $expected" >&2
             status=1
           fi
           if grep -q SKIPPED "$log"; then
-            echo "the registration accuracy measurement skipped, and a skip is not a pass" >&2
+            echo "something skipped, and a skip is not a pass" >&2
             status=1
           fi
           rm -f "$log"

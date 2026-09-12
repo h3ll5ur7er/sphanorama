@@ -265,6 +265,13 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
 
   const test::RotationScore score = test::ScoreRotations(estimated, truth);
   ASSERT_TRUE(score.valid) << "the scorer could not align the two sets";
+  // **And the alignment it found is the only one.** `maxDeg` and `medianDeg` are measured after the
+  // gauge is removed, so they are statements about the *residual* once a common rotation has been
+  // divided out — and if that rotation is not unique, they are statements about an arbitrary choice
+  // among several. Every assertion below reads those two numbers; this is what makes them mean
+  // something. A reviewer pointed out that the branch read them while checking only `valid`.
+  ASSERT_TRUE(score.alignmentIsUnique)
+      << "the gauge alignment is degenerate, so the residual below is one of several answers";
 
   const int steps = kFrames - 1;
   std::fprintf(
@@ -285,8 +292,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // concession.** The first version of this line demanded every step, and ORB failed three of
   // eleven. Instrumenting the engine to count inliers under the *truth* rotation settled what those
   // three were: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
-  // 13 of 154 correspondences, and RANSAC returned 20 and 13 on the last two — as well as is
-  // possible. Nine in ten of ORB's surviving matches on those pairs are wrong, because a
+  // 13 of 154 correspondences, and RANSAC returned 20 and 13 on the two it answered — as well as is
+  // possible. The first is a refusal rather than a declined answer, which is a distinction worth
+  // keeping straight here of all places. Nine in ten of ORB's surviving matches on those pairs are wrong, because a
   // checkerboard panorama gives it hundreds of corners that are genuinely indistinguishable and
   // Lowe's ratio cannot separate what is not separable. `accepted` was false because the support
   // really was a minority, which is the field doing its job.
@@ -348,8 +356,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  *
  * Measured here, so the arrangement is known to reach both branches: on frames 0 and 1, ORB answers
  * with 11 inliers of 128 correspondences and is not accepted, while SIFT answers with 60 of 181 and
- * is. That is also the pair whose truth rotation has only 11 of 128 behind it — the estimator is
- * doing as well as is possible and reporting honestly that it is not much.
+ * is. ORB's truth rotation on that pair is itself agreed on by only 11 of 128 correspondences, so
+ * the estimator is doing about as well as the scene allows and reporting honestly that it is not
+ * much.
  */
 TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   Rendered rendered(12, 640, 480);
@@ -387,8 +396,10 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
       } else {
         ++answeredButNotAccepted;
         // Not a refusal: the rotation is there to be read, and a global solve may use it as a weak
-        // constraint. That is the whole distinction the field exists to carry.
-        EXPECT_GT(pair.value.inliers, 0);
+        // constraint. That is the whole distinction the field exists to carry. `inliers > 0` is not
+        // asserted — an answer cannot come back with fewer than `kMinimumCorrespondences`, so it
+        // could not fail, and a reviewer was right that it reads as a check while being a
+        // restatement of the refusal floor.
         EXPECT_LT(pair.value.inliers * 5, pair.value.correspondences)
             << "not accepted, yet a fifth or more of the correspondences agree, which is not what "
                "the gate says";

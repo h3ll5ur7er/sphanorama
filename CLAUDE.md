@@ -46,9 +46,11 @@ which is what that qualification was waiting for: on a twelve-frame synthetic ri
 prior perturbed three degrees, AKAZE and SIFT register all eleven consecutive pairs and ORB eight,
 with medians under a tenth of a degree (ADR 0056, and the roadmap's table, which retracts the
 figures published before the prior was perturbed — the first harness handed the estimator the exact
-truth and was measuring itself). The three pairs ORB declines are not a defect: the correct rotation
-on those has 11, 19 and 13 correspondences of 128, 141 and 154 behind it, and the search finds as
-many as truth does. `Composition` is
+truth and was measuring itself). The three pairs ORB declines are not a defect, and they are not
+alike: two return a rotation backed by a minority (20 of 141, 13 of 154) and the third gathers no
+consensus and is refused. Under the *truth* rotation those three have 11, 19 and 13 correspondences
+of 128, 141 and 154 behind them, so where the search answers it finds as many inliers as truth
+itself. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to

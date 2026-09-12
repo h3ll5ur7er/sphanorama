@@ -1193,7 +1193,17 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
   {
     FeatureSet tooMany = a.value;
     tooMany.count = a.value.count * 4;
-    (void)refuses(tooMany, "four times as many keypoint rows as the frame holds");
+    // **And it has to be the *keypoint* frame's guard that refuses.** Without this line the case was
+    // green with its own guard deleted: `ReadDescriptors` refuses a few lines later, about the
+    // descriptor frame, *after* `ReadBearings` has already walked `4 * count * 8` bytes of a frame
+    // holding `count * 8`. The refusal arrives, the read has already happened, and the only thing
+    // that can tell the two apart is which frame the message names. Two sibling cases in this test
+    // got this assertion when they were written and this one did not, which is the enumeration
+    // failure this repository keeps having: the copy in front of me was fixed and its neighbour
+    // was not.
+    EXPECT_NE(refuses(tooMany, "four times as many keypoint rows as the frame holds")
+                  .find("keypoint frame holds fewer bytes"),
+              std::string::npos);
   }
   // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** Doctoring one
   // side only never reaches these guards: the width comparison refuses the pair first, because a
