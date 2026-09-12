@@ -725,6 +725,27 @@ describe('the dist freshness check', () => {
     }
   });
 
+  it('does not read a review agent\'s worktree as a source', () => {
+    // Reviewers check this repository out into `.claude/worktrees/agent-<id>/`, so the tree holds
+    // whole second copies of its own C++ carrying whatever mtimes an agent left on them. The walk
+    // took one as "the newest source", found it younger than the compiled core, and turned a gate
+    // green everywhere else into
+    //
+    //   newest source: .../.claude/worktrees/agent-<id>/core/CMakeLists.txt
+    //
+    // on a commit that changed no C++ at all. It is the permanently-red shape from the test above
+    // met from the other side — not a generated file counted as a source, but somebody else's
+    // source counted as this build's — and it is worse, because the remedy the message prints
+    // (rebuild, restage) cannot clear it: the agent's copy stays newer however often you build.
+    for (const theirs of ['.claude/worktrees/agent-abc123/core/src/engines/thing.cpp',
+                          '.claude/worktrees/agent-abc123/core/CMakeLists.txt',
+                          '.claude/skills/whatever/example.cpp']) {
+      const tree = aFreshTree();
+      tree.put(theirs, Date.now());
+      expect(complaint(tree.root, undefined, () => true), theirs).toBeNull();
+    }
+  });
+
   it('does not demand a wasm graph name a CMakeLists the wasm build excludes', () => {
     // The wasm presets set `SPHANORAMA_BUILD_TESTS=OFF`, so `core/test/CMakeLists.txt` appears in no
     // wasm build graph — measured on the real tree: 0 mentions in `build/wasm-release/build.ninja`
