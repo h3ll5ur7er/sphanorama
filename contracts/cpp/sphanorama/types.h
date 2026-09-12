@@ -587,6 +587,16 @@ struct PairwiseResult {
   FrameId a, b;
   Quat relativeRotation;
   int32_t inliers = 0;
+  // How many correspondences the inliers are counted *out of*, which is the denominator `accepted`
+  // is decided by.
+  //
+  // **Without it `accepted` is a verdict a caller cannot re-derive or refine.** The field below is
+  // one bit, and a global solve told to weigh a weak edge holds `inliers` alone: eleven agreeing
+  // out of forty and eleven out of a hundred and twenty-eight are the same number here and are not
+  // the same evidence. Carrying the denominator is what turns "the engine decided" into "the
+  // engine measured and a caller may decide differently" — which is the shape every other refusal
+  // in this core takes, and which ADR 0056's Rejected section claims for this one.
+  int32_t correspondences = 0;
   // Over the inliers, so it is bounded by the estimator's own inlier radius by construction. It
   // says how *tightly* the rotation fits the correspondences that back it and nothing at all about
   // how many those are — taking it over every correspondence instead was tried and is worse, since

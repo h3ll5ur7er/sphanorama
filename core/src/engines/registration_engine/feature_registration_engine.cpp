@@ -627,6 +627,10 @@ constexpr double kInlierPx = 3.0;
  * the estimator — RANSAC returns as many inliers on them as the truth itself does — they are pairs
  * whose support really is a minority, and saying so is what `accepted` is for.
  *
+ * **It is also the RANSAC search budget's floor**, so lowering it costs cubically: see
+ * `RansacSampleBudget`. At 0.2 a call is about twenty milliseconds and at 0.01 it is fifteen
+ * seconds.
+ *
  * It is deliberately not set to the middle of the measured spread: a threshold set to the
  * observation is a threshold the next dataset moves. And it is not the gate that catches a
  * half-turn alias — those gather a real minority following, and the prior's bound is what excludes
@@ -882,6 +886,7 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   PairwiseResult answer{};
   answer.relativeRotation = FromMatrix(best);
   answer.inliers = static_cast<int32_t>(bestInliers.size());
+  answer.correspondences = static_cast<int32_t>(from.size());
   answer.medianResidualPx = median;
   // **A fraction, because that is the conjunct that can be false.** A reviewer showed the previous
   // gate could not be: the count was guaranteed by the early return above, and the median was
@@ -897,26 +902,6 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
 
 }  // namespace
 
-/**
- * How many triples to draw before giving up, for correspondences of which `agreeing` are inliers.
- *
- * **The budget is the acceptance gate turned into a number of draws, rather than a second knob.**
- * A triple drawn from a set in which a fraction `w` agree is all-inlier with probability `w^3`, so
- * `log(1 - p) / log(1 - w^3)` draws reach confidence `p` that at least one was. The first version
- * of this loop wrote 200 — the textbook figure for `w = 0.5` — and on a rendered ring the measured
- * ratios are a third of that, because a checkerboard panorama hands ORB hundreds of corners that
- * all look alike and the ratio test cannot separate them. At `w = 0.15` those 200 draws find an
- * all-inlier triple about half the time, and ORB refused three steps of eleven for exactly that
- * reason: `the best had 0`, `the best had 2`, and one consensus of 19 out of 141 that was fitted
- * well (0.82 px) and still under the gate. Nothing about the geometry was wrong; the search gave
- * up early and the harness could not tell the two apart.
- *
- * A ratio below `kInlierFraction` is raised to it, and that is the whole of the clamping: a
- * consensus smaller than the gate would be *refused* even if it were found, so the draws that
- * would find one buy nothing. It also makes this total — `ratio >= 0.2` puts `w^3` in
- * `[0.008, 1)`, where the logarithm is finite and negative — which is what lets the loop hand it
- * the two-in-a-hundred-and-fifty it is currently sitting on without special-casing.
- */
 bool BearingsSpanAPlane(double largest, double second) {
   // A covariance with no leading singular value has no bearings in it worth fitting — every input
   // was the zero vector, or there were none. Refusing here is what lets the ratio below be a
@@ -931,6 +916,34 @@ bool BearingsSpanAPlane(double largest, double second) {
   return second > 1e-9 * largest;
 }
 
+/**
+ * How many triples to draw before giving up, for correspondences of which `agreeing` are inliers.
+ *
+ * **The budget is the acceptance gate turned into a number of draws, rather than a second knob.**
+ * A triple drawn from a set in which a fraction `w` agree is all-inlier with probability `w^3`, so
+ * `log(1 - p) / log(1 - w^3)` draws reach confidence `p` that at least one was. The first version
+ * of this loop wrote 200 — the textbook figure for `w = 0.5` — and on a rendered ring the measured
+ * ratios are a third of that, because a checkerboard panorama hands ORB hundreds of corners that
+ * all look alike and the ratio test cannot separate them. At `w = 0.15` those 200 draws find an
+ * all-inlier triple about half the time, and ORB refused three steps of eleven for exactly that
+ * reason: `the best had 0`, `the best had 2`, and one consensus of 19 out of 141 that was fitted
+ * well (0.82 px) and still under the gate. Nothing about the geometry was wrong; the search gave
+ * up early and the harness could not tell the two apart.
+ *
+ * **Lowering `kInlierFraction` costs cubically, and that is worth knowing before anyone does it.**
+ * The gate is this function's floor, so the budget is `log(1-p)/log(1-gate^3)`: at 0.2 it is 574
+ * draws and a call takes about twenty milliseconds, and at 0.01 it is 4.6 *million* and the same
+ * call takes fifteen seconds. Measured, by lowering the constant and watching a twenty-millisecond
+ * test become a fifteen-second one. That is the honest arithmetic rather than a defect — accepting
+ * a one-percent consensus means searching hard enough to find one — but the cost lives here while
+ * the knob lives two hundred lines up, and the target device is a phone.
+ *
+ * A ratio below `kInlierFraction` is raised to it, and that is the whole of the clamping: a
+ * consensus smaller than the gate would be *refused* even if it were found, so the draws that
+ * would find one buy nothing. It also makes this total — `ratio >= 0.2` puts `w^3` in
+ * `[0.008, 1)`, where the logarithm is finite and negative — which is what lets the loop hand it
+ * the two-in-a-hundred-and-fifty it is currently sitting on without special-casing.
+ */
 int RansacSampleBudget(double agreeing) {
   const double ratio = agreeing > kInlierFraction ? agreeing : kInlierFraction;
   const double all = ratio * ratio * ratio;

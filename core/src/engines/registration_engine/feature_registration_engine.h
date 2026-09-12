@@ -54,9 +54,6 @@ static_assert(kAllFeatureDetectors.size() == static_cast<size_t>(FeatureDetector
 // another asked for all of them.
 inline constexpr int kMaxFeaturesPerFrame = 500;
 
-// V7 — feature extraction, matching and global refinement over OpenCV.
-//
-// Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build
 /**
  * Whether a set of bearings spans a plane, given the two largest singular values of the covariance
  * the Kabsch fit builds from them.
@@ -80,6 +77,9 @@ bool BearingsSpanAPlane(double largest, double second);
  */
 int RansacSampleBudget(double agreeing);
 
+// V7 — feature extraction, matching and global refinement over OpenCV.
+//
+// Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build
 // gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
 // one of the two resource accesses an engine may touch.
 //
