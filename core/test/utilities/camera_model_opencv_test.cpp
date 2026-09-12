@@ -22,6 +22,7 @@
 #include <opencv2/core.hpp>
 
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 #include "utilities/camera_model.h"
@@ -30,8 +31,7 @@
 namespace sphanorama {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kDegPerRad = 180.0 / kPi;
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
 Intrinsics Phone() { return LensFromFieldOfView(66.0, 50.0, 960, 1280); }
 

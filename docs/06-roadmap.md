@@ -773,7 +773,7 @@ that has to be ordered.
   empty solution that would look like a solved sphere. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
-  measuring itself. It compiles
+  measuring itself (ADR 0057). It compiles
   only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.
@@ -813,15 +813,10 @@ per device class.
 until a detector had been run against a dataset, because a number chosen before anything can produce
 one is a number the implementation is tuned to rather than measured against.
 
-**The first figures published here were an artefact, and are retracted.** A table stood in this
-place giving medians of AKAZE 0.063°, ORB 0.099° and SIFT 0.124°. Those came from a harness that
-handed the estimator the *exact truth* of each step as its sensor prior — and the fit seeds its
-search with the prior, so the answer was correct before a pixel was read. A reviewer replaced the
-whole estimator with `return the prior` and every detector passed at `median = 0.0000`, scoring
-better than the real implementation; on 31 of 33 steps the search had never beaten the prior's
-inlier count. The numbers were real measurements of the wrong thing. They are restated below from a
-harness that perturbs the prior by three degrees, which is the order a fused phone orientation is
-out by when it is working.
+**An earlier table in this place was an artefact and is retracted; ADR 0057 is the record of what
+was withdrawn and how it was caught.** The figures below replace it, and come from a harness that
+perturbs the prior by three degrees — the order a fused phone orientation is out by when it is
+working — rather than handing the estimator the truth of each step.
 
 `core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
 by 50 degree lens, extracts features, estimates each consecutive pair against a prior three degrees
@@ -836,12 +831,6 @@ from truth, chains the relative rotations into absolute ones and scores them wit
 
 So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
 bound that exists beating a precise one that does not.
-
-**AKAZE's 0.063° is the same number in both lists, and that is not a copy-paste.** It is the one
-detector whose median the perturbation did not move at three significant figures — which is worth
-noticing rather than glossing: AKAZE was the detector that least needed the prior, so taking the
-truth away cost it least. ORB and SIFT moved, and ORB's pairs-registered column moved from eleven
-to eight, which is where the artefact was hiding.
 
 **Read the first column before the second.** ORB declines three of eleven pairs, and the median
 beside that is *not* computed over the eight it answered — which an earlier version of this sentence

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <utility>
 #include <vector>
 
@@ -121,8 +122,8 @@ class FrameQuality : public ::testing::Test {
   FrameRef SoftCheckerboard(int32_t square = 4) {
     return Frame([square](int32_t x, int32_t y) -> uint8_t {
       // A smooth cosine at the checkerboard's period carries the same structure with no edges.
-      const double u = std::cos(3.14159265358979 * x / square);
-      const double v = std::cos(3.14159265358979 * y / square);
+      const double u = std::cos(std::numbers::pi * x / square);
+      const double v = std::cos(std::numbers::pi * y / square);
       return static_cast<uint8_t>(127.5 + 127.0 * u * v);
     });
   }

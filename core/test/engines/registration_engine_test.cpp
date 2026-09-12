@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <utility>
 #include <vector>
 
@@ -1007,7 +1008,7 @@ TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
   const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
   ASSERT_TRUE(a.ok() && b.ok());
 
-  const Quat halfTurn = FromAxisAngle(Vec3{0, 0, 1}, 3.14159265358979323846);
+  const Quat halfTurn = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi);
   const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, halfTurn, Lens());
 
   // **Refusal, not an answer**, and asserting that is what makes this test able to fail. The first
@@ -1053,13 +1054,13 @@ TEST_P(Extraction, APriorInsideTheBoundDoesNotOverrideThePixels) {
   ASSERT_TRUE(a.ok() && b.ok());
 
   const Quat wrongButPlausible =
-      FromAxisAngle(Vec3{0, 1, 0}, 30.0 * 3.14159265358979323846 / 180.0);
+      FromAxisAngle(Vec3{0, 1, 0}, 30.0 * std::numbers::pi / 180.0);
   const Result<PairwiseResult> pair =
       engine.EstimatePairwise(a.value, b.value, wrongButPlausible, Lens());
   ASSERT_TRUE(pair.ok()) << pair.status.detail;
 
   const double fromIdentity =
-      AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 / 3.14159265358979;
+      AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 / std::numbers::pi;
   EXPECT_LT(fromIdentity, 1.0)
       << "a thirty-degree prior moved the answer " << fromIdentity
       << " degrees off the identity the pixels show; the prior seeds and bounds, it is not truth";
@@ -1354,7 +1355,7 @@ TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
   ASSERT_TRUE(pair.ok()) << "the rows were read at the wrong width: " << pair.status.detail;
   EXPECT_TRUE(pair.value.accepted);
   EXPECT_LT(AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 /
-                3.14159265358979323846,
+                std::numbers::pi,
             0.5);
 
   ForgetOutputs(a.value);
@@ -1385,7 +1386,7 @@ TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
   // `return the prior` and this test passed on all three detectors, `medianResidualPx` included.
   // Ten degrees is comfortably inside the 45-degree bound, so the identity still has to be *found*
   // rather than handed over, and the pixels are unanimous about it.
-  const Quat offset = FromAxisAngle(Vec3{0.577, 0.577, 0.577}, 10.0 * 3.14159265358979323846 / 180.0);
+  const Quat offset = FromAxisAngle(Vec3{0.577, 0.577, 0.577}, 10.0 * std::numbers::pi / 180.0);
   const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, offset, Lens());
   ASSERT_TRUE(pair.ok()) << pair.status.detail;
 
@@ -1396,7 +1397,7 @@ TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
                                 turn.z * turn.z);
   ASSERT_GT(norm, 0.0) << "a zero quaternion is not a rotation";
   const double angleDeg =
-      2.0 * std::acos(std::min(1.0, std::abs(turn.w) / norm)) * 180.0 / 3.14159265358979323846;
+      2.0 * std::acos(std::min(1.0, std::abs(turn.w) / norm)) * 180.0 / std::numbers::pi;
   EXPECT_LT(angleDeg, 1e-6) << "a frame against itself has turned by nothing, not " << angleDeg
                             << " degrees";
 

@@ -44,7 +44,7 @@ does so a browser build still gets the null one, and no composition root selects
 reached from tests. `Refine` still refuses. **The pair estimator is now scored against a dataset**,
 which is what that qualification was waiting for: on a twelve-frame synthetic ring, against a sensor
 prior perturbed three degrees, AKAZE and SIFT register all eleven consecutive pairs and ORB eight,
-with medians under a tenth of a degree (ADR 0056, and the roadmap's table, which retracts the
+with medians under a tenth of a degree (ADR 0056, and the roadmap's table; ADR 0057 retracts the
 figures published before the prior was perturbed — the first harness handed the estimator the exact
 truth and was measuring itself). The three pairs ORB declines are not a defect, and they are not
 alike: two return a rotation backed by a minority (20 of 141, 13 of 154) and the third gathers no

@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 #include "utilities/quaternion.h"
 
 namespace sphanorama::test {
 namespace {
 
-constexpr double kDegPerRad = 57.295779513082320876798154814105;
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
 // Cyclic Jacobi sweeps over the 4x4. Measured rather than chosen — see the note at the call site.
 constexpr int kJacobiSweeps = 24;

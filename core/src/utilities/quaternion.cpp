@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace sphanorama {
 
@@ -102,7 +103,7 @@ Vec3 Rotate(const Quat& q, const Vec3& v) {
 }
 
 Quat FromAzimuthElevation(double azimuthDeg, double elevationDeg) {
-  constexpr double kDegToRad = 0.017453292519943295;
+  constexpr double kDegToRad = std::numbers::pi / 180.0;
   // Yaw first, then pitch in the yawed frame: azimuth sweeps the horizon and elevation lifts out
   // of it, which is how a capture plan is read and how a user turns.
   const Quat yaw = FromAxisAngle(Vec3{0, 1, 0}, azimuthDeg * kDegToRad);

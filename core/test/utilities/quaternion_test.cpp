@@ -5,14 +5,14 @@
 
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kDegPerRad = 180.0 / kPi;
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
 Quat Yaw(double degrees) {
   return FromAxisAngle(Vec3{0, 1, 0}, degrees / kDegPerRad);
@@ -56,7 +56,7 @@ TEST(AngleBetween, NeverExceedsPi) {
   for (double degrees = 0; degrees <= 360.0; degrees += 15.0) {
     const double angle = AngleBetween(Yaw(0), Yaw(degrees));
     EXPECT_GE(angle, 0.0);
-    EXPECT_LE(angle, kPi + 1e-9) << "at " << degrees << " degrees";
+    EXPECT_LE(angle, std::numbers::pi + 1e-9) << "at " << degrees << " degrees";
   }
 }
 

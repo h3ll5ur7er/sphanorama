@@ -10,6 +10,7 @@
 #include <exception>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -816,7 +817,7 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   // A hypothesis further from the prior than the bound is not considered at all — not scored and
   // then out-voted, because the whole difficulty is that these *win* on inliers.
   const auto withinBound = [&](const cv::Matx33d& r) {
-    return AngleBetween(FromMatrix(r), prior) * 180.0 / 3.14159265358979323846 <= kPriorBoundDeg;
+    return AngleBetween(FromMatrix(r), prior) * 180.0 / std::numbers::pi <= kPriorBoundDeg;
   };
 
   cv::Matx33d best = RotationMatrix(prior);
