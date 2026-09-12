@@ -42,7 +42,10 @@
 //
 // That is a fact about this instrument, not about the loader: making an allocation fail *inside*
 // code that has opted out of exceptions is not something the real program can do, since there the
-// same failure terminates. So the one frame is suppressed and everything else stays checked.
+// same failure terminates. So those frames are suppressed and everything else stays checked —
+// *frames*, plural: one per sweep point that fails an allocation inside `Allocate`, in both
+// passes. This line said "the one frame" while the suppressions file it points at had already
+// been corrected, which is the third place that correction had to be made.
 //
 // **Two corrections, both from reviewers, both about how the first version of this comment was
 // measured.** It said "one 6,912-byte frame … allocation 82 of 119", which was read off a bisect
@@ -53,7 +56,12 @@
 //
 // It also said `detect_leaks=0`, which was process-wide on the only test that reaches these arms —
 // so a real leak planted anywhere in this binary would have been green. A reviewer demonstrated the
-// narrow suppression, and it is strictly better: LSan is what caught this file's own first defect.
+// narrow suppression. It is better than `detect_leaks=0` for every leak that is *not* a frame,
+// which is most of this binary — but **not for the reason first given here.** This said "LSan
+// is what caught this file's own first defect", and a reviewer showed the narrow form would
+// now hide that defect: what an armed cleanup leaks is frames, and every frame's allocation
+// stack runs through the suppressed function. Round 7 withdrew that argument in the
+// suppressions file and beside `~Armed`, and left it standing here and in `CMakeLists.txt`.
 #include "support/synthetic_dataset.h"
 
 #include <cstdio>
@@ -286,7 +294,13 @@ int main() {
     // allocations stop, no second failure is possible here and this point is not held against the
     // sweep below.
     if (at + 1 <= reach[static_cast<size_t>(at)]) ++reachablePoints;
-    for (long gap = 1; gap <= 4; ++gap) {
+    // **The gap bound is derived, not chosen.** It was `gap <= 4`, and a reviewer measured that
+    // `reach[at] - at` is exactly 3 at every reachable point, so the fourth gap was the first pass
+    // run again — 120 of 480 arrangements doing nothing the first pass had not already done, while
+    // the loop advertised four. Reading the bound off each run's own reach covers exactly the gaps
+    // that can carry a second failure and follows the loader if that distance ever changes. The
+    // same fact the gate below uses, applied one level up.
+    for (long gap = 1; at + gap <= reach[static_cast<size_t>(at)]; ++gap) {
       MemoryFrameStoreAccess store(64 * 1024 * 1024);
       const int64_t before = HeapUsed(store);
       std::optional<SyntheticDataset> taken;

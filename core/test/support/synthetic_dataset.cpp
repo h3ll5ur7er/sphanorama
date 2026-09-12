@@ -350,9 +350,15 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   in.get();
 
   if (maxValue != 255) {
-    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
-                         "only 8-bit samples are read; this frame's maximum is " +
-                             std::to_string(maxValue) + ", which is two bytes a sample");
+    // The "two bytes a sample" clause is *conditional*, and it was not. Netpbm puts a sample in two
+    // bytes only above 255, so the old message told a frame with a maximum of 100 that its samples
+    // were two bytes wide — false for 254 of the 255 values this branch can see, and unnoticed
+    // because the only test uses 65535 and asserts the prefix.
+    std::string why = "only 8-bit samples are read; this frame's maximum is " +
+                      std::to_string(maxValue);
+    why += maxValue > 255 ? ", which is two bytes a sample"
+                          : ", and this reader writes a full-range 255 it cannot rescale from";
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent, std::move(why));
   }
   if (width != lens.width || height != lens.height) {
     // Every frame in a dataset is rendered through one lens, so a frame of another size is either
@@ -662,14 +668,24 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     // a decision, so it fails here and again in `tools/test_synth_dataset.py`, on the writer's side.
     //
     // The other `convention` entries — camera space, image space, principal point, equirectangular
-    // layout, pixel encoding — are carried and not checked here. None of them is consumed by this
+    // layout, pixel encoding — are carried *by the file* and read past by this loader, which keeps
+    // none of them: `SyntheticDataset` has two members and neither is a `convention`. Spelled out
+    // because this sentence is the source of two wrong copies — "carried" travelled into `docs/02`
+    // and ADR 0053 with the subject silently changed from the file to the loader, where it became a
+    // claim about a field that does not exist. None of them is consumed by this
     // loader, which copies bytes; the first thing to compute on those pixels has to check the one it
     // relies on, and that is `pixel_encoding` for whatever reads a frame as signed components.
     const cv::FileNode convention = file["convention"];
     const cv::FileNode spelledRotation = convention.isMap() ? convention["rotation"] : cv::FileNode();
     static constexpr const char* kRotationConvention =
         "device -> world, unit quaternion, matching sphanorama::Quat";
-    if (spelledRotation.empty() || !spelledRotation.isString() ||
+    // `empty()` was the first disjunct and it never decided: an absent node is not a string either,
+    // which is the argument that deleted the identical check thirty-five lines below in round 2 and
+    // the `fileNode.empty()` one in round 6. A reviewer showed all three disjuncts could go with the
+    // suite green — the comparison alone refuses — but `!isString()` stays, because it is what keeps
+    // the cast off a node that is not one, and that is a promise about OpenCV rather than about this
+    // file's inputs.
+    if (!spelledRotation.isString() ||
         static_cast<std::string>(spelledRotation) != kRotationConvention) {
       return refuse(StatusCode::InvalidArgument,
                     std::string("truth.json does not state the rotation convention this reader "

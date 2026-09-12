@@ -82,7 +82,10 @@ is the exact failure mode `docs/00-principles.md` opens with, a rotation slightl
 until the seam. The block had been written by the generator since ADR 0050 and read by nothing; it
 took a reviewer asking for the *set* of `truth.json`'s top-level keys rather than the presence of the
 two the loader wanted to notice that a third had been there all along. The remaining entries are
-carried and not checked here, because this loader copies bytes and consumes none of them; the first
+read past and not checked here — *read past*, not carried: nothing of the `convention` block reaches
+`SyntheticDataset`, whose two members are `lens` and `frames`. This is the same verb round 7
+corrected in `docs/02` and 126 lines below in this file, and it survived here because the sentence
+around it is about the *file's* keys, where "carried" is true. The first
 thing to compute on those pixels owes `pixel_encoding` the same treatment, since the bytes are signed
 components rather than the unsigned [0, 1] a reader would assume.
 
@@ -160,7 +163,7 @@ fixture problem it is.
   bump would be noise. What the fixture pins is shape, and the loader's own tests read its pixels
   back through an independent parser rather than trusting them.
 - **The "gives every frame back" promise gets its own test binary, because nothing else could
-  ask.** (Four places, this one included, used to quote it as "a refusal allocates nothing" — a
+  ask.** (Five places, this one included, used to quote it as "a refusal allocates nothing" — a
   sentence the header has never contained, and a stronger claim than the code makes: a refusal
   allocates and then returns.) `sphanorama_dataset_alloc_test` replaces global `operator new` and sweeps a failure across
   every allocation of a full load, checking the store's totals return to baseline each time. It is a

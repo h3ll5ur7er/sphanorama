@@ -123,13 +123,16 @@ if(SPHANORAMA_WITH_OPENCV)
     PRIVATE SPHANORAMA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
   # Named for what the header promises. It was `DatasetRefusalAllocatesNothing`, after a sentence
   # the header has never contained — a refusal *does* allocate, and then gives the frames back,
-  # which is a weaker claim and the true one. Four places quoted the invented version.
+  # which is a weaker claim and the true one. Five places quoted the invented version.
   add_test(NAME DatasetRefusalGivesEveryFrameBack COMMAND sphanorama_dataset_alloc_test)
   # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
   # first version of this disabled leak detection for the whole binary, which is process-wide on the
   # only test that reaches the loader's exception arms — a real leak planted anywhere in it would
-  # have been green. That matters concretely: LeakSanitizer is what caught this instrument's own
-  # first defect, a sweep that stayed armed through its own cleanup.
+  # have been green. The narrow form is better for every leak that is not a frame, which is most of
+  # this binary. It is **not** better for the case first cited here — "LeakSanitizer is what caught
+  # this instrument's own first defect, a sweep that stayed armed through its own cleanup" — because
+  # that defect leaks frames, and every frame's allocation stack runs through the suppressed
+  # function. Round 7 withdrew the argument in two places and left it here.
   set_tests_properties(DatasetRefusalGivesEveryFrameBack PROPERTIES
     ENVIRONMENT
       "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/support/dataset_alloc_test.lsan-suppressions")

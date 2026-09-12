@@ -489,6 +489,32 @@ TEST_F(Dataset, RefusesAFrameWhoseSamplesAreTwoBytesWide) {
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_FALSE(loaded.ok());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "only 8-bit samples are read"));
+  EXPECT_NE(loaded.status.detail.find("two bytes a sample"), std::string::npos)
+      << loaded.status.detail;
+}
+
+TEST_F(Dataset, RefusesAMaximumUnder255WithoutClaimingItsSamplesAreWide) {
+  // The other side of the same guard, and the reason it needs one. The refusal appended "which is
+  // two bytes a sample" to *every* maximum that is not 255 — true only above 255, and false for the
+  // 254 values below it. A reviewer drove maxima of 0, 1, 100 and 254, all one byte a sample, all
+  // told otherwise. The only test was the 65535 one above, asserting a prefix that both wordings
+  // share, so nothing could tell them apart.
+  for (const int maximum : {0, 1, 100, 254}) {
+    Scratch scratch;
+    int32_t width = 0;
+    int32_t height = 0;
+    const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << " " << height << "\n" << maximum << "\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+    out.close();
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "only 8-bit samples are read"))
+        << maximum;
+    EXPECT_EQ(loaded.status.detail.find("two bytes a sample"), std::string::npos)
+        << "a maximum of " << maximum << " is one byte a sample: " << loaded.status.detail;
+  }
 }
 
 TEST_F(Dataset, RefusesAHeaderTokenLongerThanAnyRealOne) {
@@ -539,13 +565,29 @@ TEST_F(Dataset, RefusesAStoreThatPadsAStrideItNeverPromised) {
   // `Allocate` promises nothing about stride, so the handle and the span are two authorities. With
   // the stride padded and the span the honest size, the write loop runs off the end of the last row
   // — a heap-buffer-overflow a reviewer reproduced under AddressSanitizer.
-  AwkwardStore awkward{store};
-  awkward.padStrideBy = 64;
-  const int64_t before = HeapUsed();
-  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
-  EXPECT_FALSE(loaded.ok());
-  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "the store handed back fewer bytes"));
-  EXPECT_EQ(HeapUsed(), before);
+  //
+  // **A pad of one, and that is the whole point of this test.** It was 64, which is so far past the
+  // bound that it is refused even by a *broken* guard: drop the `- rowBytes` term from
+  // `synthetic_dataset.cpp` and the bound for this fixture loosens from (6912-192)/35 = 191 to
+  // 6912/35 = 197, which still refuses 192+64. A reviewer removed that term and all 58 tests stayed
+  // green while pads of 1 to 5 wrote off the end of the last row under ASan. The minimal pad is the
+  // strongest witness precisely because the true bound sits one byte below the honest stride: only
+  // an input in that five-byte window can tell a correct guard from a nearly-correct one.
+  //
+  // The larger pad is kept as a second case rather than replaced, because the two fail differently
+  // — 1 exercises the subtraction, 64 exercises the division — and a test that only ever drives the
+  // edge would not notice a guard that had stopped refusing gross violations.
+  for (const int32_t pad : {1, 5, 64}) {
+    AwkwardStore awkward{store};
+    awkward.padStrideBy = pad;
+    const int64_t before = HeapUsed();
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+    EXPECT_FALSE(loaded.ok()) << "pad " << pad;
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                            "the store handed back fewer bytes"))
+        << "pad " << pad;
+    EXPECT_EQ(HeapUsed(), before) << "pad " << pad;
+  }
 }
 
 TEST_F(Dataset, RefusesTruthThatIsNotJsonAtAll) {

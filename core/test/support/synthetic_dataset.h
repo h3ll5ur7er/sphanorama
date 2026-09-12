@@ -53,9 +53,15 @@ struct SyntheticFrame {
  * this is the one a consumer has to know.
  */
 struct SyntheticDataset {
-  // The lens every frame was rendered through. `rollingShutterLineTimeNs` and `estimated` are not
-  // in the file and are left at the values that mean "not known" and "not an estimate" — these are
-  // the true intrinsics, which is the whole point of a synthetic dataset.
+  // The lens every frame was rendered through. `estimated` is left `false`, which is exactly right:
+  // these are the true intrinsics, which is the whole point of a synthetic dataset.
+  //
+  // `rollingShutterLineTimeNs` is left `0`, and that is **not** the same kind of statement, which
+  // this comment used to blur by calling it "not known". The generator renders every frame as a
+  // single instant, so this lens really does have a global shutter — 0 is the true value, not a
+  // silence. `types.h` spells the field `0 == global shutter / unknown`, one sentinel for two
+  // meanings, so a reader of a `SyntheticDataset` cannot tell which is meant from the value alone.
+  // Said here because this is the one place in the tree where the answer is definitely the first.
   Intrinsics lens;
   std::vector<SyntheticFrame> frames;
 };
