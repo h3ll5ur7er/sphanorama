@@ -194,10 +194,15 @@ fixture problem it is.
 - **The format is spelled in two languages, so `docs/02-volatility-map.md`'s axis has two owners.**
   A change to the dataset format has to be made in `tools/synth_dataset.py` and again here. That cost
   is the point rather than an oversight: a loader checked only against bytes its own author wrote is
-  checked against its author's idea of the format. Tests on both sides fail when the two drift, and
-  `docs/02-volatility-map.md` names them — after three revisions that named tests which could not,
-  because the question is what a test *reads* and the wrong answers named tests for what they are
-  *about*.
+  checked against its author's idea of the format. Both sides have a test that fails when the two
+  drift, and `docs/02-volatility-map.md` names them — after three revisions that named tests which
+  could not, because the question is what a test *reads* and the wrong answers named tests for what
+  they are *about*. **Not both at once**, and a reviewer had to point that out too: change the
+  generator and the Python side goes red alone, because the C++ reads the committed fixture and the
+  committed fixture has not moved. The C++ half is reached only once the fixture is regenerated,
+  which is what `test_the_committed_fixture_is_still_this_generator_s_output` forces a change to do.
+  The two fire in sequence, not in parallel, and the consequence four bullets up says the same thing
+  from the other end.
 - **A dataset costs the heap what its frames cost.** Four 48x36 frames are nothing; sixty frames of a
   real capture are not. The frames belong to the caller, who must `Forget` each — the same rule
   `ExtractFeatures` states, and for the same reason: a harness leaking a dataset per run would

@@ -644,10 +644,10 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     `core/test/data/synthetic-ring-4` is four 48x36 frames and their `truth.json`, 22,570 bytes of
     content altogether (20,788 of frames, 1,782 of JSON). Not "on disk": `du` reports 40 KiB, of
     which 36 is the five files rounded up to 4 KiB blocks and the fortieth is the directory entry.
-    Read by the C++ loader's
-    tests. It is a **format** fixture rather than a measurement — it exists so that loader is read
-    against bytes this writer produced rather than against its author's idea of the format
-    (ADR 0053). The stronger claim, that this catches bugs a hand-written fixture would miss, was
+    It is read by the C++ loader's tests, and it is a **format** fixture rather than a measurement —
+    it exists so that loader is read against bytes this writer produced rather than against its
+    author's idea of the format (ADR 0053).
+    The stronger claim, that this catches bugs a hand-written fixture would miss, was
     written here and then disproved by a reviewer; the ADR records what survives of it.
     """
     if panorama.ndim != 3 or panorama.shape[2] != 3:

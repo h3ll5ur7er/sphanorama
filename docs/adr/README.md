@@ -3,6 +3,22 @@
 One file per decision that is expensive to reverse. Format: context, decision, consequences,
 and the alternative we rejected and why.
 
+**An ADR is never edited into agreement with the present.** Where the record needs a pointer
+forward it gets one *added*: a banner under the status line, or a foot note at the end, naming what
+narrowed or superseded the claim. Both shapes are in use — ADR 0047 and ADR 0052 carry each.
+
+**The banner covers the decision, not the context.** A *Context* sentence is a dated observation of
+what the world looked like before the decision, and that is its whole job; bannering one would put
+the file's revision history inside the file, and every ADR here would eventually carry a banner
+saying the world has moved on. So ADR 0052 has a banner on a Decision sentence about `-fexceptions`
+and none on the Context sentence twelve lines above it about who links `sphanorama_opencv`, which
+this branch made out of date by adding a second target. That asymmetry is the convention rather than
+an oversight, and it is written down here because a reviewer could not tell which of the two the
+file meant.
+
+The one exception is a Context sentence that was **wrong when written**, as opposed to overtaken.
+That is a defect in the record, not a record of what we thought, and it gets a foot note saying so.
+
 | ADR | Decision |
 | --- | -------- |
 | [0001](0001-decompose-by-volatility.md) | Decompose by volatility (iDesign), not by function |

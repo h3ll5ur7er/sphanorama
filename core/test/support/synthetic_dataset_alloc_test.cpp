@@ -20,12 +20,11 @@
 //
 // **The exception safety of `OwnedFrames::Rollback`'s compaction is argued here and tested nowhere**,
 // and that is measured rather than assumed. A reviewer instrumented both rollback loops and counted
-// the allocations inside them across all 600 loads of both passes — 120 and 480 — : **zero**.
-// A *successful*
-// `MemoryFrameStoreAccess::Forget` allocates nothing, and the rest of that loop is a POD assignment
-// and a shrinking `erase`, so no arming of the second throw can land there. What the second pass
-// does reach is `refuse()`'s string building — which is why emptying `~OwnedFrames` strands frames
-// under it and not under the first pass.
+// the allocations inside them across all 600 loads of both passes, 120 and 480: **zero**. A
+// *successful* `MemoryFrameStoreAccess::Forget` allocates nothing, and the rest of that loop is a
+// POD assignment and a shrinking `erase`, so no arming of the second throw can land there. What
+// the second pass does reach is `refuse()`'s string building — which is why emptying
+// `~OwnedFrames` strands frames under it and not under the first pass.
 //
 // **LeakSanitizer stays on, with one suppression**, in
 // `support/dataset_alloc_test.lsan-suppressions`. With nothing suppressed, the sweep reports its own
@@ -233,7 +232,7 @@ int main() {
     const int64_t after = HeapUsed(store);
     if (after != before) {
       ++stranded;
-      std::fprintf(stderr, 
+      std::fprintf(stderr,
           "allocation %ld of %ld: the store kept %lld bytes after a load that %s\n", at, total,
           static_cast<long long>(after - before),
           escaped ? "left by throwing" : (succeeded ? "succeeded" : "refused"));

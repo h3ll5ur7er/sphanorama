@@ -162,8 +162,9 @@ architecture is designed to avoid — say so.
 **Write an ADR** (`docs/adr/`, four sections: context, decision, consequences, rejected
 alternative) when you add or move a component, change a contract, add a dependency, take a layer-
 rule exception, or reverse an earlier ADR. Supersede old ADRs; never edit one into agreement with
-the present — the record of what we thought at the time is the point. The rejected alternative is
-the section that pays off later.
+the present — the record of what we thought at the time is the point. Point forward by *adding* a
+banner or a foot note, and only to a decision: a dated *Context* sentence is left alone
+(`docs/adr/README.md` says why). The rejected alternative is the section that pays off later.
 
 **Don't** document: what the code already says, a duplicate of a contract header, how to run tests
 in a fifth place, or status updates. A document with no job should be deleted.

@@ -71,7 +71,16 @@ struct SyntheticDataset {
  * the one this reader was written against; a header disagreeing with the recorded lens; a payload
  * shorter or longer than the header accounts for; a Netpbm that is not `P6`; a header field
  * missing, over-long, non-numeric or too large for the type that holds it; a maximum value this
- * reader cannot read; or an intrinsic that is not a finite number.
+ * reader cannot read; an intrinsic that is not a finite number; an empty `frames` array; or a
+ * rotation that is not a unit quaternion.
+ *
+ * Two of those are worth naming on their own, because nothing about "a file that is not what it
+ * claims" would lead a reader to expect them. **An empty `frames` array is a refusal**, not a
+ * successful dataset of nothing: a median over no frames is a number nobody should be shown, and
+ * the scorer's caller would be shown one. And **a rotation is required to be a rotation** — a
+ * `truth.json` whose rotations are `false` parses to four zeros, and a zero quaternion scores as a
+ * perfect reconstruction to anyone reading the median rather than the validity flag. The double
+ * cover is untouched: the check is on the norm, so a negative scalar part still loads.
  *
  * **Codes from the store are forwarded, not translated.** `FrameStoreExhausted` from `Allocate`,
  * and whatever `Pin` or `Release` answered — so a store refusing `Release` with

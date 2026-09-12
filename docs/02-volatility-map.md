@@ -50,12 +50,13 @@ The axis has **two** owners now rather than one, and deliberately: `tools/synth_
 dataset and `core/test/support/synthetic_dataset` reads one, so the format is spelled in two
 languages and a change to it has to be made twice. ADR 0053 takes that cost knowingly — the whole
 point of the loader is to be checked against bytes the generator wrote rather than against bytes its
-own author wrote. Tests on both sides fail when the two drift. On the Python side,
-`test_the_committed_fixture_is_still_this_generator_s_output` re-renders the committed ring and
-compares it byte for byte, and the `truth.json` key-set and convention assertions pin the format. On
-the C++ side it is the loader tests that read `Fixture()` — the committed dataset the generator
-wrote — of which `ReadsEveryFrameAndTheLensThatMadeThem` and `ThePixelsInTheStoreAreThePixelsOnDisk`
-would fail first on a format change.
+own author wrote. Both sides have a test that fails when the two drift — in sequence rather than
+together, since the C++ reads a committed fixture and only sees a format change once that fixture is
+regenerated. On the Python side, `test_the_committed_fixture_is_still_this_generator_s_output`
+re-renders the committed ring and compares it byte for byte, and the `truth.json` key-set and
+convention assertions pin the format. On the C++ side it is the loader tests that read `Fixture()`
+— the committed dataset the generator wrote — of which `ReadsEveryFrameAndTheLensThatMadeThem` and
+`ThePixelsInTheStoreAreThePixelsOnDisk` would fail first on a format change.
 
 Two kinds of test are **not** detectors, and this paragraph has named each of them as though they
 were, in consecutive revisions. The loader's *refusal* tests build their `truth.json` by hand through
