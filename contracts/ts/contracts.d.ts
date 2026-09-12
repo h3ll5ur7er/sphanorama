@@ -561,7 +561,11 @@ export interface PairwiseResult {
   inliers: number;
   /**
    * How many correspondences the inliers are counted *out of*, which is the denominator `accepted`
-   * is decided by.
+   * is decided by. **Zero only on a result no engine filled in**, which a caller never sees: every
+   * `Ok` return from `EstimatePairwise` sets it, and a refusal carries no result at all. That is an
+   * invariant rather than a type guarantee, so it is asserted where it could break — the acceptance
+   * test requires it positive on every answer — rather than left to the reader to infer from a
+   * default that would make `inliers / correspondences` undefined.
    * **Without it `accepted` is a verdict a caller cannot re-derive or refine.** The field below is
    * one bit, and a global solve told to weigh a weak edge holds `inliers` alone: eleven agreeing
    * out of forty and eleven out of a hundred and twenty-eight are the same number here and are not

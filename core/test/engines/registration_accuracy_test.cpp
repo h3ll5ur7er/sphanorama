@@ -325,7 +325,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // `rotation_scoring.h` says the maximum is there to make legible. The number reached stderr and no
   // assertion.
   //
-  // One degree: about four times the worst single frame any detector actually produces here (0.26)
+  // One degree: about four times the worst single frame any detector actually produces here (0.219)
   // and two orders of magnitude under the alias. It is also what catches the other way this test can
   // be flattered — a chain wrong by a degree on every answered step scores a passing median once the
   // gauge is removed and the refused steps re-anchor it to truth, and cannot hide from this.

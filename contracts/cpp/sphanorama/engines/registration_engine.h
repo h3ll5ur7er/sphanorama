@@ -47,6 +47,24 @@ class IRegistrationEngine {
   // compute placement or pixel residency arrives as an argument. `Refine` already takes an
   // `Intrinsics` for the same reason, and takes it as the value it goes on to *improve*; here it is
   // read and not improved, which is why this one is `const` and that one is named `initial`.
+  // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
+  // `StatusCode` can only do so against what the contract promises, and this method is the first in
+  // the repository to return `RegistrationFailed` at all.
+  //
+  // - `RegistrationFailed` — the two frames did not register. Either too few correspondences
+  //   survived matching to fit a rotation, or no rotation was agreed on by enough of them. Both are
+  //   the same fact to a caller (these frames do not go together) and the detail says which, for a
+  //   human. It is deliberately **not** `NotFound`, which `IFrameStoreAccess` uses for a handle
+  //   naming no frame: one code meaning "the pixels disagree" and "that frame does not exist" is a
+  //   code nobody can branch on.
+  // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a prior that
+  //   is not a usable rotation, a lens that cannot project, a frame whose declared rows do not fit
+  //   the bytes it holds, or two sets made by different detectors.
+  // - Whatever `IFrameStoreAccess::Pin` returned, unchanged, when a frame could not be pinned.
+  // - `Internal` when the compute library throws, which is how it reports what it does not model.
+  //
+  // An `Ok` result is not the same as an accepted one: see `PairwiseResult::accepted`, which is
+  // false when a rotation was found and a minority of the correspondences agree with it (ADR 0056).
   virtual Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
                                                   const Quat& prior, const Intrinsics& lens) = 0;
 
