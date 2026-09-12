@@ -58,6 +58,14 @@ convention assertions pin the format. On the C++ side it is the loader tests tha
 — the committed dataset the generator wrote — of which `ReadsEveryFrameAndTheLensThatMadeThem` and
 `ThePixelsInTheStoreAreThePixelsOnDisk` would fail first on a format change.
 
+**The C++ half covers what the loader reads, which is not all of the format.** It reads the frame
+files, `intrinsics`, `frames` and `convention.rotation`, and refuses on each; the rest of the
+`convention` block — camera space, image space, principal point, equirectangular layout, pixel
+encoding — it carries without checking, and says so at the guard. So a drift in
+`convention.pixel_encoding` reddens the Python side alone, and will go on doing so until something
+computes on those pixels as signed components and checks the entry it relies on. A reviewer had to
+point that out; the paragraph above it had claimed the pair covered the format.
+
 Two kinds of test are **not** detectors, and this paragraph has named each of them as though they
 were, in consecutive revisions. The loader's *refusal* tests build their `truth.json` by hand through
 `Scratch`, so they never read what the generator writes. And

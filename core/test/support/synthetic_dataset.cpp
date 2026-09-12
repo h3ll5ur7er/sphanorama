@@ -725,7 +725,8 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
       }
 
       // **A rotation has to be one.** The header calls this a unit quaternion and, until a reviewer
-      // asked, nothing made that true: a `truth.json` whose rotations were `false` loaded `Ok` with
+      // asked, nothing made that true: a `truth.json` spelling each component as `false` —
+      // `{"w": false, "x": false, "y": false, "z": false}` — loaded `Ok` with
       // all four components zero, and `ScoreRotations` then answered `valid = false` with
       // `medianDeg = 0` — a caller reading the median without the flag sees a *perfect score where
       // there is no answer*, and that median is Phase 2's exit criterion.

@@ -1,4 +1,10 @@
-// Does a refusal really allocate nothing? Asked of every allocation the loader makes.
+// Does a refusal really give back every frame it took? Asked of every allocation the loader makes.
+//
+// This line read "does a refusal really allocate nothing" until round 6. That was never the
+// header's promise and it is not this file's property — a refusal *does* allocate, and the
+// string `refuse()` builds is the one allocation the second pass below exists to throw inside
+// of. Round 5 corrected the invented quotation in four places and missed the fifth, which is
+// the file the other four are about; it escaped the grep by spelling the verb `allocate`.
 //
 // `synthetic_dataset.h` promises that a failed load gives back every frame it took. Round 1
 // believed that and was wrong twice, and neither window was reachable from the gtest suite: both
@@ -56,6 +62,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 
@@ -67,6 +74,10 @@ bool gArmed = false;
 // How many times the *second* failure actually fired. The second pass asserts this is non-zero, so
 // the arrangement is checked rather than assumed.
 long gSecondThrows = 0;
+// And at how many *distinct* sweep points, which is the number that discriminates. See the verdict
+// at the foot of this file: a total alone is satisfied by one point firing repeatedly.
+long gSecondThrowPoints = 0;
+bool gSecondThrewHere = false;
 
 // A second failure, so one can land *inside* a handler. Until this existed the sweep armed a single
 // exact allocation, so nothing ever failed while `refuse()` was building its message or
@@ -93,6 +104,7 @@ void* operator new(size_t bytes) {
       // second failure during the first's handling". The fix for a test that could not fail could
       // not fail either.
       ++gSecondThrows;
+      gSecondThrewHere = true;
       throw std::bad_alloc();
     }
   }
@@ -193,6 +205,7 @@ int main() {
 
   int stranded = 0;
   int wrong = 0;
+  std::vector<long> reach(static_cast<size_t>(total) + 1, 0);
   for (long at = 1; at <= total; ++at) {
     MemoryFrameStoreAccess store(64 * 1024 * 1024);
     const int64_t before = HeapUsed(store);
@@ -208,6 +221,12 @@ int main() {
         escaped = true;
       }
     }
+    // How far this run's allocations actually got, counted while armed. The second pass needs it:
+    // a run cut short at `at` makes fewer allocations than the clean load, so `at + gap` can be off
+    // the end and no second failure is *reachable* there. Recorded rather than assumed, so the
+    // second pass can check itself against what is possible instead of against a chosen number.
+    reach[static_cast<size_t>(at)] = gAllocations;
+
     // Disarmed before anything else touches the store. The frames of a load that succeeded are the
     // caller's, and giving them back is the caller's job — done here, unarmed, so this cleanup
     // cannot be the thing that fails.
@@ -250,7 +269,13 @@ int main() {
   // 51 and this pass reported 0 — blind to exactly the defect that check exists to see.
   int strandedTwice = 0;
   int wrongTwice = 0;
+  long reachablePoints = 0;
   for (long at = 1; at <= total; ++at) {
+    gSecondThrewHere = false;
+    // The nearest gap this run can actually reach. If even `at + 1` is past where this run's
+    // allocations stop, no second failure is possible here and this point is not held against the
+    // sweep below.
+    if (at + 1 <= reach[static_cast<size_t>(at)]) ++reachablePoints;
     for (long gap = 1; gap <= 4; ++gap) {
       MemoryFrameStoreAccess store(64 * 1024 * 1024);
       const int64_t before = HeapUsed(store);
@@ -281,6 +306,7 @@ int main() {
                      static_cast<long long>(HeapUsed(store) - before));
       }
     }
+    if (gSecondThrewHere) ++gSecondThrowPoints;
   }
 
   // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
@@ -290,12 +316,32 @@ int main() {
   std::fprintf(stderr,
                "swept %ld allocation points of a full load; %d stranded, %d partial datasets "
                "returned as successes. With a second failure during the first's handling "
-               "(%ld of them fired): %d stranded, %d partial\n",
-               total, stranded, wrong, gSecondThrows, strandedTwice, wrongTwice);
-  if (gSecondThrows == 0) {
-    std::fprintf(stderr, "the second pass never fired a second failure, so it proved nothing\n");
+               "(%ld fired, at %ld of the %ld points where one was reachable): %d stranded, "
+               "%d partial\n",
+               total, stranded, wrong, gSecondThrows, gSecondThrowPoints, reachablePoints,
+               strandedTwice, wrongTwice);
+  // **The gate is the number of *points*, and it is measured against what was reachable rather
+  // than against a number anyone chose.** `gSecondThrows > 0` was the first version of this check
+  // and a reviewer defeated it by arming the second failure at a single sweep point: three firings
+  // instead of hundreds, 477 of the 480 arrangements silently disarmed, and the sweep still exited
+  // 0 while printing "with a second failure during the first's handling". A threshold of one does
+  // not tell a sweep from a spot check.
+  //
+  // Not every point *can* fire one. A run cut short at `at` makes fewer allocations than the clean
+  // load `total` was sized from — the same fact `Armed`'s docstring is about — so for a tail of
+  // values `at + 1` is already past the end and there is nothing to arm. That tail is counted from
+  // the first pass's own measurements rather than guessed at, which is why this is an equality and
+  // not a floor with a fraction in it. This file bans written-down denominators for the reason
+  // that they go stale; a count the instrument takes each run cannot.
+  const bool sweptEveryReachablePoint = gSecondThrowPoints == reachablePoints;
+  if (!sweptEveryReachablePoint) {
+    std::fprintf(stderr,
+                 "the second failure fired at %ld sweep points and %ld could have carried one, so "
+                 "the difference was the first pass run again\n",
+                 gSecondThrowPoints, reachablePoints);
   }
-  return stranded == 0 && wrong == 0 && strandedTwice == 0 && wrongTwice == 0 && gSecondThrows > 0
+  return stranded == 0 && wrong == 0 && strandedTwice == 0 && wrongTwice == 0 &&
+                 sweptEveryReachablePoint
              ? 0
              : 1;
 }

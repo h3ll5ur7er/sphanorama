@@ -3,21 +3,36 @@
 One file per decision that is expensive to reverse. Format: context, decision, consequences,
 and the alternative we rejected and why.
 
-**An ADR is never edited into agreement with the present.** Where the record needs a pointer
-forward it gets one *added*: a banner under the status line, or a foot note at the end, naming what
-narrowed or superseded the claim. Both shapes are in use — ADR 0047 and ADR 0052 carry each.
+**An ADR's body is never edited into agreement with the present.** Where the record needs a pointer
+forward, one is *added* in one of three places, and the body below it is left alone.
 
-**The banner covers the decision, not the context.** A *Context* sentence is a dated observation of
-what the world looked like before the decision, and that is its whole job; bannering one would put
-the file's revision history inside the file, and every ADR here would eventually carry a banner
-saying the world has moved on. So ADR 0052 has a banner on a Decision sentence about `-fexceptions`
-and none on the Context sentence twelve lines above it about who links `sphanorama_opencv`, which
-this branch made out of date by adding a second target. That asymmetry is the convention rather than
-an oversight, and it is written down here because a reviewer could not tell which of the two the
-file meant.
+- **The Status line** carries the chain of what narrowed, superseded or extended this decision.
+  It is a pointer rather than a claim, so extending it in place is not editing the record —
+  ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
+- **A banner** under the Status line, for a claim in the body that a reader would otherwise meet
+  and believe. This is the common shape: nine ADRs carry one (0006, 0027, 0039, 0041, 0042, 0043,
+  0044, 0047, 0052).
+- **A foot note** at the end, under its own heading, when the correction has detail that would
+  swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
+  sits under that file's banner rather than instead of it: the banner points, the note explains.
 
-The one exception is a Context sentence that was **wrong when written**, as opposed to overtaken.
-That is a defect in the record, not a record of what we thought, and it gets a foot note saying so.
+**A banner covers the body's claims, not the Context's dated observations.** A *Context* sentence
+describes what the world looked like before the decision, and that is its whole job; bannering one
+would put the file's revision history inside the file, and every ADR here would eventually carry a
+banner saying the world has moved on. Worked example, checked rather than recalled: ADR 0052's
+banner corrects a Decision sentence at `:61` about `-fexceptions`, while the Context sentence at
+`:19-21` — "its single consumer cross-checks `camera_model` against `cv::projectPoints`" — is left
+alone, though this branch gave `sphanorama_opencv` a second consumer. That asymmetry is the
+convention rather than an oversight, and it is written down because a reviewer could not tell which
+of the two the file meant.
+
+The exception is a sentence that was **wrong when written**, as opposed to overtaken. That is a
+defect in the record rather than a record of what we thought, and it gets a foot note saying so
+wherever it sits, Context included.
+
+*(The first version of this section, written in the commit that settled the convention, got both of
+its worked examples wrong — it said ADR 0047 carried a foot note, which it does not, and put the
+Context sentence twelve lines above a banner that is in fact above it. Corrected from the files.)*
 
 | ADR | Decision |
 | --- | -------- |

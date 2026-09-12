@@ -33,7 +33,8 @@ struct SyntheticFrame {
 /**
  * The rotation is a **unit** quaternion, and the loader now refuses one that is not — by norm, so
  * the double cover is untouched and a negative scalar part still loads. It did not, until a reviewer
- * showed that a `truth.json` whose rotations were `false` loaded `Ok` with four zeros, after which
+ * showed that a `truth.json` spelling each component as `false` loaded `Ok` with four zeros,
+ * after which
  * `ScoreRotations` answers `valid = false` and `medianDeg = 0`: the number Phase 2 exits on, reading
  * as a perfect score to anyone who checks the median and not the flag.
  *
@@ -66,20 +67,29 @@ struct SyntheticDataset {
  * read, and an entry naming a file that is not there is a refusal.
  *
  * Refuses with `NotFound` for a directory, a `truth.json` or a named frame file that is not there,
- * and `InvalidArgument` for a file that is there and is not what it claims — JSON that is not an
- * object, or whose `intrinsics` or a `frames` entry is not one; a `convention.rotation` that is not
- * the one this reader was written against; a header disagreeing with the recorded lens; a payload
- * shorter or longer than the header accounts for; a Netpbm that is not `P6`; a header field
+ * and `InvalidArgument` for a file that is there and is not what it claims.
+ *
+ * **That second list is not written out here, and deliberately.** There are around twenty such
+ * guards and the number grows; an enumeration in a header goes stale the first time one is added,
+ * which is what happened to the paragraph this replaces — a reviewer found it missing seven, having
+ * been corrected twice for naming things it should not. The guards' own sentences are the record:
+ * each writes a phrase only it writes, `RefusedWith` in the test file asserts code *and* phrase per
+ * guard, and `detail` is what a caller reads. Among them, so a reader knows the shape: JSON that is
+ * not an object, or whose `intrinsics` or a `frames` entry is not one; a `convention.rotation` that
+ * is not the one this reader was written against; a header disagreeing with the recorded lens; a
+ * payload shorter or longer than the header accounts for; a Netpbm that is not `P6`; a header field
  * missing, over-long, non-numeric or too large for the type that holds it; a maximum value this
- * reader cannot read; an intrinsic that is not a finite number; an empty `frames` array; or a
- * rotation that is not a unit quaternion.
+ * reader cannot read; an intrinsic that is not a finite number; and a `file` naming a path rather
+ * than a name in the dataset.
  *
  * Two of those are worth naming on their own, because nothing about "a file that is not what it
  * claims" would lead a reader to expect them. **An empty `frames` array is a refusal**, not a
  * successful dataset of nothing: a median over no frames is a number nobody should be shown, and
  * the scorer's caller would be shown one. And **a rotation is required to be a rotation** — a
- * `truth.json` whose rotations are `false` parses to four zeros, and a zero quaternion scores as a
- * perfect reconstruction to anyone reading the median rather than the validity flag. The double
+ * `truth.json` spelling each component as `false` parses to four zeros, and a zero quaternion
+ * scores as a perfect reconstruction to anyone reading the median rather than the validity flag.
+ * (`"rotation": false` is a different input and a different guard — it is not a map, so it never
+ * reaches the norm.) The double
  * cover is untouched: the check is on the norm, so a negative scalar part still loads.
  *
  * **Codes from the store are forwarded, not translated.** `FrameStoreExhausted` from `Allocate`,

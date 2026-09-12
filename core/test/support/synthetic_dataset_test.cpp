@@ -585,12 +585,20 @@ TEST_F(Dataset, RefusesAScalarWhereAMapBelongsWithoutQuotingOpenCvAtTheUser) {
 }
 
 TEST_F(Dataset, RefusesARotationThatIsNotAJsonObject) {
-  Scratch scratch;
-  WriteTruth(scratch, TruthWith(kLens,
-      R"([{"file": "frame_0000.ppm", "rotation": 5}])"));
-  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
-  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
-                          "a frame's rotation in truth.json is not a JSON object"));
+  // `false` is here because the prose about the norm guard said for three rounds that "a
+  // `truth.json` whose rotations are `false`" loaded `Ok` with four zeros. It does not: `false` is
+  // an INT node, so it is not a map, and *this* guard refuses it — the zeros need each component
+  // spelled `false` individually. Two guards, two inputs that look alike in a sentence, and the
+  // difference is which one the reader would go and write.
+  for (const char* rotation : {"5", "false", R"("identity")", "[1, 0, 0, 0]"}) {
+    Scratch scratch;
+    WriteTruth(scratch, TruthWith(kLens, std::string(R"([{"file": "frame_0000.ppm", "rotation": )") +
+                                             rotation + "}]"));
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                            "a frame's rotation in truth.json is not a JSON object"))
+        << rotation;
+  }
 }
 
 TEST_F(Dataset, RefusesTruthThatDescribesNoLens) {
@@ -765,7 +773,8 @@ TEST_F(Dataset, EveryRotationComponentLandsInTheFieldItIsNamedFor) {
   // loader records what the file spells and normalising is not its job. That is still true of the
   // *sign* — the double cover is preserved, and frame 1 keeps a negative scalar part to prove it —
   // but a quaternion that is not unit is not a rotation, and a reviewer showed the loader accepted
-  // one: `"rotation": false` loaded `Ok` with four zeros, after which `ScoreRotations` answers
+  // one: `{"w": false, "x": false, "y": false, "z": false}` loaded `Ok` with four zeros, after
+  // which `ScoreRotations` answers
   // `valid = false` and `medianDeg = 0`, which reads as a perfect score to anyone who checks the
   // median and not the flag. The loader refuses a non-unit norm now, so these are
   // `(1,2,3,4)/√30` and `(-5,6,-7,8)/√174`: all eight still distinct, still mixed in sign.
@@ -1121,13 +1130,16 @@ TEST_F(Dataset, ARollbackKeepsWhatTheStoreRefusedSoTheBackstopCanTryAgain) {
         << "the store never actually declined, so there was no retry to observe: "
         << loaded.status.detail;
     // **And the message must not claim the bytes are lost — here, where that would be false.**
-    // This assertion used to live on the permanent-refusal test, where the over-claim would have
-    // been *true*, so no wording could have discriminated and it pinned a phrase that appears
-    // nowhere else in the tree. It belongs in the arrangement that can contradict it: the retry
-    // below recovers every byte, so a refusal saying otherwise is wrong and this test can say so.
-    EXPECT_EQ(loaded.status.detail.find("still account for bytes"), std::string::npos)
-        << loaded.status.detail;
-    EXPECT_EQ(loaded.status.detail.find("only Clear recovers"), std::string::npos)
+    // Asserted in the *positive*, and that is the whole point. Round 4 put this assertion on the
+    // permanent-refusal test, where the over-claim would have been *true* and no wording could
+    // discriminate; round 5 moved it to this arrangement, which can contradict it, but left it
+    // forbidding two literal phrases — and a reviewer then rewrote the suffix into a *stronger*
+    // over-claim in different words ("those bytes are gone for good and nothing can ever recover
+    // them") with all 56 tests green. Forbidding the wordings we happen to have written before is
+    // not forbidding the claim. Requiring the hedge is, because there is no way to say the bytes
+    // are certainly lost while also saying they may or may not be.
+    EXPECT_NE(loaded.status.detail.find("may or may not still be charged"), std::string::npos)
+        << "the refusal must not promise an outcome the retry below has not decided yet: "
         << loaded.status.detail;
   }
   EXPECT_EQ(HeapUsed(), before)
@@ -1160,7 +1172,8 @@ TEST_F(Dataset, TheRollbackRetriesARefusedReleaseRatherThanBelievingIt) {
 }
 
 TEST_F(Dataset, RefusesARotationThatIsNotAUnitQuaternion) {
-  // The failure this exists for is not a crash. A `truth.json` whose rotations are `false` parses
+  // The failure this exists for is not a crash. A `truth.json` spelling each rotation component
+  // as `false` parses
   // as four zeros; the loader used to accept it, and `ScoreRotations` then reports `valid = false`
   // with `medianDeg = 0` — which is what a perfect reconstruction also reports, to anyone reading
   // the median rather than the flag. That median is Phase 2's exit criterion.
@@ -1190,6 +1203,79 @@ TEST_F(Dataset, TheDoubleCoverStillLoadsAndSoDoesTheFixture) {
   ASSERT_EQ(loaded.value.frames.size(), 4u);
   EXPECT_LT(loaded.value.frames[3].trueRotation.w, 0.0) << "the fixture no longer spells one";
   ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, EveryGuardBeforeTheReadGivesBackTheFramesAlreadyReadAndSaysSoWhenItCannot) {
+  // **The frames loop refuses in six places before it ever calls `ReadFrame`, and every test for
+  // all six put the bad entry first** — where `OwnedFrames` is empty, so the rollback has nothing
+  // to give back and cannot be wrong. A reviewer found this on the norm guard, round 5's newest;
+  // it was true of the other five as well, which makes it one gap rather than six.
+  //
+  // This is round 1's finding wearing new clothes: *"a refusal on the first frame leaves
+  // `OwnedFrames` empty and proves nothing about it."* That was said of the Netpbm guards, the
+  // fixture was moved off `frame_0000`, and the guards added since were written back into the
+  // shape it warned about.
+  //
+  // **Two stores per case, because the heap alone cannot see this.** The first version of this test
+  // asserted only that the heap came back, and a sabotage replacing the norm guard's `refuse()`
+  // with a bare `Err` — dropping the explicit rollback entirely — left it green: `~OwnedFrames` is
+  // the backstop and gives the frames back either way. That is the destructor doing its job, and it
+  // is exactly why the *message* is the discriminating assertion. Only `refuse()` composes the
+  // suffix; the destructor's rollback is silent. So each guard is driven twice — once against a
+  // clean store, where the bytes must come back, and once against a store that will not take them,
+  // where the refusal must say so.
+  struct Case { const char* third; const char* says; };
+  const Case cases[] = {
+      {"7", "a frame entry in truth.json is not a JSON object"},
+      {R"({"rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}})",
+       "a frame entry in truth.json has no file or no rotation"},
+      {R"({"file": "frame_0002.ppm", "rotation": 5})",
+       "a frame's rotation in truth.json is not a JSON object"},
+      {R"({"file": "frame_0002.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0}})",
+       "a frame's rotation: z is not in the file"},
+      {R"({"file": "frame_0002.ppm", "rotation": {"w": 0.0, "x": 0.0, "y": 0.0, "z": 0.0}})",
+       "is not a unit quaternion"},
+      {R"({"file": "../frame_0002.ppm",
+           "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}})",
+       "names a path rather than a file in the dataset"},
+  };
+  for (const Case& one : cases) {
+    Scratch scratch;
+    WriteTruth(scratch, TruthWith(kLens,
+        std::string(R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}},
+            {"file": "frame_0001.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}, )") +
+        one.third + "]"));
+
+    // A store that takes its frames back: the two already read must be gone.
+    const int64_t before = HeapUsed();
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, one.says)) << one.third;
+    EXPECT_EQ(HeapUsed(), before)
+        << "two frames were read before this guard fired: " << one.third;
+
+    // A store that will not: the refusal must report it, which only `refuse()` does.
+    AwkwardStore awkward{store};
+    awkward.refuseForgetAfter = 0;
+    const Result<SyntheticDataset> kept = LoadSyntheticDataset(awkward, scratch.path());
+    EXPECT_TRUE(RefusedWith(kept, StatusCode::InvalidArgument, one.says)) << one.third;
+    EXPECT_NE(kept.status.detail.find("refused to give back a frame read before this failure"),
+              std::string::npos)
+        << "this guard refused without reporting that the store kept the frames: " << one.third
+        << " -> " << kept.status.detail;
+    EXPECT_TRUE(store.Clear().ok());
+  }
+}
+
+TEST_F(Dataset, TheUnitBoundIsTightEnoughToRefuseARotationThatIsNearlyOne) {
+  // **The bound needs a case near it, or it is not a bound.** A reviewer loosened `1e-6` by five
+  // orders of magnitude with the suite green, because the tightest input any test offered was
+  // `{0.5, 0.5, 0.5, 0.0}` — norm 0.866, so anything under 0.134 passed. A quaternion wrong in the
+  // fourth decimal is the shape a real generator bug produces, and it is the one this guard is for.
+  Scratch scratch;
+  WriteTruth(scratch, TruthWith(kLens,
+      R"([{"file": "frame_0000.ppm", "rotation": {"w": 1.0001, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "is not a unit quaternion"));
 }
 
 TEST_F(Dataset, EachIntrinsicComplaintNamesItsOwnFieldAndItsOwnReason) {
@@ -1242,8 +1328,10 @@ TEST_F(Dataset, ReadFrameAlsoStopsShortOfClaimingTheBytesAreLost) {
     EXPECT_NE(loaded.status.detail.find("refused to give this frame back"), std::string::npos)
         << "the inner rollback did not report, so this test is not reaching its own subject: "
         << loaded.status.detail;
-    EXPECT_EQ(loaded.status.detail.find("still account"), std::string::npos) << loaded.status.detail;
-    EXPECT_EQ(loaded.status.detail.find("no handle names"), std::string::npos)
+    // The positive form, for the reason spelled out on the twin above: two negative assertions
+    // here pinned literals that appear nowhere in the loader, so any reworded over-claim passed.
+    EXPECT_NE(loaded.status.detail.find("may or may not still be charged"), std::string::npos)
+        << "the inner refusal must not promise an outcome the destructor's retry decides: "
         << loaded.status.detail;
   }
   EXPECT_EQ(HeapUsed(), before) << "the retry should have given this frame back";

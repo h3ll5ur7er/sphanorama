@@ -202,7 +202,9 @@ fixture problem it is.
   committed fixture has not moved. The C++ half is reached only once the fixture is regenerated,
   which is what `test_the_committed_fixture_is_still_this_generator_s_output` forces a change to do.
   The two fire in sequence, not in parallel, and the consequence four bullets up says the same thing
-  from the other end.
+  from the other end. And the C++ half covers only what the loader reads: the `convention` entries
+  it deliberately carries without checking — pixel encoding among them — are held on the Python side
+  alone until something computes on those pixels.
 - **A dataset costs the heap what its frames cost.** Four 48x36 frames are nothing; sixty frames of a
   real capture are not. The frames belong to the caller, who must `Forget` each — the same rule
   `ExtractFeatures` states, and for the same reason: a harness leaking a dataset per run would
