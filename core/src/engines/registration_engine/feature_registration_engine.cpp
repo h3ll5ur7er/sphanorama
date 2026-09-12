@@ -640,7 +640,13 @@ constexpr double kInlierFraction = 0.2;
 /**
  * The confidence that the sampling loop draws at least one all-inlier triple.
  *
- * Paired with `SampleBudget` below, which turns it into a number of draws.
+ * Turned into a number of draws by `RansacSampleBudget`, which is defined below the anonymous
+ * namespace rather than "below" here — the name and the place in an earlier version of this line
+ * were both wrong, which is a small thing that costs a reader a search.
+ *
+ * It is the real confidence rather than a nominal one: the loop draws its three indices without
+ * replacement, so every iteration is a sample. While it drew independently and skipped collisions,
+ * this said 0.99 and delivered 0.9515 at eight correspondences.
  */
 constexpr double kRansacConfidence = 0.99;
 // **How far the pixels may disagree with the sensor before the answer is a different scene rather
@@ -759,8 +765,11 @@ Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows, 
     return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
                         "the descriptor frame holds fewer bytes than its own row count needs");
   }
-  const int64_t element = type == CV_32F ? static_cast<int64_t>(sizeof(float))
-                                         : static_cast<int64_t>(sizeof(uint8_t));
+  // `CV_ELEM_SIZE` rather than a second table of our own: a `switch` here would be a copy of what
+  // OpenCV already knows about its own type constants, and the two would drift the first time a
+  // detector with a different element type arrived — which is the coupling `LumaRowBytesPerPixel`
+  // exists in this file to remove, met again.
+  const int64_t element = static_cast<int64_t>(CV_ELEM_SIZE(type));
   if (pitch % element != 0) {
     return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
                         "the descriptor rows are not a whole number of elements wide for the "
@@ -835,10 +844,18 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   int budget = RansacSampleBudget(0.0);
   std::vector<size_t> candidate;
   for (int iteration = 0; iteration < budget; ++iteration) {
+    // **Drawn without replacement, so the confidence above is the confidence.** The first version
+    // drew three independent indices and `continue`d on a collision — which spends a draw on
+    // nothing. At `kMinimumCorrespondences = 8` the three are distinct only `8*7*6 / 8^3` of the
+    // time, so 574 draws were 377 samples and the 0.99 that `kRansacConfidence` names was really
+    // 0.9515. Shifting past the indices already taken costs two comparisons and makes every
+    // iteration a sample.
     const size_t i = next(from.size());
-    const size_t j = next(from.size());
-    const size_t k = next(from.size());
-    if (i == j || j == k || i == k) continue;
+    size_t j = next(from.size() - 1);
+    if (j >= i) ++j;
+    size_t k = next(from.size() - 2);
+    if (k >= std::min(i, j)) ++k;
+    if (k >= std::max(i, j)) ++k;
     cv::Matx33d sampled;
     if (!KabschRotation({from[i], from[j], from[k]}, {to[i], to[j], to[k]}, &sampled)) continue;
     if (!withinBound(sampled)) continue;
@@ -918,10 +935,13 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
 }  // namespace
 
 bool BearingsSpanAPlane(double largest, double second) {
-  // A covariance with no leading singular value has no bearings in it worth fitting — every input
-  // was the zero vector, or there were none. Refusing here is what lets the ratio below be a
-  // division that cannot be by zero.
-  if (!(largest > 0.0)) return false;
+  // **There is no zero guard, and that is deliberate.** One stood here saying it was what "lets the
+  // ratio below be a division that cannot be by zero" — describing a division this body has not
+  // contained since it became a comparison against `1e-9 * largest`. A reviewer then showed the
+  // guard was unreachable as well as misdescribed: deleting it left every test green, including the
+  // one that names it. `cv::SVD` orders the singular values, so `second <= largest`; an all-zero
+  // covariance gives `0 > 0`, false, and a NaN gives false through the same comparison. Keeping an
+  // untested branch because it feels safer is the thing this repository has a rule against.
   // **Relative, and deliberately still permissive.** This is the degeneracy that makes the fit
   // *unconstrained* — bearings all on one line, where the rotation about that line is free — and
   // not a general conditioning test. Bearings a ten-thousandth of a radian apart are badly

@@ -1149,6 +1149,108 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
  * row against `b`'s 32 and the mismatch guard refuses the pair; under the new one both are 32 and
  * the pair registers to the identity it should.
  */
+/**
+ * Every bounds guard on the way into `EstimatePairwise`, driven.
+ *
+ * **All five were correct and none was tested.** A reviewer deleted the lot — both keypoint guards
+ * and all three descriptor ones — and 106 tests stayed green, the accuracy measurement included;
+ * the same input then gave ASan `heap-buffer-overflow READ of size 8, 0 bytes after a 3768-byte
+ * region` inside `ReadBearings`. Correct code with nothing defending it is one careless edit away
+ * from being incorrect code, and on this branch that edit has happened twice.
+ *
+ * A `FeatureSet` is a value its caller fills in, so every case here is reachable without a
+ * conspiring store: a caller that mislays a stride, doubles a count, or hands on a set built for a
+ * different detector. What is asserted is a refusal rather than a message — a guard's job is to not
+ * read past the frame — and the detail is checked only where two guards would otherwise be
+ * indistinguishable.
+ */
+TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+  ASSERT_GT(a.value.count, 3);
+
+  const auto refuses = [&](FeatureSet doctored, const char* what) {
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(doctored, b.value, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_FALSE(pair.ok()) << what << ": answered instead of refusing, with "
+                            << pair.value.inliers << " inliers";
+    return pair.status.detail;
+  };
+
+  // **A keypoint stride narrower than one row.** Eight bytes is a row — `FeatureSet::keypoints`
+  // spells that out in the contract — so seven describes a frame whose rows overlap, which no store
+  // produces and a caller can certainly claim.
+  {
+    FeatureSet narrow = a.value;
+    narrow.keypoints.stride = 7;
+    EXPECT_NE(refuses(narrow, "a keypoint stride under one row").find("stride"), std::string::npos);
+  }
+  // **More keypoint rows than the frame holds.** This is the one whose absence ASan caught: without
+  // it the read walks `count * stride` bytes into a frame that has fewer, and the report was
+  // `heap-buffer-overflow READ of size 8, 0 bytes after a 3768-byte region`.
+  {
+    FeatureSet tooMany = a.value;
+    tooMany.count = a.value.count * 4;
+    (void)refuses(tooMany, "four times as many keypoint rows as the frame holds");
+  }
+  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** Doctoring one
+  // side only never reaches these guards: the width comparison refuses the pair first, because a
+  // 64-byte row on one side and a 32-byte row on the other is exactly what "not made by the same
+  // detector" means. Both sides claim it, the widths agree, and the row-count division is then the
+  // only thing between the matcher and a read past the end of the allocation.
+  {
+    FeatureSet wideA = a.value;
+    FeatureSet wideB = b.value;
+    wideA.descriptors.stride = a.value.descriptors.stride * 2;
+    wideB.descriptors.stride = b.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(wideA, wideB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on both sides answered instead of "
+                               "refusing, with " << pair.value.inliers << " inliers";
+    // **And the refusal has to be *this* one.** Removing the guard does not make the call answer:
+    // it makes it read past the frame and refuse anyway, because descriptors assembled from
+    // whatever follows the allocation match nothing. `EXPECT_FALSE(ok())` is therefore satisfied
+    // with the guard and without it, and proves nothing either way — the guard's own sentence is
+    // what separates a bounds check from a coincidence. Found by running the sabotage: with all
+    // four guards removed this case still "passed".
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the bounds check this case exists for: " << pair.status.detail;
+  }
+  // **A descriptor pitch one byte over, on both sides.** For SIFT that is 513 bytes where an element
+  // is four, so the divisibility guard answers; for the byte detectors every pitch divides and the
+  // row-count division answers instead. One input, two guards, and which fires is a property of the
+  // detector — so either sentence is accepted and a refusal for any *other* reason is not.
+  {
+    FeatureSet raggedA = a.value;
+    FeatureSet raggedB = b.value;
+    raggedA.descriptors.stride = a.value.descriptors.stride + 1;
+    raggedB.descriptors.stride = b.value.descriptors.stride + 1;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(raggedA, raggedB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok())
+        << "a descriptor pitch one byte over answered instead of refusing, with "
+        << pair.value.inliers << " inliers";
+    const bool byAGuard = pair.status.detail.find("whole number of elements") != std::string::npos ||
+                          pair.status.detail.find("its own row count") != std::string::npos;
+    EXPECT_TRUE(byAGuard) << "refused, but not by either bounds check this case can reach: "
+                          << pair.status.detail;
+  }
+
+  // **The fifth guard is not driven here, and that is a statement rather than an omission.**
+  // `ReadDescriptors` refuses a column count past `INT_MAX` rather than narrowing it into
+  // `cv::Mat`'s `int`, which would be undefined. But `FrameRef::stride` is an `int32_t`, so a
+  // *declared* pitch can never exceed `INT_MAX`; the only way there is the unset-stride fallback
+  // `rows.size() / count` on a descriptor frame larger than two gibibytes, which a 64-bit build can
+  // reach and a test has no business allocating. It is kept, not deleted, because the state is
+  // reachable in life — and it is named here so the next reader knows it is uncovered rather than
+  // assuming this test covers all five.
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
 TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
   FeatureRegistrationEngine engine = Engine();
   const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
@@ -1468,8 +1570,11 @@ TEST(Degeneracy, ScalingEveryBearingSetTheSameWayDoesNotChangeTheAnswer) {
   // rotation with a free axis. This assertion is the whole of the finding.
   EXPECT_FALSE(BearingsSpanAPlane(60.0, 6e-9));
 
-  // Nothing to fit: no bearings, or every one of them the zero vector. Refused rather than divided
-  // by, which is what makes the ratio above total.
+  // Nothing to fit: no bearings, or every one of them the zero vector. There is no zero guard any
+  // more — a reviewer showed the one that was here could be deleted with every test still green,
+  // because `cv::SVD` orders the singular values so `second <= largest`, and `0 > 1e-9 * 0` is
+  // false on its own. This assertion stays as the statement that the comparison is total at the
+  // bottom of its range, which is a different claim from "a guard runs".
   EXPECT_FALSE(BearingsSpanAPlane(0.0, 0.0));
 }
 

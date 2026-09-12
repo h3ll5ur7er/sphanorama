@@ -830,8 +830,8 @@ from truth, chains the relative rotations into absolute ones and scores them wit
 | detector | pairs registered | median | mean | max |
 | -------- | ---------------- | ------ | ---- | --- |
 | AKAZE | 11 of 11 | 0.063° | 0.085° | 0.204° |
-| SIFT | 11 of 11 | 0.090° | 0.091° | 0.136° |
-| ORB | 8 of 11 | 0.072° | 0.100° | 0.262° |
+| SIFT | 11 of 11 | 0.097° | 0.092° | 0.147° |
+| ORB | 8 of 11 | 0.068° | 0.095° | 0.219° |
 
 So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
 bound that exists beating a precise one that does not.
