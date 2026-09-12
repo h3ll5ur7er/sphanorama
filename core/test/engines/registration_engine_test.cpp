@@ -1228,10 +1228,12 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
     EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
         << "refused, but not by the bounds check this case exists for: " << pair.status.detail;
   }
-  // **A descriptor pitch one byte over, on both sides.** For SIFT that is 513 bytes where an element
-  // is four, so the divisibility guard answers; for the byte detectors every pitch divides and the
-  // row-count division answers instead. One input, two guards, and which fires is a property of the
-  // detector — so either sentence is accepted and a refusal for any *other* reason is not.
+  // **A descriptor pitch one byte over, on both sides.** An earlier comment here claimed SIFT would
+  // reach the divisibility guard — 513 bytes where an element is four — and it does not: the
+  // row-count division is checked *first*, and a 513-byte pitch over a frame of 512-byte rows fails
+  // it, on all three detectors. So this case drives one guard, not two. The assertion below still
+  // accepts either sentence, because naming the wrong one is exactly how the previous comment went
+  // stale.
   {
     FeatureSet raggedA = a.value;
     FeatureSet raggedB = b.value;
@@ -1248,14 +1250,26 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
                           << pair.status.detail;
   }
 
-  // **The fifth guard is not driven here, and that is a statement rather than an omission.**
-  // `ReadDescriptors` refuses a column count past `INT_MAX` rather than narrowing it into
-  // `cv::Mat`'s `int`, which would be undefined. But `FrameRef::stride` is an `int32_t`, so a
-  // *declared* pitch can never exceed `INT_MAX`; the only way there is the unset-stride fallback
-  // `rows.size() / count` on a descriptor frame larger than two gibibytes, which a 64-bit build can
-  // reach and a test has no business allocating. It is kept, not deleted, because the state is
-  // reachable in life — and it is named here so the next reader knows it is uncovered rather than
-  // assuming this test covers all five.
+  // **Seven guards on this path, three driven above, four shadowed — and I counted them wrong
+  // twice before a reviewer counted them properly.** Written out, because "all the bounds guards"
+  // is the kind of claim that decays into an unexamined comfort:
+  //
+  // Driven: the keypoint stride floor, the keypoint row count, the descriptor row count. Removing
+  // any one of those three on its own fails a case above.
+  //
+  // Not driven, each because something earlier refuses first — not because the guard is redundant:
+  //   - `count <= 0 || rows.empty()` in `ReadDescriptors`: `EstimatePairwise` refuses a set with no
+  //     rows before either reader runs.
+  //   - a descriptor pitch of zero: needs `count` to exceed the pinned bytes, and `ReadBearings`
+  //     runs first on the same `count`.
+  //   - element divisibility: the row-count division is checked before it and refuses any pitch
+  //     wide enough to be indivisible on these three detectors.
+  //   - a column count past `INT_MAX`: `FrameRef::stride` is an `int32_t`, so a declared pitch
+  //     cannot reach it; the only route is the unset-stride fallback on a descriptor frame over two
+  //     gibibytes, which a test has no business allocating.
+  //
+  // All four are kept. The call order is not a promise, and a future reader of these frames may not
+  // have a keypoint guard in front of it.
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);

@@ -265,11 +265,19 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
 
   const test::RotationScore score = test::ScoreRotations(estimated, truth);
   ASSERT_TRUE(score.valid) << "the scorer could not align the two sets";
-  // **And the alignment it found is the only one.** `maxDeg` and `medianDeg` are measured after the
-  // gauge is removed, so they are statements about the *residual* once a common rotation has been
-  // divided out — and if that rotation is not unique, they are statements about an arbitrary choice
-  // among several. Every assertion below reads those two numbers; this is what makes them mean
-  // something. A reviewer pointed out that the branch read them while checking only `valid`.
+  // **A precondition, not a check on the estimator — and it cannot fail on this dataset.** `maxDeg`
+  // and `medianDeg` are residuals measured after a common rotation is divided out, so if that
+  // rotation were not unique they would describe an arbitrary choice among several. On a twelve
+  // frame ring the eigen-gap is nowhere near degenerate and this is always true; a reviewer
+  // measured the relative gap at 1e-12 from the threshold and was right to say the assertion is
+  // decoration today.
+  //
+  // Kept anyway, and labelled, for the same reason as `ASSERT_TRUE(score.valid)` above it: the
+  // degenerate case is reachable in life — `rotation_scoring.h` names two frames exactly a half
+  // turn apart — so someone changing `kFrames` or the ring geometry into that shape should get a
+  // failure here rather than numbers below that have quietly stopped meaning anything. An assertion
+  // that guards a precondition is allowed not to fire; what it must not do is read as evidence
+  // about the thing under test, which is why this comment says which it is.
   ASSERT_TRUE(score.alignmentIsUnique)
       << "the gauge alignment is degenerate, so the residual below is one of several answers";
 
@@ -314,7 +322,19 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // the bound is deliberately several times looser than any of them — per the skill's advice that a
   // bound which exists beats a precise one that does not. It is still far tighter than the
   // 175-to-179-degree aliases this dataset produced before the prior was bounded.
-  EXPECT_LT(score.medianDeg, 0.5)
+  // **A regression bound, not the phase threshold** — and the distinction is what a reviewer had to
+  // point out. `docs/06-roadmap.md` states 0.5 degrees as what Phase 2 exits on: a claim about what
+  // a panorama needs. This test's job is different and narrower — to notice when the estimator gets
+  // worse — and a bound set generously enough to be a product statement is far too loose for that.
+  //
+  // Measured: the medians are 0.063 to 0.097 and no single frame exceeds 0.219. Deleting the entire
+  // inlier refit — the step that makes the answer better than the three points that found it —
+  // moves AKAZE to median 0.4744 and max 0.9607, which cleared both of the previous bounds by a few
+  // percent and left every one of 802 tests green. So the bounds are set at roughly twice the
+  // measurement rather than five times it: tight enough that losing a whole stage of the fit is
+  // caught, loose enough not to fail on the next OpenCV bump, which is the only thing that should
+  // move these numbers at all (the dataset, the seed and the detectors are pinned).
+  EXPECT_LT(score.medianDeg, 0.2)
       << "median " << score.medianDeg << " degrees over " << kFrames << " chained frames";
 
   // **The worst frame, which is the number the prior's bound exists to hold down.** A reviewer
@@ -325,11 +345,11 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // `rotation_scoring.h` says the maximum is there to make legible. The number reached stderr and no
   // assertion.
   //
-  // One degree: about four times the worst single frame any detector actually produces here (0.219)
-  // and two orders of magnitude under the alias. It is also what catches the other way this test can
+  // Four tenths of a degree: about twice the worst single frame any detector actually produces here
+  // (0.219), and two orders of magnitude under the alias. It is also what catches the other way this test can
   // be flattered — a chain wrong by a degree on every answered step scores a passing median once the
   // gauge is removed and the refused steps re-anchor it to truth, and cannot hide from this.
-  EXPECT_LT(score.maxDeg, 1.0)
+  EXPECT_LT(score.maxDeg, 0.4)
       << "one frame is " << score.maxDeg << " degrees out, which a median cannot see";
 
   for (const FeatureSet& set : sets) {
@@ -354,11 +374,11 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  * rotation a minority of its correspondences agree with, and some pair produces one a healthy share
  * do. Restating the acceptance rule as an assertion would only check the code against itself.
  *
- * Measured here, so the arrangement is known to reach both branches: on frames 0 and 1, ORB answers
- * with 11 inliers of 128 correspondences and is not accepted, while SIFT answers with 60 of 181 and
- * is. ORB's truth rotation on that pair is itself agreed on by only 11 of 128 correspondences, so
- * the estimator is doing about as well as the scene allows and reporting honestly that it is not
- * much.
+ * Measured here, so the arrangement is known to reach both branches: on frames 3 and 4 against a
+ * prior three degrees out, ORB answers with 20 inliers of 141 correspondences and is not accepted,
+ * while AKAZE answers with 42 of 199 and SIFT with 61 of 178, both accepted. ORB's truth rotation on
+ * that pair is itself agreed on by only 19 of 141, so the estimator is finding as much as the scene
+ * allows and reporting honestly that it is not much.
  */
 TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   Rendered rendered(12, 640, 480);
@@ -371,15 +391,36 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
   ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
 
-  const Quat step = Normalize(Multiply(Conjugate(dataset.value.frames[1].trueRotation),
-                                       dataset.value.frames[0].trueRotation));
+  // **Frames 3 and 4, against a prior three degrees from truth — and both halves of that matter.**
+  //
+  // The first version of this test used frames 0 and 1 and handed over the *exact* truth of the
+  // step, which is the arrangement `0561561` removed from the accuracy test for making the
+  // measurement a mirror. A reviewer showed the same flaw here: an estimator gutted to return its
+  // prior passes, because the prior is the answer and its inlier count is truth's, so ORB declines
+  // and SIFT accepts exactly as they should. The existence property held for an engine that read no
+  // pixels at all.
+  //
+  // It cannot be repaired by nudging *that* pair. Sweeping the perturbation: at 0.25 degrees the
+  // echo still survives (a quarter degree is about 2 px at this focal length, inside the 3 px inlier
+  // radius) and at 0.5 degrees ORB stops answering altogether, so the declined case vanishes. The
+  // window where the echo dies and the window where ORB answers do not overlap on frames 0 and 1.
+  //
+  // They do on frames 3 and 4, which is where the accuracy measurement already shows ORB answering
+  // and declining under the full three degrees: 20 correspondences of 141, against AKAZE's 42 of
+  // 199 and SIFT's 61 of 178, both accepted. Three degrees is about 26 px, so an echo gathers
+  // nothing and is refused — which fails the "something was accepted" half and catches it.
+  const size_t kFirst = 3;
+  const Quat truthStep = Multiply(Conjugate(dataset.value.frames[kFirst + 1].trueRotation),
+                                  dataset.value.frames[kFirst].trueRotation);
+  const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * 3.14159265358979323846 / 180.0);
+  const Quat step = Normalize(Multiply(truthStep, nudge));
 
   int accepted = 0;
   int answeredButNotAccepted = 0;
   for (const FeatureDetector detector : kAllFeatureDetectors) {
     FeatureRegistrationEngine engine{store, detector};
-    const Result<FeatureSet> a = engine.ExtractFeatures(dataset.value.frames[0].frame);
-    const Result<FeatureSet> b = engine.ExtractFeatures(dataset.value.frames[1].frame);
+    const Result<FeatureSet> a = engine.ExtractFeatures(dataset.value.frames[kFirst].frame);
+    const Result<FeatureSet> b = engine.ExtractFeatures(dataset.value.frames[kFirst + 1].frame);
     ASSERT_TRUE(a.ok() && b.ok());
     const Result<PairwiseResult> pair =
         engine.EstimatePairwise(a.value, b.value, step, dataset.value.lens);

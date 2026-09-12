@@ -106,23 +106,28 @@ jobs:
       - name: the accuracy measurement actually ran
         run: |
           log=$(mktemp)
-          # Every parameterisation of the measurement, plus the acceptance test that reads
-          # `PairwiseResult::correspondences` — it is a separate suite, so the Accuracy filter alone
-          # never ran it, and it is the only test anywhere that reads that field.
+          # `set +e` from here on: under `bash -e` a failing command aborts the step, and a step that
+          # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
+          # make visible. It covers the `expected=` line too, which CI was relying on to abort.
+          set +e
           filter='EveryDetector/Accuracy.*:Acceptance.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
-          # written down: `-lt 1` passed when one detector of three ran, which is exactly the hole
-          # `ValuesIn(kAllFeatureDetectors)` exists to close.
+          # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
             --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
-          # `set +e` because this step runs under `bash -e`: without it a failing measurement aborts
-          # here and the step is red with no output at all, which is the opposite of the point.
-          set +e
           ./build/native-debug/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
           status=$?
           set -e
           cat "$log"
           measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          # **Both counts go to zero together when the suite is renamed away**, so comparing them is
+          # not enough — the first version of this check was green on a binary with no measurement in
+          # it at all, which is precisely the hole it was written to close. The floor is what makes
+          # the comparison mean something.
+          if [ "$expected" -lt 1 ]; then
+            echo "the binary contains no accuracy measurement to run" >&2
+            status=1
+          fi
           if [ "$measured" -ne "$expected" ]; then
             echo "the measurement ran $measured detectors and the binary has $expected" >&2
             status=1
@@ -188,23 +193,28 @@ jobs:
       - name: the accuracy measurement actually ran
         run: |
           log=$(mktemp)
-          # Every parameterisation of the measurement, plus the acceptance test that reads
-          # `PairwiseResult::correspondences` — it is a separate suite, so the Accuracy filter alone
-          # never ran it, and it is the only test anywhere that reads that field.
+          # `set +e` from here on: under `bash -e` a failing command aborts the step, and a step that
+          # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
+          # make visible. It covers the `expected=` line too, which CI was relying on to abort.
+          set +e
           filter='EveryDetector/Accuracy.*:Acceptance.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
-          # written down: `-lt 1` passed when one detector of three ran, which is exactly the hole
-          # `ValuesIn(kAllFeatureDetectors)` exists to close.
+          # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
             --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
-          # `set +e` because this step runs under `bash -e`: without it a failing measurement aborts
-          # here and the step is red with no output at all, which is the opposite of the point.
-          set +e
           ./build/native-asan/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
           status=$?
           set -e
           cat "$log"
           measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          # **Both counts go to zero together when the suite is renamed away**, so comparing them is
+          # not enough — the first version of this check was green on a binary with no measurement in
+          # it at all, which is precisely the hole it was written to close. The floor is what makes
+          # the comparison mean something.
+          if [ "$expected" -lt 1 ]; then
+            echo "the binary contains no accuracy measurement to run" >&2
+            status=1
+          fi
           if [ "$measured" -ne "$expected" ]; then
             echo "the measurement ran $measured detectors and the binary has $expected" >&2
             status=1
