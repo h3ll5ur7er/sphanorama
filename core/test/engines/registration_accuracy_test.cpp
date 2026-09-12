@@ -309,11 +309,102 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   EXPECT_LT(score.medianDeg, 0.5)
       << "median " << score.medianDeg << " degrees over " << kFrames << " chained frames";
 
+  // **The worst frame, which is the number the prior's bound exists to hold down.** A reviewer
+  // deleted `withinBound` — the entire half-turn defence — and this test passed on two of three
+  // detectors: AKAZE came back `median 0.4034` with `mean 44.8946` and `max 178.8014`, and only the
+  // median was asserted. A median is a statement about the typical frame and the alias is not
+  // typical; it is one or two frames turned most of the way round, which is exactly the shape
+  // `rotation_scoring.h` says the maximum is there to make legible. The number reached stderr and no
+  // assertion.
+  //
+  // One degree: about four times the worst single frame any detector actually produces here (0.26)
+  // and two orders of magnitude under the alias. It is also what catches the other way this test can
+  // be flattered — a chain wrong by a degree on every answered step scores a passing median once the
+  // gauge is removed and the refused steps re-anchor it to truth, and cannot hide from this.
+  EXPECT_LT(score.maxDeg, 1.0)
+      << "one frame is " << score.maxDeg << " degrees out, which a median cannot see";
+
   for (const FeatureSet& set : sets) {
     (void)store.Forget(set.descriptors);
     (void)store.Forget(set.keypoints);
   }
   for (const SyntheticFrame& frame : dataset.value.frames) (void)store.Forget(frame.frame);
+}
+
+/**
+ * A refusal and an unaccepted answer are different outcomes, and both happen here.
+ *
+ * **ADR 0056's central claim, asserted.** `accepted` earns its place in `PairwiseResult` only if it
+ * can be false on a result that was returned — otherwise it says exactly what `Result::ok()` says,
+ * which is the defect round 1 found and which nothing could see: the fix was in the code, no test
+ * asserted `accepted == false` anywhere, and a reviewer restored the constant-`true` behaviour with
+ * all 798 tests green.
+ *
+ * Written as a statement about the *engine and the dataset together* rather than about a detector,
+ * because "ORB declines frames 0 and 1" is a fact that a better matcher should be free to change.
+ * What must not change is that the two outcomes come apart: some pair of a clean ring produces a
+ * rotation a minority of its correspondences agree with, and some pair produces one a healthy share
+ * do. Restating the acceptance rule as an assertion would only check the code against itself.
+ *
+ * Measured here, so the arrangement is known to reach both branches: on frames 0 and 1, ORB answers
+ * with 11 inliers of 128 correspondences and is not accepted, while SIFT answers with 60 of 181 and
+ * is. That is also the pair whose truth rotation has only 11 of 128 behind it — the estimator is
+ * doing as well as is possible and reporting honestly that it is not much.
+ */
+TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
+  Rendered rendered(12, 640, 480);
+  if (!rendered.ok()) {
+    GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. "
+                 << rendered.why();
+  }
+
+  MemoryFrameStoreAccess store{1 << 28};
+  const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
+  ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+
+  const Quat step = Normalize(Multiply(Conjugate(dataset.value.frames[1].trueRotation),
+                                       dataset.value.frames[0].trueRotation));
+
+  int accepted = 0;
+  int answeredButNotAccepted = 0;
+  for (const FeatureDetector detector : kAllFeatureDetectors) {
+    FeatureRegistrationEngine engine{store, detector};
+    const Result<FeatureSet> a = engine.ExtractFeatures(dataset.value.frames[0].frame);
+    const Result<FeatureSet> b = engine.ExtractFeatures(dataset.value.frames[1].frame);
+    ASSERT_TRUE(a.ok() && b.ok());
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, b.value, step, dataset.value.lens);
+    if (pair.ok()) {
+      // **The denominator is carried, so this is checkable at all.** `accepted` is a comparison
+      // against a fraction, and until `correspondences` existed a caller held the numerator alone —
+      // eleven agreeing out of forty and out of a hundred and twenty-eight are the same `inliers`
+      // and are not the same evidence.
+      EXPECT_GT(pair.value.correspondences, 0)
+          << "an answer was returned without saying how many correspondences it is out of";
+      EXPECT_LE(pair.value.inliers, pair.value.correspondences);
+      if (pair.value.accepted) {
+        ++accepted;
+      } else {
+        ++answeredButNotAccepted;
+        // Not a refusal: the rotation is there to be read, and a global solve may use it as a weak
+        // constraint. That is the whole distinction the field exists to carry.
+        EXPECT_GT(pair.value.inliers, 0);
+        EXPECT_LT(pair.value.inliers * 5, pair.value.correspondences)
+            << "not accepted, yet a fifth or more of the correspondences agree, which is not what "
+               "the gate says";
+      }
+    }
+    (void)store.Forget(a.value.descriptors);
+    (void)store.Forget(a.value.keypoints);
+    (void)store.Forget(b.value.descriptors);
+    (void)store.Forget(b.value.keypoints);
+  }
+  for (const SyntheticFrame& frame : dataset.value.frames) (void)store.Forget(frame.frame);
+
+  EXPECT_GT(answeredButNotAccepted, 0)
+      << "every detector that answered was accepted, so `accepted` says nothing `ok()` does not — "
+         "which is the defect ADR 0056 exists to have fixed";
+  EXPECT_GT(accepted, 0) << "nothing was accepted at all, so this proves only that the gate refuses";
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Accuracy,

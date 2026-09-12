@@ -769,9 +769,10 @@ that has to be ordered.
   in too* — ratio-test matching, bearings through `camera_model`, and a RANSAC rotation refitted on
   its inliers — which is what forced `EstimatePairwise` to take the lens, since a rotation cannot be
   recovered from pixels without one (ADR 0054). **Refinement still refuses** rather than returning an
-  empty solution that would look like a solved sphere, and the accuracy number this phase exits on is
-  still unmeasured: the engine answers, and nothing has yet scored its answers against a dataset. It
-  compiles
+  empty solution that would look like a solved sphere. The accuracy number this phase exits on **is
+  measured now** — the table further down is it — taken against a sensor prior perturbed three
+  degrees, because the first harness handed the estimator the truth of each step and was therefore
+  measuring itself. It compiles
   only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.
@@ -836,8 +837,11 @@ So 0.5 degrees is several times the worst detector's median — generous, in the
 bound that exists beating a precise one that does not.
 
 **Read the first column before the second.** ORB declines three of eleven pairs, and the median
-beside that is computed over the eight it answered — a detector that declined everything would
-score zero. What those three are was settled by instrumenting the engine to count inliers under the
+beside that is *not* computed over the eight it answered — which an earlier version of this sentence
+claimed, wrongly, in the same breath as drawing the right conclusion from it. A declined step carries
+the true rotation forward into both chains, so it enters the sample as an exact zero and *flatters*
+the median. That is why the first column is a conjunct of the test rather than a footnote to it: a
+detector that declined everything would chain pure truth and score zero. What those three are was settled by instrumenting the engine to count inliers under the
 truth rotation: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
 13 of 154 correspondences, and the search returned 20 and 13 on the last two, which is as well as is
 possible. Nine of ten of ORB's surviving matches there are wrong, because a checkerboard panorama

@@ -69,9 +69,33 @@ different gates.
 - `Refine` will have to decide what to do with an unaccepted edge. This ADR deliberately does not:
   nothing implements a global solve yet, and choosing a weighting before there is something to weight
   would be inventing a policy for an unwritten caller.
+- **`kInlierFraction` is now two knobs wearing one name, and the second is expensive.** It is also
+  the floor of `RansacSampleBudget`, because there is no point searching for a consensus smaller
+  than the one the gate would refuse. So the budget is `log(1-p)/log(1-gate^3)` and lowering the
+  gate costs cubically: at 0.2 it is 574 draws and a call takes about twenty milliseconds; at 0.01
+  it is 4.6 million and the same call takes fifteen seconds. Measured, by lowering the constant
+  during a sabotage and watching a twenty-millisecond test become a fifteen-second one. Nobody
+  reading the constant's own line would expect that, and the target device is a phone — so both
+  ends say so now. This is a cost this decision bought and it is not obviously the right trade: a
+  separate search floor would decouple them, at the price of a number with no measurement behind it.
+- **`PairwiseResult` had to grow a second field**, `correspondences`, which this ADR did not
+  originally foresee. `accepted` is a comparison against a fraction, and the denominator was in no
+  field of the struct — so the Rejected section's promise below, that the engine "reports the
+  strength and lets the caller decide", was false as first implemented: one bit was reported and a
+  caller holding `inliers = 11` could not tell eleven-of-forty from eleven-of-128.
 - A caller reading `relativeRotation` without checking `accepted` gets a rotation that is usually
   right and sometimes minority-backed. That is a real hazard and the field's comment says so; the
   alternative — refusing outright — is in Rejected below.
+
+## How its claims were measured
+
+The inlier counts under the truth rotation (11 of 128, 19 of 141, 13 of 154) came from a temporary
+`SPHANORAMA_TRUTH_Q` hook in `FitRotation` that counted inliers for a rotation handed in by the
+test, printed them and was removed before the commit. It is named here because the numbers are
+load-bearing for this decision and the harness as it stands **cannot reproduce them**: it scores
+estimates against truth and never asks how much support the truth itself has. Anyone re-checking
+this ADR needs to put that hook back. That the instrument is not in the tree is a weakness of this
+record, and stating it is better than letting a reader assume a test covers it.
 
 ## Rejected alternative
 

@@ -2,6 +2,16 @@
 
 **Status:** accepted
 
+> **The first Consequence below stopped being true on this ADR's own branch.** It says the
+> measurement is not in CI's `native` job and that fixing it "deserves its own decision" — and the
+> decision was taken a few commits later, in the same branch, when a reviewer showed that the job
+> was reporting "100% tests passed" while running none of it. Both jobs that build the core now
+> install `uv` and both fail if the measurement did not run. The paragraph stands as what was
+> believed when this was written; the banner is here so nobody meets it and believes it now.
+>
+> The timing in the second Consequence is also light: three detectors is closer to twenty seconds
+> than fifteen on the machine where the seven-second baseline beside it is exact.
+
 ## Context
 
 ADR 0053 committed a four-frame 48x36 dataset as a **format** fixture and drew a line that this ADR

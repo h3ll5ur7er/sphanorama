@@ -98,8 +98,28 @@ jobs:
       # is green whether the measurement ran or not — which is the failure this job just had. Run
       # the accuracy cases on their own and fail on gtest's skip count, because the only thing worse
       # than an unmeasured number is an unmeasured number nobody can tell from a measured one.
+      # **Green on zero tests was the first version's hole**, and a reviewer found it: a filter that
+      # matches nothing prints "0 tests ran", contains no SKIPPED, and exits 0 — so renaming the
+      # suite, deleting it, or building without OpenCV all reported the measurement as taken. The
+      # check is therefore for the measurement's own output line, one per detector, rather than for
+      # the absence of a bad word.
       - name: the accuracy measurement actually ran
-        run: sh -c 'log=$(mktemp); ./build/native-debug/bin/sphanorama_tests --gtest_filter="EveryDetector/Accuracy.*" >"$log" 2>&1; status=$?; cat "$log"; if grep -q SKIPPED "$log"; then echo "the registration accuracy measurement skipped; a skip is not a pass" >&2; status=1; fi; rm -f "$log"; exit $status'
+        run: |
+          log=$(mktemp)
+          ./build/native-debug/bin/sphanorama_tests --gtest_filter='EveryDetector/Accuracy.*' >"$log" 2>&1
+          status=$?
+          cat "$log"
+          measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          if [ "$measured" -lt 1 ]; then
+            echo "no accuracy measurement was taken - the run produced $measured of them" >&2
+            status=1
+          fi
+          if grep -q SKIPPED "$log"; then
+            echo "the registration accuracy measurement skipped, and a skip is not a pass" >&2
+            status=1
+          fi
+          rm -f "$log"
+          exit $status
 
   sanitizers:
     name: address and undefined behaviour
@@ -147,6 +167,28 @@ jobs:
         run: cmake --build build/native-asan
       - name: test
         run: ctest --test-dir build/native-asan --output-on-failure
+      # The same guard as the native job's, against the same tree. This job gained `uv` and not this
+      # step, while the commit message that added them said both jobs got both — so the sanitizer
+      # run has been skipping the measurement silently, which is the exact failure the native step
+      # exists to stop. Under ASan it is the more valuable of the two: the branch that added it also
+      # changed pitch arithmetic and `cv::Mat` strides over pinned spans.
+      - name: the accuracy measurement actually ran
+        run: |
+          log=$(mktemp)
+          ./build/native-asan/bin/sphanorama_tests --gtest_filter='EveryDetector/Accuracy.*' >"$log" 2>&1
+          status=$?
+          cat "$log"
+          measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          if [ "$measured" -lt 1 ]; then
+            echo "no accuracy measurement was taken - the run produced $measured of them" >&2
+            status=1
+          fi
+          if grep -q SKIPPED "$log"; then
+            echo "the registration accuracy measurement skipped, and a skip is not a pass" >&2
+            status=1
+          fi
+          rm -f "$log"
+          exit $status
 
   wasm:
     name: wasm builds, size budget and browser tests
