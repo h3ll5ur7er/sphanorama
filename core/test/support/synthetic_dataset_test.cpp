@@ -759,23 +759,33 @@ TEST_F(Dataset, EveryIntrinsicLandsInTheFieldItIsNamedFor) {
 
 TEST_F(Dataset, EveryRotationComponentLandsInTheFieldItIsNamedFor) {
   // Two frames, eight distinct components, no zeros and no repeats — so a transposition of any pair
-  // within a frame, and any confusion between the two frames, is visible. Not unit quaternions: the
-  // loader records what the file spells and normalising is not its job.
+  // within a frame, and any confusion between the two frames, is visible.
+  //
+  // **And unit, which they were not.** The first version used 0.11…0.88 with the reasoning that the
+  // loader records what the file spells and normalising is not its job. That is still true of the
+  // *sign* — the double cover is preserved, and frame 1 keeps a negative scalar part to prove it —
+  // but a quaternion that is not unit is not a rotation, and a reviewer showed the loader accepted
+  // one: `"rotation": false` loaded `Ok` with four zeros, after which `ScoreRotations` answers
+  // `valid = false` and `medianDeg = 0`, which reads as a perfect score to anyone who checks the
+  // median and not the flag. The loader refuses a non-unit norm now, so these are
+  // `(1,2,3,4)/√30` and `(-5,6,-7,8)/√174`: all eight still distinct, still mixed in sign.
   Scratch scratch;
   WriteTruth(scratch, TruthWith(kLens,
-      R"([{"file": "frame_0000.ppm", "rotation": {"w": 0.11, "x": 0.22, "y": 0.33, "z": 0.44}},
-          {"file": "frame_0001.ppm", "rotation": {"w": -0.55, "x": 0.66, "y": -0.77, "z": 0.88}}])"));
+      R"([{"file": "frame_0000.ppm", "rotation": {"w": 0.18257418583505536, "x": 0.3651483716701107,
+           "y": 0.5477225575051661, "z": 0.7302967433402214}},
+          {"file": "frame_0001.ppm", "rotation": {"w": -0.3790490217894517, "x": 0.454858826147342,
+           "y": -0.5306686305052324, "z": 0.6064784348631227}}])"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
   ASSERT_EQ(loaded.value.frames.size(), 2u);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.w, 0.11);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.x, 0.22);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.y, 0.33);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.z, 0.44);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.w, -0.55);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.x, 0.66);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.y, -0.77);
-  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.z, 0.88);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.w, 0.18257418583505536);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.x, 0.3651483716701107);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.y, 0.5477225575051661);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[0].trueRotation.z, 0.7302967433402214);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.w, -0.3790490217894517);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.x, 0.454858826147342);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.y, -0.5306686305052324);
+  EXPECT_DOUBLE_EQ(loaded.value.frames[1].trueRotation.z, 0.6064784348631227);
   ForgetAll(loaded.value);
 }
 
@@ -888,11 +898,6 @@ TEST_F(Dataset, SaysSoWhenTheStoreWillNotTakeItsFramesBack) {
   ASSERT_FALSE(loaded.ok());
   EXPECT_NE(loaded.status.detail.find("refused to give back a frame read before this failure"),
             std::string::npos)
-      << loaded.status.detail;
-  // And it must not promise what it cannot know: the destructor's retry runs after this message is
-  // written, so a store that relents leaves nothing behind while the sentence already exists. The
-  // `Release` twin below has asserted this since round 3; this half did not until round 4.
-  EXPECT_EQ(loaded.status.detail.find("only Clear recovers them"), std::string::npos)
       << loaded.status.detail;
   EXPECT_TRUE(store.Clear().ok());
 }
@@ -1115,6 +1120,15 @@ TEST_F(Dataset, ARollbackKeepsWhatTheStoreRefusedSoTheBackstopCanTryAgain) {
     EXPECT_NE(loaded.status.detail.find("refused to give back a frame"), std::string::npos)
         << "the store never actually declined, so there was no retry to observe: "
         << loaded.status.detail;
+    // **And the message must not claim the bytes are lost — here, where that would be false.**
+    // This assertion used to live on the permanent-refusal test, where the over-claim would have
+    // been *true*, so no wording could have discriminated and it pinned a phrase that appears
+    // nowhere else in the tree. It belongs in the arrangement that can contradict it: the retry
+    // below recovers every byte, so a refusal saying otherwise is wrong and this test can say so.
+    EXPECT_EQ(loaded.status.detail.find("still account for bytes"), std::string::npos)
+        << loaded.status.detail;
+    EXPECT_EQ(loaded.status.detail.find("only Clear recovers"), std::string::npos)
+        << loaded.status.detail;
   }
   EXPECT_EQ(HeapUsed(), before)
       << "the frame the store declined once was dropped instead of retried";
@@ -1143,6 +1157,96 @@ TEST_F(Dataset, TheRollbackRetriesARefusedReleaseRatherThanBelievingIt) {
   EXPECT_EQ(HeapUsed(), before) << "the destructor's retry never happened, so the frame is pinned "
                                    "for ever and Clear will refuse for the life of this store";
   EXPECT_TRUE(store.Clear().ok());
+}
+
+TEST_F(Dataset, RefusesARotationThatIsNotAUnitQuaternion) {
+  // The failure this exists for is not a crash. A `truth.json` whose rotations are `false` parses
+  // as four zeros; the loader used to accept it, and `ScoreRotations` then reports `valid = false`
+  // with `medianDeg = 0` — which is what a perfect reconstruction also reports, to anyone reading
+  // the median rather than the flag. That median is Phase 2's exit criterion.
+  //
+  // `false` first, because it is the shape a reviewer actually found. Then a plain zero quaternion,
+  // and a scaled one, so the guard is tested on the norm rather than on a JSON quirk.
+  for (const char* rotation : {R"({"w": false, "x": false, "y": false, "z": false})",
+                               R"({"w": 0.0, "x": 0.0, "y": 0.0, "z": 0.0})",
+                               R"({"w": 2.0, "x": 0.0, "y": 0.0, "z": 0.0})",
+                               R"({"w": 0.5, "x": 0.5, "y": 0.5, "z": 0.0})"}) {
+    Scratch scratch;
+    WriteTruth(scratch, TruthWith(kLens, std::string(R"([{"file": "frame_0000.ppm", "rotation": )") +
+                                             rotation + "}]"));
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "is not a unit quaternion"))
+        << rotation;
+  }
+}
+
+TEST_F(Dataset, TheDoubleCoverStillLoadsAndSoDoesTheFixture) {
+  // The other half of the guard above, and the reason its bound is on the norm rather than on any
+  // component: a negative scalar part is a unit quaternion and must still load. The committed
+  // fixture's fourth frame is exactly that, which is why this reads the fixture rather than a
+  // hand-written file — a guard that refused the generator's own output would be caught here.
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, Fixture());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ASSERT_EQ(loaded.value.frames.size(), 4u);
+  EXPECT_LT(loaded.value.frames[3].trueRotation.w, 0.0) << "the fixture no longer spells one";
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, EachIntrinsicComplaintNamesItsOwnFieldAndItsOwnReason) {
+  // `Blame` writes four sentences and only two were asserted anywhere — a reviewer swapped each of
+  // the other two for the wrong guard's wording with the whole suite green. Four fields, four
+  // reasons, one test.
+  struct Case { const char* intrinsics; const char* says; };
+  for (const Case& one : {
+           // absent, read by NodeDouble
+           Case{R"("intrinsics": {"fy": 38.6, "cx": 24.0, "cy": 18.0, "k1": 0.0, "k2": 0.0,
+                 "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": 48, "height": 36})",
+                "fx is not in the file"},
+           // present and not a number, read by NodeDouble
+           Case{R"("intrinsics": {"fx": "no", "fy": 38.6, "cx": 24.0, "cy": 18.0, "k1": 0.0,
+                 "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": 48, "height": 36})",
+                "fx is not a number"},
+           // absent, read by NodeInt
+           Case{R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 24.0, "cy": 18.0, "k1": 0.0,
+                 "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "height": 36})",
+                "width is not in the file"},
+           // present and not whole, read by NodeInt
+           Case{R"("intrinsics": {"fx": 36.9, "fy": 38.6, "cx": 24.0, "cy": 18.0, "k1": 0.0,
+                 "k2": 0.0, "k3": 0.0, "p1": 0.0, "p2": 0.0, "width": "no", "height": 36})",
+                "width is not a whole number"},
+       }) {
+    Scratch scratch;
+    WriteTruth(scratch, TruthWith(one.intrinsics, kOneFrame));
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, one.says)) << one.intrinsics;
+  }
+}
+
+TEST_F(Dataset, ReadFrameAlsoStopsShortOfClaimingTheBytesAreLost) {
+  // The inner `refuse`'s twin of the outer one. Round 4 stopped `LoadSyntheticDataset`'s suffix
+  // claiming "its totals still account for bytes no handle names"; `ReadFrame`'s kept saying it for
+  // another round, which is the third consecutive time a correction reached one half of a pair.
+  //
+  // The arrangement is what makes this able to fail, and the permanent-refusal test cannot: `Pin`
+  // refused once so the frame is never pinned, `Forget` refused **once** so the inner rollback
+  // reports failure and appends the suffix, and then `~HeldFrame` retries and the store relents. So
+  // the bytes are all back while the sentence saying the store declined has already been written —
+  // exactly the case an over-strong suffix gets wrong.
+  const int64_t before = HeapUsed();
+  {
+    AwkwardStore awkward{store};
+    awkward.refusePinAfter = 0;
+    awkward.refuseForgetTimes = 1;
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, Fixture());
+    ASSERT_FALSE(loaded.ok());
+    EXPECT_NE(loaded.status.detail.find("refused to give this frame back"), std::string::npos)
+        << "the inner rollback did not report, so this test is not reaching its own subject: "
+        << loaded.status.detail;
+    EXPECT_EQ(loaded.status.detail.find("still account"), std::string::npos) << loaded.status.detail;
+    EXPECT_EQ(loaded.status.detail.find("no handle names"), std::string::npos)
+        << loaded.status.detail;
+  }
+  EXPECT_EQ(HeapUsed(), before) << "the retry should have given this frame back";
 }
 }  // namespace
 }  // namespace sphanorama

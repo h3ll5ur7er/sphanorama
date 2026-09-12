@@ -4,7 +4,7 @@
 [ADR 0053](0053-the-harness-reads-its-own-datasets.md)
 
 > **The exception boundary below covers four translation units, not one.** The sentence further down
-> says `feature_registration_engine.cpp` carries `-fexceptions` "and no other translation unit",
+> says `feature_registration_engine.cpp` carries `-fexceptions` "and on no other translation unit",
 > which was true of the whole tree when it was written and is now true only of `core/src`. ADR 0053
 > added three under `core/test` — the synthetic-dataset loader, its test and its allocation sweep.
 > They ship nowhere. The note at the end of this file has the detail; it is repeated here because a

@@ -31,6 +31,12 @@ struct SyntheticFrame {
 // independent of `utilities/camera_model` so that a shared error cannot cancel; this reads the
 // recorded `intrinsics` and hands them over unexamined, which keeps that independence intact.
 /**
+ * The rotation is a **unit** quaternion, and the loader now refuses one that is not — by norm, so
+ * the double cover is untouched and a negative scalar part still loads. It did not, until a reviewer
+ * showed that a `truth.json` whose rotations were `false` loaded `Ok` with four zeros, after which
+ * `ScoreRotations` answers `valid = false` and `medianDeg = 0`: the number Phase 2 exits on, reading
+ * as a perfect score to anyone who checks the median and not the flag.
+ *
  * **The bytes are signed, and nothing in the type system says so.**
  *
  * `truth.json`'s `convention.pixel_encoding` records that a frame's byte `b` means
@@ -71,12 +77,18 @@ struct SyntheticDataset {
  * and whatever `Pin` or `Release` answered — so a store refusing `Release` with
  * `FailedPrecondition` refuses this call with `FailedPrecondition`.
  *
- * `Internal` therefore has **two** sources and the code alone does not separate them: this reader
- * reports an exception that escaped the parse with it, and a store whose `Pin` answers `Internal`
- * has that forwarded. The `detail` distinguishes them and `component` does not — every refusal is
- * re-stamped as this reader's on the way out, which is worth knowing before anyone branches on it.
- * An earlier version of this paragraph said `Internal` "means one thing", which the branch's own
- * test disproves: `AwkwardStore::Pin` answers `Internal` and the load is asserted to answer it too.
+ * **So no code here means exactly one thing, and the enumeration above is not a taxonomy.**
+ * `Internal` is this reader's report of an exception that escaped the parse *and* whatever a store's
+ * `Pin` answered with it. `NotFound` is a missing directory, `truth.json` or frame file *and* a
+ * store that does not know a handle. `InvalidArgument` covers a dozen guards here *and* an
+ * `Allocate` refusing a shape — which a hand-written `truth.json` can reach on its own. The `detail`
+ * separates them; `component` does not, because every refusal is re-stamped as this reader's on the
+ * way out. Branch on `detail` or on nothing.
+ *
+ * Two earlier versions of this paragraph were too strong, each in the same direction: the first said
+ * `Internal` "means one thing" — disproved by this branch's own test, where `AwkwardStore::Pin`
+ * answers `Internal` and the load is asserted to as well — and the second admitted that one and
+ * still implied the other codes were clean.
  *
  * **A refusal gives back every frame it allocated, and says so when it cannot.** That second half
  * is not pedantry. `Forget` is allowed to refuse — `MemoryFrameStoreAccess` returns a spill sink's

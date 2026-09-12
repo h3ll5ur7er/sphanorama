@@ -20,7 +20,8 @@
 //
 // **The exception safety of `OwnedFrames::Rollback`'s compaction is argued here and tested nowhere**,
 // and that is measured rather than assumed. A reviewer instrumented both rollback loops and counted
-// the allocations inside them across all 600 loads of the second pass: **zero**. A *successful*
+// the allocations inside them across all 600 loads of both passes — 120 and 480 — : **zero**.
+// A *successful*
 // `MemoryFrameStoreAccess::Forget` allocates nothing, and the rest of that loop is a POD assignment
 // and a shrinking `erase`, so no arming of the second throw can land there. What the second pass
 // does reach is `refuse()`'s string building — which is why emptying `~OwnedFrames` strands frames
@@ -64,6 +65,10 @@ namespace {
 long gAllocations = 0;
 long gThrowAt = -1;
 bool gArmed = false;
+// How many times the *second* failure actually fired. The second pass asserts this is non-zero, so
+// the arrangement is checked rather than assumed.
+long gSecondThrows = 0;
+
 // A second failure, so one can land *inside* a handler. Until this existed the sweep armed a single
 // exact allocation, so nothing ever failed while `refuse()` was building its message or
 // `Rollback()` was giving frames back — which is the one path where `~OwnedFrames` is not already
@@ -81,7 +86,16 @@ size_t gFramesInACleanLoad = 0;
 void* operator new(size_t bytes) {
   if (gArmed) {
     ++gAllocations;
-    if (gAllocations == gThrowAt || gAllocations == gThrowAgainAt) throw std::bad_alloc();
+    if (gAllocations == gThrowAt) throw std::bad_alloc();
+    if (gAllocations == gThrowAgainAt) {
+      // Counted, because an arrangement nothing counts is an arrangement nothing tests. A reviewer
+      // removed the second failure entirely — by dropping this branch and by arming `Armed(at)` —
+      // and the sweep printed byte-identical output and exited 0, while still reporting "with a
+      // second failure during the first's handling". The fix for a test that could not fail could
+      // not fail either.
+      ++gSecondThrows;
+      throw std::bad_alloc();
+    }
   }
   void* memory = std::malloc(bytes != 0 ? bytes : 1);
   if (memory == nullptr) throw std::bad_alloc();
@@ -272,14 +286,17 @@ int main() {
 
   // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
   // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
-  // where this file's own first defect was found.
-  // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
-  // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
-  // where this file's own first defect was found.
+  // where this file's own first defect was found. (This block was in the file twice, verbatim: a
+  // round pasted a copy, the next round's fix for that pasted a third, and a reviewer counted.)
   std::fprintf(stderr,
                "swept %ld allocation points of a full load; %d stranded, %d partial datasets "
-               "returned as successes. With a second failure during the first's handling: "
-               "%d stranded, %d partial\n",
-               total, stranded, wrong, strandedTwice, wrongTwice);
-  return stranded == 0 && wrong == 0 && strandedTwice == 0 && wrongTwice == 0 ? 0 : 1;
+               "returned as successes. With a second failure during the first's handling "
+               "(%ld of them fired): %d stranded, %d partial\n",
+               total, stranded, wrong, gSecondThrows, strandedTwice, wrongTwice);
+  if (gSecondThrows == 0) {
+    std::fprintf(stderr, "the second pass never fired a second failure, so it proved nothing\n");
+  }
+  return stranded == 0 && wrong == 0 && strandedTwice == 0 && wrongTwice == 0 && gSecondThrows > 0
+             ? 0
+             : 1;
 }

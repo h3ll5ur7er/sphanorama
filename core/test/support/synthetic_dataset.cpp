@@ -64,7 +64,8 @@ class OwnedFrames {
    *
    * `Forget` can refuse: `MemoryFrameStoreAccess` returns the sink's own refusal when `Drop` fails
    * and deliberately keeps the entry, so its totals go on accounting for bytes nobody holds a
-   * handle to. The header's "a refusal allocates nothing" cannot be kept against a store like that,
+   * handle to. The header's promise — that a refusal *gives back* every frame it allocated — cannot
+   * be kept against a store like that,
    * and the caller — who is handed no frames — has no way to find out. So the refusal says so
    * instead of a `(void)` swallowing it.
    */
@@ -158,10 +159,10 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   // separator, which shortens every frame by one byte and fails at the last row with a message
   // about the header. That is what the first version of this did.
   if (in.good()) in.unget();
-  if (token->empty()) {
-    *why = TokenTrouble::kNothingThere;
-    return false;
-  }
+  // No `token->empty()` check here. It was one, and it was unreachable: the skip loop above exits
+  // only on a non-whitespace byte while the stream is good, so by this point at least one byte has
+  // been taken — a reviewer sabotaged it green and an `abort()` probe never fired. It also shared
+  // `kNothingThere`'s sentence, so even reached it could not have been told from the EOF case.
   return true;
 }
 
@@ -220,6 +221,13 @@ class HeldFrame {
    * `Forget` and `Clear` will both go on refusing, so those bytes are unrecoverable.
    */
   bool Rollback() {
+    // Idempotence, and it is **not** load-bearing today: a reviewer deleted this line and the whole
+    // suite stayed green, because the only second call is the destructor's and by then `Release`
+    // and `Forget` would each simply refuse a frame that is gone. It stays because the promise it
+    // makes — that calling this explicitly and again from the destructor costs one no-op — is what
+    // lets every refusal path call it without thinking, and a future path that calls it twice with
+    // a store that answers differently would not be so lucky. Untested, and said so rather than
+    // implied.
     if (committed_ || gone_) return true;
     bool all = true;
     if (pinned_) {
@@ -367,8 +375,13 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
   // and a rollback the store declines has to be *said* rather than swallowed by a destructor.
   auto refuse = [&held](StatusCode code, std::string detail) {
     if (!held.Rollback()) {
-      detail += " (and the store then refused to give this frame back, so its totals still account "
-                "for bytes no handle names)";
+      // Says the store refused and stops there. `~HeldFrame` retries after this `Result` is built,
+      // so a store that declines once and relents restores the totals while this sentence already
+      // exists — the same thing round 4 removed from `LoadSyntheticDataset`'s twin and left standing
+      // here, in the pair's other half, where it then contradicted the header paragraph written to
+      // replace it. Third round running that a correction reached one of two.
+      detail += " (and the store refused to give this frame back; a retry follows this message, so "
+                "the bytes may or may not still be charged)";
     }
     return Err<FrameRef>(code, kComponent, std::move(detail));
   };
@@ -538,7 +551,7 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   // One refusal shape for the whole function, because a refusal here has two jobs: say what was
   // wrong with the file, and give back the frames read before the failure. The second job used to
   // belong to `~OwnedFrames` alone, which throws away the store's answer — and `Forget` can refuse,
-  // so the header's "a refusal allocates nothing" could quietly not be true with nobody able to
+  // so the header's promise to give every frame back could quietly not be kept with nobody able to
   // find out. Now the caller is told.
   auto refuse = [&owned](StatusCode code, std::string detail) {
     if (!owned.Rollback()) {
@@ -576,10 +589,14 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   } catch (const std::exception& thrown) {
     // Widened to match the traversal's arm below, which had it and this did not. `open` parses the
     // whole file, so every allocation the parser makes is an escape route from here: before this
-    // arm existed, a throwing allocator swept over a full load reached the caller from 56% of the
-    // load's allocation points — 69 of the 123 that sweep counted — most of them in this call.
-    // ("Well over half" was this sentence's previous wording for 56.1%, which is over half and not
-    // well over it.) Under `-fno-exceptions`, which
+    // arm existed, a throwing allocator swept over a full load reached the caller from **most** of
+    // the load's allocation points, most of those from inside this call.
+    //
+    // No fraction, and the reason is fifty lines up: this file bans a denominator here because the
+    // sweep's total describes the instrument and goes stale. Round 4 then wrote a "69 of N"
+    // fraction into this line while fixing a complaint that "well over half" was vague — reaching
+    // for a denominator from a sweep that no longer exists, in the file that forbids exactly that.
+    // The vague word was the smaller mistake and it is back, without the "well". Under `-fno-exceptions`, which
     // is what every consumer other than this file's own test is compiled with, an escape is a
     // terminate rather than a failure.
     return refuse(StatusCode::Internal,
@@ -687,7 +704,9 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
       }
       const cv::FileNode fileNode = entry["file"];
       const cv::FileNode rotation = entry["rotation"];
-      if (fileNode.empty() || !fileNode.isString() || rotation.empty()) {
+      // `!fileNode.isString()` covers an absent node too — `empty()` was the first disjunct and a
+      // reviewer showed it never decides, because a node that is not there is not a string either.
+      if (!fileNode.isString() || rotation.empty()) {
         return refuse(StatusCode::InvalidArgument,
                       "a frame entry in truth.json has no file or no rotation");
       }
@@ -703,6 +722,24 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
       frame.trueRotation.z = NodeDouble(rotation, "z", &spelling);
       if (!spelling.empty()) {
         return refuse(StatusCode::InvalidArgument, "a frame's rotation: " + spelling);
+      }
+
+      // **A rotation has to be one.** The header calls this a unit quaternion and, until a reviewer
+      // asked, nothing made that true: a `truth.json` whose rotations were `false` loaded `Ok` with
+      // all four components zero, and `ScoreRotations` then answered `valid = false` with
+      // `medianDeg = 0` — a caller reading the median without the flag sees a *perfect score where
+      // there is no answer*, and that median is Phase 2's exit criterion.
+      //
+      // The bound is generous on purpose (the skill's advice for a first bound), and it is on the
+      // norm rather than on the components, so the double cover this loader exists to preserve is
+      // untouched: a negative scalar part is still a unit quaternion and still loads.
+      const Quat& turn = frame.trueRotation;
+      const double norm = std::sqrt(turn.w * turn.w + turn.x * turn.x + turn.y * turn.y +
+                                    turn.z * turn.z);
+      if (!(std::abs(norm - 1.0) <= 1e-6)) {
+        return refuse(StatusCode::InvalidArgument,
+                      "a frame's rotation is not a unit quaternion; its norm is " +
+                          std::to_string(norm));
       }
 
       // A name, not a path. `fs::path(dir) / "/etc/passwd"` *replaces* rather than appends, so an

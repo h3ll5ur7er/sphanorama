@@ -101,7 +101,8 @@ if(SPHANORAMA_WITH_OPENCV)
   # chosen allocation fails, which is not something to do to a process 700 other tests share. Nor
   # is it a gtest — gtest allocates while it runs, so the sweep's counter would move under it.
   #
-  # What it buys is the one property no fake store can reach: "a refusal allocates nothing" needs an
+  # What it buys is the one property no fake store can reach: a refusal *giving back* every frame it
+  # allocated needs an
   # allocation to fail inside `std::vector`, not inside the store. Two windows were open in round 1
   # because nothing could ask that question, and three reviewers each built this instrument by hand
   # to find them. Keeping it costs one small executable.
@@ -120,13 +121,16 @@ if(SPHANORAMA_WITH_OPENCV)
     PROPERTIES COMPILE_OPTIONS "-fexceptions")
   target_compile_definitions(sphanorama_dataset_alloc_test
     PRIVATE SPHANORAMA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
-  add_test(NAME DatasetRefusalAllocatesNothing COMMAND sphanorama_dataset_alloc_test)
+  # Named for what the header promises. It was `DatasetRefusalAllocatesNothing`, after a sentence
+  # the header has never contained — a refusal *does* allocate, and then gives the frames back,
+  # which is a weaker claim and the true one. Four places quoted the invented version.
+  add_test(NAME DatasetRefusalGivesEveryFrameBack COMMAND sphanorama_dataset_alloc_test)
   # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
   # first version of this disabled leak detection for the whole binary, which is process-wide on the
   # only test that reaches the loader's exception arms — a real leak planted anywhere in it would
   # have been green. That matters concretely: LeakSanitizer is what caught this instrument's own
   # first defect, a sweep that stayed armed through its own cleanup.
-  set_tests_properties(DatasetRefusalAllocatesNothing PROPERTIES
+  set_tests_properties(DatasetRefusalGivesEveryFrameBack PROPERTIES
     ENVIRONMENT
       "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/support/dataset_alloc_test.lsan-suppressions")
 endif()

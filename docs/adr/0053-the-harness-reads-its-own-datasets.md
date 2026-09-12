@@ -18,7 +18,9 @@ before this work finds **six** files — `rotation_scoring.{h,cpp}` and its test
 them reads a dataset off disk. Only `frame_quality_engine_test.cpp` uses the word about something
 else; `camera_model_test.cpp` and `quaternion_test.cpp` are squarely *about* the generator — they
 pin its projection and its quaternions against the core's, at decimals neither side derived — which
-is worth knowing, because they are the cross-language check this ADR's own consequences reach for.
+is worth knowing, because they pin the generator's arithmetic to the core's at shared decimals.
+(They are **not** drift detectors — neither reads a dataset — and `docs/02` spent a revision saying
+they were.)
 Two versions of this sentence were wrong before this one: the first said "the renderer's own tests
 and the scorer's", tidier than what the command prints, and the second said the last three use the
 word about something else. Reviewers ran it both times.
@@ -157,8 +159,10 @@ fixture problem it is.
   numpy changes its rounding is not a contract, and a test that went red on an unrelated dependency
   bump would be noise. What the fixture pins is shape, and the loader's own tests read its pixels
   back through an independent parser rather than trusting them.
-- **The "a refusal allocates nothing" promise gets its own test binary, because nothing else could
-  ask.** `sphanorama_dataset_alloc_test` replaces global `operator new` and sweeps a failure across
+- **The "gives every frame back" promise gets its own test binary, because nothing else could
+  ask.** (Four places, this one included, used to quote it as "a refusal allocates nothing" — a
+  sentence the header has never contained, and a stronger claim than the code makes: a refusal
+  allocates and then returns.) `sphanorama_dataset_alloc_test` replaces global `operator new` and sweeps a failure across
   every allocation of a full load, checking the store's totals return to baseline each time. It is a
   separate executable for two reasons: replacing `operator new` is not something to do to a process
   seven hundred other tests share, and gtest allocates while it runs, which would move the sweep's
@@ -190,7 +194,10 @@ fixture problem it is.
 - **The format is spelled in two languages, so `docs/02-volatility-map.md`'s axis has two owners.**
   A change to the dataset format has to be made in `tools/synth_dataset.py` and again here. That cost
   is the point rather than an oversight: a loader checked only against bytes its own author wrote is
-  checked against its author's idea of the format. One test on each side fails when the two drift.
+  checked against its author's idea of the format. Tests on both sides fail when the two drift, and
+  `docs/02-volatility-map.md` names them — after three revisions that named tests which could not,
+  because the question is what a test *reads* and the wrong answers named tests for what they are
+  *about*.
 - **A dataset costs the heap what its frames cost.** Four 48x36 frames are nothing; sixty frames of a
   real capture are not. The frames belong to the caller, who must `Forget` each — the same rule
   `ExtractFeatures` states, and for the same reason: a harness leaking a dataset per run would
