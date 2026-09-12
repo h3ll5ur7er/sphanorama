@@ -664,9 +664,17 @@ constexpr double kPriorBoundDeg = 45.0;
  *
  * Eight bytes a row, two little-endian `float32`s, x then y — the contract spells that out because
  * it used to be a constant in this file's anonymous namespace and nowhere a caller could read it.
- * A row `Unproject` refuses is dropped rather than guessed at: the refusals it can answer are a
- * direction past the fold or one that does not land back where it started, and both would put a
- * feature in the wrong place while the file looked well-formed.
+ * **A row `Unproject` refuses is marked, not dropped — and this sentence used to say the opposite.**
+ * The refusals it can answer are a direction past the fold or one that does not land back where it
+ * started, and skipping such a row shortens this vector while the descriptor rows the matcher
+ * indexes it with stay where they are, so every bearing above the gap names a different feature —
+ * and that feature's `pixel` too, which keeps the residual small and the wrong answer plausible.
+ * Measured at 8.2257 degrees, reported with 43 inliers and `accepted` set. So the row stays in
+ * place with `usable` false and the matcher skips the correspondence instead.
+ *
+ * The comment outlived the fix by a commit, which is its own lesson: a paragraph arguing for the
+ * behaviour that was just removed is worse than no paragraph, because the next reader takes it as
+ * the design and restores the bug.
  */
 Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8_t> rows,
                                           const Intrinsics& lens) {
@@ -844,7 +852,14 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   }
 
   if (bestInliers.size() < kMinimumCorrespondences) {
-    return Err<PairwiseResult>(StatusCode::NotFound, kComponent,
+    // **`RegistrationFailed`, not `NotFound`.** The closed enum has carried this code since the
+    // architecture was written and nothing had ever returned it; meanwhile both of this method's
+    // registration failures returned `NotFound`, which `IFrameStoreAccess` uses for a handle naming
+    // no frame. One code meaning "the pixels did not agree" and "that frame does not exist" is a
+    // code a caller cannot branch on, which is the whole reason the enum is closed. It also let a
+    // test assert the refusal by substring-matching `status.detail`, which the contract says is
+    // never parsed.
+    return Err<PairwiseResult>(StatusCode::RegistrationFailed, kComponent,
                                "no rotation was agreed on by enough correspondences: the best had " +
                                    std::to_string(bestInliers.size()));
   }
@@ -1034,7 +1049,10 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     }
 
     if (fromAll.size() < kMinimumCorrespondences) {
-      return Err<PairwiseResult>(StatusCode::NotFound, kComponent,
+      // Registration failed for want of correspondences rather than for want of agreement among
+      // them. Same code as the consensus failure above — both mean "these two frames did not
+      // register" — and the detail says which, for a human rather than for a branch.
+      return Err<PairwiseResult>(StatusCode::RegistrationFailed, kComponent,
                                  "too few correspondences survived the ratio test to fit a "
                                  "rotation: " + std::to_string(fromAll.size()));
     }

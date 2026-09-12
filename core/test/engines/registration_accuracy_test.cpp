@@ -317,8 +317,12 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
 }
 
 INSTANTIATE_TEST_SUITE_P(EveryDetector, Accuracy,
-                         ::testing::Values(FeatureDetector::Orb, FeatureDetector::Akaze,
-                                           FeatureDetector::Sift));
+                         // From the engine's own list, as the extraction suite already does, rather
+                         // than the three restated here — a detector added to `FeatureDetector`
+                         // would otherwise reach `Make()` and never be measured. That matters more
+                         // for this suite than for any other: CI now gates on the name
+                         // `EveryDetector/Accuracy.*`, so "every detector" has to be true of it.
+                         ::testing::ValuesIn(kAllFeatureDetectors));
 
 }  // namespace
 }  // namespace sphanorama

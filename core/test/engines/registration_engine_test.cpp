@@ -1023,9 +1023,13 @@ TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
   ASSERT_FALSE(pair.ok()) << "the sensor and the pixels disagree by a half turn and this answered "
                              "anyway, with "
                           << pair.value.inliers << " inliers";
-  EXPECT_EQ(pair.status.code, StatusCode::NotFound)
-      << "refused, but not for the reason this test is about: " << pair.status.detail;
-  EXPECT_NE(pair.status.detail.find("agreed on"), std::string::npos)
+  // `RegistrationFailed` rather than `NotFound`: the code says "these two frames did not register",
+  // which is what the bound produces here, and is distinct from the `NotFound` a frame store returns
+  // for a handle naming nothing. The first version of this assertion had to substring-match
+  // `status.detail` to tell those apart — a string the contract says is for a human and is never
+  // parsed — which is a sign the code was carrying two meanings rather than that the test was
+  // clumsy.
+  EXPECT_EQ(pair.status.code, StatusCode::RegistrationFailed)
       << "refused, but not for the reason this test is about: " << pair.status.detail;
 
   ForgetOutputs(a.value);
