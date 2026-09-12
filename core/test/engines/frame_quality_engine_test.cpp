@@ -133,7 +133,17 @@ class FrameQuality : public ::testing::Test {
       // `std::numbers::pi` — 7 ULP — moved 293 of these 4096 pixels by one level. Measured, not
       // reasoned. At 126 the closest any value comes to an integer is 0.40, so no spelling of pi
       // and no libm can move a pixel; at 127 with *rounding* instead it is worse, not better,
-      // because 0 and +-1 land on the half-integers rounding splits (464 of 4096 move). The
+      // because 0 and +-1 land on the half-integers rounding splits (464 of 4096 move).
+      //
+      // **That 0.40 is a fact about `square == 4` and not about this function.** Both call sites
+      // take the default, which is why 4 is what was measured; at other periods the cosines take
+      // other values and no amplitude is safe at all of them. Swept over `square` 2 to 16: 126 is
+      // clean at 2, 4, 7, 8, 11, 13, 14 and 16, and moves *more* pixels than 127 does at 5, 6, 10,
+      // 12 and 15 — because every rational amplitude puts some product on an integer for some
+      // period. So a caller passing a different `square` is back
+      // in the same position and has to re-measure. Stated rather than left implied: the first
+      // version of this comment claimed the property for the function, which is how the next
+      // person would have inherited a guarantee that does not hold. The
       // pattern is unchanged in every way this test reads it: still a smooth cosine at the
       // checkerboard's period, and a Laplacian variance goes as the square of the amplitude, so
       // both consumers' comparison against the hard checkerboard loses 1.6% of a 17x margin.
