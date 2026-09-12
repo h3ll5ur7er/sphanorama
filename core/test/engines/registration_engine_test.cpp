@@ -1250,20 +1250,42 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
                           << pair.status.detail;
   }
 
-  // **Seven guards on this path, three driven above, four shadowed — and I counted them wrong
+  // **A descriptor pitch that is not a whole number of elements *and still fits the frame*.** The
+  // case above cannot reach that guard: inflating the pitch trips the row-count division first, on
+  // every detector. Shrinking it does reach it — a SIFT set claiming 510-byte rows where the frame
+  // holds 512, with `count` halved so the smaller pitch still covers the bytes. 510 is not a whole
+  // number of four-byte floats, and the row-count division is satisfied, so the divisibility guard
+  // is the one that answers.
+  //
+  // Only SIFT can reach it: for the byte detectors every pitch divides by one. So the assertion is
+  // scoped to the detector it applies to rather than weakened to something all three satisfy.
+  if (GetParam() == FeatureDetector::Sift) {
+    FeatureSet ragged = a.value;
+    FeatureSet raggedB = b.value;
+    ragged.descriptors.stride = a.value.descriptors.stride - 2;
+    raggedB.descriptors.stride = b.value.descriptors.stride - 2;
+    ragged.count = a.value.count / 2;
+    raggedB.count = b.value.count / 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(ragged, raggedB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a 510-byte pitch over four-byte elements answered instead of "
+                               "refusing";
+    EXPECT_NE(pair.status.detail.find("whole number of elements"), std::string::npos)
+        << "refused, but not by the divisibility check this case exists for: " << pair.status.detail;
+  }
+
+  // **Seven guards on this path, four driven above, three shadowed — and I counted them wrong
   // twice before a reviewer counted them properly.** Written out, because "all the bounds guards"
   // is the kind of claim that decays into an unexamined comfort:
   //
-  // Driven: the keypoint stride floor, the keypoint row count, the descriptor row count. Removing
-  // any one of those three on its own fails a case above.
+  // Driven: the keypoint stride floor, the keypoint row count, the descriptor row count, and
+  // element divisibility. Removing any one of those four on its own fails a case above.
   //
   // Not driven, each because something earlier refuses first — not because the guard is redundant:
   //   - `count <= 0 || rows.empty()` in `ReadDescriptors`: `EstimatePairwise` refuses a set with no
   //     rows before either reader runs.
   //   - a descriptor pitch of zero: needs `count` to exceed the pinned bytes, and `ReadBearings`
   //     runs first on the same `count`.
-  //   - element divisibility: the row-count division is checked before it and refuses any pitch
-  //     wide enough to be indivisible on these three detectors.
   //   - a column count past `INT_MAX`: `FrameRef::stride` is an `int32_t`, so a declared pitch
   //     cannot reach it; the only route is the unset-stride fallback on a descriptor frame over two
   //     gibibytes, which a test has no business allocating.
