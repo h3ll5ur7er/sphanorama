@@ -17,9 +17,11 @@ is dead weight to its actual readers — and this project has already published 
 so there is no reason to think this is the last.
 
 **What was retracted.** A table stood in the roadmap giving medians of AKAZE 0.063°, ORB 0.099° and
-SIFT 0.124°, with every detector registering all eleven consecutive pairs. Those came from a harness
-that handed `EstimatePairwise` the *exact truth* of each step as its sensor prior. The fit seeds its
-search with the prior, so the answer was correct before a pixel was read.
+SIFT 0.124°. It had no registered-pairs column, and could not have had a useful one: `accepted` was
+`true` on every returned result under the code of the day, so all eleven consecutive pairs of every
+detector entered the chain by construction. The figures came from a harness that handed
+`EstimatePairwise` the *exact truth* of each step as its sensor prior, and the fit seeds its search
+with the prior, so the answer was correct before a pixel was read.
 
 It was found by sabotage during review round 1 of the branch that produced it: a reviewer replaced
 the whole estimator with `return the prior` and every detector passed at `median = 0.0000`, scoring
@@ -27,12 +29,30 @@ the whole estimator with `return the prior` and every detector passed at `median
 never beaten the prior's inlier count. The numbers were real measurements of the wrong thing — they
 measured how good a phone's orientation is, which was already known and is not what the engine does.
 
-**AKAZE's 0.063° survives the correction unchanged, and that is not a copy-paste.** It is the one
-detector whose median the perturbation did not move at three significant figures: AKAZE was the
-detector that least needed the prior, so taking the truth away cost it least. ORB and SIFT both
-moved, and ORB's registered-pairs count moved from eleven to eight — which is where the artefact was
-hiding, since a step the estimator declines chains truth forward and enters the sample as an exact
-zero. A harness fed truth cannot produce a declined step at all.
+**AKAZE's median came back at the same three significant figures after the correction, and that is
+not a copy-paste.** It is the one detector the perturbation did not move at that precision: AKAZE
+needed the prior least, so taking the truth away cost it least. ORB and SIFT both moved. (The
+figures as they stand are in the roadmap and will move again; what is recorded here is that one of
+the three was unmoved *by this correction*.)
+
+**ORB's registered-pairs count went from eleven to eight, and the perturbation is not why — a
+reviewer had to correct this ADR on its own branch.** The first version of this section offered the
+eleven-to-eight move as where the artefact was hiding, on the reasoning that a harness fed truth
+cannot produce a declined step. That reasoning is wrong twice over. Under the code of the day
+`accepted` was `bestInliers.size() >= kMinimumCorrespondences`, the same condition that had already
+decided whether to refuse — so it was `true` on every returned result and nothing could be declined
+whatever the prior was. That is a fact about the gate, not about being fed truth. And under the gate
+as it stands, feeding truth would decline the same three: `accepted` now also requires
+`agreeing >= kInlierFraction` at 0.2, and the truth rotation's own support on those pairs is 11 of
+128, 19 of 141 and 13 of 154 — 0.086, 0.135 and 0.084, every one below the gate (ADR 0056 records
+the counts).
+
+So the eleven-to-eight move is the `accepted` redefinition, which landed in the same work as the
+perturbation and is documented in ADR 0056. It is not evidence for the artefact. The evidence for
+the artefact is the sabotage above: a `return the prior` stub beating the real implementation.
+Keeping the two apart matters because the accuracy test's registered-pairs conjunct exists to stop
+a detector chaining truth forward and scoring a free zero — a real hazard, and one the perturbation
+alone does not create.
 
 ## Decision
 
@@ -43,10 +63,10 @@ pointer.**
 the 0.5-degree threshold. Where it previously explained the retraction, it now names this file in one
 clause. The retracted numbers, how they were produced, and how they were caught are above.
 
-The current figures replacing them come from a harness that perturbs the prior by three degrees,
-which is the order a fused phone orientation is out by when it is working. They are in the roadmap,
-not here: this ADR is the record of what was withdrawn, and duplicating the live table into it would
-create exactly the second copy that drifts.
+The current figures replacing them are in the roadmap, not here: this ADR is the record of what was
+withdrawn, and duplicating the live table into it would create exactly the second copy that drifts.
+The roadmap says what the replacing harness does and why three degrees; that sentence is not
+repeated here for the same reason.
 
 ## Consequences
 
@@ -72,8 +92,8 @@ cannot miss it. Somebody who quotes the AKAZE figure out of the table has, in th
 just read the paragraph saying an earlier version of that table was an artefact — and that is a
 useful thing to have read.
 
-It loses on what happens next. The roadmap already carries two "an earlier version of this
-claimed" corrections in its body, and a document that accumulates its own revision history inline
+It loses on what happens next. The roadmap already corrects itself inline in five places, two of
+them spelled "an earlier version of this claimed", and a document that accumulates its own revision history inline
 is the failure mode `docs/adr/README.md` names when it refuses to let an ADR's body be edited into
 agreement with the present. Putting the *table* in the roadmap and the *withdrawal* in the record
 keeps each document doing one job.

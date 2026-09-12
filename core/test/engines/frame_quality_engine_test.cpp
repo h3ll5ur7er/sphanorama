@@ -124,7 +124,20 @@ class FrameQuality : public ::testing::Test {
       // A smooth cosine at the checkerboard's period carries the same structure with no edges.
       const double u = std::cos(std::numbers::pi * x / square);
       const double v = std::cos(std::numbers::pi * y / square);
-      return static_cast<uint8_t>(127.5 + 127.0 * u * v);
+      // **The amplitude is 126 rather than 127 to keep this fixture off the truncation boundary.**
+      // At integer pixels the cosines take only 0, +-sqrt2/2 and +-1, so `u * v` takes only
+      // 0, +-1/2, +-sqrt2/2 and +-1 — and at an amplitude of 127 the first three of those put
+      // `127.5 + 127 * u * v` on an exact integer (191, 64, 254.5-0.5 at the ends). A truncating
+      // cast then decides those pixels on the last bit of `std::cos`, which made the fixture's
+      // bytes a property of libm rather than of the test: swapping a 14-digit pi for
+      // `std::numbers::pi` — 7 ULP — moved 293 of these 4096 pixels by one level. Measured, not
+      // reasoned. At 126 the closest any value comes to an integer is 0.40, so no spelling of pi
+      // and no libm can move a pixel; at 127 with *rounding* instead it is worse, not better,
+      // because 0 and +-1 land on the half-integers rounding splits (464 of 4096 move). The
+      // pattern is unchanged in every way this test reads it: still a smooth cosine at the
+      // checkerboard's period, and a Laplacian variance goes as the square of the amplitude, so
+      // both consumers' comparison against the hard checkerboard loses 1.6% of a 17x margin.
+      return static_cast<uint8_t>(127.5 + 126.0 * u * v);
     });
   }
 

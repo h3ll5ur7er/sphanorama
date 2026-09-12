@@ -129,7 +129,7 @@ TEST(PoseEngine, IntegratingZeroRateChangesNothing) {
 TEST(PoseEngine, IntegrationAccumulatesAcrossCalls) {
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
-  const double rate = 0.7853981633974483;   // pi/4 rad/s
+  const double rate = std::numbers::pi / 4.0;   // rad/s, an eighth turn a second
   for (int i = 0; i < 2; ++i) {
     const std::vector<ImuSample> samples{
         Spinning(static_cast<int64_t>(i) * 1'000'000'000, rate),
