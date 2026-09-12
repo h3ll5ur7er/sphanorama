@@ -1,5 +1,11 @@
-// V7 — how frames are aligned. This file covers feature extraction only; matching and the global
-// refinement arrive in their own increments.
+// V7 — how frames are aligned. This file covers feature extraction and pairwise matching; the
+// global refinement arrives in its own increment.
+//
+// It said "feature extraction only" until a reviewer read the whole file rather than the diff. The
+// branch that added `EstimatePairwise` added 538 lines of matching tests below and never touched
+// these two, because a header at line 1 is outside every range diff — which is the shape CLAUDE.md
+// records from PR #49's fourteenth round. The first thing a reader met was a sentence telling them
+// the tests they came for were somewhere else.
 //
 // Feature counts are not knowable in advance and would be meaningless if they were: how many
 // corners ORB finds on a checkerboard depends on its threshold, the pyramid, and the content's
@@ -1134,21 +1140,38 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
 }
 
 /**
- * A descriptor row is as wide as the frame says, not as wide as the pinned bytes divide out to.
+ * A refusal from the frame store arrives with the store's name on it, not this engine's.
  *
- * **The same defect `ReadBearings` was fixed for, in the reader beside it.** The keypoint reader
- * now takes its pitch from `FrameRef::stride`; the descriptor reader still computed
- * `pinned.size() / count`, which is the row width only when the pin returns exactly the rows the
- * set claims. Hand it a set claiming fewer rows than the frame holds — which a caller can do, since
- * `FeatureSet` is a value it owns and fills in — and every row came out twice as wide, built from
- * the bytes of two.
+ * **`Status::component` says "which service reported it", and rebuilding a status loses that.**
+ * `EstimatePairwise` used to return `Err<PairwiseResult>(pinned->status.code, kComponent, ...)`,
+ * which kept the code and the detail and overwrote the one field that answers *who*. So a caller
+ * chasing a failed pin was told `FeatureRegistrationEngine` when the store had said `NotFound: no
+ * such frame`. `Extract`, in the same class, already returned the status whole — two methods
+ * disagreeing about the same promise, with no test on either to notice.
  *
- * Driven by halving `count` rather than by a padding store, because this is a statement about the
- * *set* disagreeing with its frame and not about how the store allocates. The two sets are
- * extracted from identical frames and one is doctored, so under the old reader `a` is 64 bytes a
- * row against `b`'s 32 and the mismatch guard refuses the pair; under the new one both are 32 and
- * the pair registers to the identity it should.
+ * Driven with a handle naming no frame, which is exactly the "could not be pinned" case a caller
+ * reaches by holding a `FeatureSet` past a `Forget`.
  */
+TEST_P(Extraction, APinRefusalKeepsTheStoresOwnComponent) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  FeatureSet dangling = a.value;
+  dangling.keypoints = FrameRef{};
+
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(dangling, b.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_FALSE(pair.ok());
+  EXPECT_EQ(pair.status.code, StatusCode::NotFound) << pair.status.detail;
+  EXPECT_NE(pair.status.component, "FeatureRegistrationEngine")
+      << "the engine put its own name on a refusal the store issued";
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
 /**
  * Every bounds guard on the way into `EstimatePairwise`, driven.
  *
@@ -1298,6 +1321,23 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
 }
+
+/**
+ * A descriptor row is as wide as the frame says, not as wide as the pinned bytes divide out to.
+ *
+ * **The same defect `ReadBearings` was fixed for, in the reader beside it.** The keypoint reader
+ * now takes its pitch from `FrameRef::stride`; the descriptor reader still computed
+ * `pinned.size() / count`, which is the row width only when the pin returns exactly the rows the
+ * set claims. Hand it a set claiming fewer rows than the frame holds — which a caller can do, since
+ * `FeatureSet` is a value it owns and fills in — and every row came out twice as wide, built from
+ * the bytes of two.
+ *
+ * Driven by halving `count` rather than by a padding store, because this is a statement about the
+ * *set* disagreeing with its frame and not about how the store allocates. The two sets are
+ * extracted from identical frames and one is doctored, so under the old reader `a` is 64 bytes a
+ * row against `b`'s 32 and the mismatch guard refuses the pair; under the new one both are 32 and
+ * the pair registers to the identity it should.
+ */
 
 TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
   FeatureRegistrationEngine engine = Engine();
@@ -1723,7 +1763,7 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // **"Everything" used to mean one of the three methods.** A reviewer made `EstimatePairwise` and
   // `Refine` return `Ok` — the identity registration this class's own header calls worse than a
   // refusal — and all 707 tests passed. The two *are* covered by
-  // `MatchingAndRefinementRefuseRatherThanAnswer`, but that is a `TEST_P` over
+  // `RefinementRefusesRatherThanAnswering`, but that is a `TEST_P` over
   // `FeatureRegistrationEngine`, which exists only where OpenCV does and which no composition root
   // selects; `bridge/runtime.h` holds this one. So the engine every browser actually gets had its
   // two most dangerous methods asserted nowhere.

@@ -6,7 +6,10 @@ constexpr const char* kComponent = "NullRegistrationEngine";
 }
 
 Result<FeatureSet> NullRegistrationEngine::ExtractFeatures(const FrameRef&) {
-  return Err<FeatureSet>(StatusCode::Unsupported, kComponent, "feature extraction is Phase 2");
+  // Stale since #68 in the same way `EstimatePairwise`'s message was: extraction is written, and
+  // what this build lacks is the library it needs.
+  return Err<FeatureSet>(StatusCode::Unsupported, kComponent,
+                         "feature extraction needs OpenCV, which this build does not have");
 }
 
 Result<PairwiseResult> NullRegistrationEngine::EstimatePairwise(const FeatureSet&,

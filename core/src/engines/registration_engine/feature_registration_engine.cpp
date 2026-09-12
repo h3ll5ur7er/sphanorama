@@ -1021,8 +1021,12 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     const Result<std::span<uint8_t>> kbSpan = keypointsB.Pin();
     const Result<std::span<uint8_t>> dbSpan = descriptorsB.Pin();
     for (const Result<std::span<uint8_t>>* pinned : {&kaSpan, &daSpan, &kbSpan, &dbSpan}) {
-      if (!pinned->ok()) return Err<PairwiseResult>(pinned->status.code, kComponent,
-                                                    pinned->status.detail);
+      // The store's `Status` whole, component included — as `Extract` a few hundred lines up already
+      // does. Rebuilding it with `kComponent` kept the code and the detail and overwrote the field
+      // that says *who reported it*, so a caller diagnosing a failed pin was told this engine did
+      // when the store did. Two methods of one class disagreeing about that is the second-copies
+      // failure in miniature.
+      if (!pinned->ok()) return pinned->status;
     }
 
     const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lens);

@@ -100,7 +100,17 @@ The inlier counts under the truth rotation (11 of 128, 19 of 141, 13 of 154) cam
 `SPHANORAMA_TRUTH_Q` hook in `FitRotation` that counted inliers for a rotation handed in by the
 test, printed them and was removed before the commit. It is named here because the numbers are
 load-bearing for this decision and the harness as it stands **cannot reproduce them**: it scores
-estimates against truth and never asks how much support the truth itself has. Anyone re-checking
+estimates against truth and never asks how much support the truth itself has.
+
+The other figure in the Rejected section — that the minority-backed answers are "within a tenth of a
+degree" — has a different problem and a cheaper remedy, and a reviewer supplied both. The harness
+cannot produce it either, because an unaccepted step's rotation is replaced by *truth* before
+scoring, so those two answers never enter any median computed here. Forcing `accepted` true and
+re-reading the chain puts them in: `registered` goes 8 of 11 to 10 of 11, the median moves 0.0683 to
+0.0726 and the maximum *falls* 0.2189 to 0.1965. So the claim holds, by a wide margin, and the way
+to re-check it is one line of sabotage rather than a removed hook. That run also settles the
+"three do not fail alike" split without the hook at all: `registered` rising by exactly two says two
+were answered-and-declined and one was refused outright. Anyone re-checking
 this ADR needs to put that hook back. That the instrument is not in the tree is a weakness of this
 record, and stating it is better than letting a reader assume a test covers it.
 
