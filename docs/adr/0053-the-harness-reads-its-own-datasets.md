@@ -203,8 +203,10 @@ fixture problem it is.
   which is what `test_the_committed_fixture_is_still_this_generator_s_output` forces a change to do.
   The two fire in sequence, not in parallel, and the consequence four bullets up says the same thing
   from the other end. And the C++ half covers only what the loader reads: the `convention` entries
-  it deliberately carries without checking — pixel encoding among them — are held on the Python side
-  alone until something computes on those pixels.
+  it deliberately reads past without checking — pixel encoding among them — are held on the Python
+  side alone until something computes on those pixels. (Reads past rather than carries: nothing of
+  the `convention` block survives into `SyntheticDataset`, whose two members are `lens` and
+  `frames`.)
 - **A dataset costs the heap what its frames cost.** Four 48x36 frames are nothing; sixty frames of a
   real capture are not. The frames belong to the caller, who must `Forget` each — the same rule
   `ExtractFeatures` states, and for the same reason: a harness leaking a dataset per run would
@@ -242,8 +244,9 @@ those and the C++ suite keeps passing against bytes no writer produces any more 
 of error this fixture was committed to remove, reappearing one level up. So the check is in, as
 `test_the_committed_fixture_is_still_this_generator_s_output`, and the cost named above is now an
 accepted cost rather than a reason: a numpy change that moves a pixel will turn it red, and the
-failure message says to regenerate the fixture rather than to edit the expectation. It runs in a
-fifth of a second.
+failure message says to regenerate the fixture rather than to edit the expectation. It runs in
+about half a second — 0.563 s by `unittest`'s own clock, 0.35 s to 0.84 s wall including `uv`'s
+startup. This line said "a fifth of a second" until a reviewer timed it.
 
 This paragraph is kept in `Rejected` rather than deleted, because what was thought at the time is
 the point of the section — but a reviewer had to point out that the branch had implemented the thing

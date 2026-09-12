@@ -74,13 +74,22 @@ struct SyntheticDataset {
  * which is what happened to the paragraph this replaces — a reviewer found it missing seven, having
  * been corrected twice for naming things it should not. The guards' own sentences are the record:
  * each writes a phrase only it writes, `RefusedWith` in the test file asserts code *and* phrase per
- * guard, and `detail` is what a caller reads. Among them, so a reader knows the shape: JSON that is
- * not an object, or whose `intrinsics` or a `frames` entry is not one; a `convention.rotation` that
- * is not the one this reader was written against; a header disagreeing with the recorded lens; a
+ * guard, and `detail` is what a caller reads. Among them, so a reader knows the shape: a
+ * `truth.json` whose `intrinsics` or whose `frames` entry is not a JSON object; a
+ * `convention.rotation` that is not the one this reader was written against; a header disagreeing
+ * with the recorded lens; a
  * payload shorter or longer than the header accounts for; a Netpbm that is not `P6`; a header field
  * missing, over-long, non-numeric or too large for the type that holds it; a maximum value this
  * reader cannot read; an intrinsic that is not a finite number; and a `file` naming a path rather
  * than a name in the dataset.
+ *
+ * A `truth.json` whose *root* is not an object is **not** in that list, and the omission is the
+ * point: there is no guard of ours for it. `cv::FileStorage::open` throws on every such input, the
+ * `catch` below converts it, and the guard round 3 added was deleted in round 4 as unreachable. It
+ * is also the one documented exception to the phrase-per-guard rule above — the backstop's sentence
+ * is asserted by two tests, because two different malformed shapes arrive through it. An earlier
+ * version of this list opened with "JSON that is not an object", attributing a guard this file had
+ * deleted six lines from where it explains the deletion.
  *
  * Two of those are worth naming on their own, because nothing about "a file that is not what it
  * claims" would lead a reader to expect them. **An empty `frames` array is a refusal**, not a

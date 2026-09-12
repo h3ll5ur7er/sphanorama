@@ -1823,8 +1823,11 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
         passing against bytes no writer produces any more — the very error the fixture exists to
         remove, reappearing one level up.
 
-        Rendering four 48x36 frames costs about a fifth of a second, so there is no reason to take
-        it on trust. When this fails, regenerate the fixture; do not edit the expectation.
+        This costs about half a second — measured 0.25 s to 0.86 s across four runs, median near
+        0.53 s — so there is no reason to take the fixture on trust. Most of that is the 2048x1024
+        checkerboard below and the numpy import rather than the four 48x36 renders, which is why the
+        spread is that wide. It said "a fifth of a second" until a reviewer timed it and got the
+        best of four. When this fails, regenerate the fixture; do not edit the expectation.
         """
         fixture = Path(__file__).resolve().parents[1] / "core" / "test" / "data" / "synthetic-ring-4"
         panorama = _checkerboard_panorama(2048, 1024)

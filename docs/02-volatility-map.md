@@ -61,14 +61,26 @@ convention assertions pin the format. On the C++ side it is the loader tests tha
 **The C++ half covers what the loader reads, which is not all of the format.** It reads the frame
 files, `intrinsics`, `frames` and `convention.rotation`, and refuses on each; the rest of the
 `convention` block — camera space, image space, principal point, equirectangular layout, pixel
-encoding — it carries without checking, and says so at the guard. So a drift in
-`convention.pixel_encoding` reddens the Python side alone, and will go on doing so until something
+encoding — it reads past without checking, and says so at the guard. (Reads past, not carries:
+`SyntheticDataset` has two members, `lens` and `frames`, so nothing of the `convention` block
+survives the call. The header says "drops the other five" and that is the accurate verb.) So a
+drift in `convention.pixel_encoding` reddens the Python side alone, and will go on doing so until something
 computes on those pixels as signed components and checks the entry it relies on. A reviewer had to
 point that out; the paragraph above it had claimed the pair covered the format.
 
-Two kinds of test are **not** detectors, and this paragraph has named each of them as though they
-were, in consecutive revisions. The loader's *refusal* tests build their `truth.json` by hand through
-`Scratch`, so they never read what the generator writes. And
+One kind of test is **not** a detector, and this paragraph has named two, in consecutive revisions,
+and was wrong about one of them.
+
+The *refusal* tests were called non-detectors on the grounds that they build their `truth.json` by
+hand. Some do. But `Scratch` **copies the committed fixture** before a test touches it
+(`fs::copy(Fixture(), root_, recursive)`), so a refusal test reads the generator's bytes for
+everything it does not overwrite — the `truth.json` verbatim unless it calls `WriteTruth`, and the
+frames unless it damages them. They are partial detectors, and which part depends on what each one
+replaces. Writing them off wholesale was the fourth wrong answer this paragraph has given, and it
+was wrong in the opposite direction to the previous three: not a test credited with more than it
+does, but a class of test credited with less.
+
+What is genuinely not a detector is the other pair.
 `Project.MeetsTheDatasetGeneratorAcrossLensFamilies` and
 `FromAzimuthElevation.MeetsTheDatasetGeneratorAtNumbersNeitherDerived` — named in the revision before
 this one — are tables of C++ literals fed to `camera_model` and `quaternion`: they pin the two
