@@ -22,6 +22,9 @@ if(SPHANORAMA_WITH_OPENCV)
       # Registration exists only where OpenCV does (ADR 0052), so its tests do too. A reader looking
       # for registration coverage in a WASM-only checkout will find none, and that is the reason.
       "engines/registration_engine_test.cpp"
+      # The accuracy measurement, which needs a registration, a dataset reader and a scorer at
+      # once. It renders its own dataset and skips without `uv`, per ADR 0055.
+      "engines/registration_accuracy_test.cpp"
       # The synthetic-dataset loader reads `truth.json` with `cv::FileStorage`, and everything that
       # consumes it is on the registration path, so it lives behind the same flag rather than
       # dragging a second JSON reader into a build that has one.

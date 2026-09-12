@@ -590,6 +590,21 @@ constexpr size_t kMinimumCorrespondences = 8;
 // a first bound: a bound that exists and is loose beats a precise one that does not.
 constexpr double kInlierPx = 3.0;
 constexpr int kRansacIterations = 200;
+// **How far the pixels may disagree with the sensor before the answer is a different scene rather
+// than a wrong sensor.** This is the "bounds" half of the contract's "seeds and bounds, never
+// truth", and leaving it out was not a simplification: on a panorama with a half-turn symmetry —
+// a checkerboard, say — ORB and AKAZE match features to their point-reflected twins, and the
+// aliased rotation *genuinely fits the pixels*, with ordinary inlier counts and sub-two-pixel
+// residuals. Measured on a twelve-frame ring: two of eleven ORB steps and two of eleven AKAZE
+// steps came back 175 to 179 degrees out, about the optical axis, and accepted.
+//
+// 45 degrees, and the number is chosen for its *shape* rather than fitted: a fused phone
+// orientation is good to a few degrees when it is working and can be tens of degrees out after a
+// magnetic disturbance, so the bound has to admit a badly drifted sensor. What it must exclude is
+// not sensor error at all but a different interpretation of the scene, and those arrive near a
+// half turn. Anything from roughly 60 to 150 degrees would have excluded the aliases seen here
+// equally well, which is what makes this a policy and not a fit.
+constexpr double kPriorBoundDeg = 45.0;
 
 /**
  * The keypoint rows of a set, as directions.
@@ -664,6 +679,12 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     }
   };
 
+  // A hypothesis further from the prior than the bound is not considered at all — not scored and
+  // then out-voted, because the whole difficulty is that these *win* on inliers.
+  const auto withinBound = [&](const cv::Matx33d& r) {
+    return AngleBetween(FromMatrix(r), prior) * 180.0 / 3.14159265358979323846 <= kPriorBoundDeg;
+  };
+
   cv::Matx33d best = RotationMatrix(prior);
   std::vector<size_t> bestInliers;
   countInliers(best, &bestInliers);
@@ -679,6 +700,7 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     if (i == j || j == k || i == k) continue;
     cv::Matx33d sampled;
     if (!KabschRotation({from[i], from[j], from[k]}, {to[i], to[j], to[k]}, &sampled)) continue;
+    if (!withinBound(sampled)) continue;
     countInliers(sampled, &candidate);
     if (candidate.size() > bestInliers.size()) {
       best = sampled;
@@ -702,7 +724,7 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     inTo.push_back(to[at]);
   }
   cv::Matx33d refined = best;
-  if (KabschRotation(inFrom, inTo, &refined)) {
+  if (KabschRotation(inFrom, inTo, &refined) && withinBound(refined)) {
     std::vector<size_t> after;
     countInliers(refined, &after);
     if (after.size() >= bestInliers.size()) {

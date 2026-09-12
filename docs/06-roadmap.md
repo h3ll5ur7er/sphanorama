@@ -807,9 +807,38 @@ first; a real capture
 exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build time recorded
 per device class.
 
-The threshold itself is deliberately still blank. It gets stated when the first dataset exists and a
-detector has been run against it, because a number chosen before anything can produce one is a number
-the implementation will be tuned to rather than measured against.
+**The threshold is 0.5 degrees, and here is the measurement it was written from.** It stayed blank
+until a detector had been run against a dataset, because a number chosen before anything can produce
+one is a number the implementation is tuned to rather than measured against.
+
+`core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
+by 50 degree lens, extracts features, estimates each consecutive pair, chains the relative rotations
+into absolute ones and scores them with the gauge removed (ADR 0049). Medians over that chain:
+
+| detector | median | mean | max |
+| -------- | ------ | ---- | --- |
+| AKAZE | 0.063° | 0.085° | 0.204° |
+| ORB | 0.099° | 0.114° | 0.265° |
+| SIFT | 0.124° | 0.166° | 0.303° |
+
+So 0.5 degrees is about four times the worst detector's median — generous, in the spirit of a first
+bound that exists beating a precise one that does not.
+
+**Three things this number is not.** It is not a detector ranking worth acting on: the three are
+within a factor of two on one synthetic ring, and the ordering here (AKAZE, then ORB, then SIFT) is
+not the ordering anyone would predict, which is a reason to distrust a gap this small rather than to
+report a winner. It is not a statement about a phone: the dataset has no noise, no blur, no rolling
+shutter, no exposure variation and no distortion, and ADR 0050 lists each of those as its own
+increment. And it is not a whole-sphere number — one ring of twelve frames chained in order is the
+easiest possible topology, with no loop closure and nothing for `Refine` to do.
+
+**What the measurement caught, which is the argument for having made it first.** Before the sensor
+prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of
+eleven that were 175 to 179 degrees out — about the optical axis, with ordinary inlier counts and
+sub-two-pixel residuals, and `accepted` set. The checkerboard panorama the generator renders is
+invariant under a half turn, so those detectors matched features to their point-reflected twins and
+the aliased rotation genuinely fit the pixels. No amount of reading the code would have found that;
+it took a number. The panorama's symmetry is itself worth removing, and is not removed yet.
 
 ---
 

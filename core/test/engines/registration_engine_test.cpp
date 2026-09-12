@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
+#include "utilities/quaternion.h"
 #include "engines/registration_engine/null_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "utilities/pixel_format.h"
@@ -983,6 +984,70 @@ class CountingForgets final : public IFrameStoreAccess {
  private:
   IFrameStoreAccess& inner_;
 };
+
+TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
+  // **The "bounds" half of "seeds and bounds, never truth", which was missing.** Without it, a
+  // panorama with a half-turn symmetry makes ORB and AKAZE match features to their point-reflected
+  // twins; the aliased rotation fits the pixels with ordinary inlier counts and sub-two-pixel
+  // residuals, and was accepted. Measured on a twelve-frame ring before this bound existed: two of
+  // eleven ORB steps and two of eleven AKAZE steps came back 175 to 179 degrees out about the
+  // optical axis.
+  //
+  // Here the frames are identical, so the pixels say "identity" as loudly as pixels can. A prior a
+  // half turn away must not drag the answer there — and equally must not be *followed*, which is
+  // what the next test holds.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Quat halfTurn = FromAxisAngle(Vec3{0, 0, 1}, 3.14159265358979323846);
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, halfTurn, Lens());
+
+  // **Refusal, not an answer**, and asserting that is what makes this test able to fail. The first
+  // version guarded its assertion with `if (pair.ok() && pair.value.accepted)` — which is never
+  // true here, so the assertion never ran and no sabotage could reach it. Deleting the bound left
+  // it green, which is how it was caught.
+  //
+  // The behaviour it now pins: the sensor says a half turn, the pixels say the identity, and those
+  // cannot both be nearly right. The bound excludes the identity as a hypothesis, nothing else
+  // gathers inliers near the prior — a half turn sends every bearing behind the camera, where
+  // `Project` refuses — and the call refuses rather than picking a side. That is the honest
+  // outcome: an engine that silently resolved this would be deciding whether to trust the sensor,
+  // which is a policy and not an estimate.
+  EXPECT_FALSE(pair.ok() && pair.value.accepted)
+      << "the sensor and the pixels disagree by a half turn and this answered anyway: "
+      << pair.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, APriorInsideTheBoundDoesNotOverrideThePixels) {
+  // The other half, and the one the bound could have broken: "never as truth". A prior that is
+  // wrong but *plausibly* wrong — well inside the bound — must lose to the pixels, or the bound
+  // would have turned the sensor into the answer. Identical frames again, so the truth is the
+  // identity and the prior is thirty degrees from it.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Quat wrongButPlausible =
+      FromAxisAngle(Vec3{0, 1, 0}, 30.0 * 3.14159265358979323846 / 180.0);
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(a.value, b.value, wrongButPlausible, Lens());
+  ASSERT_TRUE(pair.ok()) << pair.status.detail;
+
+  const double fromIdentity =
+      AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 / 3.14159265358979;
+  EXPECT_LT(fromIdentity, 1.0)
+      << "a thirty-degree prior moved the answer " << fromIdentity
+      << " degrees off the identity the pixels show; the prior seeds and bounds, it is not truth";
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
 
 TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // **Including on a refusal**, which is the half the contract had to spell out separately and the
