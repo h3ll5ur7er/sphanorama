@@ -765,8 +765,13 @@ that has to be ordered.
   intrinsics (focal + radial distortion).
 
   *Feature extraction is in* — `FeatureRegistrationEngine::ExtractFeatures` over ORB, AKAZE or SIFT,
-  writing descriptors and keypoints into frames the caller owns (ADR 0051). Matching and refinement
-  still refuse rather than returning an identity that would look like a registration. It compiles
+  writing descriptors and keypoints into frames the caller owns (ADR 0051). *Pairwise estimation is
+  in too* — ratio-test matching, bearings through `camera_model`, and a RANSAC rotation refitted on
+  its inliers — which is what forced `EstimatePairwise` to take the lens, since a rotation cannot be
+  recovered from pixels without one (ADR 0054). **Refinement still refuses** rather than returning an
+  empty solution that would look like a solved sphere, and the accuracy number this phase exits on is
+  still unmeasured: the engine answers, and nothing has yet scored its answers against a dataset. It
+  compiles
   only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.

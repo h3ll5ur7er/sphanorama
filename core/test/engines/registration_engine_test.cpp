@@ -16,6 +16,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -126,6 +127,21 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
   MemoryFrameStoreAccess store{1 << 24};
 
   FeatureRegistrationEngine Engine() { return FeatureRegistrationEngine{store, GetParam()}; }
+
+  /**
+   * The lens the textured frames are taken to have been seen through — square, centred, undistorted.
+   *
+   * Undistorted on purpose: these tests are about matching and the rotation fit, and a Brown-Conrady
+   * term here would mean a failure could be either. The distortion path is `camera_model`'s own
+   * tests' subject, and ADR 0054 records that a wrong lens makes this engine wrong quietly.
+   */
+  static Intrinsics Lens(int32_t edge = kWidth) {
+    Intrinsics lens{};
+    lens.fx = lens.fy = static_cast<double>(edge);
+    lens.cx = lens.cy = static_cast<double>(edge) / 2.0;
+    lens.width = lens.height = edge;
+    return lens;
+  }
 
   /**
    * A frame of `edge` square whose RGBA8 luma at (x, y) is whatever `paint` says.
@@ -910,22 +926,147 @@ TEST_P(Extraction, AnswersADegenerateFrameRatherThanLettingOpenCvThrowThroughIt)
       << "the pin was not released on the way out of a throwing call";
 }
 
-TEST_P(Extraction, MatchingAndRefinementRefuseRatherThanAnswer) {
-  // The two methods this increment does not implement. A reviewer made both return `Ok` — the
-  // identity result the header calls dangerous — and the whole file stayed green, so "refuses
-  // rather than pretending" was a sentence with nothing behind it.
+TEST_P(Extraction, RefinementRefusesRatherThanAnswering) {
+  // The method this increment still does not implement. A reviewer made it return `Ok` — the empty
+  // solution the header calls dangerous — and the whole file stayed green, so "refuses rather than
+  // pretending" was a sentence with nothing behind it.
+  //
+  // **`EstimatePairwise` used to be asserted here too, and now is not**, because it answers. Its
+  // refusals have their own tests below; what this one holds is the `Refine` half, and the pairing
+  // was an accident of both being unimplemented at once rather than a property they share.
   FeatureRegistrationEngine engine = Engine();
   const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
   const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
   ASSERT_TRUE(a.ok() && b.ok());
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, Quat{});
-  EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
-  EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
-
   const Result<GlobalSolution> refined = engine.Refine({}, {}, Intrinsics{});
   EXPECT_FALSE(refined.ok());
   EXPECT_EQ(refined.status.code, StatusCode::Unsupported);
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+/**
+ * A store that counts what was forgotten, so "this call forgets none of the four" is measurable.
+ *
+ * The contract is emphatic about this and says why: the shape invites the opposite, because
+ * `EstimatePairwise` is the method with the obvious-looking reason to release what it was handed.
+ * A caller may estimate the same pair twice, or one set against several others, so an
+ * implementation that tidied up after itself would destroy the second call's input — and the
+ * damage would show up as a `NotFound` somewhere else entirely.
+ */
+class CountingForgets final : public IFrameStoreAccess {
+ public:
+  explicit CountingForgets(IFrameStoreAccess& inner) : inner_(inner) {}
+
+  int forgets = 0;
+
+  Status Forget(const FrameRef& f) override {
+    ++forgets;
+    return inner_.Forget(f);
+  }
+
+  Result<FrameRef> Allocate(int32_t w, int32_t h, PixelFormat f) override {
+    return inner_.Allocate(w, h, f);
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef& f) override { return inner_.Pin(f); }
+  Status Release(const FrameRef& f) override { return inner_.Release(f); }
+  Result<FrameStoreBudget> Budget() override { return inner_.Budget(); }
+  Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_.ResidencyOf(f); }
+  Status Demote(const FrameRef& f, Residency t) override { return inner_.Demote(f, t); }
+  Status Adopt(const FrameRef& f) override { return inner_.Adopt(f); }
+  Status Clear() override { return inner_.Clear(); }
+  Result<uint64_t> TierGeneration() override { return inner_.TierGeneration(); }
+  Result<uint64_t> ContentHash(const FrameRef& f) override { return inner_.ContentHash(f); }
+
+ private:
+  IFrameStoreAccess& inner_;
+};
+
+TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
+  // **Including on a refusal**, which is the half the contract had to spell out separately and the
+  // half an implementation is most likely to get wrong: an error path that "cleans up" is the
+  // natural thing to write and is exactly what must not happen here.
+  //
+  // Four refusals are driven, each reaching a different exit: before any pin (an empty set), at the
+  // lens guard, at the prior guard, and after the pins are taken and the matching runs out of
+  // correspondences. A count of zero across all of them plus the success is the whole assertion.
+  CountingForgets counting{store};
+  FeatureRegistrationEngine engine{counting, GetParam()};
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok()) << a.status.detail;
+  ASSERT_TRUE(b.ok()) << b.status.detail;
+  const int afterExtraction = counting.forgets;
+
+  // A success.
+  const Result<PairwiseResult> ok = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0},
+                                                            Lens());
+  EXPECT_TRUE(ok.ok()) << ok.status.detail;
+
+  // An unusable lens, and an unusable prior. `Quat{0, 0, 0, 0}` spelled out, because `Quat{}` is
+  // the *identity* — the struct default-initialises `w` to 1 — and the first version of this line
+  // used it and was surprised to be refused nothing. A zero quaternion is not a rotation; the
+  // identity is one, and an engine refusing it would be refusing the commonest prior there is.
+  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
+  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
+  // A set with no rows, refused before anything is pinned.
+  EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
+
+  EXPECT_EQ(counting.forgets, afterExtraction)
+      << "EstimatePairwise forgot " << (counting.forgets - afterExtraction)
+      << " of the frames it was handed; they belong to the caller, refusal or not";
+
+  // And they are still usable afterwards, which is the property the count is a proxy for: a caller
+  // may estimate the same pair again.
+  const Result<PairwiseResult> again = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0},
+                                                               Lens());
+  EXPECT_TRUE(again.ok()) << "the second estimate of the same pair failed, so the first consumed "
+                             "its input: " << again.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
+  // **The invariant the engineering skill names for exactly this case**, and the only assertion
+  // about a rotation that can be written before any dataset exists to measure against: a frame
+  // registered against itself has turned by nothing, and every match is an inlier. The descriptors
+  // are identical, so the ratio test has a perfect answer for every row and RANSAC has no outlier
+  // to reject — if this one is not exact, nothing further along will be.
+  //
+  // Two frames rather than one `FeatureSet` passed twice, because the contract allows a caller to
+  // estimate the same set against itself and an implementation that aliased its two inputs would
+  // pass this while failing every real pair.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok()) << a.status.detail;
+  ASSERT_TRUE(b.ok()) << b.status.detail;
+  ASSERT_GT(a.value.count, 0);
+  ASSERT_EQ(a.value.count, b.value.count);
+
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_TRUE(pair.ok()) << pair.status.detail;
+
+  // The rotation, as an angle rather than component by component: the double cover makes -q the
+  // same rotation as q, so comparing `w` to 1 would fail on a correct answer half the time.
+  const Quat& turn = pair.value.relativeRotation;
+  const double norm = std::sqrt(turn.w * turn.w + turn.x * turn.x + turn.y * turn.y +
+                                turn.z * turn.z);
+  ASSERT_GT(norm, 0.0) << "a zero quaternion is not a rotation";
+  const double angleDeg =
+      2.0 * std::acos(std::min(1.0, std::abs(turn.w) / norm)) * 180.0 / 3.14159265358979323846;
+  EXPECT_LT(angleDeg, 1e-6) << "a frame against itself has turned by nothing, not " << angleDeg
+                            << " degrees";
+
+  EXPECT_TRUE(pair.value.accepted);
+  EXPECT_EQ(pair.value.a.value, a.value.frame.value);
+  EXPECT_EQ(pair.value.b.value, b.value.frame.value);
+  EXPECT_GT(pair.value.inliers, 0);
+  EXPECT_LT(pair.value.medianResidualPx, 1e-6)
+      << "identical descriptors at identical keypoints leave no residual";
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
@@ -1214,7 +1355,7 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   EXPECT_FALSE(extracted.ok());
   EXPECT_EQ(extracted.status.code, StatusCode::Unsupported);
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{});
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{}, Intrinsics{});
   EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
   EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
 

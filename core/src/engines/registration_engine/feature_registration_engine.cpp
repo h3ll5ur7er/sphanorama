@@ -5,12 +5,16 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <string>
 #include <vector>
 
+#include "utilities/camera_model.h"
 #include "utilities/pixel_format.h"
+#include "utilities/quaternion.h"
 
 namespace sphanorama {
 namespace {
@@ -450,12 +454,379 @@ Result<FeatureSet> FeatureRegistrationEngine::ExtractFeatures(const FrameRef& fr
   }
 }
 
-Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const FeatureSet&,
-                                                                  const FeatureSet&,
-                                                                  const Quat&) {
-  return Err<PairwiseResult>(StatusCode::Unsupported, kComponent,
-                             "matching is the next increment; refusing rather than returning an "
-                             "identity rotation that would look like a registration");
+namespace {
+
+/**
+ * A frame this call was *handed*, pinned for the length of the call and given back — never
+ * forgotten.
+ *
+ * `OwnedFrame` above is the wrong shape here and the difference is the whole reason this exists:
+ * that one forgets unless committed, which is right for a frame the engine allocated and is about
+ * to hand over. The four frames reaching `EstimatePairwise` belong to the caller, who may estimate
+ * the same pair twice or one set against several others, so an implementation that tidied up after
+ * itself would destroy the second call's input. The contract says so in as many words, and it says
+ * so because a reviewer noticed the ownership rule had been written for the frames coming *out* of
+ * `ExtractFeatures` with nothing said about the four going in.
+ */
+class BorrowedFrame {
+ public:
+  BorrowedFrame(IFrameStoreAccess& frames, const FrameRef& frame) : frames_(frames), frame_(frame) {}
+  ~BorrowedFrame() {
+    if (pinned_) (void)frames_.Release(frame_);
+  }
+  BorrowedFrame(const BorrowedFrame&) = delete;
+  BorrowedFrame& operator=(const BorrowedFrame&) = delete;
+
+  Result<std::span<uint8_t>> Pin() {
+    Result<std::span<uint8_t>> pinned = frames_.Pin(frame_);
+    if (pinned.ok()) pinned_ = true;
+    return pinned;
+  }
+
+ private:
+  IFrameStoreAccess& frames_;
+  FrameRef frame_;
+  bool pinned_ = false;
+};
+
+/** The bearing a keypoint names, or nothing — `Unproject` refuses rather than guessing (ADR 0046). */
+struct Bearing {
+  Vec3 direction;
+  Pixel pixel;
+};
+
+/** A rotation as a matrix, so the prior can be scored by the same code path as a sampled one. */
+cv::Matx33d RotationMatrix(const Quat& q) {
+  const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+  const double w = q.w / n, x = q.x / n, y = q.y / n, z = q.z / n;
+  return cv::Matx33d(1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w),
+                     2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                     2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y));
+}
+
+Quat FromMatrix(const cv::Matx33d& r) {
+  // Shepperd's method by the largest denominator, rather than the textbook `w`-first form: taking
+  // the square root of a near-zero `1 + trace` loses most of the mantissa for rotations near a half
+  // turn, which a ring of frames reaches.
+  const double trace = r(0, 0) + r(1, 1) + r(2, 2);
+  Quat q{};
+  if (trace > 0.0) {
+    const double s = std::sqrt(trace + 1.0) * 2.0;
+    q.w = 0.25 * s;
+    q.x = (r(2, 1) - r(1, 2)) / s;
+    q.y = (r(0, 2) - r(2, 0)) / s;
+    q.z = (r(1, 0) - r(0, 1)) / s;
+  } else if (r(0, 0) > r(1, 1) && r(0, 0) > r(2, 2)) {
+    const double s = std::sqrt(1.0 + r(0, 0) - r(1, 1) - r(2, 2)) * 2.0;
+    q.w = (r(2, 1) - r(1, 2)) / s;
+    q.x = 0.25 * s;
+    q.y = (r(0, 1) + r(1, 0)) / s;
+    q.z = (r(0, 2) + r(2, 0)) / s;
+  } else if (r(1, 1) > r(2, 2)) {
+    const double s = std::sqrt(1.0 + r(1, 1) - r(0, 0) - r(2, 2)) * 2.0;
+    q.w = (r(0, 2) - r(2, 0)) / s;
+    q.x = (r(0, 1) + r(1, 0)) / s;
+    q.y = 0.25 * s;
+    q.z = (r(1, 2) + r(2, 1)) / s;
+  } else {
+    const double s = std::sqrt(1.0 + r(2, 2) - r(0, 0) - r(1, 1)) * 2.0;
+    q.w = (r(1, 0) - r(0, 1)) / s;
+    q.x = (r(0, 2) + r(2, 0)) / s;
+    q.y = (r(1, 2) + r(2, 1)) / s;
+    q.z = 0.25 * s;
+  }
+  return q;
+}
+
+/**
+ * The rotation carrying `from` onto `to`, in the least-squares sense — Kabsch by SVD.
+ *
+ * Returns false when the set is degenerate: fewer than two bearings, or bearings so nearly parallel
+ * that the covariance is rank-deficient and the rotation about their common axis is unconstrained.
+ * A rotation fitted to a degenerate set is not a bad estimate, it is an arbitrary one, and the
+ * difference matters because the caller cannot tell them apart from the quaternion.
+ */
+bool KabschRotation(const std::vector<Vec3>& from, const std::vector<Vec3>& to, cv::Matx33d* out) {
+  if (from.size() < 2 || from.size() != to.size()) return false;
+  cv::Matx33d covariance = cv::Matx33d::zeros();
+  for (size_t at = 0; at < from.size(); ++at) {
+    const Vec3& f = from[at];
+    const Vec3& t = to[at];
+    covariance += cv::Matx33d(t.x * f.x, t.x * f.y, t.x * f.z,
+                              t.y * f.x, t.y * f.y, t.y * f.z,
+                              t.z * f.x, t.z * f.y, t.z * f.z);
+  }
+  cv::Matx33d u, vt;
+  cv::Matx31d w;
+  cv::SVD::compute(covariance, w, u, vt);
+  // Two bearings span a plane, so the third singular value is legitimately zero there; it is the
+  // *second* going to zero that means the bearings are parallel and the fit is unconstrained.
+  if (!(w(1, 0) > 1e-9)) return false;
+  cv::Matx33d r = u * vt;
+  if (cv::determinant(r) < 0) {
+    // A reflection fits the points as well as a rotation does and is not one. Flipping the sign of
+    // the column matched to the smallest singular value is the least-damaging repair.
+    cv::Matx33d flip = cv::Matx33d::eye();
+    flip(2, 2) = -1;
+    r = u * flip * vt;
+  }
+  *out = r;
+  return true;
+}
+
+Vec3 Rotate(const cv::Matx33d& r, const Vec3& v) {
+  return Vec3{r(0, 0) * v.x + r(0, 1) * v.y + r(0, 2) * v.z,
+              r(1, 0) * v.x + r(1, 1) * v.y + r(1, 2) * v.z,
+              r(2, 0) * v.x + r(2, 1) * v.y + r(2, 2) * v.z};
+}
+
+// Lowe's 0.75. The value is his and the reason it is not tuned here is that tuning it against one
+// synthetic dataset would fit it to a checkerboard.
+constexpr double kLoweRatio = 0.75;
+// Two bearings determine a rotation, so this is not the algebraic minimum — it is the point below
+// which RANSAC has no outlier to reject and the answer is whatever the two points say.
+constexpr size_t kMinimumCorrespondences = 8;
+// The inlier gate, in pixels of reprojection error. Generous on purpose, per the skill's advice for
+// a first bound: a bound that exists and is loose beats a precise one that does not.
+constexpr double kInlierPx = 3.0;
+constexpr int kRansacIterations = 200;
+
+/**
+ * The keypoint rows of a set, as directions.
+ *
+ * Eight bytes a row, two little-endian `float32`s, x then y — the contract spells that out because
+ * it used to be a constant in this file's anonymous namespace and nowhere a caller could read it.
+ * A row `Unproject` refuses is dropped rather than guessed at: the refusals it can answer are a
+ * direction past the fold or one that does not land back where it started, and both would put a
+ * feature in the wrong place while the file looked well-formed.
+ */
+Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8_t> rows,
+                                          const Intrinsics& lens) {
+  const size_t needed = static_cast<size_t>(set.count) * static_cast<size_t>(kKeypointBytes);
+  if (rows.size() < needed) {
+    return Err<std::vector<Bearing>>(StatusCode::InvalidArgument, kComponent,
+                                     "the keypoint frame holds fewer bytes than its own row count "
+                                     "needs");
+  }
+  std::vector<Bearing> bearings;
+  bearings.reserve(static_cast<size_t>(set.count));
+  for (int32_t row = 0; row < set.count; ++row) {
+    float xy[2] = {0, 0};
+    std::memcpy(xy, rows.data() + static_cast<size_t>(row) * kKeypointBytes, sizeof(xy));
+    const Pixel pixel{static_cast<double>(xy[0]), static_cast<double>(xy[1])};
+    const UnprojectedDirection unprojected = Unproject(lens, pixel);
+    if (!unprojected.valid) continue;
+    bearings.push_back(Bearing{unprojected.direction, pixel});
+  }
+  return Ok(std::move(bearings));
+}
+
+/** The descriptor rows as a `cv::Mat` over the pinned bytes — a view, copied by nothing. */
+Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows) {
+  if (set.count <= 0 || rows.empty()) {
+    return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent, "no descriptor rows to read");
+  }
+  const size_t width = rows.size() / static_cast<size_t>(set.count);
+  if (width == 0) {
+    return Err<cv::Mat>(StatusCode::InvalidArgument, kComponent,
+                        "the descriptor frame holds fewer bytes than one row per feature");
+  }
+  // SIFT's are 128 `float32`s and the binary detectors' are bytes; the width in bytes tells them
+  // apart, because only the float one is divisible by four *and* four times a plausible row count.
+  if (width % sizeof(float) == 0 && width >= 128 * sizeof(float)) {
+    return Ok(cv::Mat(set.count, static_cast<int>(width / sizeof(float)), CV_32F, rows.data()));
+  }
+  return Ok(cv::Mat(set.count, static_cast<int>(width), CV_8U, rows.data()));
+}
+
+/**
+ * The rotation most of the correspondences agree on, found by RANSAC and refitted on its inliers.
+ *
+ * The prior is a hypothesis rather than a starting point to descend from: it is scored alongside the
+ * sampled ones, so a sensor that is right wins immediately and a sensor that is wrong loses to the
+ * pixels. That is what "seeds and bounds, never truth" has to mean for the estimate to be able to
+ * disagree with the sensor.
+ */
+Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vector<Vec3>& to,
+                                   const std::vector<Pixel>& observed, const Quat& prior,
+                                   const Intrinsics& lens) {
+  const auto residualPx = [&](const cv::Matx33d& r, size_t at) -> double {
+    const ProjectedPixel landed = Project(lens, Rotate(r, from[at]));
+    if (!landed.valid) return std::numeric_limits<double>::infinity();
+    const double dx = landed.pixel.x - observed[at].x;
+    const double dy = landed.pixel.y - observed[at].y;
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const auto countInliers = [&](const cv::Matx33d& r, std::vector<size_t>* keep) {
+    keep->clear();
+    for (size_t at = 0; at < from.size(); ++at) {
+      if (residualPx(r, at) <= kInlierPx) keep->push_back(at);
+    }
+  };
+
+  cv::Matx33d best = RotationMatrix(prior);
+  std::vector<size_t> bestInliers;
+  countInliers(best, &bestInliers);
+
+  // Deterministic, and that is a property the selection tests rely on elsewhere in this core: the
+  // same correspondences and the same prior must give the same rotation, so the sampling walks a
+  // fixed stride rather than a clock-seeded generator.
+  std::vector<size_t> candidate;
+  for (int iteration = 0; iteration < kRansacIterations; ++iteration) {
+    const size_t i = static_cast<size_t>(iteration * 7 + 1) % from.size();
+    const size_t j = static_cast<size_t>(iteration * 13 + 5) % from.size();
+    const size_t k = static_cast<size_t>(iteration * 23 + 11) % from.size();
+    if (i == j || j == k || i == k) continue;
+    cv::Matx33d sampled;
+    if (!KabschRotation({from[i], from[j], from[k]}, {to[i], to[j], to[k]}, &sampled)) continue;
+    countInliers(sampled, &candidate);
+    if (candidate.size() > bestInliers.size()) {
+      best = sampled;
+      bestInliers = candidate;
+    }
+  }
+
+  if (bestInliers.size() < kMinimumCorrespondences) {
+    return Err<PairwiseResult>(StatusCode::NotFound, kComponent,
+                               "no rotation was agreed on by enough correspondences: the best had " +
+                                   std::to_string(bestInliers.size()));
+  }
+
+  // Refit on every inlier, which is what makes the answer better than the three points that found
+  // it, and re-gate: the refit moves the rotation, so its inlier set is not the one it was fitted
+  // from and reporting the old count would overstate the agreement.
+  std::vector<Vec3> inFrom;
+  std::vector<Vec3> inTo;
+  for (size_t at : bestInliers) {
+    inFrom.push_back(from[at]);
+    inTo.push_back(to[at]);
+  }
+  cv::Matx33d refined = best;
+  if (KabschRotation(inFrom, inTo, &refined)) {
+    std::vector<size_t> after;
+    countInliers(refined, &after);
+    if (after.size() >= bestInliers.size()) {
+      best = refined;
+      bestInliers = after;
+    }
+  }
+
+  std::vector<double> residuals;
+  residuals.reserve(bestInliers.size());
+  for (size_t at : bestInliers) residuals.push_back(residualPx(best, at));
+  std::sort(residuals.begin(), residuals.end());
+  const double median = residuals.empty() ? 0.0 : residuals[residuals.size() / 2];
+
+  PairwiseResult answer{};
+  answer.relativeRotation = FromMatrix(best);
+  answer.inliers = static_cast<int32_t>(bestInliers.size());
+  answer.medianResidualPx = median;
+  answer.accepted = bestInliers.size() >= kMinimumCorrespondences && median <= kInlierPx;
+  return Ok(answer);
+}
+
+
+}  // namespace
+
+Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const FeatureSet& a,
+                                                                  const FeatureSet& b,
+                                                                  const Quat& prior,
+                                                                  const Intrinsics& lens) {
+  if (a.count <= 0 || b.count <= 0) {
+    return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                               "a feature set with no rows cannot be matched against anything");
+  }
+  // The prior seeds and bounds the search, so an unusable one is a refusal rather than a silent
+  // fall back to identity — identity *is* a rotation, and a caller handed one would read a failed
+  // seeding as a frame that had not moved.
+  if (!IsUsableRotation(prior)) {
+    return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                               "the sensor prior is not a usable rotation");
+  }
+  if (!IsUsableLens(lens)) {
+    return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                               "the lens cannot project, so no rotation can be recovered from "
+                               "pixels (ADR 0054)");
+  }
+
+  try {
+    // Borrowed, not owned: pinned for the call and released by these destructors on every path out,
+    // and never forgotten. See `BorrowedFrame`.
+    BorrowedFrame keypointsA(frames_, a.keypoints);
+    BorrowedFrame descriptorsA(frames_, a.descriptors);
+    BorrowedFrame keypointsB(frames_, b.keypoints);
+    BorrowedFrame descriptorsB(frames_, b.descriptors);
+
+    const Result<std::span<uint8_t>> kaSpan = keypointsA.Pin();
+    const Result<std::span<uint8_t>> daSpan = descriptorsA.Pin();
+    const Result<std::span<uint8_t>> kbSpan = keypointsB.Pin();
+    const Result<std::span<uint8_t>> dbSpan = descriptorsB.Pin();
+    for (const Result<std::span<uint8_t>>* pinned : {&kaSpan, &daSpan, &kbSpan, &dbSpan}) {
+      if (!pinned->ok()) return Err<PairwiseResult>(pinned->status.code, kComponent,
+                                                    pinned->status.detail);
+    }
+
+    const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lens);
+    if (!bearingsA.ok()) {
+      return Err<PairwiseResult>(bearingsA.status.code, kComponent, bearingsA.status.detail);
+    }
+    const Result<std::vector<Bearing>> bearingsB = ReadBearings(b, kbSpan.value, lens);
+    if (!bearingsB.ok()) {
+      return Err<PairwiseResult>(bearingsB.status.code, kComponent, bearingsB.status.detail);
+    }
+
+    const Result<cv::Mat> matA = ReadDescriptors(a, daSpan.value);
+    if (!matA.ok()) return Err<PairwiseResult>(matA.status.code, kComponent, matA.status.detail);
+    const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value);
+    if (!matB.ok()) return Err<PairwiseResult>(matB.status.code, kComponent, matB.status.detail);
+    if (matA.value.type() != matB.value.type() || matA.value.cols != matB.value.cols) {
+      return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                                 "the two feature sets were not made by the same detector");
+    }
+
+    // **Lowe's ratio test, two nearest neighbours.** A single nearest neighbour always exists, so
+    // matching without the ratio produces a full set of correspondences for two frames of unrelated
+    // scenery — the shape that makes a registration look successful and be nonsense.
+    const int norm = matA.value.type() == CV_8U ? cv::NORM_HAMMING : cv::NORM_L2;
+    cv::BFMatcher matcher(norm);
+    std::vector<std::vector<cv::DMatch>> knn;
+    matcher.knnMatch(matA.value, matB.value, knn, 2);
+
+    std::vector<Vec3> fromAll;
+    std::vector<Vec3> toAll;
+    std::vector<Pixel> observed;
+    for (const std::vector<cv::DMatch>& pair : knn) {
+      if (pair.size() < 2) continue;
+      if (pair[0].distance > kLoweRatio * pair[1].distance) continue;
+      const size_t ia = static_cast<size_t>(pair[0].queryIdx);
+      const size_t ib = static_cast<size_t>(pair[0].trainIdx);
+      if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
+      fromAll.push_back(bearingsA.value[ia].direction);
+      toAll.push_back(bearingsB.value[ib].direction);
+      observed.push_back(bearingsB.value[ib].pixel);
+    }
+
+    if (fromAll.size() < kMinimumCorrespondences) {
+      return Err<PairwiseResult>(StatusCode::NotFound, kComponent,
+                                 "too few correspondences survived the ratio test to fit a "
+                                 "rotation: " + std::to_string(fromAll.size()));
+    }
+
+    const Result<PairwiseResult> fitted =
+        FitRotation(fromAll, toAll, observed, prior, lens);
+    if (!fitted.ok()) return fitted;
+
+    PairwiseResult answer = fitted.value;
+    answer.a = a.frame;
+    answer.b = b.frame;
+    return Ok(answer);
+  } catch (const cv::Exception& thrown) {
+    return Err<PairwiseResult>(StatusCode::Internal, kComponent,
+                               std::string("OpenCV refused during matching: ") + thrown.what());
+  } catch (const std::exception& thrown) {
+    return Err<PairwiseResult>(StatusCode::Internal, kComponent,
+                               std::string("matching failed: ") + thrown.what());
+  }
 }
 
 Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult>,

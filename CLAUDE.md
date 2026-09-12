@@ -38,10 +38,13 @@ coverage and acceptance are all decided in the core.
 
 **What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
-`Registration`, in part. `Registration` needs the care of a qualified sentence: one of its three
-methods is implemented (`ExtractFeatures`), it exists only where OpenCV does so a browser build
-still gets the null one, and no composition root selects it yet — it is reached from tests. Matching
-and refinement still refuse. `Composition` is untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
+`Registration`, in part. `Registration` needs the care of a qualified sentence: **two** of its three
+methods are implemented (`ExtractFeatures` and now `EstimatePairwise`), it exists only where OpenCV
+does so a browser build still gets the null one, and no composition root selects it yet — it is
+reached from tests. `Refine` still refuses. And the qualification that matters most: the pair
+estimator *answers*, and nothing has yet scored its answers against a dataset, so "implemented" here
+means it computes a rotation and not that the rotation is known to be right. `Composition` is
+untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
 build, not finished.

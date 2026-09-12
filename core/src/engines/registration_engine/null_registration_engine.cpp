@@ -10,7 +10,8 @@ Result<FeatureSet> NullRegistrationEngine::ExtractFeatures(const FrameRef&) {
 }
 
 Result<PairwiseResult> NullRegistrationEngine::EstimatePairwise(const FeatureSet&,
-                                                                const FeatureSet&, const Quat&) {
+                                                                const FeatureSet&, const Quat&,
+                                                                const Intrinsics&) {
   return Err<PairwiseResult>(StatusCode::Unsupported, kComponent, "matching is Phase 2");
 }
 

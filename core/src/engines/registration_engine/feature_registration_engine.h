@@ -60,9 +60,15 @@ inline constexpr int kMaxFeaturesPerFrame = 500;
 // gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
 // one of the two resource accesses an engine may touch.
 //
-// This increment implements `ExtractFeatures` only. `EstimatePairwise` and `Refine` refuse, for the
-// reason the null engine gives: there is no honest minimal version of matching, and a stub
-// returning identity rotations would produce a panorama that looks stitched and is not.
+// `ExtractFeatures` and `EstimatePairwise` are implemented; `Refine` still refuses, for the reason
+// the null engine gives: there is no honest minimal version of a global solve, and a stub returning
+// an empty solution would produce a panorama that looks stitched and is not.
+//
+// `EstimatePairwise` matches by Lowe's ratio test, lifts both keypoint sets to bearings through
+// `camera_model` — which is why it needs the lens, ADR 0054 — and fits the rotation most of the
+// correspondences agree on by RANSAC over minimal samples, refitting on the inliers by Kabsch. The
+// sensor prior is scored as one hypothesis among the sampled ones rather than descended from, so a
+// right sensor wins immediately and a wrong one loses to the pixels.
 class FeatureRegistrationEngine final : public IRegistrationEngine {
  public:
   FeatureRegistrationEngine(IFrameStoreAccess& frames, FeatureDetector detector)
@@ -70,7 +76,7 @@ class FeatureRegistrationEngine final : public IRegistrationEngine {
 
   Result<FeatureSet> ExtractFeatures(const FrameRef& frame) override;
   Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
-                                          const Quat& prior) override;
+                                          const Quat& prior, const Intrinsics& lens) override;
   Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
                                 std::span<const PoseSample> priors,
                                 const Intrinsics& initial) override;

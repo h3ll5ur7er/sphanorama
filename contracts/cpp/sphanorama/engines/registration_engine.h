@@ -36,8 +36,19 @@ class IRegistrationEngine {
   // nothing was said about the four going *in* here — and this is the method with the obvious-
   // looking reason to release what it was handed. Until ADR 0051 these were `BufferId`s naming
   // nothing, so the question could not be asked; they are four live store allocations per call now.
+  //
+  // **The lens is a parameter because the answer cannot be computed without it.** Under pure
+  // rotation the two views are related by a homography `H = K R inverse(K)`, so matched pixels
+  // determine `H` and nothing else; recovering the `R` this method is declared to return needs `K`.
+  // The first attempt at implementing this discovered that the signature could not honour its own
+  // return type, which is the kind of gap a stub hides (ADR 0054).
+  //
+  // Passed rather than held, because engines are stateless per session and everything that is not
+  // compute placement or pixel residency arrives as an argument. `Refine` already takes an
+  // `Intrinsics` for the same reason, and takes it as the value it goes on to *improve*; here it is
+  // read and not improved, which is why this one is `const` and that one is named `initial`.
   virtual Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
-                                                  const Quat& prior) = 0;
+                                                  const Quat& prior, const Intrinsics& lens) = 0;
 
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult>,
                                         std::span<const PoseSample> priors,
