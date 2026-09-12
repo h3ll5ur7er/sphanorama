@@ -15,9 +15,13 @@ of estimated rotations into an angular error against truth, with the global gaug
 The evidence, stated accurately this time. `git grep -li dataset` across `core/test` at the commit
 before this work finds **six** files — `rotation_scoring.{h,cpp}` and its test, plus
 `frame_quality_engine_test.cpp`, `camera_model_test.cpp` and `quaternion_test.cpp` — and not one of
-them reads a dataset off disk; the last three use the word about something else. The conclusion
-holds and the first version of this sentence described the result as "the renderer's own tests and
-the scorer's", which is tidier than what the command prints. A reviewer ran it.
+them reads a dataset off disk. Only `frame_quality_engine_test.cpp` uses the word about something
+else; `camera_model_test.cpp` and `quaternion_test.cpp` are squarely *about* the generator — they
+pin its projection and its quaternions against the core's, at decimals neither side derived — which
+is worth knowing, because they are the cross-language check this ADR's own consequences reach for.
+Two versions of this sentence were wrong before this one: the first said "the renderer's own tests
+and the scorer's", tidier than what the command prints, and the second said the last three use the
+word about something else. Reviewers ran it both times.
 
 So the accuracy number Phase 2 is defined by could not be computed at all, and `EstimatePairwise` —
 the next increment, and the first whose correctness is invisible to the eye — would have had nowhere

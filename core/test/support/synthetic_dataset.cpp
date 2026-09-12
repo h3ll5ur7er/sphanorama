@@ -540,8 +540,13 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   // find out. Now the caller is told.
   auto refuse = [&owned](StatusCode code, std::string detail) {
     if (!owned.Rollback()) {
-      detail += " (and the store then refused to give back a frame read before this failure, so "
-                "its totals still account for bytes no handle names — only Clear recovers them)";
+      // Says the store refused, and does **not** say the bytes are lost. `~OwnedFrames` retries
+      // what was declined and runs after this `Result` is built, so a store that refuses once and
+      // relents leaves nothing behind while this sentence has already been written. Round 3 made
+      // exactly this correction to `ReadFrame`'s release message and did not carry it here — the
+      // same omission, in the pair's other half, in the same commit.
+      detail += " (and the store refused to give back a frame read before this failure; a retry "
+                "follows this message, so the bytes may or may not still be charged)";
     }
     return Err<SyntheticDataset>(code, kComponent, std::move(detail));
   };
@@ -569,8 +574,10 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
   } catch (const std::exception& thrown) {
     // Widened to match the traversal's arm below, which had it and this did not. `open` parses the
     // whole file, so every allocation the parser makes is an escape route from here: before this
-    // arm existed, a throwing allocator swept over a full load reached the caller from well over
-    // half the load's allocation points, most of them in this call. Under `-fno-exceptions`, which
+    // arm existed, a throwing allocator swept over a full load reached the caller from 56% of the
+    // load's allocation points — 69 of the 123 that sweep counted — most of them in this call.
+    // ("Well over half" was this sentence's previous wording for 56.1%, which is over half and not
+    // well over it.) Under `-fno-exceptions`, which
     // is what every consumer other than this file's own test is compiled with, an escape is a
     // terminate rather than a failure.
     return refuse(StatusCode::Internal,
@@ -585,22 +592,25 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     // way — is the thing these guards exist to avoid, then applied that reasoning to `convention`
     // and to none of the other four sites. The catch arm stays as the backstop it was always meant
     // to be, rather than the first line of defence it had become.
-    if (!file.root().isMap()) {
-      return refuse(StatusCode::InvalidArgument,
-                    "truth.json is not a JSON object, so it names nothing this can read");
-    }
+    // **No guard on the root, and that is a deletion rather than an omission.** Round 3 added one,
+    // and a reviewer showed it is unreachable by any input: `open` throws first for every non-object
+    // top level — `[1,2,3]`, `5`, `"hello"`, `[]`, `true`, `null`, all six probed — so the `catch`
+    // below converts them and the guard's own test could not fail. Which this file had already
+    // measured a round earlier, in the comment twenty lines up about `open` never returning `false`,
+    // and then did not apply. The engineering skill's rule for a guard nothing can reach is to ask
+    // whether the state is reachable in life and delete it if not; it is not.
     const cv::FileNode intrinsics = file["intrinsics"];
     if (!intrinsics.isMap()) {
+      // One refusal for both shapes, because an absent node is not a map either. The standalone
+      // `empty()` check that used to follow this was dead for exactly that reason, and it wrote the
+      // same sentence as the ternary's first arm — so the test named for it was filed against a
+      // branch it never reached, and the duplicate phrase broke the one-phrase-per-guard invariant
+      // this file's refusal tests rely on.
       return refuse(StatusCode::InvalidArgument,
                     intrinsics.empty()
                         ? "truth.json records no intrinsics, so nothing knows what lens these "
                           "frames were rendered through"
                         : "truth.json's intrinsics are not a JSON object");
-    }
-    if (intrinsics.empty()) {
-      return refuse(StatusCode::InvalidArgument,
-                    "truth.json records no intrinsics, so nothing knows what lens these frames "
-                    "were rendered through");
     }
     std::string trouble;
     dataset.lens.fx = NodeDouble(intrinsics, "fx", &trouble);

@@ -12,9 +12,19 @@
 //
 // **The property asserted is the store's accounting**: for every allocation point, the load may
 // return a `Result` or leave by throwing, and either way the store's totals must be exactly where
-// they started. Not "the function returned" — this translation unit is one of only three compiled
-// `-fexceptions`, and every other consumer of the loader is `-fno-exceptions`, where an allocation
-// failure terminates at the throw site whatever any `catch` here would have done.
+// they started. Not "the function returned" — this translation unit is one of **four** compiled
+// `-fexceptions` (the OpenCV-backed registration engine in `core/src`, plus the loader, its gtest
+// and this file in `core/test`), and every other consumer of the loader is `-fno-exceptions`, where
+// an allocation failure terminates at the throw site whatever any `catch` here would have done.
+// This line said "one of only three", written by the commit that made it the fourth.
+//
+// **The exception safety of `OwnedFrames::Rollback`'s compaction is argued here and tested nowhere**,
+// and that is measured rather than assumed. A reviewer instrumented both rollback loops and counted
+// the allocations inside them across all 600 loads of the second pass: **zero**. A *successful*
+// `MemoryFrameStoreAccess::Forget` allocates nothing, and the rest of that loop is a POD assignment
+// and a shrinking `erase`, so no arming of the second throw can land there. What the second pass
+// does reach is `refuse()`'s string building — which is why emptying `~OwnedFrames` strands frames
+// under it and not under the first pass.
 //
 // **LeakSanitizer stays on, with one suppression**, in
 // `support/dataset_alloc_test.lsan-suppressions`. With nothing suppressed, the sweep reports its own
@@ -216,14 +226,17 @@ int main() {
     }
   }
 
-  // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
-  // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
-  // where this file's own first defect was found.
   // **Second pass: a failure while the first one is being handled.** Each point of the first sweep
-  // is re-run with another allocation failing shortly after, which is how the throw reaches
-  // `refuse()`'s string building and `Rollback()`'s loop. The invariant is the same and so is the
-  // arithmetic; only the arming differs.
+  // is re-run with another allocation failing shortly after, which is how a throw reaches
+  // `refuse()`'s string building — the one place inside a handler that allocates, as measured at
+  // the top of this file.
+  //
+  // Its checks are the first pass's, **both** of them. An earlier version claimed "the invariant is
+  // the same and so is the arithmetic" while quietly dropping the whole-dataset check, and three
+  // separate reviewers caught it the same way: under a partial-`Ok` sabotage the first pass reported
+  // 51 and this pass reported 0 — blind to exactly the defect that check exists to see.
   int strandedTwice = 0;
+  int wrongTwice = 0;
   for (long at = 1; at <= total; ++at) {
     for (long gap = 1; gap <= 4; ++gap) {
       MemoryFrameStoreAccess store(64 * 1024 * 1024);
@@ -239,6 +252,13 @@ int main() {
           // converted, and the point of this pass is that the store is still clean afterwards.
         }
       }
+      if (taken && taken->frames.size() != gFramesInACleanLoad) {
+        std::fprintf(stderr,
+                     "allocations %ld and %ld: the load succeeded with %zu frames, and a clean "
+                     "load gives %zu\n",
+                     at, at + gap, taken->frames.size(), gFramesInACleanLoad);
+        ++wrongTwice;
+      }
       if (taken) {
         for (const SyntheticFrame& frame : taken->frames) (void)store.Forget(frame.frame);
       }
@@ -253,10 +273,13 @@ int main() {
   // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
   // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
   // where this file's own first defect was found.
+  // On stderr, not stdout, and not by taste: LeakSanitizer ends the process without flushing
+  // stdio, so a sweep whose verdict went to a buffer reported nothing at all under ASan — which is
+  // where this file's own first defect was found.
   std::fprintf(stderr,
                "swept %ld allocation points of a full load; %d stranded, %d partial datasets "
-               "returned as successes; %d stranded with a second failure during the first's "
-               "handling\n",
-               total, stranded, wrong, strandedTwice);
-  return stranded == 0 && wrong == 0 && strandedTwice == 0 ? 0 : 1;
+               "returned as successes. With a second failure during the first's handling: "
+               "%d stranded, %d partial\n",
+               total, stranded, wrong, strandedTwice, wrongTwice);
+  return stranded == 0 && wrong == 0 && strandedTwice == 0 && wrongTwice == 0 ? 0 : 1;
 }

@@ -642,8 +642,9 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
 
     One output of this function *is* committed, and it is the exception that proves the rule:
     `core/test/data/synthetic-ring-4` is four 48x36 frames and their `truth.json`, 22,570 bytes of
-    content altogether (20,788 of frames, 1,782 of JSON) — not "on disk", which is 40 KiB of 4 KiB
-    blocks — read by the C++ loader's
+    content altogether (20,788 of frames, 1,782 of JSON). Not "on disk": `du` reports 40 KiB, of
+    which 36 is the five files rounded up to 4 KiB blocks and the fortieth is the directory entry.
+    Read by the C++ loader's
     tests. It is a **format** fixture rather than a measurement — it exists so that loader is read
     against bytes this writer produced rather than against its author's idea of the format
     (ADR 0053). The stronger claim, that this catches bugs a hand-written fixture would miss, was

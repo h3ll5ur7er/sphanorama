@@ -50,10 +50,18 @@ The axis has **two** owners now rather than one, and deliberately: `tools/synth_
 dataset and `core/test/support/synthetic_dataset` reads one, so the format is spelled in two
 languages and a change to it has to be made twice. ADR 0053 takes that cost knowingly — the whole
 point of the loader is to be checked against bytes the generator wrote rather than against bytes its
-own author wrote. One test on each side fails when the two drift:
+own author wrote. Tests on both sides fail when the two drift, and they are not the ones an earlier version of this
+paragraph named. On the Python side,
 `test_the_committed_fixture_is_still_this_generator_s_output` re-renders the committed ring and
-compares it byte for byte, and `Dataset.RefusesADatasetThatDoesNotStateTheRotationConventionThisReaderAssumes`
-refuses a dataset whose convention is not the one the reader was written against.
+compares it byte for byte, and the `truth.json` key-set and convention assertions pin the format.
+On the C++ side the real detectors predate this work: `Project.MeetsTheDatasetGeneratorAcrossLensFamilies`
+and `FromAzimuthElevation.MeetsTheDatasetGeneratorAtNumbersNeitherDerived` pin the generator's
+projection and its quaternions against the core's own, at decimals neither side derived.
+
+The loader's own refusal tests are **not** drift detectors and were named here as though they were:
+they build their `truth.json` by hand through `Scratch`, so they never read what the generator
+writes. A reviewer caught that — in a sentence written to answer an earlier review finding about
+this same sentence, which replaced a vague claim with a false one.
 
 ## 2.2 Axes deliberately *not* given their own component
 

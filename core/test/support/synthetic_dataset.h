@@ -69,8 +69,14 @@ struct SyntheticDataset {
  *
  * **Codes from the store are forwarded, not translated.** `FrameStoreExhausted` from `Allocate`,
  * and whatever `Pin` or `Release` answered — so a store refusing `Release` with
- * `FailedPrecondition` refuses this call with `FailedPrecondition`. `Internal` is this reader's own
- * last resort and means one thing: an exception escaped the parse.
+ * `FailedPrecondition` refuses this call with `FailedPrecondition`.
+ *
+ * `Internal` therefore has **two** sources and the code alone does not separate them: this reader
+ * reports an exception that escaped the parse with it, and a store whose `Pin` answers `Internal`
+ * has that forwarded. The `detail` distinguishes them and `component` does not — every refusal is
+ * re-stamped as this reader's on the way out, which is worth knowing before anyone branches on it.
+ * An earlier version of this paragraph said `Internal` "means one thing", which the branch's own
+ * test disproves: `AwkwardStore::Pin` answers `Internal` and the load is asserted to answer it too.
  *
  * **A refusal gives back every frame it allocated, and says so when it cannot.** That second half
  * is not pedantry. `Forget` is allowed to refuse — `MemoryFrameStoreAccess` returns a spill sink's
@@ -79,10 +85,22 @@ struct SyntheticDataset {
  * back, which is the ordinary case, the store's totals are where they started and there is nothing
  * to clean up.
  *
- * **One recovery is not always available, and the difference is worth knowing.** Bytes left behind
- * by a refused `Forget` can be reclaimed with `Clear`. Bytes left behind by a refused *`Release`*
- * cannot: the frame stays pinned, and `Clear` refuses while any frame is pinned. A refusal that
- * mentions the pin is telling you the store needs rebuilding, not tidying.
+ * **What a refusal cannot tell you, so that nobody reads it as saying more.** Two things in
+ * particular:
+ *
+ * The message is written from one rollback pass, and both destructors retry after the `Result`
+ * exists — so a store that declines once and relents leaves nothing behind while the sentence
+ * saying it declined has already been composed. The refusal reports what the store *said*, not what
+ * the totals ended up being. Ask the store if you need the latter.
+ *
+ * And there is no phrase that identifies the unrecoverable case. Bytes behind a refused `Release`
+ * are the worst kind — the frame stays pinned and `Clear` refuses while anything is pinned, for the
+ * life of the store — but the stride guard runs while pinned too and its refusal never mentions a
+ * pin, so a reviewer showed "a refusal that mentions the pin" is no discriminator at all. Nor is
+ * `Clear` a guaranteed remedy for the other case: `MemoryFrameStoreAccess::Forget` refuses by
+ * forwarding a spill sink's `Drop`, and `Clear` forwards to that same sink's `Clear`, so the thing
+ * that refused the first may refuse the second. Both claims were in an earlier version of this
+ * paragraph and both were too strong.
  */
 Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store, const std::string& directory);
 

@@ -1,7 +1,8 @@
 # ADR 0006 — `Result<T>` everywhere; no exceptions across layers or the WASM boundary
 
 **Status:** accepted; narrowed by
-[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md)
+[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md), extended by
+[ADR 0053](0053-the-harness-reads-its-own-datasets.md)
 
 > **One *shipped* translation unit is compiled with exceptions, and this ADR's rule is otherwise
 > unchanged.** `feature_registration_engine.cpp` calls OpenCV, which reports ordinary failure by

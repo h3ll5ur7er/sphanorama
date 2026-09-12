@@ -493,8 +493,13 @@ TEST_F(Dataset, RefusesAFrameWhoseSamplesAreTwoBytesWide) {
 
 TEST_F(Dataset, RefusesAHeaderTokenLongerThanAnyRealOne) {
   // The file with no whitespace in it. Unbounded, this read the whole thing into a string before the
-  // magic number was ever compared — a reviewer measured 988 MB resident for a 512 MiB file, in a
+  // magic number was ever compared — **986,740 KiB, which is 964 MiB**, for a 512 MiB file, in a
   // loader whose payload loop exists to avoid exactly that. A kilobyte is enough to prove the cap.
+  //
+  // This comment said "988 MB" until round 4. The loader's own comment had withdrawn that figure a
+  // round earlier, twenty lines from here in a neighbouring file, and this copy went on asserting
+  // it — so the same directory both claimed and denied the number. `ru_maxrss` is in KiB, and even
+  // `ru_maxrss / 1000` is 987.
   Scratch scratch;
   std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
   out << std::string(1024, 'P');
@@ -881,7 +886,13 @@ TEST_F(Dataset, SaysSoWhenTheStoreWillNotTakeItsFramesBack) {
           {"file": "absent.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, scratch.path());
   ASSERT_FALSE(loaded.ok());
-  EXPECT_NE(loaded.status.detail.find("still account for bytes no handle names"), std::string::npos)
+  EXPECT_NE(loaded.status.detail.find("refused to give back a frame read before this failure"),
+            std::string::npos)
+      << loaded.status.detail;
+  // And it must not promise what it cannot know: the destructor's retry runs after this message is
+  // written, so a store that relents leaves nothing behind while the sentence already exists. The
+  // `Release` twin below has asserted this since round 3; this half did not until round 4.
+  EXPECT_EQ(loaded.status.detail.find("only Clear recovers them"), std::string::npos)
       << loaded.status.detail;
   EXPECT_TRUE(store.Clear().ok());
 }
@@ -983,13 +994,23 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
 
 // ------------------------------------------------- refusing in our own words, at every site
 
-TEST_F(Dataset, RefusesTruthThatIsNotAJsonObject) {
-  Scratch scratch;
-  WriteTruth(scratch, "[1, 2, 3]");
-  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
-  // Whatever answers, it must not be an OpenCV assertion forwarded as our message.
-  ASSERT_FALSE(loaded.ok());
-  EXPECT_EQ(loaded.status.detail.find("Assertion failed"), std::string::npos) << loaded.status.detail;
+TEST_F(Dataset, RefusesTruthWhoseTopLevelIsNotAnObject) {
+  // **This is the `open` boundary, not a guard of ours, and round 3 got that wrong.** A guard on
+  // `file.root().isMap()` was added here and was unreachable: `cv::FileStorage::open` throws first
+  // for every non-object top level, which this file had measured a round earlier and written down
+  // twenty lines from where the guard went. The guard is gone; what remains is the behaviour, which
+  // is worth a test either way.
+  //
+  // Through `RefusedWith` like every other refusal, so it asserts our own sentence rather than
+  // merely the absence of the word "Assertion" — OpenCV's text is appended after our prefix, and a
+  // test that only excluded one phrase of it was asserting almost nothing.
+  for (const char* truth : {"[1, 2, 3]", "5", "\"hello\"", "[]", "true"}) {
+    Scratch scratch;
+    WriteTruth(scratch, truth);
+    const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+    EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                            "truth.json is not readable JSON")) << truth;
+  }
 }
 
 TEST_F(Dataset, RefusesIntrinsicsThatAreNotAJsonObject) {
@@ -1087,6 +1108,13 @@ TEST_F(Dataset, ARollbackKeepsWhatTheStoreRefusedSoTheBackstopCanTryAgain) {
             {"file": "absent.ppm", "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}])"));
     const Result<SyntheticDataset> loaded = LoadSyntheticDataset(awkward, scratch.path());
     ASSERT_FALSE(loaded.ok());
+    // **The arrangement, asserted.** Without this the test is green when `refuseForgetTimes` does
+    // nothing at all — a reviewer made the knob inert and the suite stayed exit 0, which is the one
+    // of `AwkwardStore`'s six knobs with that property. A test for a retry that never provokes a
+    // refusal proves the store can forget, which nothing doubted.
+    EXPECT_NE(loaded.status.detail.find("refused to give back a frame"), std::string::npos)
+        << "the store never actually declined, so there was no retry to observe: "
+        << loaded.status.detail;
   }
   EXPECT_EQ(HeapUsed(), before)
       << "the frame the store declined once was dropped instead of retried";

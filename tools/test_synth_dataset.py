@@ -1793,6 +1793,12 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
         # is noticed — next to the writer, rather than in a seam three phases later.
         self.assertEqual(truth["convention"]["rotation"],
                          "device -> world, unit quaternion, matching sphanorama::Quat")
+        # `pixel_encoding` is pinned too, and the reason is the same one `rotation` has: the C++
+        # header now tells a consumer these bytes are signed, so the sentence saying so has become
+        # load-bearing. A reviewer pointed out it was a fourth copy of a fact checked by nothing —
+        # `rotation` drifts detectably in both directions and this did not. The loader does not read
+        # it (it copies bytes and interprets none), so this is the only side that can hold it.
+        self.assertIn("value = b / 255 * 2 - 1", truth["convention"]["pixel_encoding"])
         # Every field of `sphanorama::Intrinsics` the loader fills from this file. The two it does
         # not fill — `rollingShutterLineTimeNs` and `estimated` — are deliberately absent: these are
         # the true intrinsics, and a synthetic capture has no rolling shutter yet.
@@ -1841,7 +1847,7 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
                     f"core/test/data/synthetic-ring-4 rather than changing this test",
                 )
 
-    def test_a_half_turn_is_written_with_the_sign_it_has(self):
+    def test_a_three_quarter_turn_is_written_with_the_sign_it_has(self):
         # The loader records the quaternion as spelled, negative scalar part included, because a
         # quaternion and its negation are the same rotation and tidying one is unasked-for work on
         # the field every accuracy number is compared against. That only means something if this
