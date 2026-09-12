@@ -315,10 +315,14 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
     // stops early, a field longer than any real one, a field that is not digits, and a field too
     // large for the type that holds it. They shared one sentence, so a test could not say which
     // guard had answered — the same defect this file has now had at three different sites.
-    const char* because = " has a header this reader cannot parse";
+    // No "and anything else" text, because there is nothing else. `ReadNumber` returns `false`
+    // only after setting one of the four below, so a fifth sentence would be prose no input can
+    // reach — and `kNone` reaches this switch never, which is why it shares the first arm's words
+    // rather than having its own. A reviewer found the dead default this replaces.
+    const char* because = " has a header that stops before its three numbers";
     switch (why) {
+      case TokenTrouble::kNone:
       case TokenTrouble::kNothingThere:
-        because = " has a header that stops before its three numbers";
         break;
       case TokenTrouble::kTooLong:
         because = " has a header field longer than any real one";
@@ -328,8 +332,6 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
         break;
       case TokenTrouble::kTooLargeForTheType:
         because = " has a header number too large for the type that holds it";
-        break;
-      case TokenTrouble::kNone:
         break;
     }
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,

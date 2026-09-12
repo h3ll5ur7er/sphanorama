@@ -93,6 +93,13 @@ struct SyntheticDataset {
  * saying it declined has already been composed. The refusal reports what the store *said*, not what
  * the totals ended up being. Ask the store if you need the latter.
  *
+ * There is a third exit, and on it nothing is said at all. If an allocation failure escapes the
+ * function rather than being converted — which `-fno-exceptions` makes a terminate for every
+ * consumer but this file's own tests — the rollbacks run from the two destructors, which have
+ * nowhere to report to and discard the store's answer. So "says so when it cannot" covers the
+ * refusal paths and not that one. It is bounded in life by the terminate, and it is stated here
+ * rather than papered over.
+ *
  * And there is no phrase that identifies the unrecoverable case. Bytes behind a refused `Release`
  * are the worst kind — the frame stays pinned and `Clear` refuses while anything is pinned, for the
  * life of the store — but the stride guard runs while pinned too and its refusal never mentions a
