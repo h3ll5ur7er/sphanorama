@@ -1124,33 +1124,31 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     std::vector<std::vector<cv::DMatch>> knn;
     matcher.knnMatch(matA.value, matB.value, knn, 2);
 
-    // **The two readers are asked whether they still agree**, once, rather than every row being
-    // asked whether it is in range. They are handed the same `count` and must stay parallel: a
-    // reader that dropped a row instead of marking it unusable would shift every index after it,
-    // which is the compaction defect the `usable` flag exists to prevent and which no test caught
-    // for as long as the dataset had no distortion. Here it is a refusal rather than a comparison
-    // no input can fail.
-    if (bearingsA.value.size() != static_cast<size_t>(matA.value.rows) ||
-        bearingsB.value.size() != static_cast<size_t>(matB.value.rows)) {
-      return Err<PairwiseResult>(
-          StatusCode::Internal, kComponent,
-          "the bearings and the descriptor rows came back different lengths, so a match's index "
-          "means something different to each of them");
-    }
-
     std::vector<Vec3> fromAll;
     std::vector<Vec3> toAll;
     std::vector<Pixel> observed;
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
       if (pair[0].distance > kLoweRatio * pair[1].distance) continue;
-      // **The sign, not the bound.** `DMatch` carries signed indices and OpenCV's own default
-      // constructor sets them to -1 (`core/types.hpp`), so the casts below would turn "no match"
-      // into 18446744073709551615. The upper bound is the parallelism check above, taken once;
-      // this is the one thing about a match that the row counts cannot settle.
+      // **The sign and the bound, at the row rather than once for the set.** `DMatch` carries
+      // signed indices and OpenCV's own default constructor sets them to -1 (`core/types.hpp`), so
+      // the casts below would turn "no match" into 18446744073709551615.
+      //
+      // The bound was briefly replaced by a check that the two readers came back the same length,
+      // on the argument that the row counts then settle every index. They do — `ReadDescriptors`
+      // builds `cv::Mat(set.count, …)` and `ReadBearings` a `vector(set.count)`, both from the same
+      // `count` — which is exactly why that check could never fire, and why it was the wrong thing
+      // to trade this for. Inverting it to fire when they agree fails fifteen cases, which is the
+      // measurement that says so. The hazard it was written against is real and stays a *comment*:
+      // a reader that dropped an unusable row instead of marking it would shift every index after
+      // it, which is what the `usable` flag exists to prevent.
+      //
+      // So the bound is back where it can do something, next to the sign check it never should have
+      // been separated from: both are the same refusal to take `DMatch`'s word for an index.
       if (pair[0].queryIdx < 0 || pair[0].trainIdx < 0) continue;
       const size_t ia = static_cast<size_t>(pair[0].queryIdx);
       const size_t ib = static_cast<size_t>(pair[0].trainIdx);
+      if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
       // A row the lens could not turn into a direction is dropped *here*, where dropping it costs
       // one correspondence, rather than in `ReadBearings`, where it shifted every index after it.
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;

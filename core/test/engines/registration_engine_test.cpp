@@ -176,13 +176,26 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       IFrameStoreAccess& frames;
       FrameRef frame;
       bool keep = false;
+      bool held = false;
       ~GiveBack() {
         if (keep) return;
-        (void)frames.Forget(frame);
+        // **The pin comes off before the frame goes.** `Forget` refuses a pinned frame and keeps
+        // the entry, so unwinding from an `ASSERT_*` taken *after* `Pin` — the null-data one below
+        // is exactly that — would leave the store still accounting for the bytes, silently, because
+        // the status was discarded. The engine has this ordering and a test named for it
+        // (`ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem`); the fixture meant to model
+        // the engine's callers did not.
+        if (held) {
+          EXPECT_TRUE(frames.Release(frame).ok()) << "a pin this helper took would not come off";
+        }
+        EXPECT_TRUE(frames.Forget(frame).ok()) << "the store refused to forget a frame this helper "
+                                                  "allocated, which is what it does while a pin is "
+                                                  "still outstanding";
       }
     } giveBack{store, frame};
     const Result<std::span<uint8_t>> pinned = store.Pin(frame);
     ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+    giveBack.held = true;
     ASSERT_NE(pinned.value.data(), nullptr);
     for (int32_t y = 0; y < edge; ++y) {
       for (int32_t x = 0; x < edge; ++x) {
@@ -193,6 +206,7 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       }
     }
     EXPECT_TRUE(store.Release(frame).ok());
+    giveBack.held = false;
     giveBack.keep = true;
     *out = frame;
   }
