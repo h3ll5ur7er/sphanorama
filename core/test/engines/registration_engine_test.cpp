@@ -1167,13 +1167,27 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // The status code went unasserted here for the same reason it did on the lens and prior guards
   // until the previous commit — this is the third of the three, and the comment above claimed all
   // three were covered while two were.
+  // **A set from a flat frame, not a `FeatureSet{}`**, and the difference is the whole of whether
+  // this drives the guard it names. A default-constructed set has `extractor == 0`, so the
+  // provenance check refuses it first and the count guard is never reached: deleting
+  // `a.count <= 0 || b.count <= 0` outright left all 808 tests green. `Extract` stamps *before* its
+  // `count == 0` early return, so a flat frame gives back the one shape that is this engine's and
+  // still empty — which is also the shape a capture produces, and which without the count guard
+  // reaches `Pin(FrameRef{})` and answers `NotFound` from the store where the contract promises
+  // `InvalidArgument` from here.
+  const Result<FeatureSet> nothing = engine.ExtractFeatures(Blank());
+  ASSERT_TRUE(nothing.ok()) << nothing.status.detail;
+  ASSERT_EQ(nothing.value.count, 0);
+
   const int pinsBeforeEmpty = counting.pins;
   const Result<PairwiseResult> emptyA =
-      engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(nothing.value, b.value, Quat{1, 0, 0, 0}, Lens());
   EXPECT_FALSE(emptyA.ok());
   EXPECT_EQ(emptyA.status.code, StatusCode::InvalidArgument) << emptyA.status.detail;
+  EXPECT_EQ(emptyA.status.component, "FeatureRegistrationEngine")
+      << "an empty first set reached the store instead of being refused here";
   const Result<PairwiseResult> emptyB =
-      engine.EstimatePairwise(a.value, FeatureSet{}, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(a.value, nothing.value, Quat{1, 0, 0, 0}, Lens());
   EXPECT_FALSE(emptyB.ok());
   EXPECT_EQ(emptyB.status.code, StatusCode::InvalidArgument) << emptyB.status.detail;
   EXPECT_EQ(emptyB.status.component, "FeatureRegistrationEngine")
