@@ -1477,39 +1477,56 @@ TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
  * that was free.
  */
 TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
-  FeatureRegistrationEngine engine = Engine();
+  // Over the counting store, because every refusal here is `InvalidArgument` and the count is the
+  // only thing that tells the provenance guard's refusal from a later one: the guard runs before a
+  // single `Pin`, and everything past it has already taken four. Without that, one pairing — SIFT
+  // reading AKAZE's 61-byte rows as `CV_32F` — is refused by the divisibility check instead and
+  // passes this test without the guard having run.
+  CountingForgets counting{store};
+  FeatureRegistrationEngine engine{counting, GetParam()};
+
+  const auto refusedBeforePinning = [&](const FeatureSet& left, const FeatureSet& right,
+                                        const char* what) {
+    const int before = counting.pins;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(left, right, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_FALSE(pair.ok()) << what << " was matched under this engine's metric, answering with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
+    EXPECT_EQ(counting.pins, before)
+        << what << " was refused after " << (counting.pins - before)
+        << " pins, so something past the provenance guard refused it and this case is not driving "
+           "the guard it is named for";
+  };
+
+  const Result<FeatureSet> ours = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(ours.ok()) << ours.status.detail;
 
   for (const FeatureDetector foreignDetector : kAllFeatureDetectors) {
     if (foreignDetector == GetParam()) continue;
-    FeatureRegistrationEngine foreign{store, foreignDetector};
+    FeatureRegistrationEngine foreign{counting, foreignDetector};
     const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
     const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
     ASSERT_TRUE(a.ok() && b.ok());
 
-    const Result<PairwiseResult> pair =
-        engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
-    EXPECT_FALSE(pair.ok())
-        << "matched detector " << static_cast<int>(foreignDetector) << "'s descriptors under this "
-        << "engine's metric, answering with " << pair.value.inliers << " inliers";
-    EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
+    // **Both positions, because the guard has two operands and `||` short-circuits.** Round 1 of
+    // this PR's review left every case with the bad set in `a`, and deleting `b.extractor != mine`
+    // kept the whole suite green — the defect the second and third calls below exist for.
+    refusedBeforePinning(a.value, b.value, "a pair from one foreign extractor");
+    refusedBeforePinning(ours.value, a.value, "a foreign set in the second position");
+    refusedBeforePinning(a.value, ours.value, "a foreign set in the first position");
 
     ForgetOutputs(a.value);
     ForgetOutputs(b.value);
   }
 
   // Zero is the other way a set fails the check, and its partner has to be a set this engine did
-  // produce. Paired with a foreign one — which is what this case used to do — the foreign stamp
-  // refuses the call on its own and the zero is never the reason for anything: a reviewer relaxed
-  // the guard to accept unstamped sets and the case named for them stayed green.
-  const Result<FeatureSet> ours = engine.ExtractFeatures(Textured());
-  ASSERT_TRUE(ours.ok());
+  // produce: paired with a foreign one the foreign stamp refuses the call and the zero is never the
+  // reason for anything.
   FeatureSet unstamped = ours.value;
   unstamped.extractor = 0;
-  const Result<PairwiseResult> nobodys =
-      engine.EstimatePairwise(unstamped, ours.value, Quat{1, 0, 0, 0}, Lens());
-  EXPECT_FALSE(nobodys.ok()) << "read a set no extractor stamped, answering with "
-                             << nobodys.value.inliers << " inliers";
-  EXPECT_EQ(nobodys.status.code, StatusCode::InvalidArgument) << nobodys.status.detail;
+  refusedBeforePinning(unstamped, ours.value, "a set no extractor stamped, in the first position");
+  refusedBeforePinning(ours.value, unstamped, "a set no extractor stamped, in the second position");
 
   ForgetOutputs(ours.value);
 }
