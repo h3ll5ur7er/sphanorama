@@ -1128,15 +1128,28 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // is a value compared with itself. Width is the whole of what defends this, and a `FeatureSet`
   // carrying the detector that made it is filed as its own change.
   //
-  // **Where it refuses is asserted by counting pins, not by reading the message.** This case exists
-  // to catch a refusal that happens *before* the frames are read, which would make the `Forget`
-  // count below vacuous — and a pre-pin refusal and this one are both `InvalidArgument`, so the
-  // status alone cannot separate them. It used to separate them by substring-matching
-  // `Status::detail` for the words "same detector": a field `types.h` declares is never parsed, and
-  // a phrase this branch had just corrected the engine for using. Dropping those two words from the
-  // message failed all three parameterisations while the refusal happened in exactly the same
-  // place, with a failure text that said "refused somewhere else" — so the assertion was measuring
-  // the prose. Four pins is what reading two sets costs: descriptors and keypoints, twice.
+  // **That the frames were pinned at all is asserted by counting pins, not by reading the message —
+  // and that is all it asserts.** This case exists so the `Forget` count below is not vacuous: a
+  // refusal *before* anything is pinned would make "forgot none of the four" true of a call that
+  // touched nothing. Four pins is what a pair costs, taken up front — keypoints and descriptors for
+  // each set — so a non-zero-pin refusal is one that got past them.
+  //
+  // **It does not say where past them, and an earlier version of this comment claimed it did.**
+  // `ReadBearings`, `ReadDescriptors` and the width guard all refuse with `InvalidArgument` after
+  // exactly these same four pins, so nothing observable here separates them. The substring match on
+  // `Status::detail` that this replaced *could* separate them, and a reviewer showed the trade
+  // directly: a refusal moved to after the pins and before `ReadBearings`, with a message lacking
+  // the words "same detector", passes this assertion and fails the old one. So this is a trade and
+  // not a strengthening — the previous commit called it "strictly stronger", which is false.
+  //
+  // The trade is still the right way round, because the discriminator it gave up was a substring of
+  // a field `types.h` declares is never parsed, carrying the one phrase this branch had just
+  // corrected the engine for using: the message rewrite survived only because the new wording
+  // happened to keep those two words. What the old assertion could not do is catch the failure this
+  // one does — a refusal before any pin, whose message still said "same detector" and which it
+  // therefore passed. Neither set contains the other. Where a refusal lands *inside* the read path
+  // is covered by `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`, which drives those guards
+  // one at a time.
   const FeatureDetector other =
       GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
   FeatureRegistrationEngine foreign{counting, other};
@@ -1148,7 +1161,7 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   ASSERT_FALSE(mismatched.ok());
   EXPECT_EQ(mismatched.status.code, StatusCode::InvalidArgument) << mismatched.status.detail;
   EXPECT_EQ(counting.pins - pinsBeforeMismatch, 4)
-      << "the mismatch was meant to refuse after reading both sets, and took "
+      << "the mismatch was meant to refuse after the four frames were pinned, and took "
       << (counting.pins - pinsBeforeMismatch) << " pins rather than four: " << mismatched.status.detail;
 
   EXPECT_EQ(counting.forgets, afterExtraction)

@@ -17,9 +17,12 @@ forward, one is *added* in one of three places, and the body below it is left al
   **chain** — a "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
 
   **0022's leading blockquote is a quotation, not a banner**, which is why it is absent from all
-  three lists and why counting `^> ` in the first twenty lines of every file returns twelve
-  candidates for an eleven-then-twelve-member set. Said here because two separate recounts have had
-  to rediscover it.
+  three lists and why counting `^> ` in the first twenty lines of every file returns one candidate
+  more than the set has members — thirteen against twelve today. Said here because two separate
+  recounts have had to rediscover it, and phrased as an offset rather than a total because the first
+  version of this note said "twelve candidates" and was made stale by the same commit that wrote it:
+  bannering 0056 moved the grep total the sentence had just quoted. That is a fifth quantity, and
+  the "recompute all three" rule above did not cover it.
 
   **This census has now gone wrong three times on one branch, and the third was the worst.** It
   started stale by omission: the branch added two banners and left the total at nine. The first

@@ -607,8 +607,8 @@ constexpr double kLoweRatio = 0.75;
 // **It is also a correctness floor, not only a tuning choice, and lowering it past three is a
 // crash.** The sampler draws three distinct indices by shifting past the ones already taken, which
 // takes a modulus against `from.size() - 2`: at two that divides by zero and below two the
-// subtraction wraps `size_t`. Nothing in `FitRotation` asserts the size — the guarantee lives two
-// hundred lines away in `EstimatePairwise`, which refuses a smaller set outright — so whoever
+// subtraction wraps `size_t`. Nothing in `FitRotation` asserts the size — the guarantee lives five
+// hundred lines below in `EstimatePairwise`, which refuses a smaller set outright — so whoever
 // lowers this to admit the algebraic minimum gets a SIGFPE in the search rather than a worse
 // estimate. Said here because this is the line they will edit; the draw says it too.
 constexpr size_t kMinimumCorrespondences = 8;

@@ -8,8 +8,10 @@
 > `agreeing >= kInlierFraction` alone — a reviewer pointed out that writing the count conjunct out
 > puts an unfalsifiable condition in the very line that exists because the previous gate was two
 > unfalsifiable conditions. The *value* is unchanged, for exactly the reason this ADR already gives
-> two sentences later: the count is guaranteed by the refusal above it. So the decision stands and
-> the transcription is stale, which is the distinction a banner exists to make.
+> in the same sentence's second clause — the count "is always true on a returned result" because it
+> is the refusal condition. So the decision stands and the transcription is stale, which is the
+> distinction a banner exists to make. (This banner first said "two sentences later", which points
+> past the reason to the paragraph about `kInlierFraction`.)
 
 ## Context
 
