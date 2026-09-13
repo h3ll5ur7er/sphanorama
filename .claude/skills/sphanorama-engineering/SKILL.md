@@ -160,8 +160,10 @@ follow-up. If one change forces you to edit five documents, the docs have the co
 architecture is designed to avoid — say so.
 
 **Write an ADR** (`docs/adr/`, four sections: context, decision, consequences, rejected
-alternative) when you add or move a component, change a contract, add a dependency, take a layer-
-rule exception, or reverse an earlier ADR. Supersede old ADRs; never edit one into agreement with
+alternative) when `docs/00-principles.md` § "When an ADR is required" says to — six triggers, read
+them there rather than from a copy. This paragraph used to carry its own list, and the four copies
+of it in this repository drifted apart, which is how the newest trigger (withdrawing a published
+measurement, ADR 0057) ended up in one of them. Supersede old ADRs; never edit one into agreement with
 the present — the record of what we thought at the time is the point. Point forward by *adding*: a
 Status-line pointer, a banner, or a foot note. A banner covers the body's claims and leaves a dated
 *Context* observation alone; the exception, either way, is a sentence that was wrong when written
@@ -296,6 +298,7 @@ accident anyway.
 | Adding a fourth manager | A use-case variation of an existing one. Check the volatility map |
 | An engine holding state between calls | It is a manager, or the state belongs in the caller. If the contract leaves the state nowhere else to live, the contract is the defect — name the state as a value the caller threads back in (ADR 0016) |
 | A client importing an engine | The client is doing business logic, or a manager method is missing |
+| A reviewer measures a number nobody else can reproduce | Your sabotage is still in the build tree. Restoring the *source* is not restoring the *binary*: a reviewer in its own worktree still links `build/native-debug`, and a sabotaged library there is indistinguishable from a defect to whoever arrives next. It cost a round — an agent measured ORB at 11 of 11 six deterministic times, from a library built with `kInlierFraction = 0.01`, and only caught it by rebuilding from committed sources. Rebuild after restoring, before anyone else reads the tree |
 | A sabotage that leaves every test green | Before concluding the test is worthless, prove the edit applied. A `sed` or a string replace whose pattern did not match reads exactly like a surviving test, and it has happened more than once |
 | A sabotage that applied, compiled, and changed nothing | Reinstating the *text* of the old code is not reinstating its *behaviour*. A rollback loop put back without the `push_back` that fills it iterates over nothing, and reads exactly like a test that cannot fail. Predict which test should break and why before running it; if a different one breaks, or none does, the sabotage is the suspect before the test is |
 | A test that passes for a reason you did not intend | It proves whatever refused the input first. A version-gate test never reached the version line, because the document it fed in was malformed in other ways too and the parser threw it out before then. Make the input valid in every respect except the one under test — build it from a real artefact and corrupt a single field |

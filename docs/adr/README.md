@@ -10,10 +10,36 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the nine bannered ADRs do not have one at all. For a claim in the body that a
-  reader would otherwise meet and believe. This is the common shape: nine ADRs carry a banner
-  (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052) and three of those carry a Status line
-  (0006, 0047, 0052).
+  has one; six of the twelve bannered ADRs do not have a Status line at all. For a claim in the body
+  that a reader would otherwise meet and believe. This is the common shape: twelve ADRs carry a
+  banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055, 0056); six of those
+  carry a Status line (0006, 0047, 0052, 0053, 0055, 0056), and three of *those* carry a Status
+  **chain** — a "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
+
+  **0022's leading blockquote is a quotation, not a banner**, which is why it is absent from all
+  three lists and why counting `^> ` in the first twenty lines of every file returns one candidate
+  more than the set has members — thirteen against twelve today. Said here because two separate
+  recounts have had to rediscover it, and phrased as an offset rather than a total because the first
+  version of this note said "twelve candidates" and was made stale by the same commit that wrote it:
+  bannering 0056 moved the grep total the sentence had just quoted. That is a fifth quantity, and
+  the "recompute all three" rule above did not cover it.
+
+  **This census has now gone wrong four times on one branch, and the third was the worst.** The
+  fourth is the smallest and the most on-the-nose: the sentence added to stop the next recounter
+  rediscovering the grep offset quoted a total that the same commit's own new banner made stale. It
+  started stale by omission: the branch added two banners and left the total at nine. The first
+  correction moved the total to eleven and left the list of nine beside it, along with the six
+  derived from it. The second correction then changed that six to an eight — and the six had been
+  *right*, because it counts ADRs with no Status line and both new banners have one. A number was
+  recomputed against the wrong predicate and a correct sentence was broken in the course of fixing
+  an incorrect one.
+
+  So the three quantities are spelled out separately above, because "Status line" and "Status chain"
+  are different things and collapsing them is what did the damage. **Anyone adding a banner
+  recomputes all five from the files** rather than incrementing any of them: the banner count, the
+  Status-line count, the Status-chain count, the count with no Status line, and the `^> ` grep
+  total. That last one is the newest lesson — it was added as commentary rather than as census, so
+  "recompute all three" did not reach it, and it went stale in the same commit that wrote it.
 - **A foot note** at the end, under its own heading, when the correction has detail that would
   swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
   sits under that file's banner rather than instead of it: the banner points, the note explains.
@@ -91,3 +117,7 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0051](0051-a-feature-set-points-at-frames-not-at-buffers.md) | A `FeatureSet` points at frames, not at buffers |
 | [0052](0052-opencv-enters-the-core-behind-a-build-flag.md) | OpenCV enters the core behind a build flag; the browser gets a null registration — and it builds the exception boundary 0047 named, and supersedes 0047's suppressions-file remedy |
 | [0053](0053-the-harness-reads-its-own-datasets.md) | The accuracy harness reads the datasets its own generator writes, against a small committed fixture that generator produced — so the loader is checked against real bytes rather than against an idea of the format. **Extends [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)**, whose exception boundary now covers three test-support files as well |
+| [0054](0054-pairwise-estimation-takes-the-lens.md) | `EstimatePairwise` takes an `Intrinsics`, because under pure rotation matched pixels determine only `H = K R inverse(K)` — the `R` its return type carries cannot be recovered without `K`. Passed rather than held, since engines are stateless per session |
+| [0055](0055-the-accuracy-test-renders-its-own-dataset.md) | The accuracy test renders its own measurement dataset at test time and skips without `uv` — the third option ADR 0053's Rejected section never weighed. A format fixture may be committed; a measurement dataset may not |
+| [0056](0056-accepted-is-a-weak-edge-not-a-refusal.md) | `accepted` means a minority backs the answer; a refusal means there is none |
+| [0057](0057-the-retracted-figures-are-recorded-here-not-in-the-roadmap.md) | The first published accuracy figures measured the sensor prior rather than the estimator and are retracted — and a retracted measurement is recorded in an ADR from now on, leaving the roadmap to carry the live table and a pointer |

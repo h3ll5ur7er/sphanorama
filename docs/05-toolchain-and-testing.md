@@ -104,13 +104,28 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
 8. **Broken tables** — `tools/markdown_table_check.py`. A paragraph between two rows closes a
    GitHub-flavoured table, and eleven rows of the volatility map rendered as pipe text for five
    review rounds because everybody read the prose and nobody rendered the page.
+9. **Dataset renderer tests** — `tools/test_synth_dataset.py`, in the `contracts` job. It predates
+   this list's last revision and was simply missed; it is here because the renderer is checked
+   against hand-worked decimals rather than against the code it feeds (ADR 0050), so a change to it
+   is a change to what every accuracy figure means.
+10. **The accuracy measurement actually ran** — in *both* the `native` and `sanitizers` jobs. Not a
+    checker but a guard on one: the measurement skips without `uv`, and `ctest` reported "100%
+    tests passed" while running none of it. The step derives the expected count from
+    `--gtest_list_tests` and fails on a skip, a shortfall or a floor of zero.
+
+**This list has been short before, and that is the argument for the sentence below it.** Items 9 and
+10 were missing until the branch was reviewed as a whole against `main` rather than by commit range
+— 9 predating the branch entirely. `docs/00-principles.md` and `README.md` both promise a reader
+that `tools/gate.sh` mirrors `.github/workflows/ci.yml` step for step, so a list here that is not
+the list makes that promise false one level up.
 
 Every checker in that list has its own test suite, `check_dist_fresh` included, and `gate.sh` runs
 most of them immediately before the check they guard. The reason is in that file's own header:
 the checkers never change while you are working, which is exactly what makes a broken one the
 easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
-checker suites at the top, fifteen steps before the budget it guards, because that budget needs a
+checker suites at the top, seventeen steps before the budget it guards — fifteen until this branch
+inserted `accuracy measured` and `asan accuracy` between them — because that budget needs a
 wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
 
@@ -136,7 +151,7 @@ than a browser call.
 | Level | What | How |
 | ----- | ---- | --- |
 | Engine unit | Pure functions with fixed inputs | GoogleTest, native, with inputs written in the test. One dataset is committed — `core/test/data/synthetic-ring-4`, a *format* fixture for the loader (ADR 0053) — and it is the only one; an earlier version of this row said "golden outputs checked in as small fixtures", which described a practice this repository has never followed: no golden outputs have ever been checked in. It was already false before this branch; what this branch added was a line in `docs/00-principles.md`'s repo map — "the one committed dataset" — that makes the two contradict each other on the page, which is how it was finally noticed |
-| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not), and `core/test/support/synthetic_dataset` now reads one into a frame store, so the two are joined rather than merely both present (ADR 0053). Still to come: something that estimates rotations for it to score, and the threshold that score is asserted against |
+| Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not), and `core/test/support/synthetic_dataset` now reads one into a frame store, so the two are joined rather than merely both present (ADR 0053). `FeatureRegistrationEngine::EstimatePairwise` is the thing that estimates rotations for it to score, and `core/test/engines/registration_accuracy_test.cpp` joins all four: it renders a ring, registers each consecutive pair against a perturbed prior, chains the answers and asserts a median, a maximum and the share of pairs that registered at all. **Two different numbers live here and they are not interchangeable**: `docs/06-roadmap.md` states 0.5 degrees as what *Phase 2 exits on*, a claim about what a panorama needs, while this test asserts `medianDeg < 0.2` and `maxDeg < 0.4` — regression bounds set at roughly twice the measurement, whose job is to notice the estimator getting worse. A bound generous enough to be a product statement is far too loose for that, and the test says so at its own assertions; this row used to quote only the 0.5 and so repeated the conflation a reviewer had already made the test stop making. Still to come: `Refine`, so the score is over a global solution rather than a chain |
 | Manager behaviour | Sequencing and state machines | Native tests with **fake** resource accesses (a recorded IMU log + a folder of frames implements `IMotionSensorAccess`/`ICameraAccess` exactly). This is why those are contracts and not `getUserMedia` calls |
 | Boundary | Facade marshalling, error codes | Vitest against the real WASM module in Node |
 | Client | Reticle logic, guidance rendering | Vitest + Testing Library, with a mocked manager proxy |
@@ -170,9 +185,12 @@ is contradicted by the bullet immediately under it:
   make it possible are in now (`rotation_scoring`, ADR 0049; `tools/synth_dataset.py`, ADR 0050;
   and `core/test/support/synthetic_dataset`, ADR 0053, which reads what the second writes into a
   frame store the first can be run over). What is missing is no longer plumbing:
-  `FeatureRegistrationEngine` extracts features, but matching and refinement still refuse, so
-  **no rotation comes out to be scored**. An earlier round wrote "available now" here, which overcorrected a stale sentence into
-  a false one and contradicted §5.4 further up this file;
+  `FeatureRegistrationEngine` extracts features **and estimates pairwise rotations**, and those
+  rotations are scored: see the measured table in `docs/06-roadmap.md`. `Refine` still refuses, so
+  what is scored is a chain of pairwise estimates rather than a global solution, and the datasets are
+  still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
+  overcorrected a stale sentence, and the correction outlived the code that made it true, surviving a
+  whole branch that added the measurement because the branch never opened this file;
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.

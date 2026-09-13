@@ -1,6 +1,7 @@
 #include "utilities/camera_model.h"
 
 #include <cmath>
+#include <numbers>
 
 #include "utilities/quaternion.h"
 
@@ -46,8 +47,8 @@ namespace sphanorama {
 
 namespace {
 
-constexpr double kDegToRad = 0.017453292519943295;
-constexpr double kRadToDeg = 57.29577951308232;
+constexpr double kDegToRad = std::numbers::pi / 180.0;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 // How far an unprojected direction may land from the pixel it came from when projected back, in
 // normalised image units. At the focal lengths a phone has this is under a millionth of a pixel —

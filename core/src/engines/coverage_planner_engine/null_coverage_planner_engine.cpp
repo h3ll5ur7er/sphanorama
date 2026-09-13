@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include <algorithm>
+#include <numbers>
 #include <span>
 
 #include "utilities/quaternion.h"
@@ -10,7 +11,7 @@
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "NullCoveragePlannerEngine";
-constexpr double kRadToDeg = 57.29577951308232;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 }  // namespace
 
 Result<CapturePlan> NullCoveragePlannerEngine::Plan(const CapturePlanSpec& spec,

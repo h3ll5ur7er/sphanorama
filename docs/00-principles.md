@@ -99,7 +99,16 @@ Write one in `docs/adr/` when you:
 - add a third-party dependency;
 - take an exception to a layer rule;
 - reverse or amend an earlier ADR — supersede it, never edit it into agreement with the present.
-  The record of what we thought at the time is the point.
+  The record of what we thought at the time is the point;
+- withdraw a measured figure this repository has published. The retraction goes in the record and
+  the document that carried the number keeps the live one and a pointer (ADR 0057). The reason it
+  is a trigger rather than an edit is that a roadmap corrected in place grows a paragraph of dead
+  weight per correction, and there will be more than one.
+
+**This list is the one the others point at.** `CLAUDE.md`, the engineering skill and the review
+skill's docs lens all name it rather than restating it, because a trigger list held in four places
+drifts — which is exactly what happened: when the withdrawal trigger was added it went into one of
+the four, and two of the remaining three were already a trigger behind on reversal.
 
 An ADR is four short sections: context, decision, consequences, and the alternative rejected and
 why. The rejected alternative is the part that pays off later, when someone asks "why didn't we

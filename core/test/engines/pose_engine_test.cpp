@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include "engines/pose_engine/orientation_pose_engine.h"
@@ -17,7 +18,7 @@
 namespace sphanorama {
 namespace {
 
-constexpr double kRadToDeg = 57.29577951308232;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 ImuSample Oriented(int64_t timestampNs, double azimuthDeg, double elevationDeg) {
   ImuSample sample;
@@ -108,7 +109,7 @@ TEST(PoseEngine, IntegratesAKnownRateOverAKnownTime) {
   // thing gyro integration must get right.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
-  const double rate = 1.5707963267948966;   // pi/2 rad/s
+  const double rate = std::numbers::pi / 2.0;   // rad/s, a quarter turn a second
   const std::vector<ImuSample> samples{Spinning(0, rate), Spinning(1'000'000'000, rate)};
 
   auto pose = engine.Integrate(state, samples);
@@ -128,7 +129,7 @@ TEST(PoseEngine, IntegratingZeroRateChangesNothing) {
 TEST(PoseEngine, IntegrationAccumulatesAcrossCalls) {
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
-  const double rate = 0.7853981633974483;   // pi/4 rad/s
+  const double rate = std::numbers::pi / 4.0;   // rad/s, an eighth turn a second
   for (int i = 0; i < 2; ++i) {
     const std::vector<ImuSample> samples{
         Spinning(static_cast<int64_t>(i) * 1'000'000'000, rate),

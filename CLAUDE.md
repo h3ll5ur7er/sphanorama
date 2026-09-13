@@ -25,8 +25,9 @@ The four things that are most expensive to get wrong:
 2. **Respect the layers.** Clients call managers only; managers never call managers; engines are
    stateless and touch only the compute and frame-store resource accesses. CI fails on a violating
    include edge.
-3. **Update the docs in the same commit** as the change that invalidates them, and write an ADR for
-   anything that adds a component, changes a contract, adds a dependency, or takes a rule exception.
+3. **Update the docs in the same commit** as the change that invalidates them, and write an ADR
+   when `docs/00-principles.md` § "When an ADR is required" says to. Deliberately not repeated
+   here: this line used to restate the list and fell two triggers behind it.
 4. **Before adding a component, name the volatility it absorbs.** If it's already in
    `docs/02-volatility-map.md`, extend the existing owner instead.
 
@@ -38,10 +39,20 @@ coverage and acceptance are all decided in the core.
 
 **What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
-`Registration`, in part. `Registration` needs the care of a qualified sentence: one of its three
-methods is implemented (`ExtractFeatures`), it exists only where OpenCV does so a browser build
-still gets the null one, and no composition root selects it yet — it is reached from tests. Matching
-and refinement still refuse. `Composition` is untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
+`Registration`, in part. `Registration` needs the care of a qualified sentence: **two** of its three
+methods are implemented (`ExtractFeatures` and now `EstimatePairwise`), it exists only where OpenCV
+does so a browser build still gets the null one, and no composition root selects it yet — it is
+reached from tests. `Refine` still refuses. **The pair estimator is now scored against a dataset**,
+which is what that qualification was waiting for: on a twelve-frame synthetic ring, against a sensor
+prior perturbed three degrees, AKAZE and SIFT register all eleven consecutive pairs and ORB eight,
+with medians under a tenth of a degree (ADR 0056, and the roadmap's table; ADR 0057 retracts the
+figures published before the prior was perturbed — the first harness handed the estimator the exact
+truth and was measuring itself). The three pairs ORB declines are not a defect, and they are not
+alike: two return a rotation backed by a minority (20 of 141, 13 of 154) and the third gathers no
+consensus and is refused. Under the *truth* rotation those three have 11, 19 and 13 correspondences
+of 128, 141 and 154 behind them, so where the search answers it finds as many inliers as truth
+itself. `Composition` is
+untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
 build, not finished.

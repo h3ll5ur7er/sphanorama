@@ -1,6 +1,7 @@
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 
 #include <algorithm>
+#include <numbers>
 #include <span>
 #include <cmath>
 
@@ -10,8 +11,8 @@ namespace sphanorama {
 namespace {
 
 constexpr const char* kComponent = "RingsCoveragePlannerEngine";
-constexpr double kRadToDeg = 57.29577951308232;
-constexpr double kDegToRad = 0.017453292519943295;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+constexpr double kDegToRad = std::numbers::pi / 180.0;
 
 // Below this the 1/cos(elevation) widening runs away, so a ring that close to a pole is served by
 // a single cell — which is correct: at the pole every azimuth looks at the same place.

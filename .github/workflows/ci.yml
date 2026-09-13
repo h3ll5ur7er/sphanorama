@@ -53,6 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # **The registration accuracy measurement shells out to the Python renderer and skips without
+      # it.** `uv` is not on the runner by default, so this job ran that test's `GTEST_SKIP` on every
+      # push while ctest reported "100% tests passed, 0 tests failed" — the exact shape of a
+      # measurement nobody is taking and everybody believes is green.
+      - uses: astral-sh/setup-uv@v5
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
@@ -89,12 +94,71 @@ jobs:
         run: cmake --build build/native-debug
       - name: test
         run: ctest --test-dir build/native-debug --output-on-failure
+      # And say so if it skipped anyway. `ctest` reports a skipped test as a pass, so the step above
+      # is green whether the measurement ran or not — which is the failure this job just had. Run
+      # the accuracy cases on their own and fail on gtest's skip count, because the only thing worse
+      # than an unmeasured number is an unmeasured number nobody can tell from a measured one.
+      # **Green on zero tests was the first version's hole**, and a reviewer found it: a filter that
+      # matches nothing prints "0 tests ran", contains no SKIPPED, and exits 0 — so renaming the
+      # suite, deleting it, or building without OpenCV all reported the measurement as taken. The
+      # check is therefore for the measurement's own output line, one per detector, rather than for
+      # the absence of a bad word.
+      - name: the accuracy measurement actually ran
+        run: |
+          log=$(mktemp)
+          # `set +e` from here on: under `bash -e` a failing command aborts the step, and a step that
+          # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
+          # make visible. It covers the `expected=` line too, which CI was relying on to abort.
+          set +e
+          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
+          # written down, so a fourth detector cannot go unmeasured.
+          expected=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
+          ./build/native-debug/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          # **Both counts go to zero together when the suite is renamed away**, so comparing them is
+          # not enough — the first version of this check was green on a binary with no measurement in
+          # it at all, which is precisely the hole it was written to close. The floor is what makes
+          # the comparison mean something.
+          if [ "$expected" -lt 1 ]; then
+            echo "the binary contains no accuracy measurement to run" >&2
+            status=1
+          fi
+          # `Acceptance` is the other half of the filter and prints no `[accuracy]` line, so the
+          # count above cannot see it — rename it away and this step stays green on a run that lost
+          # the only test reading `PairwiseResult::correspondences`. Its own floor, asked of the
+          # binary the same way.
+          acceptance=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
+          if [ "$acceptance" -lt 1 ]; then
+            echo "the binary contains no acceptance test to run" >&2
+            status=1
+          fi
+          if [ "$measured" -ne "$expected" ]; then
+            echo "the measurement ran $measured detectors and the binary has $expected" >&2
+            status=1
+          fi
+          if grep -q SKIPPED "$log"; then
+            echo "something skipped, and a skip is not a pass" >&2
+            status=1
+          fi
+          rm -f "$log"
+          exit $status
 
   sanitizers:
     name: address and undefined behaviour
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # **The registration accuracy measurement shells out to the Python renderer and skips without
+      # it.** `uv` is not on the runner by default, so this job ran that test's `GTEST_SKIP` on every
+      # push while ctest reported "100% tests passed, 0 tests failed" — the exact shape of a
+      # measurement nobody is taking and everybody believes is green.
+      - uses: astral-sh/setup-uv@v5
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # OpenCV is fetched and built from source (ADR 0047), so without a cache every job on every push
@@ -131,6 +195,56 @@ jobs:
         run: cmake --build build/native-asan
       - name: test
         run: ctest --test-dir build/native-asan --output-on-failure
+      # The same guard as the native job's, against the same tree. This job gained `uv` and not this
+      # step, while the commit message that added them said both jobs got both — so the sanitizer
+      # run has been skipping the measurement silently, which is the exact failure the native step
+      # exists to stop. Under ASan it is the more valuable of the two: the branch that added it also
+      # changed pitch arithmetic and `cv::Mat` strides over pinned spans.
+      - name: the accuracy measurement actually ran
+        run: |
+          log=$(mktemp)
+          # `set +e` from here on: under `bash -e` a failing command aborts the step, and a step that
+          # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
+          # make visible. It covers the `expected=` line too, which CI was relying on to abort.
+          set +e
+          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
+          # written down, so a fourth detector cannot go unmeasured.
+          expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='EveryDetector/Accuracy.ConsecutiveFrames*' | grep -c 'ConsecutiveFrames')
+          ./build/native-asan/bin/sphanorama_tests --gtest_filter="$filter" >"$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          measured=$(grep -c '^\[accuracy\]' "$log" || true)
+          # **Both counts go to zero together when the suite is renamed away**, so comparing them is
+          # not enough — the first version of this check was green on a binary with no measurement in
+          # it at all, which is precisely the hole it was written to close. The floor is what makes
+          # the comparison mean something.
+          if [ "$expected" -lt 1 ]; then
+            echo "the binary contains no accuracy measurement to run" >&2
+            status=1
+          fi
+          # `Acceptance` is the other half of the filter and prints no `[accuracy]` line, so the
+          # count above cannot see it — rename it away and this step stays green on a run that lost
+          # the only test reading `PairwiseResult::correspondences`. Its own floor, asked of the
+          # binary the same way.
+          acceptance=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
+            --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
+          if [ "$acceptance" -lt 1 ]; then
+            echo "the binary contains no acceptance test to run" >&2
+            status=1
+          fi
+          if [ "$measured" -ne "$expected" ]; then
+            echo "the measurement ran $measured detectors and the binary has $expected" >&2
+            status=1
+          fi
+          if grep -q SKIPPED "$log"; then
+            echo "something skipped, and a skip is not a pass" >&2
+            status=1
+          fi
+          rm -f "$log"
+          exit $status
 
   wasm:
     name: wasm builds, size budget and browser tests

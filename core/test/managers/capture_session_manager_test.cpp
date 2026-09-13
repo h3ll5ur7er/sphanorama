@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <memory>
+#include <numbers>
 #include <set>
 #include <span>
 #include <sstream>
@@ -263,7 +264,7 @@ TEST_F(CaptureSession, ArmingACellTheCameraIsNotAimedAtIsRefused) {
   //
   // The rings planner rather than the fixture's null one, because that has a single cell at
   // identity and every direction is inside it — there is no elsewhere to aim at.
-  constexpr double kRadToDeg = 57.29577951308232;
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   RingsCoveragePlannerEngine rings;
   // A measured pose, because the rule under test only applies to one — see `AimablePoseEngine`.
   AimablePoseEngine aiming;
@@ -582,7 +583,7 @@ TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
   auto plan = manager.GetPlan();
   ASSERT_TRUE(plan.ok());
 
-  constexpr double kRadToDeg = 57.29577951308232;
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
   const CoverageNode* atIdentity = nullptr;
   double closest = 0.0;
   for (const auto& node : plan.value.nodes) {
