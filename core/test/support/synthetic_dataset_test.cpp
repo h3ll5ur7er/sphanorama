@@ -1073,36 +1073,100 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   ForgetAll(loaded.value);
 }
 
-TEST_F(Dataset, ReadsAFrameWhoseCommentSitsInsideAToken) {
-  // **Netpbm deletes a comment; it does not end the token it interrupts.** The spec says characters
-  // from a `#` to the next end-of-line are ignored, so `48` written as `4#c\n8` is the number 48 —
-  // the two halves join, because removing the comment leaves nothing between them.
+TEST_F(Dataset, ACommentEndsTheTokenItInterruptsRatherThanJoiningItsHalves) {
+  // **A comment is whitespace to Netpbm, so it separates.** `pm_getc` reads a `#` through the next
+  // end-of-line and returns that end-of-line byte, "so that Caller sees the whole comment as just
+  // white space" — which makes `P6\n4#c\n8 36\n255\n` a 4x8 frame with a maximum of 36, and not the
+  // 48x36 one its digits spell if the halves are joined.
   //
-  // The reader had the `#` branch in its whitespace-skipping loop and not in its accumulation loop,
-  // so it read the token as `4#c` and refused a valid file. The test above cannot see that: it puts
-  // the comment on its own line, where the skip loop is the only loop that ever meets a `#`.
+  // That canonical example is not what this test writes, because it is malformed in a second
+  // respect: a maximum of 36 is refused by the sample-depth guard, which fires before the
+  // dimensions are compared, so the test would have passed on a reader that never parsed the
+  // dimensions at all. `1#c\n2 255` splits a token the same way and leaves every other field
+  // valid, so the dimension check is the guard that answers.
+  //
+  // The refusal message is the assertion because it is the only place the parsed numbers surface:
+  // past the dimension check every later line reads `lens.*`, so a frame's own `width` is the
+  // lens's whatever the header said.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
   const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
-  ASSERT_GE(width, 10) << "the split below needs at least two digits to split";
-  const std::string spelled = std::to_string(width);
+  ASSERT_EQ(width, 48) << "a reader that joined the halves would read 12, which is neither 1 nor 48";
+  ASSERT_EQ(height, 36);
   {
     std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
-    out << "P6\n"
-        << spelled.substr(0, 1) << "#the width, interrupted\n" << spelled.substr(1)
-        << " " << height << "\n255\n";
+    // The payload is the real one, so a short read is not what refuses this.
+    out << "P6\n1#c\n2 255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "frame_0000.ppm is 1x2 and"));
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseWidthIsFollowedImmediatelyByAComment) {
+  // The other half of the rule above: a comment ends a token, and the token before it is still a
+  // token. `48#c\n36` is 48 then 36 — the reader this replaced refused it, reading `48#c` whole and
+  // calling it not a number, and a reader that deleted the comment instead would read 4836.
+  //
+  // `ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows` above cannot see either mistake: it puts
+  // the comment on its own line, where the whitespace-skipping loop is the only loop a `#` reaches.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << "#the width, and then some prose\n" << height << "\n255\n";
     out.write(reinterpret_cast<const char*>(payload.data()),
               static_cast<std::streamsize>(payload.size()));
   }
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
-  // The width is the assertion, not merely that it loaded. Read as `4` rather than `48` the frame
-  // would hold a tenth of the bytes its payload has, and the refusal that followed would be about
-  // the byte count — which is the wrong sentence for a header this reader mis-parsed.
-  ASSERT_FALSE(loaded.value.frames.empty());
-  EXPECT_EQ(loaded.value.frames.front().frame.width, width);
-  EXPECT_EQ(loaded.value.frames.front().frame.height, height);
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseOwnLineCommentIsEndedByACarriageReturn) {
+  // The same `\r` rule, in the other loop. A comment on its own line is met by the
+  // whitespace-skipping loop, which had its own end-of-line test and its own way of getting it
+  // wrong; without a case here, dropping `\r` from that loop changes nothing any test can see.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n#a whole line of it, ended by a carriage return\r"
+        << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
+  // `pm_getc` stops a comment at `\n` *or* `\r`. A reader that waited for the line feed would take
+  // the width, the height and the maximum for more comment and then refuse the file over whatever
+  // it found next, which is a sentence about the wrong thing.
+  //
+  // The comment here is the last header field's neighbour on purpose: its `\r` is the single
+  // whitespace byte separating the maximum from the raster, so this also pins that the end-of-line
+  // is left for the caller rather than swallowed.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << " " << height << "\n255#ended by a carriage return\r";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
   ForgetAll(loaded.value);
 }
 

@@ -102,13 +102,17 @@ class OwnedFrames {
  * choked on them would be refusing a valid file. Everything else about the header is checked
  * strictly, so accepting the one thing the standard requires costs nothing.
  *
- * **A comment is deleted, not treated as a separator**, wherever it falls — which matters most in
- * the middle of a token. `P6\n4#c\n8 36\n255\n` is a valid file whose width is 48, because removing
- * the comment leaves nothing between the `4` and the `8`. This reader refused it until now: only
- * the whitespace-skipping loop had a `#` branch, and the accumulation loop read the token as
- * `4#c`. Both loops have one now, and
- * `ReadsAFrameWhoseCommentSitsInsideAToken` is the case the older test could not see — that one
- * puts the comment on its own line, where the skip loop is the only loop a `#` ever reaches.
+ * **A comment is whitespace, and so it ends the token it interrupts.** Netpbm's own `pm_getc`
+ * (`lib/util/fileio.c`) reads a `#` through the next end-of-line and returns *that* end-of-line
+ * byte, "so that Caller sees the whole comment as just white space" — its words. So `P6\n4#c\n8
+ * 36\n255\n` is a 4x8 frame with a maximum of 36, not a 48x36 one: the `4` and the `8` are two
+ * numbers, not two halves of one. This reader refused it until now, because only the
+ * whitespace-skipping loop had a `#` branch and the accumulation loop read the token as `4#c`.
+ *
+ * The end-of-line byte is left ungot, which is what makes the comment whitespace to the *caller*
+ * too. It matters when a comment is the last thing before the raster: that byte is then the single
+ * separator the payload starts after, and a reader that swallowed it would take the first pixel as
+ * the separator instead.
  */
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
@@ -136,7 +140,10 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   int c = in.get();
   while (in.good()) {
     if (c == '#') {
-      while (in.good() && c != '\n') c = in.get();
+      // A carriage return ends a comment as surely as a line feed does, and a reader that waited
+      // for the line feed would swallow the rest of a `\r`-terminated header — the width, the
+      // height and the maximum — before deciding anything about it.
+      while (in.good() && c != '\n' && c != '\r') c = in.get();
       continue;
     }
     if (!std::isspace(static_cast<unsigned char>(c))) break;
@@ -147,16 +154,14 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
     return false;
   }
   while (in.good() && !std::isspace(static_cast<unsigned char>(c))) {
-    // **A comment is deleted, not treated as a separator.** Netpbm ignores everything from a `#` to
-    // the next end-of-line, wherever it appears in the header — so `48` may be written `4#c\n8` and
-    // the two halves join, because removing the comment leaves nothing between them. The skip loop
-    // above had this branch and this one did not, which read that token as `4#c` and refused a file
-    // the format allows. Nothing this repository generates writes one; a reader of somebody else's
-    // frame meets it.
+    // A comment reaching this loop ends the token, because the end-of-line it collapses to is
+    // whitespace — see the docstring above and `pm_getc`. Breaking rather than continuing leaves
+    // that byte in `c` for the `unget` below, so a comment that ends the maximum is the separator
+    // the raster starts after. Nothing this repository generates writes one; a reader of somebody
+    // else's frame meets it.
     if (c == '#') {
-      while (in.good() && c != '\n') c = in.get();
-      if (in.good()) c = in.get();
-      continue;
+      while (in.good() && c != '\n' && c != '\r') c = in.get();
+      break;
     }
     if (token->size() >= kLongestHeaderToken) {
       *why = TokenTrouble::kTooLong;
