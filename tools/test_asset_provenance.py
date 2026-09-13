@@ -163,12 +163,17 @@ class AssetProvenance(unittest.TestCase):
         self.assertIn("hidden.bin", " ".join(self.tree.problems()))
 
     def test_a_record_that_is_not_json_is_reported_rather_than_raised(self):
+        # The message, not the path: every problem from this record begins with its path, so
+        # asserting that pins where the complaint came from and nothing about what it said.
         (self.tree.assets / "sources.json").write_text("{ this is not json")
-        self.assertIn("sources.json", " ".join(self.tree.problems()))
+        self.assertIn("could not be read as JSON", " ".join(self.tree.problems()))
 
-    def test_a_record_with_no_assets_list_is_reported(self):
+    def test_a_record_with_no_entries_is_reported(self):
+        # Asserted on the sentence rather than on the word `assets`, which is also this fixture's
+        # directory name: deleting the refusal outright left this green, because the file then fell
+        # through to "photo.bin is here and is recorded nowhere" and that path says `assets` too.
         self.tree.record({"why": "explained at length, and nothing recorded"})
-        self.assertIn("assets", " ".join(self.tree.problems()))
+        self.assertIn("records nothing", " ".join(self.tree.problems()))
 
     def test_a_tree_with_no_records_at_all_is_clean(self):
         # Most of this repository has no assets, and a checker that had to be told where to look
@@ -254,15 +259,23 @@ class AFileNobodyCouldRead(unittest.TestCase):
         return path
 
     def test_bytes_that_are_not_text_are_an_asset_wherever_they_are(self):
-        self.elsewhere("smuggled.jpg", NOT_TEXT)
-        self.assertIn("smuggled.jpg", " ".join(self.tree.problems()))
+        # A name the extension rule knows nothing about, so the bytes are the only thing that can
+        # report it. With a `.jpg` here — which is what this test used to write — narrowing the
+        # orphan sweep to `MEDIA` alone left the suite green, and the rule round 1 was closed with
+        # was asserted by nothing.
+        self.elsewhere("smuggled.dat", NOT_TEXT)
+        problems = " ".join(self.tree.problems())
+        self.assertIn("smuggled.dat", problems)
+        self.assertIn("not valid UTF-8", problems)
 
     def test_a_picture_that_happens_to_be_text_is_still_an_asset(self):
         # The half a bytes-only rule misses, and it was missing a real one: `shell/public/icon.svg`
         # had been in this repository unrecorded since the PWA shell landed, invisible because an
         # SVG decodes.
         self.elsewhere("logo.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>\n")
-        self.assertIn("logo.svg", " ".join(self.tree.problems()))
+        problems = " ".join(self.tree.problems())
+        self.assertIn("logo.svg", problems)
+        self.assertIn("somebody's work", problems)
 
     def test_source_is_not_an_asset(self):
         # A repository is mostly source, and a rule that asked every `.ts` file for a licence would
@@ -311,10 +324,15 @@ class RecordsInsideRecords(unittest.TestCase):
         self.assertEqual(self.tree.problems(), [])
 
     def test_a_file_the_inner_record_misses_is_reported_against_the_inner_one(self):
+        # One problem, and it is the inner record's. Two separate `assertIn`s over the joined text
+        # were satisfied by two *unrelated* problems — the outer record reporting the file, and the
+        # inner entry naming one that is not there — so the attribution this test is named for went
+        # unchecked.
         self.record_inner(name="something-else.bin")
-        problems = " ".join(self.tree.problems())
-        self.assertIn("deep.bin", problems)
-        self.assertIn("inner/sources.json", problems)
+        problems = self.tree.problems()
+        self.assertEqual(len(problems), 2, problems)
+        self.assertTrue(all(p.startswith("assets/inner/sources.json") for p in problems), problems)
+        self.assertIn("deep.bin is here and is recorded nowhere", " ".join(problems))
 
 
 class ThisRepository(unittest.TestCase):

@@ -28,7 +28,9 @@ rather than something to look at.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import math
 import subprocess
@@ -1429,7 +1431,25 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             pixels = (out / "frame_0000.ppm").read_bytes().split(b"255\n", 1)[1]
             self.assertEqual(set(pixels), {200})
 
-    def test_a_panorama_that_is_not_one_is_refused_before_a_single_frame_renders(self):
+    def test_a_panorama_of_the_wrong_shape_is_refused_before_a_single_frame_renders(self):
+        # The refusal `read_panorama` exists for, driven through the command line rather than
+        # through the function: the case below names an absent file, which reaches a different
+        # branch entirely, so until this existed no test put a real image of the wrong shape in
+        # front of `main`.
+        with tempfile.TemporaryDirectory() as directory:
+            squashed = Path(directory) / "squashed.png"
+            Image.frombytes("RGB", (8, 6), bytes(8 * 6 * 3)).save(squashed)
+            out = Path(directory) / "dataset"
+            # The message is captured because `SystemExit` alone cannot tell this refusal from the
+            # one below it: `read_panorama` raises for a file it cannot open *and* for a file of
+            # the wrong shape, and `argparse` turns both into the same exit.
+            complaint = io.StringIO()
+            with contextlib.redirect_stderr(complaint), self.assertRaises(SystemExit):
+                self._run("--out", str(out), "--panorama", str(squashed))
+            self.assertIn("8x6", complaint.getvalue())
+            self.assertFalse(out.exists())
+
+    def test_a_panorama_that_is_not_there_is_refused_before_a_single_frame_renders(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "dataset"
             rendered = {"n": 0}

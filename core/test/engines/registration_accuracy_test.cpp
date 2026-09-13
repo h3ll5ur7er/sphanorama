@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <filesystem>
 #include <fstream>
@@ -159,7 +160,14 @@ class Rendered {
         Quoted(log.string()) + " 2>&1";
     const int status = std::system(command.c_str());
     ok_ = status == 0 && fs::exists(path_ / "truth.json");
-    if (!ok_) why_ = "the renderer exited " + std::to_string(status) + ": " + Tail(log);
+    if (!ok_) {
+      // `std::system` answers with a *wait status*, so the raw number is the exit code shifted left
+      // by eight — "the renderer exited 1792" for an exit of 7, which sends a reader looking for a
+      // signal number that does not exist.
+      const std::string code = WIFEXITED(status) ? std::to_string(WEXITSTATUS(status))
+                                                 : "a signal, raw status " + std::to_string(status);
+      why_ = "the renderer exited " + code + ": " + Tail(log);
+    }
     std::error_code ignored;
     fs::remove(log, ignored);
   }
@@ -452,6 +460,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  */
 TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   Rendered rendered(12, 640, 480, World::Checkerboard);
+  // Asserted here too, though a checkerboard has no input to be missing: the guard is conditional on
+  // the world, so keeping the two in step is otherwise done by hand at every call site.
+  ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
   if (!rendered.ok()) {
     GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. "
                  << rendered.why();
