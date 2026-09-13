@@ -108,7 +108,20 @@ constexpr const char* kPhotograph = "core/test/data/panoramas/small_hangar_01_1k
 
 class Rendered {
  public:
+  /** Whether the world it was asked for is not in the tree, which is a failure and not a skip. */
+  bool inputMissing() const { return missingInput_; }
+
   Rendered(int frames, int edgeWidth, int edgeHeight, World world) {
+    // **Checked here so a missing panorama fails rather than skips.** Everything else that stops
+    // this rendering — no `uv`, no `datasets` group, no network for a first resolve — is a
+    // contributor's bare checkout and is rightly a skip. A photograph that is not in the tree is
+    // not that: it is the measurement's input gone, and a skip would be green on its own and
+    // caught only by `tools/gate.sh` noticing the word SKIPPED.
+    if (world == World::Photograph && !fs::exists(fs::path(RepoRoot()) / kPhotograph)) {
+      missingInput_ = true;
+      why_ = std::string(kPhotograph) + " is not in the tree, so there is no world to measure in";
+      return;
+    }
     // **`mkdtemp`, not a name built from the pid.** `TMPDIR` is usually world-writable and pids
     // recycle, so the previous `sphanorama-accuracy-<pid>` could already exist and belong to someone
     // else — and it was cleared with the *throwing* `remove_all` overload, so a directory this
@@ -122,16 +135,21 @@ class Rendered {
              fs::temp_directory_path().string();
       return;
     }
-    path_ = fs::path(buffer.data());
+    // **The private directory holds the dataset *and* the log, and `--out` is a child of it.** The
+    // generator swaps its output directory into place and deletes what was there, so a log written
+    // into `--out` is a log the next run of the generator throws away. A child keeps both inside
+    // the 0700 perimeter `mkdtemp` bought, which is the point: the parent is the world-writable
+    // temp root, where a predictable name is something anyone on the machine can pre-create as a
+    // symlink for `>` to follow and truncate.
+    private_ = fs::path(buffer.data());
+    path_ = private_ / "dataset";
     made_ = true;
-    // The generator refuses an `--out` that already exists as a non-directory and clears one that
-    // does, so handing it the empty directory `mkdtemp` just made is exactly what it expects.
 
     // **Its output is kept, not sent to `/dev/null`.** Every way this can fail used to arrive as
     // the same skip message — "`uv` and the `datasets` group are needed" — including a renderer
     // crash, a lock file that no longer resolves, and a checkout path that broke the shell. A skip
     // that misdiagnoses its own cause is worse than one that says nothing.
-    const fs::path log = path_.parent_path() / (path_.filename().string() + ".log");
+    const fs::path log = private_ / "renderer.log";
     const std::string command =
         "cd " + Quoted(RepoRoot()) +
         " && uv run --locked --group datasets tools/synth_dataset.py --out " +
@@ -148,7 +166,7 @@ class Rendered {
   ~Rendered() {
     if (!made_) return;
     std::error_code ignored;
-    fs::remove_all(path_, ignored);
+    fs::remove_all(private_, ignored);
   }
   Rendered(const Rendered&) = delete;
   Rendered& operator=(const Rendered&) = delete;
@@ -175,10 +193,12 @@ class Rendered {
     return tail;
   }
 
+  fs::path private_;
   fs::path path_;
   std::string why_;
   bool ok_ = false;
   bool made_ = false;
+  bool missingInput_ = false;
 };
 
 /**
@@ -234,6 +254,7 @@ class Accuracy : public ::testing::TestWithParam<FeatureDetector> {};
 TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   constexpr int kFrames = 12;
   Rendered rendered(kFrames, 640, 480, World::Photograph);
+  ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
   if (!rendered.ok()) {
     GTEST_SKIP() << "the dataset generator did not run, so nothing was measured — and a skipped "
                     "measurement is not a passing one. "
@@ -332,6 +353,15 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // world, so the easier one cannot fail them and the world the measurement is taken in was a
   // comment. The checkerboard leaves ORB at 8 of 11 and the hangar gives 11 of 11 to all three, so
   // an equality here fails loudly if `--panorama` ever stops arriving.
+  //
+  // **It rests on ORB, and on two things outside this file.** Every other assertion here passes in
+  // both worlds for all three detectors, so this conjunct on this one parameter is the whole of the
+  // discrimination — and the checkerboard is a world this suite never renders, so a better matcher
+  // that registered all eleven there would take it away silently. What holds the rest of the chain:
+  // `Rendered` fails rather than skips when the panorama is not in the tree, and
+  // `tools/asset_provenance.py` and `TheCommittedPanoramaIsWhatItsRecordSays` pin the file at that
+  // path to the bytes and the shape recorded for it. The world is held by three things together;
+  // none of them alone is enough.
   EXPECT_EQ(steps - unregistered, steps)
       << "only " << (steps - unregistered) << " of " << steps
       << " consecutive pairs produced an accepted rotation";

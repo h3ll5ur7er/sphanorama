@@ -39,11 +39,24 @@ repository's datasets are written in — would have destroyed the one thing that
 verifiable. That decides the dependency: **Pillow, in the `datasets` group**, never in the checkers,
 which stay standard-library only (ADR 0048, ADR 0050).
 
-**`tools/asset_provenance.py` keeps the record honest.** A directory holding a `sources.json` is an
-asset directory, and the build fails if a file there has no entry, an entry is missing a field or
-holds a blank one, two entries claim one file, or the bytes no longer hash to what is recorded. The
-last is the one that matters most: without it a swapped file inherits the clearance of the one it
+**`tools/asset_provenance.py` keeps the record honest.** Every tracked asset must have an entry in
+the nearest `sources.json` above it, and the build fails if one has none, if an entry is missing a
+field or holds a blank one, if two entries claim one file, or if the bytes no longer hash to what is
+recorded. The last matters most: without it a swapped file inherits the clearance of the one it
 replaced, keeping its name, its licence and its URL.
+
+**What counts as an asset is two rules, because neither alone is right.** Bytes that are not valid
+UTF-8 cannot be source here. And a name whose extension is a media format is somebody's work even
+when it decodes — which is not hypothetical: adding that rule immediately found `shell/public/icon.svg`,
+unrecorded in this repository since the PWA shell landed.
+
+**Our own work is recorded too, under `ours`**, with an author, a licence and a digest but no
+upstream trail. The first shape of that asked only for a command, which made it an escape hatch: a
+third-party file was one sentence — "we made this ourselves" — away from cleared, with the licence
+question skipped entirely. No checker can refuse a false licence, and that is a lie rather than a
+hole; what a checker can refuse is the question going unasked. Where an entry carries a
+`produced_by` command, `tools/test_synth_dataset.py` **runs it** and compares the bytes, so a
+recorded command that stops reproducing its output fails the build instead of ageing into fiction.
 
 **Both worlds stay, named.** `Rendered` takes a `World`, and `Acceptance` still renders a
 checkerboard — because across all 165 combinations of the ring's eleven pairs, three detectors and

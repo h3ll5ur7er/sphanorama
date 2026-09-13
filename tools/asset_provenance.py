@@ -9,18 +9,32 @@ checkerboard, so the answer is a record beside the bytes and a check that keeps 
 
 Two rules, and the second is the one that makes the first mean anything:
 
-**A directory holding `sources.json` is an asset directory, and every file in it must have an
-entry.** Something fetched from elsewhere goes under `assets` and names the work, its author, its
-licence and where the bytes came from — digest included, so a file swapped later cannot inherit the
-clearance of the one it replaced. Something this repository produced goes under `generated` and
-names the command that produces it; no digest, because the bytes of a generated file are pinned by
-the test that regenerates them and a second copy here would only be a second place to update.
+**Every tracked asset must have an entry, in the nearest `sources.json` above it.** Nearest, so a
+record inside another one owns its own subtree rather than deadlocking with the outer record over the
+same files. Only assets: a record in a directory does not make its neighbouring source files the
+checker's business, which is why `shell/public/`'s record answers for an icon and says nothing about
+the service worker beside it.
 
-**A tracked file that is not text has to be in one of those directories.** Without this the check is
-opted into by the person it exists to catch: a `.jpg` dropped anywhere else would be invisible while
-the build step above it claims every committed asset says where it came from. Text is exempt because
-source explains itself and a repository is mostly source; what cannot be read is what nobody can
-account for later.
+Something fetched from elsewhere goes under `assets` and names the work, its author, its licence and
+where the bytes came from. Something this repository made goes under `ours` and still names an author
+and a licence — what it is spared is the upstream trail, which for our own work is this repository.
+Both carry a digest, so a file swapped later cannot inherit the clearance of the one it replaced.
+
+**`ours` is deliberately not an escape hatch.** An earlier shape of it asked only for a command, so a
+third-party file could be cleared by claiming this repository produced it — the licence question
+skipped entirely. It cannot be skipped now: no check can stop somebody writing a false licence, and
+that is a lie rather than a hole, but omission is what a checker can and should refuse.
+
+Where an entry carries `produced_by`, that command is *executed*:
+`tools/test_synth_dataset.py` runs it and compares the bytes, so a command that does not reproduce
+the file it names fails the build rather than ageing quietly into fiction.
+
+**A tracked file that is an asset has to be in one of those directories**, or nothing would ever ask
+where it came from — the build step above this one claims every committed asset says so. Two ways to
+be an asset: bytes that are not valid UTF-8, or a name whose extension is in `MEDIA` below. The
+second exists because an SVG, an ASCII STL and a base64 `.gltf` are somebody's work and all three
+read as text. Source is exempt, because a repository is mostly source and a rule that asked every
+`.ts` file for a licence would be switched off within a week.
 
 What this does *not* check is `width` and `height`, which need a decoder and would put an image
 library in front of every build. `tools/test_synth_dataset.py` checks them where Pillow is already
@@ -44,9 +58,18 @@ RECORD = "sources.json"
 REQUIRED = ("file", "sha256", "bytes", "work", "author", "licence", "licence_url",
             "source_repository", "source_path", "retrieved")
 
-# A file this repository produced needs the command and nothing else: its licence is the
-# repository's, and its bytes are pinned by whatever test regenerates it.
-REQUIRED_GENERATED = ("file", "produced_by")
+# Our own work still has an author and a licence; what it does not have is somewhere else it came
+# from. `produced_by` is optional because some of it is written by hand rather than rendered, and it
+# is checked where it appears.
+REQUIRED_OURS = ("file", "sha256", "bytes", "author", "licence")
+
+# Extensions that make a file an asset whatever its bytes decode as. Not a guess at "binary": these
+# are the formats whose content is somebody's work rather than somebody's source, and several of
+# them are text.
+MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tiff", ".svg",
+         ".ppm", ".pgm", ".pnm", ".hdr", ".exr", ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".webm",
+         ".mov", ".ttf", ".otf", ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf",
+         ".blend", ".psd", ".zip")
 
 # The same question the conflict-marker check asks, for the same reason: tracked files plus
 # untracked ones git is not ignoring is exactly the set that can become a commit. It also keeps the
@@ -80,22 +103,56 @@ def records(root: Path) -> list[Path]:
     return [root / name for name in tracked_files(root) if Path(name).name == RECORD]
 
 
-def is_text(path: Path) -> bool:
-    """Whether the bytes read as UTF-8, which is this checker's whole definition of source."""
+def why_asset(path: Path) -> str | None:
+    """Why this file is somebody's work rather than somebody's source, or None if it is not.
+
+    Two independent reasons, because neither alone is right. An extension in `MEDIA` is an asset
+    even when it decodes — an SVG is text and is still a picture. And bytes that are not valid
+    UTF-8 cannot be source in this repository, whatever they are called.
+
+    The reason is carried rather than discarded so the refusal can name it. A Latin-1 `README.md`
+    trips the second rule, and being told that a markdown file "cannot say where it came from" sends
+    somebody looking for a licence when the answer is to save it as UTF-8.
+    """
+    if path.suffix.lower() in MEDIA:
+        return f"a {path.suffix.lower()} file is somebody's work"
     try:
         path.read_bytes().decode()
-    except (UnicodeDecodeError, OSError):
-        return False
-    return True
+    except UnicodeDecodeError:
+        return "its bytes are not valid UTF-8, so it is not source in this repository"
+    except OSError:
+        return None
+    return None
+
+
+def owner_of(name: str, directories: list[str]) -> str | None:
+    """The nearest record directory containing `name`, or None if no record does.
+
+    Nearest rather than any, because a record inside another one owns its own subtree: without this
+    the outer record reports every file under the inner one as unrecorded and the inner record's
+    own files can never satisfy both.
+    """
+    best: str | None = None
+    for prefix in directories:
+        if not name.startswith(prefix):
+            continue
+        if best is None or len(prefix) > len(best):
+            best = prefix
+    return best
 
 
 def check(root: Path) -> list[Problem]:
     root = Path(root)
     listed = tracked_files(root)
     problems: list[Problem] = []
-    accounted: set[str] = set()
 
-    for record in records(root):
+    found = records(root)
+    prefixes = []
+    for record in found:
+        relative = record.parent.relative_to(root).as_posix()
+        prefixes.append("" if relative == "." else f"{relative}/")
+
+    for record, prefix in zip(found, prefixes):
         directory = record.parent
         rel = record.relative_to(root).as_posix()
         try:
@@ -105,14 +162,14 @@ def check(root: Path) -> list[Problem]:
             continue
 
         entries = [(entry, False) for entry in document.get("assets") or []]
-        entries += [(entry, True) for entry in document.get("generated") or []]
+        entries += [(entry, True) for entry in document.get("ours") or []]
         if not entries:
-            problems.append(Problem(rel, "has no non-empty `assets` or `generated` list, so it "
+            problems.append(Problem(rel, "has no non-empty `assets` or `ours` list, so it "
                                          "records nothing"))
             continue
 
         recorded: dict[str, dict] = {}
-        for position, (entry, generated) in enumerate(entries):
+        for position, (entry, ours) in enumerate(entries):
             name = entry.get("file") if isinstance(entry, dict) else None
             if not isinstance(name, str) or not name.strip():
                 problems.append(Problem(rel, f"entry {position} names no `file`"))
@@ -123,7 +180,7 @@ def check(root: Path) -> list[Problem]:
                 continue
             recorded[name] = entry
 
-            for field in (REQUIRED_GENERATED if generated else REQUIRED):
+            for field in (REQUIRED_OURS if ours else REQUIRED):
                 value = entry.get(field)
                 if value is None or (isinstance(value, str) and not value.strip()):
                     problems.append(Problem(f"{rel} [{name}]", f"`{field}` is missing or blank"))
@@ -131,8 +188,6 @@ def check(root: Path) -> list[Problem]:
             path = directory / name
             if not path.is_file():
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
-                continue
-            if generated:
                 continue
             content = path.read_bytes()
             if entry.get("sha256") != hashlib.sha256(content).hexdigest():
@@ -144,26 +199,27 @@ def check(root: Path) -> list[Problem]:
                                         f"records {entry.get('bytes')} bytes and holds "
                                         f"{len(content)}"))
 
-        prefix = directory.relative_to(root).as_posix()
-        prefix = f"{prefix}/" if prefix != "." else ""
-        # Every file the record is responsible for, which is everything beneath its directory and
-        # not only its immediate children: a folder is not a way to slip a file past this.
         for name in listed:
-            if not name.startswith(prefix):
+            if owner_of(name, prefixes) != prefix:
                 continue
             tail = name[len(prefix):]
-            accounted.add(name)
-            if tail != RECORD and tail not in recorded:
+            if tail == RECORD or tail in recorded:
+                continue
+            path = root / name
+            if path.is_file() and why_asset(path) is not None:
                 problems.append(Problem(rel, f"{tail} is here and is recorded nowhere"))
 
     for name in listed:
-        if name in accounted:
+        if owner_of(name, prefixes) is not None:
             continue
         path = root / name
-        if not path.is_file() or is_text(path):
+        if not path.is_file():
             continue
-        problems.append(Problem(name, "is not text and is in no directory with a "
-                                      f"{RECORD}, so nothing here can say where it came from"))
+        why = why_asset(path)
+        if why is None:
+            continue
+        problems.append(Problem(name, f"{why}, and it is in no directory with a {RECORD} that "
+                                      f"names it"))
 
     return problems
 

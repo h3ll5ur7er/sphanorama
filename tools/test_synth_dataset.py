@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -2004,6 +2005,68 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
             with self.subTest(file=entry["file"]):
                 panorama = read_panorama(directory / entry["file"])
                 self.assertEqual(panorama.shape, (entry["height"], entry["width"], 3))
+
+
+class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
+    """Every `produced_by` in the tree, executed against the bytes it claims to produce.
+
+    `tools/asset_provenance.py` cannot do this itself: it runs in every build and stays standard
+    library only, and these commands need the `datasets` group. So it lives here, with the group
+    already present — generically, over every record rather than over this renderer's, because the
+    property is about the records and not about what happens to produce them today.
+
+    Without it `ours` is an escape hatch. A third-party file could be cleared by claiming this
+    repository produced it, and a command that stopped reproducing its output — a changed argparse
+    default is enough — would age quietly into fiction while the suite stayed green.
+    """
+
+    def repository(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def records(self) -> list[Path]:
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=self.repository(),
+                                capture_output=True, check=True)
+        return [self.repository() / name
+                for name in listed.stdout.decode().split("\0")
+                if name.endswith("/sources.json") or name == "sources.json"]
+
+    def test_every_recorded_command_reproduces_the_bytes_it_names(self):
+        found = 0
+        for record in self.records():
+            document = json.loads(record.read_text())
+            entries = [e for e in document.get("ours") or [] if e.get("produced_by")]
+            if not entries:
+                continue
+            commands = {entry["produced_by"] for entry in entries}
+            directory = record.parent.relative_to(self.repository()).as_posix()
+
+            for command in commands:
+                found += 1
+                # The command names the directory it writes to, so it is the one a person runs to
+                # regenerate in place. Here that path is swapped for a temporary one: a test that
+                # overwrote the fixture would pass by rewriting the thing it is checking.
+                self.assertIn(directory, command,
+                              f"{record} records a command that does not name its own directory, "
+                              f"so there is no way to run it without overwriting the fixture")
+                with tempfile.TemporaryDirectory() as elsewhere:
+                    out = str(Path(elsewhere) / "regenerated")
+                    result = subprocess.run(command.replace(directory, out), shell=True,
+                                            cwd=self.repository(), capture_output=True)
+                    self.assertEqual(result.returncode, 0,
+                                     f"{command}\n{result.stderr.decode()[-2000:]}")
+                    for entry in entries:
+                        if entry["produced_by"] != command:
+                            continue
+                        produced = Path(out) / entry["file"]
+                        self.assertTrue(produced.is_file(),
+                                        f"the command wrote no {entry['file']}")
+                        self.assertEqual(
+                            produced.read_bytes(),
+                            (record.parent / entry["file"]).read_bytes(),
+                            f"{entry['file']} is not what its recorded command produces; "
+                            f"regenerate it, or correct the command")
+        self.assertGreater(found, 0, "no recorded command was run, so this checks nothing")
+
 
 
 if __name__ == "__main__":

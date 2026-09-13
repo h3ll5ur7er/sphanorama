@@ -105,12 +105,13 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    GitHub-flavoured table, and eleven rows of the volatility map rendered as pipe text for five
    review rounds because everybody read the prose and nobody rendered the page.
 9. **Asset provenance** — `tools/asset_provenance.py`. A `.jpg` in a commit carries no author, no
-   licence and no origin, and nothing else in this gate would ever say so. It requires that every
-   tracked file it cannot read as text sits in a directory holding a `sources.json` that names it —
-   with the work, author, licence and upstream path for something fetched, or the command that
-   produces it for something this repository generates — and that the recorded digest still matches
-   the bytes, so a file swapped later cannot inherit the clearance of the one it replaced
-   (ADR 0059).
+   licence and no origin, and nothing else in this gate would ever say so. Every tracked asset —
+   bytes that are not valid UTF-8, or a name whose extension is a media format, since an SVG is
+   text and is still a picture — must have an entry in the nearest `sources.json` above it, naming
+   the work, author, licence and upstream path for something fetched, or an author and a licence
+   for something of ours. The recorded digest must still match the bytes, so a file swapped later
+   cannot inherit the clearance of the one it replaced. Where an entry records the command that
+   produces it, item 10 runs that command and compares (ADR 0059).
 10. **Dataset renderer tests** — `tools/test_synth_dataset.py`, in the `contracts` job. It predates
    this list's last revision and was simply missed; it is here because the renderer is checked
    against hand-worked decimals rather than against the code it feeds (ADR 0050), so a change to it
