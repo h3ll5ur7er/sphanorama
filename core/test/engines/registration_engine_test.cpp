@@ -1157,8 +1157,27 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // if the mismatch is refused before. An earlier version of this comment said "neither number
   // means anything alone", which over-corrected — they are a pair in the sense that together they
   // bracket where a refusal may land, not in the sense that either is inert by itself.
+  //
+  // **Both operands, and the code.** The guard is `a.count <= 0 || b.count <= 0`, and only the
+  // first disjunct was driven: deleting `b.count <= 0` left every test green, while an empty *b*
+  // then reached the store and came back `NotFound` from `MemoryFrameStoreAccess` after four pins
+  // — wrong code, wrong component, wrong place, and it would have *satisfied*
+  // `APinRefusalKeepsTheStoresOwnComponent`. Not hypothetical either:
+  // `FindsNothingOnAFlatFrame` shows extraction on a flat frame produces exactly that shape.
+  // The status code went unasserted here for the same reason it did on the lens and prior guards
+  // until the previous commit — this is the third of the three, and the comment above claimed all
+  // three were covered while two were.
   const int pinsBeforeEmpty = counting.pins;
-  EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
+  const Result<PairwiseResult> emptyA =
+      engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens());
+  EXPECT_FALSE(emptyA.ok());
+  EXPECT_EQ(emptyA.status.code, StatusCode::InvalidArgument) << emptyA.status.detail;
+  const Result<PairwiseResult> emptyB =
+      engine.EstimatePairwise(a.value, FeatureSet{}, Quat{1, 0, 0, 0}, Lens());
+  EXPECT_FALSE(emptyB.ok());
+  EXPECT_EQ(emptyB.status.code, StatusCode::InvalidArgument) << emptyB.status.detail;
+  EXPECT_EQ(emptyB.status.component, "FeatureRegistrationEngine")
+      << "an empty second set reached the store instead of being refused here";
   EXPECT_EQ(counting.pins, pinsBeforeEmpty)
       << "an empty set was refused after pinning " << (counting.pins - pinsBeforeEmpty)
       << " frames; the refusal is supposed to precede every `Pin`";
@@ -1212,6 +1231,28 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   EXPECT_EQ(counting.forgets, afterExtraction)
       << "EstimatePairwise forgot " << (counting.forgets - afterExtraction)
       << " of the frames it was handed; they belong to the caller, refusal or not";
+
+  // **And the counter that assertion rests on is itself checked.** `EXPECT_EQ(forgets, ...)` above
+  // compares zero with zero, so deleting `++forgets` from `CountingForgets::Forget` left every test
+  // green — the headline assertion of the test named for forgetting was riding an instrument
+  // nothing had exercised. `pins` was already interlocked, because the mismatch case demands
+  // exactly four; `forgets` demanded only that nothing changed, which a dead counter satisfies.
+  // One deliberate `Forget` fixes that, and it costs a frame the test is finished with.
+  //
+  // It goes through `counting` rather than through the `ForgetOutputs` helper, and that detail is
+  // the reason the counter was never exercised in the first place: `ForgetOutputs` forgets through
+  // the *fixture's* `store`, which `counting` wraps but does not observe. So every `ForgetOutputs`
+  // in this file — and there are many — moves frames without moving this counter. The first
+  // version of this check called the helper and failed at `0 vs 0`, which is the counter catching
+  // its own blind spot on the first run.
+  const int beforeDeliberateForget = counting.forgets;
+  const Result<FeatureSet> spare = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(spare.ok()) << spare.status.detail;
+  EXPECT_TRUE(counting.Forget(spare.value.descriptors).ok());
+  EXPECT_TRUE(counting.Forget(spare.value.keypoints).ok());
+  EXPECT_EQ(counting.forgets - beforeDeliberateForget, 2)
+      << "`CountingForgets` counted " << (counting.forgets - beforeDeliberateForget)
+      << " of two `Forget`s it was asked to make, so the zero-delta assertion above proves nothing";
 
   // And they are still usable afterwards, which is the property the count is a proxy for: a caller
   // may estimate the same pair again.
