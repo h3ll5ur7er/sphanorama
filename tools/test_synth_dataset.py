@@ -2098,6 +2098,7 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
 
     def test_every_recorded_shape_is_the_shape_the_file_has(self):
         shaped = 0
+        equirectangular = 0
         for record in asset_provenance.records(Path(__file__).resolve().parents[1]):
             document = json.loads(record.read_text())
             for entry in (document.get("assets") or []) + (document.get("ours") or []):
@@ -2119,6 +2120,7 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
                         width, height = ImageOps.exif_transpose(opened).size
                     self.assertEqual((width, height), (entry["width"], entry["height"]))
                     if entry.get("projection") == "equirectangular":
+                        equirectangular += 1
                         self.assertEqual(width, 2 * height,
                                          f"{entry['file']} says it is equirectangular, which covers "
                                          f"360 degrees of longitude by 180 of latitude")
@@ -2126,6 +2128,13 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
         # drops a shape fails it rather than quietly reducing this count. This only says the walk
         # found something to walk.
         self.assertGreater(shaped, 0, "no record was walked, so this checks nothing")
+        # Counted separately, because the two arms can go dead independently. While the panorama's
+        # `projection` read "equirectangular, 360 by 180 degrees" this branch never ran, and
+        # `shaped` was non-zero throughout — an aggregate over the outer loop cannot see an inner
+        # arm nothing reaches. `asset_provenance.PROJECTIONS` now refuses the spelling that caused
+        # it; this is the second lock, on the reader's side.
+        self.assertGreater(equirectangular, 0,
+                           "no entry claimed a projection, so the 2:1 rule was asserted of nothing")
 
 
 class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):

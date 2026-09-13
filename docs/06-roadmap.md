@@ -823,6 +823,13 @@ was withdrawn and how it was caught.** The figures below replace it, and come fr
 perturbs the prior by three degrees — the order a fused phone orientation is out by when it is
 working — rather than handing the estimator the truth of each step.
 
+**A second table stood here and was replaced rather than retracted**, when the world these are
+measured in became a photograph instead of a checkerboard. Those figures were not wrong; they were
+measured somewhere a feature matcher should not be scored. **ADR 0059 carries them**, under the
+convention ADR 0057 set: the document that carried a number keeps the live one and a pointer, and
+the ADR that moved it keeps the old one, so a reader comparing two versions of this table finds both
+rather than one and a gap.
+
 `core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
 by 50 degree lens **from a photographed panorama** (a CC0 hangar interior, ADR 0059), extracts
 features, estimates each consecutive pair against a prior three degrees from truth, chains the

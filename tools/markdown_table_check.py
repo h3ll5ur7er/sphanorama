@@ -30,8 +30,6 @@ from pathlib import Path
 
 from tracked import tracked_files
 
-# The same question `conflict_marker_check.py` asks, for the same reason: what git would let you
-# commit, rather than a hand-written skip list that drifts from `.gitignore`.
 # A delimiter row: pipes separating runs of dashes, with optional alignment colons. This is what
 # turns the line above it into a header, and it is the only unambiguous marker a GFM table has.
 DELIMITER = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$")

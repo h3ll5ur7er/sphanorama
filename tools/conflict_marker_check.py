@@ -43,9 +43,9 @@ SPLIT = "=" * 7
 # so a marker in the engineering skill would have gone unnoticed. A hand-written list beside an
 # existing one drifts, and this one drifted before it was ever merged.
 #
-# `--cached --others --exclude-standard` is precisely the set that can become a commit: tracked
-# files, plus untracked ones git is not ignoring. An ignored file cannot carry a marker into the
-# history, and an untracked-but-not-ignored one is exactly what somebody is about to add.
+# `tools/tracked.py` answers that question now, for this checker and two others, and carries the
+# rest of this paragraph with it.
+#
 # Read as text; anything that is not decodes to replacement characters and simply will not match.
 # A size ceiling because a marker lives in a hand-edited file, and walking a large binary line by
 # line to prove it has none is work for nothing.

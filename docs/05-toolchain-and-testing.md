@@ -10,7 +10,7 @@ makes them checkable.
 | -------- | -------- | --------- |
 | **C++20** | Managers, engines, resource-access contracts, native resource-access implementations | The whole point: one implementation of the business logic, compiled to WASM for the browser and to a native binary for the bench. OpenCV is C++ |
 | **TypeScript** | Clients, browser resource-access adapters, PWA shell, service worker | Thin by design. If a `.ts` file contains geometry or pixel maths, it is in the wrong layer |
-| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy is in a group so the checkers stay standard-library only (ADR 0050). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
+| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy and Pillow are in a group so the checkers stay standard-library only (ADR 0050, ADR 0059). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
 
 No Rust/Swift/C# — nothing in the design needs them, and each would add a toolchain without
 removing one.
@@ -112,6 +112,16 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    for something of ours. The recorded digest must still match the bytes, so a file swapped later
    cannot inherit the clearance of the one it replaced. Where an entry records the command that
    produces it, item 10 runs that command and compares (ADR 0059).
+
+   Two rules are easy to miss because the checker cannot verify them itself. **A raster must record
+   `width` and `height`** — extensions in `asset_provenance.SHAPED` — and item 10 opens the file and
+   compares them, since deciding a shape needs a decoder this gate refuses to load. And **an entry
+   that records a `projection` must use a token from `asset_provenance.PROJECTIONS`**, because a
+   test branches on it: while one record spelled it `equirectangular, 360 by 180 degrees` the 2:1
+   assertion keyed on that field was dead for every record in the tree. Every field an entry
+   carries is type-checked, not only the ones on the required list, so `false`, `[]` and `{}` answer
+   nothing — including on the optional half, where a blank `produced_by` was once carried, never
+   run, and read as though it still reproduced the bytes.
 10. **Dataset renderer tests** — `tools/test_synth_dataset.py`, in the `contracts` job. It predates
    this list's last revision and was simply missed; it is here because the renderer is checked
    against hand-worked decimals rather than against the code it feeds (ADR 0050), so a change to it
@@ -173,8 +183,9 @@ than a browser call.
 `tools/synth_dataset.py` renders the frames a phone *would* have captured from an equirectangular
 panorama: given a lens field of view and a list of camera orientations, it emits one image per
 orientation **plus the ground-truth rotation of every frame**, as binary Netpbm beside a
-`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy — the
-checkers above stay standard-library only (ADR 0050).
+`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy and — since it
+learned to read a photographed panorama — Pillow; the checkers above stay standard-library only
+(ADR 0050, ADR 0059).
 
 **It implements the lens itself rather than calling the core**, so a dataset is never rendered by
 the code it will be used to measure — an error the two shared would cancel, and the harness would
@@ -182,10 +193,11 @@ score a broken projection as perfect. What carries the weight is not the separat
 reviewer showed the arithmetic is close enough to the core's to be called a transcription. It is the
 pinning of both to hand-worked decimals derived from neither (ADR 0050).
 
-Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, and a
-procedural panorama. Still to come, each its own increment with its own invariant: real HDRIs, a
-noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
-movers for known ghost regions.
+Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, a
+procedural panorama, and **a real photographed one** — `--panorama` reads an equirectangular image
+and the accuracy measurement is made in it rather than in a checkerboard (ADR 0059). Still to come,
+each its own increment with its own invariant: a noise and blur model, rolling-shutter skew, an
+exposure ramp, a burst per cell, and composited movers for known ghost regions.
 
 It gives none of these *yet*, and the first is the only one whose machinery is complete. A reviewer
 pointed out that "what it gives today is the first of these" — which is what this line used to say —

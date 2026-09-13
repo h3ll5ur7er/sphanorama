@@ -36,9 +36,12 @@ second exists because an SVG, an ASCII STL and a base64 `.gltf` are somebody's w
 read as text. Source is exempt, because a repository is mostly source and a rule that asked every
 `.ts` file for a licence would be switched off within a week.
 
-What this does *not* check is `width` and `height`, which need a decoder and would put an image
-library in front of every build. `tools/test_synth_dataset.py` checks them where Pillow is already
-present.
+**A raster has to say what shape it is, and this cannot check that it is telling the truth.** So the
+work is split: an entry whose extension is in `SHAPED` must carry `width` and `height` or the build
+fails here, and `tools/test_synth_dataset.py` opens the file and compares them where Pillow is
+already present. Deciding the shape here would put an image library in front of every build, which
+is what this refuses to be — but leaving the field *optional* meant the one fact needing a decoder
+could be deleted from a record with nothing going red, which is what it did.
 
 Usage:  uv run tools/asset_provenance.py [repo_root]
 """
@@ -84,6 +87,13 @@ MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".ti
 # Not every asset: an SVG is somebody's work and has no shape a raster decoder can confirm, and
 # neither has an `.mp3`.
 SHAPED = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".ppm", ".pgm", ".pnm")
+
+# `projection` is read by a test rather than by a person: `tools/test_synth_dataset.py` asserts the
+# 2:1 rule on an entry that claims to be equirectangular. So it is a token from a closed set, and an
+# unrecognised one is refused here — while this field said "equirectangular, 360 by 180 degrees" the
+# assertion keyed on it was dead for every record in the tree, and nothing could see that. A
+# description of the projection belongs in `notes`, which nothing branches on.
+PROJECTIONS = ("equirectangular",)
 
 
 
@@ -255,6 +265,12 @@ def check(root: Path) -> list[Problem]:
                 wrong = unusable(field, entry[field])
                 if wrong is not None:
                     problems.append(Problem(f"{rel} [{name}]", f"`{field}` {wrong}"))
+
+            projection = entry.get("projection")
+            if projection is not None and projection not in PROJECTIONS:
+                problems.append(Problem(f"{rel} [{name}]",
+                                        f"`projection` is {projection!r}, and the projections this "
+                                        f"repository knows are {', '.join(PROJECTIONS)}"))
 
             if Path(name).suffix.lower() in SHAPED:
                 for field in ("width", "height"):

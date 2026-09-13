@@ -19,7 +19,7 @@
       "bytes": 178931,
       "width": 1024,
       "height": 512,
-      "projection": "equirectangular, 360 by 180 degrees",
+      "projection": "equirectangular",
       "work": "Small Hangar 01",
       "author": "HDRI Haven (now Poly Haven)",
       "licence": "CC0-1.0",
@@ -66,7 +66,12 @@
         "rendered frames are upsampled about 3.4 times and are soft. What that costs is measured rather",
         "than assumed: all three detectors register all eleven pairs of the ring here and ORB registered",
         "eight of eleven against the checkerboard it replaced. See ADR 0059 and the table in",
-        "docs/06-roadmap.md."
+        "docs/06-roadmap.md.",
+        "",
+        "`projection` is a token rather than a sentence, because a test reads it: the 2:1 assertion in",
+        "tools/test_synth_dataset.py keys off it, and while this field said",
+        "`equirectangular, 360 by 180 degrees` that assertion was dead for every record in the tree.",
+        "360 by 180 degrees is what equirectangular means; the words belong here."
       ]
     }
   ]

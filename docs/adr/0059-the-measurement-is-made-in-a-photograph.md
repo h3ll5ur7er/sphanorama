@@ -60,7 +60,8 @@ recorded command that stops reproducing its output fails the build instead of ag
 
 **Both worlds stay, named.** `Rendered` takes a `World`, and `Acceptance` still renders a
 checkerboard — because across all 165 combinations of the ring's eleven pairs, three detectors and
-priors perturbed from one to six degrees, the hangar's *lowest* inlier fraction is 0.652. Nothing in
+five perturbations of the prior (1, 2, 3, 4 and 6 degrees about x), the hangar's *lowest* inlier
+fraction is 0.652. Nothing in
 it can produce the answered-but-not-accepted outcome that test exists to catch, and ADR 0056's
 figures are the checkerboard's and are untouched.
 
