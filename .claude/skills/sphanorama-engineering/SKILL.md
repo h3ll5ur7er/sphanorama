@@ -173,6 +173,34 @@ section that pays off later.
 **Don't** document: what the code already says, a duplicate of a contract header, how to run tests
 in a fifth place, or status updates. A document with no job should be deleted.
 
+## Comments say why
+
+**A comment explains why the code is the way it is. What it does is the code's job, and the code is
+the copy that gets executed.** A comment starts drifting the moment it is written; a name does not,
+because changing the thing changes the name.
+
+So before writing a paragraph, spend the effort on a name instead. `kPriorBoundDeg`,
+`BearingsSpanAPlane`, `pinsBeforeMismatch` each replace a sentence and cannot go stale. A local
+`const` whose only purpose is to name a subexpression is usually worth more than the comment it
+replaces.
+
+**Worth a comment:** a measurement and how it was taken; an alternative that was tried and lost; a
+hazard that is invisible from the line itself; why a guard exists that looks unreachable; a
+constant whose value came from somewhere other than taste.
+
+**Not worth one:** restating the line below it; the comment's own revision history ("an earlier
+version of this said…" — that is what `git log` and the PR thread are for); anything locating
+something by distance or count ("twenty lines up", "these three lines", "538 lines below"), which
+is unverifiable, ungreppable, and wrong within a few commits — name the thing instead.
+
+The measurement that prompted this rule: PR #69 added 2,069 lines of C++, of which **1,145 (55%)
+were comment**, and 365 of those C++ lines were production code. Fifteen review rounds found five
+real defects in the code and roughly forty in the prose around it. Prose has a defect rate too, and
+it is not lower than code's — it is just invisible to the compiler and to every test.
+
+None of this argues for fewer tests, or for deleting comments that already earn their place. It
+argues for the paragraph you are about to write being a name instead.
+
 ## Repo structure
 
 ```
@@ -279,9 +307,9 @@ alone under this loop rather than to stop and wait:
    Answering in public is the point rather than a formality. The PR is where a human collaborator
    picks this up, and a decision is only inheritable if the rejected alternative is written down
    next to it.
-6. **If a round found something real, run another.** A round that found nothing is where it stops.
-   Findings that keep arriving on your own fixes mean the root cause is still there — and remember
-   that a fix is new code, so it goes through the same loop.
+6. **Run another round while the findings are still in the code.** A round whose findings are all
+   prose is where it stops — fix them, file what is left as tasks, and merge. A fix is new code and
+   goes through the same loop, so findings arriving on your own fixes still mean run another.
 7. **Never merge** until asked for that PR in particular. Green, mergeable and reviewed is the
    finish line; merging is not yours to call.
 
