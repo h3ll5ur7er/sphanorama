@@ -115,6 +115,13 @@ class Rendered {
    * input on disk it says the input is there, and for one this renderer generates it says the
    * question does not arise. Both are the answer a caller wants — proceed — which is why one value
    * carries them; a reader comparing the two arms of `World` should not have to work that out.
+   *
+   * **The two `ASSERT_FALSE(rendered.inputMissing())` sites are kept in step by hand, and a third
+   * world is when to stop doing that.** A helper would have to be a macro — `ASSERT_` expands to a
+   * bare `return` — and a macro that hides a return behind a name is a worse trade than one
+   * duplicated line. At three sites it stops being a pair and becomes a copy, and the `--panorama`
+   * ternary in the command below becomes a second one at the same moment, since today both those
+   * lines say `Photograph` only because the enum has two values.
    */
   bool inputMissing() const { return missingInput_; }
 
