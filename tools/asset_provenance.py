@@ -120,8 +120,11 @@ def why_asset(path: Path) -> str | None:
         path.read_bytes().decode()
     except UnicodeDecodeError:
         return "its bytes are not valid UTF-8, so it is not source in this repository"
-    except OSError:
-        return None
+    except OSError as failure:
+        # A file that cannot be read is not thereby source. Answering "not an asset" here would let
+        # an unreadable file out of the check entirely, which is the one answer that cannot be
+        # right about a file nobody can read.
+        return f"it could not be read at all ({failure}), so nothing can say what it is"
     return None
 
 
@@ -157,8 +160,17 @@ def check(root: Path) -> list[Problem]:
         rel = record.relative_to(root).as_posix()
         try:
             document = json.loads(record.read_text())
-        except (OSError, json.JSONDecodeError) as failure:
+        # Every way a record can fail to be a record, not only the one that has a named exception.
+        # `read_text` decodes before `json.loads` sees anything, so bytes that are not UTF-8 raise
+        # `UnicodeDecodeError`; and valid JSON that is a list or a string has no `.get`, so the
+        # shape is checked rather than assumed. Each of those used to come out of this checker as a
+        # traceback, which is a build failure that says the checker is broken rather than the record.
+        except (OSError, ValueError) as failure:
             problems.append(Problem(rel, f"could not be read as JSON: {failure}"))
+            continue
+        if not isinstance(document, dict):
+            problems.append(Problem(rel, f"could not be read as JSON: it is a "
+                                         f"{type(document).__name__} and a record is an object"))
             continue
 
         entries = [(entry, False) for entry in document.get("assets") or []]
@@ -203,7 +215,7 @@ def check(root: Path) -> list[Problem]:
             if owner_of(name, prefixes) != prefix:
                 continue
             tail = name[len(prefix):]
-            if tail == RECORD or tail in recorded:
+            if tail in recorded:
                 continue
             path = root / name
             if path.is_file() and why_asset(path) is not None:

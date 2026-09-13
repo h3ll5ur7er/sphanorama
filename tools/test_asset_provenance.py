@@ -138,7 +138,10 @@ class AssetProvenance(unittest.TestCase):
                 entry = dict(honest)
                 del entry[field]
                 self.tree.record({"assets": [entry]})
-                self.assertIn(field, " ".join(self.tree.problems()))
+                # The sentence, not the field name: deleting `sha256` or `bytes` also produces the
+                # digest and size complaints, each of which names the field, so asserting the name
+                # alone let those two subtests pass with the required-field loop skipping them.
+                self.assertIn(f"`{field}` is missing or blank", " ".join(self.tree.problems()))
 
     def test_an_entry_with_no_file_is_reported_before_its_fields_are_read(self):
         entry = dict(self.tree.entries()[0])
@@ -220,7 +223,7 @@ class AFileThisRepositoryMadeItself(unittest.TestCase):
                 entry = dict(self.ours)
                 del entry[field]
                 self.record(entry)
-                self.assertIn(field, " ".join(self.tree.problems()))
+                self.assertIn(f"`{field}` is missing or blank", " ".join(self.tree.problems()))
 
     def test_our_own_work_still_carries_a_digest(self):
         entry = dict(self.ours, sha256="0" * 64)
@@ -305,7 +308,11 @@ class RecordsInsideRecords(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.tree = Tree(self.root)
-        self.inner = self.tree.assets / "inner"
+        # `zoom`, not `inner`: `records()` returns paths in git's sorted order, and with a name that
+        # sorts *before* `sources.json` the first match is also the nearest one, so replacing
+        # `owner_of` with first-match-wins left both these tests green. A name that sorts after it
+        # separates the two rules.
+        self.inner = self.tree.assets / "zoom"
         self.inner.mkdir()
         self.content = NOT_TEXT + b"\xfa inner"
         (self.inner / "deep.bin").write_bytes(self.content)
@@ -331,8 +338,54 @@ class RecordsInsideRecords(unittest.TestCase):
         self.record_inner(name="something-else.bin")
         problems = self.tree.problems()
         self.assertEqual(len(problems), 2, problems)
-        self.assertTrue(all(p.startswith("assets/inner/sources.json") for p in problems), problems)
+        self.assertTrue(all(p.startswith("assets/zoom/sources.json") for p in problems), problems)
         self.assertIn("deep.bin is here and is recorded nowhere", " ".join(problems))
+
+
+class ARecordOrAFileThatCannotBeRead(unittest.TestCase):
+    """Every way of not being readable, because each used to arrive as a traceback or as silence."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.tree = Tree(self.root)
+
+    def test_a_record_whose_bytes_are_not_utf8_is_reported(self):
+        # `read_text` decodes before `json.loads` is reached, so this raises `UnicodeDecodeError`
+        # and never becomes a `JSONDecodeError`.
+        (self.tree.assets / "sources.json").write_bytes(NOT_TEXT)
+        self.assertIn("could not be read as JSON", " ".join(self.tree.problems()))
+
+    def test_a_record_that_is_valid_json_but_not_an_object_is_reported(self):
+        for document in ("[]", '"a record"', "7"):
+            with self.subTest(document=document):
+                (self.tree.assets / "sources.json").write_text(document)
+                self.assertIn("a record is an object", " ".join(self.tree.problems()))
+
+    def test_a_file_that_cannot_be_read_is_not_thereby_source(self):
+        # The one answer that cannot be right about a file nobody can read is "this is fine".
+        #
+        # `why_asset` is called directly rather than through `check`, which guards with `is_file()`:
+        # in a whole tree this arm is reachable only in a race, and a permissions fixture would skip
+        # whenever the tests run as root — which is every CI runner here. A directory reaches the
+        # same `OSError` deterministically and for the same reason, which is that the bytes did not
+        # arrive.
+        self.assertIn("could not be read at all", asset_provenance.why_asset(self.tree.assets) or "")
+
+
+class WhenGitWillNotAnswer(unittest.TestCase):
+    """A tree this cannot enumerate must not read as a clean one."""
+
+    def test_a_directory_that_is_not_a_repository_is_an_error_and_not_an_empty_answer(self):
+        # Returning "no files" from a git that would not answer makes an unrunnable check
+        # indistinguishable from a clean tree — and `main` would then exit 0 over a tree holding
+        # unrecorded binaries. Reachable in life: an export or a checkout with no `.git`.
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "blob.bin").write_bytes(NOT_TEXT)
+            with self.assertRaises(RuntimeError) as refusal:
+                asset_provenance.check(Path(directory))
+            self.assertIn("could not list this tree", str(refusal.exception))
 
 
 class ThisRepository(unittest.TestCase):
