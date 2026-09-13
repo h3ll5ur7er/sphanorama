@@ -176,13 +176,36 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       IFrameStoreAccess& frames;
       FrameRef frame;
       bool keep = false;
+      bool held = false;
       ~GiveBack() {
         if (keep) return;
-        (void)frames.Forget(frame);
+        // **The pin comes off before the frame goes**, which is the ordering the engine keeps and
+        // has a test named for (`ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem`, driven
+        // through `PaddingFrameStore`). `Forget` refuses a pinned frame and keeps the entry, so
+        // forgetting first would leave the store accounting for bytes nobody holds.
+        //
+        // **Everything below this line is unreachable today, and that is measured rather than
+        // assumed.** `ADD_FAILURE()` here leaves 808 tests green and never prints; moved above the
+        // early return it fires on every `Paint`, always with `keep=true, held=false`. Both exits
+        // that could reach it are shut: `Pin` cannot fail for a frame this line just allocated in
+        // this store, and `Pin` cannot hand back a null span for a non-empty allocation.
+        //
+        // It stays as *cleanup* rather than as a guard, which is the distinction: a destructor is
+        // correct by construction and needs no reachability argument, where a branch that decides
+        // behaviour does. What it must not do is claim more than that — an earlier version of this
+        // comment presented these two assertions as load-bearing on the strength of a measurement
+        // taken with the assertion above forced to fire, which is a different program.
+        if (held) {
+          EXPECT_TRUE(frames.Release(frame).ok()) << "a pin this helper took would not come off";
+        }
+        EXPECT_TRUE(frames.Forget(frame).ok()) << "the store refused to forget a frame this helper "
+                                                  "allocated, which is what it does while a pin is "
+                                                  "still outstanding";
       }
     } giveBack{store, frame};
     const Result<std::span<uint8_t>> pinned = store.Pin(frame);
     ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+    giveBack.held = true;
     ASSERT_NE(pinned.value.data(), nullptr);
     for (int32_t y = 0; y < edge; ++y) {
       for (int32_t x = 0; x < edge; ++x) {
@@ -193,6 +216,7 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       }
     }
     EXPECT_TRUE(store.Release(frame).ok());
+    giveBack.held = false;
     giveBack.keep = true;
     *out = frame;
   }
@@ -304,6 +328,15 @@ TEST_P(Extraction, FindsNothingOnAFlatFrame) {
   EXPECT_EQ(features.value.descriptors.id.value, 0U) << "count == 0 must mean no frame was taken";
   EXPECT_EQ(features.value.keypoints.id.value, 0U);
   EXPECT_EQ(store.Forget(features.value.descriptors).code, StatusCode::NotFound);
+  // **Stamped even with nothing in it**, which is a fact about where one assignment sits: `Extract`
+  // writes `extractor` above its `count == 0` early return. Move it below and this set comes back
+  // unstamped, `EstimatePairwise`'s provenance guard refuses it instead of the count guard, and
+  // `EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded` stops driving the guard it is named for
+  // — measured, with the whole suite green either way until this line existed. A reviewer argued in
+  // round 3 that a value no caller reads is not worth a test; round 4 measured that the reordering
+  // restores a defect invisibly, which settles it the other way.
+  EXPECT_NE(features.value.extractor, 0)
+      << "a set with nothing in it is still this engine's, and the guards downstream rely on it";
 }
 
 TEST_P(Extraction, IsDeterministic) {
@@ -1167,13 +1200,32 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // The status code went unasserted here for the same reason it did on the lens and prior guards
   // until the previous commit — this is the third of the three, and the comment above claimed all
   // three were covered while two were.
+  // **A set from a flat frame, not a `FeatureSet{}`**, and the difference is the whole of whether
+  // this drives the guard it names. A default-constructed set has `extractor == 0`, so the
+  // provenance check refuses it first and the count guard is never reached: deleting
+  // `a.count <= 0 || b.count <= 0` outright left all 808 tests green. `Extract` stamps *before* its
+  // `count == 0` early return, so a flat frame gives back the one shape that is this engine's and
+  // still empty — which is also the shape a capture produces, and which without the count guard
+  // reaches `Pin(FrameRef{})` and answers `NotFound` from the store where the contract promises
+  // `InvalidArgument` from here.
+  const Result<FeatureSet> nothing = engine.ExtractFeatures(Blank());
+  ASSERT_TRUE(nothing.ok()) << nothing.status.detail;
+  ASSERT_EQ(nothing.value.count, 0);
+  // Asserted at the point that depends on it as well as where it is written, and against another
+  // of this engine's sets rather than a literal, since the value is the implementation's business.
+  ASSERT_EQ(nothing.value.extractor, a.value.extractor)
+      << "an empty extraction came back unstamped, so the provenance guard refuses it first and "
+         "the count guard below is never reached";
+
   const int pinsBeforeEmpty = counting.pins;
   const Result<PairwiseResult> emptyA =
-      engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(nothing.value, b.value, Quat{1, 0, 0, 0}, Lens());
   EXPECT_FALSE(emptyA.ok());
   EXPECT_EQ(emptyA.status.code, StatusCode::InvalidArgument) << emptyA.status.detail;
+  EXPECT_EQ(emptyA.status.component, "FeatureRegistrationEngine")
+      << "an empty first set reached the store instead of being refused here";
   const Result<PairwiseResult> emptyB =
-      engine.EstimatePairwise(a.value, FeatureSet{}, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(a.value, nothing.value, Quat{1, 0, 0, 0}, Lens());
   EXPECT_FALSE(emptyB.ok());
   EXPECT_EQ(emptyB.status.code, StatusCode::InvalidArgument) << emptyB.status.detail;
   EXPECT_EQ(emptyB.status.component, "FeatureRegistrationEngine")
@@ -1182,46 +1234,21 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
       << "an empty set was refused after pinning " << (counting.pins - pinsBeforeEmpty)
       << " frames; the refusal is supposed to precede every `Pin`";
 
-  // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
-  // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
-  // makes differs in *width* and the mismatch guard fires — after all four `Pin`s, which are taken
-  // up front.
+  // **A refusal that lands after the pins**, which is the whole reason this case is here: the
+  // `Forget` assertion below would be true of a call that touched nothing if the refusal came
+  // first. Four pins is what a pair costs — keypoints and descriptors for each set — taken up
+  // front.
   //
-  // An earlier version of this comment said "differs in width **or in element type**". Element type
-  // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard
-  // is a value compared with itself. Width is the whole of what defends this, and a `FeatureSet`
-  // carrying the detector that made it is filed as its own change.
-  //
-  // **That the frames were pinned at all is asserted by counting pins, not by reading the message —
-  // and that is all it asserts.** This case exists so the `Forget` count below is not vacuous: a
-  // refusal *before* anything is pinned would make "forgot none of the four" true of a call that
-  // touched nothing. Four pins is what a pair costs, taken up front — keypoints and descriptors for
-  // each set — so a non-zero-pin refusal is one that got past them.
-  //
-  // **It does not say where past them, and an earlier version of this comment claimed it did.**
-  // `ReadBearings`, `ReadDescriptors` and the width guard all refuse with `InvalidArgument` after
-  // exactly these same four pins, so nothing observable here separates them. The substring match on
-  // `Status::detail` that this replaced *could* separate them, and a reviewer showed the trade
-  // directly: a refusal moved to after the pins and before `ReadBearings`, with a message lacking
-  // the words "same detector", passes this assertion and fails the old one. So this is a trade and
-  // not a strengthening — the previous commit called it "strictly stronger", which is false.
-  //
-  // The trade is still the right way round, because the discriminator it gave up was a substring of
-  // a field `types.h` declares is never parsed, carrying the one phrase this branch had just
-  // corrected the engine for using: the message rewrite survived only because the new wording
-  // happened to keep those two words. What the old assertion could not do is catch the failure this
-  // one does — a refusal before any pin, whose message still said "same detector" and which it
-  // therefore passed. Neither set contains the other. Where a refusal lands *inside* the read path
-  // is covered by `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`, which drives those guards
-  // one at a time.
-  const FeatureDetector other =
-      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
-  FeatureRegistrationEngine foreign{counting, other};
-  const Result<FeatureSet> c = foreign.ExtractFeatures(Textured());
-  ASSERT_TRUE(c.ok()) << c.status.detail;
+  // A doctored stride is the vehicle because provenance is checked before anything is pinned now,
+  // so a foreign set no longer gets far enough. The count says the refusal was past the pins and
+  // not where: `ReadBearings`, `ReadDescriptors` and the width guard all refuse with
+  // `InvalidArgument` after exactly these four, and telling them apart is
+  // `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`'s job.
+  FeatureSet doctored = b.value;
+  doctored.descriptors.stride = doctored.descriptors.stride / 2;
   const int pinsBeforeMismatch = counting.pins;
   const Result<PairwiseResult> mismatched =
-      engine.EstimatePairwise(a.value, c.value, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(a.value, doctored, Quat{1, 0, 0, 0}, Lens());
   ASSERT_FALSE(mismatched.ok());
   EXPECT_EQ(mismatched.status.code, StatusCode::InvalidArgument) << mismatched.status.detail;
   EXPECT_EQ(counting.pins - pinsBeforeMismatch, 4)
@@ -1263,7 +1290,6 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
-  ForgetOutputs(c.value);
 }
 
 /**
@@ -1311,8 +1337,13 @@ TEST_P(Extraction, APinRefusalKeepsTheStoresOwnComponent) {
  * from being incorrect code, and on this branch that edit has happened twice.
  *
  * A `FeatureSet` is a value its caller fills in, so every case here is reachable without a
- * conspiring store: a caller that mislays a stride, doubles a count, or hands on a set built for a
- * different detector. What is asserted is a refusal rather than a message — a guard's job is to not
+ * conspiring store: a caller that mislays a stride, or doubles a count. **A third route used to be
+ * listed here — handing on a set built for a different detector — and it is closed**, since
+ * `EstimatePairwise` refuses a foreign `extractor` before a single `Pin`, which
+ * `TwoSetsFromAForeignExtractorAreRefused` asserts. The conclusion stands and the justification
+ * lost a third of itself; that matters here more than elsewhere, because this docblock is the
+ * argument for keeping seven guards no test drives directly, and the same branch deleted an index
+ * guard on exactly this reasoning. What is asserted is a refusal rather than a message — a guard's job is to not
  * read past the frame — and the detail is checked only where two guards would otherwise be
  * indistinguishable.
  */
@@ -1357,10 +1388,49 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
                   .find("keypoint frame holds fewer bytes"),
               std::string::npos);
   }
-  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** Doctoring one
-  // side only never reaches these guards: the width comparison refuses the pair first, because a
-  // 64-byte row on one side and a 32-byte row on the other is exactly what "not made by the same
-  // detector" means. Both sides claim it, the widths agree, and the row-count division is then the
+  // **One side at a time, which is what the three propagation checks need to be driven at all.**
+  // Every doctored input here used to go into `a` or into both sets at once, so `!bearingsB.ok()`,
+  // `!matA.ok()` and `!matB.ok()` could each be deleted with all 808 tests green: the `b` side was
+  // never doctored alone, and the two descriptor checks shadowed each other whenever both were.
+  //
+  // The comment that justified doctoring both sides said a one-sided pitch "never reaches these
+  // guards: the width comparison refuses the pair first". Measured, that is false — `ReadDescriptors`
+  // checks each set against *its own* frame before the two are compared to each other — and the
+  // wrong justification is what left the hole. Each case below asserts the sentence, because
+  // "refused" is satisfied by the width comparison too.
+  {
+    FeatureSet narrowB = b.value;
+    narrowB.keypoints.stride = 7;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, narrowB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a keypoint stride under one row on the second set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("stride"), std::string::npos)
+        << "refused, but not by the second set's keypoint bounds: " << pair.status.detail;
+  }
+  {
+    FeatureSet wideOnlyA = a.value;
+    wideOnlyA.descriptors.stride = a.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(wideOnlyA, b.value, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on the first set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the first set's descriptor bounds: " << pair.status.detail;
+  }
+  {
+    FeatureSet wideOnlyB = b.value;
+    wideOnlyB.descriptors.stride = b.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, wideOnlyB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on the second set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the second set's descriptor bounds: " << pair.status.detail;
+  }
+
+  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** The widths
+  // agree, so the comparison between them has nothing to say, and the row-count division is the
   // only thing between the matcher and a read past the end of the allocation.
   {
     FeatureSet wideA = a.value;
@@ -1442,7 +1512,10 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
   //     cannot reach it; the only route is the unset-stride fallback on a descriptor frame over two
   //     gibibytes, which a test has no business allocating.
   //
-  // All four are kept. The call order is not a promise, and a future reader of these frames may not
+  // All three are kept — the three shadowed ones this list names; the four driven above are kept by
+  // the cases that drive them. The closing line said "all four" under a list of three for as long as
+  // this census has existed, in a paragraph whose whole subject is having counted wrong twice.
+  // The call order is not a promise, and a future reader of these frames may not
   // have a keypoint guard in front of it.
 
   ForgetOutputs(a.value);
@@ -1486,6 +1559,85 @@ TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
+}
+
+/**
+ * Two sets from a foreign extractor are refused, not matched under this engine's metric.
+ *
+ * The width check that stood here before could only see sets that differed from *each other*. When
+ * both come from one foreign extractor they agree, so nothing compared them to the engine reading
+ * them: SIFT's 512-byte float rows were matched as 512 Hamming bytes and reported accepted (ADR 0058
+ * carries the measurement and the arrangement it was taken on).
+ *
+ * **Every other detector, not one of them**, because two of the six cross combinations are the ones
+ * this decision *costs* something: ORB and AKAZE share `CV_8U` and `NORM_HAMMING`, so before the
+ * stamp existed each read the other's rows correctly, and refusing them is a price ADR 0058 accepts
+ * rather than a hole it closes. A test that only ever crossed the metric would have pinned the half
+ * that was free.
+ */
+TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
+  // Over the counting store, because every refusal here is `InvalidArgument` and the count is the
+  // only thing that tells the provenance guard's refusal from a later one: the guard runs before a
+  // single `Pin`, and everything past it has already taken four. Without that, one pairing — SIFT
+  // reading AKAZE's 61-byte rows as `CV_32F` — is refused by the divisibility check instead and
+  // passes this test without the guard having run.
+  CountingForgets counting{store};
+  FeatureRegistrationEngine engine{counting, GetParam()};
+
+  const auto refusedBeforePinning = [&](const FeatureSet& left, const FeatureSet& right,
+                                        const char* what) {
+    const int before = counting.pins;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(left, right, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_FALSE(pair.ok()) << what << " was matched under this engine's metric, answering with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
+    EXPECT_EQ(counting.pins, before)
+        << what << " was refused after " << (counting.pins - before)
+        << " pins, so something past the provenance guard refused it and this case is not driving "
+           "the guard it is named for";
+  };
+
+  const Result<FeatureSet> ours = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(ours.ok()) << ours.status.detail;
+  // **Non-empty, asserted rather than assumed.** The count guard sits immediately above the
+  // provenance guard and answers identically — pre-`Pin`, `InvalidArgument`, this component — so the
+  // pin-count discriminator above cannot tell them apart, and the only thing aiming these cases at
+  // the guard they are named for is that every set here has features. A detector retuned until
+  // `Textured()` yields none would silently convert all of them into count-guard cases that still
+  // pass. The sibling test thirty lines up learned this the hard way and pins its own arrangement
+  // the same way.
+  ASSERT_GT(ours.value.count, 0);
+
+  for (const FeatureDetector foreignDetector : kAllFeatureDetectors) {
+    if (foreignDetector == GetParam()) continue;
+    FeatureRegistrationEngine foreign{counting, foreignDetector};
+    const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
+    const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
+    ASSERT_TRUE(a.ok() && b.ok());
+    ASSERT_GT(a.value.count, 0);
+    ASSERT_GT(b.value.count, 0);
+
+    // **Both positions, because the guard has two operands and `||` short-circuits.** Round 1 of
+    // this PR's review left every case with the bad set in `a`, and deleting `b.extractor != mine`
+    // kept the whole suite green — the defect the second and third calls below exist for.
+    refusedBeforePinning(a.value, b.value, "a pair from one foreign extractor");
+    refusedBeforePinning(ours.value, a.value, "a foreign set in the second position");
+    refusedBeforePinning(a.value, ours.value, "a foreign set in the first position");
+
+    ForgetOutputs(a.value);
+    ForgetOutputs(b.value);
+  }
+
+  // Zero is the other way a set fails the check, and its partner has to be a set this engine did
+  // produce: paired with a foreign one the foreign stamp refuses the call and the zero is never the
+  // reason for anything.
+  FeatureSet unstamped = ours.value;
+  unstamped.extractor = 0;
+  refusedBeforePinning(unstamped, ours.value, "a set no extractor stamped, in the first position");
+  refusedBeforePinning(ours.value, unstamped, "a set no extractor stamped, in the second position");
+
+  ForgetOutputs(ours.value);
 }
 
 TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {

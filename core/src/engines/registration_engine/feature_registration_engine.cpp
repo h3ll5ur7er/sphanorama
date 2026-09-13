@@ -21,6 +21,25 @@
 namespace sphanorama {
 namespace {
 
+// Offset by one so that a `FeatureSet` nobody stamped keeps `extractor == 0` and is refused rather
+// than colliding with the first enumerator.
+constexpr int32_t ExtractorIdentity(FeatureDetector detector) {
+  return static_cast<int32_t>(detector) + 1;
+}
+
+// **Checked rather than relied on.** `types.h` promises that zero means unstamped, and the whole of
+// what keeps that promise is the offset above — over enumerators that live in another header, where
+// nothing says they start at zero. A `FeatureDetector` renumbered to include zero's preimage would
+// make an engine stamp 0, and then two sets nobody stamped would match each other under whatever
+// metric that engine happened to have. At compile time, so it costs nothing to run and cannot be
+// forgotten.
+static_assert([] {
+  for (const FeatureDetector detector : kAllFeatureDetectors) {
+    if (ExtractorIdentity(detector) == 0) return false;
+  }
+  return true;
+}(), "a detector's identity came out zero, which types.h reserves for a set nobody stamped");
+
 constexpr const char* kComponent = "FeatureRegistrationEngine";
 
 // x and y as two float32s. The smallest thing a matcher needs, and the reason the keypoint frame
@@ -351,6 +370,7 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   FeatureSet features;
   features.frame = frame.id;
   features.count = static_cast<int32_t>(order.size());
+  features.extractor = ExtractorIdentity(detector_);
 
   // A frame with nothing in it is answered with nothing, rather than with two empty allocations
   // the caller would then have to remember to forget. `count == 0` is the whole answer.
@@ -734,8 +754,11 @@ Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8
  *
  * This engine only ever builds the three defaults, so keying off the detector is exact for anything
  * it produced. It is still a second copy of a fact: the type is decided where the descriptors are
- * written and re-derived here. The fix that removes the copy is a field on `FeatureSet`, which is a
- * contract change and is recorded rather than smuggled in beside a bug fix.
+ * written and re-derived here, and it stays one. `FeatureSet::extractor` was the field this comment
+ * once expected to remove the copy, and ADR 0058 deliberately made it an opaque producer identity
+ * instead — a contract that named a descriptor type would be naming OpenCV's taxonomy, and two
+ * detectors sharing a type would still be indistinguishable. The copy is a cost that decision
+ * accepted; it is safe only because `extractor` refuses any set this engine did not write.
  */
 int DescriptorType(FeatureDetector detector) {
   switch (detector) {
@@ -1021,6 +1044,15 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
                                "a feature set with no rows cannot be matched against anything");
   }
+  // Before the pins, because this is a fact about the handles and not about the pixels.
+  const int32_t mine = ExtractorIdentity(detector_);
+  if (a.extractor != mine || b.extractor != mine) {
+    return Err<PairwiseResult>(
+        StatusCode::InvalidArgument, kComponent,
+        "these feature sets were not produced by this engine's extractor, and their descriptors "
+        "carry no record of the metric they want: matching them here would answer confidently "
+        "under the wrong one");
+  }
   // The prior seeds and bounds the search, so an unusable one is a refusal rather than a silent
   // fall back to identity — identity *is* a rotation, and a caller handed one would read a failed
   // seeding as a frame that had not moved.
@@ -1077,30 +1109,11 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     if (!matA.ok()) return Err<PairwiseResult>(matA.status.code, kComponent, matA.status.detail);
     const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value, type);
     if (!matB.ok()) return Err<PairwiseResult>(matB.status.code, kComponent, matB.status.detail);
-    // **This guard compares widths, and cannot compare detectors — say so rather than letting the
-    // message imply otherwise.** Both matrices were built by `ReadDescriptors(..., type)` from the
-    // *same* `type`, which came from this engine's own `detector_`, so `matA.type() != matB.type()`
-    // is a value compared with itself and is always false. A reviewer found it by asking what could
-    // make the conjunct true; nothing can. What actually fires is `cols`, and `cols` is a function
-    // of the frame's stride and the element size this engine imposed — a proxy for the detector,
-    // not the detector.
-    //
-    // It catches the case where the two sets differ *from each other* — ORB is 32 bytes a row, AKAZE
-    // 61, SIFT 128 floats — and it is blind to the case that matters, which is both sets made by
-    // one detector that is not this one. Then the two widths agree, this guard is satisfied, and the
-    // rows are matched under the wrong metric. Measured over all nine (writing detector, reading
-    // engine) pairs on a rendered ring: six answer and three of those come back `accepted = true`,
-    // SIFT's 512-byte float rows read as 512 Hamming bytes giving 30 correspondences where the
-    // right metric finds 178. The only cross-detector refusals in that table come from
-    // `ReadDescriptors`'s divisibility check and from the fit simply failing — never from here.
-    //
-    // The fix is for `FeatureSet` to carry the detector that made it, and that is a contract change
-    // with an ADR, deliberately not smuggled into a review round. The dead conjunct stays because
-    // that change is what makes it live; the message is now about what is checked.
-    if (matA.value.type() != matB.value.type() || matA.value.cols != matB.value.cols) {
+    // Provenance is `extractor`'s job, checked before the pins. What is left here is a caller that
+    // set a stride itself, which the two sets' own widths can still disagree about.
+    if (matA.value.cols != matB.value.cols) {
       return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
-                                 "the two feature sets have different descriptor widths, so they "
-                                 "were not made by the same detector");
+                                 "the two feature sets have different descriptor widths");
     }
 
     // **Lowe's ratio test, two nearest neighbours.** A single nearest neighbour always exists, so
@@ -1117,9 +1130,28 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
       if (pair[0].distance > kLoweRatio * pair[1].distance) continue;
+      // **No guard on these indices, and that is a decision rather than an omission.** Three
+      // versions of one have now been tried here and each was unreachable: a length comparison
+      // between the two readers, a per-row bound, and a sign check. `ReadDescriptors` builds
+      // `cv::Mat(set.count, …)` and `ReadBearings` a `vector(set.count)` from the same `count`, and
+      // `knnMatch` bounds `queryIdx` by `matA.rows` and `trainIdx` by `matB.rows` — so nothing a
+      // caller owns can separate the two, and no `FeatureSet`, stride or store gets there.
+      // Instrumenting all three with `abort()` leaves 808 tests green and none of them printing; the
+      // same instrumentation as `ia >= 1` aborts at exit 134, so the line is reached and the
+      // condition is simply never true.
+      //
+      // The reason not to keep one anyway is sharper than the rule against untested guards. A
+      // `continue` here would convert a would-be out-of-range read into "too few correspondences",
+      // which is a *quieter* failure than the heap-buffer-overflow the sanitizer build would report
+      // — and the sanitizer is how the seven bounds guards above were found in the first place. A
+      // guard that cannot fire but can blunt the instrument that would have caught the thing it
+      // guards against is worse than no guard.
+      //
+      // What the deleted length check was written against is real and stays here as prose: a reader
+      // that dropped an unusable row instead of marking it would shift every index after it, which
+      // is what `Bearing::usable` exists to prevent.
       const size_t ia = static_cast<size_t>(pair[0].queryIdx);
       const size_t ib = static_cast<size_t>(pair[0].trainIdx);
-      if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
       // A row the lens could not turn into a direction is dropped *here*, where dropping it costs
       // one correspondence, rather than in `ReadBearings`, where it shifted every index after it.
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;

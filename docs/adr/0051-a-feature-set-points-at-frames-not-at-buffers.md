@@ -1,6 +1,6 @@
 # 0051 — A feature set points at frames, not at buffers
 
-**Status:** accepted
+**Status:** accepted, extended by [0058](0058-a-feature-set-names-its-extractor.md)
 
 ## Context
 
