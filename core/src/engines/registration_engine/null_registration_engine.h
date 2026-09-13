@@ -12,7 +12,7 @@ class NullRegistrationEngine final : public IRegistrationEngine {
  public:
   Result<FeatureSet> ExtractFeatures(const FrameRef& frame) override;
   Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
-                                          const Quat& prior) override;
+                                          const Quat& prior, const Intrinsics& lens) override;
   Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
                                 std::span<const PoseSample> priors,
                                 const Intrinsics& initial) override;

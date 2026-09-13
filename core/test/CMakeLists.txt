@@ -22,6 +22,9 @@ if(SPHANORAMA_WITH_OPENCV)
       # Registration exists only where OpenCV does (ADR 0052), so its tests do too. A reader looking
       # for registration coverage in a WASM-only checkout will find none, and that is the reason.
       "engines/registration_engine_test.cpp"
+      # The accuracy measurement, which needs a registration, a dataset reader and a scorer at
+      # once. It renders its own dataset and skips without `uv`, per ADR 0055.
+      "engines/registration_accuracy_test.cpp"
       # The synthetic-dataset loader reads `truth.json` with `cv::FileStorage`, and everything that
       # consumes it is on the registration path, so it lives behind the same flag rather than
       # dragging a second JSON reader into a build that has one.
@@ -86,8 +89,17 @@ if(SPHANORAMA_WITH_OPENCV)
   # loader converts it to a `Result` at its own edge. The test file takes it too — it copies and
   # deletes directories to build the damaged datasets its refusal cases need, and `std::filesystem`
   # reports those failures by throwing, which under `-fno-exceptions` is a terminate that reads as a
-  # crash rather than as the fixture problem it is. Appended after the target's own options, so it
-  # wins over the `-fno-exceptions` the core exports.
+  # crash rather than as the fixture problem it is.
+  #
+  # **These properties are insurance, not a fix, and this comment used to say otherwise.** It read
+  # "so it wins over the `-fno-exceptions` the core exports" — the core does not export it.
+  # `core/CMakeLists.txt` sets it `PRIVATE` (only `-fno-rtti` is `PUBLIC`), so nothing here inherits
+  # it: a whole-branch reviewer checked `compile_commands.json` and found 0 of 39 `core/test`
+  # translation units carrying the flag. So these files compile with exceptions either way and the
+  # properties change nothing today. They stay because making the core's flag `PUBLIC` is a
+  # one-word edit, and the day someone makes it these three files are the ones that must keep
+  # throwing — an untested guard kept knowingly, with the reason written down, rather than a guard
+  # kept because it felt safer.
   set_source_files_properties(support/synthetic_dataset.cpp support/synthetic_dataset_test.cpp
     PROPERTIES COMPILE_OPTIONS "-fexceptions")
 
@@ -111,10 +123,11 @@ if(SPHANORAMA_WITH_OPENCV)
   target_include_directories(sphanorama_dataset_alloc_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(sphanorama_dataset_alloc_test PRIVATE sphanorama_core sphanorama_opencv)
   target_compile_options(sphanorama_dataset_alloc_test PRIVATE -Wall -Wextra -Werror)
-  # Through the source property, not `target_compile_options`, and the difference is the trap this
-  # file already documents twenty lines up: a target's own options are emitted *before* the
-  # INTERFACE options it inherits, so a `-fexceptions` put there would read as
-  # `-fexceptions … -fno-exceptions` and lose to the flag the core exports.
+  # Through the source property rather than `target_compile_options`, for consistency with the call
+  # twenty lines up. That call's original comment justified the choice by an ordering trap — a
+  # target's own options emitted before the INTERFACE options it inherits, so a `-fexceptions` here
+  # would lose to an inherited `-fno-exceptions`. There is no such inheritance: the core's flag is
+  # `PRIVATE`. The ordering claim is about CMake in general and is not what decides anything here.
   # `synthetic_dataset.cpp` already carries the property from the call above — source file
   # properties are directory-scoped, so it is set once for both targets that compile it.
   set_source_files_properties(support/synthetic_dataset_alloc_test.cpp

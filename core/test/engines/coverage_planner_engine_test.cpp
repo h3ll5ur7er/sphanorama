@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <set>
 #include <vector>
 
@@ -20,8 +21,7 @@
 namespace sphanorama {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kRadToDeg = 180.0 / kPi;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 CapturePlanSpec Spec(double h = 66.0, double v = 50.0, double overlap = 0.30) {
   CapturePlanSpec spec;
@@ -51,7 +51,7 @@ CapturePlan Plan(const CapturePlanSpec& spec) {
 std::vector<Vec3> SphereSamples(int count) {
   std::vector<Vec3> points;
   points.reserve(static_cast<size_t>(count));
-  const double golden = kPi * (3.0 - std::sqrt(5.0));
+  const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
   for (int i = 0; i < count; ++i) {
     const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / count;
     const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));

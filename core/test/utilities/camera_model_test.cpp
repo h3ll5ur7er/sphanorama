@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 #include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
@@ -14,8 +15,7 @@
 namespace sphanorama {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kDegPerRad = 180.0 / kPi;
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
 

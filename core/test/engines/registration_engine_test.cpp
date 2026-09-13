@@ -1,5 +1,11 @@
-// V7 — how frames are aligned. This file covers feature extraction only; matching and the global
-// refinement arrive in their own increments.
+// V7 — how frames are aligned. This file covers feature extraction and pairwise matching; the
+// global refinement arrives in its own increment.
+//
+// It said "feature extraction only" until a reviewer read the whole file rather than the diff. The
+// branch that added `EstimatePairwise` added 538 lines of matching tests below and never touched
+// these two, because a header at line 1 is outside every range diff — which is the shape CLAUDE.md
+// records from PR #49's fourteenth round. The first thing a reader met was a sentence telling them
+// the tests they came for were somewhere else.
 //
 // Feature counts are not knowable in advance and would be meaningless if they were: how many
 // corners ORB finds on a checkerboard depends on its threshold, the pyramid, and the content's
@@ -16,12 +22,15 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <utility>
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
+#include "utilities/quaternion.h"
 #include "engines/registration_engine/null_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "utilities/pixel_format.h"
@@ -126,6 +135,21 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
   MemoryFrameStoreAccess store{1 << 24};
 
   FeatureRegistrationEngine Engine() { return FeatureRegistrationEngine{store, GetParam()}; }
+
+  /**
+   * The lens the textured frames are taken to have been seen through — square, centred, undistorted.
+   *
+   * Undistorted on purpose: these tests are about matching and the rotation fit, and a Brown-Conrady
+   * term here would mean a failure could be either. The distortion path is `camera_model`'s own
+   * tests' subject, and ADR 0054 records that a wrong lens makes this engine wrong quietly.
+   */
+  static Intrinsics Lens(int32_t edge = kWidth) {
+    Intrinsics lens{};
+    lens.fx = lens.fy = static_cast<double>(edge);
+    lens.cx = lens.cy = static_cast<double>(edge) / 2.0;
+    lens.width = lens.height = edge;
+    return lens;
+  }
 
   /**
    * A frame of `edge` square whose RGBA8 luma at (x, y) is whatever `paint` says.
@@ -910,22 +934,485 @@ TEST_P(Extraction, AnswersADegenerateFrameRatherThanLettingOpenCvThrowThroughIt)
       << "the pin was not released on the way out of a throwing call";
 }
 
-TEST_P(Extraction, MatchingAndRefinementRefuseRatherThanAnswer) {
-  // The two methods this increment does not implement. A reviewer made both return `Ok` — the
-  // identity result the header calls dangerous — and the whole file stayed green, so "refuses
-  // rather than pretending" was a sentence with nothing behind it.
+TEST_P(Extraction, RefinementRefusesRatherThanAnswering) {
+  // The method this increment still does not implement. A reviewer made it return `Ok` — the empty
+  // solution the header calls dangerous — and the whole file stayed green, so "refuses rather than
+  // pretending" was a sentence with nothing behind it.
+  //
+  // **`EstimatePairwise` used to be asserted here too, and now is not**, because it answers. Its
+  // refusals have their own tests below; what this one holds is the `Refine` half, and the pairing
+  // was an accident of both being unimplemented at once rather than a property they share.
   FeatureRegistrationEngine engine = Engine();
   const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
   const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
   ASSERT_TRUE(a.ok() && b.ok());
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, Quat{});
-  EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
-  EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
-
   const Result<GlobalSolution> refined = engine.Refine({}, {}, Intrinsics{});
   EXPECT_FALSE(refined.ok());
   EXPECT_EQ(refined.status.code, StatusCode::Unsupported);
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+/**
+ * A store that counts what was forgotten, so "this call forgets none of the four" is measurable.
+ *
+ * The contract is emphatic about this and says why: the shape invites the opposite, because
+ * `EstimatePairwise` is the method with the obvious-looking reason to release what it was handed.
+ * A caller may estimate the same pair twice, or one set against several others, so an
+ * implementation that tidied up after itself would destroy the second call's input — and the
+ * damage would show up as a `NotFound` somewhere else entirely.
+ */
+class CountingForgets final : public IFrameStoreAccess {
+ public:
+  explicit CountingForgets(IFrameStoreAccess& inner) : inner_(inner) {}
+
+  int forgets = 0;
+
+  Status Forget(const FrameRef& f) override {
+    ++forgets;
+    return inner_.Forget(f);
+  }
+
+  Result<FrameRef> Allocate(int32_t w, int32_t h, PixelFormat f) override {
+    return inner_.Allocate(w, h, f);
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef& f) override { return inner_.Pin(f); }
+  Status Release(const FrameRef& f) override { return inner_.Release(f); }
+  Result<FrameStoreBudget> Budget() override { return inner_.Budget(); }
+  Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_.ResidencyOf(f); }
+  Status Demote(const FrameRef& f, Residency t) override { return inner_.Demote(f, t); }
+  Status Adopt(const FrameRef& f) override { return inner_.Adopt(f); }
+  Status Clear() override { return inner_.Clear(); }
+  Result<uint64_t> TierGeneration() override { return inner_.TierGeneration(); }
+  Result<uint64_t> ContentHash(const FrameRef& f) override { return inner_.ContentHash(f); }
+
+ private:
+  IFrameStoreAccess& inner_;
+};
+
+TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
+  // **The "bounds" half of "seeds and bounds, never truth", which was missing.** Without it, a
+  // panorama with a half-turn symmetry makes ORB and AKAZE match features to their point-reflected
+  // twins; the aliased rotation fits the pixels with ordinary inlier counts and sub-two-pixel
+  // residuals, and was accepted. Measured on a twelve-frame ring before this bound existed: two of
+  // eleven ORB steps and two of eleven AKAZE steps came back 175 to 179 degrees out about the
+  // optical axis.
+  //
+  // Here the frames are identical, so the pixels say "identity" as loudly as pixels can. A prior a
+  // half turn away must not drag the answer there — and equally must not be *followed*, which is
+  // what the next test holds.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Quat halfTurn = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi);
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, halfTurn, Lens());
+
+  // **Refusal, not an answer**, and asserting that is what makes this test able to fail. The first
+  // version guarded its assertion with `if (pair.ok() && pair.value.accepted)` — which is never
+  // true here, so the assertion never ran and no sabotage could reach it. Deleting the bound left
+  // it green, which is how it was caught.
+  //
+  // The behaviour it now pins: the sensor says a half turn, the pixels say the identity, and those
+  // cannot both be nearly right. The bound excludes the identity as a hypothesis, nothing else
+  // gathers inliers near the prior — a half turn sends every bearing behind the camera, where
+  // `Project` refuses — and the call refuses rather than picking a side. That is the honest
+  // outcome: an engine that silently resolved this would be deciding whether to trust the sensor,
+  // which is a policy and not an estimate.
+  // **And it refuses for *this* reason.** `EXPECT_FALSE(pair.ok() && ...)` alone is satisfied by any
+  // refusal at all — a lens the engine could not use, a frame it could not pin, a descriptor width
+  // it did not recognise — none of which have anything to do with the bound this test is named
+  // after. Naming the status and the sentence pins the refusal to the consensus search coming back
+  // empty, which is the only outcome that means the bound did its work.
+  ASSERT_FALSE(pair.ok()) << "the sensor and the pixels disagree by a half turn and this answered "
+                             "anyway, with "
+                          << pair.value.inliers << " inliers";
+  // `RegistrationFailed` rather than `NotFound`: the code says "these two frames did not register",
+  // which is what the bound produces here, and is distinct from the `NotFound` a frame store returns
+  // for a handle naming nothing. The first version of this assertion had to substring-match
+  // `status.detail` to tell those apart — a string the contract says is for a human and is never
+  // parsed — which is a sign the code was carrying two meanings rather than that the test was
+  // clumsy.
+  EXPECT_EQ(pair.status.code, StatusCode::RegistrationFailed)
+      << "refused, but not for the reason this test is about: " << pair.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, APriorInsideTheBoundDoesNotOverrideThePixels) {
+  // The other half, and the one the bound could have broken: "never as truth". A prior that is
+  // wrong but *plausibly* wrong — well inside the bound — must lose to the pixels, or the bound
+  // would have turned the sensor into the answer. Identical frames again, so the truth is the
+  // identity and the prior is thirty degrees from it.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Quat wrongButPlausible =
+      FromAxisAngle(Vec3{0, 1, 0}, 30.0 * std::numbers::pi / 180.0);
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(a.value, b.value, wrongButPlausible, Lens());
+  ASSERT_TRUE(pair.ok()) << pair.status.detail;
+
+  const double fromIdentity =
+      AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 / std::numbers::pi;
+  EXPECT_LT(fromIdentity, 1.0)
+      << "a thirty-degree prior moved the answer " << fromIdentity
+      << " degrees off the identity the pixels show; the prior seeds and bounds, it is not truth";
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
+  // **Including on a refusal**, which is the half the contract had to spell out separately and the
+  // half an implementation is most likely to get wrong: an error path that "cleans up" is the
+  // natural thing to write and is exactly what must not happen here.
+  //
+  // Four refusals are driven, and the fourth is the one that matters. **Three of them refuse before
+  // a single `Pin` is taken** — the empty set, the lens guard, the prior guard — so a `Forget` in
+  // the pinned region could not have been reached by any of them, and an earlier version of this
+  // comment claimed otherwise. The fourth hands the engine two feature sets made by *different*
+  // detectors: all four frames are pinned and both keypoint sets are lifted to bearings before the
+  // descriptor widths are compared, so the exit it takes is past every `BorrowedFrame` in the
+  // function. That is the exit an over-helpful rollback would live in.
+  //
+  // Still not covered, and said here rather than implied: the exits inside the matching loop — too
+  // few correspondences surviving the ratio test, and the consensus search coming back empty. Both
+  // are post-pin and both are reached by other tests in this file, but not with a store that counts
+  // `Forget`.
+  CountingForgets counting{store};
+  FeatureRegistrationEngine engine{counting, GetParam()};
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok()) << a.status.detail;
+  ASSERT_TRUE(b.ok()) << b.status.detail;
+  const int afterExtraction = counting.forgets;
+
+  // A success.
+  const Result<PairwiseResult> ok = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0},
+                                                            Lens());
+  EXPECT_TRUE(ok.ok()) << ok.status.detail;
+
+  // An unusable lens, and an unusable prior. `Quat{0, 0, 0, 0}` spelled out, because `Quat{}` is
+  // the *identity* — the struct default-initialises `w` to 1 — and the first version of this line
+  // used it and was surprised to be refused nothing. A zero quaternion is not a rotation; the
+  // identity is one, and an engine refusing it would be refusing the commonest prior there is.
+  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
+  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
+  // A set with no rows, refused before anything is pinned.
+  EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
+
+  // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
+  // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
+  // makes differs in *width* and the mismatch guard fires — after four `Pin`s and two passes of
+  // `ReadBearings`.
+  //
+  // An earlier version of this comment said "differs in width **or in element type**". Element type
+  // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard
+  // is a value compared with itself. Width is the whole of what defends this, which is why what is
+  // asserted below is the refusal and not the reason — and why a `FeatureSet` carrying the detector
+  // that made it is filed as its own change.
+  const FeatureDetector other =
+      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
+  FeatureRegistrationEngine foreign{counting, other};
+  const Result<FeatureSet> c = foreign.ExtractFeatures(Textured());
+  ASSERT_TRUE(c.ok()) << c.status.detail;
+  const Result<PairwiseResult> mismatched =
+      engine.EstimatePairwise(a.value, c.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_FALSE(mismatched.ok());
+  EXPECT_NE(mismatched.status.detail.find("same detector"), std::string::npos)
+      << "the mismatch was meant to refuse past the pins, and refused somewhere else: "
+      << mismatched.status.detail;
+
+  EXPECT_EQ(counting.forgets, afterExtraction)
+      << "EstimatePairwise forgot " << (counting.forgets - afterExtraction)
+      << " of the frames it was handed; they belong to the caller, refusal or not";
+
+  // And they are still usable afterwards, which is the property the count is a proxy for: a caller
+  // may estimate the same pair again.
+  const Result<PairwiseResult> again = engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0},
+                                                               Lens());
+  EXPECT_TRUE(again.ok()) << "the second estimate of the same pair failed, so the first consumed "
+                             "its input: " << again.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+  ForgetOutputs(c.value);
+}
+
+/**
+ * A refusal from the frame store arrives with the store's name on it, not this engine's.
+ *
+ * **`Status::component` says "which service reported it", and rebuilding a status loses that.**
+ * `EstimatePairwise` used to return `Err<PairwiseResult>(pinned->status.code, kComponent, ...)`,
+ * which kept the code and the detail and overwrote the one field that answers *who*. So a caller
+ * chasing a failed pin was told `FeatureRegistrationEngine` when the store had said `NotFound: no
+ * such frame`. `Extract`, in the same class, already returned the status whole — two methods
+ * disagreeing about the same promise, with no test on either to notice.
+ *
+ * Driven with a handle naming no frame, which is exactly the "could not be pinned" case a caller
+ * reaches by holding a `FeatureSet` past a `Forget`.
+ */
+TEST_P(Extraction, APinRefusalKeepsTheStoresOwnComponent) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  FeatureSet dangling = a.value;
+  dangling.keypoints = FrameRef{};
+
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(dangling, b.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_FALSE(pair.ok());
+  EXPECT_EQ(pair.status.code, StatusCode::NotFound) << pair.status.detail;
+  EXPECT_NE(pair.status.component, "FeatureRegistrationEngine")
+      << "the engine put its own name on a refusal the store issued";
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+/**
+ * Every bounds guard on the way into `EstimatePairwise`, driven.
+ *
+ * **Seven, and none was tested.** The docblock said five for two rounds and the footer below now
+ * enumerates seven; all seven existed when this test was written, so five was a miscount rather
+ * than a change. A reviewer deleted the lot — both keypoint guards
+ * and all three descriptor ones — and 106 tests stayed green, the accuracy measurement included;
+ * the same input then gave ASan `heap-buffer-overflow READ of size 8, 0 bytes after a 3768-byte
+ * region` inside `ReadBearings`. Correct code with nothing defending it is one careless edit away
+ * from being incorrect code, and on this branch that edit has happened twice.
+ *
+ * A `FeatureSet` is a value its caller fills in, so every case here is reachable without a
+ * conspiring store: a caller that mislays a stride, doubles a count, or hands on a set built for a
+ * different detector. What is asserted is a refusal rather than a message — a guard's job is to not
+ * read past the frame — and the detail is checked only where two guards would otherwise be
+ * indistinguishable.
+ */
+TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+  ASSERT_GT(a.value.count, 3);
+
+  const auto refuses = [&](FeatureSet doctored, const char* what) {
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(doctored, b.value, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_FALSE(pair.ok()) << what << ": answered instead of refusing, with "
+                            << pair.value.inliers << " inliers";
+    return pair.status.detail;
+  };
+
+  // **A keypoint stride narrower than one row.** Eight bytes is a row — `FeatureSet::keypoints`
+  // spells that out in the contract — so seven describes a frame whose rows overlap, which no store
+  // produces and a caller can certainly claim.
+  {
+    FeatureSet narrow = a.value;
+    narrow.keypoints.stride = 7;
+    EXPECT_NE(refuses(narrow, "a keypoint stride under one row").find("stride"), std::string::npos);
+  }
+  // **More keypoint rows than the frame holds.** This is the one whose absence ASan caught: without
+  // it the read walks `count * stride` bytes into a frame that has fewer, and the report was
+  // `heap-buffer-overflow READ of size 8, 0 bytes after a 3768-byte region`.
+  {
+    FeatureSet tooMany = a.value;
+    tooMany.count = a.value.count * 4;
+    // **And it has to be the *keypoint* frame's guard that refuses.** Without this line the case was
+    // green with its own guard deleted: `ReadDescriptors` refuses a few lines later, about the
+    // descriptor frame, *after* `ReadBearings` has already walked `4 * count * 8` bytes of a frame
+    // holding `count * 8`. The refusal arrives, the read has already happened, and the only thing
+    // that can tell the two apart is which frame the message names. Two sibling cases in this test
+    // got this assertion when they were written and this one did not, which is the enumeration
+    // failure this repository keeps having: the copy in front of me was fixed and its neighbour
+    // was not.
+    EXPECT_NE(refuses(tooMany, "four times as many keypoint rows as the frame holds")
+                  .find("keypoint frame holds fewer bytes"),
+              std::string::npos);
+  }
+  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** Doctoring one
+  // side only never reaches these guards: the width comparison refuses the pair first, because a
+  // 64-byte row on one side and a 32-byte row on the other is exactly what "not made by the same
+  // detector" means. Both sides claim it, the widths agree, and the row-count division is then the
+  // only thing between the matcher and a read past the end of the allocation.
+  {
+    FeatureSet wideA = a.value;
+    FeatureSet wideB = b.value;
+    wideA.descriptors.stride = a.value.descriptors.stride * 2;
+    wideB.descriptors.stride = b.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(wideA, wideB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on both sides answered instead of "
+                               "refusing, with " << pair.value.inliers << " inliers";
+    // **And the refusal has to be *this* one.** Removing the guard does not make the call answer:
+    // it makes it read past the frame and refuse anyway, because descriptors assembled from
+    // whatever follows the allocation match nothing. `EXPECT_FALSE(ok())` is therefore satisfied
+    // with the guard and without it, and proves nothing either way — the guard's own sentence is
+    // what separates a bounds check from a coincidence. Found by running the sabotage: with all
+    // four guards removed this case still "passed".
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the bounds check this case exists for: " << pair.status.detail;
+  }
+  // **A descriptor pitch one byte over, on both sides.** An earlier comment here claimed SIFT would
+  // reach the divisibility guard — 513 bytes where an element is four — and it does not: the
+  // row-count division is checked *first*, and a 513-byte pitch over a frame of 512-byte rows fails
+  // it, on all three detectors. So this case drives one guard, not two. The assertion below still
+  // accepts either sentence, because naming the wrong one is exactly how the previous comment went
+  // stale.
+  {
+    FeatureSet raggedA = a.value;
+    FeatureSet raggedB = b.value;
+    raggedA.descriptors.stride = a.value.descriptors.stride + 1;
+    raggedB.descriptors.stride = b.value.descriptors.stride + 1;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(raggedA, raggedB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok())
+        << "a descriptor pitch one byte over answered instead of refusing, with "
+        << pair.value.inliers << " inliers";
+    const bool byAGuard = pair.status.detail.find("whole number of elements") != std::string::npos ||
+                          pair.status.detail.find("its own row count") != std::string::npos;
+    EXPECT_TRUE(byAGuard) << "refused, but not by either bounds check this case can reach: "
+                          << pair.status.detail;
+  }
+
+  // **A descriptor pitch that is not a whole number of elements *and still fits the frame*.** The
+  // case above cannot reach that guard: inflating the pitch trips the row-count division first, on
+  // every detector. Shrinking it does reach it — a SIFT set claiming 510-byte rows where the frame
+  // holds 512, with `count` halved so the smaller pitch still covers the bytes. 510 is not a whole
+  // number of four-byte floats, and the row-count division is satisfied, so the divisibility guard
+  // is the one that answers.
+  //
+  // Only SIFT can reach it: for the byte detectors every pitch divides by one. So the assertion is
+  // scoped to the detector it applies to rather than weakened to something all three satisfy.
+  if (GetParam() == FeatureDetector::Sift) {
+    FeatureSet ragged = a.value;
+    FeatureSet raggedB = b.value;
+    ragged.descriptors.stride = a.value.descriptors.stride - 2;
+    raggedB.descriptors.stride = b.value.descriptors.stride - 2;
+    ragged.count = a.value.count / 2;
+    raggedB.count = b.value.count / 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(ragged, raggedB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a 510-byte pitch over four-byte elements answered instead of "
+                               "refusing";
+    EXPECT_NE(pair.status.detail.find("whole number of elements"), std::string::npos)
+        << "refused, but not by the divisibility check this case exists for: " << pair.status.detail;
+  }
+
+  // **Seven guards on this path, four driven above, three shadowed — and I counted them wrong
+  // twice before a reviewer counted them properly.** Written out, because "all the bounds guards"
+  // is the kind of claim that decays into an unexamined comfort:
+  //
+  // Driven: the keypoint stride floor, the keypoint row count, the descriptor row count, and
+  // element divisibility. Removing any one of those four on its own fails a case above.
+  //
+  // Not driven, each because something earlier refuses first — not because the guard is redundant:
+  //   - `count <= 0 || rows.empty()` in `ReadDescriptors`: `EstimatePairwise` refuses a set with no
+  //     rows before either reader runs.
+  //   - a descriptor pitch of zero: needs `count` to exceed the pinned bytes, and `ReadBearings`
+  //     runs first on the same `count`.
+  //   - a column count past `INT_MAX`: `FrameRef::stride` is an `int32_t`, so a declared pitch
+  //     cannot reach it; the only route is the unset-stride fallback on a descriptor frame over two
+  //     gibibytes, which a test has no business allocating.
+  //
+  // All four are kept. The call order is not a promise, and a future reader of these frames may not
+  // have a keypoint guard in front of it.
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+/**
+ * A descriptor row is as wide as the frame says, not as wide as the pinned bytes divide out to.
+ *
+ * **The same defect `ReadBearings` was fixed for, in the reader beside it.** The keypoint reader
+ * now takes its pitch from `FrameRef::stride`; the descriptor reader still computed
+ * `pinned.size() / count`, which is the row width only when the pin returns exactly the rows the
+ * set claims. Hand it a set claiming fewer rows than the frame holds — which a caller can do, since
+ * `FeatureSet` is a value it owns and fills in — and every row came out twice as wide, built from
+ * the bytes of two.
+ *
+ * Driven by halving `count` rather than by a padding store, because this is a statement about the
+ * *set* disagreeing with its frame and not about how the store allocates. The two sets are
+ * extracted from identical frames and one is doctored, so under the old reader `a` is 64 bytes a
+ * row against `b`'s 32 and the mismatch guard refuses the pair; under the new one both are 32 and
+ * the pair registers to the identity it should.
+ */
+
+TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+  ASSERT_GT(a.value.count, 3) << "too few features to halve";
+
+  FeatureSet halved = a.value;
+  halved.count = a.value.count / 2;
+
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(halved, b.value, Quat{1, 0, 0, 0}, Lens());
+  ASSERT_TRUE(pair.ok()) << "the rows were read at the wrong width: " << pair.status.detail;
+  EXPECT_TRUE(pair.value.accepted);
+  EXPECT_LT(AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 /
+                std::numbers::pi,
+            0.5);
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
+  // **The invariant the engineering skill names for exactly this case**, and the only assertion
+  // about a rotation that can be written before any dataset exists to measure against: a frame
+  // registered against itself has turned by nothing, and every match is an inlier. The descriptors
+  // are identical, so the ratio test has a perfect answer for every row and RANSAC has no outlier
+  // to reject — if this one is not exact, nothing further along will be.
+  //
+  // Two frames rather than one `FeatureSet` passed twice, because the contract allows a caller to
+  // estimate the same set against itself and an implementation that aliased its two inputs would
+  // pass this while failing every real pair.
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok()) << a.status.detail;
+  ASSERT_TRUE(b.ok()) << b.status.detail;
+  ASSERT_GT(a.value.count, 0);
+  ASSERT_EQ(a.value.count, b.value.count);
+
+  // **A prior that is not the answer**, which is what makes this an assertion about the fit. The
+  // first version passed the identity — and `FitRotation` seeds its search with the prior, so the
+  // correct answer was sitting in `best` before a pixel was read. A reviewer gutted the estimator to
+  // `return the prior` and this test passed on all three detectors, `medianResidualPx` included.
+  // Ten degrees is comfortably inside the 45-degree bound, so the identity still has to be *found*
+  // rather than handed over, and the pixels are unanimous about it.
+  const Quat offset = FromAxisAngle(Vec3{0.577, 0.577, 0.577}, 10.0 * std::numbers::pi / 180.0);
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(a.value, b.value, offset, Lens());
+  ASSERT_TRUE(pair.ok()) << pair.status.detail;
+
+  // The rotation, as an angle rather than component by component: the double cover makes -q the
+  // same rotation as q, so comparing `w` to 1 would fail on a correct answer half the time.
+  const Quat& turn = pair.value.relativeRotation;
+  const double norm = std::sqrt(turn.w * turn.w + turn.x * turn.x + turn.y * turn.y +
+                                turn.z * turn.z);
+  ASSERT_GT(norm, 0.0) << "a zero quaternion is not a rotation";
+  const double angleDeg =
+      2.0 * std::acos(std::min(1.0, std::abs(turn.w) / norm)) * 180.0 / std::numbers::pi;
+  EXPECT_LT(angleDeg, 1e-6) << "a frame against itself has turned by nothing, not " << angleDeg
+                            << " degrees";
+
+  EXPECT_TRUE(pair.value.accepted);
+  EXPECT_EQ(pair.value.a.value, a.value.frame.value);
+  EXPECT_EQ(pair.value.b.value, b.value.frame.value);
+  EXPECT_GT(pair.value.inliers, 0);
+  EXPECT_LT(pair.value.medianResidualPx, 1e-6)
+      << "identical descriptors at identical keypoints leave no residual";
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
@@ -1146,6 +1633,88 @@ TEST_P(Extraction, TheTexturedFrameHasNoTwoTilesAlike) {
   EXPECT_TRUE(store.Release(frame).ok());
 }
 
+/**
+ * The degeneracy test says the same thing about the same bearings however many there are.
+ *
+ * **The point is the invariance, so the test is written as one.** The covariance the Kabsch fit
+ * builds is a sum over correspondences, so doubling the number of bearings roughly doubles every
+ * singular value while the *shape* they describe is unchanged. An absolute threshold — which is
+ * what this was — therefore answers a different question at a three-point minimal sample than at a
+ * sixty-inlier refit, and both are shapes this engine fits on the same call.
+ */
+TEST(Degeneracy, ScalingEveryBearingSetTheSameWayDoesNotChangeTheAnswer) {
+  // A plausible minimal sample: three unit bearings a few degrees apart, so the second axis is
+  // resolved at a few percent of the first.
+  const double largest = 2.9;
+  const double second = 0.04;
+  EXPECT_TRUE(BearingsSpanAPlane(largest, second));
+  // The same shape, sixty inliers instead of three. Under the old absolute bound this was the case
+  // that drifted: everything got twenty times larger and the fixed 1e-9 floor twenty times easier
+  // to clear.
+  EXPECT_TRUE(BearingsSpanAPlane(largest * 20.0, second * 20.0));
+
+  // Bearings on one line: the second axis is a rounding error rather than a direction, and the
+  // rotation about that line is unconstrained.
+  EXPECT_FALSE(BearingsSpanAPlane(3.0, 3.0 * 1e-12));
+  // **The same degenerate shape at twenty times the count, which the absolute bound accepted.**
+  // 60 * 1e-12 is 6e-11 — under 1e-9, so the old predicate refused this one too. Scale it the other
+  // way and the old one breaks: see the next assertion.
+  EXPECT_FALSE(BearingsSpanAPlane(60.0, 60.0 * 1e-12));
+  // Sixty bearings on one line, with the second axis at 1e-10 of the first — which is 6e-9,
+  // *above* the old absolute floor, so the old predicate called this a plane and handed the fit a
+  // rotation with a free axis. This assertion is the whole of the finding.
+  EXPECT_FALSE(BearingsSpanAPlane(60.0, 6e-9));
+
+  // Nothing to fit: no bearings, or every one of them the zero vector. There is no zero guard any
+  // more — a reviewer showed the one that was here could be deleted with every test still green,
+  // because `cv::SVD` orders the singular values so `second <= largest`, and `0 > 1e-9 * 0` is
+  // false on its own. This assertion stays as the statement that the comparison is total at the
+  // bottom of its range, which is a different claim from "a guard runs".
+  EXPECT_FALSE(BearingsSpanAPlane(0.0, 0.0));
+}
+
+/**
+ * The search budget, checked against the textbook it claims to come from.
+ *
+ * **This exists because the accuracy test cannot see the difference.** The budget was a written-down
+ * 200 until a perturbed prior exposed what it cost, and raising it turned one ORB step from a
+ * two-correspondence consensus into a thirteen-correspondence one — but ORB still registers eight
+ * of eleven steps either way, so every assertion in the accuracy test reads the same before and
+ * after. A wrong budget is invisible there, which is the argument for pinning the arithmetic where
+ * it is visible.
+ *
+ * The expected values are worked from `ceil(log(1 - 0.99) / log(1 - w^3))` by hand rather than
+ * printed from the function, since a test that asks the code what it says is a test of nothing.
+ */
+TEST(SampleBudget, TheDrawsAreTheOnesNinetyNinePercentConfidenceNeeds) {
+  // w = 0.5: one triple in eight is all-inlier, and 35 draws miss them all with probability 0.01.
+  // This is the textbook figure the first version wrote down as a constant for every ratio.
+  EXPECT_EQ(RansacSampleBudget(0.5), 35);
+  // w = 0.2 — the acceptance gate. Sixteen times as many draws as w = 0.5, which is the size of the
+  // mistake the constant was making on this dataset.
+  EXPECT_EQ(RansacSampleBudget(0.2), 574);
+  // w = 0.3, between the two, so the interpolation is pinned and not just the ends.
+  EXPECT_EQ(RansacSampleBudget(0.3), 169);
+  // Nearly every correspondence agrees: four draws are enough, and the loop leaves almost at once.
+  EXPECT_EQ(RansacSampleBudget(0.9), 4);
+}
+
+/**
+ * A ratio under the gate asks for the gate's budget, and a perfect one asks for nothing.
+ *
+ * Separate from the arithmetic above because these are the two ends the loop actually hands it:
+ * `RansacSampleBudget(0.0)` opens the search, and the observed ratio it passes in on every
+ * improvement can be anything from two-in-a-hundred-and-fifty to all of them.
+ */
+TEST(SampleBudget, BelowTheGateItAsksForTheGateAndAboveEverythingItAsksForNothing) {
+  // Searching past the draws that would find a 20% consensus buys nothing: a smaller one would be
+  // refused even if found. So these are not "more thorough", they are the same number.
+  EXPECT_EQ(RansacSampleBudget(0.0), RansacSampleBudget(0.2));
+  EXPECT_EQ(RansacSampleBudget(2.0 / 150.0), RansacSampleBudget(0.2));
+  // Total, not clamped-and-hoped: w = 1 puts `1 - w^3` at zero, where the logarithm is not finite.
+  EXPECT_EQ(RansacSampleBudget(1.0), 0);
+}
+
 TEST(DetectorCoverage, AValueThatIsNotADetectorIsRefusedRatherThanBuilt) {
   // `FeatureDetector::Count` exists so `kAllFeatureDetectors` can be checked against the enum's
   // size rather than remembered. That buys a value which is not a detector, and this repository is
@@ -1201,7 +1770,7 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // **"Everything" used to mean one of the three methods.** A reviewer made `EstimatePairwise` and
   // `Refine` return `Ok` — the identity registration this class's own header calls worse than a
   // refusal — and all 707 tests passed. The two *are* covered by
-  // `MatchingAndRefinementRefuseRatherThanAnswer`, but that is a `TEST_P` over
+  // `RefinementRefusesRatherThanAnswering`, but that is a `TEST_P` over
   // `FeatureRegistrationEngine`, which exists only where OpenCV does and which no composition root
   // selects; `bridge/runtime.h` holds this one. So the engine every browser actually gets had its
   // two most dangerous methods asserted nowhere.
@@ -1214,7 +1783,7 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   EXPECT_FALSE(extracted.ok());
   EXPECT_EQ(extracted.status.code, StatusCode::Unsupported);
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{});
+  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{}, Intrinsics{});
   EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
   EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
 

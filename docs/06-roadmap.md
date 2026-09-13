@@ -349,8 +349,9 @@ but not yet demonstrated on a phone. What is left, and what has landed since:
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
   `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
-  feature extraction landed in Phase 2 — natively only, so not in the browser where this use case
-  lives (ADR 0052) — while the matching and frame-to-frame tracking this argument rests on have not.
+  feature extraction and pairwise matching landed in Phase 2 — natively only, so not in the browser
+  where this use case lives (ADR 0052) — while the frame-to-frame tracking this argument rests on has
+  not. Registering two frames a caller hands over is not tracking a camera through a sequence.
   Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
@@ -758,15 +759,23 @@ that has to be ordered.
   each frame. Until it existed no C++ here read a dataset, so the median below could not be computed
   at all, however good the scorer was. It is read against a small dataset the real generator wrote
   and this repository commits, so the format is checked against its own writer rather than against an
-  idea of it (ADR 0053). What it still does not do is produce a number: that needs something to
-  estimate rotations, which is the next line.
+  idea of it (ADR 0053). It produces a number now: the thing that estimates rotations for it to
+  score arrived in the next bullet, and the table further down is the result. This sentence said
+  "what it still does not do is produce a number" until the whole branch was reviewed against main
+  rather than by commit range — four lines above a bullet already rewritten to say the opposite.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).
 
   *Feature extraction is in* — `FeatureRegistrationEngine::ExtractFeatures` over ORB, AKAZE or SIFT,
-  writing descriptors and keypoints into frames the caller owns (ADR 0051). Matching and refinement
-  still refuse rather than returning an identity that would look like a registration. It compiles
+  writing descriptors and keypoints into frames the caller owns (ADR 0051). *Pairwise estimation is
+  in too* — ratio-test matching, bearings through `camera_model`, and a RANSAC rotation refitted on
+  its inliers — which is what forced `EstimatePairwise` to take the lens, since a rotation cannot be
+  recovered from pixels without one (ADR 0054). **Refinement still refuses** rather than returning an
+  empty solution that would look like a solved sphere. The accuracy number this phase exits on **is
+  measured now** — the table further down is it — taken against a sensor prior perturbed three
+  degrees, because the first harness handed the estimator the truth of each step and was therefore
+  measuring itself (ADR 0057). It compiles
   only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.
@@ -802,9 +811,62 @@ first; a real capture
 exports a file that Google Photos and a WebXR viewer open as a sphere; end-to-end build time recorded
 per device class.
 
-The threshold itself is deliberately still blank. It gets stated when the first dataset exists and a
-detector has been run against it, because a number chosen before anything can produce one is a number
-the implementation will be tuned to rather than measured against.
+**The threshold is 0.5 degrees, and here is the measurement it was written from.** It stayed blank
+until a detector had been run against a dataset, because a number chosen before anything can produce
+one is a number the implementation is tuned to rather than measured against.
+
+**An earlier table in this place was an artefact and is retracted; ADR 0057 is the record of what
+was withdrawn and how it was caught.** The figures below replace it, and come from a harness that
+perturbs the prior by three degrees — the order a fused phone orientation is out by when it is
+working — rather than handing the estimator the truth of each step.
+
+`core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
+by 50 degree lens, extracts features, estimates each consecutive pair against a prior three degrees
+from truth, chains the relative rotations into absolute ones and scores them with the gauge removed
+(ADR 0049):
+
+| detector | pairs registered | median | mean | max |
+| -------- | ---------------- | ------ | ---- | --- |
+| AKAZE | 11 of 11 | 0.063° | 0.085° | 0.204° |
+| SIFT | 11 of 11 | 0.097° | 0.092° | 0.147° |
+| ORB | 8 of 11 | 0.068° | 0.095° | 0.219° |
+
+So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
+bound that exists beating a precise one that does not.
+
+**Read the first column before the second.** ORB declines three of eleven pairs, and the median
+beside that is *not* computed over the eight it answered — which an earlier version of this sentence
+claimed, wrongly, in the same breath as drawing the right conclusion from it. A declined step carries
+the true rotation forward into both chains, so it enters the sample as an exact zero and *flatters*
+the median. That is why the first column is a conjunct of the test rather than a footnote to it: a
+detector that declined everything would chain pure truth and score zero. What those three are was settled by instrumenting the engine to count inliers under the
+truth rotation: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
+13 of 154 correspondences, and the search returned 20 and 13 on the two it answered at all — the
+first gathers no consensus and is refused outright, which is a different outcome and is why this
+paragraph counts them separately. Where it answers it does as well as is
+possible. Nine of ten of ORB's surviving matches there are wrong, because a checkerboard panorama
+gives it hundreds of corners that are genuinely indistinguishable. The estimator reports that
+honestly as `accepted = false` rather than chaining a minority-backed rotation.
+
+**Three things this number is not.** It is not a detector ranking worth acting on: the medians are
+within a factor of two on one synthetic ring, and the pairs-registered column is the only column
+that separates them at all. It is not a statement about a phone: the dataset has no noise, no blur,
+no rolling shutter, no exposure variation and — the one that has already cost something — **no
+distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bug in which the
+bearing reader dropped the rows the lens could not unproject, desynchronising them from their
+descriptors, was invisible to every test in this repository for exactly that reason: with no
+distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 lists each of
+these as its own increment.
+And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
+possible topology, with no loop closure and nothing for `Refine` to do.
+
+**What the measurement caught, which is the argument for having made it first.** Before the sensor
+prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of
+eleven that were 175 to 179 degrees out — about the optical axis, with ordinary inlier counts and
+sub-two-pixel residuals, and `accepted` set. The checkerboard panorama the generator renders is
+invariant under a half turn, so those detectors matched features to their point-reflected twins and
+the aliased rotation genuinely fit the pixels. No amount of reading the code would have found that;
+it took a number. The panorama's symmetry is itself worth removing, and is not removed yet.
 
 ---
 

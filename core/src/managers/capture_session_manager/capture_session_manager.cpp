@@ -4,6 +4,7 @@
 #include <cmath>
 #include <array>
 #include <iomanip>
+#include <numbers>
 #include <sstream>
 #include <string>
 
@@ -52,7 +53,7 @@ constexpr int64_t kDwellNs = 2'000'000'000;
 // crediting none of it under-counts real elapsed time on a tick that was merely late. A bound
 // keeps the ordinary case exact and makes the unknown case cost at most a seventh of a dwell.
 constexpr int64_t kMaxDwellCreditNs = 300'000'000;
-constexpr double kRadToDeg = 57.29577951308232;
+constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 // ------------------------------------------------------------------ the session document
 //

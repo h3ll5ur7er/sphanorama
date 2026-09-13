@@ -47,6 +47,14 @@ only the fourth said it could not find it. Until it is on `main`, name the branc
 `git show origin/<this branch>:.claude/skills/sphanorama-review/SKILL.md`. The same goes for any
 lens or rule that lives on an unmerged branch.
 
+**Sweep the worktrees between rounds.** Each reviewer builds OpenCV from source in its own
+worktree — 1.3 to 2.7 GB apiece — and those survive the agent that made them. By round 3 that had
+filled the disk twice: one reviewer could not configure a build at all and fell back to proving the
+shared tree was honest by hashing every tracked file against it, and another had to delete 8.5 GB of
+earlier rounds' scratch before it could link. Both said so in their reports rather than quietly
+measuring something less trustworthy, which is the only reason it is known. Delete the finished
+agents' `build/` directories before starting the next round, and leave the live one alone.
+
 **They review and publish. They do not fix.** No edits to tracked files, no commits, no pushes, no
 approving, no merging. A reviewer that fixes what it finds has stopped being able to tell you what
 it found, and two agents editing one branch is how a green tree becomes a mystery. Building and
@@ -148,7 +156,7 @@ the receipt, and this is what it is a receipt for.
 | **Ownership and lifetime** | Who owns a frame, and what a refusal leaves behind. `Forget` can fail and keep accounting for the bytes, so dropping the handle orphans them. An offered frame belongs to its caller. Caches bounded in *every* dimension they can grow in — across cells and within one |
 | **Ordering in the shell** | Every call crosses a worker, so several are in flight at once. For each guard, ask what question it answers: a per-render ticket and a per-cell identity are different questions, and using one for the other's job is a race that only shows under fast input. Late answers must not paint, and must not haul the user back |
 | **Tests that cannot fail** | For each new test, what would make it fail? A test that passes because something refused the input earlier proves only that. Watch for: an arrangement whose oscillation never reaches the condition; an assertion satisfied by a default (`toBeHidden` on an element hidden by something else); a guard asserted against a fake that cannot produce the state. The build's own version of this used to belong here — `npm run build` only *stages* a prebuilt wasm, so a contract change ran the browser tests against the previous core — and `tools/check_dist_fresh.mjs` now refuses that as Playwright's `globalSetup`, over both wasm builds, the glue, the C++ sources and the build files. It has its own tests. What is left for a reviewer is whether it has grown a hole, not whether the trap is open |
-| **Docs and ADRs** | Did the change invalidate a sentence somewhere? `docs/06-roadmap.md`, the volatility map, the contract READMEs and the engineering skill all make claims the code has to keep. An ADR is required for a new component, a contract change, a new dependency or a rule exception — and its *consequences* section is where the costs it accepted belong |
+| **Docs and ADRs** | Did the change invalidate a sentence somewhere? `docs/06-roadmap.md`, the volatility map, the contract READMEs and the engineering skill all make claims the code has to keep. An ADR is required for everything on `docs/00-principles.md` § "When an ADR is required" — read it rather than this row, which used to restate it and fell two triggers behind — and its *consequences* section is where the costs it accepted belong |
 
 ## Handling what comes back
 

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <vector>
 
@@ -13,7 +14,7 @@
 namespace sphanorama::test {
 namespace {
 
-constexpr double kDegPerRad = 57.295779513082320876798154814105;
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
 Quat Yaw(double deg) { return FromAxisAngle(Vec3{0, 1, 0}, deg / kDegPerRad); }
 Quat Pitch(double deg) { return FromAxisAngle(Vec3{1, 0, 0}, deg / kDegPerRad); }

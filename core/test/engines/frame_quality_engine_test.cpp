@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <utility>
 #include <vector>
 
@@ -121,9 +122,61 @@ class FrameQuality : public ::testing::Test {
   FrameRef SoftCheckerboard(int32_t square = 4) {
     return Frame([square](int32_t x, int32_t y) -> uint8_t {
       // A smooth cosine at the checkerboard's period carries the same structure with no edges.
-      const double u = std::cos(3.14159265358979 * x / square);
-      const double v = std::cos(3.14159265358979 * y / square);
-      return static_cast<uint8_t>(127.5 + 127.0 * u * v);
+      const double u = std::cos(std::numbers::pi * x / square);
+      const double v = std::cos(std::numbers::pi * y / square);
+      // **The amplitude is 126 rather than 127 to keep this fixture off the truncation boundary.**
+      // At integer pixels the cosines take only 0, +-sqrt2/2 and +-1, so `u * v` takes only
+      // 0, +-1/2, +-sqrt2/2 and +-1. At an amplitude of 127 exactly **one** of those — `|u * v|`
+      // of a half — puts `127.5 + 127 * u * v` on an exact integer, at 191 and 64. The others are
+      // clear: 0 and +-1 give the half-integers 127.5, 254.5 and 0.5, and +-sqrt2/2 gives
+      // 217.3026 and 37.6974, a comfortable 0.30 away. (An earlier version of this comment said
+      // "the first three of those", and contradicted itself six lines later by calling 254.5 a
+      // half-integer. Counting the moved pixels by class settles it: 293 of the 1024 pixels at
+      // `|u * v| = 1/2` moved, and **0** of the other 3072.)
+      //
+      // A truncating cast decides those 1024 on the last bit of `std::cos`, which made the
+      // fixture's bytes a property of libm rather than of the test: swapping a 14-digit pi for
+      // `std::numbers::pi` — 7 ULP — moved 293 of them by one level. Measured, not reasoned. At
+      // 126 the closest any value comes to an integer is 0.40, so no spelling of pi and no libm
+      // can move a pixel; at 127 with *rounding* instead it is worse, not better, because 0 and
+      // +-1 land on the half-integers rounding splits (464 of 4096 move).
+      //
+      // **That 0.40 is a fact about `square == 4` and not about this function.** Both call sites
+      // take the default, which is why 4 is what was measured; at other periods the cosines take
+      // other values and no amplitude is safe at all of them. Swept over `square` 2 to 16: 126 is
+      // clean at 2, 4, 7, 8, 11, 13, 14 and 16, and moves *more* pixels than 127 does at 5, 6, 10,
+      // 12 and 15 — because every rational amplitude puts some product on an integer for some
+      // period. So a caller passing a different `square` is back
+      // in the same position and has to re-measure. Stated rather than left implied: the first
+      // version of this comment claimed the property for the function, which is how the next
+      // person would have inherited a guarantee that does not hold.
+      //
+      // **What it costs the two consumers: nothing, and in the helpful direction.** Driving the
+      // real `SharpnessFrameQualityEngine` at both amplitudes rather than arguing from a square
+      // law — which is what an earlier version of this comment did, and got wrong in both sign
+      // and magnitude:
+      //
+      //     amplitude   hard         soft         hard/soft
+      //     127         93376.1707   5367.0801    17.3979
+      //     126         93376.1707   5267.8637    17.7256
+      //
+      // Both consumers assert that the hard checkerboard scores *above* this one, so a softer
+      // soft fixture moves them **away** from failing. By how much depends on which quantity, and
+      // the ratio in that last column is not it — nothing asserts on a ratio:
+      //
+      //     EXPECT_GT's gap, hard - soft   88009.0905 -> 88108.3070   +0.1127%
+      //     Rank's normalised separation    0.942522 ->  0.943584     +0.1127%
+      //     hard / soft                      17.3979 ->   17.7256     +1.8834%
+      //
+      // The first two are what the two consumers actually compare; the third is sixteen times
+      // larger and belongs to no assertion. An earlier version of this sentence quoted the 1.88%
+      // as "their margin", which is the third time this one clause has been wrong — first a
+      // derived figure, then the right figure with the sign inverted, then the right sign on the
+      // wrong quantity. The soft score itself falls 1.85%, not the 1.57% the amplitude-squared
+      // law predicts, because the uint8 truncation breaks exactly the proportionality that
+      // argument invokes. That is the whole reason this block reports a measurement instead of a
+      // derivation — and the reason it now names the quantity as well as the number.
+      return static_cast<uint8_t>(127.5 + 126.0 * u * v);
     });
   }
 

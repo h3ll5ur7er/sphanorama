@@ -559,7 +559,43 @@ export interface PairwiseResult {
   b: FrameId;
   relativeRotation: Quat;
   inliers: number;
+  /**
+   * How many correspondences the inliers are counted *out of*, which is the denominator `accepted`
+   * is decided by. **Zero only on a result no engine filled in**, which a caller never sees: every
+   * `Ok` return from `EstimatePairwise` sets it, and a refusal carries no result at all. That is an
+   * invariant rather than a type guarantee, so it is asserted where it could break — the acceptance
+   * test requires it positive on every answer — rather than left to the reader to infer from a
+   * default that would make `inliers / correspondences` undefined.
+   * **Without it `accepted` is a verdict a caller cannot re-derive or refine.** The field below is
+   * one bit, and a global solve told to weigh a weak edge holds `inliers` alone: eleven agreeing
+   * out of forty and eleven out of a hundred and twenty-eight are the same number here and are not
+   * the same evidence. Carrying the denominator is what turns "the engine decided" into "the
+   * engine measured and a caller may decide differently" — which is the shape every other refusal
+   * in this core takes, and which ADR 0056's Rejected section claims for this one.
+   */
+  correspondences: number;
+  /**
+   * Over the inliers, so it is bounded by the estimator's own inlier radius by construction. It
+   * says how *tightly* the rotation fits the correspondences that back it and nothing at all about
+   * how many those are — taking it over every correspondence instead was tried and is worse, since
+   * a matcher leaves a majority of junk by design and the number became a property of the junk.
+   */
   medianResidualPx: number;
+  /**
+   * **Whether a global solve should use this edge, which is not the same question as whether an
+   * answer exists.** A refusal means no rotation gathered enough agreement to be worth returning;
+   * `accepted` false with an answer present means one did, and a minority of the correspondences
+   * back it. Those are different facts and the field earns its place only because they come apart
+   * in practice. On a checkerboard ring three of eleven ORB pairs fail the gate, and **they do not
+   * fail it the same way**: two return a rotation that fits its own support to under a pixel — 20
+   * correspondences of 141, and 13 of 154 — while the third gathers no consensus at all and is
+   * refused. An earlier version of this comment called all three "a rotation that fits its support",
+   * which collapses the very distinction this field exists to draw, in the paragraph drawing it.
+   * So a caller may read `relativeRotation` on an unaccepted result — it is the best the pixels
+   * offered — but should treat it as a weak constraint, or ask for another frame, rather than
+   * chaining it. An earlier implementation set this from the same condition that decided the
+   * refusal, which made it a constant `true` on every returned result and told a caller nothing.
+   */
   accepted: boolean;
 }
 

@@ -26,7 +26,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // instead of adding to them — so the source walk was free to descend into a nested `build/` or
 // `node_modules/` and take a generated file's mtime as a source's. That is the permanently-stale
 // shape this checker has already been bitten by twice.
-const kNeverWalked = ['node_modules', '.git', 'dist', 'build'];
+//
+// `.claude` is here for the opposite failure — a permanently *fresh* one. Review agents check this
+// repository out into `.claude/worktrees/`, so the tree contains entire second copies of its own
+// C++, with mtimes from whenever an agent last touched them. The walk took one of those as "the
+// newest source", found it younger than the compiled core, and failed the gate with
+//
+//   newest source: .../.claude/worktrees/agent-<id>/core/CMakeLists.txt
+//
+// on a commit that had changed no C++ at all. A checker that reports a stale build because somebody
+// else's checkout is newer is worse than no checker: the message is confident, specific, and about
+// a file the build never reads.
+const kNeverWalked = ['node_modules', '.git', 'dist', 'build', '.claude'];
 
 function newest(path, skip = new Set(kNeverWalked),
                 accept = () => true) {
