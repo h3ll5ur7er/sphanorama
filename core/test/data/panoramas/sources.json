@@ -1,0 +1,66 @@
+{
+  "why": [
+    "A checkerboard is periodic and infinitely sharp: a match onto the wrong square agrees with as",
+    "many neighbours as a match onto the right one, so a registration accuracy measured there is a",
+    "statement about a scene no lens will ever see. Phase 2's number is only worth quoting if the",
+    "world it was measured in is a photograph (ADR 0059).",
+    "",
+    "Every file beside this one is copied here byte for byte from where it was found, and every",
+    "field below is a fact a reader can check: `tools/asset_provenance.py` fails the build if a file",
+    "here has no entry, if an entry is missing a field, or if the bytes no longer hash to what is",
+    "recorded. A licence written down once and never checked again is a licence nobody can rely on.",
+    "`width` and `height` are the two recorded facts that checker cannot verify without an image",
+    "library; `tools/test_synth_dataset.py` verifies them where Pillow is already present."
+  ],
+  "assets": [
+    {
+      "file": "small_hangar_01_1k.jpg",
+      "sha256": "46da9d9beeaad03578bb90ddfb3ba3b80e901d79a0dcea98a3f38390dc6111f1",
+      "bytes": 178931,
+      "width": 1024,
+      "height": 512,
+      "projection": "equirectangular, 360 by 180 degrees",
+      "work": "Small Hangar 01",
+      "author": "HDRI Haven (now Poly Haven)",
+      "licence": "CC0-1.0",
+      "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "work_url": "https://polyhaven.com/a/small_hangar_01",
+      "source_repository": "https://github.com/google/model-viewer",
+      "source_commit": "297ed2bdbea0c8f921d985ff0c71afd3a819e12e",
+      "source_path": "packages/modelviewer.dev/assets/small_hangar_01_1k.jpg",
+      "source_blob": "b29f4ec427eb20a1a81be96ae4fdc8d6593fb9f7",
+      "retrieved": "2026-09-13",
+      "licence_evidence": [
+        "packages/shared-assets/ATTRIBUTIONS.md in that repository, at that commit, under the",
+        "heading `## small_hangar_01`, quoted here in full:",
+        "",
+        "    small_hangar_01_1k.jpg by <a href=\"https://hdrihaven.com\">HDRI Haven</a> licensed",
+        "    under <a href=\"https://hdrihaven.com/p/license.php\">CC0</a> (<a",
+        "    href=\"https://hdrihaven.com/hdri/?h=small_hangar_01\">source</a>) Originally in HDR",
+        "    format",
+        "",
+        "It names this file by name, which is why it is this file and not a better-looking one: the",
+        "same repository's `whipple_creek_regional_park_1k_HDR.jpg` is a forest with texture in every",
+        "band and would make a richer world, and the attribution beside it names only the `.hdr` it",
+        "was derived from. Both readings of that file are permissive and it would almost certainly be",
+        "fine. A licence recorded from an inference is still an inference."
+      ],
+      "notes": [
+        "CC0 is a public-domain dedication: no attribution is required and derivatives carry no",
+        "conditions, so the datasets rendered from this file are ours to license as we license the",
+        "rest of the repository. The attribution above is recorded because provenance is worth",
+        "keeping, not because it is owed.",
+        "",
+        "`Originally in HDR format` is upstream's note: this is their 8-bit rendering of a Radiance",
+        "HDRI, which is what makes it readable here at all — the .hdr original is 26 MB and needs a",
+        "decoder no dependency of this repository has.",
+        "",
+        "1024 by 512 is 2.84 pixels per degree, where a 640 by 480 frame at 66 degrees is 9.7, so the",
+        "rendered frames are upsampled about three and a half times and are soft. What that costs is",
+        "measured rather than assumed: all three detectors register all eleven pairs of the ring here",
+        "and ORB registered eight of eleven against the checkerboard it replaced. See ADR 0059 and",
+        "the table in docs/06-roadmap.md."
+      ]
+    }
+  ]
+}

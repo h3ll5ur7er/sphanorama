@@ -80,9 +80,27 @@ std::string Quoted(const std::string& raw) {
  * skipped measurement being the honest outcome when the environment is not the one that was pinned
  * (ADR 0048).
  */
+/**
+ * The two worlds a dataset can be rendered in, and why there are two.
+ *
+ * `Photograph` is where accuracy is measured. A checkerboard is periodic and infinitely sharp, so a
+ * match onto the wrong square agrees with as many neighbours as a match onto the right one, and a
+ * median error computed there describes a scene no lens will ever see (ADR 0059).
+ *
+ * `Checkerboard` is where the weak-consensus case lives, and it stopped being a leftover the moment
+ * the photograph arrived: across all 165 combinations of the eleven pairs, three detectors and
+ * perturbations from one to six degrees, the hangar's *lowest* inlier fraction is 0.652, so nothing
+ * in it can produce the answered-but-not-accepted outcome `Acceptance` exists to catch. A world
+ * where consensus can be weak is what that test needs, and this is one.
+ */
+enum class World { Photograph, Checkerboard };
+
+/** Relative to the repository root, which is where the generator's command runs. */
+constexpr const char* kPhotograph = "core/test/data/panoramas/small_hangar_01_1k.jpg";
+
 class Rendered {
  public:
-  Rendered(int frames, int edgeWidth, int edgeHeight) {
+  Rendered(int frames, int edgeWidth, int edgeHeight, World world) {
     // **`mkdtemp`, not a name built from the pid.** `TMPDIR` is usually world-writable and pids
     // recycle, so the previous `sphanorama-accuracy-<pid>` could already exist and belong to someone
     // else — and it was cleared with the *throwing* `remove_all` overload, so a directory this
@@ -110,7 +128,8 @@ class Rendered {
         "cd " + Quoted(RepoRoot()) +
         " && uv run --locked --group datasets tools/synth_dataset.py --out " +
         Quoted(path_.string()) + " --frames " + std::to_string(frames) + " --width " +
-        std::to_string(edgeWidth) + " --height " + std::to_string(edgeHeight) + " >" +
+        std::to_string(edgeWidth) + " --height " + std::to_string(edgeHeight) +
+        (world == World::Photograph ? " --panorama " + Quoted(kPhotograph) : "") + " >" +
         Quoted(log.string()) + " 2>&1";
     const int status = std::system(command.c_str());
     ok_ = status == 0 && fs::exists(path_ / "truth.json");
@@ -206,7 +225,7 @@ class Accuracy : public ::testing::TestWithParam<FeatureDetector> {};
 
 TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   constexpr int kFrames = 12;
-  Rendered rendered(kFrames, 640, 480);
+  Rendered rendered(kFrames, 640, 480, World::Photograph);
   if (!rendered.ok()) {
     GTEST_SKIP() << "the dataset generator did not run, so nothing was measured — and a skipped "
                     "measurement is not a passing one. "
@@ -396,6 +415,10 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  * asserted `accepted == false` anywhere, and a reviewer restored the constant-`true` behaviour with
  * all 798 tests green.
  *
+ * **Rendered from the checkerboard**, which is now a choice rather than the only world there is: see
+ * `World` above for the sweep that says the photograph cannot produce this outcome at all. The
+ * numbers quoted below are the checkerboard's and are unchanged by ADR 0059.
+ *
  * Written as a statement about the *engine and the dataset together* rather than about a detector,
  * because "ORB declines frames 0 and 1" is a fact that a better matcher should be free to change.
  * What must not change is that the two outcomes come apart: some pair of a clean ring produces a
@@ -409,7 +432,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  * allows and reporting honestly that it is not much.
  */
 TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
-  Rendered rendered(12, 640, 480);
+  Rendered rendered(12, 640, 480, World::Checkerboard);
   if (!rendered.ok()) {
     GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. "
                  << rendered.why();

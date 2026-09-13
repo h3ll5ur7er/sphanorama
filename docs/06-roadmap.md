@@ -824,36 +824,35 @@ perturbs the prior by three degrees — the order a fused phone orientation is o
 working — rather than handing the estimator the truth of each step.
 
 `core/test/engines/registration_accuracy_test.cpp` renders a twelve-frame ring at 640x480 with a 66
-by 50 degree lens, extracts features, estimates each consecutive pair against a prior three degrees
-from truth, chains the relative rotations into absolute ones and scores them with the gauge removed
-(ADR 0049):
+by 50 degree lens **from a photographed panorama** (a CC0 hangar interior, ADR 0059), extracts
+features, estimates each consecutive pair against a prior three degrees from truth, chains the
+relative rotations into absolute ones and scores them with the gauge removed (ADR 0049):
 
 | detector | pairs registered | median | mean | max |
 | -------- | ---------------- | ------ | ---- | --- |
-| AKAZE | 11 of 11 | 0.063° | 0.085° | 0.204° |
-| SIFT | 11 of 11 | 0.097° | 0.092° | 0.147° |
-| ORB | 8 of 11 | 0.068° | 0.095° | 0.219° |
+| SIFT | 11 of 11 | 0.024° | 0.025° | 0.044° |
+| AKAZE | 11 of 11 | 0.061° | 0.067° | 0.133° |
+| ORB | 11 of 11 | 0.101° | 0.109° | 0.155° |
 
 So 0.5 degrees is several times the worst detector's median — generous, in the spirit of a first
 bound that exists beating a precise one that does not.
 
-**Read the first column before the second.** ORB declines three of eleven pairs, and the median
-beside that is *not* computed over the eight it answered — which an earlier version of this sentence
-claimed, wrongly, in the same breath as drawing the right conclusion from it. A declined step carries
-the true rotation forward into both chains, so it enters the sample as an exact zero and *flatters*
-the median. That is why the first column is a conjunct of the test rather than a footnote to it: a
-detector that declined everything would chain pure truth and score zero. What those three are was settled by instrumenting the engine to count inliers under the
-truth rotation: on those pairs the correct rotation itself is agreed on by 11 of 128, 19 of 141 and
-13 of 154 correspondences, and the search returned 20 and 13 on the two it answered at all — the
-first gathers no consensus and is refused outright, which is a different outcome and is why this
-paragraph counts them separately. Where it answers it does as well as is
-possible. Nine of ten of ORB's surviving matches there are wrong, because a checkerboard panorama
-gives it hundreds of corners that are genuinely indistinguishable. The estimator reports that
-honestly as `accepted = false` rather than chaining a minority-backed rotation.
+**Read the first column before the second.** A declined step carries the true rotation forward into
+both chains, so it enters the sample as an exact zero and *flatters* the median — a detector that
+declined everything would chain pure truth and score zero. That is why the first column is a
+conjunct of the test rather than a footnote to it. Nothing declines here, which is the change: the
+same three detectors against the checkerboard this replaced left ORB registering eight of eleven,
+because a checkerboard offers hundreds of corners that are genuinely indistinguishable and the
+estimator reported that honestly as `accepted = false` rather than chaining a minority-backed
+rotation. ADR 0056 is the record of that, and `Acceptance` still renders a checkerboard for it: the
+hangar's lowest inlier fraction over the eleven pairs, three detectors and priors from one to six
+degrees out is 0.652, so the weak-consensus case cannot be reached in it at all.
 
-**Three things this number is not.** It is not a detector ranking worth acting on: the medians are
-within a factor of two on one synthetic ring, and the pairs-registered column is the only column
-that separates them at all. It is not a statement about a phone: the dataset has no noise, no blur,
+**Three things this number is not.** It is not a detector ranking worth acting on: it is one ring of
+twelve frames in one room, and the column that used to separate them — pairs registered — now reads
+eleven of eleven for all three. SIFT's median is four times better than ORB's here and SIFT is also
+the slowest of the three by the test's own timings; neither fact is a decision, and the WASM build
+where the cost actually lands has not been measured at all. It is not a statement about a phone: the dataset has no noise, no blur,
 no rolling shutter, no exposure variation and — the one that has already cost something — **no
 distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bug in which the
 bearing reader dropped the rows the lens could not unproject, desynchronising them from their
@@ -866,10 +865,18 @@ possible topology, with no loop closure and nothing for `Refine` to do.
 **What the measurement caught, which is the argument for having made it first.** Before the sensor
 prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of
 eleven that were 175 to 179 degrees out — about the optical axis, with ordinary inlier counts and
-sub-two-pixel residuals, and `accepted` set. The checkerboard panorama the generator renders is
-invariant under a half turn, so those detectors matched features to their point-reflected twins and
-the aliased rotation genuinely fit the pixels. No amount of reading the code would have found that;
-it took a number. The panorama's symmetry is itself worth removing, and is not removed yet.
+sub-two-pixel residuals, and `accepted` set. The checkerboard the generator rendered is invariant
+under a half turn, so those detectors matched features to their point-reflected twins and the
+aliased rotation genuinely fit the pixels. No amount of reading the code would have found that; it
+took a number. That symmetry is gone from the accuracy measurement with the photograph (ADR 0059),
+and the bound that was added because of it stays: a world with no half-turn symmetry is not a reason
+to stop refusing one.
+
+**What it is measured through is still soft.** The panorama is 1024 by 512, which is 2.84 pixels per
+degree against a 640 by 480 frame's 9.7, so every frame is upsampled about three and a half times.
+The numbers above are what that world yields; a sharper one is a bigger file and, better, a sphere
+shot on a phone.
+
 
 ---
 

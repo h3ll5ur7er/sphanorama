@@ -49,6 +49,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageOps
 
 # Newton on the distortion, matching the core's solver in shape if not in code. The core measured
 # its own budget; this one is generous because it runs offline on whole images at a time and an
@@ -746,8 +747,46 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     return [out / f"frame_{index:04d}.ppm" for index in range(len(frames))]
 
 
+def read_panorama(path: Path) -> np.ndarray:
+    """An equirectangular photograph, in the signed unit range the renderer samples.
+
+    [-1, 1] rather than [0, 1] because that is what `_to_bytes` encodes and what
+    `direction_encoded_panorama` produces; a byte read here and the byte written for a pixel that
+    samples it are the same number.
+
+    Two refusals and a correction, all of which render perfectly well if they are let through:
+
+    A panorama that is not 2:1 is not one. Longitude spans the width and latitude the height
+    whatever the ratio, so the world comes out squashed in elevation while every rotation in
+    `truth.json` stays exactly right — a harness measuring an estimator against a world nobody can
+    see is wrong.
+
+    The orientation tag is applied before that ratio is judged, because a phone writes the tag
+    rather than turning the pixels, and a sideways panorama is 1:2.
+    """
+    try:
+        with Image.open(path) as opened:
+            upright = ImageOps.exif_transpose(opened)
+            pixels = np.asarray(upright.convert("RGB"), dtype=np.float64)
+    except OSError as failure:
+        raise ValueError(f"{path} could not be read as an image: {failure}") from failure
+
+    height, width = pixels.shape[:2]
+    if width != 2 * height:
+        raise ValueError(
+            f"{path} is {width}x{height}, and an equirectangular panorama covers 360 degrees of "
+            f"longitude by 180 of latitude, so it is twice as wide as it is tall")
+    return pixels / 255.0 * 2.0 - 1.0
+
+
 def _checkerboard_panorama(width: int, height: int, squares: int = 64) -> np.ndarray:
-    """A stand-in until real panoramas are wired in — enough texture for features to exist."""
+    """Texture with no photograph behind it, for a render that is not measuring accuracy.
+
+    Kept as the default because the tests that pin this file's arithmetic want a panorama they can
+    compute rather than one they have to read, and because it costs nothing to generate at any size.
+    A measurement wants `--panorama`: a checkerboard is periodic, so a wrong match looks exactly
+    like a right one, which is the one property a world for scoring a feature matcher must not have.
+    """
     v, u = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     cell = ((u * squares // width) + (v * squares // height)) % 2
     noise = np.sin(u * 0.11) * np.cos(v * 0.07)
@@ -767,6 +806,8 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--hfov", type=float, default=66.0)
     parser.add_argument("--vfov", type=float, default=50.0)
+    parser.add_argument("--panorama", type=Path,
+                        help="an equirectangular image to render from; without it, a checkerboard")
     args = parser.parse_args()
 
     # Checked before anything is rendered, because rendering is the expensive part and these are
@@ -797,7 +838,13 @@ def main() -> int:
     if staging.exists() and not staging.is_dir():
         parser.error(f"{staging} is in the way and is not a directory this can clear")
 
-    panorama = _checkerboard_panorama(2048, 1024)
+    # Read before the lens is built and long before anything renders, so that an unusable
+    # `--panorama` costs nothing — the same reason every `--out` shape is judged above.
+    try:
+        panorama = (read_panorama(args.panorama) if args.panorama is not None
+                    else _checkerboard_panorama(2048, 1024))
+    except ValueError as refusal:
+        parser.error(str(refusal))
     lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height)
     written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))
     print(f"wrote {len(written)} frames and truth.json to {args.out}")

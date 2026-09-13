@@ -37,10 +37,12 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    read_panorama,
     _checkerboard_panorama,
     _ring_of_poses,
     _distort,
@@ -1863,6 +1865,99 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             truth = json.loads((Path(directory) / "truth.json").read_text())
         self.assertLess(truth["frames"][0]["rotation"]["w"], 0.0,
                         "no negative scalar part is emitted, so the loader's case is unreachable")
+
+
+class APanoramaIsReadAsThePixelsItHolds(unittest.TestCase):
+    """Reading a photograph in, where until now the only panoramas were computed ones.
+
+    The failure to be afraid of is quiet: a panorama read with the wrong colour convention or the
+    wrong shape still renders, still writes a `truth.json` whose rotations are exactly right, and
+    still produces an accuracy number. Nothing downstream can tell that the world it measured in
+    was stretched or inverted.
+    """
+
+    def rgb(self, path: Path, width: int, height: int) -> bytes:
+        """A deterministic image nobody could confuse with a constant one, written losslessly."""
+        payload = bytes((7 * index + 13) % 256 for index in range(width * height * 3))
+        Image.frombytes("RGB", (width, height), payload).save(path)
+        return payload
+
+    def test_the_bytes_survive_the_round_trip_to_a_rendered_frames_encoding(self):
+        # `_to_bytes` is the only other place this convention is spelled, and it is the one that
+        # decides what a rendered pixel looks like. If these two disagree, every frame is rendered
+        # in a colour space of its own and the dataset still writes cleanly.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            payload = self.rgb(path, 8, 4)
+            panorama = read_panorama(path)
+            self.assertEqual(panorama.shape, (4, 8, 3))
+            self.assertEqual(_to_bytes(panorama).tobytes(), payload)
+
+    def test_a_panorama_that_is_not_two_to_one_is_refused(self):
+        # Longitude spans the width and latitude the height whatever the aspect ratio is, so a 4:3
+        # image renders a world squashed in elevation — with the truth rotations still exactly
+        # right, which is what makes it unnoticeable.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            self.rgb(path, 8, 6)
+            with self.assertRaises(ValueError) as refusal:
+                read_panorama(path)
+            self.assertIn("8x6", str(refusal.exception))
+
+    def test_a_greyscale_panorama_arrives_with_three_channels(self):
+        # A monochrome panorama is still a panorama, and `write_dataset` refuses anything that is
+        # not three channels — so without this the refusal would land on the writer, naming a shape
+        # rather than the file that had it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            Image.frombytes("L", (8, 4), bytes(range(32))).save(path)
+            panorama = read_panorama(path)
+            self.assertEqual(panorama.shape, (4, 8, 3))
+            np.testing.assert_array_equal(panorama[..., 0], panorama[..., 2])
+
+    def test_a_rotation_the_camera_only_wrote_down_is_applied(self):
+        # A phone records an orientation tag and leaves the pixels as the sensor read them. Ignored,
+        # a panorama shot in one orientation is read sideways: north is where up should be, and
+        # every estimate comes back wrong in a way that reads as a bad estimator rather than as a
+        # bad input. Tagged 6, an 4x8 image *is* the 8x4 panorama, so the shape check below it has
+        # to run second.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.jpg"
+            image = Image.frombytes("RGB", (4, 8), bytes((5 * i) % 256 for i in range(4 * 8 * 3)))
+            exif = image.getexif()
+            exif[0x0112] = 6
+            image.save(path, exif=exif)
+            self.assertEqual(read_panorama(path).shape, (4, 8, 3))
+
+    def test_a_file_that_is_not_an_image_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            path.write_bytes(b"not a PNG at all")
+            with self.assertRaises(ValueError) as refusal:
+                read_panorama(path)
+            self.assertIn("p.png", str(refusal.exception))
+
+
+class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
+    """The one asset check that needs a decoder, which is why it is here and not in the checker.
+
+    `tools/asset_provenance.py` keeps the digest, the size and the licence honest with the standard
+    library alone. Width and height are the two recorded facts it cannot check without an image
+    library, and they are the two that decide whether the file is an equirectangular panorama at
+    all.
+    """
+
+    def record(self) -> dict:
+        directory = Path(__file__).resolve().parents[1] / "core" / "test" / "data" / "panoramas"
+        return json.loads((directory / "sources.json").read_text()), directory
+
+    def test_every_recorded_panorama_has_the_shape_it_claims(self):
+        document, directory = self.record()
+        self.assertTrue(document["assets"], "no panorama is recorded, so this checks nothing")
+        for entry in document["assets"]:
+            with self.subTest(file=entry["file"]):
+                panorama = read_panorama(directory / entry["file"])
+                self.assertEqual(panorama.shape, (entry["height"], entry["width"], 3))
 
 
 if __name__ == "__main__":
