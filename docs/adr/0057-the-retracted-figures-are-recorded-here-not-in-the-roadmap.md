@@ -18,8 +18,11 @@ so there is no reason to think this is the last.
 
 **What was retracted.** A table stood in the roadmap giving medians of AKAZE 0.063°, ORB 0.099° and
 SIFT 0.124°. It had no registered-pairs column, and could not have had a useful one: `accepted` was
-`true` on every returned result under the code of the day, so all eleven consecutive pairs of every
-detector entered the chain by construction. The figures came from a harness that handed
+`true` on every returned result under the code of the day, and on this dataset every consecutive
+pair cleared the refusal that precedes it, so all eleven of every detector entered the chain. (The
+second half of that is measurement, not construction — a pair *can* be refused outright before
+`accepted` is reached, and on these twelve frames none was.) The figures came from a harness that
+handed
 `EstimatePairwise` the *exact truth* of each step as its sensor prior, and the fit seeds its search
 with the prior, so the answer was correct before a pixel was read.
 
@@ -39,9 +42,15 @@ the three was unmoved *by this correction*.)
 reviewer had to correct this ADR on its own branch.** The first version of this section offered the
 eleven-to-eight move as where the artefact was hiding, on the reasoning that a harness fed truth
 cannot produce a declined step. That reasoning is wrong twice over. Under the code of the day
-`accepted` was `bestInliers.size() >= kMinimumCorrespondences`, the same condition that had already
-decided whether to refuse — so it was `true` on every returned result and nothing could be declined
-whatever the prior was. That is a fact about the gate, not about being fed truth. And under the gate
+`accepted` was `bestInliers.size() >= kMinimumCorrespondences && median <= kInlierPx`, and **both**
+conjuncts were vacuous on a returned result: the count is the condition the early return above has
+already enforced, and the median is taken over precisely the rows that count selected, so it cannot
+exceed the radius that selected them. Injected noise from zero to four pixels produced
+`accepted = true` at every level. So it was `true` on everything returned and nothing could be
+declined whatever the prior was — a fact about the gate, not about being fed truth. (Quoting only
+the first conjunct, as the first version of this paragraph did, made the argument look like it
+turned on the obvious half. It turns on both, and the second is the one a reader would not guess;
+`feature_registration_engine.cpp` records it beside the gate that replaced it.) And under the gate
 as it stands, feeding truth would decline the same three: `accepted` now also requires
 `agreeing >= kInlierFraction` at 0.2, and the truth rotation's own support on those pairs is 11 of
 128, 19 of 141 and 13 of 154 — 0.086, 0.135 and 0.084, every one below the gate (ADR 0056 records

@@ -126,14 +126,20 @@ class FrameQuality : public ::testing::Test {
       const double v = std::cos(std::numbers::pi * y / square);
       // **The amplitude is 126 rather than 127 to keep this fixture off the truncation boundary.**
       // At integer pixels the cosines take only 0, +-sqrt2/2 and +-1, so `u * v` takes only
-      // 0, +-1/2, +-sqrt2/2 and +-1 — and at an amplitude of 127 the first three of those put
-      // `127.5 + 127 * u * v` on an exact integer (191, 64, 254.5-0.5 at the ends). A truncating
-      // cast then decides those pixels on the last bit of `std::cos`, which made the fixture's
-      // bytes a property of libm rather than of the test: swapping a 14-digit pi for
-      // `std::numbers::pi` — 7 ULP — moved 293 of these 4096 pixels by one level. Measured, not
-      // reasoned. At 126 the closest any value comes to an integer is 0.40, so no spelling of pi
-      // and no libm can move a pixel; at 127 with *rounding* instead it is worse, not better,
-      // because 0 and +-1 land on the half-integers rounding splits (464 of 4096 move).
+      // 0, +-1/2, +-sqrt2/2 and +-1. At an amplitude of 127 exactly **one** of those — `|u * v|`
+      // of a half — puts `127.5 + 127 * u * v` on an exact integer, at 191 and 64. The others are
+      // clear: 0 and +-1 give the half-integers 127.5, 254.5 and 0.5, and +-sqrt2/2 gives
+      // 217.3026 and 37.6974, a comfortable 0.30 away. (An earlier version of this comment said
+      // "the first three of those", and contradicted itself six lines later by calling 254.5 a
+      // half-integer. Counting the moved pixels by class settles it: 293 of the 1024 pixels at
+      // `|u * v| = 1/2` moved, and **0** of the other 3072.)
+      //
+      // A truncating cast decides those 1024 on the last bit of `std::cos`, which made the
+      // fixture's bytes a property of libm rather than of the test: swapping a 14-digit pi for
+      // `std::numbers::pi` — 7 ULP — moved 293 of them by one level. Measured, not reasoned. At
+      // 126 the closest any value comes to an integer is 0.40, so no spelling of pi and no libm
+      // can move a pixel; at 127 with *rounding* instead it is worse, not better, because 0 and
+      // +-1 land on the half-integers rounding splits (464 of 4096 move).
       //
       // **That 0.40 is a fact about `square == 4` and not about this function.** Both call sites
       // take the default, which is why 4 is what was measured; at other periods the cosines take
@@ -144,9 +150,20 @@ class FrameQuality : public ::testing::Test {
       // in the same position and has to re-measure. Stated rather than left implied: the first
       // version of this comment claimed the property for the function, which is how the next
       // person would have inherited a guarantee that does not hold. The
-      // pattern is unchanged in every way this test reads it: still a smooth cosine at the
-      // checkerboard's period, and a Laplacian variance goes as the square of the amplitude, so
-      // both consumers' comparison against the hard checkerboard loses 1.6% of a 17x margin.
+      // **What it costs the two consumers: nothing, and in the helpful direction.** Driving the
+      // real `SharpnessFrameQualityEngine` at both amplitudes rather than arguing from a square
+      // law — which is what an earlier version of this comment did, and got wrong in both sign
+      // and magnitude:
+      //
+      //     amplitude   hard         soft         hard/soft
+      //     127         93376.1707   5367.0801    17.3979
+      //     126         93376.1707   5267.8637    17.7256
+      //
+      // Both consumers assert that the hard checkerboard scores *above* this one, so a softer
+      // soft fixture **widens** their margin, by 1.88%. The soft score itself falls 1.85%, not
+      // the 1.57% the amplitude-squared law predicts, because the uint8 truncation breaks exactly
+      // the proportionality that argument invokes. That is the whole reason this block reports a
+      // measurement instead of a derivation.
       return static_cast<uint8_t>(127.5 + 126.0 * u * v);
     });
   }

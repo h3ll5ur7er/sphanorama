@@ -349,9 +349,14 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //     SIFT   registered 11/11  median 0.1489   max 0.3297   passes
   //
   // So losing a whole stage of the fit is caught by **AKAZE's instantiation alone**. ORB and SIFT
-  // pass every assertion in this test with the refit gone: SIFT comes within 0.0511 of the median
-  // bound and 0.0703 of this one, and ORB barely moves at all because on this dataset its answers are
-  // already dominated by how few correspondences survive. A parameterised suite whose sabotage is
+  // pass every assertion in this test with the refit gone, and the three closest calls are worth
+  // naming individually because the obvious reading of the table gets them wrong. SIFT's median
+  // lands 0.0511 under its bound — the tightest of the six. **ORB's maximum lands 0.0606 under
+  // this one**, tighter than SIFT's 0.0703, which is not what "ORB barely moves" would suggest:
+  // ORB's *median* barely moves (0.0683 to 0.0837, its answers already dominated by how few
+  // correspondences survive) while its maximum goes 0.2189 to 0.3394, half again as far. A median
+  // and a maximum are different statements about the same run, and this test asserts both for
+  // exactly that reason. A parameterised suite whose sabotage is
   // caught by one of three parameters is thinner than it looks from any single passing run, and
   // saying so here is cheaper than the next person re-deriving it.
   //
