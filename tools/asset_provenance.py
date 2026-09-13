@@ -84,7 +84,7 @@ REQUIRED_OURS = ("file", "sha256", "bytes", "author", "licence")
 # Extensions that make a file an asset whatever its bytes decode as. Not a guess at "binary": these
 # are the formats whose content is somebody's work rather than somebody's source, and several of
 # them are text.
-MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tiff", ".svg",
+MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tiff", ".tif", ".svg",
          ".ppm", ".pgm", ".pnm", ".hdr", ".exr", ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".webm",
          ".mov", ".ttf", ".otf", ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf",
          ".blend", ".psd", ".zip")
@@ -98,7 +98,15 @@ MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".ti
 #
 # Not every asset: an SVG is somebody's work and has no shape a raster decoder can confirm, and
 # neither has an `.mp3`.
-SHAPED = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".ppm", ".pgm", ".pnm")
+#
+# Derived from `MEDIA` rather than listed beside it, because a second list of extensions drifts from
+# the first and did: `.avif`, `.ico`, `.hdr` and `.exr` were rasters in one tuple and not the other,
+# so a 3x2 PNG named `.avif` and recorded as 4096x7 cleared the build. Naming the exceptions instead
+# means a new extension is shaped unless somebody says why it is not, which is the way round that
+# fails safe.
+UNSHAPED = (".svg", ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".webm", ".mov", ".ttf", ".otf",
+            ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf", ".blend", ".psd", ".zip")
+SHAPED = tuple(suffix for suffix in MEDIA if suffix not in UNSHAPED)
 
 # `projection` is read by a test rather than by a person: `tools/test_synth_dataset.py` asserts the
 # 2:1 rule on an entry that claims to be equirectangular. So it is a token from a closed set, and an
@@ -106,6 +114,28 @@ SHAPED = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".ppm", ".p
 # assertion keyed on it was dead for every record in the tree, and nothing could see that. A
 # description of the projection belongs in `notes`, which nothing branches on.
 PROJECTIONS = ("equirectangular",)
+
+# Fields whose answer is executed rather than read. `unusable` holds these to a single string: the
+# prose rule below accepts a list of lines, which is right for everything a person reads and wrong
+# for anything a shell runs.
+COMMANDS = ("produced_by",)
+
+# A licence that defers to this repository's own, rather than naming one. It is the right way to
+# write our own work down — a derivation cannot drift the way a copy of "MIT" in nine records can —
+# but it has to point at something, and for the whole life of these records it pointed at nothing:
+# there was no LICENSE file, and `rm LICENSE` still leaves the checker and all of its tests green.
+# Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`. A record may carry the
+# upstream blob hash so a reader can find the exact object in the source repository's history, and
+# until now it was the one recorded fact nothing derived — which matters because it is the one that
+# would go stale silently after the one thing ADR 0059 forbids. A transcode changes `sha256` and
+# `bytes`, and the build says so; it changes this too, and nothing said anything.
+def git_blob(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+DEFERS_TO_THIS_REPOSITORY = "same as this repository"
+LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
 
 
 
@@ -164,6 +194,12 @@ def unusable(field: str, value: object) -> str | None:
                     else f"{field} is a whole number of pixels")
             return f"is {value!r}, and {what}"
         return None
+    if field in COMMANDS and isinstance(value, list):
+        # A command is run and is used as a dictionary key, so unlike every other answer here it
+        # may not be a list of lines. Spelled as one it passed the prose rule, reached
+        # `tools/test_synth_dataset.py`, and died there with `TypeError: unhashable type: 'list'` —
+        # a checker that says nothing and a test that crashes rather than reports.
+        return f"is {value!r}, and a command is one line that a shell can run"
     if isinstance(value, list):
         # A blank line inside the list is a paragraph break — that is how the long answers in this
         # tree are written — so the rule is about the list as a whole rather than each line: every
@@ -299,6 +335,29 @@ def check(root: Path) -> list[Problem]:
                 wrong = unusable(field, entry[field])
                 if wrong is not None:
                     problems.append(Problem(f"{rel} [{name}]", f"`{field}` {wrong}"))
+
+            # A licence that defers has to have something to defer to. Per entry rather than once,
+            # so the refusal names the record a reader would go and correct.
+            if entry.get("licence") == DEFERS_TO_THIS_REPOSITORY and not any(
+                    (root / spelling).is_file() and (root / spelling).stat().st_size > 0
+                    for spelling in LICENCE_FILES):
+                problems.append(Problem(
+                    f"{rel} [{name}]",
+                    f"`licence` is {DEFERS_TO_THIS_REPOSITORY!r} and this repository has no "
+                    f"licence file for it to mean — looked for {', '.join(LICENCE_FILES)}"))
+
+            # The upstream git object name, where a record carries one. Optional, and checked when
+            # present for the same reason `sha256` is: a fact nobody derives is a fact that goes
+            # quietly stale, and this one goes stale on exactly the change ADR 0059 forbids.
+            recorded_blob = entry.get("source_blob")
+            here = directory / name
+            if isinstance(recorded_blob, str) and recorded_blob.strip() and here.is_file():
+                actual = git_blob(here)
+                if actual != recorded_blob:
+                    problems.append(Problem(
+                        f"{rel} [{name}]",
+                        f"`source_blob` is {recorded_blob}, and these bytes are git object "
+                        f"{actual}"))
 
             projection = entry.get("projection")
             if projection is not None and projection not in PROJECTIONS:

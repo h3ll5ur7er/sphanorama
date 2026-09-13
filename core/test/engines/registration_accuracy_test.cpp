@@ -245,7 +245,8 @@ class Rendered {
  * `Forget` fails while a frame is still pinned, so a discarded status is a leak nothing reports: a
  * sabotaged `~BorrowedFrame` leaking four pins a pair left this suite green with every number
  * identical to the digit, while the engine's own suite went red in twenty-one places. The pattern is
- * `ForgetOutputs`' one directory over; this file was the one that had not adopted it.
+ * `ForgetOutputs`' in `registration_engine_test.cpp`; this file was the one that had not adopted
+ * it.
  */
 void Release(IFrameStoreAccess& store, const FrameRef& frame) {
   const Status status = store.Forget(frame);
@@ -292,7 +293,7 @@ class Owned {
   ~Owned() {
     for (const FeatureSet& set : sets) {
       // **A count of zero allocated nothing**, which `IRegistrationEngine::ExtractFeatures` states
-      // and `ForgetOutputs` one directory over already guards. Such a set carries default
+      // and `ForgetOutputs` in `registration_engine_test.cpp` already guards. Such a set carries default
       // `FrameRef`s, and `MemoryFrameStoreAccess` numbers frames from 1, so forgetting one answers
       // `NotFound` — two spurious failures about a store that is correctly empty. Not reachable
       // from these two tests today; reachable in this repository, which is enough.
@@ -501,13 +502,24 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // a panorama needs. This test's job is different and narrower — to notice when the estimator gets
   // worse — and a bound set generously enough to be a product statement is far too loose for that.
   //
-  // Measured in the hangar: the medians run 0.024 to 0.101 and no single frame exceeds 0.156.
+  // Measured in the hangar: the medians run 0.024 to 0.101 and no single frame exceeds 0.155.
+  // (This line said 0.156 and the one below said 0.155 for the same quantity — ORB's worst frame,
+  // 0.1551. A number written twice is written differently twice.)
   // Deleting the entire inlier refit — the step that makes the answer better than the three points
   // that found it — takes ORB to median 0.2108 and max 0.6477 and fails both bounds, while AKAZE
   // lands at 0.1826/0.2989 and SIFT at 0.0535/0.1147 and both pass. So the bounds are roughly twice
   // the measurement rather than five times it: tight enough that losing a whole stage of the fit is
   // caught, loose enough not to fail on the next OpenCV bump, which is the only thing that should
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
+  //
+  // **Where else the table is written, because a bump moves all of it and the suite would stay
+  // green.** The bounds here are what fail; the figures are prose in six places and nothing
+  // invalidates them: this comment, the one below it about the worst frame,
+  // `docs/06-roadmap.md`'s table, `docs/adr/0056`, `docs/adr/0059` and `CLAUDE.md`. Re-run
+  // `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for each —
+  // and correct all six, or the next reader inherits a table that was true of a different OpenCV.
+  // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
+  // 0.0239/0.0250/0.0435, eleven of eleven each.
   //
   // **Caught by one instantiation of three, and which one depends on the world** — it was AKAZE in
   // the checkerboard and it is ORB here. That is the argument for keeping all three: any single

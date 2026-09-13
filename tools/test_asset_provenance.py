@@ -49,6 +49,11 @@ class Tree:
     def __init__(self, root: Path, content: bytes = NOT_TEXT):
         self.root = root
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        # A repository, and a repository has a licence. Written because records here defer to it —
+        # `"licence": "same as this repository"` — and a deferral that points at nothing is refused.
+        # Six tests in this file started failing when that rule arrived, every one of them for the
+        # right reason: their fixture was a repository with no licence in it.
+        (root / "LICENSE").write_text("MIT, for the purposes of this fixture.\n")
         self.assets = root / "assets"
         self.assets.mkdir(parents=True)
         self.write("photo.bin", content)
@@ -172,7 +177,7 @@ class AssetProvenance(unittest.TestCase):
         for field, value, because in (
                 ("produced_by", "", "is blank"),
                 ("produced_by", False, "answers a question a reader asks in words"),
-                ("produced_by", [], "is a list of nothing"),
+                ("produced_by", [], "one line that a shell can run"),
                 ("projection", {}, "answers a question a reader asks in words"),
                 ("width", True, "width is a whole number of pixels"),
                 ("height", "512", "height is a whole number of pixels"),
@@ -186,6 +191,113 @@ class AssetProvenance(unittest.TestCase):
                 self.assertTrue(named, f"nothing reported `{field}` at all")
                 self.assertTrue(any(because in p for p in named),
                                 f"`{field}` was reported, but not for being unusable: {named}")
+
+    def defer(self):
+        """Make the tree's one record defer its licence to the repository, as our own work does."""
+        entries = self.tree.entries()
+        entries[0]["licence"] = asset_provenance.DEFERS_TO_THIS_REPOSITORY
+        self.tree.record({"assets": entries})
+
+    def test_a_licence_that_defers_to_a_repository_with_no_licence_is_refused(self):
+        # `"licence": "same as this repository"` is the right way to write our own work down: it is
+        # a derivation, and a derivation cannot drift the way nine copies of "MIT" can. What it has
+        # to do is resolve, and for the whole life of these records it did not — there was no
+        # LICENSE file at all, and nothing said so.
+        self.defer()
+        (self.tree.root / "LICENSE").unlink()
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(named, "a licence deferring to a repository with no licence was accepted")
+        self.assertTrue(any("no licence file for it to mean" in p for p in named), named)
+
+    def test_a_deferred_licence_is_answered_by_any_of_the_usual_spellings(self):
+        # The rule is about the licence existing, not about what it is called. `COPYING` is the
+        # GNU spelling and is as much an answer as `LICENSE`.
+        self.defer()
+        (self.tree.root / "LICENSE").unlink()
+        for spelling in asset_provenance.LICENCE_FILES:
+            with self.subTest(spelling=spelling):
+                written = self.tree.root / spelling
+                written.write_text("A licence, of some kind.\n")
+                self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
+                written.unlink()
+
+    def test_a_deferred_licence_is_not_answered_by_an_empty_file(self):
+        # A zero-byte LICENSE is the shape a half-finished `touch` leaves behind, and it answers
+        # the question no better than no file at all.
+        self.defer()
+        (self.tree.root / "LICENSE").write_text("")
+        self.assertTrue([p for p in self.tree.problems() if "`licence`" in p])
+
+    def test_a_source_blob_that_is_not_these_bytes_is_refused(self):
+        # The upstream git object name was the one recorded fact nothing derived, which matters
+        # because it goes stale on exactly the change ADR 0059 forbids: re-encode the file and
+        # `sha256` and `bytes` both shout, while this one quietly went on naming an object whose
+        # contents are no longer here.
+        entries = self.tree.entries()
+        entries[0]["source_blob"] = "0" * 40
+        self.tree.record({"assets": entries})
+        named = [p for p in self.tree.problems() if "`source_blob`" in p]
+        self.assertTrue(named, "a blob hash naming different bytes was accepted")
+        self.assertTrue(any("these bytes are git object" in p for p in named), named)
+
+    def test_a_source_blob_git_itself_computes_is_accepted(self):
+        # Against `git hash-object` rather than against this checker's own arithmetic, which would
+        # be asserting that the function agrees with itself.
+        blob = subprocess.run(["git", "hash-object", str(self.tree.assets / "photo.bin")],
+                              cwd=self.tree.root, check=True, capture_output=True,
+                              text=True).stdout.strip()
+        entries = self.tree.entries()
+        entries[0]["source_blob"] = blob
+        self.tree.record({"assets": entries})
+        self.assertEqual([p for p in self.tree.problems() if "`source_blob`" in p], [])
+
+    def test_a_command_spelled_as_a_list_of_lines_is_refused(self):
+        # The prose rule accepts a list of lines, which is how every long answer in this tree is
+        # written and is right for all of them but this one: `produced_by` is *run*, and
+        # `tools/test_synth_dataset.py` puts it in a set. Spelled as a list it cleared the checker
+        # and died there with `TypeError: unhashable type: 'list'` — a checker that says nothing
+        # and a test that crashes instead of reporting.
+        entries = self.tree.entries()
+        entries[0]["produced_by"] = ["uv run --group datasets tools/synth_dataset.py",
+                                     "  --out core/test/data/synthetic-ring-4"]
+        self.tree.record({"assets": entries})
+        named = [p for p in self.tree.problems() if "`produced_by`" in p]
+        self.assertTrue(named, "a command written as two lines was accepted")
+        self.assertTrue(any("one line that a shell can run" in p for p in named), named)
+
+    def test_every_media_extension_is_shaped_or_says_why_not(self):
+        # `SHAPED` used to be a second hand-written list beside `MEDIA`, and it drifted: `.avif`,
+        # `.ico`, `.hdr` and `.exr` were rasters in one and not the other, and `.tif` was in
+        # neither — so an entry for a `.avif` could record any dimensions it liked, or none.
+        # `SHAPED` is derived now, and this is the assertion that keeps the derivation total.
+        self.assertEqual(
+            sorted(asset_provenance.SHAPED) + sorted(asset_provenance.UNSHAPED),
+            sorted(asset_provenance.SHAPED) + sorted(asset_provenance.UNSHAPED))
+        for suffix in asset_provenance.MEDIA:
+            with self.subTest(suffix=suffix):
+                self.assertTrue(
+                    (suffix in asset_provenance.SHAPED) != (suffix in asset_provenance.UNSHAPED),
+                    f"{suffix} is in both or neither, so nothing decides whether an entry for one "
+                    f"has to record a width")
+        for suffix in asset_provenance.UNSHAPED:
+            self.assertIn(suffix, asset_provenance.MEDIA,
+                          f"{suffix} is exempted from a rule it was never subject to")
+
+    def test_a_raster_that_used_to_escape_the_shape_rule_no_longer_does(self):
+        # The concrete half of the test above, through the checker rather than the tuples: an
+        # `.avif` with no `width` was accepted before, because `.avif` was in `MEDIA` and not in
+        # `SHAPED`.
+        content = b"\x00\x01\x02not text at all\xff"
+        self.tree.write("photo.avif", content)
+        entry = dict(self.tree.entries()[0])
+        entry["file"] = "photo.avif"
+        entry["sha256"] = asset_provenance.digest(self.tree.assets / "photo.avif")
+        entry["bytes"] = len(content)
+        entry.pop("width", None)
+        entry.pop("height", None)
+        self.tree.record({"assets": [entry]})
+        problems = self.tree.problems()
+        self.assertTrue(any("`width`" in p for p in problems), problems)
 
     def test_a_projection_nobody_recognises_is_refused(self):
         # `projection` is read by a test rather than by a person — `tools/test_synth_dataset.py`
