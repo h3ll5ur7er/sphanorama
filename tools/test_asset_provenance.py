@@ -104,13 +104,34 @@ class AssetProvenance(unittest.TestCase):
         self.tree.record({"assets": entries + [dict(entries[0], licence="MIT")]})
         self.assertIn("twice", " ".join(self.tree.problems()))
 
+    # Spelled out rather than read from `asset_provenance.REQUIRED`, which was the obvious fix and
+    # is not one: a loop over the constant shrinks with it, so deleting a field from the schema
+    # leaves the suite green — measured, not assumed. Three fields were unpinned before this list
+    # existed, `work`, `licence_url` and `source_path` among them.
+    FIELDS = ("sha256", "bytes", "work", "author", "licence", "licence_url", "source_repository",
+              "source_path", "retrieved")
+
+    def test_the_required_schema_is_the_one_these_tests_pin(self):
+        # `file` is not in FIELDS because an entry without it is refused earlier, by name.
+        self.assertEqual(sorted(asset_provenance.REQUIRED), sorted(("file",) + self.FIELDS))
+
     def test_a_missing_field_is_reported(self):
-        for field in ("licence", "author", "source_repository", "retrieved"):
+        honest = self.tree.entries()[0]
+        for field in self.FIELDS:
             with self.subTest(field=field):
-                entries = self.tree.entries()
-                del entries[0][field]
-                self.tree.record({"assets": entries})
+                # A fresh entry each time: deleting from the record the previous subtest wrote
+                # accumulates, and the first field whose absence is refused early would take every
+                # later subtest down with it.
+                entry = dict(honest)
+                del entry[field]
+                self.tree.record({"assets": [entry]})
                 self.assertIn(field, " ".join(self.tree.problems()))
+
+    def test_an_entry_with_no_file_is_reported_before_its_fields_are_read(self):
+        entry = dict(self.tree.entries()[0])
+        del entry["file"]
+        self.tree.record({"assets": [entry]})
+        self.assertIn("names no `file`", " ".join(self.tree.problems()))
 
     def test_a_field_left_blank_is_reported(self):
         # An empty string satisfies "the key is there" and answers nothing, which is the shape a
@@ -144,6 +165,69 @@ class AssetProvenance(unittest.TestCase):
             (Path(empty) / "src").mkdir()
             (Path(empty) / "src" / "thing.txt").write_text("no assets here")
             self.assertEqual(asset_provenance.check(Path(empty)), [])
+
+
+class AFileThisRepositoryMadeItself(unittest.TestCase):
+    """`generated` entries, which carry a command instead of a licence and a digest."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.tree = Tree(Path(self.directory.name))
+        self.tree.write("rendered.bin", b"\x00\x01output of a tool in this tree")
+        self.generated = {"file": "rendered.bin", "produced_by": "uv run tools/whatever.py"}
+
+    def record(self, entry=None):
+        self.tree.record({"assets": self.tree.entries(),
+                          "generated": [entry if entry is not None else self.generated]})
+
+    def test_a_generated_file_needs_no_licence_or_digest(self):
+        self.record()
+        self.assertEqual(self.tree.problems(), [])
+
+    def test_a_generated_entry_without_its_command_is_reported(self):
+        # The command is the whole of what a generated entry says. Without it the record is an
+        # assertion that somebody made this, which is not provenance.
+        self.record({"file": "rendered.bin"})
+        self.assertIn("produced_by", " ".join(self.tree.problems()))
+
+    def test_a_generated_entry_naming_no_file_is_reported(self):
+        self.record({"file": "absent.bin", "produced_by": "uv run tools/whatever.py"})
+        self.assertIn("absent.bin", " ".join(self.tree.problems()))
+
+    def test_a_record_holding_only_generated_entries_is_a_record(self):
+        (self.tree.assets / "photo.bin").unlink()
+        self.tree.record({"generated": [self.generated]})
+        self.assertEqual(self.tree.problems(), [])
+
+
+class AFileNobodyCouldRead(unittest.TestCase):
+    """The rule that stops the check being opted into by the person it exists to catch."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.tree = Tree(self.root)
+
+    def test_a_binary_in_a_directory_with_no_record_is_reported(self):
+        (self.root / "elsewhere").mkdir()
+        (self.root / "elsewhere" / "smuggled.jpg").write_bytes(b"\xff\xd8\xff\x00 not text")
+        self.assertIn("smuggled.jpg", " ".join(self.tree.problems()))
+
+    def test_text_in_a_directory_with_no_record_is_not_reported(self):
+        # Source explains itself and a repository is mostly source; a rule that asked every `.ts`
+        # file for a licence would be turned off within a week.
+        (self.root / "elsewhere").mkdir()
+        (self.root / "elsewhere" / "code.ts").write_text("export const x = 1;\n")
+        self.assertEqual(self.tree.problems(), [])
+
+    def test_a_binary_git_is_ignoring_is_not_reported(self):
+        # An ignored file cannot become a commit, which is the whole set this checker is about.
+        (self.root / ".gitignore").write_text("build/\n")
+        (self.root / "build").mkdir()
+        (self.root / "build" / "artefact.o").write_bytes(b"\x7fELF not text")
+        self.assertEqual(self.tree.problems(), [])
 
 
 class ThisRepository(unittest.TestCase):

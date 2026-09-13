@@ -1,0 +1,36 @@
+{
+  "why": [
+    "These bytes are this repository's own output, not somebody else's work, and the record says",
+    "so because `tools/asset_provenance.py` will not let a file it cannot read sit in the tree",
+    "unaccounted for. A generated entry carries the command and no digest: the bytes are already",
+    "pinned, exactly, by `test_the_committed_fixture_is_still_this_generator_s_output`, and a",
+    "second copy of them here would only be a second place to forget to update.",
+    "",
+    "What the fixture is for is ADR 0053: the loader is read against bytes this generator wrote",
+    "rather than against its author's idea of the format. It is a format fixture and not a",
+    "measurement \u2014 48x36 frames are a specimen, and the world accuracy is measured in is",
+    "`core/test/data/panoramas` (ADR 0059)."
+  ],
+  "generated": [
+    {
+      "file": "frame_0000.ppm",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0001.ppm",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0002.ppm",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0003.ppm",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "truth.json",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    }
+  ]
+}

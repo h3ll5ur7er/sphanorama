@@ -844,9 +844,11 @@ conjunct of the test rather than a footnote to it. Nothing declines here, which 
 same three detectors against the checkerboard this replaced left ORB registering eight of eleven,
 because a checkerboard offers hundreds of corners that are genuinely indistinguishable and the
 estimator reported that honestly as `accepted = false` rather than chaining a minority-backed
-rotation. ADR 0056 is the record of that, and `Acceptance` still renders a checkerboard for it: the
-hangar's lowest inlier fraction over the eleven pairs, three detectors and priors from one to six
-degrees out is 0.652, so the weak-consensus case cannot be reached in it at all.
+rotation. ADR 0056 is the record of that, and `Acceptance` still renders a checkerboard for it: over
+the ring's eleven pairs, three detectors and five perturbations of the prior — 1, 2, 3, 4 and 6
+degrees — the hangar's lowest inlier fraction is 0.6522 against the 0.2 that `accepted` needs, so
+the weak-consensus case cannot be reached in it at all. The probe that measured that is not in the
+tree; `World` in `registration_accuracy_test.cpp` says how it was run.
 
 **Three things this number is not.** It is not a detector ranking worth acting on: it is one ring of
 twelve frames in one room, and the column that used to separate them — pairs registered — now reads
@@ -873,7 +875,7 @@ and the bound that was added because of it stays: a world with no half-turn symm
 to stop refusing one.
 
 **What it is measured through is still soft.** The panorama is 1024 by 512, which is 2.84 pixels per
-degree against a 640 by 480 frame's 9.7, so every frame is upsampled about three and a half times.
+degree against a 640 by 480 frame's 9.7, so every frame is upsampled about 3.4 times.
 The numbers above are what that world yields; a sharper one is a bigger file and, better, a sphere
 shot on a phone.
 

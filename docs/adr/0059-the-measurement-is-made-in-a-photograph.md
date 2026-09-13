@@ -18,6 +18,15 @@ So: a photograph. Which panorama is a licensing question before it is a technica
 repository carries no author, no licence and no origin, and six months later nobody can supply any
 of the three — at which point the only safe move is to delete it and everything measured against it.
 
+**And committing one at all needs saying, because ADR 0053 drew a line here**: *a format fixture may
+be committed, a measurement dataset may not*, for two reasons — a dataset big enough to measure a
+detector on is megabytes, and a committed one is a snapshot of a generator that has since moved. A
+source panorama is a third thing that line does not name, and neither reason reaches it. 179 KB is
+not megabytes, and a photograph is not a snapshot of our generator: it is the input the generator
+reads, and it is the one thing in the loop that is *supposed* to stay fixed while everything around
+it moves. It is committed for the same reason the fixture is — a number nobody can reproduce is not
+a measurement.
+
 ## Decision
 
 **`core/test/data/panoramas/small_hangar_01_1k.jpg`**, CC0, copied byte for byte from
@@ -50,13 +59,25 @@ figures are the checkerboard's and are untouched.
   *easier* world than the checkerboard for ORB, which was declining pairs it could gather no
   consensus on. `docs/06-roadmap.md` carries the table.
 - **The frames are soft.** 1024 by 512 is 2.84 pixels per degree and a 640 by 480 frame at 66
-  degrees is 9.7, so every rendered frame is upsampled about three and a half times. That cost is
+  degrees is 9.7, so every rendered frame is upsampled about 3.4 times. That cost is
   paid and measured rather than argued about; a sharper world is a bigger file, and see the rejected
   alternatives.
 - **A dataset's exact bytes now depend on a JPEG decoder** when `--panorama` is given, so on a
   Pillow version rather than on this repository alone. The committed format fixture is unaffected:
   `core/test/data/synthetic-ring-4` is rendered from the checkerboard, and the test that compares it
   byte for byte against a fresh render never reads an image file (ADR 0053).
+- **The figures this replaces are recorded here rather than deleted.** They were the live Phase 2
+  table, and `docs/00-principles.md` makes withdrawing a published measurement an ADR trigger. This
+  is not a withdrawal in ADR 0057's sense — nothing about them was wrong, and they are still true of
+  the world they were taken in — but a reader who remembers them deserves better than their absence.
+  Measured against the checkerboard, twelve-frame ring, prior three degrees out:
+
+  | detector | pairs registered | median | mean | max |
+  | -------- | ---------------- | ------ | ---- | --- |
+  | AKAZE | 11 of 11 | 0.063° | 0.085° | 0.204° |
+  | SIFT | 11 of 11 | 0.097° | 0.092° | 0.147° |
+  | ORB | 8 of 11 | 0.068° | 0.095° | 0.219° |
+
 - **Every asset added from here needs a record**, which is the cost and also the point.
 
 ## Rejected alternatives
@@ -71,12 +92,17 @@ digest would attest to our conversion rather than to the published work, and 102
 are — `mrdoob/three.js`, `KhronosGroup/glTF-Sample-Environments`, `BabylonJS/Assets` and
 `google/model-viewer` — and every candidate that passed was 1k. three.js carries a 4k panorama and
 attributes none of them; Khronos names its sources but not their licences, and those sources are
-research-use and non-commercial archives; Babylon states CC0 per-directory for one HDRI that is
-26 MB in Radiance format.
+research-use and non-commercial archives; Babylon states CC0 per-directory for one HDRI, which is 26 MB
+because it is the 4k Radiance original.
 
 **A better-looking 1k from the same repository.** `whipple_creek_regional_park_1k_HDR.jpg` is a
-forest — 7% of it is flat against the hangar's 22%, and it has texture in every band. Its
-attribution names only the `.hdr` it was derived from. Both readings of that file are permissive and
+forest with texture in every band, where the hangar's floor is bare concrete. Quantitatively, and
+naming the metric because the pair is meaningless without it: taking *flat* to mean a pixel whose
+gradient magnitude is under 0.01 on a luma plane in the renderer's own [-1, 1] colour convention,
+7% of whipple is flat against the hangar's 22%. A reviewer swept fourteen other definitions of flat
+and could not land on that pair under any of them, which is the honest state of it — every one of
+the fourteen agreed on the direction, by a factor of three to twenty, and none agreed on the
+numbers. Its attribution names only the `.hdr` it was derived from. Both readings of that file are permissive and
 it would almost certainly have been fine, which is exactly the sentence that should not appear in a
 provenance record.
 

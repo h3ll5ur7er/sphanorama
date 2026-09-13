@@ -31,13 +31,18 @@
       "source_blob": "b29f4ec427eb20a1a81be96ae4fdc8d6593fb9f7",
       "retrieved": "2026-09-13",
       "licence_evidence": [
-        "packages/shared-assets/ATTRIBUTIONS.md in that repository, at that commit, under the",
-        "heading `## small_hangar_01`, quoted here in full:",
+        "`packages/modelviewer.dev/ATTRIBUTIONS.md` in that repository, at that commit \u2014 the",
+        "attributions file of the package the bytes are in \u2014 under the heading `## small_hangar_01`,",
+        "quoted here in full:",
         "",
         "    small_hangar_01_1k.jpg by <a href=\"https://hdrihaven.com\">HDRI Haven</a> licensed",
         "    under <a href=\"https://hdrihaven.com/p/license.php\">CC0</a> (<a",
         "    href=\"https://hdrihaven.com/hdri/?h=small_hangar_01\">source</a>) Originally in HDR",
         "    format",
+        "",
+        "`packages/shared-assets/ATTRIBUTIONS.md` in the sibling package carries the same entry word",
+        "for word. The package-local one is quoted because this record's whole argument is that the",
+        "licence is stated where the bytes are, and a sibling package is one inference away.",
         "",
         "It names this file by name, which is why it is this file and not a better-looking one: the",
         "same repository's `whipple_creek_regional_park_1k_HDR.jpg` is a forest with texture in every",
@@ -52,14 +57,16 @@
         "keeping, not because it is owed.",
         "",
         "`Originally in HDR format` is upstream's note: this is their 8-bit rendering of a Radiance",
-        "HDRI, which is what makes it readable here at all — the .hdr original is 26 MB and needs a",
-        "decoder no dependency of this repository has.",
+        "HDRI, which is what makes it readable here at all \u2014 a `.hdr` needs a decoder no dependency of",
+        "this repository has. No size is claimed for that original, because its resolution is not",
+        "recorded anywhere we can check and the 1k Radiance files in the same upstream tree are about",
+        "1.5 MB.",
         "",
         "1024 by 512 is 2.84 pixels per degree, where a 640 by 480 frame at 66 degrees is 9.7, so the",
-        "rendered frames are upsampled about three and a half times and are soft. What that costs is",
-        "measured rather than assumed: all three detectors register all eleven pairs of the ring here",
-        "and ORB registered eight of eleven against the checkerboard it replaced. See ADR 0059 and",
-        "the table in docs/06-roadmap.md."
+        "rendered frames are upsampled about 3.4 times and are soft. What that costs is measured rather",
+        "than assumed: all three detectors register all eleven pairs of the ring here and ORB registered",
+        "eight of eleven against the checkerboard it replaced. See ADR 0059 and the table in",
+        "docs/06-roadmap.md."
       ]
     }
   ]

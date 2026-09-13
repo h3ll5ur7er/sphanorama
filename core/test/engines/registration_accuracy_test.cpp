@@ -88,10 +88,18 @@ std::string Quoted(const std::string& raw) {
  * median error computed there describes a scene no lens will ever see (ADR 0059).
  *
  * `Checkerboard` is where the weak-consensus case lives, and it stopped being a leftover the moment
- * the photograph arrived: across all 165 combinations of the eleven pairs, three detectors and
- * perturbations from one to six degrees, the hangar's *lowest* inlier fraction is 0.652, so nothing
- * in it can produce the answered-but-not-accepted outcome `Acceptance` exists to catch. A world
- * where consensus can be weak is what that test needs, and this is one.
+ * the photograph arrived: nothing in the hangar can produce the answered-but-not-accepted outcome
+ * `Acceptance` exists to catch, so that test needs a world where consensus can be weak and this is
+ * one.
+ *
+ * **How that was measured, since the instrument is not in the tree.** A temporary probe in this file
+ * ran all eleven consecutive pairs of the twelve-frame hangar ring against all three detectors at
+ * five perturbations of the prior — 1, 2, 3, 4 and 6 degrees about x — and printed
+ * `inliers / correspondences` for each. 165 combinations, none refused, none unaccepted, lowest
+ * inlier fraction 0.6522 against the 0.2 `kInlierFraction` accepts at. Nothing in the suite asserts that
+ * floor, so it would not go red if the hangar one day *could* reach the weak case; ADR 0056 hit the
+ * same problem and the answer is the same, which is to say so rather than let a reader assume a test
+ * covers it.
  */
 enum class World { Photograph, Checkerboard };
 
@@ -318,7 +326,13 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // perturbation itself — a returned prior wins no inliers at three degrees, so the chain refuses
   // and the registered-pairs conjunct below fails. Verified by sabotage rather than argued.
 
-  EXPECT_GT(steps - unregistered, steps / 2)
+  // **Every pair, not most of them — which is what makes `World::Photograph` load-bearing.** This
+  // asked for more than half until a reviewer set the world to `Checkerboard` and watched all three
+  // detectors stay green on the pre-branch numbers: the bounds below were calibrated in the harder
+  // world, so the easier one cannot fail them and the world the measurement is taken in was a
+  // comment. The checkerboard leaves ORB at 8 of 11 and the hangar gives 11 of 11 to all three, so
+  // an equality here fails loudly if `--panorama` ever stops arriving.
+  EXPECT_EQ(steps - unregistered, steps)
       << "only " << (steps - unregistered) << " of " << steps
       << " consecutive pairs produced an accepted rotation";
 
@@ -334,68 +348,43 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // a panorama needs. This test's job is different and narrower — to notice when the estimator gets
   // worse — and a bound set generously enough to be a product statement is far too loose for that.
   //
-  // Measured: the medians are 0.063 to 0.097 and no single frame exceeds 0.219. Deleting the entire
-  // inlier refit — the step that makes the answer better than the three points that found it —
-  // moves AKAZE to median 0.4744 and max 0.9607, which cleared both of the previous bounds by a few
-  // percent and left the whole suite green (802 tests, as it stood then). So the bounds are set at
-  // roughly twice the measurement rather than five times it: tight enough that losing a whole stage
-  // of the fit is caught, loose enough not to fail on the next OpenCV bump, which is the only thing
-  // that should move these numbers at all (the dataset, the seed and the detectors are pinned).
+  // Measured in the hangar: the medians run 0.024 to 0.101 and no single frame exceeds 0.156.
+  // Deleting the entire inlier refit — the step that makes the answer better than the three points
+  // that found it — takes ORB to median 0.2108 and max 0.6477 and fails both bounds, while AKAZE
+  // lands at 0.1826/0.2989 and SIFT at 0.0535/0.1147 and both pass. So the bounds are roughly twice
+  // the measurement rather than five times it: tight enough that losing a whole stage of the fit is
+  // caught, loose enough not to fail on the next OpenCV bump, which is the only thing that should
+  // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
-  // How narrowly it is caught — by one of the three detectors, not by all of them — is measured
-  // in full at the `maxDeg` assertion below. Read that before trusting a green run here.
+  // **Caught by one instantiation of three, and which one depends on the world** — it was AKAZE in
+  // the checkerboard and it is ORB here. That is the argument for keeping all three: any single
+  // parameter is a weaker test than a green run makes it look. The thinnest margin that survives the
+  // sabotage is AKAZE's median, 0.2 - 0.1826 = 0.0174.
   EXPECT_LT(score.medianDeg, 0.2)
       << "median " << score.medianDeg << " degrees over " << kFrames << " chained frames";
 
-  // **The worst frame, which is the number the prior's bound exists to hold down.** A reviewer
-  // deleted `withinBound` — the entire half-turn defence — and this test passed on two of three
-  // detectors: AKAZE came back `median 0.4034` with `mean 44.8946` and `max 178.8014`, and only the
-  // median was asserted. A median is a statement about the typical frame and the alias is not
-  // typical; it is one or two frames turned most of the way round, which is exactly the shape
-  // `rotation_scoring.h` says the maximum is there to make legible. The number reached stderr and no
-  // assertion.
+  // **The worst frame, which a median cannot see.** A chain wrong by a degree on every answered
+  // step scores a passing median once the gauge is removed and the refused steps re-anchor it to
+  // truth; this is what catches that. Four tenths is about two and a half times the worst single
+  // frame any detector produces here (0.155).
   //
-  // Four tenths of a degree: about twice the worst single frame any detector actually produces here
-  // (0.219), and two orders of magnitude under the alias. It is also what catches the other way this test can
-  // be flattered — a chain wrong by a degree on every answered step scores a passing median once the
-  // gauge is removed and the refused steps re-anchor it to truth, and cannot hide from this.
+  // **What it no longer catches, said out loud because the change that did this is ADR 0059's.**
+  // This bound was written when deleting `withinBound` — the half-turn defence — left AKAZE at
+  // `max 178.8014` with only the median asserted. In the hangar, deleting `withinBound` at both its
+  // sites changes nothing at all: all three detectors return the same numbers to the digit and the
+  // suite is green, because the alias it excludes was the checkerboard's half-turn symmetry and a
+  // room has none. The defence is still tested — `ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt`
+  // fails on all three detectors with the bound gone, and is the only test that does — but it is
+  // tested there and not here, which is the better arrangement and is not where a reader of this
+  // bound would look.
   //
-  // **This margin is thin, and the thinness is a choice rather than an oversight — here is the
-  // whole measurement.** Deleting the inlier refit and running all three instantiations gives:
-  //
-  //     ORB    registered 7/11   median 0.0837   max 0.3394   passes
-  //     AKAZE  registered 11/11  median 0.4744   max 0.9607   fails both bounds
-  //     SIFT   registered 11/11  median 0.1489   max 0.3297   passes
-  //
-  // So losing a whole stage of the fit is caught by **AKAZE's instantiation alone**. ORB and SIFT
-  // pass every assertion in this test with the refit gone, and the three closest calls are worth
-  // naming individually because the obvious reading of the table gets them wrong. Four of the six
-  // detector-and-bound pairs still pass with the refit gone — AKAZE's two are the failures, not
-  // thin margins — and among those four the slack runs:
-  //
-  //     SIFT   median   0.2 - 0.1489 = 0.0511   the thinnest
-  //     ORB    max      0.4 - 0.3394 = 0.0606
-  //     SIFT   max      0.4 - 0.3297 = 0.0703
-  //     ORB    median   0.2 - 0.0837 = 0.1163
-  //
-  // So **ORB's maximum is the nearest miss on this bound**, tighter than SIFT's 0.0703, which is
-  // not what "ORB barely moves" would suggest:
-  // ORB's *median* barely moves (0.0683 to 0.0837, its answers already dominated by how few
-  // correspondences survive) while its maximum goes 0.2189 to 0.3394, half again as far. A median
-  // and a maximum are different statements about the same run, and this test asserts both for
-  // exactly that reason. A parameterised suite whose sabotage is
-  // caught by one of three parameters is thinner than it looks from any single passing run, and
-  // saying so here is cheaper than the next person re-deriving it.
-  //
-  // The maintainer was asked whether to loosen these bounds and said to keep the tight margin. That
-  // is the right call while the dataset, the seed and the detector parameters are all pinned —
-  // nothing but an OpenCV bump can move these numbers. What it costs, stated so nobody has to
-  // rediscover it: when a bump does move them, the failure will look like a regression in the
-  // estimator and will not be one. Read the printed `median/mean/max` line for all three detectors
-  // first. Two of three moving by a similar small amount is the library, and the bounds want
-  // re-measuring rather than the code. One moving alone is a real change. And a future detector
-  // whose honest maximum is above 0.3 does not fit under this bound at all — the answer then is a
-  // per-detector bound, not one loose enough for the worst of them.
+  // The maintainer was asked whether to loosen these bounds and said to keep the tight margin. What
+  // that costs, stated so nobody rediscovers it: when an OpenCV bump moves them, the failure will
+  // look like a regression in the estimator and will not be one. Read the printed
+  // `median/mean/max` line for all three detectors first — two of three moving by a similar small
+  // amount is the library, one moving alone is a real change. A future detector whose honest
+  // maximum is above 0.3 does not fit under this bound at all, and the answer then is a per-detector
+  // bound rather than one loose enough for the worst of them.
   EXPECT_LT(score.maxDeg, 0.4)
       << "one frame is " << score.maxDeg << " degrees out, which a median cannot see";
 

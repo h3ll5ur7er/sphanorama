@@ -1871,9 +1871,13 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             fresh = Path(directory) / "synthetic-ring-4"
             write_dataset(fresh, panorama, lens, _ring_of_poses(4))
 
+            # `sources.json` sits in the fixture and is not generator output: it is what
+            # `tools/asset_provenance.py` requires of a directory holding files nothing else can
+            # account for, and it names the command that regenerates these frames.
+            committed_names = sorted(p.name for p in fixture.iterdir() if p.name != "sources.json")
             self.assertEqual(
                 sorted(p.name for p in fresh.iterdir()),
-                sorted(p.name for p in fixture.iterdir()),
+                committed_names,
                 "the generator writes a different set of files than the fixture holds",
             )
             for produced in sorted(fresh.iterdir()):
@@ -1952,15 +1956,24 @@ class APanoramaIsReadAsThePixelsItHolds(unittest.TestCase):
         # A phone records an orientation tag and leaves the pixels as the sensor read them. Ignored,
         # a panorama shot in one orientation is read sideways: north is where up should be, and
         # every estimate comes back wrong in a way that reads as a bad estimator rather than as a
-        # bad input. Tagged 6, an 4x8 image *is* the 8x4 panorama, so the shape check below it has
-        # to run second.
+        # bad input. Tagged 6, a 4x8 image *is* the 8x4 panorama, so the shape check has to run
+        # second.
+        #
+        # The pixels are asserted rather than the shape, because both directions of rotation give an
+        # 8x4 image: a reviewer turned it counter-clockwise where tag 6 calls for clockwise and all
+        # 92 tests stayed green, which is a panorama 180 degrees from where it belongs with the
+        # truth rotations still exactly right. A lossless PNG carries the tag, so the comparison is
+        # exact rather than to within JPEG.
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "p.jpg"
-            image = Image.frombytes("RGB", (4, 8), bytes((5 * i) % 256 for i in range(4 * 8 * 3)))
+            path = Path(directory) / "p.png"
+            payload = bytes((5 * index) % 256 for index in range(4 * 8 * 3))
+            image = Image.frombytes("RGB", (4, 8), payload)
             exif = image.getexif()
             exif[0x0112] = 6
             image.save(path, exif=exif)
-            self.assertEqual(read_panorama(path).shape, (4, 8, 3))
+
+            clockwise = np.rot90(np.asarray(image, dtype=np.float64), k=-1)
+            np.testing.assert_array_equal(read_panorama(path), clockwise / 255.0 * 2.0 - 1.0)
 
     def test_a_file_that_is_not_an_image_is_refused_by_name(self):
         with tempfile.TemporaryDirectory() as directory:

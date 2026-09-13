@@ -166,7 +166,9 @@ contracts/cpp/        the include root — the interface headers, consumed direc
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest — mirrors src/ one file per unit; fakes in test/support/
-  test/data/          the one committed dataset: a format fixture for the loader (ADR 0053)
+  test/data/          synthetic-ring-4, a format fixture for the loader (ADR 0053), and
+                      panoramas/, the licensed world accuracy is measured in (ADR 0059).
+                      Both carry a sources.json; a binary with none fails the build
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. Layer-wise a client
 bench/                native CLI client: runs the core on datasets, prints timings
