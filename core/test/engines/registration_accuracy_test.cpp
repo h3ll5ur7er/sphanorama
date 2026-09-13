@@ -291,6 +291,12 @@ class Owned {
       : store_(store), then_(then) {}
   ~Owned() {
     for (const FeatureSet& set : sets) {
+      // **A count of zero allocated nothing**, which `IRegistrationEngine::ExtractFeatures` states
+      // and `ForgetOutputs` one directory over already guards. Such a set carries default
+      // `FrameRef`s, and `MemoryFrameStoreAccess` numbers frames from 1, so forgetting one answers
+      // `NotFound` — two spurious failures about a store that is correctly empty. Not reachable
+      // from these two tests today; reachable in this repository, which is enough.
+      if (set.count == 0) continue;
       Release(store_, set.descriptors);
       Release(store_, set.keypoints);
     }
@@ -598,6 +604,13 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   // 199 and SIFT's 61 of 178, both accepted. Three degrees is about 26 px, so an echo gathers
   // nothing and is refused — which fails the "something was accepted" half and catches it.
   const size_t kFirst = 3;
+  // `Rendered` above asks for twelve frames and this asks for two of them by index; nothing else
+  // keeps that pair in step. Without this, shrinking the ring reads a `FrameRef` past the end of a
+  // vector reserved to exactly its count, hands it to `ExtractFeatures`, and fails blaming
+  // extraction. `Accuracy` asserts its own count twenty lines up; this did not.
+  ASSERT_GT(dataset.value.frames.size(), kFirst + 1)
+      << "the dataset has " << dataset.value.frames.size() << " frames and this test reads index "
+      << (kFirst + 1);
   const Quat truthStep = Multiply(Conjugate(dataset.value.frames[kFirst + 1].trueRotation),
                                   dataset.value.frames[kFirst].trueRotation);
   const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
