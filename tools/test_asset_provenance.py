@@ -159,6 +159,62 @@ class AssetProvenance(unittest.TestCase):
                 self.tree.record({"assets": entries})
                 self.assertIn("`licence`", " ".join(self.tree.problems()))
 
+    def test_a_volunteered_answer_is_held_to_the_same_rule_as_a_required_one(self):
+        # The required list says which questions must be answered. It said nothing about whether an
+        # answer volunteered to a question nobody asked has to be an answer, so every optional field
+        # — `produced_by`, `width`, `projection`, `notes` — could be `false`, `[]` or `{}` and clear
+        # the build. `produced_by` is the one that bites: a blank command is carried, never run, and
+        # the record reads as though it had been.
+        for field, value in (("produced_by", ""), ("produced_by", False), ("produced_by", []),
+                             ("projection", {}), ("width", True), ("height", "512"),
+                             ("notes", [""]), ("notes", ["fine", 7])):
+            with self.subTest(field=field, value=value):
+                entries = self.tree.entries()
+                entries[0][field] = value
+                self.tree.record({"assets": entries})
+                self.assertIn(f"`{field}`", " ".join(self.tree.problems()))
+
+    def test_a_raster_has_to_say_what_shape_it_is(self):
+        # `width` and `height` were optional, so the one fact this checker cannot verify itself —
+        # it has no decoder — could be deleted from a record with nothing going red. The suite that
+        # does verify them, over in `tools/test_synth_dataset.py` where Pillow is present, counted
+        # how many it had checked and asserted only that the count was not zero; with one shaped
+        # entry in the tree that number is 1 whether the fact is there or not.
+        #
+        # Required by extension, because deciding what is a raster from the bytes would put an
+        # image library in front of every build, which is the thing this checker refuses to be.
+        entry = dict(self.tree.entries()[0])
+        entry["file"] = "photo.png"
+        self.tree.write("photo.png", NOT_TEXT)
+        entry["sha256"] = asset_provenance.digest(self.tree.assets / "photo.png")
+        entry["bytes"] = len(NOT_TEXT)
+        self.tree.record({"assets": [entry, self.tree.entries()[0]]})
+        reported = " ".join(self.tree.problems())
+        self.assertIn("`width`", reported)
+        self.assertIn("`height`", reported)
+
+    def test_a_file_that_is_not_a_raster_is_not_asked_for_a_shape(self):
+        # The guard on the rule above. `shell/public/icon.svg` is somebody's work and has no shape
+        # a decoder could confirm, and the four committed `.ppm` frames do — so the rule has to
+        # split on which, or it either exempts every asset or demands the impossible of an SVG.
+        entry = dict(self.tree.entries()[0])
+        entry["file"] = "drawing.svg"
+        self.tree.write("drawing.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        entry["sha256"] = asset_provenance.digest(self.tree.assets / "drawing.svg")
+        entry["bytes"] = (self.tree.assets / "drawing.svg").stat().st_size
+        self.tree.record({"assets": [entry, self.tree.entries()[0]]})
+        self.assertEqual(self.tree.problems(), [])
+
+    def test_an_answer_spelled_across_lines_is_an_answer(self):
+        # The guard on the test above: `licence_evidence` and `notes` are written as a list of lines
+        # in the record this checker was built for, so a rule that refused lists outright would
+        # refuse the tree it ships with.
+        entries = self.tree.entries()
+        entries[0]["notes"] = ["the first line", "and the second"]
+        entries[0]["width"] = 1024
+        self.tree.record({"assets": entries})
+        self.assertEqual(self.tree.problems(), [])
+
     def test_a_size_that_is_not_a_size_is_reported(self):
         # `True == 1` in Python, so `"bytes": true` satisfied the size comparison for a one-byte
         # file — the record agreeing with itself rather than with the bytes.

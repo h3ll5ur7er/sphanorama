@@ -19,6 +19,8 @@
       "file": "frame_0000.ppm",
       "sha256": "151a0ce363ea2223e666077ed861e9474078a52ca1de6679d6c457885614a4df",
       "bytes": 5197,
+      "width": 48,
+      "height": 36,
       "author": "this repository",
       "licence": "same as this repository",
       "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
@@ -27,6 +29,8 @@
       "file": "frame_0001.ppm",
       "sha256": "700d7c462c104e965744a605cee5b9b292c05d1cf3f81b949a4cc2fb0c49e09b",
       "bytes": 5197,
+      "width": 48,
+      "height": 36,
       "author": "this repository",
       "licence": "same as this repository",
       "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
@@ -35,6 +39,8 @@
       "file": "frame_0002.ppm",
       "sha256": "1e34f00eeed58cfaeabba78a0146ced40d6d44795c60fd1a23714d38f8ae4ea1",
       "bytes": 5197,
+      "width": 48,
+      "height": 36,
       "author": "this repository",
       "licence": "same as this repository",
       "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
@@ -43,6 +49,8 @@
       "file": "frame_0003.ppm",
       "sha256": "ef4daccabd9a7837c51af35168a718dead442e839d916f3776c23eab3f5d764a",
       "bytes": 5197,
+      "width": 48,
+      "height": 36,
       "author": "this repository",
       "licence": "same as this repository",
       "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"

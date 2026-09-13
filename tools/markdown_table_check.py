@@ -24,15 +24,14 @@ Usage:  uv run tools/markdown_table_check.py [repo_root]
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from tracked import tracked_files
+
 # The same question `conflict_marker_check.py` asks, for the same reason: what git would let you
 # commit, rather than a hand-written skip list that drifts from `.gitignore`.
-LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-
 # A delimiter row: pipes separating runs of dashes, with optional alignment colons. This is what
 # turns the line above it into a header, and it is the only unambiguous marker a GFM table has.
 DELIMITER = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$")
@@ -124,18 +123,14 @@ def breaks_in(body: str) -> list[tuple[int, str]]:
     return found
 
 
-def tracked_files(root: Path) -> list[str]:
+def markdown_files(root: Path) -> list[str]:
     """Every markdown path git would let you commit, relative to `root`."""
-    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    return sorted({n for n in result.stdout.split("\0") if n and n.endswith(".md")})
-
+    return [name for name in tracked_files(root) if name.endswith(".md")]
 
 def check(root: Path) -> list[Break]:
     root = Path(root)
     found: list[Break] = []
-    for rel in tracked_files(root):
+    for rel in markdown_files(root):
         path = root / rel
         if not path.is_file():
             continue

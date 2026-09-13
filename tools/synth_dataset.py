@@ -845,9 +845,15 @@ def main() -> int:
         parser.error(f"--out must be a directory, and {args.out} is not one")
     if not args.out.parent.is_dir():
         parser.error(f"--out's parent must be an existing directory, and {args.out.parent} is not")
-    staging = args.out.parent / f".{args.out.name}.partial"
-    if staging.exists() and not staging.is_dir():
-        parser.error(f"{staging} is in the way and is not a directory this can clear")
+    # Both hidden siblings, not just the one. `write_dataset` swaps through `.{name}.replaced` too,
+    # and that one is cleared with `ignore_errors=True` — which no-ops on a file rather than
+    # complaining, so the render finished and then died in `out.replace(displaced)`, and the
+    # leftover stayed put so every later run failed identically. One guard covered one of two paths
+    # because the second was introduced after it was written.
+    for hidden in (f".{args.out.name}.partial", f".{args.out.name}.replaced"):
+        beside = args.out.parent / hidden
+        if beside.exists() and not beside.is_dir():
+            parser.error(f"{beside} is in the way and is not a directory this can clear")
 
     # Read before the lens is built and long before anything renders, so that an unusable
     # `--panorama` costs nothing — the same reason every `--out` shape is judged above.

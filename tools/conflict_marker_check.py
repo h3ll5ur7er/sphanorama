@@ -20,10 +20,11 @@ Usage:  uv run tools/conflict_marker_check.py [repo_root]
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from tracked import tracked_files
 
 # Built from repeated characters, so that no line of this file or its tests can be one. Spelling
 # them out would eventually make the checker flag itself, and the usual answer to that — excluding
@@ -45,8 +46,6 @@ SPLIT = "=" * 7
 # `--cached --others --exclude-standard` is precisely the set that can become a commit: tracked
 # files, plus untracked ones git is not ignoring. An ignored file cannot carry a marker into the
 # history, and an untracked-but-not-ignored one is exactly what somebody is about to add.
-LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-
 # Read as text; anything that is not decodes to replacement characters and simply will not match.
 # A size ceiling because a marker lives in a hand-edited file, and walking a large binary line by
 # line to prove it has none is work for nothing.
@@ -86,22 +85,6 @@ def is_marker(text: str) -> bool:
     if text.startswith(BASE + " ") or text.rstrip() == BASE:
         return True
     return text.rstrip() == SPLIT
-
-
-def tracked_files(root: Path) -> list[str]:
-    """Every path git would let you commit, relative to `root`.
-
-    A failure to ask is reported rather than swallowed. Returning "no files" from a git that would
-    not answer would make an unrunnable check indistinguishable from a clean tree, which is the
-    shape of bug this whole checker exists to catch.
-    """
-    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    # Deduplicated, because `--cached` lists a path once per stage while a merge is unresolved —
-    # base, ours, theirs. That is exactly when this check runs, so without it every marker in a
-    # conflicted file is reported three times, in the output somebody is reading to find them.
-    return sorted({name for name in result.stdout.split("\0") if name})
 
 
 def check(root: Path) -> list[Marker]:

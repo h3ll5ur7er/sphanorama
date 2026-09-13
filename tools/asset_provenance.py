@@ -46,15 +46,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from tracked import tracked_files
+
 RECORD = "sources.json"
 
-# Each answers a question that cannot be recovered from the bytes. `bytes` and `sha256` can be, and
-# are here so that the record is checkable against the file rather than merely present.
+# Each answers a question that cannot be recovered from the bytes. `sha256` can be, and is here so
+# that the record is checkable against the file rather than merely present — `bytes` is a second
+# copy of a fact the digest already pins, kept because a reader can compare it without hashing
+# anything, not because it adds reach. The one failure it catches alone is a typo in the record.
 REQUIRED = ("file", "sha256", "bytes", "work", "author", "licence", "licence_url",
             "source_repository", "source_path", "retrieved")
 
@@ -71,11 +74,17 @@ MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".ti
          ".mov", ".ttf", ".otf", ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf",
          ".blend", ".psd", ".zip")
 
-# The same question the conflict-marker check asks, for the same reason: tracked files plus
-# untracked ones git is not ignoring is exactly the set that can become a commit. It also keeps the
-# scan out of node_modules and build/, where a vendored `sources.json` would otherwise be read as
-# ours.
-LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+# Extensions whose files have a pixel shape a decoder could confirm. An entry for one of these has
+# to record `width` and `height`: this checker cannot verify them — that needs an image library in
+# front of every build, which it refuses to be — but `tools/test_synth_dataset.py` does, where
+# Pillow is already present, and a fact that is optional here is a fact that can be deleted there
+# with nothing going red. Split by extension rather than by content for the same reason: asking the
+# bytes is asking a decoder.
+#
+# Not every asset: an SVG is somebody's work and has no shape a raster decoder can confirm, and
+# neither has an `.mp3`.
+SHAPED = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".ppm", ".pgm", ".pnm")
+
 
 
 @dataclass(frozen=True)
@@ -91,16 +100,16 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def tracked_files(root: Path) -> list[str]:
-    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    return sorted({name for name in result.stdout.split("\0") if name})
-
-
 def records(root: Path) -> list[Path]:
     """Every asset directory's record, as absolute paths."""
     return [root / name for name in tracked_files(root) if Path(name).name == RECORD]
+
+
+# Fields whose answer is a number rather than a sentence. Everything else a record holds is prose,
+# spelled either as one string or as a list of lines — which is how the long answers
+# (`licence_evidence`, `notes`) are written, so a rule that refused lists would refuse the tree this
+# ships with.
+COUNTS = ("bytes", "width", "height")
 
 
 def unusable(field: str, value: object) -> str | None:
@@ -114,11 +123,23 @@ def unusable(field: str, value: object) -> str | None:
     """
     if value is None:
         return "is missing"
-    if field == "bytes":
+    if field in COUNTS:
         # `bool` first: it is a subclass of `int`, and `True` is the value that made the size
         # comparison agree with itself.
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return f"is {value!r}, and a size is a whole number of bytes"
+            what = ("a size is a whole number of bytes" if field == "bytes"
+                    else f"{field} is a whole number of pixels")
+            return f"is {value!r}, and {what}"
+        return None
+    if isinstance(value, list):
+        # A blank line inside the list is a paragraph break — that is how the long answers in this
+        # tree are written — so the rule is about the list as a whole rather than each line: every
+        # element is prose, and at least one of them says something.
+        for line in value:
+            if not isinstance(line, str):
+                return f"holds {line!r}, and this answers a question a reader asks in words"
+        if not any(line.strip() for line in value):
+            return "is a list of nothing, which answers nothing"
         return None
     if not isinstance(value, str):
         return f"is {value!r}, and this answers a question a reader asks in words"
@@ -216,20 +237,43 @@ def check(root: Path) -> list[Problem]:
                 continue
             recorded[name] = entry
 
-            for field in (REQUIRED_OURS if ours else REQUIRED):
+            required = REQUIRED_OURS if ours else REQUIRED
+            for field in required:
                 wrong = unusable(field, entry.get(field))
                 if wrong is not None:
                     problems.append(Problem(f"{rel} [{name}]", f"`{field}` {wrong}"))
+
+            # And every other key the entry actually holds. The required list says which questions
+            # must be answered; it did not say that an answer volunteered to a question nobody asked
+            # has to be an answer, so the whole optional half of the schema was exempt from the rule
+            # the required half exists to enforce. `produced_by` is the one that bites: blank, it is
+            # carried, never run, and the record reads as though its command still reproduced the
+            # bytes.
+            for field in entry:
+                if field in required:
+                    continue
+                wrong = unusable(field, entry[field])
+                if wrong is not None:
+                    problems.append(Problem(f"{rel} [{name}]", f"`{field}` {wrong}"))
+
+            if Path(name).suffix.lower() in SHAPED:
+                for field in ("width", "height"):
+                    if field not in entry:
+                        problems.append(Problem(f"{rel} [{name}]",
+                                                f"`{field}` is missing, and a raster has one"))
 
             path = directory / name
             if not path.is_file():
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
                 continue
             content = path.read_bytes()
-            if entry.get("sha256") != hashlib.sha256(content).hexdigest():
+            # `digest`, not a third spelling of it: this used to inline `hashlib` here while the
+            # test suite called the helper, so the two paths computed the same thing two ways.
+            held = digest(path)
+            if entry.get("sha256") != held:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"has moved on from its recorded sha256; the bytes now "
-                                        f"hash to {hashlib.sha256(content).hexdigest()}"))
+                                        f"hash to {held}"))
             if entry.get("bytes") != len(content):
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"records {entry.get('bytes')} bytes and holds "

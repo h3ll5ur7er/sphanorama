@@ -40,7 +40,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asset_provenance  # noqa: E402
@@ -1064,9 +1064,13 @@ class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
             after = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
             self.assertEqual(after, before,
                              "a failed run changed the dataset that was already there")
-            # This is the path where the staging directory exists when the failure happens — the
-            # render is complete by then — so it is the one that pins the cleanup. The
-            # refused-during-rendering test cannot: nothing is staged yet at that point.
+            # Both this and the refused-during-rendering test pin the cleanup now, and each fails
+            # when it is deleted. That was not true when this was written: rendering used to happen
+            # entirely before `staging.mkdir`, so a refusal mid-render had nothing staged to leak
+            # and only the failure-while-writing path could see one. Frames are rendered inside the
+            # write loop since the round that bounded this tool's memory, which moved the refusal
+            # into the staged window — and left this sentence claiming an assertion one test down
+            # is redundant when it had just become load-bearing.
             leaked = [c.name for c in out.parent.iterdir() if c.name.startswith(".")]
             self.assertEqual(leaked, [], f"staging directories leaked: {leaked}")
 
@@ -1507,6 +1511,12 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             root = Path(directory)
             (root / "afile").write_text("not a directory\n")
             (root / ".occupied.partial").write_text("in the way\n")
+            # The second hidden sibling. `write_dataset` swaps through `.{name}.replaced` as well as
+            # `.{name}.partial`, and only the first was pre-checked — so a file at this path spent
+            # the whole render and died in `out.replace(displaced)` with `NotADirectoryError`. Worse
+            # than the staging case, because `shutil.rmtree(displaced, ignore_errors=True)` no-ops
+            # on a file, so the leftover survives and every later run fails the same way.
+            (root / ".swapped.replaced").write_text("in the way\n")
             dangling = root / "dangling"
             dangling.symlink_to(root / "does-not-exist")
 
@@ -1515,6 +1525,7 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
                 "a dangling symlink": dangling,
                 "under a file": root / "afile" / "ds",
                 "staging occupied": root / "occupied",
+                "displaced occupied": root / "swapped",
             }
             for name, out in cases.items():
                 rendered = {"n": 0}
@@ -2066,32 +2077,52 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
 
     `tools/asset_provenance.py` keeps the digest, the size and the licence honest with the standard
     library alone. Width and height are the two recorded facts it cannot check without an image
-    library, and they are the two that decide whether the file is an equirectangular panorama at
-    all.
+    library, so the work is split: the checker demands a shape from every entry whose extension is
+    in `asset_provenance.SHAPED`, and this asserts that the shape demanded is the shape the file
+    has. Neither half is enough alone — a requirement nobody verifies is a comment, and a
+    verification of whatever happens to be recorded cannot notice a record that stopped recording.
 
     Every record in the tree, not one directory named here: the prose in `sources.json` claims this
     generally, and a hard-coded path made that claim true of one folder and false everywhere else —
     a tracked 64x32 JPEG recorded as 4096 by 7 passed every gate.
+
+    **Read with `Image.open`, not `read_panorama`.** The reader this used to call is the
+    *equirectangular panorama* reader and refuses everything else, so the moment a second raster
+    recorded a shape — the four 48x36 frames, the first time the checker demanded one — a generic
+    claim was being enforced by a panorama-specific reader and four records failed for being what
+    they are. Where an entry says so itself, in `projection`, the 2:1 rule is asserted here instead.
     """
 
     def test_every_recorded_shape_is_the_shape_the_file_has(self):
-        checked = 0
+        shaped = 0
         for record in asset_provenance.records(Path(__file__).resolve().parents[1]):
             document = json.loads(record.read_text())
             for entry in (document.get("assets") or []) + (document.get("ours") or []):
-                present = ("width" in entry, "height" in entry)
-                # Neither is skipped, because the checker has both optional. One without the other
-                # is a failure with a sentence rather than a `KeyError` out of the test body, which
-                # is what the subscripts below used to give.
-                if not any(present):
+                if Path(entry["file"]).suffix.lower() not in asset_provenance.SHAPED:
                     continue
+                shaped += 1
                 with self.subTest(file=entry["file"]):
-                    self.assertTrue(all(present), f"{entry['file']} records one of width and "
-                                                  f"height and not the other")
-                    panorama = read_panorama(record.parent / entry["file"])
-                    self.assertEqual(panorama.shape, (entry["height"], entry["width"], 3))
-                    checked += 1
-        self.assertGreater(checked, 0, "no recorded shape was checked, so this checks nothing")
+                    # The checker refuses a raster entry with no shape, so reaching here without one
+                    # already fails the build — but it fails it in the other step, and a `KeyError`
+                    # out of this body names a line of test code where a sentence would name the
+                    # record.
+                    missing = [f for f in ("width", "height") if f not in entry]
+                    self.assertFalse(missing, f"{entry['file']} records no {' or '.join(missing)}, "
+                                              f"which tools/asset_provenance.py should have caught")
+                    # The orientation tag is applied first, for the reason `read_panorama` applies
+                    # it: a phone writes the tag rather than turning the pixels, so the shape in the
+                    # header is not the shape anybody sees.
+                    with Image.open(record.parent / entry["file"]) as opened:
+                        width, height = ImageOps.exif_transpose(opened).size
+                    self.assertEqual((width, height), (entry["width"], entry["height"]))
+                    if entry.get("projection") == "equirectangular":
+                        self.assertEqual(width, 2 * height,
+                                         f"{entry['file']} says it is equirectangular, which covers "
+                                         f"360 degrees of longitude by 180 of latitude")
+        # Not a stand-in for the per-file requirement — the checker owns that now, and a record that
+        # drops a shape fails it rather than quietly reducing this count. This only says the walk
+        # found something to walk.
+        self.assertGreater(shaped, 0, "no record was walked, so this checks nothing")
 
 
 class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
@@ -2120,7 +2151,13 @@ class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
         found = 0
         for record in self.records():
             document = json.loads(record.read_text())
-            entries = [e for e in document.get("ours") or [] if e.get("produced_by")]
+            # Both lists. This walked `ours` alone, while `tools/asset_provenance.py`'s docstring
+            # promises it of any entry that carries the field — so a `produced_by` under `assets`
+            # cleared the checker and was never run, which is the one shape of this record the
+            # promise most needs to cover: a file we did not make, with a command claiming it can
+            # be remade.
+            entries = [e for e in (document.get("assets") or []) + (document.get("ours") or [])
+                       if e.get("produced_by")]
             if not entries:
                 continue
             commands = {entry["produced_by"] for entry in entries}
