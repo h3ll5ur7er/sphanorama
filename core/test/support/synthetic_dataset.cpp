@@ -102,12 +102,13 @@ class OwnedFrames {
  * choked on them would be refusing a valid file. Everything else about the header is checked
  * strictly, so accepting the one thing the standard requires costs nothing.
  *
- * **A `#` inside a token is not skipped, and that is a known gap rather than a decision.** Netpbm
- * allows a comment anywhere in the header, so `P6\n4#c\n8 36\n255\n` is a valid file this reader
- * refuses: the accumulation loop below has no comment branch, only the whitespace-skipping loop
- * above does. Written down rather than fixed because no generator produces that shape and the fix
- * restructures the loop — but a reader meeting a refused file that looks fine deserves to find this
- * sentence rather than work it out.
+ * **A comment is deleted, not treated as a separator**, wherever it falls — which matters most in
+ * the middle of a token. `P6\n4#c\n8 36\n255\n` is a valid file whose width is 48, because removing
+ * the comment leaves nothing between the `4` and the `8`. This reader refused it until now: only
+ * the whitespace-skipping loop had a `#` branch, and the accumulation loop read the token as
+ * `4#c`. Both loops have one now, and
+ * `ReadsAFrameWhoseCommentSitsInsideAToken` is the case the older test could not see — that one
+ * puts the comment on its own line, where the skip loop is the only loop a `#` ever reaches.
  */
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
@@ -146,6 +147,17 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
     return false;
   }
   while (in.good() && !std::isspace(static_cast<unsigned char>(c))) {
+    // **A comment is deleted, not treated as a separator.** Netpbm ignores everything from a `#` to
+    // the next end-of-line, wherever it appears in the header — so `48` may be written `4#c\n8` and
+    // the two halves join, because removing the comment leaves nothing between them. The skip loop
+    // above had this branch and this one did not, which read that token as `4#c` and refused a file
+    // the format allows. Nothing this repository generates writes one; a reader of somebody else's
+    // frame meets it.
+    if (c == '#') {
+      while (in.good() && c != '\n') c = in.get();
+      if (in.good()) c = in.get();
+      continue;
+    }
     if (token->size() >= kLongestHeaderToken) {
       *why = TokenTrouble::kTooLong;
       return false;

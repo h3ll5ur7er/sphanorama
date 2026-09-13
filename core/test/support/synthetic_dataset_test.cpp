@@ -1073,6 +1073,39 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   ForgetAll(loaded.value);
 }
 
+TEST_F(Dataset, ReadsAFrameWhoseCommentSitsInsideAToken) {
+  // **Netpbm deletes a comment; it does not end the token it interrupts.** The spec says characters
+  // from a `#` to the next end-of-line are ignored, so `48` written as `4#c\n8` is the number 48 —
+  // the two halves join, because removing the comment leaves nothing between them.
+  //
+  // The reader had the `#` branch in its whitespace-skipping loop and not in its accumulation loop,
+  // so it read the token as `4#c` and refused a valid file. The test above cannot see that: it puts
+  // the comment on its own line, where the skip loop is the only loop that ever meets a `#`.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  ASSERT_GE(width, 10) << "the split below needs at least two digits to split";
+  const std::string spelled = std::to_string(width);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n"
+        << spelled.substr(0, 1) << "#the width, interrupted\n" << spelled.substr(1)
+        << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  // The width is the assertion, not merely that it loaded. Read as `4` rather than `48` the frame
+  // would hold a tenth of the bytes its payload has, and the refusal that followed would be about
+  // the byte count — which is the wrong sentence for a header this reader mis-parsed.
+  ASSERT_FALSE(loaded.value.frames.empty());
+  EXPECT_EQ(loaded.value.frames.front().frame.width, width);
+  EXPECT_EQ(loaded.value.frames.front().frame.height, height);
+  ForgetAll(loaded.value);
+}
+
 // ------------------------------------------------- refusing in our own words, at every site
 
 TEST_F(Dataset, RefusesTruthWhoseTopLevelIsNotAnObject) {
