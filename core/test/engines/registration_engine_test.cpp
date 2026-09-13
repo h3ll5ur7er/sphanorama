@@ -1214,14 +1214,16 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // therefore passed. Neither set contains the other. Where a refusal lands *inside* the read path
   // is covered by `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`, which drives those guards
   // one at a time.
-  const FeatureDetector other =
-      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
-  FeatureRegistrationEngine foreign{counting, other};
-  const Result<FeatureSet> c = foreign.ExtractFeatures(Textured());
-  ASSERT_TRUE(c.ok()) << c.status.detail;
+  //
+  // A doctored stride is the vehicle, and it used to be a foreign detector's set. That stopped
+  // working when `FeatureSet::extractor` arrived: a foreign set is now refused before anything is
+  // pinned, which is the better behaviour and leaves this case needing a pair the engine will
+  // agree to read. Same extractor, one row width the frame does not have.
+  FeatureSet doctored = b.value;
+  doctored.descriptors.stride = doctored.descriptors.stride / 2;
   const int pinsBeforeMismatch = counting.pins;
   const Result<PairwiseResult> mismatched =
-      engine.EstimatePairwise(a.value, c.value, Quat{1, 0, 0, 0}, Lens());
+      engine.EstimatePairwise(a.value, doctored, Quat{1, 0, 0, 0}, Lens());
   ASSERT_FALSE(mismatched.ok());
   EXPECT_EQ(mismatched.status.code, StatusCode::InvalidArgument) << mismatched.status.detail;
   EXPECT_EQ(counting.pins - pinsBeforeMismatch, 4)
@@ -1263,7 +1265,6 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);
-  ForgetOutputs(c.value);
 }
 
 /**
@@ -1483,6 +1484,43 @@ TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
   EXPECT_LT(AngleBetween(pair.value.relativeRotation, Quat{1, 0, 0, 0}) * 180.0 /
                 std::numbers::pi,
             0.5);
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+/**
+ * Two sets from a foreign extractor are refused, not matched under this engine's metric.
+ *
+ * The width check that stood here before could only see sets that differed from *each other*. When
+ * both come from one foreign extractor they agree, so nothing compared them to the engine reading
+ * them: SIFT's 512-byte float rows were matched as 512 Hamming bytes and reported accepted, with
+ * 30 correspondences where the right metric finds 178.
+ */
+TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
+  const FeatureDetector foreignDetector =
+      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
+  FeatureRegistrationEngine foreign{store, foreignDetector};
+  FeatureRegistrationEngine engine = Engine();
+
+  const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
+  EXPECT_FALSE(pair.ok()) << "matched a foreign extractor's descriptors under this engine's metric, "
+                          << "answering with " << pair.value.inliers << " inliers";
+  EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
+
+  // Zero is the other way a set fails the check, and it is a separate branch: a caller that built a
+  // `FeatureSet` by hand rather than one a foreign extractor stamped.
+  FeatureSet unstamped = a.value;
+  unstamped.extractor = 0;
+  const Result<PairwiseResult> nobodys =
+      engine.EstimatePairwise(unstamped, a.value, Quat{1, 0, 0, 0}, Lens());
+  EXPECT_FALSE(nobodys.ok()) << "read a set no extractor stamped";
+  EXPECT_EQ(nobodys.status.code, StatusCode::InvalidArgument) << nobodys.status.detail;
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);

@@ -552,6 +552,16 @@ export interface FeatureSet {
    * to take on trust, because nothing in this struct lets them check it.
    */
   keypoints: FrameRef;
+  /**
+   * Which extractor produced these descriptors, opaque to everyone but the implementation that
+   * stamped it. Two sets whose `extractor` differs cannot be matched against each other: the bytes
+   * carry no record of the metric they want, so an engine handed a foreign set will match them
+   * under its own and answer confidently. Zero means nobody stamped it, which is also a refusal.
+   * Not a detector enum, because a caller never chooses the detector and an implementation with no
+   * notion of ORB should still satisfy this interface. The values are an implementation's private
+   * business; the only operation the contract defines on them is equality.
+   */
+  extractor: number;
 }
 
 export interface PairwiseResult {

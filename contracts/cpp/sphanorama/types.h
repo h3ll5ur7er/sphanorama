@@ -581,6 +581,15 @@ struct FeatureSet {
   // belongs here rather than in a commit message: the best-first promise above is one a caller has
   // to take on trust, because nothing in this struct lets them check it.
   FrameRef keypoints;
+  // Which extractor produced these descriptors, opaque to everyone but the implementation that
+  // stamped it. Two sets whose `extractor` differs cannot be matched against each other: the bytes
+  // carry no record of the metric they want, so an engine handed a foreign set will match them
+  // under its own and answer confidently. Zero means nobody stamped it, which is also a refusal.
+  //
+  // Not a detector enum, because a caller never chooses the detector and an implementation with no
+  // notion of ORB should still satisfy this interface. The values are an implementation's private
+  // business; the only operation the contract defines on them is equality.
+  int32_t extractor = 0;
 };
 
 struct PairwiseResult {
