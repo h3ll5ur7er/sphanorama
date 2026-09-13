@@ -179,12 +179,22 @@ class Extraction : public ::testing::TestWithParam<FeatureDetector> {
       bool held = false;
       ~GiveBack() {
         if (keep) return;
-        // **The pin comes off before the frame goes.** `Forget` refuses a pinned frame and keeps
-        // the entry, so unwinding from an `ASSERT_*` taken *after* `Pin` — the null-data one below
-        // is exactly that — would leave the store still accounting for the bytes, silently, because
-        // the status was discarded. The engine has this ordering and a test named for it
-        // (`ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem`); the fixture meant to model
-        // the engine's callers did not.
+        // **The pin comes off before the frame goes**, which is the ordering the engine keeps and
+        // has a test named for (`ARollbackHoldingPinsGivesTheBytesBackBeforeItForgetsThem`, driven
+        // through `PaddingFrameStore`). `Forget` refuses a pinned frame and keeps the entry, so
+        // forgetting first would leave the store accounting for bytes nobody holds.
+        //
+        // **Everything below this line is unreachable today, and that is measured rather than
+        // assumed.** `ADD_FAILURE()` here leaves 808 tests green and never prints; moved above the
+        // early return it fires on every `Paint`, always with `keep=true, held=false`. Both exits
+        // that could reach it are shut: `Pin` cannot fail for a frame this line just allocated in
+        // this store, and `Pin` cannot hand back a null span for a non-empty allocation.
+        //
+        // It stays as *cleanup* rather than as a guard, which is the distinction: a destructor is
+        // correct by construction and needs no reachability argument, where a branch that decides
+        // behaviour does. What it must not do is claim more than that — an earlier version of this
+        // comment presented these two assertions as load-bearing on the strength of a measurement
+        // taken with the assertion above forced to fire, which is a different program.
         if (held) {
           EXPECT_TRUE(frames.Release(frame).ok()) << "a pin this helper took would not come off";
         }
@@ -1582,6 +1592,14 @@ TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
 
   const Result<FeatureSet> ours = engine.ExtractFeatures(Textured());
   ASSERT_TRUE(ours.ok()) << ours.status.detail;
+  // **Non-empty, asserted rather than assumed.** The count guard sits immediately above the
+  // provenance guard and answers identically — pre-`Pin`, `InvalidArgument`, this component — so the
+  // pin-count discriminator above cannot tell them apart, and the only thing aiming these cases at
+  // the guard they are named for is that every set here has features. A detector retuned until
+  // `Textured()` yields none would silently convert all of them into count-guard cases that still
+  // pass. The sibling test thirty lines up learned this the hard way and pins its own arrangement
+  // the same way.
+  ASSERT_GT(ours.value.count, 0);
 
   for (const FeatureDetector foreignDetector : kAllFeatureDetectors) {
     if (foreignDetector == GetParam()) continue;
@@ -1589,6 +1607,8 @@ TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
     const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
     const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
     ASSERT_TRUE(a.ok() && b.ok());
+    ASSERT_GT(a.value.count, 0);
+    ASSERT_GT(b.value.count, 0);
 
     // **Both positions, because the guard has two operands and `||` short-circuits.** Round 1 of
     // this PR's review left every case with the bad set in `a`, and deleting `b.extractor != mine`

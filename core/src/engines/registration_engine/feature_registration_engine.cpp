@@ -1130,25 +1130,28 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
       if (pair[0].distance > kLoweRatio * pair[1].distance) continue;
-      // **The sign and the bound, at the row rather than once for the set.** `DMatch` carries
-      // signed indices and OpenCV's own default constructor sets them to -1 (`core/types.hpp`), so
-      // the casts below would turn "no match" into 18446744073709551615.
+      // **No guard on these indices, and that is a decision rather than an omission.** Three
+      // versions of one have now been tried here and each was unreachable: a length comparison
+      // between the two readers, a per-row bound, and a sign check. `ReadDescriptors` builds
+      // `cv::Mat(set.count, …)` and `ReadBearings` a `vector(set.count)` from the same `count`, and
+      // `knnMatch` bounds `queryIdx` by `matA.rows` and `trainIdx` by `matB.rows` — so nothing a
+      // caller owns can separate the two, and no `FeatureSet`, stride or store gets there.
+      // Instrumenting all three with `abort()` leaves 808 tests green and none of them printing; the
+      // same instrumentation as `ia >= 1` aborts at exit 134, so the line is reached and the
+      // condition is simply never true.
       //
-      // The bound was briefly replaced by a check that the two readers came back the same length,
-      // on the argument that the row counts then settle every index. They do — `ReadDescriptors`
-      // builds `cv::Mat(set.count, …)` and `ReadBearings` a `vector(set.count)`, both from the same
-      // `count` — which is exactly why that check could never fire, and why it was the wrong thing
-      // to trade this for. Inverting it to fire when they agree fails fifteen cases, which is the
-      // measurement that says so. The hazard it was written against is real and stays a *comment*:
-      // a reader that dropped an unusable row instead of marking it would shift every index after
-      // it, which is what the `usable` flag exists to prevent.
+      // The reason not to keep one anyway is sharper than the rule against untested guards. A
+      // `continue` here would convert a would-be out-of-range read into "too few correspondences",
+      // which is a *quieter* failure than the heap-buffer-overflow the sanitizer build would report
+      // — and the sanitizer is how the seven bounds guards above were found in the first place. A
+      // guard that cannot fire but can blunt the instrument that would have caught the thing it
+      // guards against is worse than no guard.
       //
-      // So the bound is back where it can do something, next to the sign check it never should have
-      // been separated from: both are the same refusal to take `DMatch`'s word for an index.
-      if (pair[0].queryIdx < 0 || pair[0].trainIdx < 0) continue;
+      // What the deleted length check was written against is real and stays here as prose: a reader
+      // that dropped an unusable row instead of marking it would shift every index after it, which
+      // is what `Bearing::usable` exists to prevent.
       const size_t ia = static_cast<size_t>(pair[0].queryIdx);
       const size_t ib = static_cast<size_t>(pair[0].trainIdx);
-      if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
       // A row the lens could not turn into a direction is dropped *here*, where dropping it costs
       // one correspondence, rather than in `ReadBearings`, where it shifted every index after it.
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;
