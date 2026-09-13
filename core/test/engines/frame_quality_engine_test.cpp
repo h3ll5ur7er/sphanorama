@@ -130,8 +130,8 @@ class FrameQuality : public ::testing::Test {
       // of a half — puts `127.5 + 127 * u * v` on an exact integer, at 191 and 64. The others are
       // clear: 0 and +-1 give the half-integers 127.5, 254.5 and 0.5, and +-sqrt2/2 gives
       // 217.3026 and 37.6974, a comfortable 0.30 away. (An earlier version of this comment said
-      // "the first three of those", and contradicted itself six lines later by calling 254.5 a
-      // half-integer. Counting the moved pixels by class settles it: 293 of the 1024 pixels at
+      // "the first three of those", and contradicted itself in the rounding sentence below by
+      // calling 254.5 a half-integer. Counting the moved pixels by class settles it: 293 of the 1024 pixels at
       // `|u * v| = 1/2` moved, and **0** of the other 3072.)
       //
       // A truncating cast decides those 1024 on the last bit of `std::cos`, which made the

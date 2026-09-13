@@ -973,8 +973,9 @@ class CountingForgets final : public IFrameStoreAccess {
   // **Pins are counted so "it refused before touching anything" and "it refused after pinning the
   // four" are observable rather than asserted in prose.** Both refusals are `InvalidArgument`, so
   // the status cannot separate them; the count can, and it is the *only* thing here that can, since
-  // every refusal past the pins — `ReadBearings`, `ReadDescriptors`, the width guard — takes the
-  // same four.
+  // every refusal past the pins takes the same four. The enumeration that used to sit here named
+  // three of them and this file names five elsewhere, so it is a predicate now rather than a list:
+  // *anything* that refuses after the pin loop counts four, and nothing here tells those apart.
   //
   // An earlier version of this docblock said the count "needs to tell a refusal past both
   // `ReadBearings` passes from one before them". It cannot: the pins are all taken up front, so a
@@ -1119,8 +1120,22 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // the *identity* — the struct default-initialises `w` to 1 — and the first version of this line
   // used it and was surprised to be refused nothing. A zero quaternion is not a rotation; the
   // identity is one, and an engine refusing it would be refusing the commonest prior there is.
+  //
+  // **All three pre-pin refusals are checked against the pin count, not just the empty set.** The
+  // comment above claims three of the four refuse before a single `Pin`; until a reviewer moved the
+  // lens and prior guards to *after* the pin loop and watched 805 tests stay green, only the empty
+  // set was checked and the other two thirds of that claim were prose. This is the mutation twelve
+  // review rounds had not found.
+  const int pinsBeforeGuards = counting.pins;
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
+  EXPECT_EQ(counting.pins, pinsBeforeGuards)
+      << "the lens guard pinned " << (counting.pins - pinsBeforeGuards)
+      << " frames; an unusable lens is refused before the pixels are touched";
+  const int pinsBeforePrior = counting.pins;
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
+  EXPECT_EQ(counting.pins, pinsBeforePrior)
+      << "the prior guard pinned " << (counting.pins - pinsBeforePrior)
+      << " frames; an unusable prior is refused before the pixels are touched";
   // A set with no rows, refused before anything is pinned — and now that pins are observable, that
   // second half is checked rather than asserted in a comment. Each of the two counts stands on its
   // own: this one fails if an empty set is refused after pinning, and the post-pin case below fails

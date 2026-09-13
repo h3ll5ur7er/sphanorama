@@ -861,7 +861,7 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     // 0.9515. Shifting past the indices already taken costs two comparisons and makes every
     // iteration a sample.
     //
-    // **`from.size() >= 3` is a precondition of these three lines**, held by `EstimatePairwise`'s
+    // **`from.size() >= 3` is a precondition of the draw below**, held by `EstimatePairwise`'s
     // `fromAll.size() < kMinimumCorrespondences` refusal and by nothing in this function. `kMinimumCorrespondences`
     // carries the explanation; this is a pointer to it rather than a second copy, because the
     // first version of this note *was* a second copy and had both failure modes backwards within
@@ -1046,7 +1046,11 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     const Result<std::span<uint8_t>> kbSpan = keypointsB.Pin();
     const Result<std::span<uint8_t>> dbSpan = descriptorsB.Pin();
     for (const Result<std::span<uint8_t>>* pinned : {&kaSpan, &daSpan, &kbSpan, &dbSpan}) {
-      // The store's `Status` whole, component included — as `ExtractFeatures` already does. Rebuilding it with `kComponent` kept the code and the detail and overwrote the field
+      // The store's `Status` whole, component included, as `Extract` already does — `Extract`
+      // being the pinning helper, not `ExtractFeatures`, which is the exception wrapper around it
+      // and rebuilds with `kComponent`. The previous version of this line said `ExtractFeatures`:
+      // a stale distance was traded for a wrong name, which is the worse of the two, and it split a
+      // second copy that `registration_engine_test.cpp` still spells correctly. Rebuilding it with `kComponent` kept the code and the detail and overwrote the field
       // that says *who reported it*, so a caller diagnosing a failed pin was told this engine did
       // when the store did. Two methods of one class disagreeing about that is the second-copies
       // failure in miniature.

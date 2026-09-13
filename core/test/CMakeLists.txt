@@ -123,8 +123,9 @@ if(SPHANORAMA_WITH_OPENCV)
   target_include_directories(sphanorama_dataset_alloc_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(sphanorama_dataset_alloc_test PRIVATE sphanorama_core sphanorama_opencv)
   target_compile_options(sphanorama_dataset_alloc_test PRIVATE -Wall -Wextra -Werror)
-  # Through the source property rather than `target_compile_options`, for consistency with the call
-  # twenty lines up. That call's original comment justified the choice by an ordering trap — a
+  # Through the source property rather than `target_compile_options`, for consistency with the
+  # `set_source_files_properties` call on `support/synthetic_dataset.cpp` above. That call's
+  # original comment justified the choice by an ordering trap — a
   # target's own options emitted before the INTERFACE options it inherits, so a `-fexceptions` here
   # would lose to an inherited `-fno-exceptions`. There is no such inheritance: the core's flag is
   # `PRIVATE`. The ordering claim is about CMake in general and is not what decides anything here.
