@@ -554,8 +554,11 @@ export interface FeatureSet {
   keypoints: FrameRef;
   /**
    * Which extractor produced these descriptors, opaque to everyone but the implementation that
-   * stamped it. An engine matches only sets it produced itself, and refuses any set stamped by
-   * anything else — comparing the two sets to *each other* is the blind rule this replaced, and it
+   * stamped it. An engine refuses any set whose stamp is not its own, so a caller may pair only sets
+   * that came back from the same engine — which is the obligation, not a guarantee the engine can
+   * make: an implementation is free to give two of its instances the same identity, and the one in
+   * this tree does (ADR 0058 records what that costs). Comparing the two sets to *each other* is the
+   * blind rule this replaced, and it
    * passes two sets that agree because one foreign extractor wrote both. The bytes carry no record
    * of the metric they want, so an engine handed a foreign set matches them under its own and
    * answers confidently. Zero means nobody stamped it, which is also a refusal.

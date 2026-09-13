@@ -304,6 +304,15 @@ TEST_P(Extraction, FindsNothingOnAFlatFrame) {
   EXPECT_EQ(features.value.descriptors.id.value, 0U) << "count == 0 must mean no frame was taken";
   EXPECT_EQ(features.value.keypoints.id.value, 0U);
   EXPECT_EQ(store.Forget(features.value.descriptors).code, StatusCode::NotFound);
+  // **Stamped even with nothing in it**, which is a fact about where one assignment sits: `Extract`
+  // writes `extractor` above its `count == 0` early return. Move it below and this set comes back
+  // unstamped, `EstimatePairwise`'s provenance guard refuses it instead of the count guard, and
+  // `EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded` stops driving the guard it is named for
+  // — measured, with the whole suite green either way until this line existed. A reviewer argued in
+  // round 3 that a value no caller reads is not worth a test; round 4 measured that the reordering
+  // restores a defect invisibly, which settles it the other way.
+  EXPECT_NE(features.value.extractor, 0)
+      << "a set with nothing in it is still this engine's, and the guards downstream rely on it";
 }
 
 TEST_P(Extraction, IsDeterministic) {
@@ -1178,6 +1187,11 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   const Result<FeatureSet> nothing = engine.ExtractFeatures(Blank());
   ASSERT_TRUE(nothing.ok()) << nothing.status.detail;
   ASSERT_EQ(nothing.value.count, 0);
+  // Asserted at the point that depends on it as well as where it is written, and against another
+  // of this engine's sets rather than a literal, since the value is the implementation's business.
+  ASSERT_EQ(nothing.value.extractor, a.value.extractor)
+      << "an empty extraction came back unstamped, so the provenance guard refuses it first and "
+         "the count guard below is never reached";
 
   const int pinsBeforeEmpty = counting.pins;
   const Result<PairwiseResult> emptyA =
@@ -1345,10 +1359,49 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
                   .find("keypoint frame holds fewer bytes"),
               std::string::npos);
   }
-  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** Doctoring one
-  // side only never reaches these guards: the width comparison refuses the pair first, because a
-  // 64-byte row on one side and a 32-byte row on the other is exactly what "not made by the same
-  // detector" means. Both sides claim it, the widths agree, and the row-count division is then the
+  // **One side at a time, which is what the three propagation checks need to be driven at all.**
+  // Every doctored input here used to go into `a` or into both sets at once, so `!bearingsB.ok()`,
+  // `!matA.ok()` and `!matB.ok()` could each be deleted with all 808 tests green: the `b` side was
+  // never doctored alone, and the two descriptor checks shadowed each other whenever both were.
+  //
+  // The comment that justified doctoring both sides said a one-sided pitch "never reaches these
+  // guards: the width comparison refuses the pair first". Measured, that is false — `ReadDescriptors`
+  // checks each set against *its own* frame before the two are compared to each other — and the
+  // wrong justification is what left the hole. Each case below asserts the sentence, because
+  // "refused" is satisfied by the width comparison too.
+  {
+    FeatureSet narrowB = b.value;
+    narrowB.keypoints.stride = 7;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, narrowB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a keypoint stride under one row on the second set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("stride"), std::string::npos)
+        << "refused, but not by the second set's keypoint bounds: " << pair.status.detail;
+  }
+  {
+    FeatureSet wideOnlyA = a.value;
+    wideOnlyA.descriptors.stride = a.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(wideOnlyA, b.value, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on the first set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the first set's descriptor bounds: " << pair.status.detail;
+  }
+  {
+    FeatureSet wideOnlyB = b.value;
+    wideOnlyB.descriptors.stride = b.value.descriptors.stride * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, wideOnlyB, Quat{1, 0, 0, 0}, Lens());
+    ASSERT_FALSE(pair.ok()) << "a doubled descriptor pitch on the second set answered, with "
+                            << pair.value.inliers << " inliers";
+    EXPECT_NE(pair.status.detail.find("its own row count"), std::string::npos)
+        << "refused, but not by the second set's descriptor bounds: " << pair.status.detail;
+  }
+
+  // **A descriptor pitch wider than the frame's real rows, claimed on *both* sets.** The widths
+  // agree, so the comparison between them has nothing to say, and the row-count division is the
   // only thing between the matcher and a read past the end of the allocation.
   {
     FeatureSet wideA = a.value;
