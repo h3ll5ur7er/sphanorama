@@ -529,10 +529,18 @@ class BorrowedFrame {
  * `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites`, so this paragraph cannot drift
  * again. The second figure was published here as 38.8% and is retracted by ADR 0060.
  *
- * It is *not* reachable from a rendered dataset, whatever distortion the renderer is given:
- * `tools/synth_dataset.py` refuses to render a frame with a rayless pixel in it, so the lens of
- * every dataset this repository produces refuses none of its own pixels by construction. That is
- * the second half of the same test.
+ * It is *not* reachable from a rendered dataset as things stand: `tools/synth_dataset.py` refuses
+ * to render a frame with a rayless pixel in it, so the lens of every dataset this repository
+ * produces answers every pixel *centre* of its own frame. That is the second half of the same test.
+ *
+ * Centres, not keypoints, and the gap is real rather than rhetorical. `ReadBearings` above passes
+ * OpenCV keypoint coordinates through unchanged, and OpenCV puts a pixel centre at an integer
+ * while this model puts the image corner at the origin — so a keypoint reported at (0, 0) arrives
+ * here as the frame's corner, half a pixel further out than any centre. On a 66x50 degree lens the
+ * last k1 every centre survives is -0.23340 and the last the corner survives is -0.23178, so there
+ * is a narrow band of lenses the renderer would accept and this would refuse a corner keypoint on.
+ * No dataset is in it today and none is distorted at all; it is written down because "by
+ * construction" was the wrong strength for the claim.
  */
 struct Bearing {
   Vec3 direction;

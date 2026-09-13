@@ -863,8 +863,10 @@ TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
   //
   // Frame size is not a parameter of the answer, which is why 320x240 is enough to check a claim
   // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
-  // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167%. The tolerance below is half
-  // a percentage point, which is four times that spread and still a tenth of the error it caught.
+  // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167% — spreads of 0.146 and 0.169
+  // points. The tolerance below is half a percentage point: **three times** the wider of those and
+  // a **fifty-sixth** of the 28-point error it caught. (This said "four times" and "a tenth", and
+  // a reviewer divided. Neither was computed, in a test written because a figure was not.)
   Intrinsics wide = LensFromFieldOfView(78.0, 60.0, 320, 240);
   wide.k1 = -0.20;
   EXPECT_NEAR(RefusedPercentOfFrame(wide), 4.47, 0.5);
@@ -882,14 +884,19 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   //
   // So the refused-row path is unreachable from any rendered dataset, whatever distortion the
   // renderer is given, and a test that hoped to drive it by adding distortion to a dataset would
-  // pass without ever taking it. k1 = -0.15 is well past what the renderer has ever been asked
-  // for and still refuses nothing; -0.30 on the same lens is where the first pixel goes.
+  // pass without ever taking it.
+  //
+  // The boundary is pinned rather than described. Bisected, the first pixel centre goes at
+  // k1 = -0.2334; -0.23 refuses none of 76,800 and -0.24 refuses 48. An earlier version of this
+  // said "-0.30 is where the first pixel goes" and asserted `> 0` there, where 3.53% are already
+  // gone — a sentence naming a threshold with a test that was green across the whole band the
+  // sentence called empty, one file from where this branch closed exactly that.
   Intrinsics rendered = LensFromFieldOfView(66.0, 50.0, 320, 240);
-  rendered.k1 = -0.15;
+  rendered.k1 = -0.23;
   EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
 
   Intrinsics folding = rendered;
-  folding.k1 = -0.30;
+  folding.k1 = -0.24;
   EXPECT_GT(RefusedPercentOfFrame(folding), 0.0);
 }
 

@@ -30,18 +30,32 @@ every figure ADR 0057 was written about, one layer down, in a source comment rat
 Retract 38.8%; publish 66.8%; and **assert both figures from a test** rather than leaving them as
 prose, so the paragraph cannot drift a third time.
 `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites` measures each lens over its own
-frame and asserts the share to within half a percentage point — four times the spread across the
-frame sizes above, and a tenth of the error it caught.
+frame and asserts the share to within half a percentage point — three times the spread across the
+frame sizes above (0.169 points for the ultra-wide lens, 0.146 for the wide) and a fifty-sixth of
+the 28-point error it caught. Those two multiples read "four times" and "a tenth" in the first
+draft of this ADR, in both tests and in the commit message. A reviewer divided. That is the second
+uncomputed figure this one change produced, which is the argument for the decision above rather
+than an embarrassment beside it: prose next to code that cannot fail on it drifts at a rate that
+does not care what the prose is about.
 
 A second test records the thing the first one makes obvious once the numbers are in front of you,
 and which was not written down anywhere: **the refused-row path is unreachable from any rendered
 dataset**. `tools/synth_dataset.py` refuses to render a frame with a rayless pixel in it — there
 being no colour that could honestly stand for a missing direction — so the lens of every dataset
-this repository produces refuses none of its own pixels by construction. Adding distortion to the
+this repository produces answers every pixel *centre* of its own frame. Adding distortion to the
 renderer, which `docs/06-roadmap.md` lists as an increment and gives this guard as a reason for,
 will not reach it.
 
 The retraction lives here and the docblock keeps the live figure and a pointer, per ADR 0057.
+
+**Centres, not keypoints.** That last claim is about pixel centres, and a keypoint is not one:
+`ReadBearings` passes OpenCV coordinates through unchanged, and OpenCV puts a pixel's centre at an
+integer where this model puts the image's corner at the origin, so a keypoint reported at (0, 0)
+arrives half a pixel further out than any centre. Bisected on a 66x50 degree lens, every centre
+survives down to `k1 = -0.23340` and the corner only to `-0.23178` — a narrow band of lenses the
+renderer would accept and the core would refuse a corner keypoint on. Nothing is in that band today
+and no dataset is distorted at all, so this changes no conclusion; it is recorded because the first
+draft said "by construction", which is a stronger word than the measurement supports.
 
 ## Consequences
 

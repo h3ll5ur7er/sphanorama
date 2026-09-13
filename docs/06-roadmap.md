@@ -859,15 +859,11 @@ distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bu
 bearing reader dropped the rows the lens could not unproject, desynchronising them from their
 descriptors, was invisible to every test in this repository for exactly that reason: with no
 distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 lists each of
-these as its own increment.
-
-This paragraph used to go on to say that rendering with distortion would make that path reachable.
-It would not, and ADR 0060 has the measurement: the renderer refuses to render a frame with a
-rayless pixel in it, so the lens of every dataset it produces refuses none of its own pixels
-whatever coefficients it is given. Distortion in the renderer is still worth having, for the first
-reason rather than the second — a registration accuracy measured on a lens nobody sells is not a
-statement about a phone. Reaching the refused-row path needs a lens whose fold is inside the frame,
-which is the one thing the renderer will not render, and that is a separate increment.
+these as its own increment. Rendering with distortion will not, on its own, make that path
+reachable again — the renderer refuses to render a frame with a rayless pixel in it, so the lens of
+every dataset it produces answers every pixel of its own frame whatever coefficients it is given
+(ADR 0060). Distortion is worth rendering for the first reason rather than the second: an accuracy
+measured on a lens nobody sells is not a statement about a phone.
 And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
 possible topology, with no loop closure and nothing for `Refine` to do.
 
