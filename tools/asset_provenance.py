@@ -47,6 +47,7 @@ Usage:  uv run tools/asset_provenance.py [repo_root]
 """
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import sys
@@ -56,6 +57,11 @@ from pathlib import Path
 from tracked import tracked_files
 
 RECORD = "sources.json"
+
+# One block of a file at a time, for the digest and for the decode. Big enough that the
+# syscall count does not matter and small enough that the peak does not depend on what
+# somebody left in the working tree.
+BLOCK = 1024 * 1024
 
 # Each answers a question that cannot be recovered from the bytes. `sha256` can be, and is here so
 # that the record is checkable against the file rather than merely present — `bytes` is a second
@@ -107,7 +113,17 @@ class Problem:
 
 
 def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """The file's sha256, read a block at a time.
+
+    A panorama is the small case; this walks whatever is committed, and a record can name a file of
+    any size. Holding it whole to hash it costs its length in memory for no reason — `hashlib` is
+    incremental and the loop is two lines.
+    """
+    running = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(BLOCK):
+            running.update(chunk)
+    return running.hexdigest()
 
 
 def records(root: Path) -> list[Path]:
@@ -172,7 +188,18 @@ def why_asset(path: Path) -> str | None:
     if path.suffix.lower() in MEDIA:
         return f"a {path.suffix.lower()} file is somebody's work"
     try:
-        path.read_bytes().decode()
+        # **Decoded a block at a time, never held whole.** This read the entire file into memory to
+        # ask one yes-or-no question about it, over every tracked file that is not a media name —
+        # and `--others` means untracked ones too, so a 544 MiB scratch file nobody committed took
+        # peak memory from 32 MiB to 1105 MiB, to be told nothing about it. An incremental decoder
+        # answers the same question exactly: it holds a partial multi-byte sequence across a block
+        # boundary, so a character split between two reads is not mistaken for invalid UTF-8, which
+        # is the reason this cannot simply be `chunk.decode()` in a loop.
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        with path.open("rb") as handle:
+            while chunk := handle.read(BLOCK):
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
     except UnicodeDecodeError:
         return "its bytes are not valid UTF-8, so it is not source in this repository"
     except OSError as failure:
@@ -282,18 +309,19 @@ def check(root: Path) -> list[Problem]:
             if not path.is_file():
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
                 continue
-            content = path.read_bytes()
             # `digest`, not a third spelling of it: this used to inline `hashlib` here while the
-            # test suite called the helper, so the two paths computed the same thing two ways.
+            # test suite called the helper, so the two paths computed the same thing two ways. And
+            # the size comes from `stat`, where it has always been: reading the file a second time
+            # to call `len` on it was the whole of what `content` was for.
             held = digest(path)
             if entry.get("sha256") != held:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"has moved on from its recorded sha256; the bytes now "
                                         f"hash to {held}"))
-            if entry.get("bytes") != len(content):
+            size = path.stat().st_size
+            if entry.get("bytes") != size:
                 problems.append(Problem(f"{rel} [{name}]",
-                                        f"records {entry.get('bytes')} bytes and holds "
-                                        f"{len(content)}"))
+                                        f"records {entry.get('bytes')} bytes and holds {size}"))
 
         for name in listed:
             if owner_of(name, prefixes) != prefix:

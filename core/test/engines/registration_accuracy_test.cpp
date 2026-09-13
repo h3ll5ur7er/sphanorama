@@ -207,17 +207,25 @@ class Rendered {
   const std::string& why() const { return why_; }
 
  private:
-  /** The last few lines of the renderer's output, which is where its complaint is. */
+  /** The last few lines of the renderer's output, which is where its complaint is.
+   *
+   * Five lines held, not the whole log: the renderer's output is small today and is whatever it
+   * decides to print tomorrow, and a ring buffer costs the same as a vector to write.
+   */
   static std::string Tail(const fs::path& log) {
     std::ifstream stream(log);
     if (!stream) return "(no output was captured)";
+    constexpr size_t kLines = 5;
     std::vector<std::string> lines;
     std::string line;
-    while (std::getline(stream, line)) lines.push_back(line);
+    while (std::getline(stream, line)) {
+      if (lines.size() == kLines) lines.erase(lines.begin());
+      lines.push_back(line);
+    }
     if (lines.empty()) return "(it said nothing)";
     std::string tail;
-    for (size_t at = lines.size() > 5 ? lines.size() - 5 : 0; at < lines.size(); ++at) {
-      tail += lines[at];
+    for (const std::string& kept : lines) {
+      tail += kept;
       tail += "\n";
     }
     return tail;
@@ -240,9 +248,31 @@ class Rendered {
  * `ForgetOutputs`' one directory over; this file was the one that had not adopted it.
  */
 void Release(IFrameStoreAccess& store, const FrameRef& frame) {
-  EXPECT_TRUE(store.Forget(frame).ok())
-      << "the store refused to forget a frame, which is what it does while something still has it "
-         "pinned";
+  const Status status = store.Forget(frame);
+  // The store's own sentence, not a guess at which refusal this was. The first version named a
+  // surviving pin, which is the refusal this exists to catch and not the only one it can get: a
+  // zero-count `FeatureSet` carries default `FrameRef`s that were never allocated, and forgetting
+  // one answers `NotFound` — a message blaming a pin sends the reader looking for the wrong bug.
+  EXPECT_TRUE(status.ok())
+      << "the store would not forget a frame: " << status.detail
+      << " — a surviving pin is the usual cause, and a handle it never allocated is the other";
+}
+
+/**
+ * Nothing is left in the store, which is the half `Release` cannot see.
+ *
+ * `Release` catches a frame that will not go — a pin nobody dropped. It cannot catch a frame nobody
+ * *asked* it about: deleting one `Release(store, set.keypoints)` strands 43 to 48 KB per detector
+ * (47848, 43496 and 44296 measured here) and leaves all three parameters `[ OK ]`, every number
+ * identical to the digit, process exit 0. The two questions need two instruments, and this one is
+ * already in the tree — `synthetic_dataset_alloc_test.cpp` asks the budget exactly this way.
+ */
+void ExpectNothingLeft(IFrameStoreAccess& store) {
+  const Result<FrameStoreBudget> budget = store.Budget();
+  ASSERT_TRUE(budget.ok()) << budget.status.detail;
+  EXPECT_EQ(budget.value.heapUsedBytes, 0)
+      << "the measurement ended with " << budget.value.heapUsedBytes
+      << " bytes still in the store, so something it allocated was never forgotten";
 }
 
 /**
@@ -467,6 +497,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
     Release(store, set.keypoints);
   }
   for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
+  ExpectNothingLeft(store);
 }
 
 /**
@@ -569,6 +600,7 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
     Release(store, b.value.keypoints);
   }
   for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
+  ExpectNothingLeft(store);
 
   EXPECT_GT(answeredButNotAccepted, 0)
       << "every detector that answered was accepted, so `accepted` says nothing `ok()` does not — "
