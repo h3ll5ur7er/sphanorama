@@ -861,14 +861,14 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     // 0.9515. Shifting past the indices already taken costs two comparisons and makes every
     // iteration a sample.
     //
-    // **`from.size() >= 3` is a precondition of these three lines, and it is held elsewhere.**
-    // `next(from.size() - 2)` underflows `size_t` at a size of two and divides by zero at three
-    // minus three; neither can happen because the early return above refuses anything below
-    // `kMinimumCorrespondences`, which is 8. That is a real coupling between a constant and this
-    // arithmetic, and it was written down nowhere until a reviewer swept the draw over every size
-    // in [3, 512] under UBSan (200k draws each: all distinct, all in range, all 56 triples reached
-    // at n = 8) and observed that nothing states the floor. Lowering `kMinimumCorrespondences`
-    // below 3 breaks this loop rather than the gate it looks like it belongs to.
+    // **`from.size() >= 3` is a precondition of these three lines**, held by `EstimatePairwise`
+    // two hundred and fifty lines below and by nothing in this function. `kMinimumCorrespondences`
+    // carries the explanation; this is a pointer to it rather than a second copy, because the
+    // first version of this note *was* a second copy and had both failure modes backwards within
+    // one round — it said the subtraction underflows at a size of two, when two is the modulus by
+    // zero, and it credited an early return in this function that does not exist. Swept over every
+    // size in [3, 512] under UBSan, 200k draws each: all distinct, all in range, all 56 triples
+    // reached at n = 8.
     const size_t i = next(from.size());
     size_t j = next(from.size() - 1);
     if (j >= i) ++j;

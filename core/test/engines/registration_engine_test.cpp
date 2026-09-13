@@ -956,7 +956,8 @@ TEST_P(Extraction, RefinementRefusesRatherThanAnswering) {
 }
 
 /**
- * A store that counts what was forgotten, so "this call forgets none of the four" is measurable.
+ * A store that counts what was forgotten and what was pinned, so "this call forgets none of the
+ * four" and "it refused *after* reading them" are both measurable rather than inferred from prose.
  *
  * The contract is emphatic about this and says why: the shape invites the opposite, because
  * `EstimatePairwise` is the method with the obvious-looking reason to release what it was handed.
@@ -969,6 +970,12 @@ class CountingForgets final : public IFrameStoreAccess {
   explicit CountingForgets(IFrameStoreAccess& inner) : inner_(inner) {}
 
   int forgets = 0;
+  // **Pins are counted because how far a call got is otherwise only visible in its message.** The
+  // mismatch case below needs to tell a refusal past both `ReadBearings` passes from one before
+  // them, and the two are both `InvalidArgument`; it used to tell them apart by substring-matching
+  // `Status::detail`, which `types.h` says is never parsed and which pinned the test to a wording
+  // the engine has since had corrected. A count is an observable.
+  int pins = 0;
 
   Status Forget(const FrameRef& f) override {
     ++forgets;
@@ -978,7 +985,10 @@ class CountingForgets final : public IFrameStoreAccess {
   Result<FrameRef> Allocate(int32_t w, int32_t h, PixelFormat f) override {
     return inner_.Allocate(w, h, f);
   }
-  Result<std::span<uint8_t>> Pin(const FrameRef& f) override { return inner_.Pin(f); }
+  Result<std::span<uint8_t>> Pin(const FrameRef& f) override {
+    ++pins;
+    return inner_.Pin(f);
+  }
   Status Release(const FrameRef& f) override { return inner_.Release(f); }
   Result<FrameStoreBudget> Budget() override { return inner_.Budget(); }
   Result<Residency> ResidencyOf(const FrameRef& f) override { return inner_.ResidencyOf(f); }
@@ -1115,20 +1125,31 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   //
   // An earlier version of this comment said "differs in width **or in element type**". Element type
   // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard
-  // is a value compared with itself. Width is the whole of what defends this, which is why what is
-  // asserted below is the refusal and not the reason — and why a `FeatureSet` carrying the detector
-  // that made it is filed as its own change.
+  // is a value compared with itself. Width is the whole of what defends this, and a `FeatureSet`
+  // carrying the detector that made it is filed as its own change.
+  //
+  // **Where it refuses is asserted by counting pins, not by reading the message.** This case exists
+  // to catch a refusal that happens *before* the frames are read, which would make the `Forget`
+  // count below vacuous — and a pre-pin refusal and this one are both `InvalidArgument`, so the
+  // status alone cannot separate them. It used to separate them by substring-matching
+  // `Status::detail` for the words "same detector": a field `types.h` declares is never parsed, and
+  // a phrase this branch had just corrected the engine for using. Dropping those two words from the
+  // message failed all three parameterisations while the refusal happened in exactly the same
+  // place, with a failure text that said "refused somewhere else" — so the assertion was measuring
+  // the prose. Four pins is what reading two sets costs: descriptors and keypoints, twice.
   const FeatureDetector other =
       GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
   FeatureRegistrationEngine foreign{counting, other};
   const Result<FeatureSet> c = foreign.ExtractFeatures(Textured());
   ASSERT_TRUE(c.ok()) << c.status.detail;
+  const int pinsBeforeMismatch = counting.pins;
   const Result<PairwiseResult> mismatched =
       engine.EstimatePairwise(a.value, c.value, Quat{1, 0, 0, 0}, Lens());
   ASSERT_FALSE(mismatched.ok());
-  EXPECT_NE(mismatched.status.detail.find("same detector"), std::string::npos)
-      << "the mismatch was meant to refuse past the pins, and refused somewhere else: "
-      << mismatched.status.detail;
+  EXPECT_EQ(mismatched.status.code, StatusCode::InvalidArgument) << mismatched.status.detail;
+  EXPECT_EQ(counting.pins - pinsBeforeMismatch, 4)
+      << "the mismatch was meant to refuse after reading both sets, and took "
+      << (counting.pins - pinsBeforeMismatch) << " pins rather than four: " << mismatched.status.detail;
 
   EXPECT_EQ(counting.forgets, afterExtraction)
       << "EstimatePairwise forgot " << (counting.forgets - afterExtraction)

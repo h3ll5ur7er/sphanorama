@@ -59,7 +59,12 @@ class IRegistrationEngine {
   //   code nobody can branch on.
   // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a prior that
   //   is not a usable rotation, a lens that cannot project, a frame whose declared rows do not fit
-  //   the bytes it holds, or two sets made by different detectors.
+  //   the bytes it holds, or two sets whose descriptor rows are different widths. That last one is
+  //   **not** a detector-identity check, though it catches most ways of getting one wrong: a
+  //   `FeatureSet` does not say which detector made it, so the implementation compares widths and
+  //   is blind to two sets that are both foreign and alike. Three of the four places that said
+  //   "made by different detectors" were corrected in one commit and this was the fourth, which is
+  //   the argument for the field rather than for more careful wording.
   // - **`Pin`'s own status, whole** — `code`, `detail` and `component` — when a frame could not be
   //   pinned. So a caller branching on the code sees what the store said, and a human reading the
   //   component sees the store that said it rather than the engine that was asking.
@@ -76,11 +81,18 @@ class IRegistrationEngine {
   //   code, and nothing checks this sentence.
   // - `Internal` when the compute library throws, which is how it reports what it does not model.
   // - `Unsupported` — from `NullRegistrationEngine`, which is what a build without OpenCV gets
-  //   (ADR 0052), and therefore the **only** status this method returns in any shipping browser
-  //   build today. It was missing from this list until a reviewer read the list against the
-  //   composition roots rather than against the implementation in front of it; `ExtractFeatures`
-  //   names it twenty lines above. A caller branching on the four codes above and not on this one
-  //   handles every case that cannot currently happen and none of the case that does.
+  //   (ADR 0052). It was missing from this list until a reviewer read the list against the
+  //   composition roots rather than against the implementation in front of it, and `ExtractFeatures`
+  //   documents it at the top of this file.
+  //
+  //   **What that means today needs stating carefully, because the first version of this bullet got
+  //   it backwards.** It said `Unsupported` is "the only status this method returns in any shipping
+  //   browser build", which reads as a fact about what browsers see. No manager takes an
+  //   `IRegistrationEngine` at all, so nothing outside tests calls this method in any build. The
+  //   accurate statement is conditional: the first composition root that wires this up will get the
+  //   null engine everywhere OpenCV is absent, which today is every browser build, and `Unsupported`
+  //   is what it will see. A caller written against the codes above and not this one is writing for
+  //   the build that does not exist yet.
   //
   // An `Ok` result is not the same as an accepted one: see `PairwiseResult::accepted`, which is
   // false when a rotation was found and a minority of the correspondences agree with it (ADR 0056).

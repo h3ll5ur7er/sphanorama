@@ -10,11 +10,16 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the eleven bannered ADRs do not have a Status line at all. For a claim in the body
-  that a reader would otherwise meet and believe. This is the common shape: eleven ADRs carry a
-  banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055); five of those carry a
-  Status line (0006, 0047, 0052, 0053, 0055), and three of *those* carry a Status **chain** — a
-  "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
+  has one; six of the twelve bannered ADRs do not have a Status line at all. For a claim in the body
+  that a reader would otherwise meet and believe. This is the common shape: twelve ADRs carry a
+  banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055, 0056); six of those
+  carry a Status line (0006, 0047, 0052, 0053, 0055, 0056), and three of *those* carry a Status
+  **chain** — a "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
+
+  **0022's leading blockquote is a quotation, not a banner**, which is why it is absent from all
+  three lists and why counting `^> ` in the first twenty lines of every file returns twelve
+  candidates for an eleven-then-twelve-member set. Said here because two separate recounts have had
+  to rediscover it.
 
   **This census has now gone wrong three times on one branch, and the third was the worst.** It
   started stale by omission: the branch added two banners and left the total at nine. The first

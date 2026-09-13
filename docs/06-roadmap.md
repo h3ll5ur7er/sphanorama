@@ -762,7 +762,9 @@ that has to be ordered.
   idea of it (ADR 0053). It produces a number now: the thing that estimates rotations for it to
   score arrived in the next bullet, and the table further down is the result. This sentence said
   "what it still does not do is produce a number" until the whole branch was reviewed against main
-  rather than by commit range — four lines above a bullet already rewritten to say the opposite.
+  rather than by commit range — directly above a bullet this branch had already rewritten to say
+  the opposite, eleven lines down, which is how close a contradiction can sit and still survive
+  nine rounds of range-scoped review.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).

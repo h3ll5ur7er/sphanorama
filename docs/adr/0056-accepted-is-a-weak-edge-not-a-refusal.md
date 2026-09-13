@@ -2,6 +2,15 @@
 
 **Status:** accepted
 
+> **The Decision's "Concretely" line no longer spells what the code spells, though it still says
+> what `accepted` means.** It gives the expression as
+> `bestInliers.size() >= kMinimumCorrespondences && agreeing >= kInlierFraction`. The code is now
+> `agreeing >= kInlierFraction` alone — a reviewer pointed out that writing the count conjunct out
+> puts an unfalsifiable condition in the very line that exists because the previous gate was two
+> unfalsifiable conditions. The *value* is unchanged, for exactly the reason this ADR already gives
+> two sentences later: the count is guaranteed by the refusal above it. So the decision stands and
+> the transcription is stale, which is the distinction a banner exists to make.
+
 ## Context
 
 `PairwiseResult` carries both a `Result` status and an `accepted` flag, and until the first real
