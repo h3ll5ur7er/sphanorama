@@ -524,8 +524,15 @@ class BorrowedFrame {
  * degrees, reported with 43 inliers, a 1.62-pixel median, and `accepted` true.
  *
  * It was invisible here because every lens in these tests is distortion-free, so `Unproject` never
- * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses about 4% of in-frame
- * pixels, and a 100-degree one with `k1 = -0.35` refuses 38.8%.
+ * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses **4.5%** of its own
+ * frame's pixels, and a 100-degree one with `k1 = -0.35` refuses **66.8%**. Both are asserted by
+ * `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites`, so this paragraph cannot drift
+ * again. The second figure was published here as 38.8% and is retracted by ADR 0060.
+ *
+ * It is *not* reachable from a rendered dataset, whatever distortion the renderer is given:
+ * `tools/synth_dataset.py` refuses to render a frame with a rayless pixel in it, so the lens of
+ * every dataset this repository produces refuses none of its own pixels by construction. That is
+ * the second half of the same test.
  */
 struct Bearing {
   Vec3 direction;

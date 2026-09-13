@@ -839,5 +839,59 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
+// The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
+//
+// Stated as a percentage because that is the unit the claim it checks is written in, and measured
+// on a frame rather than a grid because the frame is what the question is about: a keypoint the
+// detector found is at a pixel of a real image, and the fraction of *those* with no bearing behind
+// them is what decides whether the engine's refused-row path is ever taken.
+double RefusedPercentOfFrame(const Intrinsics& lens) {
+  long refused = 0, total = 0;
+  for (int32_t y = 0; y < lens.height; ++y) {
+    for (int32_t x = 0; x < lens.width; ++x) {
+      if (!Unproject(lens, Pixel{x + 0.5, y + 0.5}).valid) ++refused;
+      ++total;
+    }
+  }
+  return 100.0 * static_cast<double>(refused) / static_cast<double>(total);
+}
+
+TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
+  // `feature_registration_engine.cpp`'s `Bearing` docblock argues that its refused-row path is
+  // reachable in life, and the argument is two measured figures. Nothing measured them: they are
+  // prose beside code that cannot fail on them, and one is wrong by a factor of one and a half.
+  //
+  // Frame size is not a parameter of the answer, which is why 320x240 is enough to check a claim
+  // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
+  // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167%. The tolerance below is half
+  // a percentage point, which is four times that spread and still a tenth of the error it caught.
+  Intrinsics wide = LensFromFieldOfView(78.0, 60.0, 320, 240);
+  wide.k1 = -0.20;
+  EXPECT_NEAR(RefusedPercentOfFrame(wide), 4.47, 0.5);
+
+  Intrinsics ultraWide = LensFromFieldOfView(100.0, 80.0, 320, 240);
+  ultraWide.k1 = -0.35;
+  EXPECT_NEAR(RefusedPercentOfFrame(ultraWide), 66.76, 0.5);
+}
+
+TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
+  // The other half of the engine's argument, and the reason the figures above are not academic:
+  // every dataset this repository renders uses a lens that refuses *no* pixel of its own frame,
+  // because `tools/synth_dataset.py` will not render a frame with a rayless pixel in it — there
+  // being no colour that could honestly stand for one.
+  //
+  // So the refused-row path is unreachable from any rendered dataset, whatever distortion the
+  // renderer is given, and a test that hoped to drive it by adding distortion to a dataset would
+  // pass without ever taking it. k1 = -0.15 is well past what the renderer has ever been asked
+  // for and still refuses nothing; -0.30 on the same lens is where the first pixel goes.
+  Intrinsics rendered = LensFromFieldOfView(66.0, 50.0, 320, 240);
+  rendered.k1 = -0.15;
+  EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
+
+  Intrinsics folding = rendered;
+  folding.k1 = -0.30;
+  EXPECT_GT(RefusedPercentOfFrame(folding), 0.0);
+}
+
 }  // namespace
 }  // namespace sphanorama
