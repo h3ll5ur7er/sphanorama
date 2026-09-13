@@ -17,7 +17,7 @@ fix — which is the argument for running another rather than for stopping. Roun
 first time and found two defects that predate the branch entirely — a quaternion norm overflow and
 an unbounded frame read — because a range diff cannot see code nobody touched.
 
-The four things that are most expensive to get wrong:
+The five things that are most expensive to get wrong:
 
 1. **Write the test first.** Correctness here is invisible to the eye and the target device is a
    phone. `docs/00-principles.md` §0.2 lists the invariants worth reaching for when the expected
@@ -30,6 +30,9 @@ The four things that are most expensive to get wrong:
    here: this line used to restate the list and fell two triggers behind it.
 4. **Before adding a component, name the volatility it absorbs.** If it's already in
    `docs/02-volatility-map.md`, extend the existing owner instead.
+5. **Comments say why, never what** — see the engineering skill's "Comments say why". A name is
+   the comment that cannot drift, because it is the copy that runs. PR #69 added 2,069 lines of
+   C++ and 1,145 of them were prose.
 
 Status: Phase 0's exit criterion is met. The native and WASM builds, the PWA shell, the three
 managers, the generated boundary (contracts mirror, wire codec, facade dispatch) and the Pages

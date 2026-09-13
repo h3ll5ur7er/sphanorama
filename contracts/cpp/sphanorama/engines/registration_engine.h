@@ -13,6 +13,12 @@ class IRegistrationEngine {
   // `Forget` each — `FeatureSet` says what they hold and ADR 0051 says why they are frames. A
   // `count` of zero means nothing was allocated and there is nothing to forget.
   //
+  // **The set it answers with carries this implementation's `extractor` stamp**, which is what makes
+  // `EstimatePairwise`'s refusal of a foreign set satisfiable: a caller may pair only sets that came
+  // from the same engine. Promised here rather than left to the field's own comment, because an
+  // implementation could otherwise honour the letter of both methods, return the default identity
+  // from this one, and refuse every pair built from its own sets.
+  //
   // The frame handed in is left alone, except that reading it pins it — and pinning faults a
   // spilled frame back into the heap and leaves it resident, which is a cost a caller working
   // through cold frames should expect.
@@ -57,14 +63,10 @@ class IRegistrationEngine {
   //   human. It is deliberately **not** `NotFound`, which `IFrameStoreAccess` uses for a handle
   //   naming no frame: one code meaning "the pixels disagree" and "that frame does not exist" is a
   //   code nobody can branch on.
-  // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a prior that
-  //   is not a usable rotation, a lens that cannot project, a frame whose declared rows do not fit
-  //   the bytes it holds, or two sets whose descriptor rows are different widths. That last one is
-  //   **not** a detector-identity check, though it catches most ways of getting one wrong: a
-  //   `FeatureSet` does not say which detector made it, so the implementation compares widths and
-  //   is blind to two sets that are both foreign and alike. Three of the four places that said
-  //   "made by different detectors" were corrected in one commit and this was the fourth, which is
-  //   the argument for the field rather than for more careful wording.
+  // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a set this
+  //   engine's extractor did not produce (`FeatureSet::extractor`, ADR 0058), a prior that is not a
+  //   usable rotation, a lens that cannot project, a frame whose declared rows do not fit the bytes
+  //   it holds, or two sets whose descriptor rows are different widths.
   // - **`Pin`'s own status, whole** — `code`, `detail` and `component` — when a frame could not be
   //   pinned. So a caller branching on the code sees what the store said, and a human reading the
   //   component sees the store that said it rather than the engine that was asking.

@@ -179,8 +179,17 @@ without a reply reads as one nobody looked at.
 - **A fix is new code**, subject to everything above. The worst defect on a recent PR was introduced
   *by* a fix, and caught only because the existing test for the opposite case was still there and
   the whole suite was run.
-- **Re-run the review when a round found something real.** A round that found nothing is where it
-  stops. Findings that keep arriving on your own fixes mean the root cause is still there.
+- **Re-run the review while a round is still finding things in the code.** A round whose findings
+  are all prose — comments, documents, commit messages — is where it stops. Those findings are
+  still real and still get fixed; what they do not get is another round, because prose defects are
+  inexhaustible and a round costs twenty minutes of build time. Anything left over becomes a task,
+  not a blocker.
+
+  The evidence for that line: PR #69 ran fifteen rounds. The last executable line of production
+  code changed in round 9. Rounds 10 to 15 produced twenty-four findings, every one a comment, a
+  document or a test assertion — valuable, and no longer telling anyone whether the change was
+  sound. Findings that keep arriving on your own *fixes* still mean the root cause is there; that
+  is a different signal and it still means run another.
 
 ## What this does not do
 
