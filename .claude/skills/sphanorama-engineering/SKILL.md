@@ -160,10 +160,10 @@ follow-up. If one change forces you to edit five documents, the docs have the co
 architecture is designed to avoid — say so.
 
 **Write an ADR** (`docs/adr/`, four sections: context, decision, consequences, rejected
-alternative) when you add or move a component, change a contract, add a dependency, take a layer-
-rule exception, reverse an earlier ADR, or **withdraw a measured figure this repository has
-published** — the retraction goes in the record, and the document that carried the number keeps the
-live one and a pointer (ADR 0057). Supersede old ADRs; never edit one into agreement with
+alternative) when `docs/00-principles.md` § "When an ADR is required" says to — six triggers, read
+them there rather than from a copy. This paragraph used to carry its own list, and the four copies
+of it in this repository drifted apart, which is how the newest trigger (withdrawing a published
+measurement, ADR 0057) ended up in one of them. Supersede old ADRs; never edit one into agreement with
 the present — the record of what we thought at the time is the point. Point forward by *adding*: a
 Status-line pointer, a banner, or a foot note. A banner covers the body's claims and leaves a dated
 *Context* observation alone; the exception, either way, is a sentence that was wrong when written

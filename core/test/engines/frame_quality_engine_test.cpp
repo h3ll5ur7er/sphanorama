@@ -149,7 +149,8 @@ class FrameQuality : public ::testing::Test {
       // period. So a caller passing a different `square` is back
       // in the same position and has to re-measure. Stated rather than left implied: the first
       // version of this comment claimed the property for the function, which is how the next
-      // person would have inherited a guarantee that does not hold. The
+      // person would have inherited a guarantee that does not hold.
+      //
       // **What it costs the two consumers: nothing, and in the helpful direction.** Driving the
       // real `SharpnessFrameQualityEngine` at both amplitudes rather than arguing from a square
       // law — which is what an earlier version of this comment did, and got wrong in both sign
@@ -160,10 +161,21 @@ class FrameQuality : public ::testing::Test {
       //     126         93376.1707   5267.8637    17.7256
       //
       // Both consumers assert that the hard checkerboard scores *above* this one, so a softer
-      // soft fixture **widens** their margin, by 1.88%. The soft score itself falls 1.85%, not
-      // the 1.57% the amplitude-squared law predicts, because the uint8 truncation breaks exactly
-      // the proportionality that argument invokes. That is the whole reason this block reports a
-      // measurement instead of a derivation.
+      // soft fixture moves them **away** from failing. By how much depends on which quantity, and
+      // the ratio in that last column is not it — nothing asserts on a ratio:
+      //
+      //     EXPECT_GT's gap, hard - soft   88009.0905 -> 88108.3070   +0.1127%
+      //     Rank's normalised separation    0.942522 ->  0.943584     +0.1127%
+      //     hard / soft                      17.3979 ->   17.7256     +1.8834%
+      //
+      // The first two are what the two consumers actually compare; the third is sixteen times
+      // larger and belongs to no assertion. An earlier version of this sentence quoted the 1.88%
+      // as "their margin", which is the third time this one clause has been wrong — first a
+      // derived figure, then the right figure with the sign inverted, then the right sign on the
+      // wrong quantity. The soft score itself falls 1.85%, not the 1.57% the amplitude-squared
+      // law predicts, because the uint8 truncation breaks exactly the proportionality that
+      // argument invokes. That is the whole reason this block reports a measurement instead of a
+      // derivation — and the reason it now names the quantity as well as the number.
       return static_cast<uint8_t>(127.5 + 126.0 * u * v);
     });
   }

@@ -25,10 +25,9 @@ The four things that are most expensive to get wrong:
 2. **Respect the layers.** Clients call managers only; managers never call managers; engines are
    stateless and touch only the compute and frame-store resource accesses. CI fails on a violating
    include edge.
-3. **Update the docs in the same commit** as the change that invalidates them, and write an ADR for
-   anything on the engineering skill's list — a component, a contract, a dependency, a rule
-   exception, a reversal, or a measured figure this repository has published and is withdrawing.
-   That list is the authority; this line is a reminder that it exists, not a second copy of it.
+3. **Update the docs in the same commit** as the change that invalidates them, and write an ADR
+   when `docs/00-principles.md` § "When an ADR is required" says to. Deliberately not repeated
+   here: this line used to restate the list and fell two triggers behind it.
 4. **Before adding a component, name the volatility it absorbs.** If it's already in
    `docs/02-volatility-map.md`, extend the existing owner instead.
 
