@@ -2052,7 +2052,10 @@ class APanoramaIsReadAsThePixelsItHolds(unittest.TestCase):
         # The half the type matters for: `main` catches `ValueError`, so an escaping
         # `DecompressionBombError` arrives as a traceback where every other unusable `--panorama`
         # gets a sentence — and through `registration_accuracy_test.cpp` as a *skipped*
-        # measurement, which is green.
+        # measurement, which is green. `inputMissing()` does not catch that one: it asks whether the
+        # file is there, and this file is. What catches it is `tools/gate.sh`'s `accuracy measured`
+        # step, which fails on `grep -q SKIPPED` whatever the cause — so this test is what keeps the
+        # skip from happening and the gate is what notices if it does.
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "huge.png"
             Image.frombytes("RGB", (8, 4), bytes(8 * 4 * 3)).save(path)

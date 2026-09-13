@@ -116,6 +116,15 @@ class Rendered {
    * question does not arise. Both are the answer a caller wants — proceed — which is why one value
    * carries them; a reader comparing the two arms of `World` should not have to work that out.
    *
+   * **It answers "the file is not there", not "the world is usable".** A panorama that is present
+   * and unreadable — truncated, an LFS pointer the smudge filter never expanded, or simply too
+   * large for the decoder — leaves this `false`, fails the renderer instead, and *skips*. That is
+   * deliberate: the broader check is "the renderer refused its input", which would be a second copy
+   * of the generator's refusal taxonomy kept in step by hand here. `tools/gate.sh`'s `accuracy
+   * measured` step and its CI twin already fail on `grep -q SKIPPED` and do not care which cause
+   * produced the skip, so the guarantee lives there. This is the cheap tripwire for the one cause a
+   * contributor actually creates, so that a partial local `ctest` says something useful.
+   *
    * **The two `ASSERT_FALSE(rendered.inputMissing())` sites are kept in step by hand, and a third
    * world is when to stop doing that.** A helper would have to be a macro — `ASSERT_` expands to a
    * bare `return` — and a macro that hides a return behind a name is a worse trade than one
