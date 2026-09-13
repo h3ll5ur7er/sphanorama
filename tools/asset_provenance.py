@@ -43,11 +43,14 @@ already present. Deciding the shape here would put an image library in front of 
 is what this refuses to be — but leaving the field *optional* meant the one fact needing a decoder
 could be deleted from a record with nothing going red, which is what it did.
 
-**A field a test branches on is a token, not a sentence.** `projection` is the only one so far: an
-entry recording it must use a value from `PROJECTIONS`, because `tools/test_synth_dataset.py` asserts
-the 2:1 rule on an entry claiming to be equirectangular — and while one record spelled that field as
-a description, the assertion keyed on it was dead for every record in the tree with nothing able to
-notice. Everything else a record holds is prose and is judged only for being an answer at all.
+**A field a program reads is a token, not a sentence.** `projection` was the first: an entry
+recording it must use a value from `PROJECTIONS`, because `tools/test_synth_dataset.py` asserts the
+2:1 rule on an entry claiming to be equirectangular — and while one record spelled that field as a
+description, the assertion keyed on it was dead for every record in the tree with nothing able to
+notice. `READ_BY_A_PROGRAM` is the list of them, and each is held to a single string; a field that
+joins that list without a case in the suite is the defect this has already produced twice.
+Everything else a record holds is prose, may be written as a list of lines, and is judged only for
+being an answer at all.
 
 Usage:  uv run tools/asset_provenance.py [repo_root]
 """
@@ -115,21 +118,32 @@ SHAPED = tuple(suffix for suffix in MEDIA if suffix not in UNSHAPED)
 # description of the projection belongs in `notes`, which nothing branches on.
 PROJECTIONS = ("equirectangular",)
 
-# Fields whose answer is executed rather than read. `unusable` holds these to a single string: the
-# prose rule below accepts a list of lines, which is right for everything a person reads and wrong
-# for anything a shell runs.
-COMMANDS = ("produced_by",)
+# Fields this file *branches on* rather than merely stores — run as a command, compared against a
+# constant, hashed against the bytes. `unusable` holds each to a single string, because the prose
+# rule below accepts a list of lines and that is right for everything a person reads and wrong for
+# everything a program reads.
+#
+# It began as one field. `produced_by` spelled as a list cleared the checker and died in its
+# consumer with `TypeError: unhashable type: 'list'`, and the fix named that field alone — so
+# `source_blob` as a list sailed past `isinstance(recorded_blob, str)` and was never compared, and
+# `licence` as a list was never equal to the deferral sentinel, so a repository with no licence
+# came back clean. The same defect, twice, inside the commit that fixed it. It is a tuple of every
+# such field now, and the subtest table in the suite is driven from this tuple rather than from a
+# hand-written list, so a field added here cannot be added without a case.
+READ_BY_A_PROGRAM = ("file", "sha256", "licence", "projection", "produced_by", "source_blob")
 
 # A licence that defers to this repository's own, rather than naming one. It is the right way to
 # write our own work down — a derivation cannot drift the way a copy of "MIT" in nine records can —
 # but it has to point at something, and for the whole life of these records it pointed at nothing:
 # there was no LICENSE file, and `rm LICENSE` still leaves the checker and all of its tests green.
-# Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`. A record may carry the
-# upstream blob hash so a reader can find the exact object in the source repository's history, and
-# until now it was the one recorded fact nothing derived — which matters because it is the one that
-# would go stale silently after the one thing ADR 0059 forbids. A transcode changes `sha256` and
-# `bytes`, and the build says so; it changes this too, and nothing said anything.
 def git_blob(path: Path) -> str:
+    """Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`.
+
+    A record may carry the upstream blob hash so a reader can find the exact object in the source
+    repository's history. It was the one recorded fact nothing derived, which matters because it is
+    the one that goes stale silently after the single thing ADR 0059 forbids: a transcode changes
+    `sha256` and `bytes` and the build says so, and it changes this too and nothing said anything.
+    """
     data = path.read_bytes()
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
@@ -194,12 +208,11 @@ def unusable(field: str, value: object) -> str | None:
                     else f"{field} is a whole number of pixels")
             return f"is {value!r}, and {what}"
         return None
-    if field in COMMANDS and isinstance(value, list):
-        # A command is run and is used as a dictionary key, so unlike every other answer here it
-        # may not be a list of lines. Spelled as one it passed the prose rule, reached
-        # `tools/test_synth_dataset.py`, and died there with `TypeError: unhashable type: 'list'` —
-        # a checker that says nothing and a test that crashes rather than reports.
-        return f"is {value!r}, and a command is one line that a shell can run"
+    if field in READ_BY_A_PROGRAM and not isinstance(value, str):
+        # Before the prose rule, and by type rather than by shape: a program reads this, so a list
+        # of lines is as useless to it as a `False`, and each of them slipped past a check that
+        # only asked lists to be lists of prose.
+        return f"is {value!r}, and this one is read by a program, so it is a single string"
     if isinstance(value, list):
         # A blank line inside the list is a paragraph break — that is how the long answers in this
         # tree are written — so the rule is about the list as a whole rather than each line: every

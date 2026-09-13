@@ -174,17 +174,31 @@ class AssetProvenance(unittest.TestCase):
         # "`projection`" appeared somewhere, and a later round added a *second* refusal that names
         # the same field — so the subtest passed with the type rule it exists for switched off. A
         # field name is not a discriminator when two rules can print it.
-        for field, value, because in (
+        #
+        # **The program-read fields are driven from the tuple, not listed here.** The hand-written
+        # list is what let two of them through: it stopped one rung short of `source_blob`, whose
+        # list spelling then sailed past `isinstance(recorded_blob, str)` and was never compared,
+        # and of `licence`, whose list spelling was never equal to the deferral sentinel. A field
+        # that joins `READ_BY_A_PROGRAM` now cannot join it without a case.
+        # `file` is not driven here even though it is read by a program: it has its own guard
+        # earlier in `check`, which names the entry by position and skips the rest of it, so it
+        # never reaches `unusable` at all. `test_an_entry_that_names_no_file_is_reported` covers it.
+        rows = [(field, value, "read by a program, so it is a single string")
+                for field in asset_provenance.READ_BY_A_PROGRAM if field != "file"
+                for value in (["a line", "another"], [], False)]
+        # Each case starts from the pristine record. Without this the loop writes its damage into
+        # the file that the next case reads, so the fields compound — and the first one that makes
+        # the record structurally invalid stops every later case from being checked at all, while
+        # still reporting as a pass for whichever of them it silences.
+        pristine = json.dumps({"assets": self.tree.entries()})
+        for field, value, because in rows + [
                 ("produced_by", "", "is blank"),
-                ("produced_by", False, "answers a question a reader asks in words"),
-                ("produced_by", [], "one line that a shell can run"),
-                ("projection", {}, "answers a question a reader asks in words"),
                 ("width", True, "width is a whole number of pixels"),
                 ("height", "512", "height is a whole number of pixels"),
                 ("notes", [""], "is a list of nothing"),
-                ("notes", ["fine", 7], "answers a question a reader asks in words")):
+                ("notes", ["fine", 7], "answers a question a reader asks in words")]:
             with self.subTest(field=field, value=value):
-                entries = self.tree.entries()
+                entries = json.loads(pristine)["assets"]
                 entries[0][field] = value
                 self.tree.record({"assets": entries})
                 named = [p for p in self.tree.problems() if f"`{field}`" in p]
@@ -213,6 +227,10 @@ class AssetProvenance(unittest.TestCase):
         # The rule is about the licence existing, not about what it is called. `COPYING` is the
         # GNU spelling and is as much an answer as `LICENSE`.
         self.defer()
+        # The tuple itself, because a loop over it shrinks with it: `LICENCE_FILES = ("LICENSE",)`
+        # left all of these green with three spellings asserted by nothing.
+        self.assertEqual(asset_provenance.LICENCE_FILES,
+                         ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"))
         (self.tree.root / "LICENSE").unlink()
         for spelling in asset_provenance.LICENCE_FILES:
             with self.subTest(spelling=spelling):
@@ -263,16 +281,16 @@ class AssetProvenance(unittest.TestCase):
         self.tree.record({"assets": entries})
         named = [p for p in self.tree.problems() if "`produced_by`" in p]
         self.assertTrue(named, "a command written as two lines was accepted")
-        self.assertTrue(any("one line that a shell can run" in p for p in named), named)
+        self.assertTrue(any("read by a program, so it is a single string" in p for p in named),
+                        named)
 
     def test_every_media_extension_is_shaped_or_says_why_not(self):
         # `SHAPED` used to be a second hand-written list beside `MEDIA`, and it drifted: `.avif`,
         # `.ico`, `.hdr` and `.exr` were rasters in one and not the other, and `.tif` was in
         # neither — so an entry for a `.avif` could record any dimensions it liked, or none.
-        # `SHAPED` is derived now, and this is the assertion that keeps the derivation total.
-        self.assertEqual(
-            sorted(asset_provenance.SHAPED) + sorted(asset_provenance.UNSHAPED),
-            sorted(asset_provenance.SHAPED) + sorted(asset_provenance.UNSHAPED))
+        # `SHAPED` is derived now, and this keeps the derivation total. (An `assertEqual` of one
+        # expression against itself stood here and asserted nothing — the shape of mistake this
+        # file exists to catch, made in the test written to catch it.)
         for suffix in asset_provenance.MEDIA:
             with self.subTest(suffix=suffix):
                 self.assertTrue(
@@ -282,6 +300,15 @@ class AssetProvenance(unittest.TestCase):
         for suffix in asset_provenance.UNSHAPED:
             self.assertIn(suffix, asset_provenance.MEDIA,
                           f"{suffix} is exempted from a rule it was never subject to")
+        # **Which side, not only that there is a side.** Totality alone left the hand list free to
+        # move: adding `.ppm` to `UNSHAPED` and deleting `width`/`height` from the four committed
+        # frame records left every test here and in the dataset suite green. Whether an extension
+        # is a raster is not derivable from anything in this repository — there is no decoder here
+        # by design — so it is pinned by hand, which is what `REQUIRED` does for the same reason.
+        self.assertEqual(sorted(asset_provenance.UNSHAPED), sorted((
+            ".svg", ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".webm", ".mov", ".ttf", ".otf",
+            ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf", ".blend", ".psd", ".zip")),
+            "an extension changed sides, and only a decoder could say whether it should have")
 
     def test_a_raster_that_used_to_escape_the_shape_rule_no_longer_does(self):
         # The concrete half of the test above, through the checker rather than the tuples: an
