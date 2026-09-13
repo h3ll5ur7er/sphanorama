@@ -582,9 +582,11 @@ struct FeatureSet {
   // to take on trust, because nothing in this struct lets them check it.
   FrameRef keypoints;
   // Which extractor produced these descriptors, opaque to everyone but the implementation that
-  // stamped it. Two sets whose `extractor` differs cannot be matched against each other: the bytes
-  // carry no record of the metric they want, so an engine handed a foreign set will match them
-  // under its own and answer confidently. Zero means nobody stamped it, which is also a refusal.
+  // stamped it. An engine matches only sets it produced itself, and refuses any set stamped by
+  // anything else — comparing the two sets to *each other* is the blind rule this replaced, and it
+  // passes two sets that agree because one foreign extractor wrote both. The bytes carry no record
+  // of the metric they want, so an engine handed a foreign set matches them under its own and
+  // answers confidently. Zero means nobody stamped it, which is also a refusal.
   //
   // Not a detector enum, because a caller never chooses the detector and an implementation with no
   // notion of ORB should still satisfy this interface. The values are an implementation's private

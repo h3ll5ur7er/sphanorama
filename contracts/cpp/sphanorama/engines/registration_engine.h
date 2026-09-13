@@ -13,6 +13,12 @@ class IRegistrationEngine {
   // `Forget` each — `FeatureSet` says what they hold and ADR 0051 says why they are frames. A
   // `count` of zero means nothing was allocated and there is nothing to forget.
   //
+  // **The set it answers with carries this implementation's `extractor` stamp**, which is what makes
+  // `EstimatePairwise`'s refusal of a foreign set satisfiable: a caller may pair only sets that came
+  // from the same engine. Promised here rather than left to the field's own comment, because an
+  // implementation could otherwise honour the letter of both methods, return the default identity
+  // from this one, and refuse every pair built from its own sets.
+  //
   // The frame handed in is left alone, except that reading it pins it — and pinning faults a
   // spilled frame back into the heap and leaves it resident, which is a cost a caller working
   // through cold frames should expect.

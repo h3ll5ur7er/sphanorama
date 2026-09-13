@@ -742,8 +742,11 @@ Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8
  *
  * This engine only ever builds the three defaults, so keying off the detector is exact for anything
  * it produced. It is still a second copy of a fact: the type is decided where the descriptors are
- * written and re-derived here. The fix that removes the copy is a field on `FeatureSet`, which is a
- * contract change and is recorded rather than smuggled in beside a bug fix.
+ * written and re-derived here, and it stays one. `FeatureSet::extractor` was the field this comment
+ * once expected to remove the copy, and ADR 0058 deliberately made it an opaque producer identity
+ * instead — a contract that named a descriptor type would be naming OpenCV's taxonomy, and two
+ * detectors sharing a type would still be indistinguishable. The copy is a cost that decision
+ * accepted; it is safe only because `extractor` refuses any set this engine did not write.
  */
 int DescriptorType(FeatureDetector detector) {
   switch (detector) {
@@ -1095,10 +1098,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value, type);
     if (!matB.ok()) return Err<PairwiseResult>(matB.status.code, kComponent, matB.status.detail);
     // Provenance is `extractor`'s job, checked before the pins. What is left here is a caller that
-    // set a stride itself, which the two sets' own widths can still disagree about. A
-    // `matA.type() != matB.type()` conjunct stood here too, kept on the argument that
-    // `FeatureSet` carrying its producer would make it live; it did not, because the fix was an
-    // earlier guard rather than a per-set type, so it is gone.
+    // set a stride itself, which the two sets' own widths can still disagree about.
     if (matA.value.cols != matB.value.cols) {
       return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
                                  "the two feature sets have different descriptor widths");

@@ -1182,43 +1182,16 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
       << "an empty set was refused after pinning " << (counting.pins - pinsBeforeEmpty)
       << " frames; the refusal is supposed to precede every `Pin`";
 
-  // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
-  // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
-  // makes differs in *width* and the mismatch guard fires — after all four `Pin`s, which are taken
-  // up front.
+  // **A refusal that lands after the pins**, which is the whole reason this case is here: the
+  // `Forget` assertion below would be true of a call that touched nothing if the refusal came
+  // first. Four pins is what a pair costs — keypoints and descriptors for each set — taken up
+  // front.
   //
-  // An earlier version of this comment said "differs in width **or in element type**". Element type
-  // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard
-  // is a value compared with itself. Width is the whole of what defends this, and a `FeatureSet`
-  // carrying the detector that made it is filed as its own change.
-  //
-  // **That the frames were pinned at all is asserted by counting pins, not by reading the message —
-  // and that is all it asserts.** This case exists so the `Forget` count below is not vacuous: a
-  // refusal *before* anything is pinned would make "forgot none of the four" true of a call that
-  // touched nothing. Four pins is what a pair costs, taken up front — keypoints and descriptors for
-  // each set — so a non-zero-pin refusal is one that got past them.
-  //
-  // **It does not say where past them, and an earlier version of this comment claimed it did.**
-  // `ReadBearings`, `ReadDescriptors` and the width guard all refuse with `InvalidArgument` after
-  // exactly these same four pins, so nothing observable here separates them. The substring match on
-  // `Status::detail` that this replaced *could* separate them, and a reviewer showed the trade
-  // directly: a refusal moved to after the pins and before `ReadBearings`, with a message lacking
-  // the words "same detector", passes this assertion and fails the old one. So this is a trade and
-  // not a strengthening — the previous commit called it "strictly stronger", which is false.
-  //
-  // The trade is still the right way round, because the discriminator it gave up was a substring of
-  // a field `types.h` declares is never parsed, carrying the one phrase this branch had just
-  // corrected the engine for using: the message rewrite survived only because the new wording
-  // happened to keep those two words. What the old assertion could not do is catch the failure this
-  // one does — a refusal before any pin, whose message still said "same detector" and which it
-  // therefore passed. Neither set contains the other. Where a refusal lands *inside* the read path
-  // is covered by `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`, which drives those guards
-  // one at a time.
-  //
-  // A doctored stride is the vehicle, and it used to be a foreign detector's set. That stopped
-  // working when `FeatureSet::extractor` arrived: a foreign set is now refused before anything is
-  // pinned, which is the better behaviour and leaves this case needing a pair the engine will
-  // agree to read. Same extractor, one row width the frame does not have.
+  // A doctored stride is the vehicle because provenance is checked before anything is pinned now,
+  // so a foreign set no longer gets far enough. The count says the refusal was past the pins and
+  // not where: `ReadBearings`, `ReadDescriptors` and the width guard all refuse with
+  // `InvalidArgument` after exactly these four, and telling them apart is
+  // `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame`'s job.
   FeatureSet doctored = b.value;
   doctored.descriptors.stride = doctored.descriptors.stride / 2;
   const int pinsBeforeMismatch = counting.pins;
@@ -1494,36 +1467,51 @@ TEST_P(Extraction, TheDescriptorWidthComesFromTheFrameAndNotFromTheByteCount) {
  *
  * The width check that stood here before could only see sets that differed from *each other*. When
  * both come from one foreign extractor they agree, so nothing compared them to the engine reading
- * them: SIFT's 512-byte float rows were matched as 512 Hamming bytes and reported accepted, with
- * 30 correspondences where the right metric finds 178.
+ * them: SIFT's 512-byte float rows were matched as 512 Hamming bytes and reported accepted (ADR 0058
+ * carries the measurement and the arrangement it was taken on).
+ *
+ * **Every other detector, not one of them**, because two of the six cross combinations are the ones
+ * this decision *costs* something: ORB and AKAZE share `CV_8U` and `NORM_HAMMING`, so before the
+ * stamp existed each read the other's rows correctly, and refusing them is a price ADR 0058 accepts
+ * rather than a hole it closes. A test that only ever crossed the metric would have pinned the half
+ * that was free.
  */
 TEST_P(Extraction, TwoSetsFromAForeignExtractorAreRefused) {
-  const FeatureDetector foreignDetector =
-      GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
-  FeatureRegistrationEngine foreign{store, foreignDetector};
   FeatureRegistrationEngine engine = Engine();
 
-  const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
-  const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
-  ASSERT_TRUE(a.ok() && b.ok());
+  for (const FeatureDetector foreignDetector : kAllFeatureDetectors) {
+    if (foreignDetector == GetParam()) continue;
+    FeatureRegistrationEngine foreign{store, foreignDetector};
+    const Result<FeatureSet> a = foreign.ExtractFeatures(Textured());
+    const Result<FeatureSet> b = foreign.ExtractFeatures(Textured());
+    ASSERT_TRUE(a.ok() && b.ok());
 
-  const Result<PairwiseResult> pair =
-      engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
-  EXPECT_FALSE(pair.ok()) << "matched a foreign extractor's descriptors under this engine's metric, "
-                          << "answering with " << pair.value.inliers << " inliers";
-  EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_FALSE(pair.ok())
+        << "matched detector " << static_cast<int>(foreignDetector) << "'s descriptors under this "
+        << "engine's metric, answering with " << pair.value.inliers << " inliers";
+    EXPECT_EQ(pair.status.code, StatusCode::InvalidArgument) << pair.status.detail;
 
-  // Zero is the other way a set fails the check, and it is a separate branch: a caller that built a
-  // `FeatureSet` by hand rather than one a foreign extractor stamped.
-  FeatureSet unstamped = a.value;
+    ForgetOutputs(a.value);
+    ForgetOutputs(b.value);
+  }
+
+  // Zero is the other way a set fails the check, and its partner has to be a set this engine did
+  // produce. Paired with a foreign one — which is what this case used to do — the foreign stamp
+  // refuses the call on its own and the zero is never the reason for anything: a reviewer relaxed
+  // the guard to accept unstamped sets and the case named for them stayed green.
+  const Result<FeatureSet> ours = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(ours.ok());
+  FeatureSet unstamped = ours.value;
   unstamped.extractor = 0;
   const Result<PairwiseResult> nobodys =
-      engine.EstimatePairwise(unstamped, a.value, Quat{1, 0, 0, 0}, Lens());
-  EXPECT_FALSE(nobodys.ok()) << "read a set no extractor stamped";
+      engine.EstimatePairwise(unstamped, ours.value, Quat{1, 0, 0, 0}, Lens());
+  EXPECT_FALSE(nobodys.ok()) << "read a set no extractor stamped, answering with "
+                             << nobodys.value.inliers << " inliers";
   EXPECT_EQ(nobodys.status.code, StatusCode::InvalidArgument) << nobodys.status.detail;
 
-  ForgetOutputs(a.value);
-  ForgetOutputs(b.value);
+  ForgetOutputs(ours.value);
 }
 
 TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {

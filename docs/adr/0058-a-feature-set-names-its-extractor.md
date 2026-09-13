@@ -11,11 +11,38 @@ check.
 
 The proxy is blind in the case that matters. It compares the two sets to each other, so when both
 come from one foreign extractor they agree and neither is ever compared to the engine reading them.
-A reviewer drove all nine (writing detector, reading engine) pairs on a rendered ring: six answer,
-and three come back `accepted = true` from a pair matched under the wrong metric — SIFT's 512-byte
-float rows read as 512 Hamming bytes give 30 correspondences where the right metric finds 178. Not
-memory-unsafe; a wrong answer reported confidently, which is what the whole `accepted` apparatus
-exists to prevent.
+
+**Measured on an arrangement anyone can re-run**: the twelve-frame ring `tools/synth_dataset.py`
+renders at 640x480, frames 0 and 1, the prior nudged three degrees about x — the accuracy suite's
+own arrangement — with each (writing detector, reading engine) pair forced past the provenance guard
+so that what is measured is the behaviour before it.
+
+| writing detector → reading engine | outcome | inliers / correspondences |
+| --- | --- | --- |
+| ORB → ORB, AKAZE or SIFT | RegistrationFailed | the best hypothesis had 0, 0 and 2 |
+| AKAZE → ORB | accepted | 42 / 202 |
+| AKAZE → AKAZE | accepted | 42 / 202 |
+| AKAZE → SIFT | InvalidArgument: rows are not a whole number of elements wide | – |
+| SIFT → ORB | **accepted** | 13 / 18 |
+| SIFT → AKAZE | **accepted** | 13 / 18 |
+| SIFT → SIFT | accepted | 60 / 181 |
+
+Five answer, five are accepted, and **two** of those are matched under the wrong metric: SIFT's
+512-byte float rows read as 512 Hamming bytes come back accepted on 13 of 18 correspondences where
+the right metric finds 60 of 181. Not memory-unsafe; a wrong answer reported confidently, which is
+what the whole `accepted` apparatus exists to prevent.
+
+**At most three of the nine can be wrong that way at all**, which bounds the defect and is the
+reason to give the whole table rather than the headline. `DescriptorType` answers `CV_8U` for both
+ORB and AKAZE and the norm is `NORM_HAMMING` for both, so AKAZE → ORB is bit-identical to the
+diagonal — 42 of 202 twice — and ORB → AKAZE fails identically to ORB → ORB. The six cross pairs are
+three that cross the metric, two that are clones of the diagonal, and one the divisibility check
+refuses.
+
+An earlier draft of this section said six answer and three are accepted, with 30 correspondences
+against 178. Those figures named no frame pair and do not reproduce on this one; they are replaced
+here rather than retracted in an ADR of their own (ADR 0057's rule) because they were never
+published.
 
 Two other things made this worth a contract change rather than a sharper guard:
 
@@ -49,15 +76,35 @@ a caller picks or branches on. This is neither.
   width the frame does not have.
 - The width check stays. It is no longer reachable by a foreign extractor, but a caller can still
   hand over a set whose stride it set itself, and that is what the bounds-guard test drives.
-- **The identity is unique per detector, not per implementation.** Two different
-  `IRegistrationEngine`s would both stamp 1 for their first detector, so a set from one would be
-  accepted by the other. There is one implementation, so this costs nothing today; making it a
-  global registry before there is a second implementation would be inventing a problem.
+- **The identity is unique per detector, not per implementation, and it says nothing about which
+  store the frames live in.** Two different `IRegistrationEngine`s would both stamp 1 for their
+  first detector, so a set from one would be accepted by the other. And `MemoryFrameStoreAccess`
+  numbers its frames from 1 per instance, so a set made over one store passes the guard of an engine
+  over another and its `FrameRef`s then resolve against frames it has never seen. Both are
+  unreachable today — there is one implementation, no composition root wires an `IRegistrationEngine`
+  at all, and every test uses one store — and both are reasons to read this field as one half of
+  provenance rather than the whole of it. A global registry or a store identity before there is a
+  second implementation would be inventing a problem.
 - `FeatureSet` crosses the generated TypeScript mirror, so the field appears there. Engines never
   cross the WASM boundary, so nothing in the shell reads it — the mirror carries it because the
   struct is mirrored, not because anyone on that side has a use for it.
 
-## Rejected alternative
+## Rejected alternatives
+
+**Carry the descriptor type instead of a producer identity**, which is the option this engine's own
+code asks for: `DescriptorType`'s docblock has said since it was written that the type is decided
+where the descriptors are written and re-derived when they are read, and that a field on `FeatureSet`
+is what removes the copy. It would close the measured hole — a `CV_32F` set handed to a `CV_8U`
+engine is exactly the SIFT-read-as-Hamming case — remove that second copy, and *allow* the two cross
+pairs the table above shows are harmless.
+
+It loses on what it identifies. The type names the metric, not the producer, so two detectors
+sharing a metric stay indistinguishable — which is the same objection as "width is not identity",
+one level up, and ORB and AKAZE are that pair today. And the contract cannot say `CV_8U`: naming
+OpenCV's type codes in `types.h` publishes one library's taxonomy through an interface that a
+learned matcher is supposed to be able to satisfy, so it would need an abstraction of its own, which
+is a second decision to pay for a strictly weaker check. The copy in `DescriptorType` stays, as a
+cost recorded there.
 
 **Keep the width check and sharpen it** — compare the descriptor width against what this engine's
 detector produces, rather than the two sets against each other. That closes the measured hole with
