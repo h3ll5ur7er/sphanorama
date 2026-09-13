@@ -2,8 +2,9 @@
 // global refinement arrives in its own increment.
 //
 // It said "feature extraction only" until a reviewer read the whole file rather than the diff. The
-// branch that added `EstimatePairwise` added 538 lines of matching tests below and never touched
-// these two, because a header at line 1 is outside every range diff — which is the shape CLAUDE.md
+// branch that added `EstimatePairwise` added the whole matching half of this file below and never
+// touched these two lines, because a header at the top is outside every range diff — the shape
+// CLAUDE.md
 // records from PR #49's fourteenth round. The first thing a reader met was a sentence telling them
 // the tests they came for were somewhere else.
 //
@@ -1126,13 +1127,27 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // lens and prior guards to *after* the pin loop and watched 805 tests stay green, only the empty
   // set was checked and the other two thirds of that claim were prose. This is the mutation twelve
   // review rounds had not found.
+  //
+  // **And the code, not only the place.** Four pin counters say *where* each refusal happened and
+  // nothing said *what* it was: a reviewer changed the lens guard to `Unsupported` and the prior
+  // guard to `Internal` and watched 805 tests stay green. These two calls are the only ones in the
+  // repository that drive either guard, so the `InvalidArgument` the contract promises at
+  // `IRegistrationEngine::EstimatePairwise` was asserted nowhere — and `Unsupported` is the null
+  // engine's own code, which a caller branching on it would read as "this build cannot register"
+  // rather than "your lens is unusable".
   const int pinsBeforeGuards = counting.pins;
-  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
+  const Result<PairwiseResult> lensRefusal =
+      engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{});
+  EXPECT_FALSE(lensRefusal.ok());
+  EXPECT_EQ(lensRefusal.status.code, StatusCode::InvalidArgument) << lensRefusal.status.detail;
   EXPECT_EQ(counting.pins, pinsBeforeGuards)
       << "the lens guard pinned " << (counting.pins - pinsBeforeGuards)
       << " frames; an unusable lens is refused before the pixels are touched";
   const int pinsBeforePrior = counting.pins;
-  EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
+  const Result<PairwiseResult> priorRefusal =
+      engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens());
+  EXPECT_FALSE(priorRefusal.ok());
+  EXPECT_EQ(priorRefusal.status.code, StatusCode::InvalidArgument) << priorRefusal.status.detail;
   EXPECT_EQ(counting.pins, pinsBeforePrior)
       << "the prior guard pinned " << (counting.pins - pinsBeforePrior)
       << " frames; an unusable prior is refused before the pixels are touched";
@@ -1847,7 +1862,8 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   EXPECT_FALSE(extracted.ok());
   EXPECT_EQ(extracted.status.code, StatusCode::Unsupported);
 
-  const Result<PairwiseResult> pair = engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{}, Intrinsics{});
+  const Result<PairwiseResult> pair =
+      engine.EstimatePairwise(FeatureSet{}, FeatureSet{}, Quat{}, Intrinsics{});
   EXPECT_FALSE(pair.ok()) << "an identity rotation here would look like a registration";
   EXPECT_EQ(pair.status.code, StatusCode::Unsupported);
 
