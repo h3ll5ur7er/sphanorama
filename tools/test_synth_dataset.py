@@ -1414,6 +1414,39 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
         finally:
             sys.argv = old
 
+    def test_the_panorama_it_is_given_is_the_one_it_renders(self):
+        # Without this the flag could be accepted and dropped, and every frame would come back off
+        # the checkerboard while the run reported success. A flat panorama is the vehicle because a
+        # bilinear sample of a constant is that constant, so every byte of every frame is one
+        # number that only this file can supply.
+        with tempfile.TemporaryDirectory() as directory:
+            flat = Path(directory) / "flat.png"
+            Image.frombytes("RGB", (8, 4), bytes([200]) * (8 * 4 * 3)).save(flat)
+            out = Path(directory) / "dataset"
+            self.assertEqual(self._run("--out", str(out), "--frames", "1", "--width", "6",
+                                       "--height", "4", "--panorama", str(flat)), 0)
+            pixels = (out / "frame_0000.ppm").read_bytes().split(b"255\n", 1)[1]
+            self.assertEqual(set(pixels), {200})
+
+    def test_a_panorama_that_is_not_one_is_refused_before_a_single_frame_renders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "dataset"
+            rendered = {"n": 0}
+            honest = synth_dataset.render_frame
+
+            def count(*args, **kwargs):
+                rendered["n"] += 1
+                return honest(*args, **kwargs)
+
+            synth_dataset.render_frame = count
+            try:
+                with self.assertRaises(SystemExit):
+                    self._run("--out", str(out), "--panorama", str(Path(directory) / "absent.png"))
+            finally:
+                synth_dataset.render_frame = honest
+            self.assertEqual(rendered["n"], 0)
+            self.assertFalse(out.exists())
+
     def test_an_out_that_is_a_file_is_refused_before_a_single_frame_renders(self):
         with tempfile.TemporaryDirectory() as directory:
             occupied = Path(directory) / "not-a-directory"
