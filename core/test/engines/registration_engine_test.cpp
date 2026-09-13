@@ -1110,8 +1110,14 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
 
   // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
   // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
-  // makes differs in width or in element type and the mismatch guard fires — after four `Pin`s and
-  // two passes of `ReadBearings`.
+  // makes differs in *width* and the mismatch guard fires — after four `Pin`s and two passes of
+  // `ReadBearings`.
+  //
+  // An earlier version of this comment said "differs in width **or in element type**". Element type
+  // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard
+  // is a value compared with itself. Width is the whole of what defends this, which is why what is
+  // asserted below is the refusal and not the reason — and why a `FeatureSet` carrying the detector
+  // that made it is filed as its own change.
   const FeatureDetector other =
       GetParam() == FeatureDetector::Sift ? FeatureDetector::Orb : FeatureDetector::Sift;
   FeatureRegistrationEngine foreign{counting, other};

@@ -8,6 +8,15 @@
 > and scores the chain, and `docs/06-roadmap.md` publishes the table. That Consequence also says the
 > C++ never reads a freshly generated dataset; it does now, since the accuracy test renders its own
 > at test time (ADR 0055). Both paragraphs stand as what was believed when this was written.
+>
+> **And the Decision's `-fexceptions` paragraph rests on a premise that is not true of this
+> build.** It says the three test translation units need the flag because `-fno-exceptions` would
+> otherwise make a throw a terminate. They do not: `core/CMakeLists.txt` sets `-fno-exceptions`
+> `PRIVATE` on `sphanorama_core`, so no `core/test` translation unit inherits it — 0 of 39,
+> checked in `compile_commands.json`. The properties are kept as insurance against that flag
+> becoming `PUBLIC`, and `core/test/CMakeLists.txt` now says so where they are set. This predates
+> the branch that found it and is on `main` too; it was invisible to eight rounds of range-scoped
+> review because nothing touched those lines.
 
 ## Context
 

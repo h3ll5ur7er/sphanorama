@@ -852,6 +852,15 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     // time, so 574 draws were 377 samples and the 0.99 that `kRansacConfidence` names was really
     // 0.9515. Shifting past the indices already taken costs two comparisons and makes every
     // iteration a sample.
+    //
+    // **`from.size() >= 3` is a precondition of these three lines, and it is held elsewhere.**
+    // `next(from.size() - 2)` underflows `size_t` at a size of two and divides by zero at three
+    // minus three; neither can happen because the early return above refuses anything below
+    // `kMinimumCorrespondences`, which is 8. That is a real coupling between a constant and this
+    // arithmetic, and it was written down nowhere until a reviewer swept the draw over every size
+    // in [3, 512] under UBSan (200k draws each: all distinct, all in range, all 56 triples reached
+    // at n = 8) and observed that nothing states the floor. Lowering `kMinimumCorrespondences`
+    // below 3 breaks this loop rather than the gate it looks like it belongs to.
     const size_t i = next(from.size());
     size_t j = next(from.size() - 1);
     if (j >= i) ++j;
@@ -929,6 +938,11 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   // how much of the evidence stands behind it.
   const double agreeing =
       from.empty() ? 0.0 : static_cast<double>(bestInliers.size()) / static_cast<double>(from.size());
+  // The first conjunct cannot be false here — the early return above already refused anything below
+  // `kMinimumCorrespondences`, and the refit only ever grows the set. It is written out anyway, and
+  // deliberately: ADR 0056 defines `accepted` as both conditions, and a reader of this line should
+  // see the whole definition rather than the half that varies. Removing it leaves every test green,
+  // which is the expected result and not an argument for removing it.
   answer.accepted = bestInliers.size() >= kMinimumCorrespondences && agreeing >= kInlierFraction;
   return Ok(answer);
 }
@@ -1044,9 +1058,27 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     if (!matA.ok()) return Err<PairwiseResult>(matA.status.code, kComponent, matA.status.detail);
     const Result<cv::Mat> matB = ReadDescriptors(b, dbSpan.value, type);
     if (!matB.ok()) return Err<PairwiseResult>(matB.status.code, kComponent, matB.status.detail);
+    // **This guard compares widths, and cannot compare detectors — say so rather than letting the
+    // message imply otherwise.** Both matrices were built by `ReadDescriptors(..., type)` from the
+    // *same* `type`, which came from this engine's own `detector_`, so `matA.type() != matB.type()`
+    // is a value compared with itself and is always false. A reviewer found it by asking what could
+    // make the conjunct true; nothing can. What actually fires is `cols`, and `cols` is a function
+    // of the frame's stride and the element size this engine imposed — a proxy for the detector,
+    // not the detector.
+    //
+    // It is a good proxy on the three detectors that exist (ORB 32 bytes a row, AKAZE 61, SIFT 128
+    // floats, so a foreign set almost always lands on a different width) and it is not a guarantee:
+    // a set whose rows happen to be the width this engine expects is matched under this engine's
+    // metric, which for SIFT rows read as Hamming is a real and wrong answer rather than a refusal.
+    // Measured by a reviewer over all nine (writing detector, reading engine) pairs.
+    //
+    // The fix is for `FeatureSet` to carry the detector that made it, and that is a contract change
+    // with an ADR, deliberately not smuggled into a review round. The dead conjunct stays because
+    // that change is what makes it live; the message is now about what is checked.
     if (matA.value.type() != matB.value.type() || matA.value.cols != matB.value.cols) {
       return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
-                                 "the two feature sets were not made by the same detector");
+                                 "the two feature sets have different descriptor widths, so they "
+                                 "were not made by the same detector");
     }
 
     // **Lowe's ratio test, two nearest neighbours.** A single nearest neighbour always exists, so

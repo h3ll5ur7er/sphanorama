@@ -759,8 +759,10 @@ that has to be ordered.
   each frame. Until it existed no C++ here read a dataset, so the median below could not be computed
   at all, however good the scorer was. It is read against a small dataset the real generator wrote
   and this repository commits, so the format is checked against its own writer rather than against an
-  idea of it (ADR 0053). What it still does not do is produce a number: that needs something to
-  estimate rotations, which is the next line.
+  idea of it (ADR 0053). It produces a number now: the thing that estimates rotations for it to
+  score arrived in the next bullet, and the table further down is the result. This sentence said
+  "what it still does not do is produce a number" until the whole branch was reviewed against main
+  rather than by commit range — four lines above a bullet already rewritten to say the opposite.
 - `RegistrationEngine`: feature extraction, ratio-test + geometric matching, sensor-prior-seeded
   pure-rotation estimation with RANSAC, then a global bundle adjustment over rotations and shared
   intrinsics (focal + radial distortion).

@@ -60,13 +60,27 @@ class IRegistrationEngine {
   // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a prior that
   //   is not a usable rotation, a lens that cannot project, a frame whose declared rows do not fit
   //   the bytes it holds, or two sets made by different detectors.
-  // - `Pin`'s own `code` and `detail` when a frame could not be pinned — but **not** its
-  //   `component`, which is replaced by this engine's. So a caller branching on the code sees what
-  //   the store said and a human reading the component sees who was holding it at the time. An
-  //   earlier version of this line claimed the status came back "unchanged", which a reviewer
-  //   disproved by probe: `component = "FeatureRegistrationEngine"` over the store's `code = 2`
-  //   and `detail = "no such frame"`.
+  // - **`Pin`'s own status, whole** — `code`, `detail` and `component` — when a frame could not be
+  //   pinned. So a caller branching on the code sees what the store said, and a human reading the
+  //   component sees the store that said it rather than the engine that was asking.
+  //
+  //   This line has now been wrong in both directions, which is worth leaving on the record because
+  //   the second was subtler than the first. It first claimed the status came back "unchanged"; a
+  //   reviewer disproved that by probe (`component = "FeatureRegistrationEngine"` over the store's
+  //   `code = 2`), so it was rewritten to say the component is replaced. Then the engine was changed
+  //   to return the store's status whole — and this line was not, so it went on describing the
+  //   behaviour it had just been corrected *to* describe, one commit after that stopped being true.
+  //   `core/test/engines/registration_engine_test.cpp` asserts the current behaviour directly
+  //   (`EXPECT_NE(pair.status.component, "FeatureRegistrationEngine")`), which is the only reason
+  //   the contract and the code could drift apart without a test noticing: the test was checking the
+  //   code, and nothing checks this sentence.
   // - `Internal` when the compute library throws, which is how it reports what it does not model.
+  // - `Unsupported` — from `NullRegistrationEngine`, which is what a build without OpenCV gets
+  //   (ADR 0052), and therefore the **only** status this method returns in any shipping browser
+  //   build today. It was missing from this list until a reviewer read the list against the
+  //   composition roots rather than against the implementation in front of it; `ExtractFeatures`
+  //   names it twenty lines above. A caller branching on the four codes above and not on this one
+  //   handles every case that cannot currently happen and none of the case that does.
   //
   // An `Ok` result is not the same as an accepted one: see `PairwiseResult::accepted`, which is
   // false when a rotation was found and a minority of the correspondences agree with it (ADR 0056).
