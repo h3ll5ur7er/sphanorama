@@ -1054,9 +1054,11 @@ TEST_F(Dataset, RefusesAShortSpanForALensOfOneRow) {
 TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   // `ReadToken`'s comment branch could be deleted outright with the suite green, because the
   // generator never writes one and every damaged copy in this file is hand-written without one. The
-  // docstring claims a reader that choked on a comment would be refusing a valid file; this is the
-  // only case here that is green *because* the branch is present rather than because something else
-  // refused first.
+  // docstring claims a reader that choked on a comment would be refusing a valid file, and this was
+  // the only case here green *because* the branch is present rather than because something else
+  // refused first. It is now one of five, and one of the two that cover the whitespace-skipping
+  // loop — deleting that loop's `#` branch fails this and the carriage-return case below and
+  // nothing else, because a comment on its own line is the only shape that loop ever meets.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;

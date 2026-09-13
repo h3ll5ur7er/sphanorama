@@ -180,6 +180,11 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   // only on a non-whitespace byte while the stream is good, so by this point at least one byte has
   // been taken — a reviewer sabotaged it green and an `abort()` probe never fired. It also shared
   // `kNothingThere`'s sentence, so even reached it could not have been told from the EOF case.
+  //
+  // That argument now rests on the skip loop's `#` branch specifically, not on the sentence as
+  // written: a `#` is not whitespace, so without that branch the skip loop would break on one and
+  // the loop above would end the token on it having pushed nothing. Delete it and a file that is
+  // only a comment reads as an empty token rather than `kNothingThere`.
   return true;
 }
 
