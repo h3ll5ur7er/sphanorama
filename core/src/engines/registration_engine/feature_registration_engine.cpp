@@ -22,11 +22,11 @@ namespace sphanorama {
 namespace {
 
 // Offset by one so that a `FeatureSet` nobody stamped keeps `extractor == 0` and is refused rather
-// than colliding with the first enumerator.
+// than colliding with the first enumerator — which relies on `FeatureDetector`'s enumerators
+// starting at zero, a property of a header in another file.
 int32_t ExtractorIdentity(FeatureDetector detector) {
   return static_cast<int32_t>(detector) + 1;
 }
-
 
 constexpr const char* kComponent = "FeatureRegistrationEngine";
 
