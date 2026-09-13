@@ -39,10 +39,18 @@ diagonal — 42 of 202 twice — and ORB → AKAZE fails identically to ORB → 
 three that cross the metric, two that are clones of the diagonal, and one the divisibility check
 refuses.
 
-An earlier draft of this section said six answer and three are accepted, with 30 correspondences
-against 178. Those figures named no frame pair and do not reproduce on this one; they are replaced
-here rather than retracted in an ADR of their own (ADR 0057's rule) because they were never
-published.
+**Retracting the earlier figures, which were published after all.** An earlier draft of this section
+said six answer and three are accepted, with 30 correspondences against 178. Those figures named no
+frame pair and do not reproduce on this one. This paragraph previously excused itself from ADR 0057's
+rule on the grounds that they "were never published" — which was wrong: they are on `main` verbatim
+in `feature_registration_engine.cpp`, in a merged source comment that this change deletes.
+`docs/00-principles.md` says "a measured figure this repository has published" and draws no line
+between a figure published in `docs/` and one published in code; ADR 0057's own rejected-alternative
+section notes the carrier need not be an ADR, since there the carrier was the roadmap.
+
+So this *is* the retraction, and it is recorded here rather than in an ADR of its own because this is
+the ADR that replaces them — which is the shape ADR 0057 describes, not an exemption from it. The
+figures above are the ones to believe; six-answer/three-accepted and 30-against-178 are withdrawn.
 
 Two other things made this worth a contract change rather than a sharper guard:
 
@@ -69,21 +77,40 @@ a caller picks or branches on. This is neither.
 
 ## Consequences
 
+- **Two pairings that were previously correct are now refused, and that is a price rather than a
+  fix.** ORB and AKAZE share `CV_8U` and `NORM_HAMMING`, so before the stamp existed each read the
+  other's rows under the right metric and answered sensibly. The stamp cannot tell those two apart
+  from the pairing that is genuinely wrong, so it refuses all six cross pairs including the two that
+  worked. Accepted because a caller never chooses the detector — nothing in this repository pairs
+  across engines on purpose — and because a guard that is right for the wrong reason on a third of
+  its cases is worse than one that is uniformly strict. This was recorded only inside a *rejected*
+  alternative, as a benefit of the option that lost, while the test asserting it cited this section.
+
 - The refusal moved *earlier*: a foreign pair is now refused before any `Pin`, where it used to be
   refused after four. That is better and it invalidated a test's arrangement —
   `EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded` needed a post-pin refusal and had been
   using a foreign detector's set to get one. It uses a doctored stride now: same extractor, a row
   width the frame does not have.
 - The width check stays. It is no longer reachable by a foreign extractor, but a caller can still
-  hand over a set whose stride it set itself, and that is what the bounds-guard test drives.
+  hand over a set whose stride it set itself. **Which test reaches it is worth naming precisely,
+  because an earlier version of this line named the wrong one.** Every case in
+  `EveryBoundsGuardRefusesRatherThanReadingPastTheFrame` asserts a message from a guard that fires
+  strictly earlier — a stride floor, a row count, element divisibility — so none of them arrives at
+  the comparison between the two sets. The case that does is
+  `EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded`'s halved descriptor stride, and that test
+  deliberately asserts only `InvalidArgument` and a pin count rather than which guard refused.
 - **The identity is unique per detector, not per implementation, and it says nothing about which
   store the frames live in.** Two different `IRegistrationEngine`s would both stamp 1 for their
   first detector, so a set from one would be accepted by the other. And `MemoryFrameStoreAccess`
   numbers its frames from 1 per instance, so a set made over one store passes the guard of an engine
   over another and its `FrameRef`s then resolve against frames it has never seen. Both are
-  unreachable today — there is one implementation, no composition root wires an `IRegistrationEngine`
-  at all, and every test uses one store — and both are reasons to read this field as one half of
-  provenance rather than the whole of it. A global registry or a store identity before there is a
+  unreachable today, though **not for the reason an earlier version of this sentence gave**: there are
+  two implementations — `NullRegistrationEngine` as well as this one — and `bridge/runtime.h` does
+  wire one, unconditionally. ADR 0052's Decision section corrected this exact sentence once already.
+  What actually holds is narrower and is enough: the null engine never returns a `FeatureSet`, so no
+  set it produced can be handed to anyone, nothing outside the tests constructs the OpenCV engine,
+  and every test uses one store. Both are still reasons to read this field as one half of provenance
+  rather than the whole of it. A global registry or a store identity before there is a
   second implementation would be inventing a problem.
 - `FeatureSet` crosses the generated TypeScript mirror, so the field appears there. Engines never
   cross the WASM boundary, so nothing in the shell reads it — the mirror carries it because the

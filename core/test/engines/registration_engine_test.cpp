@@ -1337,8 +1337,13 @@ TEST_P(Extraction, APinRefusalKeepsTheStoresOwnComponent) {
  * from being incorrect code, and on this branch that edit has happened twice.
  *
  * A `FeatureSet` is a value its caller fills in, so every case here is reachable without a
- * conspiring store: a caller that mislays a stride, doubles a count, or hands on a set built for a
- * different detector. What is asserted is a refusal rather than a message — a guard's job is to not
+ * conspiring store: a caller that mislays a stride, or doubles a count. **A third route used to be
+ * listed here — handing on a set built for a different detector — and it is closed**, since
+ * `EstimatePairwise` refuses a foreign `extractor` before a single `Pin`, which
+ * `TwoSetsFromAForeignExtractorAreRefused` asserts. The conclusion stands and the justification
+ * lost a third of itself; that matters here more than elsewhere, because this docblock is the
+ * argument for keeping seven guards no test drives directly, and the same branch deleted an index
+ * guard on exactly this reasoning. What is asserted is a refusal rather than a message — a guard's job is to not
  * read past the frame — and the detail is checked only where two guards would otherwise be
  * indistinguishable.
  */
@@ -1507,7 +1512,10 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
   //     cannot reach it; the only route is the unset-stride fallback on a descriptor frame over two
   //     gibibytes, which a test has no business allocating.
   //
-  // All four are kept. The call order is not a promise, and a future reader of these frames may not
+  // All three are kept — the three shadowed ones this list names; the four driven above are kept by
+  // the cases that drive them. The closing line said "all four" under a list of three for as long as
+  // this census has existed, in a paragraph whose whole subject is having counted wrong twice.
+  // The call order is not a promise, and a future reader of these frames may not
   // have a keypoint guard in front of it.
 
   ForgetOutputs(a.value);
