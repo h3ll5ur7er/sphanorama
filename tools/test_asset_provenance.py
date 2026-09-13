@@ -326,6 +326,18 @@ class RecordsInsideRecords(unittest.TestCase):
             "licence": "same as this repository",
         }]}, indent=2))
 
+    def test_the_nearest_record_owns_the_file_whatever_order_they_arrive_in(self):
+        # Asserted on the function rather than through a fixture, because a fixture cannot help
+        # depending on the order `records()` happens to return: with a nested directory named
+        # `inner`, "assets/inner/sources.json" sorts *before* "assets/sources.json", so first-match
+        # and nearest-match were the same string and replacing one rule with the other left the
+        # suite green. Here both orders are asserted, so neither can flatter the rule.
+        for order in (["assets/", "assets/zoom/"], ["assets/zoom/", "assets/"]):
+            with self.subTest(order=order):
+                self.assertEqual(asset_provenance.owner_of("assets/zoom/deep.bin", order),
+                                 "assets/zoom/")
+        self.assertEqual(asset_provenance.owner_of("elsewhere/x.bin", ["assets/"]), None)
+
     def test_the_inner_record_answers_and_the_outer_one_is_not_asked(self):
         self.record_inner()
         self.assertEqual(self.tree.problems(), [])
