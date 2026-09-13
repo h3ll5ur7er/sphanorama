@@ -858,8 +858,10 @@ no rolling shutter, no exposure variation and — the one that has already cost 
 distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bug in which the
 bearing reader dropped the rows the lens could not unproject, desynchronising them from their
 descriptors, was invisible to every test in this repository for exactly that reason: with no
-distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 lists each of
-these as its own increment. Rendering with distortion will not, on its own, make that path
+distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 names noise,
+blur, rolling-shutter skew, exposure ramps, bursts per cell and composited movers as increments of
+their own; distortion is not on that list and belongs on it. Rendering with distortion will not,
+on its own, make that path
 reachable again — the renderer refuses to render a frame with a rayless pixel in it, so the lens of
 every dataset it produces answers every pixel of its own frame whatever coefficients it is given
 (ADR 0060). Distortion is worth rendering for the first reason rather than the second: an accuracy

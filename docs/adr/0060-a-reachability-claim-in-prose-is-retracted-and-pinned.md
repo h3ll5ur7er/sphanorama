@@ -25,6 +25,11 @@ re-implementation of the same lens, which agrees to four decimal places.
 Nothing could have caught it. It was prose beside code that cannot fail on it — the same shape as
 every figure ADR 0057 was written about, one layer down, in a source comment rather than a document.
 
+One number in this file is 0060 rather than 0059: ADR 0059 was written on a branch that had not yet
+merged when this one was, so the index gained the rows out of order and then in order. It is noted
+here, which is read once, rather than in `docs/adr/README.md`, which is read every time somebody
+looks up an ADR and would carry a status update forever.
+
 ## Decision
 
 Retract 38.8%; publish 66.8%; and **assert both figures from a test** rather than leaving them as
