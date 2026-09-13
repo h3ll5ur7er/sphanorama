@@ -43,6 +43,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asset_provenance  # noqa: E402
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
     read_panorama,
@@ -2004,6 +2005,61 @@ class APanoramaIsReadAsThePixelsItHolds(unittest.TestCase):
                 read_panorama(path)
             self.assertIn("p.png", str(refusal.exception))
 
+    @contextlib.contextmanager
+    def _ceiling(self, pixels):
+        """Pillow's decompression ceiling, lowered so a small file stands in for a large one.
+
+        The real threshold is twice `MAX_IMAGE_PIXELS`, which defaults to 89,478,485 — rendering a
+        180-megapixel PNG to reach it would cost more than the rest of the suite together.
+        """
+        held = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = pixels
+        try:
+            yield
+        finally:
+            Image.MAX_IMAGE_PIXELS = held
+
+    def test_a_panorama_too_large_to_decode_is_refused_as_large_rather_than_as_broken(self):
+        # `DecompressionBombError` descends from `Exception`, not `OSError`, so the arm that catches
+        # an unreadable file does not catch this one. It is not an exotic input: a 2:1 panorama
+        # crosses the default ceiling at about 18,900 pixels wide, and the source of the committed
+        # one publishes 16k and 24k.
+        #
+        # The message is asserted, not just the type, because the refusal has to say the file is
+        # too big. Reported as "could not be read as an image" it sends the reader looking for a
+        # corrupt download instead of downscaling.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huge.png"
+            Image.frombytes("RGB", (8, 4), bytes(8 * 4 * 3)).save(path)
+            with self._ceiling(1):
+                with self.assertRaises(ValueError) as refusal:
+                    read_panorama(path)
+            self.assertIn("huge.png", str(refusal.exception))
+            self.assertIn("more pixels", str(refusal.exception))
+
+    def test_a_panorama_too_large_to_decode_reaches_the_command_line_as_a_sentence(self):
+        # The half the type matters for: `main` catches `ValueError`, so an escaping
+        # `DecompressionBombError` arrives as a traceback where every other unusable `--panorama`
+        # gets a sentence — and through `registration_accuracy_test.cpp` as a *skipped*
+        # measurement, which is green.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huge.png"
+            Image.frombytes("RGB", (8, 4), bytes(8 * 4 * 3)).save(path)
+            out = Path(directory) / "dataset"
+            complaint = io.StringIO()
+            argv = ["synth_dataset.py", "--out", str(out), "--panorama", str(path),
+                    "--frames", "1", "--width", "6", "--height", "4"]
+            held = sys.argv
+            sys.argv = argv
+            try:
+                with self._ceiling(1):
+                    with contextlib.redirect_stderr(complaint), self.assertRaises(SystemExit):
+                        synth_dataset.main()
+            finally:
+                sys.argv = held
+            self.assertIn("more pixels", complaint.getvalue())
+            self.assertFalse(out.exists())
+
 
 class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
     """The one asset check that needs a decoder, which is why it is here and not in the checker.
@@ -2012,19 +2068,30 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
     library alone. Width and height are the two recorded facts it cannot check without an image
     library, and they are the two that decide whether the file is an equirectangular panorama at
     all.
+
+    Every record in the tree, not one directory named here: the prose in `sources.json` claims this
+    generally, and a hard-coded path made that claim true of one folder and false everywhere else —
+    a tracked 64x32 JPEG recorded as 4096 by 7 passed every gate.
     """
 
-    def record(self) -> dict:
-        directory = Path(__file__).resolve().parents[1] / "core" / "test" / "data" / "panoramas"
-        return json.loads((directory / "sources.json").read_text()), directory
-
-    def test_every_recorded_panorama_has_the_shape_it_claims(self):
-        document, directory = self.record()
-        self.assertTrue(document["assets"], "no panorama is recorded, so this checks nothing")
-        for entry in document["assets"]:
-            with self.subTest(file=entry["file"]):
-                panorama = read_panorama(directory / entry["file"])
-                self.assertEqual(panorama.shape, (entry["height"], entry["width"], 3))
+    def test_every_recorded_shape_is_the_shape_the_file_has(self):
+        checked = 0
+        for record in asset_provenance.records(Path(__file__).resolve().parents[1]):
+            document = json.loads(record.read_text())
+            for entry in (document.get("assets") or []) + (document.get("ours") or []):
+                present = ("width" in entry, "height" in entry)
+                # Neither is skipped, because the checker has both optional. One without the other
+                # is a failure with a sentence rather than a `KeyError` out of the test body, which
+                # is what the subscripts below used to give.
+                if not any(present):
+                    continue
+                with self.subTest(file=entry["file"]):
+                    self.assertTrue(all(present), f"{entry['file']} records one of width and "
+                                                  f"height and not the other")
+                    panorama = read_panorama(record.parent / entry["file"])
+                    self.assertEqual(panorama.shape, (entry["height"], entry["width"], 3))
+                    checked += 1
+        self.assertGreater(checked, 0, "no recorded shape was checked, so this checks nothing")
 
 
 class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
@@ -2044,11 +2111,10 @@ class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
         return Path(__file__).resolve().parents[1]
 
     def records(self) -> list[Path]:
-        listed = subprocess.run(["git", "ls-files", "-z"], cwd=self.repository(),
-                                capture_output=True, check=True)
-        return [self.repository() / name
-                for name in listed.stdout.decode().split("\0")
-                if name.endswith("/sources.json") or name == "sources.json"]
+        # The checker's own listing, not a second one. Asking the index alone — which is what this
+        # did — clears an *unstaged* record without ever running its command, and `tools/gate.sh` is
+        # exactly what a contributor runs before staging.
+        return asset_provenance.records(self.repository())
 
     def test_every_recorded_command_reproduces_the_bytes_it_names(self):
         found = 0

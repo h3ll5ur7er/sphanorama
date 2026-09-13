@@ -661,12 +661,6 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     # handed — while claiming "unit quaternion" in its own convention block.
     poses = [pose.normalised() for pose in poses]
 
-    # Everything renders before anything is written, so a refusal part way through leaves no files
-    # rather than frames with no truth to describe them. A dozen-line consumer globs
-    # `frame_*.ppm` — which is the whole pitch for P6 — and cannot tell a half-written dataset from
-    # a whole one.
-    rendered = [_to_bytes(render_frame(panorama, lens, pose)) for pose in poses]
-
     # Written into a staging directory first, and moved into place only once every byte is on
     # disk. The previous version swept the old frames *before* the write loop, so all-or-nothing
     # covered rendering and stopped there: a failure while writing left the earlier dataset deleted
@@ -679,9 +673,14 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
 
+    # **Rendered one at a time, into the staging directory.** Every frame used to be held in memory
+    # until the last one was done, for all-or-nothing — which the staging directory already gives,
+    # since nothing is swapped into place until every byte is written. What it cost was linear in
+    # the dataset: 480 frames at 640x480 is 406 MB of peak RSS, and `--frames` has no ceiling.
     frames = []
     try:
-        for index, (pose, frame) in enumerate(zip(poses, rendered)):
+        for index, pose in enumerate(poses):
+            frame = _to_bytes(render_frame(panorama, lens, pose))
             name = f"frame_{index:04d}.ppm"
             with (staging / name).open("wb") as handle:
                 handle.write(b"P6\n%d %d\n255\n" % (lens.width, lens.height))
@@ -754,7 +753,8 @@ def read_panorama(path: Path) -> np.ndarray:
     `direction_encoded_panorama` produces; a byte read here and the byte written for a pixel that
     samples it are the same number.
 
-    Two refusals and a correction, all of which render perfectly well if they are let through:
+    Three refusals and a correction. The first two render perfectly well if they are let
+    through, which is what makes them worth refusing:
 
     A panorama that is not 2:1 is not one. Longitude spans the width and latitude the height
     whatever the ratio, so the world comes out squashed in elevation while every rotation in
@@ -768,6 +768,17 @@ def read_panorama(path: Path) -> np.ndarray:
         with Image.open(path) as opened:
             upright = ImageOps.exif_transpose(opened)
             pixels = np.asarray(upright.convert("RGB"), dtype=np.float64)
+    # Its own arm, because "could not be read as an image" is the wrong sentence for a file that
+    # decodes fine and is merely large — it sends a reader looking for corruption. `Image` raises
+    # this above twice `MAX_IMAGE_PIXELS`, which a 2:1 panorama crosses at about 18,900 wide, and
+    # Poly Haven, where the committed one came from, publishes 16k and 24k. It is not an `OSError`,
+    # so before this arm existed it escaped `main`'s `except ValueError` as well and arrived as a
+    # traceback where every other unusable `--panorama` gets a sentence.
+    except Image.DecompressionBombError as failure:
+        raise ValueError(
+            f"{path} holds more pixels than Pillow will decode: {failure}. A 2:1 panorama crosses "
+            f"that limit at about 18,900 pixels wide, so downscale it, or raise "
+            f"Image.MAX_IMAGE_PIXELS if you know where the file came from") from failure
     except OSError as failure:
         raise ValueError(f"{path} could not be read as an image: {failure}") from failure
 

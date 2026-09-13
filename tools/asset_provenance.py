@@ -103,6 +103,30 @@ def records(root: Path) -> list[Path]:
     return [root / name for name in tracked_files(root) if Path(name).name == RECORD]
 
 
+def unusable(field: str, value: object) -> str | None:
+    """Why this field does not answer its question, or None if it does.
+
+    A type rather than a truthiness test, because JSON has more empty shapes than `None` and the
+    blank string: a record whose `licence` is `false`, whose `source_path` is `[]` and whose
+    `retrieved` is `{}` passed every check this file makes, and `"bytes": true` satisfied the size
+    comparison for a one-byte file because `True == 1` in Python. This repository has already paid
+    for that once, in a `truth.json` whose quaternion was four `false`s.
+    """
+    if value is None:
+        return "is missing"
+    if field == "bytes":
+        # `bool` first: it is a subclass of `int`, and `True` is the value that made the size
+        # comparison agree with itself.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return f"is {value!r}, and a size is a whole number of bytes"
+        return None
+    if not isinstance(value, str):
+        return f"is {value!r}, and this answers a question a reader asks in words"
+    if not value.strip():
+        return "is blank"
+    return None
+
+
 def why_asset(path: Path) -> str | None:
     """Why this file is somebody's work rather than somebody's source, or None if it is not.
 
@@ -193,9 +217,9 @@ def check(root: Path) -> list[Problem]:
             recorded[name] = entry
 
             for field in (REQUIRED_OURS if ours else REQUIRED):
-                value = entry.get(field)
-                if value is None or (isinstance(value, str) and not value.strip()):
-                    problems.append(Problem(f"{rel} [{name}]", f"`{field}` is missing or blank"))
+                wrong = unusable(field, entry.get(field))
+                if wrong is not None:
+                    problems.append(Problem(f"{rel} [{name}]", f"`{field}` {wrong}"))
 
             path = directory / name
             if not path.is_file():

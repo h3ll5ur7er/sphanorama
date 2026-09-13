@@ -109,7 +109,13 @@ constexpr const char* kPhotograph = "core/test/data/panoramas/small_hangar_01_1k
 
 class Rendered {
  public:
-  /** Whether the world it was asked for is not in the tree, which is a failure and not a skip. */
+  /** Whether the world it was asked for is not in the tree, which is a failure and not a skip.
+   *
+   * `false` says two different things and the caller cannot tell them apart: for a world with an
+   * input on disk it says the input is there, and for one this renderer generates it says the
+   * question does not arise. Both are the answer a caller wants — proceed — which is why one value
+   * carries them; a reader comparing the two arms of `World` should not have to work that out.
+   */
   bool inputMissing() const { return missingInput_; }
 
   Rendered(int frames, int edgeWidth, int edgeHeight, World world) {
@@ -208,6 +214,20 @@ class Rendered {
   bool made_ = false;
   bool missingInput_ = false;
 };
+
+/**
+ * Forgets a frame and says so if the store refuses, which is the only signal a leaked pin gives.
+ *
+ * `Forget` fails while a frame is still pinned, so a discarded status is a leak nothing reports: a
+ * sabotaged `~BorrowedFrame` leaking four pins a pair left this suite green with every number
+ * identical to the digit, while the engine's own suite went red in twenty-one places. The pattern is
+ * `ForgetOutputs`' one directory over; this file was the one that had not adopted it.
+ */
+void Release(IFrameStoreAccess& store, const FrameRef& frame) {
+  EXPECT_TRUE(store.Forget(frame).ok())
+      << "the store refused to forget a frame, which is what it does while something still has it "
+         "pinned";
+}
 
 /**
  * The relative rotation this engine answers with, turned into the absolute one the scorer wants.
@@ -427,10 +447,10 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
       << "one frame is " << score.maxDeg << " degrees out, which a median cannot see";
 
   for (const FeatureSet& set : sets) {
-    (void)store.Forget(set.descriptors);
-    (void)store.Forget(set.keypoints);
+    Release(store, set.descriptors);
+    Release(store, set.keypoints);
   }
-  for (const SyntheticFrame& frame : dataset.value.frames) (void)store.Forget(frame.frame);
+  for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
 }
 
 /**
@@ -527,12 +547,12 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
                "the gate says";
       }
     }
-    (void)store.Forget(a.value.descriptors);
-    (void)store.Forget(a.value.keypoints);
-    (void)store.Forget(b.value.descriptors);
-    (void)store.Forget(b.value.keypoints);
+    Release(store, a.value.descriptors);
+    Release(store, a.value.keypoints);
+    Release(store, b.value.descriptors);
+    Release(store, b.value.keypoints);
   }
-  for (const SyntheticFrame& frame : dataset.value.frames) (void)store.Forget(frame.frame);
+  for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
 
   EXPECT_GT(answeredButNotAccepted, 0)
       << "every detector that answered was accepted, so `accepted` says nothing `ok()` does not — "

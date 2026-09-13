@@ -141,13 +141,33 @@ class AssetProvenance(unittest.TestCase):
                 # The sentence, not the field name: deleting `sha256` or `bytes` also produces the
                 # digest and size complaints, each of which names the field, so asserting the name
                 # alone let those two subtests pass with the required-field loop skipping them.
-                self.assertIn(f"`{field}` is missing or blank", " ".join(self.tree.problems()))
+                self.assertIn(f"`{field}` is missing", " ".join(self.tree.problems()))
 
     def test_an_entry_with_no_file_is_reported_before_its_fields_are_read(self):
         entry = dict(self.tree.entries()[0])
         del entry["file"]
         self.tree.record({"assets": [entry]})
         self.assertIn("names no `file`", " ".join(self.tree.problems()))
+
+    def test_a_field_that_answers_nothing_is_reported_whatever_shape_it_takes(self):
+        # JSON has more empty shapes than `None` and the blank string, and the check used to see
+        # only those two: a record whose every prose field was `false` produced no problems at all.
+        for value in (False, True, 0, [], {}, 7):
+            with self.subTest(value=value):
+                entries = self.tree.entries()
+                entries[0]["licence"] = value
+                self.tree.record({"assets": entries})
+                self.assertIn("`licence`", " ".join(self.tree.problems()))
+
+    def test_a_size_that_is_not_a_size_is_reported(self):
+        # `True == 1` in Python, so `"bytes": true` satisfied the size comparison for a one-byte
+        # file — the record agreeing with itself rather than with the bytes.
+        for value in (True, "29", 1.5, -1, [29]):
+            with self.subTest(value=value):
+                entries = self.tree.entries()
+                entries[0]["bytes"] = value
+                self.tree.record({"assets": entries})
+                self.assertIn("`bytes`", " ".join(self.tree.problems()))
 
     def test_a_field_left_blank_is_reported(self):
         # An empty string satisfies "the key is there" and answers nothing, which is the shape a
@@ -223,7 +243,7 @@ class AFileThisRepositoryMadeItself(unittest.TestCase):
                 entry = dict(self.ours)
                 del entry[field]
                 self.record(entry)
-                self.assertIn(f"`{field}` is missing or blank", " ".join(self.tree.problems()))
+                self.assertIn(f"`{field}` is missing", " ".join(self.tree.problems()))
 
     def test_our_own_work_still_carries_a_digest(self):
         entry = dict(self.ours, sha256="0" * 64)
