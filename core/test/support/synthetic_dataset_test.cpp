@@ -1159,8 +1159,12 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   // payload for a defect in the header.
   //
   // Being the last header field's neighbour is the point twice over: its `\r` is also the single
-  // whitespace byte separating the maximum from the raster, so this pins that the end-of-line is
-  // left for the caller rather than swallowed.
+  // whitespace byte separating the maximum from the raster, and this is the *only* test that pins
+  // the end-of-line being left for the caller. The other four are indifferent to the `unget`,
+  // because the byte it puts back is one the next `ReadToken` would skip anyway. Here nothing reads
+  // a token after the maximum, so an eol that is swallowed — or a `#` that is not consumed — moves
+  // where the raster starts, and the loader is strict in both directions: `ok()` means the payload
+  // began at exactly the byte after the separator and ran exactly its promised length.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
