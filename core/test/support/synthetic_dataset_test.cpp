@@ -1056,10 +1056,15 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   // generator never writes one and every damaged copy in this file is hand-written without one. The
   // docstring claims a reader that choked on a comment would be refusing a valid file, and this was
   // the only case here green *because* the branch is present rather than because something else
-  // refused first. It is now one of five, and one of the two that cover the whitespace-skipping
-  // loop: deleting that loop's `#` branch fails this and the carriage-return case below, and
-  // nothing else in the 809. That loop meets any comment that follows whitespace, of which a whole
-  // line is one shape — `48 #c\n36` is another, and no test writes it.
+  // refused first. Seven tests are now green because a `#` branch exists: deleting the
+  // whitespace-skipping loop's fails this one, `…OwnLineCommentIsEndedByACarriageReturn` and
+  // `RefusesAHeaderWhoseCommentIsNeverEnded`; deleting the accumulation loop's fails the other
+  // four. Three and four, measured over all 811 — a comment here said two and three, written when
+  // there were two and three and not re-measured when the commit that wrote it added a test to
+  // each group.
+  //
+  // That loop meets any comment following whitespace, of which a whole line is one shape —
+  // `48 #c\n36` is another, and no test writes it.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1159,12 +1164,17 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   // payload for a defect in the header.
   //
   // Being the last header field's neighbour is the point twice over: its `\r` is also the single
-  // whitespace byte separating the maximum from the raster, and this is the *only* test that pins
-  // the end-of-line being left for the caller. The other four are indifferent to the `unget`,
-  // because the byte it puts back is one the next `ReadToken` would skip anyway. Here nothing reads
-  // a token after the maximum, so an eol that is swallowed — or a `#` that is not consumed — moves
-  // where the raster starts, and the loader is strict in both directions: `ok()` means the payload
-  // began at exactly the byte after the separator and ran exactly its promised length.
+  // whitespace byte separating the maximum from the raster, and this is the only comment test that
+  // pins *the comment branch* leaving its end-of-line unread. The other comment tests are
+  // indifferent to that, because the byte it leaves is one the next `ReadToken` would skip anyway.
+  // Here nothing reads a token after the maximum, so an eol that is swallowed — or a `#` that is
+  // not consumed — moves where the raster starts, and the loader is strict in both directions:
+  // `ok()` means the payload began at exactly the byte after the separator and ran exactly its
+  // promised length.
+  //
+  // Not to be read as a claim about `ReadToken`'s `unget` itself, which an earlier version of this
+  // sentence was: that line is load-bearing for every header in the file, and deleting it fails 22
+  // tests, these four among them.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1216,10 +1226,15 @@ TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
     std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
     out << "P6\n" << width << " " << height << "\n255#a comment nobody ended";
   }
+  // Bracketed, as every other refusal test here is: this is the only new case whose header parses,
+  // so it is the only one that reaches `Allocate` and `Pin` and so the only one that could strand
+  // a frame on the way out.
+  const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
                           "ends before the pixels its header promises"))
       << loaded.status.detail;
+  EXPECT_EQ(HeapUsed(), before);
 }
 
 // ------------------------------------------------- refusing in our own words, at every site

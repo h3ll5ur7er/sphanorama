@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -216,13 +217,25 @@ bool ReadNumber(std::istream& in, int64_t* value, TokenTrouble* why) {
   }
   try {
     *value = std::stoll(token);
-  } catch (...) {
+  } catch (const std::out_of_range&) {
     // Reachable, and by a file anyone can write: all-digits is checked above but *width* is not
     // bounded, so a twenty-digit header number is a valid token that overflows `long long` and
     // `std::stoll` throws `std::out_of_range`. The cap on token length is 32, which leaves plenty
     // of room for one. A reviewer found this arm carrying no reason while its two neighbours
     // carried theirs, which is what a reason is for.
     *why = TokenTrouble::kTooLargeForTheType;
+    return false;
+  } catch (const std::invalid_argument&) {
+    // The empty token — which `stoll` refuses and the all-digits check above lets through, since
+    // `find_first_not_of` answers `npos` for an empty string. Unreachable while `ReadToken`'s skip
+    // loop keeps a `#` out of its accumulation loop's first iteration; see the note there.
+    //
+    // Named rather than folded into the arm above, though `catch (...)` would still answer it.
+    // That is how it was written, and a reviewer sabotaging the skip loop's `#` branch got back
+    // "has a header number too large for the type that holds it" for a two-word file — a sentence
+    // about the wrong guard, which then made the failure count in a comment on this branch wrong.
+    // A reason exists to name the thing that happened.
+    *why = TokenTrouble::kNotANumber;
     return false;
   }
   return true;
