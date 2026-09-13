@@ -850,8 +850,11 @@ declined everything would chain pure truth and score zero. That is why the first
 conjunct of the test rather than a footnote to it. Nothing declines here, which is the change: the
 same three detectors against the checkerboard this replaced left ORB registering eight of eleven,
 because a checkerboard offers hundreds of corners that are genuinely indistinguishable and the
-estimator reported that honestly as `accepted = false` rather than chaining a minority-backed
-rotation. ADR 0056 is the record of that, and `Acceptance` still renders a checkerboard for it: over
+estimator reported that honestly rather than chaining a minority-backed rotation. **Two outcomes,
+not one, and ADR 0056 is cited here for exactly that distinction:** two of those three came back
+*answered* with `accepted = false` — a rotation there to be read, backed by a minority — and the
+third gathered no consensus at all and was **refused**, which is a different thing and is why they
+are counted separately. ADR 0056 is the record of that, and `Acceptance` still renders a checkerboard for it: over
 the ring's eleven pairs, three detectors and five perturbations of the prior — 1, 2, 3, 4 and 6
 degrees — the hangar's lowest inlier fraction is 0.6522 against the 0.2 that `accepted` needs, so
 the weak-consensus case cannot be reached in it at all. The probe that measured that is not in the

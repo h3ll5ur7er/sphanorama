@@ -642,9 +642,11 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     regenerated rather than committed, so the size is a cost nobody carries for long.
 
     One output of this function *is* committed, and it is the exception that proves the rule:
-    `core/test/data/synthetic-ring-4` is four 48x36 frames and their `truth.json`, 22,570 bytes of
-    content altogether (20,788 of frames, 1,782 of JSON). Not "on disk": `du` reports 40 KiB, of
-    which 36 is the five files rounded up to 4 KiB blocks and the fortieth is the directory entry.
+    `core/test/data/synthetic-ring-4` is four 48x36 frames, their `truth.json` and the `sources.json`
+    that accounts for them — six files, 25,593 bytes of content altogether (20,788 of frames, 4,805
+    of JSON). Not "on disk": `du` reports 44 KiB, which is the six files rounded up to 4 KiB blocks
+    plus the directory entry. The previous figures — five files, 22,570 bytes, 40 KiB — were made
+    false by the commit that added the provenance record, in the same commit that wrote it.
     It is read by the C++ loader's tests, and it is a **format** fixture rather than a measurement —
     it exists so that loader is read against bytes this writer produced rather than against its
     author's idea of the format (ADR 0053).
@@ -753,8 +755,10 @@ def read_panorama(path: Path) -> np.ndarray:
     `direction_encoded_panorama` produces; a byte read here and the byte written for a pixel that
     samples it are the same number.
 
-    Three refusals and a correction. The first two render perfectly well if they are let
-    through, which is what makes them worth refusing:
+    Three refusals and a correction, and they are not alike. Two of them — a file too large to
+    decode, and one that is not an image — render *nothing* if let through, so they are refusals of
+    convenience: they turn a traceback into a sentence. The third is the one worth the word, because
+    a panorama that is not 2:1 renders perfectly well and is wrong:
 
     A panorama that is not 2:1 is not one. Longitude spans the width and latitude the height
     whatever the ratio, so the world comes out squashed in elevation while every rotation in

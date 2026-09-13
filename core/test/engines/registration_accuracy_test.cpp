@@ -267,13 +267,53 @@ void Release(IFrameStoreAccess& store, const FrameRef& frame) {
  * identical to the digit, process exit 0. The two questions need two instruments, and this one is
  * already in the tree — `synthetic_dataset_alloc_test.cpp` asks the budget exactly this way.
  */
-void ExpectNothingLeft(IFrameStoreAccess& store) {
-  const Result<FrameStoreBudget> budget = store.Budget();
-  ASSERT_TRUE(budget.ok()) << budget.status.detail;
-  EXPECT_EQ(budget.value.heapUsedBytes, 0)
-      << "the measurement ended with " << budget.value.heapUsedBytes
-      << " bytes still in the store, so something it allocated was never forgotten";
-}
+/**
+ * Everything the measurement allocated, given back on every path out — a failed assertion included.
+ *
+ * The release loops these replace sat at the end of the function body, and this file has **five**
+ * `ASSERT_*` between the first allocation and them. `ASSERT_*` returns, so any one of them left the
+ * whole dataset in the store — 14,745,600 bytes for twelve 640x480 frames — and skipped the very
+ * check that would have said so. That is `synthetic_dataset.h`'s stated contract broken on exactly
+ * the paths nobody was looking at: "**It belongs to the caller**, who must `Forget` it … a harness
+ * that leaked a dataset per run would exhaust the heap somewhere in the middle of a measurement and
+ * report that instead of an accuracy number."
+ *
+ * A destructor needs no reachability argument, which is the point: the assertions above it can grow
+ * without anyone remembering this. The budget check moved inside for the same reason — at the end of
+ * the body it would have run *before* this cleanup and read non-zero.
+ */
+class Owned {
+ public:
+  /** Whether this one also asserts the store ended empty — true for the outermost holder only. */
+  enum class Then { kExpectEmpty, kJustGiveBack };
+
+  explicit Owned(IFrameStoreAccess& store, Then then = Then::kExpectEmpty)
+      : store_(store), then_(then) {}
+  ~Owned() {
+    for (const FeatureSet& set : sets) {
+      Release(store_, set.descriptors);
+      Release(store_, set.keypoints);
+    }
+    for (const FrameRef& frame : frames) Release(store_, frame);
+    if (then_ == Then::kJustGiveBack) return;
+    const Result<FrameStoreBudget> budget = store_.Budget();
+    EXPECT_TRUE(budget.ok()) << budget.status.detail;
+    if (budget.ok()) {
+      EXPECT_EQ(budget.value.heapUsedBytes, 0)
+          << "the measurement ended with " << budget.value.heapUsedBytes
+          << " bytes still in the store, so something it allocated was never forgotten";
+    }
+  }
+  Owned(const Owned&) = delete;
+  Owned& operator=(const Owned&) = delete;
+
+  std::vector<FrameRef> frames;
+  std::vector<FeatureSet> sets;
+
+ private:
+  IFrameStoreAccess& store_;
+  Then then_;
+};
 
 /**
  * The relative rotation this engine answers with, turned into the absolute one the scorer wants.
@@ -336,13 +376,16 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   }
 
   MemoryFrameStoreAccess store{1 << 28};
+  // Declared before anything is allocated, so it outlives every `ASSERT_*` below and unwinds last.
+  Owned owned{store};
   const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
   ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+  for (const SyntheticFrame& frame : dataset.value.frames) owned.frames.push_back(frame.frame);
   ASSERT_EQ(dataset.value.frames.size(), static_cast<size_t>(kFrames));
 
   FeatureRegistrationEngine engine{store, GetParam()};
 
-  std::vector<FeatureSet> sets;
+  std::vector<FeatureSet>& sets = owned.sets;
   for (const SyntheticFrame& frame : dataset.value.frames) {
     const Result<FeatureSet> features = engine.ExtractFeatures(frame.frame);
     ASSERT_TRUE(features.ok()) << features.status.detail;
@@ -492,12 +535,6 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   EXPECT_LT(score.maxDeg, 0.4)
       << "one frame is " << score.maxDeg << " degrees out, which a median cannot see";
 
-  for (const FeatureSet& set : sets) {
-    Release(store, set.descriptors);
-    Release(store, set.keypoints);
-  }
-  for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
-  ExpectNothingLeft(store);
 }
 
 /**
@@ -536,8 +573,11 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   }
 
   MemoryFrameStoreAccess store{1 << 28};
+  // Declared before anything is allocated, so it outlives every `ASSERT_*` below and unwinds last.
+  Owned owned{store};
   const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
   ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+  for (const SyntheticFrame& frame : dataset.value.frames) owned.frames.push_back(frame.frame);
 
   // **Frames 3 and 4, against a prior three degrees from truth — and both halves of that matter.**
   //
@@ -567,8 +607,14 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   int answeredButNotAccepted = 0;
   for (const FeatureDetector detector : kAllFeatureDetectors) {
     FeatureRegistrationEngine engine{store, detector};
+    // Its own holder, because the assertion below can fire with `a` extracted and `b` refused — and
+    // because the dataset's frames are still held here, so this one gives back without asserting
+    // the store is empty. Only the outer holder can say that, and only after this one has run.
+    Owned extracted{store, Owned::Then::kJustGiveBack};
     const Result<FeatureSet> a = engine.ExtractFeatures(dataset.value.frames[kFirst].frame);
+    if (a.ok()) extracted.sets.push_back(a.value);
     const Result<FeatureSet> b = engine.ExtractFeatures(dataset.value.frames[kFirst + 1].frame);
+    if (b.ok()) extracted.sets.push_back(b.value);
     ASSERT_TRUE(a.ok() && b.ok());
     const Result<PairwiseResult> pair =
         engine.EstimatePairwise(a.value, b.value, step, dataset.value.lens);
@@ -594,13 +640,7 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
                "the gate says";
       }
     }
-    Release(store, a.value.descriptors);
-    Release(store, a.value.keypoints);
-    Release(store, b.value.descriptors);
-    Release(store, b.value.keypoints);
   }
-  for (const SyntheticFrame& frame : dataset.value.frames) Release(store, frame.frame);
-  ExpectNothingLeft(store);
 
   EXPECT_GT(answeredButNotAccepted, 0)
       << "every detector that answered was accepted, so `accepted` says nothing `ok()` does not — "

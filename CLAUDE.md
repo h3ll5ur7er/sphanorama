@@ -49,7 +49,9 @@ consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101
 roadmap's table, ADR 0059 for the world it is measured in, and ADR 0057 for the figures retracted
 when the first harness was found to be handing the estimator the exact truth and measuring itself.
 **The world matters more than the ranking.** Against the checkerboard that photograph replaced, ORB
-declined three of eleven pairs for want of consensus among hundreds of indistinguishable corners —
+declined three of eleven pairs among hundreds of indistinguishable corners — two answered with
+`accepted = false` and the third refused outright, which ADR 0056 counts separately because they are
+different outcomes —
 not a defect, and ADR 0056 is the record of it. A periodic world is the one place a feature matcher
 must not be scored. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2

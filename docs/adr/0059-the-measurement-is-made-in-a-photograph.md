@@ -65,6 +65,15 @@ fraction is 0.652. Nothing in
 it can produce the answered-but-not-accepted outcome that test exists to catch, and ADR 0056's
 figures are the checkerboard's and are untouched.
 
+**Two rules the checker gained after this decision was first written, recorded here because this
+section reads as the complete list of what a record must say.** A raster entry — an extension in
+`asset_provenance.SHAPED` — must carry `width` and `height`, which the checker cannot verify itself
+and `tools/test_synth_dataset.py` does where Pillow is present; leaving it optional meant the one
+fact needing a decoder could be deleted from a record with nothing going red. And an entry recording
+a `projection` must use a token from `asset_provenance.PROJECTIONS`, because a test branches on that
+field: while the panorama's record spelled it as a description, the 2:1 assertion keyed on it was
+dead for every record in the tree.
+
 ## Consequences
 
 - **The numbers moved, and in the direction the reasoning predicted.** Against the hangar all three

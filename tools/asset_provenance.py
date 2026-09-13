@@ -43,6 +43,12 @@ already present. Deciding the shape here would put an image library in front of 
 is what this refuses to be — but leaving the field *optional* meant the one fact needing a decoder
 could be deleted from a record with nothing going red, which is what it did.
 
+**A field a test branches on is a token, not a sentence.** `projection` is the only one so far: an
+entry recording it must use a value from `PROJECTIONS`, because `tools/test_synth_dataset.py` asserts
+the 2:1 rule on an entry claiming to be equirectangular — and while one record spelled that field as
+a description, the assertion keyed on it was dead for every record in the tree with nothing able to
+notice. Everything else a record holds is prose and is judged only for being an answer at all.
+
 Usage:  uv run tools/asset_provenance.py [repo_root]
 """
 from __future__ import annotations
@@ -131,10 +137,11 @@ def records(root: Path) -> list[Path]:
     return [root / name for name in tracked_files(root) if Path(name).name == RECORD]
 
 
-# Fields whose answer is a number rather than a sentence. Everything else a record holds is prose,
-# spelled either as one string or as a list of lines — which is how the long answers
-# (`licence_evidence`, `notes`) are written, so a rule that refused lists would refuse the tree this
-# ships with.
+# Fields whose answer is a number rather than a sentence. Everything else a record holds is prose —
+# spelled as one string or as a list of lines, which is how the long answers (`licence_evidence`,
+# `notes`) are written, so a rule that refused lists would refuse the tree this ships with — with the
+# one exception twenty lines above: `projection` is a token from `PROJECTIONS`, because a test
+# branches on it rather than a person reading it.
 COUNTS = ("bytes", "width", "height")
 
 
@@ -330,8 +337,13 @@ def check(root: Path) -> list[Problem]:
             if tail in recorded:
                 continue
             path = root / name
-            if path.is_file() and why_asset(path) is not None:
-                problems.append(Problem(rel, f"{tail} is here and is recorded nowhere"))
+            why = why_asset(path) if path.is_file() else None
+            if why is not None:
+                # The reason, here as well as in the loop below. `why_asset` carries it precisely so
+                # a refusal can name it — and this call site threw it away, so a Latin-1 `.md` inside
+                # a recorded directory was told it "is recorded nowhere" and sent its author looking
+                # for a licence, which is the misdirection that docstring exists to prevent.
+                problems.append(Problem(rel, f"{tail} is here and is recorded nowhere: {why}"))
 
     for name in listed:
         if owner_of(name, prefixes) is not None:
