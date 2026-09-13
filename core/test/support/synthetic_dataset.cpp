@@ -103,11 +103,15 @@ class OwnedFrames {
  * strictly, so accepting the one thing the standard requires costs nothing.
  *
  * **A comment is whitespace, and so it ends the token it interrupts.** Netpbm's own `pm_getc`
- * (`lib/util/fileio.c`) reads a `#` through the next end-of-line and returns *that* end-of-line
- * byte, "so that Caller sees the whole comment as just white space" — its words. So `P6\n4#c\n8
- * 36\n255\n` is a 4x8 frame with a maximum of 36, not a 48x36 one: the `4` and the `8` are two
- * numbers, not two halves of one. This reader refused it until now, because only the
- * whitespace-skipping loop had a `#` branch and the accumulation loop read the token as `4#c`.
+ * (`lib/fileio.c`) reads a `#` through the next end-of-line and returns *that* end-of-line byte:
+ * "The effect is that Caller sees the whole comment as just white space", in its own words. So
+ * `P6\n4#c\n8 36\n255\n` is a 4x8 frame with a maximum of 36, not a 48x36 one: the `4` and the
+ * `8` are two numbers, not two halves of one. This reader read that token as `4#c` until now,
+ * because only the whitespace-skipping loop had a `#` branch.
+ *
+ * That example is still refused, for an unrelated reason — a maximum of 36 is not 8-bit, and the
+ * sample-depth guard says so. What changed is *which* four numbers the header yields, which the
+ * refusal now names: `1#c\n2 255` reads as 1x2 and is turned away by the dimension check.
  *
  * The end-of-line byte is left ungot, which is what makes the comment whitespace to the *caller*
  * too. It matters when a comment is the last thing before the raster: that byte is then the single
@@ -116,8 +120,9 @@ class OwnedFrames {
  */
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
-// `magic != "P6"` ever runs — in a function whose own payload loop twenty lines below exists to
-// avoid precisely that.
+// `magic != "P6"` ever runs — in a file whose `ReadFrame` reads its payload a row at a time for
+// precisely that reason. (This said "twenty lines below" and meant that loop, which is three
+// hundred lines below and in another function; a distance is a worse pointer than a name.)
 //
 // Measured, twice, by two people. A 512 MiB file of non-whitespace bytes takes the uncapped reader
 // to a peak RSS of **986,740 KiB — 964 MiB**, or 1,010 MB decimal. The first version of this said
@@ -143,6 +148,12 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
       // A carriage return ends a comment as surely as a line feed does, and a reader that waited
       // for the line feed would swallow the rest of a `\r`-terminated header — the width, the
       // height and the maximum — before deciding anything about it.
+      //
+      // `in.good()` is what ends a comment nobody ended: at end of file `get` answers `eof`
+      // for ever, and the two character tests never become false. It is the difference between a
+      // refusal and a hang, which is why `RefusesAHeaderWhoseCommentIsNeverEnded` exists — a test
+      // that times out rather than fails, this being the only way to catch a loop that does not
+      // stop.
       while (in.good() && c != '\n' && c != '\r') c = in.get();
       continue;
     }
@@ -155,10 +166,15 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   }
   while (in.good() && !std::isspace(static_cast<unsigned char>(c))) {
     // A comment reaching this loop ends the token, because the end-of-line it collapses to is
-    // whitespace — see the docstring above and `pm_getc`. Breaking rather than continuing leaves
-    // that byte in `c` for the `unget` below, so a comment that ends the maximum is the separator
-    // the raster starts after. Nothing this repository generates writes one; a reader of somebody
-    // else's frame meets it.
+    // whitespace — see the docstring above and `pm_getc`. What matters is that the end-of-line is
+    // *not* consumed: it is left in `c` for the `unget` below, so a comment ending the maximum
+    // becomes the single separator the raster starts after. The first version of this branch read
+    // one byte further and ate that separator, which on a comment before the raster was pixel
+    // zero. (`break` and `continue` are interchangeable here — the loop's own condition ends the
+    // token on the same byte. `break` says so in one place instead of two.) Nothing this
+    // repository generates writes a comment; a reader of somebody else's frame meets one.
+    // `in.good()` here is the same stop as the skip loop's, driven by
+    // `RefusesAMaximumWhoseCommentIsNeverEnded`.
     if (c == '#') {
       while (in.good() && c != '\n' && c != '\r') c = in.get();
       break;

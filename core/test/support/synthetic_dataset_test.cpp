@@ -1057,8 +1057,9 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   // docstring claims a reader that choked on a comment would be refusing a valid file, and this was
   // the only case here green *because* the branch is present rather than because something else
   // refused first. It is now one of five, and one of the two that cover the whitespace-skipping
-  // loop — deleting that loop's `#` branch fails this and the carriage-return case below and
-  // nothing else, because a comment on its own line is the only shape that loop ever meets.
+  // loop: deleting that loop's `#` branch fails this and the carriage-return case below, and
+  // nothing else in the 809. That loop meets any comment that follows whitespace, of which a whole
+  // line is one shape — `48 #c\n36` is another, and no test writes it.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1094,7 +1095,9 @@ TEST_F(Dataset, ACommentEndsTheTokenItInterruptsRatherThanJoiningItsHalves) {
   int32_t width = 0;
   int32_t height = 0;
   const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
-  ASSERT_EQ(width, 48) << "a reader that joined the halves would read 12, which is neither 1 nor 48";
+  // The header below is written 1x2 against this fixture on purpose, so both are pinned here: a
+  // fixture that was already 1x2 would make the refusal this test asserts impossible.
+  ASSERT_EQ(width, 48) << "this test's header disagrees with the lens deliberately";
   ASSERT_EQ(height, 36);
   {
     std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
@@ -1150,13 +1153,14 @@ TEST_F(Dataset, ReadsAFrameWhoseOwnLineCommentIsEndedByACarriageReturn) {
 }
 
 TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
-  // `pm_getc` stops a comment at `\n` *or* `\r`. A reader that waited for the line feed would take
-  // the width, the height and the maximum for more comment and then refuse the file over whatever
-  // it found next, which is a sentence about the wrong thing.
+  // `pm_getc` stops a comment at `\n` *or* `\r`. The comment here follows the maximum, so a reader
+  // that waited for the line feed would read on into the raster hunting for one — and then refuse
+  // the frame for ending before the pixels its header promised, which is a sentence about the
+  // payload for a defect in the header.
   //
-  // The comment here is the last header field's neighbour on purpose: its `\r` is the single
-  // whitespace byte separating the maximum from the raster, so this also pins that the end-of-line
-  // is left for the caller rather than swallowed.
+  // Being the last header field's neighbour is the point twice over: its `\r` is also the single
+  // whitespace byte separating the maximum from the raster, so this pins that the end-of-line is
+  // left for the caller rather than swallowed.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1170,6 +1174,48 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
   ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, RefusesAHeaderWhoseCommentIsNeverEnded) {
+  // A comment that runs to end of file ends no other way: `get` answers `eof` for ever and neither
+  // character test ever becomes false, so `in.good()` is the whole of what stops the scan. Delete
+  // it and this does not fail — it never returns, which is the only symptom a loop that does not
+  // stop can have. A timeout in CI is the assertion here; the `EXPECT` below only says the refusal
+  // is the right one once the loop does end.
+  //
+  // This is the whitespace-skipping loop's copy: the comment opens the header, so nothing has been
+  // accumulated when the file runs out and the reader has no token at all.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  (void)PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n#a comment nobody ended";
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "has a header that stops before its three numbers"))
+      << loaded.status.detail;
+}
+
+TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
+  // The accumulation loop's copy of the same stop. Here the header is complete and the comment
+  // interrupts the maximum, so the scan runs off the end with `255` already in hand — a different
+  // path through `ReadToken` to the same `in.good()`, and the file is refused for having no pixels
+  // rather than for having no token.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  (void)PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << " " << height << "\n255#a comment nobody ended";
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "ends before the pixels its header promises"))
+      << loaded.status.detail;
 }
 
 // ------------------------------------------------- refusing in our own words, at every site
