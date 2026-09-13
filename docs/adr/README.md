@@ -24,7 +24,9 @@ forward, one is *added* in one of three places, and the body below it is left al
   bannering 0056 moved the grep total the sentence had just quoted. That is a fifth quantity, and
   the "recompute all three" rule above did not cover it.
 
-  **This census has now gone wrong three times on one branch, and the third was the worst.** It
+  **This census has now gone wrong four times on one branch, and the third was the worst.** The
+  fourth is the smallest and the most on-the-nose: the sentence added to stop the next recounter
+  rediscovering the grep offset quoted a total that the same commit's own new banner made stale. It
   started stale by omission: the branch added two banners and left the total at nine. The first
   correction moved the total to eleven and left the list of nine beside it, along with the six
   derived from it. The second correction then changed that six to an eight — and the six had been

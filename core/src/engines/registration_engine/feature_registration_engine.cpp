@@ -607,8 +607,8 @@ constexpr double kLoweRatio = 0.75;
 // **It is also a correctness floor, not only a tuning choice, and lowering it past three is a
 // crash.** The sampler draws three distinct indices by shifting past the ones already taken, which
 // takes a modulus against `from.size() - 2`: at two that divides by zero and below two the
-// subtraction wraps `size_t`. Nothing in `FitRotation` asserts the size — the guarantee lives five
-// hundred lines below in `EstimatePairwise`, which refuses a smaller set outright — so whoever
+// subtraction wraps `size_t`. Nothing in `FitRotation` asserts the size — the guarantee is
+// `EstimatePairwise`'s own `fromAll.size() < kMinimumCorrespondences` refusal — so whoever
 // lowers this to admit the algebraic minimum gets a SIGFPE in the search rather than a worse
 // estimate. Said here because this is the line they will edit; the draw says it too.
 constexpr size_t kMinimumCorrespondences = 8;
@@ -861,8 +861,8 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
     // 0.9515. Shifting past the indices already taken costs two comparisons and makes every
     // iteration a sample.
     //
-    // **`from.size() >= 3` is a precondition of these three lines**, held by `EstimatePairwise`
-    // two hundred and fifty lines below and by nothing in this function. `kMinimumCorrespondences`
+    // **`from.size() >= 3` is a precondition of these three lines**, held by `EstimatePairwise`'s
+    // `fromAll.size() < kMinimumCorrespondences` refusal and by nothing in this function. `kMinimumCorrespondences`
     // carries the explanation; this is a pointer to it rather than a second copy, because the
     // first version of this note *was* a second copy and had both failure modes backwards within
     // one round — it said the subtraction underflows at a size of two, when two is the modulus by
@@ -996,7 +996,8 @@ bool BearingsSpanAPlane(double largest, double second) {
  * call takes fifteen seconds. Measured, by lowering the constant and watching a twenty-millisecond
  * test become a fifteen-second one. That is the honest arithmetic rather than a defect — accepting
  * a one-percent consensus means searching hard enough to find one — but the cost lives here while
- * the knob lives two hundred lines up, and the target device is a phone.
+ * the knob is `kInlierFraction`, up with the other tuning constants, and the target device is a
+ * phone.
  *
  * A ratio below `kInlierFraction` is raised to it, and that is the whole of the clamping: a
  * consensus smaller than the gate would be *refused* even if it were found, so the draws that
@@ -1045,8 +1046,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     const Result<std::span<uint8_t>> kbSpan = keypointsB.Pin();
     const Result<std::span<uint8_t>> dbSpan = descriptorsB.Pin();
     for (const Result<std::span<uint8_t>>* pinned : {&kaSpan, &daSpan, &kbSpan, &dbSpan}) {
-      // The store's `Status` whole, component included — as `Extract` a few hundred lines up already
-      // does. Rebuilding it with `kComponent` kept the code and the detail and overwrote the field
+      // The store's `Status` whole, component included — as `ExtractFeatures` already does. Rebuilding it with `kComponent` kept the code and the detail and overwrote the field
       // that says *who reported it*, so a caller diagnosing a failed pin was told this engine did
       // when the store did. Two methods of one class disagreeing about that is the second-copies
       // failure in miniature.

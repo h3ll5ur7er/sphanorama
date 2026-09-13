@@ -970,11 +970,17 @@ class CountingForgets final : public IFrameStoreAccess {
   explicit CountingForgets(IFrameStoreAccess& inner) : inner_(inner) {}
 
   int forgets = 0;
-  // **Pins are counted because how far a call got is otherwise only visible in its message.** The
-  // mismatch case below needs to tell a refusal past both `ReadBearings` passes from one before
-  // them, and the two are both `InvalidArgument`; it used to tell them apart by substring-matching
-  // `Status::detail`, which `types.h` says is never parsed and which pinned the test to a wording
-  // the engine has since had corrected. A count is an observable.
+  // **Pins are counted so "it refused before touching anything" and "it refused after pinning the
+  // four" are observable rather than asserted in prose.** Both refusals are `InvalidArgument`, so
+  // the status cannot separate them; the count can, and it is the *only* thing here that can, since
+  // every refusal past the pins — `ReadBearings`, `ReadDescriptors`, the width guard — takes the
+  // same four.
+  //
+  // An earlier version of this docblock said the count "needs to tell a refusal past both
+  // `ReadBearings` passes from one before them". It cannot: the pins are all taken up front, so a
+  // refusal on either side of `ReadBearings` counts four. That claim was retracted at both use
+  // sites and survived here, which is the third time on this branch a correction has missed a
+  // copy — and this one is the copy a reader meets first.
   int pins = 0;
 
   Status Forget(const FrameRef& f) override {
@@ -1116,9 +1122,11 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
   // A set with no rows, refused before anything is pinned — and now that pins are observable, that
-  // second half is checked rather than asserted in a comment. It is also the other half of the pair
-  // the post-pin case below needs: zero here and four there is what makes the two distinguishable
-  // at all, since both refuse with `InvalidArgument`.
+  // second half is checked rather than asserted in a comment. Each of the two counts stands on its
+  // own: this one fails if an empty set is refused after pinning, and the post-pin case below fails
+  // if the mismatch is refused before. An earlier version of this comment said "neither number
+  // means anything alone", which over-corrected — they are a pair in the sense that together they
+  // bracket where a refusal may land, not in the sense that either is inert by itself.
   const int pinsBeforeEmpty = counting.pins;
   EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
   EXPECT_EQ(counting.pins, pinsBeforeEmpty)
