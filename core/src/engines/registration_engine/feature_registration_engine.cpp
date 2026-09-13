@@ -603,6 +603,14 @@ Vec3 Rotate(const cv::Matx33d& r, const Vec3& v) {
 constexpr double kLoweRatio = 0.75;
 // Two bearings determine a rotation, so this is not the algebraic minimum — it is the point below
 // which RANSAC has no outlier to reject and the answer is whatever the two points say.
+//
+// **It is also a correctness floor, not only a tuning choice, and lowering it past three is a
+// crash.** The sampler draws three distinct indices by shifting past the ones already taken, which
+// takes a modulus against `from.size() - 2`: at two that divides by zero and below two the
+// subtraction wraps `size_t`. Nothing in `FitRotation` asserts the size — the guarantee lives two
+// hundred lines away in `EstimatePairwise`, which refuses a smaller set outright — so whoever
+// lowers this to admit the algebraic minimum gets a SIGFPE in the search rather than a worse
+// estimate. Said here because this is the line they will edit; the draw says it too.
 constexpr size_t kMinimumCorrespondences = 8;
 // The inlier gate, in pixels of reprojection error. Generous on purpose, per the skill's advice for
 // a first bound: a bound that exists and is loose beats a precise one that does not.
@@ -938,12 +946,13 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   // how much of the evidence stands behind it.
   const double agreeing =
       from.empty() ? 0.0 : static_cast<double>(bestInliers.size()) / static_cast<double>(from.size());
-  // The first conjunct cannot be false here — the early return above already refused anything below
-  // `kMinimumCorrespondences`, and the refit only ever grows the set. It is written out anyway, and
-  // deliberately: ADR 0056 defines `accepted` as both conditions, and a reader of this line should
-  // see the whole definition rather than the half that varies. Removing it leaves every test green,
-  // which is the expected result and not an argument for removing it.
-  answer.accepted = bestInliers.size() >= kMinimumCorrespondences && agreeing >= kInlierFraction;
+  // **One conjunct, because only one can be false.** ADR 0056 defines `accepted` as the count *and*
+  // the fraction, and the count is already guaranteed here: the early return above refused anything
+  // below `kMinimumCorrespondences`, and the refit replaces `bestInliers` only when the new set is
+  // at least as large, so it never shrinks. Writing it out again would put an unfalsifiable
+  // conjunct in the very line that exists because the previous gate was two unfalsifiable
+  // conjuncts — which is what a reviewer pointed out when the first fix carried it across.
+  answer.accepted = agreeing >= kInlierFraction;
   return Ok(answer);
 }
 
@@ -1066,11 +1075,14 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     // of the frame's stride and the element size this engine imposed — a proxy for the detector,
     // not the detector.
     //
-    // It is a good proxy on the three detectors that exist (ORB 32 bytes a row, AKAZE 61, SIFT 128
-    // floats, so a foreign set almost always lands on a different width) and it is not a guarantee:
-    // a set whose rows happen to be the width this engine expects is matched under this engine's
-    // metric, which for SIFT rows read as Hamming is a real and wrong answer rather than a refusal.
-    // Measured by a reviewer over all nine (writing detector, reading engine) pairs.
+    // It catches the case where the two sets differ *from each other* — ORB is 32 bytes a row, AKAZE
+    // 61, SIFT 128 floats — and it is blind to the case that matters, which is both sets made by
+    // one detector that is not this one. Then the two widths agree, this guard is satisfied, and the
+    // rows are matched under the wrong metric. Measured over all nine (writing detector, reading
+    // engine) pairs on a rendered ring: six answer and three of those come back `accepted = true`,
+    // SIFT's 512-byte float rows read as 512 Hamming bytes giving 30 correspondences where the
+    // right metric finds 178. The only cross-detector refusals in that table come from
+    // `ReadDescriptors`'s divisibility check and from the fit simply failing — never from here.
     //
     // The fix is for `FeatureSet` to carry the detector that made it, and that is a contract change
     // with an ADR, deliberately not smuggled into a review round. The dead conjunct stays because
