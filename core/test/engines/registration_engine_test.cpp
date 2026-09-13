@@ -1115,13 +1115,20 @@ TEST_P(Extraction, EstimatePairwiseForgetsNoneOfTheFourFramesItIsHanded) {
   // identity is one, and an engine refusing it would be refusing the commonest prior there is.
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{1, 0, 0, 0}, Intrinsics{}).ok());
   EXPECT_FALSE(engine.EstimatePairwise(a.value, b.value, Quat{0, 0, 0, 0}, Lens()).ok());
-  // A set with no rows, refused before anything is pinned.
+  // A set with no rows, refused before anything is pinned — and now that pins are observable, that
+  // second half is checked rather than asserted in a comment. It is also the other half of the pair
+  // the post-pin case below needs: zero here and four there is what makes the two distinguishable
+  // at all, since both refuse with `InvalidArgument`.
+  const int pinsBeforeEmpty = counting.pins;
   EXPECT_FALSE(engine.EstimatePairwise(FeatureSet{}, b.value, Quat{1, 0, 0, 0}, Lens()).ok());
+  EXPECT_EQ(counting.pins, pinsBeforeEmpty)
+      << "an empty set was refused after pinning " << (counting.pins - pinsBeforeEmpty)
+      << " frames; the refusal is supposed to precede every `Pin`";
 
   // **The post-pin refusal.** A second engine over the same counting store, with a detector that is
   // not this one: ORB is 32 bytes a row, AKAZE 61, and SIFT 128 floats, so whichever pair this
-  // makes differs in *width* and the mismatch guard fires — after four `Pin`s and two passes of
-  // `ReadBearings`.
+  // makes differs in *width* and the mismatch guard fires — after all four `Pin`s, which are taken
+  // up front.
   //
   // An earlier version of this comment said "differs in width **or in element type**". Element type
   // cannot differ: both sides are read with this engine's own `type`, so that conjunct of the guard

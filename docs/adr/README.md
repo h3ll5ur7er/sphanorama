@@ -33,8 +33,11 @@ forward, one is *added* in one of three places, and the body below it is left al
   an incorrect one.
 
   So the three quantities are spelled out separately above, because "Status line" and "Status chain"
-  are different things and collapsing them is what did the damage. Anyone adding a banner recomputes
-  all three rather than incrementing one.
+  are different things and collapsing them is what did the damage. **Anyone adding a banner
+  recomputes all five from the files** rather than incrementing any of them: the banner count, the
+  Status-line count, the Status-chain count, the count with no Status line, and the `^> ` grep
+  total. That last one is the newest lesson — it was added as commentary rather than as census, so
+  "recompute all three" did not reach it, and it went stale in the same commit that wrote it.
 - **A foot note** at the end, under its own heading, when the correction has detail that would
   swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
   sits under that file's banner rather than instead of it: the banner points, the note explains.
