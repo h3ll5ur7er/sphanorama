@@ -22,11 +22,23 @@ namespace sphanorama {
 namespace {
 
 // Offset by one so that a `FeatureSet` nobody stamped keeps `extractor == 0` and is refused rather
-// than colliding with the first enumerator — which relies on `FeatureDetector`'s enumerators
-// starting at zero, a property of a header in another file.
-int32_t ExtractorIdentity(FeatureDetector detector) {
+// than colliding with the first enumerator.
+constexpr int32_t ExtractorIdentity(FeatureDetector detector) {
   return static_cast<int32_t>(detector) + 1;
 }
+
+// **Checked rather than relied on.** `types.h` promises that zero means unstamped, and the whole of
+// what keeps that promise is the offset above — over enumerators that live in another header, where
+// nothing says they start at zero. A `FeatureDetector` renumbered to include zero's preimage would
+// make an engine stamp 0, and then two sets nobody stamped would match each other under whatever
+// metric that engine happened to have. At compile time, so it costs nothing to run and cannot be
+// forgotten.
+static_assert([] {
+  for (const FeatureDetector detector : kAllFeatureDetectors) {
+    if (ExtractorIdentity(detector) == 0) return false;
+  }
+  return true;
+}(), "a detector's identity came out zero, which types.h reserves for a set nobody stamped");
 
 constexpr const char* kComponent = "FeatureRegistrationEngine";
 
@@ -1112,15 +1124,33 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     std::vector<std::vector<cv::DMatch>> knn;
     matcher.knnMatch(matA.value, matB.value, knn, 2);
 
+    // **The two readers are asked whether they still agree**, once, rather than every row being
+    // asked whether it is in range. They are handed the same `count` and must stay parallel: a
+    // reader that dropped a row instead of marking it unusable would shift every index after it,
+    // which is the compaction defect the `usable` flag exists to prevent and which no test caught
+    // for as long as the dataset had no distortion. Here it is a refusal rather than a comparison
+    // no input can fail.
+    if (bearingsA.value.size() != static_cast<size_t>(matA.value.rows) ||
+        bearingsB.value.size() != static_cast<size_t>(matB.value.rows)) {
+      return Err<PairwiseResult>(
+          StatusCode::Internal, kComponent,
+          "the bearings and the descriptor rows came back different lengths, so a match's index "
+          "means something different to each of them");
+    }
+
     std::vector<Vec3> fromAll;
     std::vector<Vec3> toAll;
     std::vector<Pixel> observed;
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
       if (pair[0].distance > kLoweRatio * pair[1].distance) continue;
+      // **The sign, not the bound.** `DMatch` carries signed indices and OpenCV's own default
+      // constructor sets them to -1 (`core/types.hpp`), so the casts below would turn "no match"
+      // into 18446744073709551615. The upper bound is the parallelism check above, taken once;
+      // this is the one thing about a match that the row counts cannot settle.
+      if (pair[0].queryIdx < 0 || pair[0].trainIdx < 0) continue;
       const size_t ia = static_cast<size_t>(pair[0].queryIdx);
       const size_t ib = static_cast<size_t>(pair[0].trainIdx);
-      if (ia >= bearingsA.value.size() || ib >= bearingsB.value.size()) continue;
       // A row the lens could not turn into a direction is dropped *here*, where dropping it costs
       // one correspondence, rather than in `ReadBearings`, where it shifted every index after it.
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;
