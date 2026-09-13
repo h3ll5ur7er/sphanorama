@@ -2099,9 +2099,15 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
     def test_every_recorded_shape_is_the_shape_the_file_has(self):
         shaped = 0
         equirectangular = 0
+        claimed = 0
         for record in asset_provenance.records(Path(__file__).resolve().parents[1]):
             document = json.loads(record.read_text())
             for entry in (document.get("assets") or []) + (document.get("ours") or []):
+                # Counted before the extension filter, so the two numbers can disagree. An entry
+                # claiming to be equirectangular whose extension is not in `SHAPED` is skipped
+                # entirely by the loop below, and a floor on the assertions made cannot see that.
+                if entry.get("projection") == "equirectangular":
+                    claimed += 1
                 if Path(entry["file"]).suffix.lower() not in asset_provenance.SHAPED:
                     continue
                 shaped += 1
@@ -2128,12 +2134,16 @@ class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
         # drops a shape fails it rather than quietly reducing this count. This only says the walk
         # found something to walk.
         self.assertGreater(shaped, 0, "no record was walked, so this checks nothing")
-        # Counted separately, because the two arms can go dead independently. While the panorama's
-        # `projection` read "equirectangular, 360 by 180 degrees" this branch never ran, and
-        # `shaped` was non-zero throughout — an aggregate over the outer loop cannot see an inner
-        # arm nothing reaches. `asset_provenance.PROJECTIONS` now refuses the spelling that caused
-        # it; this is the second lock, on the reader's side.
-        self.assertGreater(equirectangular, 0,
+        # **Every claim made is a claim checked**, rather than a floor on how many were. While the
+        # panorama's `projection` read "equirectangular, 360 by 180 degrees" this branch never ran
+        # and `shaped` was non-zero throughout, so the outer count could not see it; a floor of one
+        # closed that and no more — it goes quiet again the moment a second entry claims a
+        # projection, since losing one of two still leaves the count above zero. Tying it to the
+        # claims present is what makes it proof rather than a tripwire for one specific past bug.
+        self.assertEqual(equirectangular, claimed,
+                         "an entry claims to be equirectangular and its shape was never checked — "
+                         "most likely its extension is not in asset_provenance.SHAPED")
+        self.assertGreater(claimed, 0,
                            "no entry claimed a projection, so the 2:1 rule was asserted of nothing")
 
 

@@ -165,14 +165,50 @@ class AssetProvenance(unittest.TestCase):
         # — `produced_by`, `width`, `projection`, `notes` — could be `false`, `[]` or `{}` and clear
         # the build. `produced_by` is the one that bites: a blank command is carried, never run, and
         # the record reads as though it had been.
-        for field, value in (("produced_by", ""), ("produced_by", False), ("produced_by", []),
-                             ("projection", {}), ("width", True), ("height", "512"),
-                             ("notes", [""]), ("notes", ["fine", 7])):
+        # **The reason, not just the field name.** `("projection", {})` asserted only that
+        # "`projection`" appeared somewhere, and a later round added a *second* refusal that names
+        # the same field — so the subtest passed with the type rule it exists for switched off. A
+        # field name is not a discriminator when two rules can print it.
+        for field, value, because in (
+                ("produced_by", "", "is blank"),
+                ("produced_by", False, "answers a question a reader asks in words"),
+                ("produced_by", [], "is a list of nothing"),
+                ("projection", {}, "answers a question a reader asks in words"),
+                ("width", True, "width is a whole number of pixels"),
+                ("height", "512", "height is a whole number of pixels"),
+                ("notes", [""], "is a list of nothing"),
+                ("notes", ["fine", 7], "answers a question a reader asks in words")):
             with self.subTest(field=field, value=value):
                 entries = self.tree.entries()
                 entries[0][field] = value
                 self.tree.record({"assets": entries})
-                self.assertIn(f"`{field}`", " ".join(self.tree.problems()))
+                named = [p for p in self.tree.problems() if f"`{field}`" in p]
+                self.assertTrue(named, f"nothing reported `{field}` at all")
+                self.assertTrue(any(because in p for p in named),
+                                f"`{field}` was reported, but not for being unusable: {named}")
+
+    def test_a_projection_nobody_recognises_is_refused(self):
+        # `projection` is read by a test rather than by a person — `tools/test_synth_dataset.py`
+        # asserts the 2:1 rule on an entry claiming to be equirectangular — so it has to be a token
+        # from a closed set. The rule was added after a record spelled it as a sentence
+        # ("equirectangular, 360 by 180 degrees") and silently disabled that assertion for every
+        # record in the tree; it went in with no test of its own, which is how it was found.
+        for value in ("equirectangular, 360 by 180 degrees", "Equirectangular", "cubemap", ""):
+            with self.subTest(value=value):
+                entries = self.tree.entries()
+                entries[0]["projection"] = value
+                self.tree.record({"assets": entries})
+                reported = " ".join(self.tree.problems())
+                self.assertIn("`projection`", reported)
+                self.assertIn("the projections this repository knows", reported)
+
+    def test_the_projection_this_repository_does_know_is_accepted(self):
+        # The guard on the rule above: a closed set that refused its own only member would fail the
+        # tree it ships with, and the tree is the thing it is meant to let through.
+        entries = self.tree.entries()
+        entries[0]["projection"] = "equirectangular"
+        self.tree.record({"assets": entries})
+        self.assertEqual(self.tree.problems(), [])
 
     def test_a_raster_has_to_say_what_shape_it_is(self):
         # `width` and `height` were optional, so the one fact this checker cannot verify itself —
@@ -320,6 +356,63 @@ class AFileThisRepositoryMadeItself(unittest.TestCase):
         (self.tree.assets / "photo.bin").unlink()
         self.tree.record({"ours": [self.ours]})
         self.assertEqual(self.tree.problems(), [])
+
+
+class ReadingAFileInBlocks(unittest.TestCase):
+    """The two loops that read a file a block at a time, driven across more than one block.
+
+    `BLOCK` is a megabyte, and nothing either suite writes is a megabyte — so both loops ran exactly
+    once in every test, and three separate mistakes were invisible: a decoder that restarts per
+    block, a decoder never flushed at end of file, and a digest that hashes the first block and
+    stops. Each leaves 41 tests green and the checker at exit 0.
+
+    So the block size is lowered here rather than the files made huge. The property under test is
+    "more than one block", not "many megabytes", and a fixture that spends a second writing 2 MiB to
+    assert it is a fixture nobody runs.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        held = asset_provenance.BLOCK
+        asset_provenance.BLOCK = 8
+        self.addCleanup(setattr, asset_provenance, "BLOCK", held)
+
+    def write(self, name: str, content: bytes) -> Path:
+        path = self.root / name
+        path.write_bytes(content)
+        return path
+
+    def test_a_digest_covers_every_block_and_not_just_the_first(self):
+        # Hashing one block and stopping gives a digest that is stable, plausible and wrong past the
+        # first 8 bytes here — a megabyte in the shipped constant. The record exists to catch a file
+        # swapped for another; two files sharing a first block would swap freely.
+        content = b"the first block!" + b"and everything after it" * 4
+        path = self.write("long.bin", content)
+        self.assertGreater(len(content), asset_provenance.BLOCK * 3, "one block would prove nothing")
+        self.assertEqual(asset_provenance.digest(path), hashlib.sha256(content).hexdigest())
+
+    def test_a_character_split_across_a_block_boundary_is_still_one_character(self):
+        # The reason this cannot be `chunk.decode()` in a loop. A multi-byte character that straddles
+        # the boundary decodes as two invalid halves, so a perfectly good source file is reported as
+        # an asset nobody recorded — a refusal a reader cannot act on, about a file that is fine.
+        for pad in range(asset_provenance.BLOCK):
+            with self.subTest(pad=pad):
+                content = ("a" * pad + "\u00e9" + "b" * 20).encode()
+                path = self.write("text.txt", content)
+                self.assertIsNone(asset_provenance.why_asset(path),
+                                  f"valid UTF-8 with a character at byte {pad} was called an asset")
+
+    def test_a_character_cut_off_at_the_end_of_the_file_is_not_valid_utf8(self):
+        # The flush, and the whole of what it is for. An incremental decoder holds a partial sequence
+        # waiting for the rest; without `decode(b"", final=True)` the file simply ends and nobody
+        # asks, so bytes that are not UTF-8 read as source — and an unrecorded binary walks past the
+        # rule this checker exists to enforce.
+        path = self.write("truncated.bin", b"hello \xc3")
+        why = asset_provenance.why_asset(path)
+        self.assertIsNotNone(why, "a truncated multi-byte sequence was read as source")
+        self.assertIn("not valid UTF-8", why)
 
 
 class AFileNobodyCouldRead(unittest.TestCase):
