@@ -44,10 +44,11 @@ than an embarrassment beside it: prose next to code that cannot fail on it drift
 does not care what the prose is about.
 
 A second test records the thing the first one makes obvious once the numbers are in front of you,
-and which was not written down anywhere: **the refused-row path is unreachable from any rendered
-dataset**. `tools/synth_dataset.py` refuses to render a frame with a rayless pixel in it — there
-being no colour that could honestly stand for a missing direction — so the lens of every dataset
-this repository produces answers every pixel *centre* of its own frame. Adding distortion to the
+and which was not written down anywhere: **the refused-row path is not reached by any dataset this
+repository renders, and reaches a frame only below a `k1` no dataset would choose**.
+`tools/synth_dataset.py` refuses to render a frame with a rayless pixel in it — there being no
+colour that could honestly stand for a missing direction — so the lens of every dataset this
+repository produces answers every pixel *centre* of its own frame. Adding distortion to the
 renderer, which `docs/06-roadmap.md` lists as an increment and gives this guard as a reason for,
 will not reach it.
 
