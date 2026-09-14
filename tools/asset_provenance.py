@@ -161,10 +161,16 @@ def git_blob(path: Path) -> str:
     # memory is one `--panorama` away from being the thing it refuses to be.
     #
     # Git's header needs the length up front, and `stat` is the only way to have it before the
-    # bytes — so this is the one place here that reads a size from the filesystem, and it is safe
-    # only because `reading.blocks` has already established what the file is. A `stat` size used to
-    # *bound* a read would be the mistake the sibling checker made; used to *describe* the bytes
-    # that follow it is what git's own object format asks for.
+    # bytes. A `stat` size used to *bound* a read is the mistake the sibling checker made; used to
+    # *describe* the bytes that follow it is what git's own object format asks for, so it is right
+    # here and wrong there.
+    #
+    # It is not, however, protected by `blocks` — `blocks` is a generator, so this `stat` runs
+    # before a single byte is read and before `open_regular` has said what the file is. If the two
+    # disagree the digest simply comes out wrong, which the recorded `source_blob` then catches by
+    # not matching. That is the honest account; an earlier version of this comment claimed the
+    # opposite order and claimed this was the only `stat` in the file, which the entry walk's own
+    # `path.stat().st_size` had already made false.
     running = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
     for block in blocks(path):
         running.update(block)
@@ -602,25 +608,6 @@ def check(root: Path) -> list[Problem]:
             if not isinstance(name, str) or not name.strip():
                 problems.append(Problem(rel, f"entry {position} names no `file`"))
                 continue
-            # **Keyed on the file, not on the spelling.** `./photo.bin` and `.//photo.bin` are one
-            # file and were two entries: the rule below — which exists because two entries cannot
-            # both be true of one file — was defeated by punctuation, and the file was opened and
-            # hashed once per spelling. It also put the walk and the orphan sweep into
-            # disagreement, since the sweep's key is the real relative path: a file recorded twice
-            # came back as "recorded nowhere", which sends its author looking for an entry they
-            # have already written.
-            #
-            # Normalised rather than resolved. This is pure string work and it is safe here for
-            # exactly that reason — it happens before the `file` rule below has ruled anything out,
-            # so it must not touch the disk. `..` and absolute paths are that rule's business and
-            # are refused there; what this settles is only that one file has one key.
-            owned = os.path.normpath(name)
-            if owned in recorded:
-                problems.append(Problem(rel, f"{name} is recorded twice, and the two entries "
-                                             f"cannot both describe it"))
-                continue
-            recorded[owned] = entry
-
             # **`file` names a file in this record's own directory, and nothing else.** It is
             # joined to that directory and then hashed, and `directory / name` happily accepts
             # `../../etc/hostname` or an absolute path, while `is_file()` and `digest()` follow
@@ -661,6 +648,31 @@ def check(root: Path) -> list[Problem]:
             if escaped is not None:
                 problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
                 continue
+
+            # **Keyed on the file, not on the spelling.** `./photo.bin` and `.//photo.bin` are one
+            # file and were two entries: the rule below — which exists because two entries cannot
+            # both be true of one file — was defeated by punctuation, and the file was opened and
+            # hashed once per spelling. It also put the walk and the orphan sweep into
+            # disagreement, since the sweep's key is the real relative path: a file recorded twice
+            # came back as "recorded nowhere", which sends its author looking for an entry they
+            # have already written.
+            #
+            # Normalised rather than resolved: pure string work, since `..` and absolute paths are
+            # the rule above's business and have been refused there by now.
+            #
+            # **And booked after that rule, not before it.** Booking first let a *refused* entry
+            # claim the name — `x/../photo.bin` normalises to `photo.bin` — so the real entry was
+            # told it "is recorded twice, and the two entries cannot both describe it", which is
+            # false about an entry that describes nothing. The damage was not the sentence: the
+            # good entry `continue`d there, so its `sha256` and `bytes` were never checked, and an
+            # asset cleared the build by standing behind a broken sibling. Only an entry that has
+            # been accepted as naming a file can be the one that already named it.
+            owned = os.path.normpath(name)
+            if owned in recorded:
+                problems.append(Problem(rel, f"{name} is recorded twice, and the two entries "
+                                             f"cannot both describe it"))
+                continue
+            recorded[owned] = entry
 
             required = REQUIRED_OURS if ours else REQUIRED
             for field in required:

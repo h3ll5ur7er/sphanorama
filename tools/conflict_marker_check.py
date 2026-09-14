@@ -96,9 +96,16 @@ def check(root: Path) -> list[Marker]:
         path = root / rel
         # Not every listed path is a file to read: a submodule is a gitlink, and a tracked file
         # deleted from the working tree is still in the index. Neither has content to scan.
-        if not path.is_file():
-            continue
+        # **Inside the `try`, like every other `is_file()` this project has been caught by.**
+        # `Path.stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so a
+        # tracked symlink whose target is a 300-character name raises `ENAMETOOLONG` out of here —
+        # a traceback from the one call this loop makes before it is ready to report anything. The
+        # provenance checker guards the identical call in three places; these two did not, and the
+        # `/proc/kmsg` case that tests the promise walks straight past it because `is_file()`
+        # succeeds for that file.
         try:
+            if not path.is_file():
+                continue
             # **The ceiling is measured, not read from `stat`.** `st_size > MAX_BYTES` looks
             # equivalent and is a second answer to the same question — and it is wrong for exactly
             # the files that need bounding: a `/proc` file reports zero, so the ceiling let through

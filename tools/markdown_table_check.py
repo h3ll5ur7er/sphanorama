@@ -138,9 +138,16 @@ def check(root: Path) -> list[Break]:
     found: list[Break] = []
     for rel in markdown_files(root):
         path = root / rel
-        if not path.is_file():
-            continue
+        # **Inside the `try`, like every other `is_file()` this project has been caught by.**
+        # `Path.stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so a
+        # tracked symlink whose target is a 300-character name raises `ENAMETOOLONG` out of here —
+        # a traceback from the one call this loop makes before it is ready to report anything. The
+        # provenance checker guards the identical call in three places; these two did not, and the
+        # `/proc/kmsg` case that tests the promise walks straight past it because `is_file()`
+        # succeeds for that file.
         try:
+            if not path.is_file():
+                continue
             # **Bounded, like the sibling checker, which it was not.** This walk includes untracked
             # files, so a scratch `.md` nobody committed was read whole: one 356 MB file took peak
             # RSS to 935.7 MiB against the marker checker's 34.1 MiB on the identical tree. A

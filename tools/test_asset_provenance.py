@@ -406,6 +406,25 @@ class AssetProvenance(unittest.TestCase):
                 self.assertTrue(any("is recorded twice" in p for p in problems), problems)
                 self.assertFalse(any("recorded nowhere" in p for p in problems), problems)
 
+    def test_an_entry_the_file_rule_refuses_does_not_claim_the_name(self):
+        # The key was booked before the `file` rule ran, so a refused entry held the name and the
+        # real one was told it "is recorded twice, and the two entries cannot both describe it" —
+        # false, since the refused entry describes nothing. Worse than the wrong sentence: the good
+        # entry `continue`d at that point, so its `sha256` and `bytes` were never checked at all.
+        # An entry that clears the build by standing behind a broken sibling is the failure this
+        # whole checker exists to prevent.
+        #
+        # `x/../photo.bin` normalises to the same name and is refused for leaving the directory,
+        # which is what makes it a collision rather than two unrelated entries.
+        good = dict(self.tree.entries()[0], sha256="0" * 64, bytes=999)
+        self.tree.record({"assets": [dict(good, file="x/../photo.bin"), good]})
+        problems = self.tree.problems()
+        self.assertTrue(any("`file` names a path outside" in p for p in problems), problems)
+        self.assertFalse(any("is recorded twice" in p for p in problems), problems)
+        # And the surviving entry is held to the rules it escaped.
+        self.assertTrue(any("sha256" in p for p in problems), problems)
+        self.assertTrue(any("bytes" in p for p in problems), problems)
+
     def test_a_file_spelled_with_a_leading_dot_is_still_that_file(self):
         # The other half, and the one that says the fix is a normalisation rather than a ban: a
         # single `./photo.bin` names the file beside the record and is a perfectly good entry. A

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import os
 import signal
 import subprocess
@@ -28,6 +29,11 @@ import reading  # noqa: E402
 # input the whole module is shaped around, and it is named rather than read: reading `/proc/kmsg`
 # *drains the kernel ring buffer*, which a test has no business doing to the machine it runs on.
 BLOCKING_REGULAR_FILE = Path("/proc/kmsg")
+
+# And a regular file that answers forever: `S_ISREG`, `st_size` 0, no end. Unlike
+# `/proc/kmsg` this one is safe to read — it reports this process's own page table and
+# reading it consumes nothing.
+ENDLESS_REGULAR_FILE = Path("/proc/self/pagemap")
 
 
 class Impatient(unittest.TestCase):
@@ -171,6 +177,113 @@ class ReadingInBlocks(Impatient):
             self.impatiently(10, lambda: list(reading.blocks(fifo)))
 
 
+class AStreamThatStopsWithoutEnding(Impatient):
+    """A read that returns *some* bytes and then is not ready — the outcome `ready` cannot see.
+
+    `ready` catches the case where a non-blocking read answers `None` having produced nothing. It
+    structurally cannot catch the other one: `BufferedReader.read(n)` on a non-blocking raw returns
+    what it has when the raw stalls part-way, and a short return is indistinguishable from end of
+    file to a caller that only counts bytes.
+
+    That is a false pass rather than an error, which is why it matters more than the `None`. A
+    conflict marker truncated from `<<<<<<< HEAD` to `<<<<<` stops matching `is_marker`, so the
+    checker reports a clean tree about a file it only partly read — the one answer it exists to
+    prevent. `blocks` was already safe, because its next read raises; `head` was not.
+    """
+
+    class Stalls(io.RawIOBase):
+        """Five bytes, then EAGAIN. Not end of file — just nothing more ready."""
+
+        def __init__(self, given=b"<<<<<"):
+            self.given = given
+
+        def readable(self):
+            return True
+
+        def readinto(self, buffer):
+            if not self.given:
+                return None
+            count = len(self.given)
+            buffer[:count] = self.given
+            self.given = b""
+            return count
+
+    def stalling(self, *arguments):
+        held = reading.open_regular
+        self.addCleanup(setattr, reading, "open_regular", held)
+        reading.open_regular = lambda path: io.BufferedReader(self.Stalls(*arguments))
+
+    def test_a_short_read_that_is_not_end_of_file_is_a_refusal(self):
+        self.stalling()
+        with self.assertRaises(OSError) as refused:
+            reading.head(self.root / "anything", 64)
+        self.assertEqual(refused.exception.errno, errno.EAGAIN)
+
+    def test_text_does_not_hand_back_a_truncated_file_as_a_whole_one(self):
+        # The consequence, in the units of the checker that suffers it. Before, this returned
+        # `'<<<<<'` — five bytes of a file the reader had not finished — and both line checkers
+        # would have scanned it and found nothing.
+        self.stalling()
+        with self.assertRaises(OSError):
+            reading.text(self.root / "anything", 64)
+
+    def test_a_genuinely_short_file_is_still_short(self):
+        # The other side, and the one that says this is not simply "refuse anything under the
+        # limit". A 10-byte file asked for 64 bytes is complete at 10, and `read` returning fewer
+        # than asked is the *normal* case at end of file.
+        path = self.root / "small"
+        path.write_bytes(b"0123456789")
+        self.assertEqual(reading.head(path, 64), b"0123456789")
+        self.assertEqual(reading.text(path, 64), "0123456789")
+
+
+class AFileThatNeverEnds(Impatient):
+    """A regular file with no end, which "it never hangs" did not cover.
+
+    `open_regular` guards the `open` and `ready` guards a stalled read. Neither bounds a file that
+    keeps answering: `/proc/self/pagemap` is `S_ISREG`, reports `st_size` 0, opens instantly and
+    yielded **7.7 GB in three seconds with no EOF**. The module promised never to hang and did not
+    keep it — what kept it in practice were two guards in a different file, one refusing symlinks
+    inside a record's directory and one happening to hit invalid UTF-8 in the first block. A
+    promise kept by somebody else's coincidence is the shape this project keeps being caught by.
+
+    So the stream has a ceiling. Generous rather than tight: the largest committed asset here is
+    179 KB, an asset is allowed to be a panorama, and the number only has to be below "forever".
+    """
+
+    def test_a_stream_with_no_end_is_refused_rather_than_followed(self):
+        held = reading.STREAM_CEILING
+        reading.STREAM_CEILING = 4096
+        self.addCleanup(setattr, reading, "STREAM_CEILING", held)
+        path = self.root / "big"
+        path.write_bytes(b"x" * (reading.STREAM_CEILING + 1))
+        with self.assertRaises(OSError) as refused:
+            list(reading.blocks(path))
+        self.assertIn("larger than", refused.exception.strerror)
+
+    def test_a_file_exactly_at_the_ceiling_is_read(self):
+        # The boundary, because a ceiling asserted only from above is satisfied by a reader that
+        # refuses everything — and `digest` is the caller, so refusing a legitimate asset would
+        # fail the build on the file it is meant to account for.
+        held = reading.STREAM_CEILING
+        reading.STREAM_CEILING = 4096
+        self.addCleanup(setattr, reading, "STREAM_CEILING", held)
+        path = self.root / "exact"
+        path.write_bytes(b"x" * reading.STREAM_CEILING)
+        self.assertEqual(len(b"".join(reading.blocks(path))), reading.STREAM_CEILING)
+
+    @unittest.skipUnless(ENDLESS_REGULAR_FILE.exists(),
+                         f"{ENDLESS_REGULAR_FILE} is not on this machine")
+    def test_the_real_endless_file_terminates(self):
+        # The fixture above is a large file, which is not the same thing. This is a file that does
+        # not end, and the only way to tell the two apart is to read one.
+        held = reading.STREAM_CEILING
+        reading.STREAM_CEILING = 1024 * 1024
+        self.addCleanup(setattr, reading, "STREAM_CEILING", held)
+        with self.assertRaises(OSError):
+            self.impatiently(20, lambda: list(reading.blocks(ENDLESS_REGULAR_FILE)))
+
+
 class ReadingAHead(Impatient):
     def test_at_most_the_limit_is_returned(self):
         path = self.root / "f"
@@ -244,17 +357,13 @@ class EveryCheckerThatWalksThisRepository(Impatient):
 
     CHECKERS = ("asset_provenance", "conflict_marker_check", "markdown_table_check")
 
-    @unittest.skipUnless(BLOCKING_REGULAR_FILE.exists(),
-                         f"{BLOCKING_REGULAR_FILE} is not on this machine")
-    def test_none_of_them_hangs_on_a_tracked_symlink_to_a_blocking_file(self):
+    def tree(self, build):
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         (self.root / "LICENSE").write_text("MIT, for the purposes of this fixture.\n")
-        # `.md`, so the table checker has a reason to open it, and a name the marker checker scans
-        # too. The symlink target is what matters, not the extension.
-        blocked = self.root / "notes.md"
-        blocked.symlink_to(BLOCKING_REGULAR_FILE)
-        subprocess.run(["git", "add", "-f", "--", "LICENSE", "notes.md"],
-                       cwd=self.root, check=True)
+        tracked = ["LICENSE"] + build(self.root)
+        subprocess.run(["git", "add", "-f", "--", *tracked], cwd=self.root, check=True)
+
+    def each_checker_answers(self, seconds=20):
         for name in self.CHECKERS:
             with self.subTest(checker=name):
                 checker = __import__(name)
@@ -265,8 +374,36 @@ class EveryCheckerThatWalksThisRepository(Impatient):
                 #
                 # Not "returns zero": what each says about this file is its own business and its
                 # own suite's. The promise here is that it comes back, with an exit code.
-                answer = self.impatiently(20, checker.main, ["checker", str(self.root)])
+                answer = self.impatiently(seconds, checker.main, ["checker", str(self.root)])
                 self.assertIsInstance(answer, int)
+
+    def test_none_of_them_raises_on_a_name_this_filesystem_will_not_answer_about(self):
+        # `is_file()` is the first thing all three do with a listed path, and `Path.stat` swallows
+        # `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else. A tracked symlink to a
+        # 300-character name gives `ENAMETOOLONG`, which is in no ignore set.
+        #
+        # This is a *different* input from the blocking file below and it has to be, which is the
+        # whole finding: for `/proc/kmsg`, `is_file()` succeeds, so that case walks past the
+        # unguarded call without touching it. One promise, two ways to break it, and a suite that
+        # tested the promise with only the first went on being green.
+        def build(root):
+            (root / "notes.md").symlink_to("n" * 300)
+            return ["notes.md"]
+
+        self.tree(build)
+        self.each_checker_answers()
+
+    @unittest.skipUnless(BLOCKING_REGULAR_FILE.exists(),
+                         f"{BLOCKING_REGULAR_FILE} is not on this machine")
+    def test_none_of_them_hangs_on_a_tracked_symlink_to_a_blocking_file(self):
+        def build(root):
+            # `.md`, so the table checker has a reason to open it, and a name the marker checker
+            # scans too. The symlink target is what matters, not the extension.
+            (root / "notes.md").symlink_to(BLOCKING_REGULAR_FILE)
+            return ["notes.md"]
+
+        self.tree(build)
+        self.each_checker_answers()
 
 
 if __name__ == "__main__":
