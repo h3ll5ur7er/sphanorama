@@ -1173,8 +1173,14 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   // promised length.
   //
   // Not to be read as a claim about `ReadToken`'s `unget` itself, which an earlier version of this
-  // sentence was: that line is load-bearing for every header in the file, and deleting it fails 22
-  // tests, these four among them.
+  // sentence was: that line is load-bearing for every header in the file, and deleting it fails
+  // **25** tests across three suites, these four among them.
+  //
+  // 25 and not the 22 this said, which is the same counting mistake twice over. The first version
+  // came from a run filtered to `Dataset.*`. The second came from an unfiltered run counted with a
+  // pattern that required a suite name of letters only, so the three `EveryDetector/Accuracy`
+  // cases — parameterised, and printed with a `GetParam()` clause before the timing — were dropped
+  // silently. A filter you did not intend is still a filter.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1226,9 +1232,15 @@ TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
     std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
     out << "P6\n" << width << " " << height << "\n255#a comment nobody ended";
   }
-  // Bracketed, as every other refusal test here is: this is the only new case whose header parses,
-  // so it is the only one that reaches `Allocate` and `Pin` and so the only one that could strand
-  // a frame on the way out.
+  // Bracketed because this case reaches `Allocate` and `Pin` and so could strand a frame on the
+  // way out: its header parses *and agrees with the lens*, which is the last guard before the
+  // allocation.
+  //
+  // Both halves of what this said before were wrong, and a reviewer counted. It is not "the only
+  // new case whose header parses" — five of the six do, including the 1x2 one whose whole subject
+  // is a header that parses. And it is not what "every other refusal test here" does: 30 of the 45
+  // refusal tests in this file carry no bracket, two of them added by this branch. The
+  // discriminator is the dimension check, not the parse.
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,

@@ -122,8 +122,7 @@ class OwnedFrames {
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
 // `magic != "P6"` ever runs — in a file whose `ReadFrame` reads its payload a row at a time for
-// precisely that reason. (This said "twenty lines below" and meant that loop, which is three
-// hundred lines below and in another function; a distance is a worse pointer than a name.)
+// precisely that reason.
 //
 // Measured, twice, by two people. A 512 MiB file of non-whitespace bytes takes the uncapped reader
 // to a peak RSS of **986,740 KiB — 964 MiB**, or 1,010 MB decimal. The first version of this said
@@ -225,19 +224,20 @@ bool ReadNumber(std::istream& in, int64_t* value, TokenTrouble* why) {
     // carried theirs, which is what a reason is for.
     *why = TokenTrouble::kTooLargeForTheType;
     return false;
-  } catch (const std::invalid_argument&) {
-    // The empty token — which `stoll` refuses and the all-digits check above lets through, since
-    // `find_first_not_of` answers `npos` for an empty string. Unreachable while `ReadToken`'s skip
-    // loop keeps a `#` out of its accumulation loop's first iteration; see the note there.
-    //
-    // Named rather than folded into the arm above, though `catch (...)` would still answer it.
-    // That is how it was written, and a reviewer sabotaging the skip loop's `#` branch got back
-    // "has a header number too large for the type that holds it" for a two-word file — a sentence
-    // about the wrong guard, which then made the failure count in a comment on this branch wrong.
-    // A reason exists to name the thing that happened.
-    *why = TokenTrouble::kNotANumber;
-    return false;
   }
+  // `std::out_of_range` by name, and nothing else caught. The other thing `stoll` throws is
+  // `std::invalid_argument`, for a token with no digits in it — which the all-digits check above
+  // has already refused, except for the empty token it lets through, because `find_first_not_of`
+  // answers `npos` for an empty string. That token is unreachable: `ReadToken`'s skip loop keeps a
+  // `#` out of its accumulation loop's first iteration, so at least one byte is always pushed, and
+  // an `if (token->empty()) std::abort();` probe never fired across the whole suite.
+  //
+  // This was a second `catch` arm for a while, added because sabotaging that skip loop made
+  // `catch (...)` report "too large for the type that holds it" for a file with no number in it.
+  // It is gone rather than kept: an arm no test can reach is what this file has a standing rule
+  // against, it set `kNotANumber` — a sentence the all-digits guard already writes, so two guards
+  // would share one and `TokenTrouble` exists to stop that — and `LoadSyntheticDataset`'s own
+  // `catch (const std::exception&)` is the backstop if it ever does escape, so nothing terminates.
   return true;
 }
 
