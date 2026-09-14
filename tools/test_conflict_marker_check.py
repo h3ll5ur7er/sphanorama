@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import conflict_marker_check  # noqa: E402
+import reading  # noqa: E402
 
 # Built rather than written out, for the same reason the checker builds them: a test file spelling
 # them literally would be flagged by the checker it is testing.
@@ -117,10 +118,42 @@ class ConflictMarkerCheckTest(unittest.TestCase):
         # The same refusal the git failure gets. A tracked file this cannot read is a file it
         # cannot clear, and swallowing the error would make an unreadable tree look like a clean
         # one — the false pass this checker exists to prevent, in its own machinery.
+        #
+        # Patched at `reading.text` rather than at `Path.read_text`, which is where this used to
+        # reach and is no longer what the checker calls. That rename is the whole of the change
+        # here, and it is worth one line of comment because the previous spelling would have gone
+        # on passing for a while: patching a method nobody calls raises nothing, and a test that
+        # asserts a raise is one of the few shapes where that reads as red rather than as green.
         self.repo.write("docs/a.md", "fine\n")
-        with mock.patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+        with mock.patch.object(reading, "text", side_effect=OSError("permission denied")):
             with self.assertRaises(RuntimeError):
                 self.markers()
+
+    def test_a_file_past_the_ceiling_is_skipped_rather_than_read(self):
+        # The ceiling had no case in either line checker, so widening it 16x in both left every
+        # suite green. Both sides of the boundary, the way `RECORD_CEILING`'s case does it: a
+        # ceiling asserted only from above is satisfied by a reader that refuses everything.
+        #
+        # The constant is patched rather than the fixture made huge — the property is "past the
+        # ceiling", not "four megabytes", and a test that spends a second writing 4 MiB to assert
+        # it is a test nobody runs.
+        self.addCleanup(setattr, conflict_marker_check, "MAX_BYTES",
+                        conflict_marker_check.MAX_BYTES)
+        body = "ours\n<<<<<<< HEAD\nmine\n"
+        self.repo.write("docs/a.md", body)
+        conflict_marker_check.MAX_BYTES = len(body) - 1
+        self.assertEqual(self.markers(), [])
+        conflict_marker_check.MAX_BYTES = len(body)
+        self.assertEqual([marker.path for marker in self.markers()], ["docs/a.md"])
+
+    def test_and_main_turns_that_refusal_into_a_sentence(self):
+        # The other half, one level up, because `check` raising is deliberate and a traceback is
+        # not. The commonest way to reach it needs no hostile input at all — git refuses a
+        # repository whose checkout and whose caller are different users, an ordinary container
+        # shape — and the remedy then arrived under four frames of checker source.
+        self.repo.write("docs/a.md", "fine\n")
+        with mock.patch.object(reading, "text", side_effect=OSError("permission denied")):
+            self.assertEqual(conflict_marker_check.main(["checker", str(self.repo.root)]), 1)
 
     def test_a_marker_in_source_is_caught_too(self):
         # Redundant against the compiler and kept anyway: the checker should not carry an opinion

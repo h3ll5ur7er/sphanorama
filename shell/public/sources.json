@@ -1,0 +1,20 @@
+{
+  "why": [
+    "Drawn by hand in this repository, in the commit that added the PWA shell. It is here",
+    "because `tools/asset_provenance.py` counts an SVG as somebody's work whatever its bytes",
+    "decode as \u2014 and it was invisible to the check until that rule existed, which is the",
+    "argument for the rule.",
+    "",
+    "No `produced_by`: nothing renders it, a person drew it. The digest is what says it has not",
+    "quietly become a different picture."
+  ],
+  "ours": [
+    {
+      "file": "icon.svg",
+      "sha256": "8d09b3b0acb23390bd9b1c0c57306b32cebc36173a2431ec8bfbe90e0a58bf14",
+      "bytes": 304,
+      "author": "this repository",
+      "licence": "same as this repository"
+    }
+  ]
+}

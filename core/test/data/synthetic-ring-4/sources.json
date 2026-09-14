@@ -1,0 +1,67 @@
+{
+  "why": [
+    "This repository's own output, recorded because `tools/asset_provenance.py` will not let a",
+    "file that is somebody's work sit in the tree unaccounted for \u2014 ours included, since",
+    "'we made it' is a claim and not an exemption.",
+    "",
+    "`produced_by` is the same command for every file here and it is executed rather than",
+    "believed: `tools/test_synth_dataset.py` runs it with the output redirected elsewhere and",
+    "compares every byte, so a renderer default that drifts away from what this command",
+    "produces fails the build instead of ageing into fiction.",
+    "",
+    "What the fixture is for is ADR 0053: the loader is read against bytes this generator wrote",
+    "rather than against its author's idea of the format. It is a format fixture and not a",
+    "measurement \u2014 48x36 frames are a specimen, and the world accuracy is measured in is",
+    "`core/test/data/panoramas` (ADR 0059)."
+  ],
+  "ours": [
+    {
+      "file": "frame_0000.ppm",
+      "sha256": "151a0ce363ea2223e666077ed861e9474078a52ca1de6679d6c457885614a4df",
+      "bytes": 5197,
+      "width": 48,
+      "height": 36,
+      "author": "this repository",
+      "licence": "same as this repository",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0001.ppm",
+      "sha256": "700d7c462c104e965744a605cee5b9b292c05d1cf3f81b949a4cc2fb0c49e09b",
+      "bytes": 5197,
+      "width": 48,
+      "height": 36,
+      "author": "this repository",
+      "licence": "same as this repository",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0002.ppm",
+      "sha256": "1e34f00eeed58cfaeabba78a0146ced40d6d44795c60fd1a23714d38f8ae4ea1",
+      "bytes": 5197,
+      "width": 48,
+      "height": 36,
+      "author": "this repository",
+      "licence": "same as this repository",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "frame_0003.ppm",
+      "sha256": "ef4daccabd9a7837c51af35168a718dead442e839d916f3776c23eab3f5d764a",
+      "bytes": 5197,
+      "width": 48,
+      "height": 36,
+      "author": "this repository",
+      "licence": "same as this repository",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    },
+    {
+      "file": "truth.json",
+      "sha256": "60d8d06fd4b9122868c09857ce15d7efd8db75ff606a51e4d80e8d021cb61e62",
+      "bytes": 1782,
+      "author": "this repository",
+      "licence": "same as this repository",
+      "produced_by": "uv run --locked --group datasets tools/synth_dataset.py --out core/test/data/synthetic-ring-4 --frames 4 --width 48 --height 36"
+    }
+  ]
+}

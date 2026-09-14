@@ -13,6 +13,17 @@
 > distinction a banner exists to make. (This banner first said "two sentences later", which points
 > past the reason to the paragraph about `kInlierFraction`.)
 
+> **The first Consequence was true of the checkerboard and is not true of the world the harness
+> measures in now.** It says the accuracy harness "can no longer assert that every pair of a clean
+> ring registers, because on this dataset ORB does not", and that the honest bar is more than half.
+> That held while the ring was rendered from a checkerboard, where hundreds of indistinguishable
+> corners left ORB declining three of eleven — which is the observation this ADR exists for and it
+> stands. ADR 0059 moved the measurement into a photographed panorama, where all three detectors
+> register all eleven, so the harness asserts equality now
+> (`EXPECT_EQ(steps - unregistered, steps)`) and the "more than half" bar is gone. The finding about
+> what a periodic world does to a feature matcher is untouched; only the bar the harness could
+> defend has changed, and it changed because the world did.
+
 ## Context
 
 `PairwiseResult` carries both a `Result` status and an `accepted` flag, and until the first real

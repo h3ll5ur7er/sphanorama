@@ -24,14 +24,12 @@ Usage:  uv run tools/markdown_table_check.py [repo_root]
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# The same question `conflict_marker_check.py` asks, for the same reason: what git would let you
-# commit, rather than a hand-written skip list that drifts from `.gitignore`.
-LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+import reading
+from tracked import tracked_files
 
 # A delimiter row: pipes separating runs of dashes, with optional alignment colons. This is what
 # turns the line above it into a header, and it is the only unambiguous marker a GFM table has.
@@ -124,23 +122,40 @@ def breaks_in(body: str) -> list[tuple[int, str]]:
     return found
 
 
-def tracked_files(root: Path) -> list[str]:
+def markdown_files(root: Path) -> list[str]:
     """Every markdown path git would let you commit, relative to `root`."""
-    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    return sorted({n for n in result.stdout.split("\0") if n and n.endswith(".md")})
+    return [name for name in tracked_files(root) if name.endswith(".md")]
+
+# The same ceiling the marker checker uses, and for the same reason rather than by coincidence: a
+# markdown table is a document somebody is reading, and a `.md` past four megabytes is generated
+# output or a mistake. It matters more here than there, because this walk is the one `--others` put
+# untracked files behind.
+MAX_BYTES = 4 * 1024 * 1024
 
 
 def check(root: Path) -> list[Break]:
     root = Path(root)
     found: list[Break] = []
-    for rel in tracked_files(root):
+    for rel in markdown_files(root):
         path = root / rel
-        if not path.is_file():
-            continue
+        # **Inside the `try`, like every other `is_file()` this project has been caught by.**
+        # `Path.stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so a
+        # tracked symlink whose target is a 300-character name raises `ENAMETOOLONG` out of here —
+        # a traceback from the one call this loop makes before it is ready to report anything. The
+        # provenance checker guards the identical call in three places; these two did not, and the
+        # `/proc/kmsg` case that tests the promise walks straight past it because `is_file()`
+        # succeeds for that file.
         try:
-            body = path.read_text(errors="replace")
+            if not path.is_file():
+                continue
+            # **Bounded, like the sibling checker, which it was not.** This walk includes untracked
+            # files, so a scratch `.md` nobody committed was read whole: one 356 MB file took peak
+            # RSS to 935.7 MiB against the marker checker's 34.1 MiB on the identical tree. A
+            # markdown table does not live past this ceiling, and a file that does has nothing this
+            # can say about it.
+            body = reading.text(path, MAX_BYTES)
+            if body is None:
+                continue
         except OSError as failure:
             # Reported rather than skipped, for the reason the sibling checker gives: a file this
             # cannot read is one it cannot clear, and a silent skip is a false pass.
@@ -152,7 +167,18 @@ def check(root: Path) -> list[Break]:
 
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parent.parent
-    broken = check(root)
+    # **A refusal to run is a sentence, not a traceback.** `tracked.py` raises when git will not
+    # answer, and these checkers raise when a tracked file cannot be read — both deliberately, since
+    # returning "nothing found" from a check that could not run is the one false pass they exist to
+    # prevent. What was not deliberate is that the message then arrived as a `RuntimeError` under
+    # four frames of checker source, with git's own remedy buried at the bottom. The commonest
+    # trigger needs no hostile input at all: git refuses a repository whose checkout and whose
+    # caller are different users, which is an ordinary container shape.
+    try:
+        broken = check(root)
+    except RuntimeError as refused:
+        print(f"this check could not run: {refused}", file=sys.stderr)
+        return 1
     if not broken:
         return 0
     print(f"{len(broken)} table row(s) render as text, not as a table:\n", file=sys.stderr)

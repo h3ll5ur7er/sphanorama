@@ -28,19 +28,28 @@ rather than something to look at.
 """
 from __future__ import annotations
 
+import contextlib
+import gc
 import hashlib
+import io
 import json
 import math
+import subprocess
 import sys
 import tempfile
+import textwrap
+import weakref
 import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asset_provenance  # noqa: E402
 import synth_dataset  # noqa: E402
 from synth_dataset import (  # noqa: E402
+    read_panorama,
     _checkerboard_panorama,
     _ring_of_poses,
     _distort,
@@ -1058,9 +1067,13 @@ class ADatasetIsAllOfItOrNoneOfIt(unittest.TestCase):
             after = {child.name: child.read_bytes() for child in sorted(out.iterdir())}
             self.assertEqual(after, before,
                              "a failed run changed the dataset that was already there")
-            # This is the path where the staging directory exists when the failure happens — the
-            # render is complete by then — so it is the one that pins the cleanup. The
-            # refused-during-rendering test cannot: nothing is staged yet at that point.
+            # Both this and the refused-during-rendering test pin the cleanup now, and each fails
+            # when it is deleted. That was not true when this was written: rendering used to happen
+            # entirely before `staging.mkdir`, so a refusal mid-render had nothing staged to leak
+            # and only the failure-while-writing path could see one. Frames are rendered inside the
+            # write loop since the round that bounded this tool's memory, which moved the refusal
+            # into the staged window — and left this sentence claiming an assertion one test down
+            # is redundant when it had just become load-bearing.
             leaked = [c.name for c in out.parent.iterdir() if c.name.startswith(".")]
             self.assertEqual(leaked, [], f"staging directories leaked: {leaked}")
 
@@ -1388,6 +1401,100 @@ class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
         self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
 
 
+class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):
+    """Frame N is on disk before frame N+1 is rendered, which is what the streaming render is for.
+
+    The change that introduced it pinned its *side effect* — deleting the staging cleanup fails two
+    cases — and left its stated purpose asserted by nothing: reverting the loop to the batched shape
+    it replaced was 96 of 96 green, which a reviewer found by reverting it.
+
+    **Peak memory is the purpose and is not what this measures, deliberately.** `ru_maxrss` in a
+    child process was the first attempt and it cannot see this: the floor is ~195,800 KiB of numpy
+    and Pillow import, and the allocator absorbs the held frames without moving the high-water mark.
+    Measured against the batched shape, at 4 frames and at 64: 195,780 → 195,848 KiB at 128x96, and
+    195,820 → 195,728 at 256x192. It moves at 640x480, and 128 frames of that is a 26-second test.
+    So a memory assertion here would have been a test that cannot fail, which is the thing this
+    file is most often caught by.
+
+    What is asserted instead is the structure that *causes* the memory property, and it is exact
+    rather than statistical: a frame that is already written is a frame not being held. Batching the
+    loop fails this on the second frame.
+    """
+
+    def _run(self, *argv):
+        held = sys.argv
+        sys.argv = ["synth_dataset.py", *argv]
+        try:
+            return synth_dataset.main()
+        finally:
+            sys.argv = held
+
+    def test_each_frame_is_written_before_the_next_one_is_rendered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / ".ring.partial"
+            honest = synth_dataset.render_frame
+            seen = []
+
+            def watch(*arguments, **named):
+                # What is on disk at the moment this frame starts. Streamed, that is every earlier
+                # frame; held, it is none of them until the whole loop is done.
+                seen.append(sorted(p.name for p in staging.glob("frame_*.ppm"))
+                            if staging.is_dir() else [])
+                return honest(*arguments, **named)
+
+            synth_dataset.render_frame = watch
+            self.addCleanup(setattr, synth_dataset, "render_frame", honest)
+            self._run("--out", str(Path(directory) / "ring"), "--frames", "4",
+                      "--width", "16", "--height", "12")
+
+        self.assertEqual(seen, [[],
+                                ["frame_0000.ppm"],
+                                ["frame_0000.ppm", "frame_0001.ppm"],
+                                ["frame_0000.ppm", "frame_0001.ppm", "frame_0002.ppm"]],
+                         "a frame was still unwritten when the next one began: the render is "
+                         "holding them, and peak memory is linear in --frames again")
+
+    def test_a_frame_is_released_once_it_is_written(self):
+        # **Written is not the same as released**, and the case above cannot tell them apart: a
+        # loop that writes each frame *and* keeps a reference to it passes that assertion with
+        # peak memory linear in `--frames` again, which is the whole thing this is for.
+        #
+        # So the question is asked of the object rather than of the directory. A weak reference
+        # outlives its array only while something else holds one; if the render has let go, every
+        # earlier frame is dead by the time the next is asked for. CPython frees on the last
+        # reference, so no collection is needed — but `gc.collect()` is cheap here and makes the
+        # assertion independent of that.
+        with tempfile.TemporaryDirectory() as directory:
+            honest = synth_dataset._to_bytes
+            issued, alive_when_asked = [], []
+
+            def watch(*arguments, **named):
+                gc.collect()
+                alive_when_asked.append([reference() is not None for reference in issued])
+                frame = honest(*arguments, **named)
+                issued.append(weakref.ref(frame))
+                return frame
+
+            synth_dataset._to_bytes = watch
+            self.addCleanup(setattr, synth_dataset, "_to_bytes", honest)
+            self._run("--out", str(Path(directory) / "ring"), "--frames", "4",
+                      "--width", "16", "--height", "12")
+
+        # **One frame is alive, and that is the right answer rather than a tolerance.** The loop
+        # variable in `write_dataset` still points at frame N while frame N+1 is being rendered,
+        # because it is not reassigned until the call returns. So the streamed shape holds exactly
+        # its predecessor and the hoarding shape holds all of them: the distinction is not "some"
+        # against "none", it is one against N, which is the difference between O(1) and O(frames).
+        #
+        # Written as the exact list rather than a count, because "at most one" would also be
+        # satisfied by an implementation that kept a different single frame — the first, say — and
+        # the position is what says which one.
+        self.assertEqual(alive_when_asked,
+                         [[], [True], [False, True], [False, False, True]],
+                         "the render is holding frames it has already written, which costs the "
+                         "same memory as never writing them")
+
+
 class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
     """A smoke test over `main()`, which two rounds of deferral had left with none.
 
@@ -1411,6 +1518,72 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             return synth_dataset.main()
         finally:
             sys.argv = old
+
+    def test_the_panorama_it_is_given_is_the_one_it_renders(self):
+        # Without this the flag could be accepted and dropped, and every frame would come back off
+        # the checkerboard while the run reported success. A flat panorama is the vehicle because a
+        # bilinear sample of a constant is that constant, so every byte of every frame is one
+        # number that only this file can supply.
+        with tempfile.TemporaryDirectory() as directory:
+            flat = Path(directory) / "flat.png"
+            Image.frombytes("RGB", (8, 4), bytes([200]) * (8 * 4 * 3)).save(flat)
+            out = Path(directory) / "dataset"
+            self.assertEqual(self._run("--out", str(out), "--frames", "1", "--width", "6",
+                                       "--height", "4", "--panorama", str(flat)), 0)
+            pixels = (out / "frame_0000.ppm").read_bytes().split(b"255\n", 1)[1]
+            self.assertEqual(set(pixels), {200})
+
+    def test_a_panorama_of_the_wrong_shape_is_refused_before_a_single_frame_renders(self):
+        # The refusal `read_panorama` exists for, driven through the command line rather than
+        # through the function: the case below names an absent file, which reaches a different
+        # branch entirely, so until this existed no test put a real image of the wrong shape in
+        # front of `main`.
+        with tempfile.TemporaryDirectory() as directory:
+            squashed = Path(directory) / "squashed.png"
+            Image.frombytes("RGB", (8, 6), bytes(8 * 6 * 3)).save(squashed)
+            out = Path(directory) / "dataset"
+            # The message is captured because `SystemExit` alone cannot tell this refusal from the
+            # one below it: `read_panorama` raises for a file it cannot open *and* for a file of
+            # the wrong shape, and `argparse` turns both into the same exit.
+            complaint = io.StringIO()
+            # **"Before a single frame renders" is counted, not inferred from the output.** The
+            # generator stages into a temporary directory and swaps, so `out` is absent after *any*
+            # failure — the assertion below holds just as well for a refusal that happened on the
+            # last frame of twelve, which is the opposite of what this test's name promises. The
+            # sibling that refuses mid-render already counts calls; this one did not.
+            calls = {"n": 0}
+            honest = synth_dataset.render_frame
+
+            def counted(*args, **kwargs):
+                calls["n"] += 1
+                return honest(*args, **kwargs)
+
+            synth_dataset.render_frame = counted
+            self.addCleanup(setattr, synth_dataset, "render_frame", honest)
+            with contextlib.redirect_stderr(complaint), self.assertRaises(SystemExit):
+                self._run("--out", str(out), "--panorama", str(squashed))
+            self.assertIn("8x6", complaint.getvalue())
+            self.assertEqual(calls["n"], 0, "the shape was checked after rendering had begun")
+            self.assertFalse(out.exists())
+
+    def test_a_panorama_that_is_not_there_is_refused_before_a_single_frame_renders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "dataset"
+            rendered = {"n": 0}
+            honest = synth_dataset.render_frame
+
+            def count(*args, **kwargs):
+                rendered["n"] += 1
+                return honest(*args, **kwargs)
+
+            synth_dataset.render_frame = count
+            try:
+                with self.assertRaises(SystemExit):
+                    self._run("--out", str(out), "--panorama", str(Path(directory) / "absent.png"))
+            finally:
+                synth_dataset.render_frame = honest
+            self.assertEqual(rendered["n"], 0)
+            self.assertFalse(out.exists())
 
     def test_an_out_that_is_a_file_is_refused_before_a_single_frame_renders(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1450,14 +1623,33 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             root = Path(directory)
             (root / "afile").write_text("not a directory\n")
             (root / ".occupied.partial").write_text("in the way\n")
+            # The second hidden sibling. `write_dataset` swaps through `.{name}.replaced` as well as
+            # `.{name}.partial`, and only the first was pre-checked — so a file at this path spent
+            # the whole render and died in `out.replace(displaced)` with `NotADirectoryError`. Worse
+            # than the staging case, because `shutil.rmtree(displaced, ignore_errors=True)` no-ops
+            # on a file, so the leftover survives and every later run fails the same way.
+            (root / ".swapped.replaced").write_text("in the way\n")
             dangling = root / "dangling"
             dangling.symlink_to(root / "does-not-exist")
+            # And the same correction `--out` got above, which these two siblings did not:
+            # `exists()` and `is_dir()` both answer through a symlink, so a link to a real
+            # directory passed the guard as though it were one. Pointing a dataset directory at a
+            # scratch disk is an ordinary thing to do, and it made run 1 write *through* the link —
+            # reporting success about a directory that is not the one named — then leave the
+            # consumed link behind, after which every later run died in `out.replace(displaced)`
+            # with the whole render already spent. Exactly what this guard exists to pre-empt.
+            (root / "elsewhere").mkdir()
+            (root / ".linked.partial").symlink_to(root / "elsewhere")
+            (root / ".linkswapped.replaced").symlink_to(root / "elsewhere")
 
             cases = {
                 "a file": root / "afile",
                 "a dangling symlink": dangling,
                 "under a file": root / "afile" / "ds",
                 "staging occupied": root / "occupied",
+                "displaced occupied": root / "swapped",
+                "staging is a symlink to a directory": root / "linked",
+                "displaced is a symlink to a directory": root / "linkswapped",
             }
             for name, out in cases.items():
                 rendered = {"n": 0}
@@ -1814,7 +2006,7 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             self.assertEqual(set(entry["rotation"]), {"w", "x", "y", "z"})
 
     def test_the_committed_fixture_is_still_this_generator_s_output(self):
-        """The whole argument for committing 22,570 bytes, checked rather than asserted once.
+        """The whole argument for committing 25,593 bytes, checked rather than asserted once.
 
         ADR 0053 commits `core/test/data/synthetic-ring-4` on the grounds that the loader is then
         read against bytes *this* writer produced rather than against the author's idea of the
@@ -1836,9 +2028,13 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             fresh = Path(directory) / "synthetic-ring-4"
             write_dataset(fresh, panorama, lens, _ring_of_poses(4))
 
+            # `sources.json` sits in the fixture and is not generator output: it is what
+            # `tools/asset_provenance.py` requires of a directory holding files nothing else can
+            # account for, and it names the command that regenerates these frames.
+            committed_names = sorted(p.name for p in fixture.iterdir() if p.name != "sources.json")
             self.assertEqual(
                 sorted(p.name for p in fresh.iterdir()),
-                sorted(p.name for p in fixture.iterdir()),
+                committed_names,
                 "the generator writes a different set of files than the fixture holds",
             )
             for produced in sorted(fresh.iterdir()):
@@ -1863,6 +2059,283 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             truth = json.loads((Path(directory) / "truth.json").read_text())
         self.assertLess(truth["frames"][0]["rotation"]["w"], 0.0,
                         "no negative scalar part is emitted, so the loader's case is unreachable")
+
+
+class APanoramaIsReadAsThePixelsItHolds(unittest.TestCase):
+    """Reading a photograph in, where until now the only panoramas were computed ones.
+
+    The failure to be afraid of is quiet: a panorama read with the wrong colour convention or the
+    wrong shape still renders, still writes a `truth.json` whose rotations are exactly right, and
+    still produces an accuracy number. Nothing downstream can tell that the world it measured in
+    was stretched or inverted.
+    """
+
+    def rgb(self, path: Path, width: int, height: int) -> bytes:
+        """A deterministic image nobody could confuse with a constant one, written losslessly."""
+        payload = bytes((7 * index + 13) % 256 for index in range(width * height * 3))
+        Image.frombytes("RGB", (width, height), payload).save(path)
+        return payload
+
+    def test_the_bytes_survive_the_round_trip_to_a_rendered_frames_encoding(self):
+        # `_to_bytes` is the only other place this convention is spelled, and it is the one that
+        # decides what a rendered pixel looks like. If these two disagree, every frame is rendered
+        # in a colour space of its own and the dataset still writes cleanly.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            payload = self.rgb(path, 8, 4)
+            panorama = read_panorama(path)
+            self.assertEqual(panorama.shape, (4, 8, 3))
+            self.assertEqual(_to_bytes(panorama).tobytes(), payload)
+
+    def test_a_panorama_that_is_not_two_to_one_is_refused(self):
+        # Longitude spans the width and latitude the height whatever the aspect ratio is, so a 4:3
+        # image renders a world squashed in elevation — with the truth rotations still exactly
+        # right, which is what makes it unnoticeable.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            self.rgb(path, 8, 6)
+            with self.assertRaises(ValueError) as refusal:
+                read_panorama(path)
+            self.assertIn("8x6", str(refusal.exception))
+
+    def test_a_greyscale_panorama_arrives_with_three_channels(self):
+        # A monochrome panorama is still a panorama, and `write_dataset` refuses anything that is
+        # not three channels — so without this the refusal would land on the writer, naming a shape
+        # rather than the file that had it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            Image.frombytes("L", (8, 4), bytes(range(32))).save(path)
+            panorama = read_panorama(path)
+            self.assertEqual(panorama.shape, (4, 8, 3))
+            np.testing.assert_array_equal(panorama[..., 0], panorama[..., 2])
+
+    def test_a_rotation_the_camera_only_wrote_down_is_applied(self):
+        # A phone records an orientation tag and leaves the pixels as the sensor read them. Ignored,
+        # a panorama shot in one orientation is read sideways: north is where up should be, and
+        # every estimate comes back wrong in a way that reads as a bad estimator rather than as a
+        # bad input. Tagged 6, a 4x8 image *is* the 8x4 panorama, so the shape check has to run
+        # second.
+        #
+        # The pixels are asserted rather than the shape, because both directions of rotation give an
+        # 8x4 image: a reviewer turned it counter-clockwise where tag 6 calls for clockwise and all
+        # 92 tests stayed green, which is a panorama 180 degrees from where it belongs with the
+        # truth rotations still exactly right. A lossless PNG carries the tag, so the comparison is
+        # exact rather than to within JPEG.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            payload = bytes((5 * index) % 256 for index in range(4 * 8 * 3))
+            image = Image.frombytes("RGB", (4, 8), payload)
+            exif = image.getexif()
+            exif[0x0112] = 6
+            image.save(path, exif=exif)
+
+            clockwise = np.rot90(np.asarray(image, dtype=np.float64), k=-1)
+            np.testing.assert_array_equal(read_panorama(path), clockwise / 255.0 * 2.0 - 1.0)
+
+    def test_a_file_that_is_not_an_image_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.png"
+            path.write_bytes(b"not a PNG at all")
+            with self.assertRaises(ValueError) as refusal:
+                read_panorama(path)
+            self.assertIn("p.png", str(refusal.exception))
+
+    @contextlib.contextmanager
+    def _ceiling(self, pixels):
+        """Pillow's decompression ceiling, lowered so a small file stands in for a large one.
+
+        The real threshold is twice `MAX_IMAGE_PIXELS`, which defaults to 89,478,485 — rendering a
+        180-megapixel PNG to reach it would cost more than the rest of the suite together.
+        """
+        held = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = pixels
+        try:
+            yield
+        finally:
+            Image.MAX_IMAGE_PIXELS = held
+
+    def test_a_panorama_too_large_to_decode_is_refused_as_large_rather_than_as_broken(self):
+        # `DecompressionBombError` descends from `Exception`, not `OSError`, so the arm that catches
+        # an unreadable file does not catch this one. It is not an exotic input: a 2:1 panorama
+        # crosses the default ceiling at about 18,900 pixels wide, and the source of the committed
+        # one publishes 16k and 24k.
+        #
+        # The message is asserted, not just the type, because the refusal has to say the file is
+        # too big. Reported as "could not be read as an image" it sends the reader looking for a
+        # corrupt download instead of downscaling.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huge.png"
+            Image.frombytes("RGB", (8, 4), bytes(8 * 4 * 3)).save(path)
+            with self._ceiling(1):
+                with self.assertRaises(ValueError) as refusal:
+                    read_panorama(path)
+            self.assertIn("huge.png", str(refusal.exception))
+            self.assertIn("more pixels", str(refusal.exception))
+
+    def test_a_panorama_too_large_to_decode_reaches_the_command_line_as_a_sentence(self):
+        # The half the type matters for: `main` catches `ValueError`, so an escaping
+        # `DecompressionBombError` arrives as a traceback where every other unusable `--panorama`
+        # gets a sentence — and through `registration_accuracy_test.cpp` as a *skipped*
+        # measurement, which is green. `inputMissing()` does not catch that one: it asks whether the
+        # file is there, and this file is. What catches it is `tools/gate.sh`'s `accuracy measured`
+        # step, which fails on `grep -q SKIPPED` whatever the cause — so this test is what keeps the
+        # skip from happening and the gate is what notices if it does.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "huge.png"
+            Image.frombytes("RGB", (8, 4), bytes(8 * 4 * 3)).save(path)
+            out = Path(directory) / "dataset"
+            complaint = io.StringIO()
+            argv = ["synth_dataset.py", "--out", str(out), "--panorama", str(path),
+                    "--frames", "1", "--width", "6", "--height", "4"]
+            held = sys.argv
+            sys.argv = argv
+            try:
+                with self._ceiling(1):
+                    with contextlib.redirect_stderr(complaint), self.assertRaises(SystemExit):
+                        synth_dataset.main()
+            finally:
+                sys.argv = held
+            self.assertIn("more pixels", complaint.getvalue())
+            self.assertFalse(out.exists())
+
+
+class TheCommittedPanoramaIsWhatItsRecordSays(unittest.TestCase):
+    """The one asset check that needs a decoder, which is why it is here and not in the checker.
+
+    `tools/asset_provenance.py` keeps the digest, the size and the licence honest with the standard
+    library alone. Width and height are the two recorded facts it cannot check without an image
+    library, so the work is split: the checker demands a shape from every entry whose extension is
+    in `asset_provenance.SHAPED`, and this asserts that the shape demanded is the shape the file
+    has. Neither half is enough alone — a requirement nobody verifies is a comment, and a
+    verification of whatever happens to be recorded cannot notice a record that stopped recording.
+
+    Every record in the tree, not one directory named here: the prose in `sources.json` claims this
+    generally, and a hard-coded path made that claim true of one folder and false everywhere else —
+    a tracked 64x32 JPEG recorded as 4096 by 7 passed every gate.
+
+    **Read with `Image.open`, not `read_panorama`.** The reader this used to call is the
+    *equirectangular panorama* reader and refuses everything else, so the moment a second raster
+    recorded a shape — the four 48x36 frames, the first time the checker demanded one — a generic
+    claim was being enforced by a panorama-specific reader and four records failed for being what
+    they are. Where an entry says so itself, in `projection`, the 2:1 rule is asserted here instead.
+    """
+
+    def test_every_recorded_shape_is_the_shape_the_file_has(self):
+        shaped = 0
+        equirectangular = 0
+        claimed = 0
+        for record in asset_provenance.records(Path(__file__).resolve().parents[1]):
+            document = json.loads(record.read_text())
+            for entry in (document.get("assets") or []) + (document.get("ours") or []):
+                # Counted before the extension filter, so the two numbers can disagree. An entry
+                # claiming to be equirectangular whose extension is not in `SHAPED` is skipped
+                # entirely by the loop below, and a floor on the assertions made cannot see that.
+                if entry.get("projection") == "equirectangular":
+                    claimed += 1
+                if Path(entry["file"]).suffix.lower() not in asset_provenance.SHAPED:
+                    continue
+                shaped += 1
+                with self.subTest(file=entry["file"]):
+                    # The checker refuses a raster entry with no shape, so reaching here without one
+                    # already fails the build — but it fails it in the other step, and a `KeyError`
+                    # out of this body names a line of test code where a sentence would name the
+                    # record.
+                    missing = [f for f in ("width", "height") if f not in entry]
+                    self.assertFalse(missing, f"{entry['file']} records no {' or '.join(missing)}, "
+                                              f"which tools/asset_provenance.py should have caught")
+                    # The orientation tag is applied first, for the reason `read_panorama` applies
+                    # it: a phone writes the tag rather than turning the pixels, so the shape in the
+                    # header is not the shape anybody sees.
+                    with Image.open(record.parent / entry["file"]) as opened:
+                        width, height = ImageOps.exif_transpose(opened).size
+                    self.assertEqual((width, height), (entry["width"], entry["height"]))
+                    if entry.get("projection") == "equirectangular":
+                        equirectangular += 1
+                        self.assertEqual(width, 2 * height,
+                                         f"{entry['file']} says it is equirectangular, which covers "
+                                         f"360 degrees of longitude by 180 of latitude")
+        # Not a stand-in for the per-file requirement — the checker owns that now, and a record that
+        # drops a shape fails it rather than quietly reducing this count. This only says the walk
+        # found something to walk.
+        self.assertGreater(shaped, 0, "no record was walked, so this checks nothing")
+        # **Every claim made is a claim checked**, rather than a floor on how many were. While the
+        # panorama's `projection` read "equirectangular, 360 by 180 degrees" this branch never ran
+        # and `shaped` was non-zero throughout, so the outer count could not see it; a floor of one
+        # closed that and no more — it goes quiet again the moment a second entry claims a
+        # projection, since losing one of two still leaves the count above zero. Tying it to the
+        # claims present is what makes it proof rather than a tripwire for one specific past bug.
+        self.assertEqual(equirectangular, claimed,
+                         "an entry claims to be equirectangular and its shape was never checked — "
+                         "most likely its extension is not in asset_provenance.SHAPED")
+        self.assertGreater(claimed, 0,
+                           "no entry claimed a projection, so the 2:1 rule was asserted of nothing")
+
+
+class ARecordedCommandIsRunRatherThanBelieved(unittest.TestCase):
+    """Every `produced_by` in the tree, executed against the bytes it claims to produce.
+
+    `tools/asset_provenance.py` cannot do this itself: it runs in every build and stays standard
+    library only, and these commands need the `datasets` group. So it lives here, with the group
+    already present — generically, over every record rather than over this renderer's, because the
+    property is about the records and not about what happens to produce them today.
+
+    Without it `ours` is an escape hatch. A third-party file could be cleared by claiming this
+    repository produced it, and a command that stopped reproducing its output — a changed argparse
+    default is enough — would age quietly into fiction while the suite stayed green.
+    """
+
+    def repository(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def records(self) -> list[Path]:
+        # The checker's own listing, not a second one. Asking the index alone — which is what this
+        # did — clears an *unstaged* record without ever running its command, and `tools/gate.sh` is
+        # exactly what a contributor runs before staging.
+        return asset_provenance.records(self.repository())
+
+    def test_every_recorded_command_reproduces_the_bytes_it_names(self):
+        found = 0
+        for record in self.records():
+            document = json.loads(record.read_text())
+            # Both lists. This walked `ours` alone, while `tools/asset_provenance.py`'s docstring
+            # promises it of any entry that carries the field — so a `produced_by` under `assets`
+            # cleared the checker and was never run, which is the one shape of this record the
+            # promise most needs to cover: a file we did not make, with a command claiming it can
+            # be remade.
+            entries = [e for e in (document.get("assets") or []) + (document.get("ours") or [])
+                       if e.get("produced_by")]
+            if not entries:
+                continue
+            commands = {entry["produced_by"] for entry in entries}
+            directory = record.parent.relative_to(self.repository()).as_posix()
+
+            for command in commands:
+                found += 1
+                # The command names the directory it writes to, so it is the one a person runs to
+                # regenerate in place. Here that path is swapped for a temporary one: a test that
+                # overwrote the fixture would pass by rewriting the thing it is checking.
+                self.assertIn(directory, command,
+                              f"{record} records a command that does not name its own directory, "
+                              f"so there is no way to run it without overwriting the fixture")
+                with tempfile.TemporaryDirectory() as elsewhere:
+                    out = str(Path(elsewhere) / "regenerated")
+                    result = subprocess.run(command.replace(directory, out), shell=True,
+                                            cwd=self.repository(), capture_output=True)
+                    self.assertEqual(result.returncode, 0,
+                                     f"{command}\n{result.stderr.decode()[-2000:]}")
+                    for entry in entries:
+                        if entry["produced_by"] != command:
+                            continue
+                        produced = Path(out) / entry["file"]
+                        self.assertTrue(produced.is_file(),
+                                        f"the command wrote no {entry['file']}")
+                        self.assertEqual(
+                            produced.read_bytes(),
+                            (record.parent / entry["file"]).read_bytes(),
+                            f"{entry['file']} is not what its recorded command produces; "
+                            f"regenerate it, or correct the command")
+        self.assertGreater(found, 0, "no recorded command was run, so this checks nothing")
+
 
 
 if __name__ == "__main__":

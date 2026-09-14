@@ -5,8 +5,9 @@
 # there is a dependency on every build that runs them. (An earlier version of this comment said
 # "every CI job"; measured, two of the five set Python up at all, and the count of checkers this
 # repository quotes in three places matches nothing countable — so neither number is stated here.) `dependencies` below is
-# therefore empty and the one tool that needs numpy, the dataset renderer, names the `datasets`
-# group at its call site instead (ADR 0050). What keeps that true is the ordering in ci.yml: the
+# therefore empty, and the one tool with dependencies — the dataset renderer, which needs numpy to
+# compute on a panorama and Pillow to read one — names the `datasets` group at its call site
+# instead (ADR 0050, ADR 0059). What keeps that true is the ordering in ci.yml: the
 # checker steps run before the step that installs the group. The reason this
 # file exists anyway is the interpreter itself: `python3` was whatever the machine happened to have,
 # CI pinned 3.11 in one place, and nothing tied the two together. `uv run` resolves both from here.
@@ -27,4 +28,5 @@ package = false
 [dependency-groups]
 datasets = [
     "numpy>=2.4.6",
+    "pillow>=12.3.0",
 ]

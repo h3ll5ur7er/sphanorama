@@ -46,15 +46,17 @@ coverage and acceptance are all decided in the core.
 methods are implemented (`ExtractFeatures` and now `EstimatePairwise`), it exists only where OpenCV
 does so a browser build still gets the null one, and no composition root selects it yet — it is
 reached from tests. `Refine` still refuses. **The pair estimator is now scored against a dataset**,
-which is what that qualification was waiting for: on a twelve-frame synthetic ring, against a sensor
-prior perturbed three degrees, AKAZE and SIFT register all eleven consecutive pairs and ORB eight,
-with medians under a tenth of a degree (ADR 0056, and the roadmap's table; ADR 0057 retracts the
-figures published before the prior was perturbed — the first harness handed the estimator the exact
-truth and was measuring itself). The three pairs ORB declines are not a defect, and they are not
-alike: two return a rotation backed by a minority (20 of 141, 13 of 154) and the third gathers no
-consensus and is refused. Under the *truth* rotation those three have 11, 19 and 13 correspondences
-of 128, 141 and 154 behind them, so where the search answers it finds as many inliers as truth
-itself. `Composition` is
+which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
+panorama, against a sensor prior perturbed three degrees, all three detectors register all eleven
+consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101 (ORB) — the
+roadmap's table, ADR 0059 for the world it is measured in, and ADR 0057 for the figures retracted
+when the first harness was found to be handing the estimator the exact truth and measuring itself.
+**The world matters more than the ranking.** Against the checkerboard that photograph replaced, ORB
+declined three of eleven pairs among hundreds of indistinguishable corners — two answered with
+`accepted = false` and the third refused outright, which ADR 0056 counts separately because they are
+different outcomes —
+not a defect, and ADR 0056 is the record of it. A periodic world is the one place a feature matcher
+must not be scored. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
@@ -75,8 +77,8 @@ our inverse to invert *their* forward map, which is a stronger statement than ag
 inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
 theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
 `uv run tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the
-line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy is in a group so
-the checkers stay standard-library only (ADR 0050).
+line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy and Pillow are in
+a group so the checkers stay standard-library only (ADR 0050, ADR 0059).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that
@@ -109,8 +111,8 @@ compensating way, and score perfect (ADR 0050). The two are pinned to the same h
 instead. It taught the same lesson again in a new place — a tolerance written in colour components
 was three orders of magnitude looser than the interpolation error it was meant to bound and let a
 render wrong by 0.086 degrees pass, so the assertions are in degrees now, which is the unit the
-thing exists to serve. Geometry only so far: noise, blur, rolling shutter, exposure, bursts and
-movers are each their own increment. Which feature
+thing exists to serve. Geometry only so far, and undistorted geometry at that: distortion, noise,
+blur, rolling shutter, exposure, bursts and movers are each their own increment. Which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.

@@ -17,6 +17,14 @@
 > becoming `PUBLIC`, and `core/test/CMakeLists.txt` now says so where they are set. This predates
 > the branch that found it and is on `main` too; it was invisible to eight rounds of range-scoped
 > review because nothing touched those lines.
+>
+> **And the Decision's inventory of `core/test/data/synthetic-ring-4` is one file short.** The
+> branch that adds the asset-provenance check puts a `sources.json` in that directory, so it is six
+> files and **25,593 bytes** of content, 44 KiB on disk — not the five objects, 22,570 bytes and
+> 40 KiB written below. The new figure is the one `tools/asset_provenance.py` quotes when it says
+> what a record may weigh. The numbers below stand as what the directory held when this was
+> written, which is what an ADR is for; this note is where a reader going to that directory today
+> should stop.
 
 ## Context
 

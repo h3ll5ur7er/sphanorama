@@ -208,7 +208,9 @@ contracts/cpp/        the include root — headers consumed directly, never mirr
 core/                 C++: managers, engines, resource-access implementations, native adapters
   src/{managers,engines,resource_access,utilities}/
   test/               GoogleTest, mirroring src/; fakes in test/support/
-  test/data/          the one committed dataset — a format fixture, not a measurement (ADR 0053)
+  test/data/          synthetic-ring-4, a format fixture rather than a measurement (ADR 0053),
+                      and panoramas/, the world accuracy is measured in (ADR 0059). A binary
+                      here needs an entry in the nearest sources.json above it
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. A client at its root; its
                       resource_access/ subtree holds browser-backed ports and is judged as
@@ -328,6 +330,7 @@ accident anyway.
 | A client importing an engine | The client is doing business logic, or a manager method is missing |
 | A reviewer measures a number nobody else can reproduce | Your sabotage is still in the build tree. Restoring the *source* is not restoring the *binary*: a reviewer in its own worktree still links `build/native-debug`, and a sabotaged library there is indistinguishable from a defect to whoever arrives next. It cost a round — an agent measured ORB at 11 of 11 six deterministic times, from a library built with `kInlierFraction = 0.01`, and only caught it by rebuilding from committed sources. Rebuild after restoring, before anyone else reads the tree |
 | A sabotage that leaves every test green | Before concluding the test is worthless, prove the edit applied. A `sed` or a string replace whose pattern did not match reads exactly like a surviving test, and it has happened more than once |
+| A Python sabotage that survives being restored | `__pycache__`. Restoring the source and re-running gave the *sabotage's* behaviour, with `git diff` clean — the cached bytecode was still being imported. Two tests then looked like they could not fail and were not the problem. `rm -rf tools/__pycache__` between a restore and the run that checks it, and treat a clean diff plus the old behaviour as the cache before it is the code |
 | A sabotage that applied, compiled, and changed nothing | Reinstating the *text* of the old code is not reinstating its *behaviour*. A rollback loop put back without the `push_back` that fills it iterates over nothing, and reads exactly like a test that cannot fail. Predict which test should break and why before running it; if a different one breaks, or none does, the sabotage is the suspect before the test is |
 | A test that passes for a reason you did not intend | It proves whatever refused the input first. A version-gate test never reached the version line, because the document it fed in was malformed in other ways too and the parser threw it out before then. Make the input valid in every respect except the one under test — build it from a real artefact and corrupt a single field |
 | A guard no test can reach | Ask whether the state is reachable *in life* before deleting it. If it is, give the fake what it needs to get there — a lock it can refuse, a close that throws — and keep the guard with a test. If it is not, delete it. What you must not do is keep an untested guard because it feels safer |
