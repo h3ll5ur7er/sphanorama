@@ -631,6 +631,28 @@ class AssetProvenance(unittest.TestCase):
         subprocess.run(["git", "add", "-f", "--", "LICENSE"], cwd=self.tree.root, check=True)
         self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
+    def test_a_refused_open_leaves_no_descriptor_behind(self):
+        # `open_regular` holds a bare descriptor between `os.open` and `os.fdopen`, and every way
+        # out of that window but the happy one is an exception — a FIFO, a directory, `fdopen`
+        # itself failing. Without the `except BaseException: os.close(handle)` the integer leaks,
+        # and a leak is invisible: the suite stays green and the checker runs out of descriptors
+        # only on a tree big enough to matter.
+        #
+        # Counted rather than warned about, because `ResourceWarning` is not raised for a bare
+        # descriptor — nothing owns it to have a finaliser.
+        def open_descriptors():
+            return len(os.listdir("/proc/self/fd"))
+
+        fifo = self.tree.root / "pipe"
+        os.mkfifo(fifo)
+        self.addCleanup(fifo.unlink)
+        before = open_descriptors()
+        for _ in range(64):
+            with self.assertRaises(OSError):
+                asset_provenance.open_regular(fifo)
+        self.assertLessEqual(open_descriptors(), before,
+                             "a refused open left its descriptor behind")
+
     def test_a_licence_or_a_record_that_is_a_fifo_does_not_hang_the_build(self):
         # **A ceiling on the read does not bound the `open`.** A FIFO blocks in the kernel until a
         # writer appears, so `mkfifo LICENSE` made this checker never return — the bound added to
@@ -659,6 +681,35 @@ class AssetProvenance(unittest.TestCase):
     @staticmethod
     def impatient(number, frame):
         raise AssertionError("the checker did not return: a fifo is blocking it in open()")
+
+    def test_one_unreadable_spelling_does_not_hide_a_good_one(self):
+        # Hoisting the licence question out of the entry loop changed its answer, which is the kind
+        # of thing hoisting is supposed not to do: the `any(...)` it replaced swallowed an `OSError`
+        # and tried the next spelling, and returning on the first one stopped the search. A
+        # `LICENSE` that is a FIFO beside a perfectly good tracked `COPYING` was refused.
+        #
+        # Both orders, because the rule is about the set and not about which file comes first in
+        # `LICENCE_FILES`.
+        self.defer()
+        for broken, good in (("LICENSE", "COPYING"), ("COPYING", "LICENSE")):
+            with self.subTest(broken=broken):
+                for spelling in ("LICENSE", "COPYING"):
+                    written = self.tree.root / spelling
+                    if written.exists():
+                        written.unlink()
+                # Tracked as ordinary files and *then* replaced on disk, because `git add` refuses
+                # a FIFO — which is the real arrangement anyway: the index says what was committed
+                # and the working tree is what the checker opens.
+                for spelling in (good, broken):
+                    (self.tree.root / spelling).write_text("MIT, and readable.\n")
+                    self.tree.track(spelling)
+                (self.tree.root / broken).unlink()
+                os.mkfifo(self.tree.root / broken)
+                try:
+                    self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [],
+                                     f"an unreadable {broken} hid a good {good}")
+                finally:
+                    (self.tree.root / broken).unlink()
 
     def test_a_licence_that_cannot_be_read_is_not_reported_as_one_that_is_not_there(self):
         # "This repository has no licence file" about a file that is right there sends a reader to
@@ -1123,21 +1174,41 @@ class ReadingAFileInBlocks(unittest.TestCase):
             # `assertIn(function, source)` was a tautology for exactly the function the class
             # docstring names — the fix and the defect it fixed, in one line.
             #
-            # **Parsed, not matched.** The qualified form was still text, so a case gutted to a
-            # comment naming `asset_provenance.digest(path)` plus `assertTrue(True)` satisfied it —
-            # round 16's defect reinstated by round 16's fix, which is the third spelling of this
-            # one assertion. A comment cannot be an `ast.Call`.
+            # **Run, not read.** This assertion has had three spellings — `hasattr`, then the
+            # qualified name as a substring, then an `ast.Call` — and every one of them asked a
+            # question about the *text* of the case. Each was defeated in the round after it: an
+            # empty method, a comment, and then dead code after a `return`. A parser strictly
+            # stricter than the last is still not the question, which is whether the case *calls*
+            # the function when it runs.
+            #
+            # So the case is invoked with the function wrapped, in a fresh instance of this class so
+            # its own `setUp` gives it the fixture it expects and nothing here is disturbed. `if
+            # False:`, an uninvoked lambda and a call inside `assertRaises` all now fail, because
+            # none of them reaches the wrapper.
             self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
-            self.assertIn(function, self.functions_called_by(case),
-                          f"{case} is named as {function}'s cover and never calls it")
+            self.assertTrue(self.case_calls(case, function),
+                            f"{case} is named as {function}'s cover and never calls it")
 
-    def functions_called_by(self, case):
-        """The names this case calls on `asset_provenance`, from its parse tree."""
-        source = textwrap.dedent(inspect.getsource(getattr(self, case)))
-        return {node.func.attr for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "asset_provenance"}
+    def case_calls(self, case, function):
+        """Whether running `case` actually calls `asset_provenance.<function>`."""
+        called = []
+        held = getattr(asset_provenance, function)
+
+        def watched(*arguments, **named):
+            called.append(arguments)
+            return held(*arguments, **named)
+
+        instance = type(self)(case)
+        setattr(asset_provenance, function, watched)
+        try:
+            instance.setUp()
+            try:
+                getattr(instance, case)()
+            finally:
+                instance.doCleanups()
+        finally:
+            setattr(asset_provenance, function, held)
+        return bool(called)
 
     def test_no_function_here_reads_an_asset_other_than_in_blocks_of_block(self):
         # The hole the derivation above cannot see. It finds functions that mention `BLOCK`, so a
@@ -1177,22 +1248,36 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # this file now asks for a number.
         self.assertEqual([ast.unparse(node) for node in whole], [],
                          "something is read whole again")
-        # And nothing iterates a file handle, which is the one shape no list of method names can
-        # see: `for line in handle` reads the file a line at a time with no call to enumerate. The
-        # handles are the names bound by `with … .open(…) as name`, which is how every read in this
-        # module is opened, so the set is exact rather than a guess at what a file might be called.
-        handles = {item.optional_vars.id
-                   for node in ast.walk(tree) if isinstance(node, ast.With)
-                   for item in node.items
-                   if isinstance(item.optional_vars, ast.Name)
-                   and isinstance(item.context_expr, ast.Call)
-                   and isinstance(item.context_expr.func, ast.Attribute)
-                   and item.context_expr.func.attr == "open"}
-        iterated = [ast.unparse(node.iter) for node in ast.walk(tree)
-                    if isinstance(node, (ast.For, ast.comprehension))
-                    and isinstance(getattr(node, "iter", None), ast.Name)
-                    and node.iter.id in handles]
-        self.assertEqual(iterated, [], "a file handle is iterated, which reads it a line at a time")
+        # And a handle is only ever *called on*, never used as a value — which is the one shape no
+        # list of method names can see. `for line in handle` reads the file a line at a time with no
+        # call to enumerate, and `b"".join(handle)` does it with no loop either.
+        #
+        # Every `with` that binds a name, not only `… .open(…)`. The first version keyed on the
+        # attribute `open`, so `with open_regular(path) as handle` — which is how *both* of the
+        # reads this whole exercise is about are opened — contributed nothing to the set, and the
+        # check was correct only because the other two `with` statements happened to bind the same
+        # name. A test right by name collision is a test waiting for a rename.
+        # Per function, because a name means different things in different ones: `open_regular`
+        # binds `handle` to an *integer* file descriptor and passes it to `os.fstat` and `os.close`,
+        # which is exactly right and is not a read at all. A module-wide set of names would refuse
+        # that, and asking each function about its own bindings is the question anyway.
+        loose = []
+        for value in vars(asset_provenance).values():
+            if not inspect.isfunction(value):
+                continue
+            body = ast.parse(textwrap.dedent(inspect.getsource(value)))
+            handles = {item.optional_vars.id
+                       for node in ast.walk(body) if isinstance(node, ast.With)
+                       for item in node.items if isinstance(item.optional_vars, ast.Name)}
+            parents = {child: parent for parent in ast.walk(body)
+                       for child in ast.iter_child_nodes(parent)}
+            loose += [f"{value.__name__}: {ast.unparse(parents.get(node, node))}"
+                      for node in ast.walk(body)
+                      if isinstance(node, ast.Name) and node.id in handles
+                      and isinstance(node.ctx, ast.Load)
+                      and not (isinstance(parents.get(node), ast.Attribute)
+                               and parents[node].attr in reads)]
+        self.assertEqual(loose, [], "a file handle is used as a value rather than read from")
 
     def test_a_licence_whose_first_legible_byte_is_past_one_block_reads_as_blank(self):
         # `says_something` reads *one* block on purpose — a checker asked about a path from the

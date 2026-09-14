@@ -328,7 +328,12 @@ def licence_trouble(root: Path, indexed: list[str]) -> str | None:
     re-reading the same file, and 600 entries spent 98 — and `RECORD_CEILING` permits some 23,000
     entries in one record, so the bound added to stop unbounded work was also the multiplier. The
     answer cannot change while `check` runs.
+
+    Every spelling is tried before any of them is reported, because the two questions this can
+    answer — "there is no licence" and "the licence cannot be read" — are both about the set rather
+    than about one file.
     """
+    unreadable = None
     for spelling in LICENCE_FILES:
         if spelling not in indexed:
             continue
@@ -336,7 +341,15 @@ def licence_trouble(root: Path, indexed: list[str]) -> str | None:
             if says_something(root / spelling):
                 return None
         except OSError as refused:
-            return f"{spelling} cannot be read: {refused.strerror}"
+            # **Remembered, not returned.** Hoisting this out of the entry loop quietly changed the
+            # answer: the `any(...)` it replaced swallowed an `OSError` and went on to the next
+            # spelling, and returning here stopped the search at the first unreadable one — so a
+            # repository with a `LICENSE` that is a FIFO and a perfectly good tracked `COPYING` was
+            # refused. A licence that cannot be read is a reason to report *if nothing else
+            # answers*, never a reason to stop looking.
+            unreadable = unreadable or f"{spelling} cannot be read: {refused.strerror}"
+    if unreadable is not None:
+        return unreadable
     return (f"this repository has no licence file for it to mean — looked for "
             f"{', '.join(LICENCE_FILES)}")
 
