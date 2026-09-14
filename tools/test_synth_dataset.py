@@ -29,6 +29,7 @@ rather than something to look at.
 from __future__ import annotations
 
 import contextlib
+import gc
 import hashlib
 import io
 import json
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import weakref
 import unittest
 from pathlib import Path
 
@@ -1451,6 +1453,46 @@ class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):
                                 ["frame_0000.ppm", "frame_0001.ppm", "frame_0002.ppm"]],
                          "a frame was still unwritten when the next one began: the render is "
                          "holding them, and peak memory is linear in --frames again")
+
+    def test_a_frame_is_released_once_it_is_written(self):
+        # **Written is not the same as released**, and the case above cannot tell them apart: a
+        # loop that writes each frame *and* keeps a reference to it passes that assertion with
+        # peak memory linear in `--frames` again, which is the whole thing this is for.
+        #
+        # So the question is asked of the object rather than of the directory. A weak reference
+        # outlives its array only while something else holds one; if the render has let go, every
+        # earlier frame is dead by the time the next is asked for. CPython frees on the last
+        # reference, so no collection is needed — but `gc.collect()` is cheap here and makes the
+        # assertion independent of that.
+        with tempfile.TemporaryDirectory() as directory:
+            honest = synth_dataset._to_bytes
+            issued, alive_when_asked = [], []
+
+            def watch(*arguments, **named):
+                gc.collect()
+                alive_when_asked.append([reference() is not None for reference in issued])
+                frame = honest(*arguments, **named)
+                issued.append(weakref.ref(frame))
+                return frame
+
+            synth_dataset._to_bytes = watch
+            self.addCleanup(setattr, synth_dataset, "_to_bytes", honest)
+            self._run("--out", str(Path(directory) / "ring"), "--frames", "4",
+                      "--width", "16", "--height", "12")
+
+        # **One frame is alive, and that is the right answer rather than a tolerance.** The loop
+        # variable in `write_dataset` still points at frame N while frame N+1 is being rendered,
+        # because it is not reassigned until the call returns. So the streamed shape holds exactly
+        # its predecessor and the hoarding shape holds all of them: the distinction is not "some"
+        # against "none", it is one against N, which is the difference between O(1) and O(frames).
+        #
+        # Written as the exact list rather than a count, because "at most one" would also be
+        # satisfied by an implementation that kept a different single frame — the first, say — and
+        # the position is what says which one.
+        self.assertEqual(alive_when_asked,
+                         [[], [True], [False, True], [False, False, True]],
+                         "the render is holding frames it has already written, which costs the "
+                         "same memory as never writing them")
 
 
 class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):

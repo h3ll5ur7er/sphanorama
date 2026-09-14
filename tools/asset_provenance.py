@@ -65,7 +65,13 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from reading import BLOCK, blocks, head
+# **The module, not its names.** `from reading import BLOCK, blocks, head` binds copies at import
+# time, and a copy of a constant is a second answer to the question it settles: lowering
+# `asset_provenance.BLOCK` in a test moved this module's alias and left `reading.BLOCK` — which is
+# the one every streamed read actually uses — at a megabyte. Three consumers were then driven
+# across a block boundary by a suite that believed it had lowered the boundary, and each could be
+# truncated to its first chunk with every test green.
+import reading
 from tracked import indexed_files, tracked_files
 
 RECORD = "sources.json"
@@ -172,7 +178,7 @@ def git_blob(path: Path) -> str:
     # opposite order and claimed this was the only `stat` in the file, which the entry walk's own
     # `path.stat().st_size` had already made false.
     running = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
-    for block in blocks(path):
+    for block in reading.blocks(path):
         running.update(block)
     return running.hexdigest()
 
@@ -273,7 +279,7 @@ def read_record(path: Path) -> str:
     rather than a big record. `stat` first would be a second answer — and a wrong one for a
     character device, whose length is zero — so this reads one byte past the ceiling and asks.
     """
-    found = head(path, RECORD_CEILING + 1)
+    found = reading.head(path, RECORD_CEILING + 1)
     if len(found) > RECORD_CEILING:
         raise ValueError(f"is larger than {RECORD_CEILING} bytes, so it is not a record")
     return found.decode("utf-8")
@@ -294,7 +300,7 @@ def says_something(path: Path) -> bool:
     there sends a reader to write one. `why_asset` made the opposite choice deliberately and it is
     the right one — the reason is what a refusal is for.
     """
-    return legible(head(path, BLOCK).decode("utf-8", "surrogateescape"))
+    return legible(reading.head(path, reading.BLOCK).decode("utf-8", "surrogateescape"))
 
 
 def licence_trouble(root: Path, indexed: list[str]) -> str | None:
@@ -390,7 +396,7 @@ def digest(path: Path) -> str:
     incremental and the loop is two lines.
     """
     running = hashlib.sha256()
-    for chunk in blocks(path):
+    for chunk in reading.blocks(path):
         running.update(chunk)
     return running.hexdigest()
 
@@ -496,7 +502,7 @@ def why_asset(path: Path) -> str | None:
         # boundary, so a character split between two reads is not mistaken for invalid UTF-8, which
         # is the reason this cannot simply be `chunk.decode()` in a loop.
         decoder = codecs.getincrementaldecoder("utf-8")()
-        for chunk in blocks(path):
+        for chunk in reading.blocks(path):
             decoder.decode(chunk)
         decoder.decode(b"", final=True)
     except UnicodeDecodeError:

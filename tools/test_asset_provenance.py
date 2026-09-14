@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import asset_provenance  # noqa: E402
+import reading  # noqa: E402
 
 # Bytes that are not valid UTF-8, spelled with a continuation byte that can never start a
 # sequence. The first version of this file used `b"\x7fELF not text"` and similar — thirteen ASCII
@@ -720,15 +721,15 @@ class AssetProvenance(unittest.TestCase):
         # The licence only. Refusing every read would make the record unreadable too, so the entry
         # loop would never run and the refusal under test could not be reached — `named` would come
         # back empty for the wrong reason.
-        held = asset_provenance.head
+        held = reading.head
 
         def nothing_ready(path, limit):
             if path.name == "LICENSE":
                 raise OSError(errno.EAGAIN, "had nothing ready to read")
             return held(path, limit)
 
-        asset_provenance.head = nothing_ready
-        self.addCleanup(setattr, asset_provenance, "head", held)
+        reading.head = nothing_ready
+        self.addCleanup(setattr, reading, "head", held)
         self.defer()
         named = [p for p in self.tree.problems() if "`licence`" in p]
         self.assertTrue(any("LICENSE cannot be read" in p for p in named), named)
@@ -852,15 +853,15 @@ class AssetProvenance(unittest.TestCase):
         # The licence only. `read_record` reads through the same helper, so refusing everything
         # makes the record unreadable and the entry loop never runs — the refusal under test then
         # cannot be reached, and `named` comes back empty for the wrong reason.
-        held = asset_provenance.head
+        held = reading.head
 
         def refuse(path, limit):
             if path.name == "LICENSE":
                 raise PermissionError(13, "Permission denied")
             return held(path, limit)
 
-        asset_provenance.head = refuse
-        self.addCleanup(setattr, asset_provenance, "head", held)
+        reading.head = refuse
+        self.addCleanup(setattr, reading, "head", held)
         self.defer()
         named = [p for p in self.tree.problems() if "`licence`" in p]
         self.assertTrue(any("LICENSE cannot be read: Permission denied" in p for p in named), named)
@@ -1287,11 +1288,10 @@ class ReadingAFileInBlocks(unittest.TestCase):
         "read_record": "test_a_record_too_large_to_be_a_record_is_refused_rather_than_read",
     }
 
-    # The two calls that reach a file. Everything this module knows about bytes on disk arrives
-    # through one of them, which is what `test_nothing_here_reads_a_file_except_through_reading`
-    # holds — so "calls one of these" and "reads a file" are the same set, and the derivation below
-    # is complete by that assertion rather than by inspection.
-    READERS = ("blocks", "head")
+    # Everything `reading` offers that reaches a file. `text` is here even though this module does
+    # not currently call it: the set is "what would count as reading a file", not "what is called
+    # today", and a set that tracks today's call sites cannot notice a new one.
+    READERS = ("blocks", "head", "text")
 
     def test_every_reader_has_a_case_in_this_class(self):
         # Derived from the module rather than listed beside it: every function that calls into
@@ -1305,8 +1305,7 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # asked, and it survived the reads moving into `reading` where a name-based one would not.
         readers = {name for name, value in vars(asset_provenance).items()
                    if inspect.isfunction(value)
-                   and any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                           and node.func.id in self.READERS
+                   and any(self.reaches_a_file(node)
                            for node in ast.walk(ast.parse(
                                textwrap.dedent(inspect.getsource(value)))))}
         self.assertEqual(readers, set(self.DRIVEN),
@@ -1337,6 +1336,24 @@ class ReadingAFileInBlocks(unittest.TestCase):
             self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
             self.assertTrue(self.case_calls(case, function),
                             f"{case} is named as {function}'s cover and never calls it")
+
+    @classmethod
+    def reaches_a_file(cls, node):
+        """Whether this node is a call into `reading`, spelled either way.
+
+        **Both spellings, because the import style decides which one appears** and this module has
+        used both. An `ast.Name` check saw `blocks(path)` and was blind to `reading.blocks(path)`,
+        which is how the two sibling checkers spell it — so a function could read a file, demand no
+        case here, and be reported by nothing. The module has since moved to the attribute form
+        itself, which would have made the whole derivation vacuous.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        if isinstance(node.func, ast.Name):
+            return node.func.id in cls.READERS
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr in cls.READERS
+        return False
 
     def case_calls(self, case, function):
         """Whether running `case` actually calls `asset_provenance.<function>`."""
@@ -1392,6 +1409,28 @@ class ReadingAFileInBlocks(unittest.TestCase):
                          "this module opens or reads a file itself rather than through `reading`, "
                          "which is how three of five open sites came to be unguarded")
 
+        # **And the imports are a closed set**, which is the half a list of method names cannot do.
+        # `linecache.getlines(str(path))` reads a file through the builtin `open` under a name
+        # nothing above matches — no `O_NONBLOCK`, no ceiling — and so do `mmap`, `shutil`,
+        # `codecs.open`, `os.read` and `numpy.fromfile`. Enumerating those is another copy of
+        # somebody else's surface, and this file has been caught by that shape four times.
+        #
+        # So the question is inverted: what may this module import at all? Ten names, every one of
+        # them here for a reason a reader can check, and a new one is a deliberate line in this
+        # tuple rather than a silent capability. That is a smaller thing to keep true than a list
+        # of every way Python can open a file.
+        allowed = {"__future__", "codecs", "hashlib", "json", "os", "sys", "unicodedata",
+                   "dataclasses", "pathlib", "reading", "tracked"}
+        imported = set()
+        for node in ast.walk(ast.parse(inspect.getsource(asset_provenance))):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(imported - allowed, set(),
+                         "a new import can reach the filesystem outside `reading` — add it here "
+                         "deliberately, having checked it cannot")
+
     def test_a_record_too_large_to_be_a_record_is_refused_rather_than_read(self):
         # `read_record` is bounded rather than streamed, because unlike an asset a record has no
         # honest large form: `json.loads` needs the whole document anyway, and one this size is a
@@ -1416,7 +1455,7 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # is pinned here rather than left to be discovered. Anything legible is in the first block
         # of a licence somebody wrote; a file that hides its first word past a megabyte of spaces is
         # not one, and reading it as blank is the answer this accepts.
-        path = self.write("LICENSE", b" " * (asset_provenance.BLOCK + 4) + b"MIT")
+        path = self.write("LICENSE", b" " * (reading.BLOCK + 4) + b"MIT")
         self.assertFalse(asset_provenance.says_something(path))
         self.assertTrue(asset_provenance.says_something(self.write("ok", b"   MIT\n")))
 
@@ -1425,7 +1464,7 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # against a second implementation of the same header. Sizes around the boundary because the
         # mistakes here are off-by-one-block: an empty file, a block short, exactly a block, a block
         # and one byte, and several blocks with a remainder.
-        block = asset_provenance.BLOCK
+        block = reading.BLOCK
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         for size in (0, block - 1, block, block + 1, 3 * block + 5):
             with self.subTest(size=size):
@@ -1439,9 +1478,18 @@ class ReadingAFileInBlocks(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        held = asset_provenance.BLOCK
-        asset_provenance.BLOCK = 8
-        self.addCleanup(setattr, asset_provenance, "BLOCK", held)
+        # **`reading.BLOCK`, which is the one every streamed read uses.** This lowered
+        # `asset_provenance.BLOCK`, an alias bound at import — so after the reads moved
+        # into `reading`, the constant this class lowers reached exactly one of its four cases and
+        # `digest`, `git_blob` and `why_asset` were each driven across a boundary that was still a
+        # megabyte away. All three could be truncated to their first chunk with the whole suite
+        # green, which is this class's own docstring describing itself.
+        #
+        # One constant now, and that is the fix rather than a tidy-up: `asset_provenance` imports
+        # the module instead of the names, so there is no alias left to lower separately and no way
+        # for the two to disagree again.
+        self.addCleanup(setattr, reading, "BLOCK", reading.BLOCK)
+        reading.BLOCK = 8
 
     def write(self, name: str, content: bytes) -> Path:
         path = self.root / name
@@ -1454,14 +1502,14 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # swapped for another; two files sharing a first block would swap freely.
         content = b"the first block!" + b"and everything after it" * 4
         path = self.write("long.bin", content)
-        self.assertGreater(len(content), asset_provenance.BLOCK * 3, "one block would prove nothing")
+        self.assertGreater(len(content), reading.BLOCK * 3, "one block would prove nothing")
         self.assertEqual(asset_provenance.digest(path), hashlib.sha256(content).hexdigest())
 
     def test_a_character_split_across_a_block_boundary_is_still_one_character(self):
         # The reason this cannot be `chunk.decode()` in a loop. A multi-byte character that straddles
         # the boundary decodes as two invalid halves, so a perfectly good source file is reported as
         # an asset nobody recorded — a refusal a reader cannot act on, about a file that is fine.
-        for pad in range(asset_provenance.BLOCK):
+        for pad in range(reading.BLOCK):
             with self.subTest(pad=pad):
                 content = ("a" * pad + "\u00e9" + "b" * 20).encode()
                 path = self.write("text.txt", content)

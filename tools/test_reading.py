@@ -11,6 +11,7 @@ one is the only kind that can fail on it.
 """
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import io
@@ -372,10 +373,17 @@ class EveryCheckerThatWalksThisRepository(Impatient):
                 # which is deliberate — a silent skip would be a false pass — so `check` alone
                 # cannot say whether the build got a sentence or a traceback. `main` can.
                 #
-                # Not "returns zero": what each says about this file is its own business and its
-                # own suite's. The promise here is that it comes back, with an exit code.
-                answer = self.impatiently(seconds, checker.main, ["checker", str(self.root)])
-                self.assertIsInstance(answer, int)
+                # **And the answer is checked, not merely counted.** `assertIsInstance(answer, int)`
+                # was the whole of this, and a checker that walked nothing would satisfy it by
+                # returning 0 — so the case passed for a file none of the three had opened, which
+                # is precisely the failure the surrounding class is about. A non-zero exit and the
+                # file's own name in what the build prints is what "it looked at this and had
+                # something to say" looks like from outside.
+                said = io.StringIO()
+                with contextlib.redirect_stderr(said):
+                    answer = self.impatiently(seconds, checker.main, ["checker", str(self.root)])
+                self.assertEqual(answer, 1, said.getvalue())
+                self.assertIn("notes.md", said.getvalue())
 
     def test_none_of_them_raises_on_a_name_this_filesystem_will_not_answer_about(self):
         # `is_file()` is the first thing all three do with a listed path, and `Path.stat` swallows
