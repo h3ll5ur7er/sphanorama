@@ -272,7 +272,7 @@ def read_record(path: Path) -> str:
     character device, whose length is zero — so this reads one byte past the ceiling and asks.
     """
     with open_regular(path) as handle:
-        head = handle.read(RECORD_CEILING + 1)
+        head = ready(handle.read(RECORD_CEILING + 1))
     if len(head) > RECORD_CEILING:
         raise ValueError(f"is larger than {RECORD_CEILING} bytes, so it is not a record")
     return head.decode("utf-8")
@@ -300,6 +300,30 @@ def open_regular(path: Path):
         raise
 
 
+def ready(head: bytes | None) -> bytes:
+    """The bytes a read returned, refusing the one answer that is not bytes.
+
+    `open_regular` opens with `O_NONBLOCK` and the flag stays on the descriptor, so a read here has
+    a third outcome besides bytes and end of file: `None`, meaning "a regular file with nothing
+    ready". The flag cannot be cleared to make that go away — the files it guards against are
+    exactly the ones whose *read* would then block forever. `/proc/kmsg` is a regular file by
+    `S_ISREG` and reading it waits for the next kernel message, so `os.set_blocking` reinstates the
+    hang the flag was added to prevent, one call later and in a place nothing tests.
+
+    So `None` is a refusal, and it is one here rather than twice at the call sites. Left unhandled
+    it was `AttributeError: 'NoneType' object has no attribute 'decode'` from `says_something` and
+    `TypeError: object of type 'NoneType' has no len()` from `read_record` — neither an `OSError`,
+    so neither caught by the arms that exist for a file that cannot be read, and both arriving as a
+    traceback out of `check()`.
+
+    `EAGAIN`, which is the errno the flag's own contract names for it, so a caller reporting
+    `strerror` says something true about what happened.
+    """
+    if head is None:
+        raise OSError(errno.EAGAIN, "had nothing ready to read")
+    return head
+
+
 def says_something(path: Path) -> bool:
     """Whether this file has anything legible in it, read without trusting its length.
 
@@ -316,7 +340,7 @@ def says_something(path: Path) -> bool:
     the right one — the reason is what a refusal is for.
     """
     with open_regular(path) as handle:
-        head = handle.read(BLOCK)
+        head = ready(handle.read(BLOCK))
     return legible(head.decode("utf-8", "surrogateescape"))
 
 
@@ -761,19 +785,30 @@ def check(root: Path) -> list[Problem]:
                         problems.append(Problem(f"{rel} [{name}]",
                                                 f"`{field}` is missing, and a raster has one"))
 
-            # `here` again, not a second guard around it. The `file` check above wraps
-            # `is_symlink()` and `exists()` in the same `try` and `continue`s on an `OSError`, so by
-            # here the path is one this filesystem will answer about — `is_file()` is the same
-            # syscall and cannot newly refuse. A second `try` stood here and no input could reach
-            # it: a reviewer could not construct one, and deleting it leaves all 85 tests green and
-            # a 300-byte name still answered with "cannot be asked about" by the guard above.
+            # Guarded, like every other `is_file()` in this file. It was deleted one round ago as
+            # unreachable — the `file` check above wraps `is_symlink()` and `exists()` in a `try`
+            # and `continue`s on an `OSError`, so by here the path is one this filesystem answered
+            # about, and `is_file()` is the same syscall. Every clause of that is true and the
+            # conclusion does not follow: the two calls ask about the disk, and several fields are
+            # checked between them. The syscall cannot newly refuse; the *file* can.
             #
-            # Deleted rather than kept with a note, because the rule is that an unreachable guard
-            # goes; keeping one because it feels safer is how a reader comes to believe the state
-            # is reachable. The race — the file removed between the two calls — is not it either:
-            # `is_file()` swallows `ENOENT` and answers `False`, which is the line below.
+            # Measured this time, which the deletion was not. The removal race really is not it —
+            # `stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` — but a regular file replaced
+            # by a symlink to a 300-byte name raises `ENAMETOOLONG`, which is in no ignore set, and
+            # at the `file` rule a moment earlier it was an ordinary file that nothing refused. A
+            # concurrent build step or a parallel checkout is all it takes.
+            #
+            # The rule that an unreachable guard goes still stands. What went wrong is the step
+            # before it: "I could not construct an input" was read as "there is none", by a
+            # reviewer and then by me, about a window neither of us had tried to drive.
             path = directory / name
-            if not path.is_file():
+            try:
+                present = path.is_file()
+            except OSError as refused:
+                problems.append(Problem(f"{rel} [{name}]",
+                                        f"cannot be asked about: {refused.strerror}"))
+                continue
+            if not present:
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
                 continue
             # `digest`, not a third spelling of it: this used to inline `hashlib` here while the

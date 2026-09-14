@@ -8,8 +8,10 @@ record stops describing the bytes — a file nobody recorded, and a file that ha
 somebody did.
 """
 import ast
+import fcntl
 import hashlib
 import inspect
+import io
 import json
 import os
 import signal
@@ -653,6 +655,96 @@ class AssetProvenance(unittest.TestCase):
         self.assertLessEqual(open_descriptors(), before,
                              "a refused open left its descriptor behind")
 
+    def test_a_read_that_answers_nothing_is_a_refusal_and_not_a_traceback(self):
+        # `open_regular` opens with `O_NONBLOCK` because `open()` on a FIFO hangs, and the flag
+        # stays on the descriptor afterwards. It cannot simply be cleared: the files it guards
+        # against are the ones whose *read* would then block forever. `/proc/kmsg` is a regular
+        # file by `S_ISREG` and reading it waits for the next kernel message, so
+        # `os.set_blocking(handle, True)` — the obvious fix — reinstates the hang one call later,
+        # measured at exit 124 under `timeout` with `ln -s /proc/kmsg LICENSE` in the index.
+        #
+        # So a read here can answer `None`: a regular file with nothing ready, which is neither
+        # bytes nor an empty file. Both readers took it for bytes — `AttributeError: 'NoneType'
+        # object has no attribute 'decode'` out of `says_something`, `TypeError: object of type
+        # 'NoneType' has no len()` out of `read_record` — and neither is an `OSError`, so both
+        # walked past every arm that catches one and came out of `check()` as a traceback. That is
+        # the one answer this module's docstring says it will not give, and round 17 introduced it
+        # while closing the hang.
+        #
+        # The flag is asserted on a real descriptor; the `None` is driven through a raw that has
+        # nothing ready, because the file that really does this is `/proc/kmsg` and reading it
+        # *drains the kernel ring buffer*. A test has no business doing that to the machine it runs
+        # on, and one that did would also depend on whether a message happened to be waiting.
+        with asset_provenance.open_regular(self.tree.root / "LICENSE") as handle:
+            flags = fcntl.fcntl(handle.fileno(), fcntl.F_GETFL)
+        self.assertTrue(flags & os.O_NONBLOCK,
+                        "O_NONBLOCK on the descriptor is what makes a None read possible")
+
+        class NothingReady(io.RawIOBase):
+            """A regular file with nothing ready — what the flag above permits."""
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                return None
+
+        held = asset_provenance.open_regular
+        self.addCleanup(setattr, asset_provenance, "open_regular", held)
+
+        asset_provenance.open_regular = lambda path: io.BufferedReader(NothingReady())
+        with self.assertRaises(OSError):
+            asset_provenance.says_something(self.tree.root / "LICENSE")
+        with self.assertRaises(OSError):
+            asset_provenance.read_record(self.tree.assets / "sources.json")
+
+        # And end to end, for the licence alone — refusing the record too would stop the run before
+        # the deferral is asked about, so the sentence under test would be missing for the wrong
+        # reason.
+        asset_provenance.open_regular = (
+            lambda path: io.BufferedReader(NothingReady()) if path.name == "LICENSE"
+            else held(path))
+        self.defer()
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(any("LICENSE cannot be read" in p for p in named), named)
+
+    def test_a_file_that_stops_being_askable_after_its_name_is_checked_is_a_sentence(self):
+        # The entry walk asks the filesystem about one path twice: once for the `file` rule — is it
+        # a symlink, does it escape the record's directory — and once, several fields later, for
+        # "is it here". The second guard was deleted on the argument that it is the same syscall as
+        # the first and so cannot newly refuse. That is true of the call and false of the file:
+        # what the two calls ask about is the disk, and the disk can change between them.
+        #
+        # Measured rather than argued, because the deletion was argued. `Path.stat` swallows
+        # `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so the removal race really is
+        # not it — but a regular file replaced by a symlink to a 300-byte name gives
+        # `ENAMETOOLONG`, which is in no ignore set:
+        #
+        #     >>> path.symlink_to("n" * 300); path.is_file()
+        #     OSError: [Errno 36] File name too long
+        #
+        # and at the `file` rule a moment earlier the path was an ordinary file, so nothing there
+        # refused it. Uncaught that is a traceback out of `check()`, about a record whose problem a
+        # reader could have fixed.
+        #
+        # The window is driven rather than raced. `unusable` is the one call `check` makes between
+        # the two questions, so wrapping it puts the replacement exactly where a concurrent build
+        # step or a parallel checkout would put it — with no thread, no loop and no flake.
+        photo = self.tree.assets / "photo.bin"
+        held = asset_provenance.unusable
+
+        def swap(field, value):
+            if not photo.is_symlink():
+                photo.unlink()
+                photo.symlink_to("n" * 300)
+            return held(field, value)
+
+        asset_provenance.unusable = swap
+        self.addCleanup(setattr, asset_provenance, "unusable", held)
+        problems = self.tree.problems()
+        self.assertTrue(any("cannot be asked about: File name too long" in p for p in problems),
+                        problems)
+
     def test_a_licence_or_a_record_that_is_a_fifo_does_not_hang_the_build(self):
         # **A ceiling on the read does not bound the `open`.** A FIFO blocks in the kernel until a
         # writer appears, so `mkfifo LICENSE` made this checker never return — the bound added to
@@ -661,22 +753,39 @@ class AssetProvenance(unittest.TestCase):
         #
         # The alarm is the assertion: a hang has no other symptom, and a test that waits for one is
         # the only kind that can fail on it.
+        #
+        # **Put back, both of them.** `signal.alarm(0)` cancels the timer and leaves `impatient`
+        # installed as the process-wide `SIGALRM` handler, so every later test in this run that
+        # sets an alarm gets this file's `AssertionError` instead of its own — and the FIFO, taken
+        # down in `addCleanup`, outlived its own subtest and was still in place for the next one,
+        # which then ran against a licence nobody could read for a reason it does not name. A test
+        # that changes global state for the rest of the suite is measuring its neighbours.
+        self.addCleanup(signal.signal, signal.SIGALRM, signal.getsignal(signal.SIGALRM))
         # Deferring first, so the licence is a question this run actually asks.
         self.defer()
-        for where, expected in (("LICENSE", "cannot be read"),
-                                ("assets/sources.json", "could not be read as JSON")):
+        # The record first, and the order is the assertion. A FIFO left in place by the subtest
+        # before it makes the record unparseable, and an unparseable record has no entries — so
+        # nothing asks the licence question at all and the second case reports neither sentence.
+        # That is what makes the restore below load-bearing rather than tidy: with the cleanup
+        # deferred to the end of the test, this case fails.
+        for where, expected in (("assets/sources.json", "could not be read as JSON"),
+                                ("LICENSE", "cannot be read")):
             with self.subTest(fifo=where):
                 target = self.tree.root / where
+                held = target.read_bytes()
                 target.unlink()
                 os.mkfifo(target)
-                self.addCleanup(lambda t=target: t.exists() and t.unlink())
-                signal.signal(signal.SIGALRM, self.impatient)
-                signal.alarm(10)
                 try:
-                    problems = self.tree.problems()
+                    signal.signal(signal.SIGALRM, self.impatient)
+                    signal.alarm(10)
+                    try:
+                        problems = self.tree.problems()
+                    finally:
+                        signal.alarm(0)
+                    self.assertTrue(any(expected in p for p in problems), problems)
                 finally:
-                    signal.alarm(0)
-                self.assertTrue(any(expected in p for p in problems), problems)
+                    target.unlink()
+                    target.write_bytes(held)
 
     @staticmethod
     def impatient(number, frame):
