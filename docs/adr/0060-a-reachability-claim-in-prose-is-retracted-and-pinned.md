@@ -67,9 +67,10 @@ draft said "by construction", which is a stronger word than the measurement supp
 - The two figures are now derived where they are checked and copied where they are read, with a
   test between them. The copy in the docblock can still be edited into disagreement with the test,
   which no tooling prevents; what it cannot do is disagree with reality while the suite is green.
-- The test walks 76,800 pixels twice through a damped-Newton inverse. Measured at 307 ms in the
-  debug build, which is why the frame is 320x240 rather than a phone's: the answer does not depend
-  on the resolution and the cost does.
+- The two tests walk 76,800 pixels **four** times through a damped-Newton inverse — two lenses in
+  the first, two coefficients in the second. Measured at 317 ms and 66 ms in the debug build, 384 ms
+  together, which is why the frame is 320x240 rather than a phone's: the answer does not depend on
+  the resolution and the cost does. (This said "twice" and 307 ms, counting the first test only.)
 - **Two lenses rather than one, and the pair earns itself.** A reviewer swapped `fx` and `fy` —
   the mistake `camera_model.h` calls the single easiest thing here to get silently wrong — and the
   ultra-wide figure did not move at all: **66.7552% either way**, 51,268 refused of 76,800 in both
