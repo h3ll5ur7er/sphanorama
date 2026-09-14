@@ -70,6 +70,12 @@ draft said "by construction", which is a stronger word than the measurement supp
 - The test walks 76,800 pixels twice through a damped-Newton inverse. Measured at 307 ms in the
   debug build, which is why the frame is 320x240 rather than a phone's: the answer does not depend
   on the resolution and the cost does.
+- **Two lenses rather than one, and the pair earns itself.** A reviewer swapped `fx` and `fy` —
+  the mistake `camera_model.h` calls the single easiest thing here to get silently wrong — and the
+  ultra-wide figure did not move at all: 66.7552% either way, because that lens's refusal region
+  lies wholly inside the frame, so the refused area depends only on the product `fx·fy`. The wide
+  lens moves to 3.3854% and blows the tolerance. Either lens alone would let an axis swap through;
+  the second is load-bearing rather than a second example.
 - **The roadmap's reason for rendering with distortion is now known to be partly wrong**, and that
   matters more than the figure. Distortion in the renderer is still worth having — it is the
   difference between measuring registration on a lens a phone has and one nobody sells — but it
