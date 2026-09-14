@@ -601,9 +601,12 @@ def check(root: Path) -> list[Problem]:
                 # record a reader could have corrected instead named a line of checker source.
                 #
                 # Caught on the error rather than measured against a length, because the limit is
-                # the filesystem's to state and every other way of being unaskable — a NUL in the
-                # name, a path too long in total, a permission the walk cannot pass — arrives here
-                # by the same door.
+                # the filesystem's to state and the other ways of being unaskable — a path too long
+                # in total, a permission the walk cannot pass — arrive here by the same door.
+                #
+                # A NUL in the name does *not*: `pathlib` raises `ValueError` for a path it cannot
+                # encode, before any syscall. It is refused, by the `file` field's own prose rule,
+                # and this arm never sees it. Said because the sentence here used to claim it.
                 escaped = f"cannot be asked about: {refused.strerror}"
             if escaped is not None:
                 problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
