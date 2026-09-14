@@ -86,6 +86,11 @@ class Tree:
 
     def record(self, document: dict) -> None:
         (self.assets / "sources.json").write_text(json.dumps(document, indent=2))
+        # Added, like the licence. A record is a claim about the committed tree, so an untracked one
+        # accounts for nothing in anybody's checkout — and until the rule for that existed, every
+        # test in this file was asserting against a record git had never been told about. The second
+        # time today the fixture turned out to be the thing hiding the rule.
+        self.track("assets/sources.json")
 
     def entries(self) -> list[dict]:
         return json.loads((self.assets / "sources.json").read_text())["assets"]
@@ -99,6 +104,11 @@ class AssetProvenance(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.tree = Tree(Path(self.directory.name))
+        # Captured here, not read back per call: `record_ours` rewrites the record with an `ours`
+        # half and no `assets` one, so a second read of it finds no `assets` key at all. A subtest
+        # loop makes exactly that call.
+        self.base = {field: self.tree.entries()[0][field]
+                     for field in ("file", "sha256", "bytes", "author")}
 
     def test_a_directory_whose_every_file_is_recorded_is_clean(self):
         self.assertEqual(self.tree.problems(), [])
@@ -226,11 +236,19 @@ class AssetProvenance(unittest.TestCase):
                 self.assertTrue(any(because in p for p in named),
                                 f"`{field}` was reported, but not for being unusable: {named}")
 
+    def record_ours(self, **fields) -> None:
+        """Record the tree's one file as this repository's own work.
+
+        `ours` and not `assets`, which is the fixture's default. The deferral is about *our* work,
+        and an `assets` entry carries a `licence_url` whatever its `licence` says — so a rule about
+        licences with nothing behind them cannot be exercised on one. Two tests for the near-miss
+        rule were written on the default half, where the rule they name never ran.
+        """
+        self.tree.record({"ours": [dict(self.base, **fields)]})
+
     def defer(self):
         """Make the tree's one record defer its licence to the repository, as our own work does."""
-        entries = self.tree.entries()
-        entries[0]["licence"] = asset_provenance.DEFERS_TO_THIS_REPOSITORY
-        self.tree.record({"assets": entries})
+        self.record_ours(licence=asset_provenance.DEFERS_TO_THIS_REPOSITORY)
 
     def test_a_licence_that_is_tracked_and_gone_is_reported_rather_than_raised(self):
         # `git ls-files --cached` answers about the index, not the disk. A LICENSE that is tracked
@@ -255,7 +273,13 @@ class AssetProvenance(unittest.TestCase):
                          "  Same\u202fAs This Repository  ", "same  as  this  repository",
                          "same as this\u200b repository", "same as\u2060 this repository",
                          "\ufeffsame as this repository", "same\u00ad as this repository",
-                         "same\u200b \u200cas this\u200d repository"):
+                         "same\u200b \u200cas this\u200d repository",
+                         # And the categories a hand-written list of them left out: a control
+                         # character, a DEL, a lone surrogate and a private-use codepoint each made
+                         # this not the sentinel, which is the zero-width space again one category
+                         # over — found in the commit that was written to end that.
+                         "same as this\u0001 repository", "same as this\u007f repository",
+                         "same as this\udce9 repository", "same as this\ue000 repository"):
             with self.subTest(spelling=spelling):
                 entries = self.tree.entries()
                 entries[0]["licence"] = spelling
@@ -287,7 +311,8 @@ class AssetProvenance(unittest.TestCase):
         # set of characters that render blank, which is why `BLANK` is a short named tuple and the
         # docstring claims what the rule does rather than what a font does.
         for invisible in ("\u200b", "\u200d", "\u2060", "\ufeff", " \u200b \ufeff ",
-                          "\u3164", "\u115f", "\u1160", "\uffa0", "\u2800", " \u2800\u3164 "):
+                          "\u3164", "\u115f", "\u1160", "\uffa0", "\u2800", " \u2800\u3164 ",
+                          "\u0001", "\u007f", "\udce9", "\ue000", " \u0001 \ue000 "):
             with self.subTest(invisible=repr(invisible)):
                 entries = self.tree.entries()
                 entries[0]["work"] = invisible
@@ -328,6 +353,20 @@ class AssetProvenance(unittest.TestCase):
                 (self.tree.root / "LICENSE").write_text("MIT\n")
                 self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
 
+    def test_a_record_that_is_only_on_disk_accounts_for_nothing_in_a_checkout(self):
+        # `records` asks `tracked_files`, so a record written and not added is still read — which is
+        # right, since waiting for `git add` to notice it would mean reporting after the push. What
+        # was wrong is that it also *cleared* the assets beside it: green here, red in a fresh clone
+        # of the same commit, which is the split `indexed_files` was introduced to close for the
+        # licence turning up again at the record itself.
+        subprocess.run(["git", "rm", "--cached", "-q", "--", "assets/sources.json"],
+                       cwd=self.tree.root, check=True)
+        problems = self.tree.problems()
+        self.assertTrue(any("is not in the index" in p for p in problems), problems)
+        # And the asset is *not* additionally reported as unrecorded, which is the failure mode of
+        # the other fix — skipping the record would send a reader to write one that already exists.
+        self.assertFalse(any("no directory with a sources.json" in p for p in problems), problems)
+
     def test_a_licence_file_that_is_only_on_disk_does_not_answer_the_deferral(self):
         # `tracked_files` is `--cached --others --exclude-standard`: every path git would *let* you
         # commit, which includes one nobody has added. So "tracked" here meant "not gitignored",
@@ -343,6 +382,29 @@ class AssetProvenance(unittest.TestCase):
         self.assertTrue((self.tree.root / "LICENSE").is_file(), "the file itself must stay")
         named = [p for p in self.tree.problems() if "`licence`" in p]
         self.assertTrue(named, "a licence git has never been told about answered a deferral")
+
+    def test_a_file_that_cannot_be_read_is_reported_rather_than_raised(self):
+        # Round 14 guarded the call that names the file and left the three that open it bare, so a
+        # mode-000 asset came out of `check()` as a `PermissionError` traceback — the one answer
+        # this module's docstring says it will not give.
+        #
+        # Driven by making `digest` raise rather than by `chmod`, because the checker's own CI runs
+        # as root and root reads a mode-000 file: a permissions fixture here would skip in the one
+        # place the guard has to hold, which is a test that cannot fail wearing a skip. What the
+        # guard promises is that an `OSError` out of these three calls becomes a sentence, and where
+        # the error came from is not part of that promise.
+        held = asset_provenance.digest
+
+        def refuse(path):
+            raise PermissionError(13, "Permission denied")
+
+        asset_provenance.digest = refuse
+        self.addCleanup(setattr, asset_provenance, "digest", held)
+        problems = self.tree.problems()
+        self.assertTrue(any("cannot be read: Permission denied" in p for p in problems), problems)
+        # And the entry is abandoned rather than carried on with, so nothing downstream compares a
+        # digest that was never computed.
+        self.assertFalse(any("sha256" in p for p in problems), problems)
 
     def test_a_file_too_long_for_the_filesystem_is_reported_rather_than_raised(self):
         # `Path.is_symlink()` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so
@@ -362,15 +424,37 @@ class AssetProvenance(unittest.TestCase):
         # The sentinel absorbed exactly one spelling, so every near-miss meant the deferral to a
         # reader and a licence name to the checker — and a licence name needs nothing to exist.
         # These five cleared a tree with no LICENSE in it.
+        # The nouns, not only the characters. A reviewer found that the substring rule this list was
+        # written for is a rule about the one word `repo`: the last five here contain none, mean the
+        # deferral to any reader, and each cleared a tree with **no licence file at all**. That is
+        # why the guard is now "the exact words, or a `licence_url`", and why this asserts the
+        # refusal every one of them gets rather than the hint only some of them get.
         for spelling in ("Same as this repo", "same as this repository.", "as in this repository",
-                         "same licence as this repo, see LICENSE", "This repository's licence"):
+                         "same licence as this repo, see LICENSE", "This repository's licence",
+                         "same as the repository", "same as this project", "see LICENSE",
+                         "same as the top-level LICENSE", "this project's licence"):
             with self.subTest(spelling=spelling):
-                entries = self.tree.entries()
-                entries[0]["licence"] = spelling
-                self.tree.record({"assets": entries})
+                self.record_ours(licence=spelling)
                 named = [p for p in self.tree.problems() if "`licence`" in p]
                 self.assertTrue(named, f"{spelling!r} was read as a licence name")
-                self.assertTrue(any("without being" in p for p in named), named)
+                self.assertTrue(any("names a licence with a `licence_url`" in p for p in named),
+                                named)
+
+    def test_the_spellings_that_name_no_repo_are_the_ones_the_hint_cannot_guess(self):
+        # The hint is allowed to be incomplete and the guard is not, so the line between them is
+        # worth pinning: without it, widening `NEARLY_DEFERS` until it covered everything would look
+        # like progress rather than the open-ended rule it was demoted for being.
+        for spelling in ("Same as this repo", "same licence as this repo, see LICENSE"):
+            with self.subTest(guessed=spelling):
+                self.record_ours(licence=spelling)
+                self.assertTrue(any("reads as the deferral" in p for p in self.tree.problems()))
+        for spelling in ("same as the repository", "same as this project", "see LICENSE",
+                         "same as the top-level LICENSE", "this project's licence"):
+            with self.subTest(unguessed=spelling):
+                self.record_ours(licence=spelling)
+                problems = self.tree.problems()
+                self.assertTrue(any("`licence`" in p for p in problems), problems)
+                self.assertFalse(any("reads as the deferral" in p for p in problems), problems)
 
     def test_a_licence_naming_a_licence_is_not_a_near_miss(self):
         # The other direction, because the rule above refuses on a substring and a rule that refuses
@@ -378,9 +462,8 @@ class AssetProvenance(unittest.TestCase):
         for spelling in ("MIT", "CC-BY-4.0", "Apache-2.0, see the upstream NOTICE",
                          "CC0-1.0 (public domain dedication)", "same as the upstream project"):
             with self.subTest(spelling=spelling):
-                entries = self.tree.entries()
-                entries[0]["licence"] = spelling
-                self.tree.record({"assets": entries})
+                self.record_ours(licence=spelling,
+                                 licence_url="https://spdx.org/licenses/MIT.html")
                 self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
     def test_a_gitignored_licence_does_not_answer_the_deferral(self):
@@ -423,12 +506,16 @@ class AssetProvenance(unittest.TestCase):
 
     def test_a_deferred_licence_is_answered_by_any_of_the_usual_spellings(self):
         # The rule is about the licence existing, not about what it is called. `COPYING` is the
-        # GNU spelling and is as much an answer as `LICENSE`.
+        # GNU spelling and is as much an answer as `LICENSE`, and `LICENCE` is the one this module
+        # uses for the field itself — a checker written in British English was telling a repository
+        # that spells its file the same way that it had no licence at all. A pin asserts what is in
+        # a tuple and can say nothing about what is missing from it, which is how that survived.
         self.defer()
         # The tuple itself, because a loop over it shrinks with it: `LICENCE_FILES = ("LICENSE",)`
         # left all of these green with three spellings asserted by nothing.
         self.assertEqual(asset_provenance.LICENCE_FILES,
-                         ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"))
+                         ("LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md",
+                          "LICENCE.txt", "COPYING"))
         self.tree.forget("LICENSE")
         for spelling in asset_provenance.LICENCE_FILES:
             with self.subTest(spelling=spelling):
@@ -930,6 +1017,7 @@ class RecordsInsideRecords(unittest.TestCase):
             "author": "this repository",
             "licence": "same as this repository",
         }]}, indent=2))
+        self.tree.track(self.inner.relative_to(self.tree.root).as_posix() + "/sources.json")
 
     def test_the_nearest_record_owns_the_file_whatever_order_they_arrive_in(self):
         # Asserted on the function rather than through a fixture, because a fixture cannot help

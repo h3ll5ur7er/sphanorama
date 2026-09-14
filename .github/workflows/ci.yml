@@ -43,6 +43,8 @@ jobs:
         run: uv run --locked tools/test_markdown_table_check.py
       - name: no markdown table broken open
         run: uv run --locked tools/markdown_table_check.py
+      - name: listing checker tests
+        run: uv run --locked tools/test_tracked.py
       - name: provenance checker tests
         run: uv run --locked tools/test_asset_provenance.py
       - name: every committed asset says where it came from

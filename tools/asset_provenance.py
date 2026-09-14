@@ -160,7 +160,12 @@ def git_blob(path: Path) -> str:
 # Deleting the licence file used to leave the checker and all of its tests green; it produces six
 # refusals now, one per deferring record.
 DEFERS_TO_THIS_REPOSITORY = "same as this repository"
-LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+# Both spellings, because this module calls the field `licence` and would otherwise have told a
+# repository that spells its file the same way that it has none. The suite pins what is in this
+# tuple and cannot pin what is missing from it, which is how the British spelling stayed out of a
+# checker written in British English.
+LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md", "LICENCE.txt",
+                 "COPYING")
 
 # Characters that put nothing on the page and are neither whitespace nor category `Cf`: the four
 # Hangul fillers (`Lo`) and the braille blank (`So`). Named one by one because there is no closed
@@ -170,17 +175,18 @@ LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
 # that, which is why the stopping place is written down rather than derived.
 BLANK = ("\u115f", "\u1160", "\u3164", "\uffa0", "\u2800")
 
-# A licence that gestures at this repository without being the token. `"Same as this repo"`,
-# `"same as this repository."` and `"as in this repository"` all mean the deferral to a reader and
-# none of them is it, so each fell through to the prose rule and cleared a tree with no LICENSE in
-# it — the sentinel absorbing exactly one spelling while every near-miss read as a licence name.
-# `projection` has the same shape of problem and answers it with a closed set; a licence cannot
-# have one, since any licence in the world is a legitimate answer, so the near-miss is refused
-# loudly instead and the reader writes the token.
+# A licence that gestures at this repository without being the token. This was the *guard* for one
+# round, and a reviewer showed that a guard made of a substring is a guard made of one noun:
+# `"same as the repository"`, `"same as this project"`, `"see LICENSE"`, `"same as the top-level
+# LICENSE"` and `"this project's licence"` all mean the deferral to any reader, contain no
+# `"this repo"`, and each cleared a tree with **no licence file at all**. Four widenings before it
+# had every one been about characters — case, surrounding space, inner space, invisibles — so
+# nothing had ever asked the rule about a different word, and there is no end to the ways English
+# points at something.
 #
-# The cost is a real licence that mentions this repository in passing — "CC-BY-4.0, see the NOTICE
-# in this repository" — which is refused and has to be reworded. That is the safe direction: a
-# refusal names the record, and the failure it replaces was a record with nothing behind it.
+# So it is a *diagnostic* now and the rule in `check` is the guard. This only decides whether a
+# refusal can name the likely intent, which is worth having and is allowed to be incomplete: a
+# phrase it misses is refused anyway, just less helpfully.
 NEARLY_DEFERS = "this repo"
 
 
@@ -193,11 +199,21 @@ def visible(value: str) -> str:
     quietly stopped being the sentinel — and a repository with no licence file came back clean.
     A second answer to "does this render as nothing" is a second answer.
 
+    **`isprintable()` rather than a list of categories**, which is the third spelling of this rule
+    and the first that is not a list. Naming `Cf` by hand left `Cc`, the surrogates and the
+    private-use area out: a licence holding one U+0001 was neither the sentinel nor a near-miss, so
+    a tree with no licence file came back clean again — the same defect as the zero-width space,
+    one category over, in the fix written to end it. `isprintable()` is false for every category
+    that puts nothing on the page (`Cc`, `Cf`, `Cs`, `Co`, `Cn`) and is maintained by somebody else.
+    `BLANK` survives it because those five characters *are* printable and still render as nothing.
+
     Whitespace is left in, because the callers want it differently: `legible` strips it and the
-    sentinel collapses runs of it to single spaces.
+    sentinel collapses runs of it to single spaces. It is asked for separately since `isprintable()`
+    is false for a line separator, which is whitespace and not an invisible answer.
     """
     return "".join(character for character in value
-                   if unicodedata.category(character) != "Cf" and character not in BLANK)
+                   if (character.isprintable() or character.isspace())
+                   and character not in BLANK)
 
 
 def defers_to_this_repository(licence: object) -> bool:
@@ -410,6 +426,22 @@ def check(root: Path) -> list[Problem]:
     for record, prefix in zip(found, prefixes):
         directory = record.parent
         rel = record.relative_to(root).as_posix()
+
+        # **A record that is not in the index accounts for nothing in anybody else's checkout.**
+        # `records` asks `tracked_files`, which is right — a record you have written and not yet
+        # added is one this run must read, and waiting for `git add` to notice it would mean
+        # reporting after the push. But *ownership* is a claim about the committed tree: an
+        # untracked `sources.json` beside a tracked asset cleared the build here and failed in a
+        # fresh clone of the same commit, which is exactly the split `indexed_files` was introduced
+        # to close for the licence, reappearing at the record itself.
+        #
+        # Reported rather than skipped, for the same reason: skipping it would report the assets it
+        # covers as unrecorded, which sends a reader to write a record that already exists.
+        if rel not in indexed:
+            problems.append(Problem(rel, "is not in the index, so a checkout of this commit would "
+                                         "not have it and the files it accounts for would be "
+                                         "unrecorded there — `git add` it"))
+
         try:
             document = json.loads(record.read_text())
         # Every way a record can fail to be a record, not only the one that has a named exception.
@@ -526,12 +558,30 @@ def check(root: Path) -> list[Problem]:
             # a LICENSE that is tracked and then deleted — or a tracked dangling symlink — made this
             # raise `FileNotFoundError` out of the checker, which is the traceback-instead-of-a-
             # sentence outcome this file's own docstring exists to prevent.
-            if nearly_defers_to_this_repository(entry.get("licence")):
+            # **Our own work says its licence in one of two ways, and both are checkable.** The
+            # exact deferral, which must resolve below — or a name with a `licence_url` beside it,
+            # which is the bar every `assets` entry already meets, `licence_url` being in `REQUIRED`.
+            #
+            # A closed rule where the four rounds before it wrote open ones. Each of those widened
+            # the *recognition* of a deferral and the next round found a spelling it missed; this
+            # one stops trying to recognise a deferral loosely and asks instead what a record has
+            # behind it. Prose that points at this repository is refused whether or not
+            # `NEARLY_DEFERS` can guess what it meant.
+            #
+            # `ours` only, and not for tidiness: an `assets` entry is somebody else's licence and
+            # already carries a URL, so a rule about licences with nothing behind them cannot fire
+            # on one. The deferral is about *our* work, which is the half that had no second field.
+            licence = entry.get("licence")
+            if (ours and isinstance(licence, str) and not defers_to_this_repository(licence)
+                    and unusable("licence_url", entry.get("licence_url")) is not None):
+                intent = (f" — this reads as the deferral, which is spelled exactly "
+                          f"{DEFERS_TO_THIS_REPOSITORY!r}"
+                          if nearly_defers_to_this_repository(licence) else "")
                 problems.append(Problem(
                     f"{rel} [{name}]",
-                    f"`licence` points at this repository without being {DEFERS_TO_THIS_REPOSITORY!r}"
-                    f", so nothing checks that there is a licence to point at — write the exact "
-                    f"words, or name the licence"))
+                    f"`licence` is {licence!r}, and our own work either says exactly "
+                    f"{DEFERS_TO_THIS_REPOSITORY!r} or names a licence with a `licence_url` "
+                    f"beside it{intent}"))
             if defers_to_this_repository(entry.get("licence")) and not any(
                     spelling in indexed and (root / spelling).is_file()
                     and (root / spelling).stat().st_size > 0
@@ -554,14 +604,41 @@ def check(root: Path) -> list[Problem]:
                                                 f"`{field}` is missing, and a raster has one"))
 
             path = directory / name
-            if not path.is_file():
+            try:
+                present = path.is_file()
+            except OSError as refused:
+                problems.append(Problem(f"{rel} [{name}]",
+                                        f"cannot be asked about: {refused.strerror}"))
+                continue
+            if not present:
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
                 continue
             # `digest`, not a third spelling of it: this used to inline `hashlib` here while the
             # test suite called the helper, so the two paths computed the same thing two ways. And
             # the size comes from `stat`, where it has always been: reading the file a second time
             # to call `len` on it was the whole of what `content` was for.
-            held = digest(path)
+            # **Everything that opens the file, under one guard.** The `file` guard above catches a
+            # name that cannot be asked about; this catches a file that can be named and not read —
+            # a mode-000 asset, a permission the walk cannot pass, a file deleted between `is_file`
+            # and here. Each of those came out of `check()` as a `PermissionError` or
+            # `FileNotFoundError` traceback: the one answer this module's docstring says it will not
+            # give, about a record whose problem a reader could have fixed.
+            #
+            # Round 14 wrapped the *first* of these calls and left the three after it bare, which is
+            # the one-of-a-pair shape this branch has now produced six times.
+            try:
+                held = digest(path)
+                size = path.stat().st_size
+                # Only where a record carries one: this walks every committed asset, and hashing
+                # each of them a second time for a field most entries do not have is a cost with no
+                # reader. Inside the guard rather than after it because it opens the same file.
+                recorded_blob = entry.get("source_blob")
+                wants_blob = isinstance(recorded_blob, str) and bool(recorded_blob.strip())
+                actual_blob = git_blob(path) if wants_blob else ""
+            except OSError as refused:
+                problems.append(Problem(f"{rel} [{name}]",
+                                        f"cannot be read: {refused.strerror}"))
+                continue
             recorded_digest = entry.get("sha256")
             if isinstance(recorded_digest, str) and recorded_digest.casefold() == held:
                 # A digest spelled in upper case is the same digest. Answered separately because
@@ -577,7 +654,6 @@ def check(root: Path) -> list[Problem]:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"has moved on from its recorded sha256; the bytes now "
                                         f"hash to {held}"))
-            size = path.stat().st_size
             if entry.get("bytes") != size:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"records {entry.get('bytes')} bytes and holds {size}"))
@@ -592,9 +668,8 @@ def check(root: Path) -> list[Problem]:
             # never be checked against anything again. `sha256` and `bytes` invite exactly that
             # paste and are right to; this field never does, because the local object name equals
             # the recorded one precisely when the check did not fire.
-            recorded_blob = entry.get("source_blob")
-            if isinstance(recorded_blob, str) and recorded_blob.strip():
-                if git_blob(path) != recorded_blob:
+            if wants_blob:
+                if actual_blob != recorded_blob:
                     problems.append(Problem(
                         f"{rel} [{name}]",
                         f"`source_blob` names object {recorded_blob} in the source repository and "

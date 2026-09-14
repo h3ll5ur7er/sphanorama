@@ -55,6 +55,7 @@ step "marker checker tests"       uv run --locked tools/test_conflict_marker_che
 step "no conflict markers"        uv run --locked tools/conflict_marker_check.py
 step "table checker tests"        uv run --locked tools/test_markdown_table_check.py
 step "no broken tables"           uv run --locked tools/markdown_table_check.py
+step "listing checker tests"      uv run --locked tools/test_tracked.py
 step "provenance checker tests"   uv run --locked tools/test_asset_provenance.py
 step "assets say where they came from" uv run --locked tools/asset_provenance.py
 # The one step that needs a dependency, so it names the group that carries it. Everything

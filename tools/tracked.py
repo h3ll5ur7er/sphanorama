@@ -31,6 +31,12 @@ LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard
 
 # The narrower question, and a different one. `--cached` alone is what a fresh clone gets: the index.
 # Without `--others` a file nobody has added is simply not there.
+#
+# No `--exclude-standard`, and that is not an omission: it applies to the *untracked* half, so with
+# no `--others` there is nothing for it to exclude. A gitignored file that somebody added anyway is
+# in the index and will be in the clone, which is what this question asks. A test that fed a
+# `.gitignore` to this listing was therefore asserting nothing, and it was written believing the
+# opposite.
 LS_FILES_INDEXED = ("git", "ls-files", "-z", "--cached")
 
 
@@ -41,13 +47,30 @@ def ask(root: Path, question: tuple[str, ...]) -> list[str]:
     answer makes an unrunnable check indistinguishable from a clean tree, which is the shape of bug
     every caller of this exists to catch.
     """
-    result = subprocess.run(question, cwd=root, capture_output=True, text=True)
+    # **Bytes, not `text=True`.** A path is bytes on this platform and only conventionally UTF-8,
+    # and `text=True` did two separate kinds of damage to one that is not:
+    #
+    # - a name that is not valid UTF-8 — `café.md` written by an editor in Latin-1 — raised
+    #   `UnicodeDecodeError` out of `subprocess._translate_newlines`, killing all three checkers
+    #   with a traceback naming a line of the standard library;
+    # - universal-newline translation rewrote a `\r` *inside* a name to `\n`, which is worse than
+    #   a crash because it is silent: `-z` asks git for NUL-separated paths precisely so a newline
+    #   in one cannot be mistaken for a separator, and then the decoder put one there. A committed,
+    #   unrecorded 179 KB JPEG named `stol\renn.jpg` came back as `stol\nenn.jpg`, a path that does
+    #   not exist, so the provenance walk could not find the file and said nothing. **Exit 0 on an
+    #   unrecorded binary**, which is the one failure that checker exists to prevent.
+    #
+    # `surrogateescape` rather than a decode that can fail or substitute: it round-trips undecodable
+    # bytes back through `os.fsencode`, so `Path(name).open()` reaches the file git named.
+    result = subprocess.run(question, cwd=root, capture_output=True)
     if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
+        stderr = result.stderr.decode("utf-8", "surrogateescape").strip()
+        raise RuntimeError(f"git could not list this tree: {stderr}")
     # Deduplicated, because `--cached` lists a path once per stage while a merge is unresolved —
     # base, ours, theirs. That is exactly when the marker check runs, so without it every marker in
     # a conflicted file is reported three times, in the output somebody is reading to find them.
-    return sorted({name for name in result.stdout.split("\0") if name})
+    return sorted({name.decode("utf-8", "surrogateescape")
+                   for name in result.stdout.split(b"\0") if name})
 
 
 def tracked_files(root: Path) -> list[str]:

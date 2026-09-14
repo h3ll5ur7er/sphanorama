@@ -143,10 +143,10 @@ most of them immediately before the check they guard. The reason is in that file
 the checkers never change while you are working, which is exactly what makes a broken one the
 easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
-checker suites at the top, nineteen steps before the budget it guards — counted from
-`grep -n 'step "' tools/gate.sh`, and seventeen until the two provenance steps were inserted between
-them — because that budget needs a
-wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
+checker suites at the top, twenty steps before the budget it guards — count them with
+`grep -c 'step "' tools/gate.sh` and the two ordinals, since every checker added since has widened
+the gap — because that budget needs a
+wasm build, and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
 
 Every job that runs a checker sets up `uv` rather than a bare interpreter (ADR 0048), and invokes
