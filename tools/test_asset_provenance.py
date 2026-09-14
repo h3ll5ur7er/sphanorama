@@ -503,18 +503,29 @@ class AssetProvenance(unittest.TestCase):
                 self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
     def test_a_gitignored_licence_does_not_answer_the_deferral(self):
-        # The narrower of the two failures a filesystem check produced: a gitignored LICENSE is an
-        # answer on the machine that wrote it and not on the one that checks it out. It is stated
-        # separately from the unadded case above because a reader fixing one would not think of the
-        # other — and because `--exclude-standard` and `--cached` are different reasons for the
-        # same refusal, so a change that repaired one could leave the other open.
+        # A gitignored *and unadded* LICENSE, which is one arrangement of the rule above rather
+        # than a second rule — and saying so is the point of keeping it.
+        #
+        # This was written believing `--exclude-standard` was what refused it. It is not:
+        # `LS_FILES_INDEXED` has no `--exclude-standard`, because that flag applies to the untracked
+        # half and there is no `--others` here for it to reach. A gitignored file somebody added
+        # anyway is in the index and will be in the clone, which is exactly what this listing asks.
+        # So the `.gitignore` below changes nothing, and a reader who "matched the other listing" by
+        # adding `--exclude-standard` would be loosening the rule rather than tightening it.
         self.defer()
         subprocess.run(["git", "rm", "--cached", "-q", "--", "LICENSE"],
                        cwd=self.tree.root, check=True)
         (self.tree.root / ".gitignore").write_text("LICENSE\n")
         self.tree.track(".gitignore")
         named = [p for p in self.tree.problems() if "`licence`" in p]
-        self.assertTrue(named, "a gitignored licence answered a deferral")
+        self.assertTrue(any("no licence file for it to mean" in p for p in named), named)
+        # And the `.gitignore` is not what did it: adding the file back answers the deferral while
+        # git is still ignoring it. `-f`, because git refuses to add an ignored path without it —
+        # which is the whole distinction, since a `-f` add is exactly how such a file ends up in
+        # somebody's clone. Without this assertion the case reads as covering a rule that does not
+        # exist.
+        subprocess.run(["git", "add", "-f", "--", "LICENSE"], cwd=self.tree.root, check=True)
+        self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
     def test_a_half_that_is_not_a_list_is_reported_rather_than_crashing_its_consumer(self):
         # `{"ours": {...}}` keyed by filename reads as a record and is not one. The checker used to
