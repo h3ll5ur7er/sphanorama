@@ -70,18 +70,6 @@ std::string Quoted(const std::string& raw) {
 }
 
 /**
- * A rendered ring, or nothing.
- *
- * Shelling out rather than linking: the generator is Python and stays Python for the reason ADR
- * 0050 gives — a dataset rendered through the code under test cancels any error the two share.
- *
- * `--locked` rather than a bare `uv run`: without it a stale lock file is *resolved and rewritten*,
- * so a test run would leave a modified `uv.lock` in the working tree and the measurement would have
- * been taken against dependencies nobody chose. With it, `uv` refuses and this skips instead — a
- * skipped measurement being the honest outcome when the environment is not the one that was pinned
- * (ADR 0048).
- */
-/**
  * The two worlds a dataset can be rendered in, and why there are two.
  *
  * `Photograph` is where accuracy is measured. A checkerboard is periodic and infinitely sharp, so a
@@ -107,6 +95,18 @@ enum class World { Photograph, Checkerboard };
 /** Relative to the repository root, which is where the generator's command runs. */
 constexpr const char* kPhotograph = "core/test/data/panoramas/small_hangar_01_1k.jpg";
 
+/**
+ * A rendered ring, or nothing.
+ *
+ * Shelling out rather than linking: the generator is Python and stays Python for the reason ADR
+ * 0050 gives — a dataset rendered through the code under test cancels any error the two share.
+ *
+ * `--locked` rather than a bare `uv run`: without it a stale lock file is *resolved and rewritten*,
+ * so a test run would leave a modified `uv.lock` in the working tree and the measurement would have
+ * been taken against dependencies nobody chose. With it, `uv` refuses and this skips instead — a
+ * skipped measurement being the honest outcome when the environment is not the one that was pinned
+ * (ADR 0048).
+ */
 class Rendered {
  public:
   /** Whether the world it was asked for is not in the tree, which is a failure and not a skip.
@@ -517,27 +517,32 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // green.** The bounds here are what fail; the figures are prose in eight places that may be
   // corrected, and nothing invalidates them. Six are in this file:
   //
-  //   1. this comment's `0.024 to 0.101` and `0.1551`;
+  //   1. this comment's `0.024 to 0.101` and `0.1551` — **and the refit paragraph above it**,
+  //      whose `0.2108 / 0.6477`, `0.1826 / 0.2989` and `0.0535 / 0.1147` are hangar measurements
+  //      an OpenCV bump moves and no bound asserts. Re-run the refit sabotage to get them;
   //   2. the `Today's run, for comparison:` transcript that closes this comment — the whole triple;
   //   3. the worst-frame bound's `0.1551`, under `EXPECT_LT(score.maxDeg, 0.4)`;
   //   4. the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`;
   //   5. its repeat beside `kFirst`;
+  //   5b. the margin `0.2 - 0.1826 = 0.0174` below, which is arithmetic over two of those;
   //   6. the `0.6522` lowest inlier fraction in `World`'s docblock, which is the one figure here
   //      that no bound asserts and no probe in the tree reproduces.
   //
   // Two are outside it:
   //
-  //   7. `docs/06-roadmap.md`'s table, and separately its `the hangar's lowest inlier fraction is
-  //      0.6522` — prose the table does not cover, so editing the table alone leaves it standing;
+  //   7. `docs/06-roadmap.md`'s table, and separately the prose around it that the table does not
+  //      cover — `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is four times
+  //      better than ORB's` and `now reads eleven of eleven for all three`. Editing the table
+  //      alone leaves all three standing, and a reader who trusts the entry stops at the table;
   //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101`.
   //
   // The table rounds to three places and the bounds above claim four, which is how `0.155` and
   // `0.1551` came to name one quantity — keep the rounding where it is and the claims exact.
   //
-  // **ADR 0059 carries `0.652` and is not one of the eight.** An ADR is never edited into agreement
+  // **ADR 0059 carries `0.652` and the live medians, and is not one of the eight.** An ADR is never edited into agreement
   // with the present (`docs/adr/README.md`), so a bump that moves these figures supersedes it.
-  // (`docs/adr/0056` was on an earlier version of this list and carries no hangar figure at all —
-  // its numbers are the checkerboard's, which is what that ADR is about.)
+  // (`docs/adr/0056` is deliberately absent: its numbers are the checkerboard's, which is what that
+  // ADR is about, so it is not a copy of this table.)
   //
   // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
   // each — correct all eight, and supersede ADR 0059 rather than correcting it. Otherwise the next

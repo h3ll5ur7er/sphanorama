@@ -77,8 +77,8 @@ our inverse to invert *their* forward map, which is a stronger statement than ag
 inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
 theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
 `uv run tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the
-line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy is in a group so
-the checkers stay standard-library only (ADR 0050).
+line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy and Pillow are in
+a group so the checkers stay standard-library only (ADR 0050, ADR 0059).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that
@@ -111,8 +111,8 @@ compensating way, and score perfect (ADR 0050). The two are pinned to the same h
 instead. It taught the same lesson again in a new place — a tolerance written in colour components
 was three orders of magnitude looser than the interpolation error it was meant to bound and let a
 render wrong by 0.086 degrees pass, so the assertions are in degrees now, which is the unit the
-thing exists to serve. Geometry only so far: noise, blur, rolling shutter, exposure, bursts and
-movers are each their own increment. Which feature
+thing exists to serve. Geometry only so far, and undistorted geometry at that: distortion, noise,
+blur, rolling shutter, exposure, bursts and movers are each their own increment. Which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.

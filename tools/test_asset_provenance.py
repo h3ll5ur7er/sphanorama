@@ -10,6 +10,7 @@ somebody did.
 import hashlib
 import inspect
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -253,8 +254,9 @@ class AssetProvenance(unittest.TestCase):
     def test_a_licence_that_is_tracked_and_gone_is_reported_rather_than_raised(self):
         # `git ls-files --cached` answers about the index, not the disk. A LICENSE that is tracked
         # and then deleted made the checker raise `FileNotFoundError` — a traceback instead of a
-        # sentence, which is the outcome its docstring exists to prevent. Unreachable from the
-        # other fixtures because none of them ever runs `git add`.
+        # sentence, which is the outcome its docstring exists to prevent. It was unreachable from
+        # the other fixtures when this was written, none of them running `git add`; the fixture
+        # tracks its licence and its record now, so what makes this case its own is the deletion.
         self.defer()
         subprocess.run(["git", "add", "LICENSE"], cwd=self.tree.root, check=True)
         (self.tree.root / "LICENSE").unlink()
@@ -321,6 +323,17 @@ class AssetProvenance(unittest.TestCase):
                 self.assertTrue(named, f"{invisible!r} answered a required field")
                 self.assertTrue(any("is blank" in p for p in named), named)
 
+    def test_a_raster_under_a_name_nobody_recognises_is_still_recorded(self):
+        # The bounded half of the extension rule, pinned because a reviewer's finding turns on which
+        # half it is. A PNG committed as `frame.dat` escapes the *shape* rule — nothing asks it for
+        # `width` and `height` — but it cannot escape being recorded, because `why_asset` reads the
+        # bytes rather than the name. Under-described, not unaccounted for.
+        (self.tree.assets / "frame.dat").write_bytes(NOT_TEXT)
+        self.tree.track("assets/frame.dat")
+        problems = self.tree.problems()
+        self.assertTrue(any("frame.dat" in p for p in problems), problems)
+        self.assertTrue(any("not valid UTF-8" in p for p in problems), problems)
+
     def test_a_file_that_leaves_the_records_own_directory_is_refused(self):
         # `directory / name` accepts `../…` and an absolute path, and `is_file()` and `digest()`
         # follow symlinks — so a record could account for a file it does not own, one outside the
@@ -342,16 +355,32 @@ class AssetProvenance(unittest.TestCase):
         # nothing to it and cleared a repository with no licence file at all. A sentinel that one
         # keystroke defeats is not a sentinel. `projection` has the same shape and answers it with
         # a closed set; a licence cannot have one, so the deferral is recognised loosely instead.
+        # **Asserting the sentence and not the field name**, because two other rules print
+        # `` `licence` `` — the near-miss hint and the "exact words or a `licence_url`" refusal —
+        # so making `defers_to_this_repository` case-sensitive left this green: the capitalised
+        # deferral was refused, just for a different reason than the one under test. A field name
+        # is not a discriminator when three rules can print it, which is the lesson the
+        # volunteered-answer table learnt one round earlier and this test did not inherit.
         for spelling in ("Same as this repository", "SAME AS THIS REPOSITORY",
                          "  same as this repository  ", "Same As This Repository"):
             with self.subTest(spelling=spelling):
-                entries = self.tree.entries()
-                entries[0]["licence"] = spelling
-                self.tree.record({"assets": entries})
-                (self.tree.root / "LICENSE").unlink()
+                self.record_ours(licence=spelling)
+                self.tree.forget("LICENSE")
                 named = [p for p in self.tree.problems() if "`licence`" in p]
+                self.assertTrue(any("no licence file for it to mean" in p for p in named),
+                                f"{spelling!r} was not read as the deferral: {named}")
                 (self.tree.root / "LICENSE").write_text("MIT\n")
-                self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
+                self.tree.track("LICENSE")
+
+    def test_a_capitalised_deferral_resolves_against_a_licence_that_is_there(self):
+        # The other half, and the one nothing covered: making the sentinel case-sensitive should
+        # also break a capitalised deferral in a tree that *has* a licence. Without this, the rule
+        # could be narrowed to an exact match and only the negative test above would notice — and
+        # it was green under exactly that change.
+        for spelling in ("Same as this repository", "SAME AS THIS REPOSITORY"):
+            with self.subTest(spelling=spelling):
+                self.record_ours(licence=spelling)
+                self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
     def test_a_record_that_is_only_on_disk_accounts_for_nothing_in_a_checkout(self):
         # `records` asks `tracked_files`, so a record written and not added is still read — which is
@@ -412,13 +441,20 @@ class AssetProvenance(unittest.TestCase):
         # `check()` — a traceback instead of a sentence, about a record a reader could have fixed.
         # 255 is the limit on every filesystem this runs on; the guard is written against the
         # error rather than the number, because the number is a mount option.
-        for length in (255, 256, 4096):
+        # Each length asserts the sentence it actually earns. `"a" * 32` appears in the `where` of
+        # every refusal about this entry, so it could not tell the guard's answer from any other —
+        # it was green with the message replaced by "names a path outside the record's own
+        # directory". And 255 is *legal*: it never reaches the guard at all, which is the point of
+        # having it here, so it must not assert the guard's words either.
+        for length, expected in ((255, "names a file that is not here"),
+                                 (256, "cannot be asked about"),
+                                 (4096, "cannot be asked about")):
             with self.subTest(length=length):
                 entries = self.tree.entries()
                 entries[0]["file"] = "a" * length
                 self.tree.record({"assets": entries})
                 problems = self.tree.problems()
-                self.assertTrue(any("a" * 32 in problem for problem in problems), problems)
+                self.assertTrue(any(expected in problem for problem in problems), problems)
 
     def test_a_licence_that_nearly_defers_is_refused_rather_than_read_as_a_name(self):
         # The sentinel absorbed exactly one spelling, so every near-miss meant the deferral to a
@@ -852,11 +888,11 @@ class ReadingAFileInBlocks(unittest.TestCase):
     "more than one block", not "many megabytes", and a fixture that spends a second writing 2 MiB to
     assert it is a fixture nobody runs.
 
-    This said *"the two loops"*, and `git_blob` arrived four commits later and joined no case — so
-    for the whole of that time truncating it to its first block left both checkers at exit 0. The
-    class names its set now rather than counting it, and `test_every_loop…` fails when that set
-    stops matching the module. A hand-written count is a copy of a fact, and this file's own
-    `READ_BY_A_PROGRAM` note says what happens to those.
+    The set is named and derived rather than counted, because a count is a copy of a fact: a
+    function that arrives here without a case leaves its loop able to stop after one block with
+    both checkers at exit 0, and a class docstring saying "the two loops" cannot notice a third.
+    `test_every_loop…` fails when the derived set stops matching `DRIVEN`, and
+    `test_block_is_the_only_read_size…` holds the assumption that derivation rests on.
     """
 
     # Function name → the test here that drives it past one block. Checked against the module, so
@@ -877,7 +913,24 @@ class ReadingAFileInBlocks(unittest.TestCase):
                          "a function reads in blocks with no case here, or a case names a "
                          "function that no longer does")
         for function, case in self.DRIVEN.items():
+            # `hasattr` was the whole of this and it accepted an empty method: emptying the digest
+            # case *and* truncating `digest` to its first block left the suite green, which is the
+            # docstring's own "a digest that hashes the first block and stops". A case has to
+            # mention the function it claims to drive.
             self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
+            source = inspect.getsource(getattr(self, case))
+            self.assertIn(function, source,
+                          f"{case} is named as {function}'s cover and does not call it")
+
+    def test_block_is_the_only_read_size_this_module_has(self):
+        # The hole the derivation above cannot see. It finds functions that mention `BLOCK`, so a
+        # function reading in blocks through a *differently named* constant is invisible to it and
+        # would arrive with no case and nothing red. Rather than guess at what such a constant
+        # might be called, this pins the thing that makes the derivation sound: every sized read in
+        # this module asks for `BLOCK`. A second read size is then a failure here, at the line that
+        # introduced it, rather than a silent gap in the class above.
+        sized = re.findall(r"\.read\(([^)]+)\)", inspect.getsource(asset_provenance))
+        self.assertEqual({argument.strip() for argument in sized}, {"BLOCK"}, sized)
 
     def test_a_blob_name_covers_every_block_and_not_just_the_first(self):
         # Git's own answer, not ours, so the comparison is against `git hash-object` rather than

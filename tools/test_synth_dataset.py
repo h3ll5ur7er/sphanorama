@@ -1449,9 +1449,24 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             # one below it: `read_panorama` raises for a file it cannot open *and* for a file of
             # the wrong shape, and `argparse` turns both into the same exit.
             complaint = io.StringIO()
+            # **"Before a single frame renders" is counted, not inferred from the output.** The
+            # generator stages into a temporary directory and swaps, so `out` is absent after *any*
+            # failure — the assertion below holds just as well for a refusal that happened on the
+            # last frame of twelve, which is the opposite of what this test's name promises. The
+            # sibling that refuses mid-render already counts calls; this one did not.
+            calls = {"n": 0}
+            honest = synth_dataset.render_frame
+
+            def counted(*args, **kwargs):
+                calls["n"] += 1
+                return honest(*args, **kwargs)
+
+            synth_dataset.render_frame = counted
+            self.addCleanup(setattr, synth_dataset, "render_frame", honest)
             with contextlib.redirect_stderr(complaint), self.assertRaises(SystemExit):
                 self._run("--out", str(out), "--panorama", str(squashed))
             self.assertIn("8x6", complaint.getvalue())
+            self.assertEqual(calls["n"], 0, "the shape was checked after rendering had begun")
             self.assertFalse(out.exists())
 
     def test_a_panorama_that_is_not_there_is_refused_before_a_single_frame_renders(self):
@@ -1882,7 +1897,7 @@ class TheContractTheCppLoaderReads(unittest.TestCase):
             self.assertEqual(set(entry["rotation"]), {"w", "x", "y", "z"})
 
     def test_the_committed_fixture_is_still_this_generator_s_output(self):
-        """The whole argument for committing 22,570 bytes, checked rather than asserted once.
+        """The whole argument for committing 25,593 bytes, checked rather than asserted once.
 
         ADR 0053 commits `core/test/data/synthetic-ring-4` on the grounds that the loader is then
         read against bytes *this* writer produced rather than against the author's idea of the

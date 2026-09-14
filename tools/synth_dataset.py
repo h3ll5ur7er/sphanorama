@@ -645,8 +645,8 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     `core/test/data/synthetic-ring-4` is four 48x36 frames, their `truth.json` and the `sources.json`
     that accounts for them — six files, 25,593 bytes of content altogether (20,788 of frames, 4,805
     of JSON). Not "on disk": `du` reports 44 KiB, which is the six files rounded up to 4 KiB blocks
-    plus the directory entry. The previous figures — five files, 22,570 bytes, 40 KiB — were made
-    false by the commit that added the provenance record, in the same commit that wrote it.
+    plus the directory entry. Re-count all three when a file joins this directory: adding the
+    provenance record moved every one of them, in the commit that wrote them.
     It is read by the C++ loader's tests, and it is a **format** fixture rather than a measurement —
     it exists so that loader is read against bytes this writer produced rather than against its
     author's idea of the format (ADR 0053).

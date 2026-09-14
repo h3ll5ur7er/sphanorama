@@ -65,7 +65,7 @@ fraction is 0.652. Nothing in
 it can produce the answered-but-not-accepted outcome that test exists to catch, and ADR 0056's
 figures are the checkerboard's and are untouched.
 
-**Two rules the checker gained after this decision was first written, recorded here because this
+**Six rules the checker gained after this decision was first written, recorded here because this
 section reads as the complete list of what a record must say.** A raster entry — an extension in
 `asset_provenance.SHAPED` — must carry `width` and `height`, which the checker cannot verify itself
 and `tools/test_synth_dataset.py` does where Pillow is present; leaving it optional meant the one
@@ -73,6 +73,26 @@ fact needing a decoder could be deleted from a record with nothing going red. An
 a `projection` must use a token from `asset_provenance.PROJECTIONS`, because a test branches on that
 field: while the panorama's record spelled it as a description, the 2:1 assertion keyed on it was
 dead for every record in the tree.
+
+And four more, which arrived in review rather than in this decision and are the reason this
+paragraph is a running list rather than a closed one:
+
+- **A licence for our own work is checkable or it is not a licence.** An `ours` entry says exactly
+  `"same as this repository"` — which must resolve to a non-empty licence file *in the index* — or
+  names a licence with a `licence_url` beside it, the bar `REQUIRED` already sets for `assets`.
+  Four rounds tried instead to recognise a deferral loosely and each was defeated by a spelling the
+  last had not thought of; the rule that ended it asks what a record has behind it rather than what
+  its prose resembles.
+- **A record is a claim about the committed tree.** A `sources.json` that is not in the index
+  accounts for nothing in anybody's checkout, and said so only after a reviewer found it clearing a
+  tracked asset here and failing in a fresh clone of the same commit.
+- **A field a program reads is a single string**, by type and before the prose rule. A `produced_by`
+  spelled as a list cleared the checker and died in its consumer; the same was then true of
+  `source_blob` and `licence` inside the commit that fixed it, which is why `READ_BY_A_PROGRAM` is a
+  tuple and the suite's cases are generated from it.
+- **A `file` names a file in the record's own directory.** Absolute paths, `..`, symlinks and
+  anything resolving outside are refused, because a digest satisfied by a path outside the
+  repository pins nothing.
 
 ## Consequences
 

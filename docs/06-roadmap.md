@@ -862,9 +862,11 @@ tree; `World` in `registration_accuracy_test.cpp` says how it was run.
 
 **Three things this number is not.** It is not a detector ranking worth acting on: it is one ring of
 twelve frames in one room, and the column that used to separate them — pairs registered — now reads
-eleven of eleven for all three. SIFT's median is four times better than ORB's here and SIFT is also
-the slowest of the three by the test's own timings; neither fact is a decision, and the WASM build
-where the cost actually lands has not been measured at all. It is not a statement about a phone: the dataset has no noise, no blur,
+eleven of eleven for all three. SIFT's median is 4.2 times better than ORB's here, and what that
+costs is not measured at all: the test prints `registered`, `median`, `mean` and `max` and no time,
+and gtest's per-case wall clock covers a fresh Python render as well as the detector. So there is
+no speed column to weigh the accuracy one against — and the WASM build, where the cost actually
+lands, has not been measured either. It is not a statement about a phone: the dataset has no noise, no blur,
 no rolling shutter, no exposure variation and — the one that has already cost something — **no
 distortion**, its lens carrying zeroes for every Brown-Conrady coefficient. A bug in which the
 bearing reader dropped the rows the lens could not unproject, desynchronising them from their

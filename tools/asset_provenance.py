@@ -88,6 +88,16 @@ REQUIRED_OURS = ("file", "sha256", "bytes", "author", "licence")
 # Extensions that make a file an asset whatever its bytes decode as. Not a guess at "binary": these
 # are the formats whose content is somebody's work rather than somebody's source, and several of
 # them are text.
+#
+# **What this does and does not reach**, since a reviewer asked the question and the answer is not
+# obvious from the tuple. A file whose *bytes* are not valid UTF-8 is an asset whatever it is
+# called — `why_asset` decodes it — so a PNG committed as `frame.dat` still has to be recorded.
+# What it escapes is the *shape* rule: `SHAPED` keys on the extension, so nothing asks `frame.dat`
+# for `width` and `height`, and `tools/test_synth_dataset.py` skips it by the same test, so both
+# halves of the split go quiet together. That is a real gap and it is bounded: the file cannot go
+# unrecorded, only under-described. Closing it means sniffing content to decide the rule, which is
+# the decoder-dependence `SHAPED` is derived from `MEDIA` to avoid; if a raster is ever committed
+# under a name like that, rename it rather than teaching this to guess.
 MEDIA = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tiff", ".tif", ".svg",
          ".ppm", ".pgm", ".pnm", ".hdr", ".exr", ".mp3", ".wav", ".ogg", ".flac", ".mp4", ".webm",
          ".mov", ".ttf", ".otf", ".woff", ".woff2", ".pdf", ".stl", ".obj", ".glb", ".gltf",
@@ -225,10 +235,13 @@ def defers_to_this_repository(licence: object) -> bool:
     solves it with a closed set; a licence cannot have one, since any licence in the world is a
     legitimate answer, so the deferral is recognised loosely instead and everything else is prose.
 
-    Loosely in one direction only. Every normalisation here makes *more* strings the sentinel, so
-    it can turn a licence somebody meant literally into a deferral and cannot let a deferral escape
-    — and the failure it can still produce is a refusal naming the record, not a clean record with
-    no licence behind it.
+    Not monotone, which an earlier sentence here claimed it was. Collapsing runs of space makes
+    more strings the sentinel; *deleting* an invisible character can go the other way, since the
+    space two words needed may be the thing deleted — `same as this<ZWSP>repository` is not the
+    deferral, and a test pins that it must not be, because a reader sees the joined word too. What
+    holds in both directions is the consequence: a record that misses the sentinel is refused by
+    the rule in `check` for having nothing behind it, so an escape costs a confusing refusal rather
+    than a clean record with no licence.
     """
     if not isinstance(licence, str):
         return False
