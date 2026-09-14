@@ -60,6 +60,7 @@ import codecs
 import hashlib
 import json
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,7 +172,13 @@ def defers_to_this_repository(licence: object) -> bool:
     a closed set; a licence cannot have one, since any licence in the world is a legitimate answer,
     so the deferral is recognised loosely instead and everything else is prose.
     """
-    return isinstance(licence, str) and licence.strip().casefold() == DEFERS_TO_THIS_REPOSITORY
+    if not isinstance(licence, str):
+        return False
+    # `split()` rather than `strip()`, because it splits on *every* unicode space and rejoins with
+    # ordinary ones. Round 12 closed case and surrounding space and left the inside alone, so
+    # "same as this\u00a0repository" — one non-breaking space, invisible in every editor — was not
+    # the sentinel and cleared a repository with no licence file at all.
+    return " ".join(licence.split()).casefold() == DEFERS_TO_THIS_REPOSITORY
 
 
 
@@ -247,9 +254,21 @@ def unusable(field: str, value: object) -> str | None:
         return None
     if not isinstance(value, str):
         return f"is {value!r}, and this answers a question a reader asks in words"
-    if not value.strip():
+    if not legible(value):
         return "is blank"
     return None
+
+
+def legible(value: str) -> bool:
+    """Whether this string puts anything on the page.
+
+    `strip()` is not the test. It removes whitespace, and the format characters — zero-width space,
+    zero-width joiner, word joiner, byte-order mark — are category `Cf` rather than whitespace, so
+    a field answered with a single U+200B survived every check here and read as blank to every
+    human who would ever open the file.
+    """
+    return any(not character.isspace() and unicodedata.category(character) != "Cf"
+               for character in value)
 
 
 def why_asset(path: Path) -> str | None:
@@ -367,6 +386,26 @@ def check(root: Path) -> list[Problem]:
                 continue
             recorded[name] = entry
 
+            # **`file` names a file in this record's own directory, and nothing else.** It is
+            # joined to that directory and then hashed, and `directory / name` happily accepts
+            # `../../etc/hostname` or an absolute path, while `is_file()` and `digest()` follow
+            # symlinks — so a record could clear the build by accounting for a file it does not
+            # own, one outside the repository, or one git ignores. The checker would report the
+            # digest of something nobody committed and call the directory accounted for.
+            #
+            # Checked before the fields, because every later question is about the file this names.
+            here = directory / name
+            escaped = None
+            if Path(name).is_absolute() or ".." in Path(name).parts:
+                escaped = "names a path outside the record's own directory"
+            elif here.is_symlink():
+                escaped = "is a symlink, and what a record accounts for is the bytes it sits beside"
+            elif here.exists() and not here.resolve().is_relative_to(directory.resolve()):
+                escaped = "resolves outside the record's own directory"
+            if escaped is not None:
+                problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
+                continue
+
             required = REQUIRED_OURS if ours else REQUIRED
             for field in required:
                 wrong = unusable(field, entry.get(field))
@@ -392,8 +431,13 @@ def check(root: Path) -> list[Problem]:
             # `tracked_files`, and a `LICENSE` that is gitignored answers the deferral on the
             # machine that wrote it and not on the one that checks it out — a green local run and a
             # red CI naming records nobody touched.
+            # `is_file()` before `stat()`, because `git ls-files --cached` answers about the index
+            # and not the disk: a LICENSE that is tracked and then deleted — or a tracked dangling
+            # symlink — made this raise `FileNotFoundError` out of the checker, which is the
+            # traceback-instead-of-a-sentence outcome this file's own docstring exists to prevent.
             if defers_to_this_repository(entry.get("licence")) and not any(
-                    spelling in listed and (root / spelling).stat().st_size > 0
+                    spelling in listed and (root / spelling).is_file()
+                    and (root / spelling).stat().st_size > 0
                     for spelling in LICENCE_FILES):
                 problems.append(Problem(
                     f"{rel} [{name}]",
@@ -404,7 +448,6 @@ def check(root: Path) -> list[Problem]:
             # present for the same reason `sha256` is: a fact nobody derives is a fact that goes
             # quietly stale, and this one goes stale on exactly the change ADR 0059 forbids.
             recorded_blob = entry.get("source_blob")
-            here = directory / name
             if isinstance(recorded_blob, str) and recorded_blob.strip() and here.is_file():
                 actual = git_blob(here)
                 if actual != recorded_blob:

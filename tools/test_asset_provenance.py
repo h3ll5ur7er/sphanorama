@@ -215,6 +215,61 @@ class AssetProvenance(unittest.TestCase):
         entries[0]["licence"] = asset_provenance.DEFERS_TO_THIS_REPOSITORY
         self.tree.record({"assets": entries})
 
+    def test_a_licence_that_is_tracked_and_gone_is_reported_rather_than_raised(self):
+        # `git ls-files --cached` answers about the index, not the disk. A LICENSE that is tracked
+        # and then deleted made the checker raise `FileNotFoundError` — a traceback instead of a
+        # sentence, which is the outcome its docstring exists to prevent. Unreachable from the
+        # other fixtures because none of them ever runs `git add`.
+        self.defer()
+        subprocess.run(["git", "add", "LICENSE"], cwd=self.tree.root, check=True)
+        (self.tree.root / "LICENSE").unlink()
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(named, "a tracked-but-deleted licence answered the deferral")
+
+    def test_a_deferral_with_an_unusual_space_in_it_still_has_to_resolve(self):
+        # Round 12 normalised case and surrounding space and left the inside alone, so one
+        # non-breaking space — invisible in every editor — made the string not the sentinel, and it
+        # cleared a repository with no licence file at all.
+        for spelling in ("same as this\u00a0repository", "same\u2009as this repository",
+                         "  Same\u202fAs This Repository  ", "same  as  this  repository"):
+            with self.subTest(spelling=spelling):
+                entries = self.tree.entries()
+                entries[0]["licence"] = spelling
+                self.tree.record({"assets": entries})
+                (self.tree.root / "LICENSE").unlink()
+                named = [p for p in self.tree.problems() if "`licence`" in p]
+                (self.tree.root / "LICENSE").write_text("MIT\n")
+                self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
+
+    def test_a_field_answered_with_something_invisible_is_blank(self):
+        # `strip()` removes whitespace; the format characters are category `Cf` and are not
+        # whitespace, so a field answered with one zero-width space was a non-blank string to every
+        # check here and blank to every human who would open the file.
+        for invisible in ("\u200b", "\u200d", "\u2060", "\ufeff", " \u200b \ufeff "):
+            with self.subTest(invisible=repr(invisible)):
+                entries = self.tree.entries()
+                entries[0]["work"] = invisible
+                self.tree.record({"assets": entries})
+                named = [p for p in self.tree.problems() if "`work`" in p]
+                self.assertTrue(named, f"{invisible!r} answered a required field")
+                self.assertTrue(any("is blank" in p for p in named), named)
+
+    def test_a_file_that_leaves_the_records_own_directory_is_refused(self):
+        # `directory / name` accepts `../…` and an absolute path, and `is_file()` and `digest()`
+        # follow symlinks — so a record could account for a file it does not own, one outside the
+        # repository, or one git ignores, and the checker would report that file's digest and call
+        # the directory accounted for.
+        outside = self.tree.root / "elsewhere.bin"
+        outside.write_bytes(NOT_TEXT)
+        (self.tree.assets / "linked.bin").symlink_to(outside)
+        for name in ("../elsewhere.bin", str(outside), "linked.bin", "sub/../../elsewhere.bin"):
+            with self.subTest(name=name):
+                entry = dict(self.tree.entries()[0])
+                entry["file"] = name
+                self.tree.record({"assets": [entry]})
+                named = [p for p in self.tree.problems() if "`file`" in p]
+                self.assertTrue(named, f"{name!r} was accepted as this record's own file")
+
     def test_a_deferral_spelled_with_different_capitals_still_has_to_resolve(self):
         # The rule was an exact string match, so `"Same as this repository"` — one capital — meant
         # nothing to it and cleared a repository with no licence file at all. A sentinel that one

@@ -502,9 +502,10 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // a panorama needs. This test's job is different and narrower — to notice when the estimator gets
   // worse — and a bound set generously enough to be a product statement is far too loose for that.
   //
-  // Measured in the hangar: the medians run 0.024 to 0.101 and no single frame exceeds 0.155.
-  // (This line said 0.156 and the one below said 0.155 for the same quantity — ORB's worst frame,
-  // 0.1551. A number written twice is written differently twice.)
+  // Measured in the hangar: the medians run 0.024 to 0.101 and the worst single frame is 0.1551,
+  // ORB's. (This line said 0.156 and the one below 0.155 for that same quantity; reconciling them
+  // on 0.155 then made this sentence — "no single frame exceeds 0.155" — false by a ten
+  // thousandth. Rounding a measurement is fine; rounding it inside a claim about a bound is not.)
   // Deleting the entire inlier refit — the step that makes the answer better than the three points
   // that found it — takes ORB to median 0.2108 and max 0.6477 and fails both bounds, while AKAZE
   // lands at 0.1826/0.2989 and SIFT at 0.0535/0.1147 and both pass. So the bounds are roughly twice
@@ -516,12 +517,16 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // green.** The bounds here are what fail; the figures are prose in eight places and nothing
   // invalidates them. Five are in this file: this comment, the one below it about the worst frame,
   // the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`, its repeat beside the test, and
-  // the `0.6522` lowest inlier fraction near the top. Three are outside it:
-  // `docs/06-roadmap.md`'s table, `docs/adr/0059` and `CLAUDE.md`. (`docs/adr/0056` was on this
+  // the `0.6522` lowest inlier fraction near the top, which is written at three sites in this
+  // file and appears as `0.652` in ADR 0059. Two are outside it and may be edited:
+  // `docs/06-roadmap.md`'s table and `CLAUDE.md`. **ADR 0059 is not one of them** — an ADR is
+  // never edited into agreement with the present (`docs/adr/README.md`), so a bump that moves
+  // these figures supersedes it rather than correcting it. (`docs/adr/0056` was on this
   // list and carries no hangar figure at all — its numbers are the checkerboard's, which is what
   // that ADR is about, so it is not a copy of this table.) Re-run
   // `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for each —
-  // and correct all six, or the next reader inherits a table that was true of a different OpenCV.
+  // and correct all eight, or the next reader inherits a table that was true of a different
+  // OpenCV. (This said six, which is the count this list replaced.)
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.
   //
@@ -625,7 +630,8 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   // `Rendered` above asks for twelve frames and this asks for two of them by index; nothing else
   // keeps that pair in step. Without this, shrinking the ring reads a `FrameRef` past the end of a
   // vector reserved to exactly its count, hands it to `ExtractFeatures`, and fails blaming
-  // extraction. `Accuracy` asserts its own count twenty lines up; this did not.
+  // extraction. `Accuracy` asserts its own count with `ASSERT_EQ(dataset.value.frames.size(),
+  // static_cast<size_t>(kFrames))`; this did not.
   ASSERT_GT(dataset.value.frames.size(), kFirst + 1)
       << "the dataset has " << dataset.value.frames.size() << " frames and this test reads index "
       << (kFirst + 1);
