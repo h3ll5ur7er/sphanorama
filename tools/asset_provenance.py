@@ -170,6 +170,19 @@ LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
 # that, which is why the stopping place is written down rather than derived.
 BLANK = ("\u115f", "\u1160", "\u3164", "\uffa0", "\u2800")
 
+# A licence that gestures at this repository without being the token. `"Same as this repo"`,
+# `"same as this repository."` and `"as in this repository"` all mean the deferral to a reader and
+# none of them is it, so each fell through to the prose rule and cleared a tree with no LICENSE in
+# it — the sentinel absorbing exactly one spelling while every near-miss read as a licence name.
+# `projection` has the same shape of problem and answers it with a closed set; a licence cannot
+# have one, since any licence in the world is a legitimate answer, so the near-miss is refused
+# loudly instead and the reader writes the token.
+#
+# The cost is a real licence that mentions this repository in passing — "CC-BY-4.0, see the NOTICE
+# in this repository" — which is refused and has to be reworded. That is the safe direction: a
+# refusal names the record, and the failure it replaces was a record with nothing behind it.
+NEARLY_DEFERS = "this repo"
+
 
 def visible(value: str) -> str:
     """`value` with the characters that put nothing on the page removed, whitespace excepted.
@@ -205,7 +218,24 @@ def defers_to_this_repository(licence: object) -> bool:
         return False
     # `split()` rather than `strip()`, because it splits on *every* unicode space and rejoins with
     # ordinary ones — reaching the inside of the string, which round 12's `strip()` did not.
-    return " ".join(visible(licence).split()).casefold() == DEFERS_TO_THIS_REPOSITORY
+    return normalised(licence) == DEFERS_TO_THIS_REPOSITORY
+
+
+def normalised(licence: str) -> str:
+    """This `licence` answer with everything the sentinel does not care about taken out."""
+    return " ".join(visible(licence).split()).casefold()
+
+
+def nearly_defers_to_this_repository(licence: object) -> bool:
+    """Whether this `licence` means the deferral to a reader without being the token.
+
+    Asked separately from `defers_to_this_repository` because the two want different answers: one
+    decides whether a licence file must exist, and this one decides whether to refuse a record that
+    nobody can act on either way.
+    """
+    if not isinstance(licence, str) or defers_to_this_repository(licence):
+        return False
+    return NEARLY_DEFERS in normalised(licence)
 
 
 
@@ -237,12 +267,19 @@ def records(root: Path) -> list[Path]:
     return [root / name for name in tracked_files(root) if Path(name).name == RECORD]
 
 
-# Fields whose answer is a number rather than a sentence. Everything else a record holds is prose —
-# spelled as one string or as a list of lines, which is how the long answers (`licence_evidence`,
-# `notes`) are written, so a rule that refused lists would refuse the tree this ships with — with the
-# one exception twenty lines above: `projection` is a token from `PROJECTIONS`, because a test
-# branches on it rather than a person reading it.
+# Fields whose answer is a number rather than a sentence, and the numeric half of the same rule
+# `READ_BY_A_PROGRAM` states: a reader adding `frames` or `channels` belongs here rather than there.
+# Everything else a record holds is prose — spelled as one string or as a list of lines, which is
+# how the long answers (`licence_evidence`, `notes`) are written, so a rule that refused lists would
+# refuse the tree this ships with. The exception is `projection`, a token from `PROJECTIONS`,
+# because a test branches on it rather than a person reading it.
 COUNTS = ("bytes", "width", "height")
+
+# Of those, the ones a zero is not an answer to. A frame nought pixels wide is not a raster, and
+# `>= 0` accepted it — which matters because `width` and `height` are the two facts only a decoder
+# can check, so the arm that does not need one must not be the looser of the two. `bytes` keeps
+# zero: an empty file is a real file, and the size check compares it against `stat`.
+POSITIVE = ("width", "height")
 
 
 def unusable(field: str, value: object) -> str | None:
@@ -259,9 +296,10 @@ def unusable(field: str, value: object) -> str | None:
     if field in COUNTS:
         # `bool` first: it is a subclass of `int`, and `True` is the value that made the size
         # comparison agree with itself.
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        least = 1 if field in POSITIVE else 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < least:
             what = ("a size is a whole number of bytes" if field == "bytes"
-                    else f"{field} is a whole number of pixels")
+                    else f"{field} is a whole number of pixels, and a raster has at least one")
             return f"is {value!r}, and {what}"
         return None
     if field in READ_BY_A_PROGRAM and not isinstance(value, str):
@@ -488,6 +526,12 @@ def check(root: Path) -> list[Problem]:
             # a LICENSE that is tracked and then deleted — or a tracked dangling symlink — made this
             # raise `FileNotFoundError` out of the checker, which is the traceback-instead-of-a-
             # sentence outcome this file's own docstring exists to prevent.
+            if nearly_defers_to_this_repository(entry.get("licence")):
+                problems.append(Problem(
+                    f"{rel} [{name}]",
+                    f"`licence` points at this repository without being {DEFERS_TO_THIS_REPOSITORY!r}"
+                    f", so nothing checks that there is a licence to point at — write the exact "
+                    f"words, or name the licence"))
             if defers_to_this_repository(entry.get("licence")) and not any(
                     spelling in indexed and (root / spelling).is_file()
                     and (root / spelling).stat().st_size > 0
@@ -496,18 +540,6 @@ def check(root: Path) -> list[Problem]:
                     f"{rel} [{name}]",
                     f"`licence` is {DEFERS_TO_THIS_REPOSITORY!r} and this repository has no "
                     f"licence file for it to mean — looked for {', '.join(LICENCE_FILES)}"))
-
-            # The upstream git object name, where a record carries one. Optional, and checked when
-            # present for the same reason `sha256` is: a fact nobody derives is a fact that goes
-            # quietly stale, and this one goes stale on exactly the change ADR 0059 forbids.
-            recorded_blob = entry.get("source_blob")
-            if isinstance(recorded_blob, str) and recorded_blob.strip() and here.is_file():
-                actual = git_blob(here)
-                if actual != recorded_blob:
-                    problems.append(Problem(
-                        f"{rel} [{name}]",
-                        f"`source_blob` is {recorded_blob}, and these bytes are git object "
-                        f"{actual}"))
 
             projection = entry.get("projection")
             if projection is not None and projection not in PROJECTIONS:
@@ -530,7 +562,18 @@ def check(root: Path) -> list[Problem]:
             # the size comes from `stat`, where it has always been: reading the file a second time
             # to call `len` on it was the whole of what `content` was for.
             held = digest(path)
-            if entry.get("sha256") != held:
+            recorded_digest = entry.get("sha256")
+            if isinstance(recorded_digest, str) and recorded_digest.casefold() == held:
+                # A digest spelled in upper case is the same digest. Answered separately because
+                # the other message says *the bytes have moved on*, and a reader acts on that by
+                # re-hashing a file that was never wrong — the misdirection `why_asset` carries its
+                # own reason to avoid. One spelling, so the recorded value can be compared to
+                # `digest()` and to `git hash-object` without a rule about case at each site.
+                if recorded_digest != held:
+                    problems.append(Problem(f"{rel} [{name}]",
+                                            "records the right digest in the wrong case; a sha256 "
+                                            "is written in lower case here"))
+            elif recorded_digest != held:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"has moved on from its recorded sha256; the bytes now "
                                         f"hash to {held}"))
@@ -538,6 +581,26 @@ def check(root: Path) -> list[Problem]:
             if entry.get("bytes") != size:
                 problems.append(Problem(f"{rel} [{name}]",
                                         f"records {entry.get('bytes')} bytes and holds {size}"))
+
+            # The upstream git object name, where a record carries one. Optional, and checked when
+            # present for the same reason `sha256` is: a fact nobody derives is a fact that goes
+            # quietly stale, and this one goes stale on exactly the change ADR 0059 forbids.
+            #
+            # **Last, and it says what to do rather than what it saw.** All three of these fire for
+            # one cause, and this one used to print first, handing the reader a forty-hex value
+            # whose only effect when pasted in is to turn an upstream fact into a local one that can
+            # never be checked against anything again. `sha256` and `bytes` invite exactly that
+            # paste and are right to; this field never does, because the local object name equals
+            # the recorded one precisely when the check did not fire.
+            recorded_blob = entry.get("source_blob")
+            if isinstance(recorded_blob, str) and recorded_blob.strip():
+                if git_blob(path) != recorded_blob:
+                    problems.append(Problem(
+                        f"{rel} [{name}]",
+                        f"`source_blob` names object {recorded_blob} in the source repository and "
+                        f"these are not those bytes — if they were re-encoded, ADR 0059 forbids "
+                        f"that; if the file was legitimately replaced, re-record `source_blob` "
+                        f"from upstream rather than from here"))
 
         for name in listed:
             if owner_of(name, prefixes) != prefix:

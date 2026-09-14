@@ -503,9 +503,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // worse — and a bound set generously enough to be a product statement is far too loose for that.
   //
   // Measured in the hangar: the medians run 0.024 to 0.101 and the worst single frame is 0.1551,
-  // ORB's. (This line said 0.156 and the one below 0.155 for that same quantity; reconciling them
-  // on 0.155 then made this sentence — "no single frame exceeds 0.155" — false by a ten
-  // thousandth. Rounding a measurement is fine; rounding it inside a claim about a bound is not.)
+  // ORB's. Four places, because this sentence is a claim about a bound: rounding a measurement is
+  // fine, and rounding it inside a claim that something does not exceed it is how a sentence here
+  // came to be false by a ten thousandth.
   // Deleting the entire inlier refit — the step that makes the answer better than the three points
   // that found it — takes ORB to median 0.2108 and max 0.6477 and fails both bounds, while AKAZE
   // lands at 0.1826/0.2989 and SIFT at 0.0535/0.1147 and both pass. So the bounds are roughly twice
@@ -638,9 +638,10 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   //
   // They do on frames 3 and 4, which is where the accuracy measurement already shows ORB answering
   // and declining under the full three degrees: 20 **inliers** of 141 correspondences, against
-  // AKAZE's 42 of 199 and SIFT's 61 of 178, both accepted. (This said "20 correspondences of 141",
-  // which is the numerator named after the denominator — the same triple as the docblock
-  // thirty-seven lines up, written differently the second time.) Three degrees is about 26 px, so an echo gathers
+  // AKAZE's 42 of 199 and SIFT's 61 of 178, both accepted — the same triple `Acceptance`'s docblock
+  // carries, and the word `inliers` is load-bearing in both, because "20 correspondences of 141"
+  // names the numerator after the denominator and is the spelling one of the two copies had.
+  // Three degrees is about 26 px, so an echo gathers
   // nothing and is refused — which fails the "something was accepted" half and catches it.
   const size_t kFirst = 3;
   // `Rendered` above asks for twelve frames and this asks for two of them by index; nothing else

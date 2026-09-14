@@ -358,6 +358,31 @@ class AssetProvenance(unittest.TestCase):
                 problems = self.tree.problems()
                 self.assertTrue(any("a" * 32 in problem for problem in problems), problems)
 
+    def test_a_licence_that_nearly_defers_is_refused_rather_than_read_as_a_name(self):
+        # The sentinel absorbed exactly one spelling, so every near-miss meant the deferral to a
+        # reader and a licence name to the checker — and a licence name needs nothing to exist.
+        # These five cleared a tree with no LICENSE in it.
+        for spelling in ("Same as this repo", "same as this repository.", "as in this repository",
+                         "same licence as this repo, see LICENSE", "This repository's licence"):
+            with self.subTest(spelling=spelling):
+                entries = self.tree.entries()
+                entries[0]["licence"] = spelling
+                self.tree.record({"assets": entries})
+                named = [p for p in self.tree.problems() if "`licence`" in p]
+                self.assertTrue(named, f"{spelling!r} was read as a licence name")
+                self.assertTrue(any("without being" in p for p in named), named)
+
+    def test_a_licence_naming_a_licence_is_not_a_near_miss(self):
+        # The other direction, because the rule above refuses on a substring and a rule that refuses
+        # ordinary answers is worse than the hole it closes. None of these mentions this repository.
+        for spelling in ("MIT", "CC-BY-4.0", "Apache-2.0, see the upstream NOTICE",
+                         "CC0-1.0 (public domain dedication)", "same as the upstream project"):
+            with self.subTest(spelling=spelling):
+                entries = self.tree.entries()
+                entries[0]["licence"] = spelling
+                self.tree.record({"assets": entries})
+                self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
+
     def test_a_gitignored_licence_does_not_answer_the_deferral(self):
         # The narrower of the two failures a filesystem check produced: a gitignored LICENSE is an
         # answer on the machine that wrote it and not on the one that checks it out. It is stated
@@ -430,7 +455,56 @@ class AssetProvenance(unittest.TestCase):
         self.tree.record({"assets": entries})
         named = [p for p in self.tree.problems() if "`source_blob`" in p]
         self.assertTrue(named, "a blob hash naming different bytes was accepted")
-        self.assertTrue(any("these bytes are git object" in p for p in named), named)
+        # What it must *not* say is the local object name. Pasting that in converts an upstream
+        # fact into a local one that can never be checked against anything again — the only repair
+        # this field's refusal can suggest that is always wrong.
+        self.assertTrue(any("re-record `source_blob` from upstream" in p for p in named), named)
+        self.assertFalse(any(asset_provenance.git_blob(self.tree.assets / "photo.bin") in p
+                             for p in named), named)
+
+    def test_the_bytes_are_reported_before_the_object_name_that_follows_from_them(self):
+        # All three refusals fire for one cause — changed bytes — and the reader acts on the first
+        # one they meet. `sha256` and `bytes` both invite the paste that repairs them; this one
+        # never does, so it goes last.
+        entries = self.tree.entries()
+        entries[0]["source_blob"] = "0" * 40
+        self.tree.record({"assets": entries})
+        (self.tree.assets / "photo.bin").write_bytes(NOT_TEXT + b"more")
+        problems = self.tree.problems()
+        said = [i for i, p in enumerate(problems) if "sha256" in p or "bytes and holds" in p]
+        blob = [i for i, p in enumerate(problems) if "`source_blob`" in p]
+        self.assertTrue(said and blob, problems)
+        self.assertLess(max(said), min(blob), problems)
+
+    def test_a_digest_recorded_in_upper_case_is_not_called_a_change_in_the_bytes(self):
+        # A hex digest has no meaningful case, so "has moved on from its recorded sha256" sends a
+        # reader to re-hash a file that was never wrong. The record is still refused — one spelling,
+        # so nothing downstream needs a rule about case — but for what is actually wrong with it.
+        entries = self.tree.entries()
+        entries[0]["sha256"] = entries[0]["sha256"].upper()
+        self.tree.record({"assets": entries})
+        named = [p for p in self.tree.problems() if "sha256" in p]
+        self.assertTrue(named, "a digest in the wrong case was accepted")
+        self.assertTrue(any("wrong case" in p for p in named), named)
+        self.assertFalse(any("has moved on" in p for p in named), named)
+
+    def test_a_raster_nought_pixels_wide_is_not_a_raster(self):
+        # `value < 0` admitted zero, so `"width": 0, "height": 0` cleared the checker. `width` and
+        # `height` are the two facts only a decoder can confirm, which is the reason the arm that
+        # needs no decoder must not be the looser of the two.
+        for field in ("width", "height"):
+            with self.subTest(field=field):
+                entries = self.tree.entries()
+                entries[0]["file"] = "photo.png"
+                (self.tree.assets / "photo.png").write_bytes((self.tree.assets / "photo.bin")
+                                                             .read_bytes())
+                entries[0]["width"] = 4
+                entries[0]["height"] = 4
+                entries[0][field] = 0
+                self.tree.record({"assets": entries})
+                named = [p for p in self.tree.problems() if f"`{field}`" in p]
+                self.assertTrue(named, f"`{field}: 0` was accepted")
+                self.assertTrue(any("at least one" in p for p in named), named)
 
     def test_a_source_blob_git_itself_computes_is_accepted(self):
         # Against `git hash-object` rather than against this checker's own arithmetic, which would
