@@ -867,6 +867,16 @@ every dataset it produces answers every pixel *centre* of its own frame whatever
 is given
 (ADR 0060). Distortion is worth rendering for the first reason rather than the second: an accuracy
 measured on a lens nobody sells is not a statement about a phone.
+
+**And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
+hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by
+half a pixel in each axis — a constant `(-0.5, -0.5)` px translation, absorbed by the optical
+centre rather than by the focal length. At this dataset's `fx` of 492.757 that is **0.0581
+degrees**, which is the same order as the medians above and larger than SIFT's. So the table is a
+comparison between detectors on equal terms and is not yet a statement of how well this estimator
+locates a rotation. Correcting it moves every figure here and wants its own measurement and its own
+ADR (ADR 0060 records the geometry; `camera_model.h` has stated the convention gap since it was
+written).
 And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
 possible topology, with no loop closure and nothing for `Refine` to do.
 

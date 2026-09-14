@@ -13,7 +13,7 @@ measured figures:
 > a 78-degree lens with `k1 = -0.20` refuses about 4% of in-frame pixels, and a 100-degree one with
 > `k1 = -0.35` refuses 38.8%.
 
-The first is right. The second is wrong by a factor of about one and a half in the direction that
+The first is right. The second is wrong by a factor of **1.72** in the direction that
 understates the case: such a lens refuses **66.8%** of its own frame, measured at every pixel centre
 of a 320x240 frame, and the figure is insensitive to frame size — over 80x60, 160x120, 320x240,
 640x480 and 1280x960 it spans 66.7474% to 66.9167%. There is no vertical field of view that makes it
@@ -53,6 +53,12 @@ will not reach it.
 
 The retraction lives here and the docblock keeps the live figure and a pointer, per ADR 0057.
 
+**The offset is not confined to the fold.** It displaces *every* bearing the engine computes, on
+every lens, distorted or not — `docs/06-roadmap.md` now says so beside the accuracy table those
+bearings produce, because at that dataset's `fx` of 492.757 half a pixel is 0.0581 degrees, the
+same order as the medians and larger than one of them. What follows is only the narrower question
+of where the two conventions disagree about the *fold*.
+
 **Centres, not keypoints.** That last claim is about pixel centres, and a keypoint is not one:
 `ReadBearings` passes OpenCV coordinates through unchanged, and OpenCV puts a pixel's centre at an
 integer where this model puts the image's corner at the origin, so a keypoint reported at (0, 0)
@@ -70,7 +76,7 @@ draft said "by construction", which is a stronger word than the measurement supp
 - The two tests walk 76,800 pixels **four** times through a damped-Newton inverse — two lenses in
   the first, two coefficients in the second. Measured at 317 ms and 66 ms in the debug build, 384 ms
   together, which is why the frame is 320x240 rather than a phone's: the answer does not depend on
-  the resolution and the cost does. (This said "twice" and 307 ms, counting the first test only.)
+  the resolution and the cost does.
 - **Two lenses rather than one, and the pair earns itself.** A reviewer swapped `fx` and `fy` —
   the mistake `camera_model.h` calls the single easiest thing here to get silently wrong — and the
   ultra-wide figure did not move at all: **66.7552% either way**, 51,268 refused of 76,800 in both

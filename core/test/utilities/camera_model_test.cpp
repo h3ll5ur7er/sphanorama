@@ -869,7 +869,7 @@ double RefusedPercentOfFrame(const Intrinsics& lens) {
 TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
   // `feature_registration_engine.cpp`'s `Bearing` docblock argues that its refused-row path is
   // reachable in life, and the argument is two measured figures. Nothing measured them: they are
-  // prose beside code that cannot fail on them, and one is wrong by a factor of one and a half.
+  // prose beside code that cannot fail on them, and one is wrong by a factor of 1.72.
   //
   // Frame size is not a parameter of the answer, which is why 320x240 is enough to check a claim
   // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
@@ -893,9 +893,10 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   // because `tools/synth_dataset.py` will not render a frame with a rayless pixel in it — there
   // being no colour that could honestly stand for one.
   //
-  // So the refused-row path is unreachable from any rendered dataset, whatever distortion the
-  // renderer is given, and a test that hoped to drive it by adding distortion to a dataset would
-  // pass without ever taking it.
+  // So the refused-row path is not reached by a rendered dataset at any lens anyone would choose,
+  // whatever distortion the renderer is given, and a test that hoped to drive it by adding
+  // distortion to a dataset would pass without ever taking it. Not "cannot be": the band below is
+  // where it can.
   //
   // The boundary is pinned rather than described. Bisected, the first pixel centre goes at
   // k1 = -0.2334; -0.23 refuses none of 76,800 and -0.24 refuses 48. An earlier version of this
@@ -907,7 +908,7 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
 
   // The count, not merely that there is one. `EXPECT_GT(…, 0.0)` is green for anything from 1
-  // pixel to all 76,800, which is the shape this test's own comment two paragraphs up complains
+  // pixel to all 76,800, which is the shape the threshold sentence above complains
   // about — a threshold named in prose with an assertion that cannot fail on it. 48 of 76,800 is
   // stable: identical under gcc and clang at five optimisation settings including `-ffast-math`,
   // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
@@ -915,8 +916,8 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   //
   // **It is not the most sensitive assertion here, and an earlier version of this claimed it was.**
   // Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
-  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, twenty-five
-  // lines up and predating this branch. This count only joins in at 1e-3. So the pair below pins
+  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, which
+  // predates this branch. This count only joins in at 1e-3. So the pair below pins
   // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
   // whole suite — 0.44 px of accepted round-trip error against a constant documented as under a
   // millionth of a pixel.
