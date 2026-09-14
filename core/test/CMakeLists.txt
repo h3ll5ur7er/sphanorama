@@ -172,8 +172,8 @@ target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 #
 # 300 and not the 60 a reviewer proposed. The slowest case is `EveryDetector/Accuracy…/2` under
 # ASan: **19.1 s** on an idle machine and **27.4 s** with a build running alongside, so 300 is
-# between eleven and sixteen times it. (This said 16.36 s and "eighteen times", from a ctest run
-# that had the machine to itself and was read off a different build than the one it named.)
+# between eleven and sixteen times it — measured under ASan, which is the slow build, and reported
+# as a range because the figure is load-dependent.
 #
 # The tail nothing local bounds is the per-case `uv run` subprocess: `ci.yml` caches no uv
 # environment, so a cold resolve on a slow runner is the plausible way a case takes minutes without

@@ -1052,16 +1052,15 @@ TEST_F(Dataset, RefusesAShortSpanForALensOfOneRow) {
 }
 
 TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
-  // `ReadToken`'s comment branch could be deleted outright with the suite green, because the
-  // generator never writes one and every damaged copy in this file is hand-written without one. The
+  // `ReadToken`'s comment branch could once be deleted outright with the suite green: the
+  // generator writes no comment, and no damaged copy in this file carried one. Six do now. The
   // docstring claims a reader that choked on a comment would be refusing a valid file, and this was
-  // the only case here green *because* the branch is present rather than because something else
+  // the only case green *because* the branch is present rather than because something else
   // refused first. Seven tests are now green because a `#` branch exists: deleting the
   // whitespace-skipping loop's fails this one, `…OwnLineCommentIsEndedByACarriageReturn` and
   // `RefusesAHeaderWhoseCommentIsNeverEnded`; deleting the accumulation loop's fails the other
-  // four. Three and four, measured over all 811 — a comment here said two and three, written when
-  // there were two and three and not re-measured when the commit that wrote it added a test to
-  // each group.
+  // four, measured over all 811. Re-measure these when a test joins either group: the commit that
+  // first wrote them added one to each and left the numbers alone.
   //
   // That loop meets any comment following whitespace, of which a whole line is one shape —
   // `48 #c\n36` is another, and no test writes it.
@@ -1083,8 +1082,8 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
 
 TEST_F(Dataset, ACommentEndsTheTokenItInterruptsRatherThanJoiningItsHalves) {
   // **A comment is whitespace to Netpbm, so it separates.** `pm_getc` reads a `#` through the next
-  // end-of-line and returns that end-of-line byte, "so that Caller sees the whole comment as just
-  // white space" — which makes `P6\n4#c\n8 36\n255\n` a 4x8 frame with a maximum of 36, and not the
+  // end-of-line and returns that end-of-line byte: "The effect is that Caller sees the whole
+  // comment as just white space" — which makes `P6\n4#c\n8 36\n255\n` a 4x8 frame with a maximum of 36, and not the
   // 48x36 one its digits spell if the halves are joined.
   //
   // That canonical example is not what this test writes, because it is malformed in a second
@@ -1174,7 +1173,7 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   //
   // Not a claim about `ReadToken`'s `unget` itself: that line is load-bearing for every header in
   // the file, and deleting it fails **25** tests across three suites — 21 `Dataset`, 3
-  // `EveryDetector/Accuracy`, 1 `Acceptance` — these four among them.
+  // `EveryDetector/Accuracy`, 1 `Acceptance` — this one among them.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
