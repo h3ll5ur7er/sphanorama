@@ -129,6 +129,23 @@ class ConflictMarkerCheckTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.markers()
 
+    def test_a_file_past_the_ceiling_is_skipped_rather_than_read(self):
+        # The ceiling had no case in either line checker, so widening it 16x in both left every
+        # suite green. Both sides of the boundary, the way `RECORD_CEILING`'s case does it: a
+        # ceiling asserted only from above is satisfied by a reader that refuses everything.
+        #
+        # The constant is patched rather than the fixture made huge — the property is "past the
+        # ceiling", not "four megabytes", and a test that spends a second writing 4 MiB to assert
+        # it is a test nobody runs.
+        self.addCleanup(setattr, conflict_marker_check, "MAX_BYTES",
+                        conflict_marker_check.MAX_BYTES)
+        body = "ours\n<<<<<<< HEAD\nmine\n"
+        self.repo.write("docs/a.md", body)
+        conflict_marker_check.MAX_BYTES = len(body) - 1
+        self.assertEqual(self.markers(), [])
+        conflict_marker_check.MAX_BYTES = len(body)
+        self.assertEqual([marker.path for marker in self.markers()], ["docs/a.md"])
+
     def test_and_main_turns_that_refusal_into_a_sentence(self):
         # The other half, one level up, because `check` raising is deliberate and a traceback is
         # not. The commonest way to reach it needs no hostile input at all — git refuses a
