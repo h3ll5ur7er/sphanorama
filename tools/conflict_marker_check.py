@@ -24,6 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import reading
 from tracked import tracked_files
 
 # Built from repeated characters, so that no line of this file or its tests can be one. Spelling
@@ -98,9 +99,13 @@ def check(root: Path) -> list[Marker]:
         if not path.is_file():
             continue
         try:
-            if path.stat().st_size > MAX_BYTES:
+            # **The ceiling is measured, not read from `stat`.** `st_size > MAX_BYTES` looks
+            # equivalent and is a second answer to the same question — and it is wrong for exactly
+            # the files that need bounding: a `/proc` file reports zero, so the ceiling let through
+            # the one input it existed for and `read_text` then blocked in the kernel forever.
+            body = reading.text(path, MAX_BYTES)
+            if body is None:
                 continue
-            body = path.read_text(errors="replace")
         except OSError as failure:
             # Reported, not skipped. A tracked file this cannot read is a file it cannot clear,
             # and swallowing that would make an unreadable tree look like a clean one — which is
@@ -114,7 +119,18 @@ def check(root: Path) -> list[Marker]:
 
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parent.parent
-    markers = check(root)
+    # **A refusal to run is a sentence, not a traceback.** `tracked.py` raises when git will not
+    # answer, and these checkers raise when a tracked file cannot be read — both deliberately, since
+    # returning "nothing found" from a check that could not run is the one false pass they exist to
+    # prevent. What was not deliberate is that the message then arrived as a `RuntimeError` under
+    # four frames of checker source, with git's own remedy buried at the bottom. The commonest
+    # trigger needs no hostile input at all: git refuses a repository whose checkout and whose
+    # caller are different users, which is an ordinary container shape.
+    try:
+        markers = check(root)
+    except RuntimeError as refused:
+        print(f"this check could not run: {refused}", file=sys.stderr)
+        return 1
     if not markers:
         return 0
     print(f"{len(markers)} conflict marker(s) left behind:\n", file=sys.stderr)

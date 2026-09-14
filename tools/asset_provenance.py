@@ -57,24 +57,18 @@ Usage:  uv run tools/asset_provenance.py [repo_root]
 from __future__ import annotations
 
 import codecs
-import errno
 import hashlib
 import json
-import os
-import stat
 import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
+from reading import BLOCK, blocks, head
 from tracked import indexed_files, tracked_files
 
 RECORD = "sources.json"
 
-# One block of a file at a time, for the digest and for the decode. Big enough that the
-# syscall count does not matter and small enough that the peak does not depend on what
-# somebody left in the working tree.
-BLOCK = 1024 * 1024
 
 # Each answers a question that cannot be recovered from the bytes. `sha256` can be, and is here so
 # that the record is checkable against the file rather than merely present — `bytes` is a second
@@ -162,16 +156,17 @@ def git_blob(path: Path) -> str:
     the one that goes stale silently after the single thing ADR 0059 forbids: a transcode changes
     `sha256` and `bytes` and the build says so, and it changes this too and nothing said anything.
     """
-    # Streamed in blocks, like `digest` above and for its reason: a checker that reads an asset
-    # whole into memory is one `--panorama` away from being the thing it refuses to be. Git's
-    # header needs the length up front, which `stat` answers without opening the file.
+    # Streamed, like `digest` above and for its reason: a checker that reads an asset whole into
+    # memory is one `--panorama` away from being the thing it refuses to be.
+    #
+    # Git's header needs the length up front, and `stat` is the only way to have it before the
+    # bytes — so this is the one place here that reads a size from the filesystem, and it is safe
+    # only because `reading.blocks` has already established what the file is. A `stat` size used to
+    # *bound* a read would be the mistake the sibling checker made; used to *describe* the bytes
+    # that follow it is what git's own object format asks for.
     running = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
-    with path.open("rb") as handle:
-        while True:
-            block = handle.read(BLOCK)
-            if not block:
-                break
-            running.update(block)
+    for block in blocks(path):
+        running.update(block)
     return running.hexdigest()
 
 
@@ -271,57 +266,10 @@ def read_record(path: Path) -> str:
     rather than a big record. `stat` first would be a second answer — and a wrong one for a
     character device, whose length is zero — so this reads one byte past the ceiling and asks.
     """
-    with open_regular(path) as handle:
-        head = ready(handle.read(RECORD_CEILING + 1))
-    if len(head) > RECORD_CEILING:
+    found = head(path, RECORD_CEILING + 1)
+    if len(found) > RECORD_CEILING:
         raise ValueError(f"is larger than {RECORD_CEILING} bytes, so it is not a record")
-    return head.decode("utf-8")
-
-
-def open_regular(path: Path):
-    """Open `path` for reading, refusing anything that is not a regular file.
-
-    **`O_NONBLOCK`, because `open()` itself can hang.** On a FIFO it blocks in the kernel until a
-    writer appears, and no ceiling on the *read* helps: a single `mkfifo LICENSE` made this checker
-    never return. Both places that open a file here were reached from the git index, which says what
-    was committed and nothing about what is on disk now — the same sentence this file already makes
-    about records, arriving a third time.
-
-    `fstat` on the descriptor rather than `is_file()` on the path, so there is no window between the
-    question and the answer: what is opened is what is checked.
-    """
-    handle = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(handle).st_mode):
-            raise OSError(errno.EINVAL, "is not a regular file")
-        return os.fdopen(handle, "rb")
-    except BaseException:
-        os.close(handle)
-        raise
-
-
-def ready(head: bytes | None) -> bytes:
-    """The bytes a read returned, refusing the one answer that is not bytes.
-
-    `open_regular` opens with `O_NONBLOCK` and the flag stays on the descriptor, so a read here has
-    a third outcome besides bytes and end of file: `None`, meaning "a regular file with nothing
-    ready". The flag cannot be cleared to make that go away — the files it guards against are
-    exactly the ones whose *read* would then block forever. `/proc/kmsg` is a regular file by
-    `S_ISREG` and reading it waits for the next kernel message, so `os.set_blocking` reinstates the
-    hang the flag was added to prevent, one call later and in a place nothing tests.
-
-    So `None` is a refusal, and it is one here rather than twice at the call sites. Left unhandled
-    it was `AttributeError: 'NoneType' object has no attribute 'decode'` from `says_something` and
-    `TypeError: object of type 'NoneType' has no len()` from `read_record` — neither an `OSError`,
-    so neither caught by the arms that exist for a file that cannot be read, and both arriving as a
-    traceback out of `check()`.
-
-    `EAGAIN`, which is the errno the flag's own contract names for it, so a caller reporting
-    `strerror` says something true about what happened.
-    """
-    if head is None:
-        raise OSError(errno.EAGAIN, "had nothing ready to read")
-    return head
+    return found.decode("utf-8")
 
 
 def says_something(path: Path) -> bool:
@@ -339,9 +287,7 @@ def says_something(path: Path) -> bool:
     there sends a reader to write one. `why_asset` made the opposite choice deliberately and it is
     the right one — the reason is what a refusal is for.
     """
-    with open_regular(path) as handle:
-        head = ready(handle.read(BLOCK))
-    return legible(head.decode("utf-8", "surrogateescape"))
+    return legible(head(path, BLOCK).decode("utf-8", "surrogateescape"))
 
 
 def licence_trouble(root: Path, indexed: list[str]) -> str | None:
@@ -437,9 +383,8 @@ def digest(path: Path) -> str:
     incremental and the loop is two lines.
     """
     running = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(BLOCK):
-            running.update(chunk)
+    for chunk in blocks(path):
+        running.update(chunk)
     return running.hexdigest()
 
 
@@ -544,10 +489,9 @@ def why_asset(path: Path) -> str | None:
         # boundary, so a character split between two reads is not mistaken for invalid UTF-8, which
         # is the reason this cannot simply be `chunk.decode()` in a loop.
         decoder = codecs.getincrementaldecoder("utf-8")()
-        with path.open("rb") as handle:
-            while chunk := handle.read(BLOCK):
-                decoder.decode(chunk)
-            decoder.decode(b"", final=True)
+        for chunk in blocks(path):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
     except UnicodeDecodeError:
         return "its bytes are not valid UTF-8, so it is not source in this repository"
     except OSError as failure:
@@ -919,7 +863,18 @@ def check(root: Path) -> list[Problem]:
 
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parent.parent
-    problems = check(root)
+    # **A refusal to run is a sentence, not a traceback.** `tracked.py` raises when git will not
+    # answer, and these checkers raise when a tracked file cannot be read — both deliberately, since
+    # returning "nothing found" from a check that could not run is the one false pass they exist to
+    # prevent. What was not deliberate is that the message then arrived as a `RuntimeError` under
+    # four frames of checker source, with git's own remedy buried at the bottom. The commonest
+    # trigger needs no hostile input at all: git refuses a repository whose checkout and whose
+    # caller are different users, which is an ordinary container shape.
+    try:
+        problems = check(root)
+    except RuntimeError as refused:
+        print(f"this check could not run: {refused}", file=sys.stderr)
+        return 1
     if not problems:
         return 0
     print(f"{len(problems)} asset(s) cannot say where they came from:\n", file=sys.stderr)
