@@ -8,6 +8,7 @@ record stops describing the bytes — a file nobody recorded, and a file that ha
 somebody did.
 """
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -53,7 +54,14 @@ class Tree:
         # `"licence": "same as this repository"` — and a deferral that points at nothing is refused.
         # Six tests in this file started failing when that rule arrived, every one of them for the
         # right reason: their fixture was a repository with no licence in it.
+        #
+        # Added, not merely written. The deferral asks what a reader's checkout has, and for nine
+        # tests this file was answering it from a file git had never been told about — so every
+        # green deferral here was green because the rule was the wrong one. Adding it in the
+        # fixture makes those nine assert the rule they name; the one test about an unadded licence
+        # takes it back out of the index.
         (root / "LICENSE").write_text("MIT, for the purposes of this fixture.\n")
+        self.track("LICENSE")
         self.assets = root / "assets"
         self.assets.mkdir(parents=True)
         self.write("photo.bin", content)
@@ -61,6 +69,15 @@ class Tree:
         entry["sha256"] = asset_provenance.digest(self.assets / "photo.bin")
         entry["bytes"] = len(content)
         self.record({"assets": [entry]})
+
+    def track(self, name: str) -> None:
+        """Put a path in the index, which is what a fresh checkout of this tree would contain."""
+        subprocess.run(["git", "add", "--", name], cwd=self.root, check=True)
+
+    def forget(self, name: str) -> None:
+        """Take a path out of the index and off the disk, so no reading of "present" finds it."""
+        subprocess.run(["git", "rm", "-q", "--cached", "--", name], cwd=self.root, check=True)
+        (self.root / name).unlink()
 
     def write(self, name: str, content: bytes) -> Path:
         path = self.assets / name
@@ -230,8 +247,15 @@ class AssetProvenance(unittest.TestCase):
         # Round 12 normalised case and surrounding space and left the inside alone, so one
         # non-breaking space — invisible in every editor — made the string not the sentinel, and it
         # cleared a repository with no licence file at all.
+        # And the invisible characters that are not whitespace at all. `split()` splits on
+        # `str.isspace()`, so round 13's fix reached every space and no format character: one
+        # U+200B inside the sentinel made it not the sentinel, and the six records this repository
+        # actually ships cleared a tree with no LICENSE in it. Same rule as `legible()` now.
         for spelling in ("same as this\u00a0repository", "same\u2009as this repository",
-                         "  Same\u202fAs This Repository  ", "same  as  this  repository"):
+                         "  Same\u202fAs This Repository  ", "same  as  this  repository",
+                         "same as this\u200b repository", "same as\u2060 this repository",
+                         "\ufeffsame as this repository", "same\u00ad as this repository",
+                         "same\u200b \u200cas this\u200d repository"):
             with self.subTest(spelling=spelling):
                 entries = self.tree.entries()
                 entries[0]["licence"] = spelling
@@ -241,11 +265,29 @@ class AssetProvenance(unittest.TestCase):
                 (self.tree.root / "LICENSE").write_text("MIT\n")
                 self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
 
+    def test_an_invisible_character_that_joins_two_words_does_not_make_a_deferral(self):
+        # `visible` deletes rather than substitutes, and this is what that choice decides. A reader
+        # of `"same as this\u200brepository"` sees `same as thisrepository` — no gap, because the
+        # character is zero-width — so the checker must read it the same way. Substituting a space
+        # would make the sentinel match anything with the right letters and a separator anywhere,
+        # which is the loose direction that lets a record clear the build.
+        entries = self.tree.entries()
+        entries[0]["licence"] = "same as this\u200brepository"
+        self.tree.record({"assets": entries})
+        (self.tree.root / "LICENSE").unlink()
+        self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [],
+                         "a joined-up word was read as the deferral")
+
     def test_a_field_answered_with_something_invisible_is_blank(self):
         # `strip()` removes whitespace; the format characters are category `Cf` and are not
         # whitespace, so a field answered with one zero-width space was a non-blank string to every
         # check here and blank to every human who would open the file.
-        for invisible in ("\u200b", "\u200d", "\u2060", "\ufeff", " \u200b \ufeff "):
+        # The fillers and the braille blank are not `Cf` — they are `Lo` and `So` — so the
+        # category rule alone let `"work": "\u3164"` answer a required field. There is no closed
+        # set of characters that render blank, which is why `BLANK` is a short named tuple and the
+        # docstring claims what the rule does rather than what a font does.
+        for invisible in ("\u200b", "\u200d", "\u2060", "\ufeff", " \u200b \ufeff ",
+                          "\u3164", "\u115f", "\u1160", "\uffa0", "\u2800", " \u2800\u3164 "):
             with self.subTest(invisible=repr(invisible)):
                 entries = self.tree.entries()
                 entries[0]["work"] = invisible
@@ -286,16 +328,49 @@ class AssetProvenance(unittest.TestCase):
                 (self.tree.root / "LICENSE").write_text("MIT\n")
                 self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
 
-    def test_a_licence_file_that_is_not_tracked_does_not_answer_the_deferral(self):
-        # Every other question this checker asks goes through `tracked_files`. Asking the
-        # filesystem instead made a gitignored LICENSE an answer on the machine that wrote it and
-        # not on the one that checks it out — green locally, red in CI, naming records nobody had
-        # touched.
+    def test_a_licence_file_that_is_only_on_disk_does_not_answer_the_deferral(self):
+        # `tracked_files` is `--cached --others --exclude-standard`: every path git would *let* you
+        # commit, which includes one nobody has added. So "tracked" here meant "not gitignored",
+        # and a LICENSE that exists only in the working tree answered the deferral on the machine
+        # that wrote it and not on the one that checks it out — verbatim the failure the comment
+        # beside this rule says it closed. Every green deferral test in this file was answered by
+        # an untracked licence until this arrived, the fixture never having run `git add`.
         self.defer()
-        (self.tree.root / ".gitignore").write_text("LICENSE\n")
-        subprocess.run(["git", "add", ".gitignore"], cwd=self.tree.root, check=True)
+        self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [],
+                         "the fixture's tracked licence does not answer the deferral")
+        subprocess.run(["git", "rm", "--cached", "-q", "--", "LICENSE"],
+                       cwd=self.tree.root, check=True)
+        self.assertTrue((self.tree.root / "LICENSE").is_file(), "the file itself must stay")
         named = [p for p in self.tree.problems() if "`licence`" in p]
-        self.assertTrue(named, "an untracked licence answered a deferral")
+        self.assertTrue(named, "a licence git has never been told about answered a deferral")
+
+    def test_a_file_too_long_for_the_filesystem_is_reported_rather_than_raised(self):
+        # `Path.is_symlink()` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so
+        # a `file` whose last component is at least 256 bytes raised `OSError: [Errno 36]` out of
+        # `check()` — a traceback instead of a sentence, about a record a reader could have fixed.
+        # 255 is the limit on every filesystem this runs on; the guard is written against the
+        # error rather than the number, because the number is a mount option.
+        for length in (255, 256, 4096):
+            with self.subTest(length=length):
+                entries = self.tree.entries()
+                entries[0]["file"] = "a" * length
+                self.tree.record({"assets": entries})
+                problems = self.tree.problems()
+                self.assertTrue(any("a" * 32 in problem for problem in problems), problems)
+
+    def test_a_gitignored_licence_does_not_answer_the_deferral(self):
+        # The narrower of the two failures a filesystem check produced: a gitignored LICENSE is an
+        # answer on the machine that wrote it and not on the one that checks it out. It is stated
+        # separately from the unadded case above because a reader fixing one would not think of the
+        # other — and because `--exclude-standard` and `--cached` are different reasons for the
+        # same refusal, so a change that repaired one could leave the other open.
+        self.defer()
+        subprocess.run(["git", "rm", "--cached", "-q", "--", "LICENSE"],
+                       cwd=self.tree.root, check=True)
+        (self.tree.root / ".gitignore").write_text("LICENSE\n")
+        self.tree.track(".gitignore")
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(named, "a gitignored licence answered a deferral")
 
     def test_a_half_that_is_not_a_list_is_reported_rather_than_crashing_its_consumer(self):
         # `{"ours": {...}}` keyed by filename reads as a record and is not one. The checker used to
@@ -316,7 +391,7 @@ class AssetProvenance(unittest.TestCase):
         # to do is resolve, and for the whole life of these records it did not — there was no
         # LICENSE file at all, and nothing said so.
         self.defer()
-        (self.tree.root / "LICENSE").unlink()
+        self.tree.forget("LICENSE")
         named = [p for p in self.tree.problems() if "`licence`" in p]
         self.assertTrue(named, "a licence deferring to a repository with no licence was accepted")
         self.assertTrue(any("no licence file for it to mean" in p for p in named), named)
@@ -329,13 +404,14 @@ class AssetProvenance(unittest.TestCase):
         # left all of these green with three spellings asserted by nothing.
         self.assertEqual(asset_provenance.LICENCE_FILES,
                          ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"))
-        (self.tree.root / "LICENSE").unlink()
+        self.tree.forget("LICENSE")
         for spelling in asset_provenance.LICENCE_FILES:
             with self.subTest(spelling=spelling):
                 written = self.tree.root / spelling
                 written.write_text("A licence, of some kind.\n")
+                self.tree.track(spelling)
                 self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
-                written.unlink()
+                self.tree.forget(spelling)
 
     def test_a_deferred_licence_is_not_answered_by_an_empty_file(self):
         # A zero-byte LICENSE is the shape a half-finished `touch` leaves behind, and it answers
@@ -604,17 +680,58 @@ class AFileThisRepositoryMadeItself(unittest.TestCase):
 
 
 class ReadingAFileInBlocks(unittest.TestCase):
-    """The two loops that read a file a block at a time, driven across more than one block.
+    """Every loop that reads a file a block at a time, driven across more than one block.
 
-    `BLOCK` is a megabyte, and nothing either suite writes is a megabyte — so both loops ran exactly
-    once in every test, and three separate mistakes were invisible: a decoder that restarts per
-    block, a decoder never flushed at end of file, and a digest that hashes the first block and
+    `BLOCK` is a megabyte, and nothing either suite writes is a megabyte — so every such loop ran
+    exactly once in every test, and three separate mistakes were invisible: a decoder that restarts
+    per block, a decoder never flushed at end of file, and a digest that hashes the first block and
     stops. Each leaves 41 tests green and the checker at exit 0.
 
     So the block size is lowered here rather than the files made huge. The property under test is
     "more than one block", not "many megabytes", and a fixture that spends a second writing 2 MiB to
     assert it is a fixture nobody runs.
+
+    This said *"the two loops"*, and `git_blob` arrived four commits later and joined no case — so
+    for the whole of that time truncating it to its first block left both checkers at exit 0. The
+    class names its set now rather than counting it, and `test_every_loop…` fails when that set
+    stops matching the module. A hand-written count is a copy of a fact, and this file's own
+    `READ_BY_A_PROGRAM` note says what happens to those.
     """
+
+    # Function name → the test here that drives it past one block. Checked against the module, so
+    # a new block-reading function cannot arrive without either a case or a deliberate line here.
+    DRIVEN = {
+        "digest": "test_a_digest_covers_every_block_and_not_just_the_first",
+        "git_blob": "test_a_blob_name_covers_every_block_and_not_just_the_first",
+        "why_asset": "test_a_character_split_across_a_block_boundary_is_still_one_character",
+    }
+
+    def test_every_loop_that_reads_in_blocks_has_a_case_in_this_class(self):
+        # Derived from the module rather than listed beside it: `inspect` finds every function whose
+        # body mentions `BLOCK`, which is what "reads a file a block at a time" is spelled as here.
+        # The failure it produces names the function, which is the whole of what a reader needs.
+        reading = {name for name, value in vars(asset_provenance).items()
+                   if inspect.isfunction(value) and "BLOCK" in inspect.getsource(value)}
+        self.assertEqual(reading, set(self.DRIVEN),
+                         "a function reads in blocks with no case here, or a case names a "
+                         "function that no longer does")
+        for function, case in self.DRIVEN.items():
+            self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
+
+    def test_a_blob_name_covers_every_block_and_not_just_the_first(self):
+        # Git's own answer, not ours, so the comparison is against `git hash-object` rather than
+        # against a second implementation of the same header. Sizes around the boundary because the
+        # mistakes here are off-by-one-block: an empty file, a block short, exactly a block, a block
+        # and one byte, and several blocks with a remainder.
+        block = asset_provenance.BLOCK
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        for size in (0, block - 1, block, block + 1, 3 * block + 5):
+            with self.subTest(size=size):
+                path = self.write("blob.bin", bytes(range(256)) * (size // 256 + 1))
+                path.write_bytes(path.read_bytes()[:size])
+                theirs = subprocess.run(["git", "hash-object", "--", str(path)], cwd=self.root,
+                                        capture_output=True, text=True, check=True).stdout.strip()
+                self.assertEqual(asset_provenance.git_blob(path), theirs)
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

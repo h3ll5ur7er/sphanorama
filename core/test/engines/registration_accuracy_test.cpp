@@ -514,19 +514,34 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
-  // green.** The bounds here are what fail; the figures are prose in eight places and nothing
-  // invalidates them. Five are in this file: this comment, the one below it about the worst frame,
-  // the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`, its repeat beside the test, and
-  // the `0.6522` lowest inlier fraction near the top, which is written at three sites in this
-  // file and appears as `0.652` in ADR 0059. Two are outside it and may be edited:
-  // `docs/06-roadmap.md`'s table and `CLAUDE.md`. **ADR 0059 is not one of them** — an ADR is
-  // never edited into agreement with the present (`docs/adr/README.md`), so a bump that moves
-  // these figures supersedes it rather than correcting it. (`docs/adr/0056` was on this
-  // list and carries no hangar figure at all — its numbers are the checkerboard's, which is what
-  // that ADR is about, so it is not a copy of this table.) Re-run
-  // `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for each —
-  // and correct all eight, or the next reader inherits a table that was true of a different
-  // OpenCV. (This said six, which is the count this list replaced.)
+  // green.** The bounds here are what fail; the figures are prose in eight places that may be
+  // corrected, and nothing invalidates them. Six are in this file:
+  //
+  //   1. this comment's `0.024 to 0.101` and `0.1551`;
+  //   2. the `Today's run, for comparison:` transcript that closes this comment — the whole triple;
+  //   3. the worst-frame bound's `0.1551`, under `EXPECT_LT(score.maxDeg, 0.4)`;
+  //   4. the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`;
+  //   5. its repeat beside `kFirst`;
+  //   6. the `0.6522` lowest inlier fraction in `World`'s docblock, which is the one figure here
+  //      that no bound asserts and no probe in the tree reproduces.
+  //
+  // Two are outside it:
+  //
+  //   7. `docs/06-roadmap.md`'s table, and separately its `the hangar's lowest inlier fraction is
+  //      0.6522` — prose the table does not cover, so editing the table alone leaves it standing;
+  //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101`.
+  //
+  // The table rounds to three places and the bounds above claim four, which is how `0.155` and
+  // `0.1551` came to name one quantity — keep the rounding where it is and the claims exact.
+  //
+  // **ADR 0059 carries `0.652` and is not one of the eight.** An ADR is never edited into agreement
+  // with the present (`docs/adr/README.md`), so a bump that moves these figures supersedes it.
+  // (`docs/adr/0056` was on an earlier version of this list and carries no hangar figure at all —
+  // its numbers are the checkerboard's, which is what that ADR is about.)
+  //
+  // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
+  // each — correct all eight, and supersede ADR 0059 rather than correcting it. Otherwise the next
+  // reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.
   //
@@ -539,8 +554,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
 
   // **The worst frame, which a median cannot see.** A chain wrong by a degree on every answered
   // step scores a passing median once the gauge is removed and the refused steps re-anchor it to
-  // truth; this is what catches that. Four tenths is about two and a half times the worst single
-  // frame any detector produces here (0.155).
+  // truth; this is what catches that. Four tenths is 2.58 times the worst single frame any detector
+  // produces here (0.1551, ORB's) — the same four-place figure the bound above claims, because two
+  // spellings of one quantity is what made a sentence here false by a ten thousandth.
   //
   // **What it no longer catches, said out loud because the change that did this is ADR 0059's.**
   // This bound was written when deleting `withinBound` — the half-turn defence — left AKAZE at

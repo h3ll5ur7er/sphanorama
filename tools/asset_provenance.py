@@ -64,7 +64,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from tracked import tracked_files
+from tracked import indexed_files, tracked_files
 
 RECORD = "sources.json"
 
@@ -133,11 +133,6 @@ PROJECTIONS = ("equirectangular",)
 # hand-written list, so a field added here cannot be added without a case.
 READ_BY_A_PROGRAM = ("file", "sha256", "licence", "projection", "produced_by", "source_blob")
 
-# A licence that defers to this repository's own, rather than naming one. It is the right way to
-# write our own work down — a derivation cannot drift the way a copy of "MIT" in nine records can —
-# but it has to point at something, and for the whole life of these records it pointed at nothing.
-# Deleting the licence file used to leave the checker and all of its tests green; it produces six
-# refusals now, one per deferring record.
 def git_blob(path: Path) -> str:
     """Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`.
 
@@ -159,26 +154,58 @@ def git_blob(path: Path) -> str:
     return running.hexdigest()
 
 
+# A licence that defers to this repository's own, rather than naming one. It is the right way to
+# write our own work down — a derivation cannot drift the way a copy of "MIT" in nine records can —
+# but it has to point at something, and for the whole life of these records it pointed at nothing.
+# Deleting the licence file used to leave the checker and all of its tests green; it produces six
+# refusals now, one per deferring record.
 DEFERS_TO_THIS_REPOSITORY = "same as this repository"
 LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+
+# Characters that put nothing on the page and are neither whitespace nor category `Cf`: the four
+# Hangul fillers (`Lo`) and the braille blank (`So`). Named one by one because there is no closed
+# set of "renders blank" — that is as much a font question as a Unicode one, and a rule that chases
+# it forever is worse than one that stops somewhere a reader can see. Unicode's
+# `Default_Ignorable_Code_Point` covers the fillers and every `Cf` character; U+2800 is outside even
+# that, which is why the stopping place is written down rather than derived.
+BLANK = ("\u115f", "\u1160", "\u3164", "\uffa0", "\u2800")
+
+
+def visible(value: str) -> str:
+    """`value` with the characters that put nothing on the page removed, whitespace excepted.
+
+    One definition, for the two rules that need it. Each had been deriving its own a character
+    class at a time: `legible` learnt about `Cf` and the deferral sentinel did not, so a field
+    answered with a zero-width space was refused while a *sentinel* holding the same character
+    quietly stopped being the sentinel — and a repository with no licence file came back clean.
+    A second answer to "does this render as nothing" is a second answer.
+
+    Whitespace is left in, because the callers want it differently: `legible` strips it and the
+    sentinel collapses runs of it to single spaces.
+    """
+    return "".join(character for character in value
+                   if unicodedata.category(character) != "Cf" and character not in BLANK)
 
 
 def defers_to_this_repository(licence: object) -> bool:
     """Whether this `licence` answer points at the repository's own rather than naming one.
 
-    Compared without case or surrounding space, because the rule was an exact string match and
-    `"Same as this repository"` therefore cleared a repository with no licence file at all — a
-    sentinel one capital letter wide. `projection` has the same shape of problem and solves it with
-    a closed set; a licence cannot have one, since any licence in the world is a legitimate answer,
-    so the deferral is recognised loosely instead and everything else is prose.
+    Compared without case, invisible characters or surrounding space, because the rule was an exact
+    string match and `"Same as this repository"` therefore cleared a repository with no licence file
+    at all — a sentinel one capital letter wide. `projection` has the same shape of problem and
+    solves it with a closed set; a licence cannot have one, since any licence in the world is a
+    legitimate answer, so the deferral is recognised loosely instead and everything else is prose.
+
+    Loosely in one direction only. Every normalisation here makes *more* strings the sentinel, so
+    it can turn a licence somebody meant literally into a deferral and cannot let a deferral escape
+    — and the failure it can still produce is a refusal naming the record, not a clean record with
+    no licence behind it.
     """
     if not isinstance(licence, str):
         return False
     # `split()` rather than `strip()`, because it splits on *every* unicode space and rejoins with
-    # ordinary ones. Round 12 closed case and surrounding space and left the inside alone, so
-    # "same as this\u00a0repository" — one non-breaking space, invisible in every editor — was not
-    # the sentinel and cleared a repository with no licence file at all.
-    return " ".join(licence.split()).casefold() == DEFERS_TO_THIS_REPOSITORY
+    # ordinary ones — reaching the inside of the string, which round 12's `strip()` did not.
+    return " ".join(visible(licence).split()).casefold() == DEFERS_TO_THIS_REPOSITORY
 
 
 
@@ -249,7 +276,10 @@ def unusable(field: str, value: object) -> str | None:
         for line in value:
             if not isinstance(line, str):
                 return f"holds {line!r}, and this answers a question a reader asks in words"
-        if not any(line.strip() for line in value):
+        if not any(legible(line) for line in value):
+            # `legible` rather than `strip()`, which is the same rule the single-string arm below
+            # applies — and applying it to only one of the pair is how the zero-width space reached
+            # this file in the first place. `["\u200b"]` is a list of nothing.
             return "is a list of nothing, which answers nothing"
         return None
     if not isinstance(value, str):
@@ -260,15 +290,17 @@ def unusable(field: str, value: object) -> str | None:
 
 
 def legible(value: str) -> bool:
-    """Whether this string puts anything on the page.
+    """Whether this string has a character in it that puts something on the page.
 
-    `strip()` is not the test. It removes whitespace, and the format characters — zero-width space,
-    zero-width joiner, word joiner, byte-order mark — are category `Cf` rather than whitespace, so
-    a field answered with a single U+200B survived every check here and read as blank to every
-    human who would ever open the file.
+    `strip()` is not the test. It removes whitespace, and the characters that render as nothing
+    without being whitespace — the format characters, the Hangul fillers, the braille blank — are
+    not, so a field answered with a single U+200B survived every check here and read as blank to
+    every human who would ever open the file.
+
+    What it claims is what `visible` implements and no more: this is not a promise that the answer
+    renders as something in a reader's font, which nothing here can know.
     """
-    return any(not character.isspace() and unicodedata.category(character) != "Cf"
-               for character in value)
+    return bool(visible(value).strip())
 
 
 def why_asset(path: Path) -> str | None:
@@ -326,6 +358,9 @@ def owner_of(name: str, directories: list[str]) -> str | None:
 def check(root: Path) -> list[Problem]:
     root = Path(root)
     listed = tracked_files(root)
+    # The other question, asked once for the same reason the first is: what a reader's checkout
+    # would contain, which is not what this working tree contains. Only the deferral needs it.
+    indexed = indexed_files(root)
     problems: list[Problem] = []
 
     found = records(root)
@@ -396,12 +431,26 @@ def check(root: Path) -> list[Problem]:
             # Checked before the fields, because every later question is about the file this names.
             here = directory / name
             escaped = None
-            if Path(name).is_absolute() or ".." in Path(name).parts:
-                escaped = "names a path outside the record's own directory"
-            elif here.is_symlink():
-                escaped = "is a symlink, and what a record accounts for is the bytes it sits beside"
-            elif here.exists() and not here.resolve().is_relative_to(directory.resolve()):
-                escaped = "resolves outside the record's own directory"
+            try:
+                if Path(name).is_absolute() or ".." in Path(name).parts:
+                    escaped = "names a path outside the record's own directory"
+                elif here.is_symlink():
+                    escaped = ("is a symlink, and what a record accounts for is the bytes it sits "
+                               "beside")
+                elif here.exists() and not here.resolve().is_relative_to(directory.resolve()):
+                    escaped = "resolves outside the record's own directory"
+            except OSError as refused:
+                # `Path.is_symlink()` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing
+                # else, so a `file` whose last component reaches `NAME_MAX` — 255 bytes here, a
+                # mount option elsewhere — came back out of `check()` as `OSError: [Errno 36]`. A
+                # traceback is the one answer this module's docstring says it will not give: a
+                # record a reader could have corrected instead named a line of checker source.
+                #
+                # Caught on the error rather than measured against a length, because the limit is
+                # the filesystem's to state and every other way of being unaskable — a NUL in the
+                # name, a path too long in total, a permission the walk cannot pass — arrives here
+                # by the same door.
+                escaped = f"cannot be asked about: {refused.strerror}"
             if escaped is not None:
                 problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
                 continue
@@ -427,16 +476,20 @@ def check(root: Path) -> list[Problem]:
 
             # A licence that defers has to have something to defer to. Per entry rather than once,
             # so the refusal names the record a reader would go and correct.
-            # Tracked, not merely present. Every other question this file asks goes through
-            # `tracked_files`, and a `LICENSE` that is gitignored answers the deferral on the
-            # machine that wrote it and not on the one that checks it out — a green local run and a
-            # red CI naming records nobody touched.
-            # `is_file()` before `stat()`, because `git ls-files --cached` answers about the index
-            # and not the disk: a LICENSE that is tracked and then deleted — or a tracked dangling
-            # symlink — made this raise `FileNotFoundError` out of the checker, which is the
-            # traceback-instead-of-a-sentence outcome this file's own docstring exists to prevent.
+            #
+            # `indexed_files` and not `listed`, which is the walk's own `tracked_files`. The two
+            # differ by `--others`: a LICENSE that exists only in the working tree is something
+            # this repository *can* commit and not something a reader's checkout has, and this
+            # question is about the reader's checkout. Asking the wider one answered the deferral
+            # from an untracked file — and the whole test suite's fixture was such a file, so every
+            # green deferral test was green for that reason.
+            #
+            # `is_file()` before `stat()`, because the index answers about itself and not the disk:
+            # a LICENSE that is tracked and then deleted — or a tracked dangling symlink — made this
+            # raise `FileNotFoundError` out of the checker, which is the traceback-instead-of-a-
+            # sentence outcome this file's own docstring exists to prevent.
             if defers_to_this_repository(entry.get("licence")) and not any(
-                    spelling in listed and (root / spelling).is_file()
+                    spelling in indexed and (root / spelling).is_file()
                     and (root / spelling).stat().st_size > 0
                     for spelling in LICENCE_FILES):
                 problems.append(Problem(
