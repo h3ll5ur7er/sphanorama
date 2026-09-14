@@ -186,10 +186,13 @@ class AssetProvenance(unittest.TestCase):
         rows = [(field, value, "read by a program, so it is a single string")
                 for field in asset_provenance.READ_BY_A_PROGRAM if field != "file"
                 for value in (["a line", "another"], [], False)]
-        # Each case starts from the pristine record. Without this the loop writes its damage into
-        # the file that the next case reads, so the fields compound — and the first one that makes
-        # the record structurally invalid stops every later case from being checked at all, while
-        # still reporting as a pass for whichever of them it silences.
+        # Each case starts from the pristine record, so the table is order-independent. It is not
+        # load-bearing today — remove it and all 54 still pass — because the one field that made
+        # the record structurally invalid when damaged, `file`, is excluded above. It stays because
+        # the table is generated from a tuple that will grow, and the failure it prevents is the
+        # quiet kind: the first case to break the record silences every later one while reporting
+        # as a pass. A reviewer measured that it is currently inert, which is worth saying rather
+        # than implying otherwise.
         pristine = json.dumps({"assets": self.tree.entries()})
         for field, value, because in rows + [
                 ("produced_by", "", "is blank"),
@@ -211,6 +214,46 @@ class AssetProvenance(unittest.TestCase):
         entries = self.tree.entries()
         entries[0]["licence"] = asset_provenance.DEFERS_TO_THIS_REPOSITORY
         self.tree.record({"assets": entries})
+
+    def test_a_deferral_spelled_with_different_capitals_still_has_to_resolve(self):
+        # The rule was an exact string match, so `"Same as this repository"` — one capital — meant
+        # nothing to it and cleared a repository with no licence file at all. A sentinel that one
+        # keystroke defeats is not a sentinel. `projection` has the same shape and answers it with
+        # a closed set; a licence cannot have one, so the deferral is recognised loosely instead.
+        for spelling in ("Same as this repository", "SAME AS THIS REPOSITORY",
+                         "  same as this repository  ", "Same As This Repository"):
+            with self.subTest(spelling=spelling):
+                entries = self.tree.entries()
+                entries[0]["licence"] = spelling
+                self.tree.record({"assets": entries})
+                (self.tree.root / "LICENSE").unlink()
+                named = [p for p in self.tree.problems() if "`licence`" in p]
+                (self.tree.root / "LICENSE").write_text("MIT\n")
+                self.assertTrue(named, f"{spelling!r} cleared a repository with no licence")
+
+    def test_a_licence_file_that_is_not_tracked_does_not_answer_the_deferral(self):
+        # Every other question this checker asks goes through `tracked_files`. Asking the
+        # filesystem instead made a gitignored LICENSE an answer on the machine that wrote it and
+        # not on the one that checks it out — green locally, red in CI, naming records nobody had
+        # touched.
+        self.defer()
+        (self.tree.root / ".gitignore").write_text("LICENSE\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.tree.root, check=True)
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(named, "an untracked licence answered a deferral")
+
+    def test_a_half_that_is_not_a_list_is_reported_rather_than_crashing_its_consumer(self):
+        # `{"ours": {...}}` keyed by filename reads as a record and is not one. The checker used to
+        # say nothing about it and `tools/test_synth_dataset.py` died on the shape with a bare
+        # `TypeError` naming a line of test code — round 10's defect one level above the fields it
+        # was about.
+        for half, held in (("assets", {"photo.bin": {}}), ("ours", {"photo.bin": {}}),
+                           ("assets", "photo.bin"), ("ours", 7)):
+            with self.subTest(half=half, held=held):
+                self.tree.record({half: held})
+                problems = self.tree.problems()
+                self.assertTrue(any(f"`{half}`" in p and "list of entries" in p for p in problems),
+                                problems)
 
     def test_a_licence_that_defers_to_a_repository_with_no_licence_is_refused(self):
         # `"licence": "same as this repository"` is the right way to write our own work down: it is
@@ -288,15 +331,23 @@ class AssetProvenance(unittest.TestCase):
         # `SHAPED` used to be a second hand-written list beside `MEDIA`, and it drifted: `.avif`,
         # `.ico`, `.hdr` and `.exr` were rasters in one and not the other, and `.tif` was in
         # neither — so an entry for a `.avif` could record any dimensions it liked, or none.
-        # `SHAPED` is derived now, and this keeps the derivation total. (An `assertEqual` of one
-        # expression against itself stood here and asserted nothing — the shape of mistake this
-        # file exists to catch, made in the test written to catch it.)
-        for suffix in asset_provenance.MEDIA:
-            with self.subTest(suffix=suffix):
-                self.assertTrue(
-                    (suffix in asset_provenance.SHAPED) != (suffix in asset_provenance.UNSHAPED),
-                    f"{suffix} is in both or neither, so nothing decides whether an entry for one "
-                    f"has to record a width")
+        # No "in exactly one of the two" loop here. `SHAPED` is *derived* as `MEDIA - UNSHAPED`, so
+        # that property holds by construction and asserting it is a tautology — which is what stood
+        # here, in the test written to catch tautologies.
+        #
+        # **`MEDIA` is pinned as well, and that is the half the last round missed.** An extension
+        # leaves `SHAPED` two ways: by joining `UNSHAPED`, which the pin below catches, or by
+        # leaving `MEDIA`, which nothing caught. Deleting `.ppm` from `MEDIA` and stripping
+        # `width`/`height` from the four committed frame records left the checker at exit 0 and all
+        # of these green — `.jpg` is protected by the projection assertion downstream and a frame
+        # claims no projection, so nothing else was watching.
+        self.assertEqual(sorted(asset_provenance.MEDIA), sorted((
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tiff", ".tif",
+            ".svg", ".ppm", ".pgm", ".pnm", ".hdr", ".exr", ".mp3", ".wav", ".ogg", ".flac",
+            ".mp4", ".webm", ".mov", ".ttf", ".otf", ".woff", ".woff2", ".pdf", ".stl", ".obj",
+            ".glb", ".gltf", ".blend", ".psd", ".zip")),
+            "an extension left or joined MEDIA, which decides both what counts as an asset at all "
+            "and — through SHAPED — whether an entry for one must record its pixel shape")
         for suffix in asset_provenance.UNSHAPED:
             self.assertIn(suffix, asset_provenance.MEDIA,
                           f"{suffix} is exempted from a rule it was never subject to")

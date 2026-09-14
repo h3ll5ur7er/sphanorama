@@ -134,8 +134,9 @@ READ_BY_A_PROGRAM = ("file", "sha256", "licence", "projection", "produced_by", "
 
 # A licence that defers to this repository's own, rather than naming one. It is the right way to
 # write our own work down — a derivation cannot drift the way a copy of "MIT" in nine records can —
-# but it has to point at something, and for the whole life of these records it pointed at nothing:
-# there was no LICENSE file, and `rm LICENSE` still leaves the checker and all of its tests green.
+# but it has to point at something, and for the whole life of these records it pointed at nothing.
+# Deleting the licence file used to leave the checker and all of its tests green; it produces six
+# refusals now, one per deferring record.
 def git_blob(path: Path) -> str:
     """Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`.
 
@@ -144,12 +145,33 @@ def git_blob(path: Path) -> str:
     the one that goes stale silently after the single thing ADR 0059 forbids: a transcode changes
     `sha256` and `bytes` and the build says so, and it changes this too and nothing said anything.
     """
-    data = path.read_bytes()
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    # Streamed in blocks, like `digest` above and for its reason: a checker that reads an asset
+    # whole into memory is one `--panorama` away from being the thing it refuses to be. Git's
+    # header needs the length up front, which `stat` answers without opening the file.
+    running = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(BLOCK)
+            if not block:
+                break
+            running.update(block)
+    return running.hexdigest()
 
 
 DEFERS_TO_THIS_REPOSITORY = "same as this repository"
 LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+
+
+def defers_to_this_repository(licence: object) -> bool:
+    """Whether this `licence` answer points at the repository's own rather than naming one.
+
+    Compared without case or surrounding space, because the rule was an exact string match and
+    `"Same as this repository"` therefore cleared a repository with no licence file at all — a
+    sentinel one capital letter wide. `projection` has the same shape of problem and solves it with
+    a closed set; a licence cannot have one, since any licence in the world is a legitimate answer,
+    so the deferral is recognised loosely instead and everything else is prose.
+    """
+    return isinstance(licence, str) and licence.strip().casefold() == DEFERS_TO_THIS_REPOSITORY
 
 
 
@@ -311,6 +333,21 @@ def check(root: Path) -> list[Problem]:
                                          f"{type(document).__name__} and a record is an object"))
             continue
 
+        # Both lists are shape-checked before anything is read out of them. A record spelling
+        # `"ours"` as an object keyed by filename gets a sentence from here and, downstream, a bare
+        # `TypeError: can only concatenate list (not "dict") to list` out of
+        # `tools/test_synth_dataset.py` — the checker saying nothing useful and its consumer dying
+        # in a line of test code where a sentence should name the record. That is round 10's defect
+        # one level up from the fields it was about.
+        malformed = False
+        for half in ("assets", "ours"):
+            held = document.get(half)
+            if held is not None and not isinstance(held, list):
+                problems.append(Problem(rel, f"`{half}` is {type(held).__name__}, and it is a list "
+                                             f"of entries"))
+                malformed = True
+        if malformed:
+            continue
         entries = [(entry, False) for entry in document.get("assets") or []]
         entries += [(entry, True) for entry in document.get("ours") or []]
         if not entries:
@@ -351,8 +388,12 @@ def check(root: Path) -> list[Problem]:
 
             # A licence that defers has to have something to defer to. Per entry rather than once,
             # so the refusal names the record a reader would go and correct.
-            if entry.get("licence") == DEFERS_TO_THIS_REPOSITORY and not any(
-                    (root / spelling).is_file() and (root / spelling).stat().st_size > 0
+            # Tracked, not merely present. Every other question this file asks goes through
+            # `tracked_files`, and a `LICENSE` that is gitignored answers the deferral on the
+            # machine that wrote it and not on the one that checks it out — a green local run and a
+            # red CI naming records nobody touched.
+            if defers_to_this_repository(entry.get("licence")) and not any(
+                    spelling in listed and (root / spelling).stat().st_size > 0
                     for spelling in LICENCE_FILES):
                 problems.append(Problem(
                     f"{rel} [{name}]",

@@ -513,9 +513,13 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
-  // green.** The bounds here are what fail; the figures are prose in six places and nothing
-  // invalidates them: this comment, the one below it about the worst frame,
-  // `docs/06-roadmap.md`'s table, `docs/adr/0056`, `docs/adr/0059` and `CLAUDE.md`. Re-run
+  // green.** The bounds here are what fail; the figures are prose in eight places and nothing
+  // invalidates them. Five are in this file: this comment, the one below it about the worst frame,
+  // the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`, its repeat beside the test, and
+  // the `0.6522` lowest inlier fraction near the top. Three are outside it:
+  // `docs/06-roadmap.md`'s table, `docs/adr/0059` and `CLAUDE.md`. (`docs/adr/0056` was on this
+  // list and carries no hangar figure at all — its numbers are the checkerboard's, which is what
+  // that ADR is about, so it is not a copy of this table.) Re-run
   // `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for each —
   // and correct all six, or the next reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
@@ -612,8 +616,10 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   // window where the echo dies and the window where ORB answers do not overlap on frames 0 and 1.
   //
   // They do on frames 3 and 4, which is where the accuracy measurement already shows ORB answering
-  // and declining under the full three degrees: 20 correspondences of 141, against AKAZE's 42 of
-  // 199 and SIFT's 61 of 178, both accepted. Three degrees is about 26 px, so an echo gathers
+  // and declining under the full three degrees: 20 **inliers** of 141 correspondences, against
+  // AKAZE's 42 of 199 and SIFT's 61 of 178, both accepted. (This said "20 correspondences of 141",
+  // which is the numerator named after the denominator — the same triple as the docblock
+  // thirty-seven lines up, written differently the second time.) Three degrees is about 26 px, so an echo gathers
   // nothing and is refused — which fails the "something was accepted" half and catches it.
   const size_t kFirst = 3;
   // `Rendered` above asks for twelve frames and this asks for two of them by index; nothing else
