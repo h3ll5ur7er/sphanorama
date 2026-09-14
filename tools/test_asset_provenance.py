@@ -504,15 +504,20 @@ class AssetProvenance(unittest.TestCase):
                 problems = self.tree.problems()
                 self.assertTrue(any(expected in problem for problem in problems), problems)
 
-    def test_a_licence_that_nearly_defers_is_refused_rather_than_read_as_a_name(self):
+    def test_our_own_work_without_a_licence_url_is_refused_whatever_its_licence_says(self):
         # The sentinel absorbed exactly one spelling, so every near-miss meant the deferral to a
         # reader and a licence name to the checker — and a licence name needs nothing to exist.
         # These five cleared a tree with no LICENSE in it.
-        # The nouns, not only the characters. A reviewer found that the substring rule this list was
-        # written for is a rule about the one word `repo`: the last five here contain none, mean the
-        # deferral to any reader, and each cleared a tree with **no licence file at all**. That is
-        # why the guard is now "the exact words, or a `licence_url`", and why this asserts the
-        # refusal every one of them gets rather than the hint only some of them get.
+        # **Named for what it holds, which is not what it was named for.** Every spelling here is
+        # refused by the one field `record_ours` omits, and `"MIT"` earns the identical sentence —
+        # so "refused rather than read as a name" was a property nothing in the loop distinguished.
+        # The hint is tested as a predicate instead, below.
+        #
+        # The ten stay, because they guard the thing no other test does: widening
+        # `DEFERS_TO_THIS_REPOSITORY` to swallow one of them makes that spelling a deferral, which
+        # skips this rule entirely and resolves against the fixture's tracked `LICENSE` — so the
+        # subtest goes green-to-red the moment somebody tries the widening that four rounds tried.
+        # That is why the list is ten phrases and not one.
         for spelling in ("Same as this repo", "same as this repository.", "as in this repository",
                          "same licence as this repo, see LICENSE", "This repository's licence",
                          "same as the repository", "same as this project", "see LICENSE",
@@ -550,9 +555,22 @@ class AssetProvenance(unittest.TestCase):
                 named = [p for p in self.tree.problems() if "`licence" in p]
                 self.assertTrue(named, f"a licence_url of {url!r} answered for our own work")
 
-    def test_a_licence_naming_a_licence_is_not_a_near_miss(self):
-        # The other direction, because the rule above refuses on a substring and a rule that refuses
-        # ordinary answers is worse than the hole it closes. None of these mentions this repository.
+    def test_the_hint_names_a_deferral_and_not_an_ordinary_licence(self):
+        # The hint tested as a predicate, because through `check` it cannot be: it only ever appends
+        # to a refusal that a `licence_url` suppresses, so a test that supplies one never consults
+        # it — `test_..._is_not_a_near_miss` was green with this function replaced by `return True`.
+        # A rule reachable only under a condition the test removes is a rule the test cannot see.
+        for spelling in ("Same as this repo", "same licence as this repo, see LICENSE"):
+            with self.subTest(names_this_repository=spelling):
+                self.assertTrue(asset_provenance.nearly_defers_to_this_repository(spelling))
+        for spelling in ("MIT", "CC-BY-4.0", "Apache-2.0, see the upstream NOTICE",
+                         "same as the upstream project", "same as this repository"):
+            with self.subTest(does_not=spelling):
+                self.assertFalse(asset_provenance.nearly_defers_to_this_repository(spelling))
+
+    def test_our_own_work_naming_a_licence_with_a_url_is_accepted(self):
+        # The second arm of the `ours` rule, which is the only way to be accepted without the exact
+        # sentinel. A rule that refuses ordinary answers would be worse than the hole it closed.
         for spelling in ("MIT", "CC-BY-4.0", "Apache-2.0, see the upstream NOTICE",
                          "CC0-1.0 (public domain dedication)", "same as the upstream project"):
             with self.subTest(spelling=spelling):
