@@ -524,8 +524,37 @@ class BorrowedFrame {
  * degrees, reported with 43 inliers, a 1.62-pixel median, and `accepted` true.
  *
  * It was invisible here because every lens in these tests is distortion-free, so `Unproject` never
- * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses about 4% of in-frame
- * pixels, and a 100-degree one with `k1 = -0.35` refuses 38.8%.
+ * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses **4.5%** of its own
+ * frame's pixels, and a 100-degree one with `k1 = -0.35` refuses **66.8%**. Both are asserted by
+ * `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites`, to within half a percentage
+ * point — so a rewrite of the solver that moved either of them a whole point would be caught, and
+ * a rounding of the prose would not. The second figure was published here as 38.8% and is
+ * retracted by ADR 0060, which records that producing that retraction generated three more
+ * uncomputed figures of its own; a test is a bound on drift, not an end to it.
+ *
+ * It is *not* reachable from a rendered dataset as things stand: `tools/synth_dataset.py` refuses
+ * to render a frame with a rayless pixel in it, so the lens of every dataset this repository
+ * produces answers every pixel *centre* of its own frame. That is the second half of the same test.
+ *
+ * Centres, not keypoints, and the gap is real rather than rhetorical. `ReadBearings` passes
+ * OpenCV keypoint coordinates through unchanged, and the two conventions differ by half a pixel in
+ * each axis — `camera_model.h` states it exactly, as the `cx`/`cy` shift it is. So every bearing
+ * this engine computes is the bearing of a point **translated by (-0.5, -0.5) pixels**: a constant
+ * offset, absorbed by the optical centre rather than by the focal length, and not a radial one.
+ * It reads outward from the axis across the top-left of the frame and *inward* across the
+ * bottom-right — measured on a 66x50 lens, 0.700 px outward at keypoint (0, 0) and 0.700 px inward
+ * at (319, 239).
+ *
+ * That is a systematic error in the measurement rather than a reachability question, and it is the
+ * larger half of what this paragraph found. It is not corrected here: doing so moves every
+ * published accuracy figure, which wants its own measurement and its own ADR.
+ *
+ * The reachability curiosity is that the two conventions also disagree at the fold. On that lens
+ * the last k1 every pixel centre survives is -0.23340 and the last the frame corner survives is
+ * -0.23178, so a narrow band of lenses exists that the renderer accepts and this refuses a corner
+ * keypoint on — at `k1 = -0.2325`, measured, no centre is refused and the corner is.
+ *
+ * No dataset is in the band today and none is distorted at all.
  */
 struct Bearing {
   Vec3 direction;

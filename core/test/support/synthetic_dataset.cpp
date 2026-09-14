@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -102,17 +103,26 @@ class OwnedFrames {
  * choked on them would be refusing a valid file. Everything else about the header is checked
  * strictly, so accepting the one thing the standard requires costs nothing.
  *
- * **A `#` inside a token is not skipped, and that is a known gap rather than a decision.** Netpbm
- * allows a comment anywhere in the header, so `P6\n4#c\n8 36\n255\n` is a valid file this reader
- * refuses: the accumulation loop below has no comment branch, only the whitespace-skipping loop
- * above does. Written down rather than fixed because no generator produces that shape and the fix
- * restructures the loop — but a reader meeting a refused file that looks fine deserves to find this
- * sentence rather than work it out.
+ * **A comment is whitespace, and so it ends the token it interrupts.** Netpbm's own `pm_getc`
+ * (`lib/fileio.c`) reads a `#` through the next end-of-line and returns *that* end-of-line byte:
+ * "The effect is that Caller sees the whole comment as just white space", in its own words. So
+ * `P6\n4#c\n8 36\n255\n` is a 4x8 frame with a maximum of 36, not a 48x36 one: the `4` and the
+ * `8` are two numbers, not two halves of one. This reader read that token as `4#c` until now,
+ * because only the whitespace-skipping loop had a `#` branch.
+ *
+ * That example is still refused, for an unrelated reason — a maximum of 36 is not 8-bit, and the
+ * sample-depth guard says so. What changed is *which* four numbers the header yields, which the
+ * refusal now names: `1#c\n2 255` reads as 1x2 and is turned away by the dimension check.
+ *
+ * The end-of-line byte is left ungot, which is what makes the comment whitespace to the *caller*
+ * too. It matters when a comment is the last thing before the raster: that byte is then the single
+ * separator the payload starts after, and a reader that swallowed it would take the first pixel as
+ * the separator instead.
  */
 // Nothing legitimate in a Netpbm header is long: a magic number and three decimal integers. The cap
 // is what stops a file with no whitespace byte in it from being read *whole* into memory before
-// `magic != "P6"` ever runs — in a function whose own payload loop twenty lines below exists to
-// avoid precisely that.
+// `magic != "P6"` ever runs — in a file whose `ReadFrame` reads its payload a row at a time for
+// precisely that reason.
 //
 // Measured, twice, by two people. A 512 MiB file of non-whitespace bytes takes the uncapped reader
 // to a peak RSS of **986,740 KiB — 964 MiB**, or 1,010 MB decimal. The first version of this said
@@ -135,7 +145,21 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   int c = in.get();
   while (in.good()) {
     if (c == '#') {
-      while (in.good() && c != '\n') c = in.get();
+      // A carriage return ends a comment as surely as a line feed does, and a reader that waited
+      // for the line feed would swallow the rest of a `\r`-terminated header — the width, the
+      // height and the maximum — before deciding anything about it.
+      //
+      // `in.good()` is what ends a comment nobody ended: at end of file `get` answers `eof`
+      // for ever, and the two character tests never become false. It is the difference between a
+      // refusal and a hang, which is why `RefusesAHeaderWhoseCommentIsNeverEnded` exists — a test
+      // that times out rather than fails, this being the only way to catch a loop that does not
+      // stop.
+      //
+      // `ctest` is what makes that a usable assertion rather than a stalled job: `core/test/
+      // CMakeLists.txt` discovers each case as its own test, so a hang is reported by name and
+      // marked `(Timeout)` with its siblings unaffected. The bound there is this repository's own
+      // 300 seconds; it was ctest's 1500-second default until a reviewer measured what that costs.
+      while (in.good() && c != '\n' && c != '\r') c = in.get();
       continue;
     }
     if (!std::isspace(static_cast<unsigned char>(c))) break;
@@ -146,6 +170,20 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
     return false;
   }
   while (in.good() && !std::isspace(static_cast<unsigned char>(c))) {
+    // A comment reaching this loop ends the token, because the end-of-line it collapses to is
+    // whitespace — see the docstring above and `pm_getc`. What matters is that the end-of-line is
+    // *not* consumed: it is left in `c` for the `unget` below, so a comment ending the maximum
+    // becomes the single separator the raster starts after. The first version of this branch read
+    // one byte further and ate that separator, which on a comment before the raster was pixel
+    // zero. (`break` and `continue` are interchangeable here — the loop's own condition ends the
+    // token on the same byte. `break` says so in one place instead of two.) Nothing this
+    // repository generates writes a comment; a reader of somebody else's frame meets one.
+    // `in.good()` here is the same stop as the skip loop's, driven by
+    // `RefusesAMaximumWhoseCommentIsNeverEnded`.
+    if (c == '#') {
+      while (in.good() && c != '\n' && c != '\r') c = in.get();
+      break;
+    }
     if (token->size() >= kLongestHeaderToken) {
       *why = TokenTrouble::kTooLong;
       return false;
@@ -163,6 +201,11 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
   // only on a non-whitespace byte while the stream is good, so by this point at least one byte has
   // been taken — a reviewer sabotaged it green and an `abort()` probe never fired. It also shared
   // `kNothingThere`'s sentence, so even reached it could not have been told from the EOF case.
+  //
+  // That argument now rests on the skip loop's `#` branch specifically, not on the sentence as
+  // written: a `#` is not whitespace, so without that branch the skip loop would break on one and
+  // the loop above would end the token on it having pushed nothing. Delete it and a file that is
+  // only a comment reads as an empty token rather than `kNothingThere`.
   return true;
 }
 
@@ -178,7 +221,7 @@ bool ReadNumber(std::istream& in, int64_t* value, TokenTrouble* why) {
   }
   try {
     *value = std::stoll(token);
-  } catch (...) {
+  } catch (const std::out_of_range&) {
     // Reachable, and by a file anyone can write: all-digits is checked above but *width* is not
     // bounded, so a twenty-digit header number is a valid token that overflows `long long` and
     // `std::stoll` throws `std::out_of_range`. The cap on token length is 32, which leaves plenty
@@ -187,6 +230,19 @@ bool ReadNumber(std::istream& in, int64_t* value, TokenTrouble* why) {
     *why = TokenTrouble::kTooLargeForTheType;
     return false;
   }
+  // `std::out_of_range` by name, and nothing else caught. The other thing `stoll` throws is
+  // `std::invalid_argument`, for a token with no digits in it — which the all-digits check above
+  // has already refused, except for the empty token it lets through, because `find_first_not_of`
+  // answers `npos` for an empty string. That token is unreachable: `ReadToken`'s skip loop keeps a
+  // `#` out of its accumulation loop's first iteration, so at least one byte is always pushed, and
+  // an `if (token->empty()) std::abort();` probe never fired across the whole suite.
+  //
+  // This was a second `catch` arm for a while, added because sabotaging that skip loop made
+  // `catch (...)` report "too large for the type that holds it" for a file with no number in it.
+  // It is gone rather than kept: an arm no test can reach is what this file has a standing rule
+  // against, it set `kNotANumber` — a sentence the all-digits guard already writes, so two guards
+  // would share one and `TokenTrouble` exists to stop that — and `LoadSyntheticDataset`'s own
+  // `catch (const std::exception&)` is the backstop if it ever does escape, so nothing terminates.
   return true;
 }
 
@@ -602,9 +658,11 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     // sweep's total describes the instrument and goes stale. Round 4 then wrote a "69 of N"
     // fraction into this line while fixing a complaint that "well over half" was vague — reaching
     // for a denominator from a sweep that no longer exists, in the file that forbids exactly that.
-    // The vague word was the smaller mistake and it is back, without the "well". Under `-fno-exceptions`, which
-    // is what every consumer other than this file's own test is compiled with, an escape is a
-    // terminate rather than a failure.
+    // The vague word was the smaller mistake and it is back, without the "well".
+    //
+    // An escape is caught, by this arm: nothing under `core/test` is built `-fno-exceptions`,
+    // because the core sets that flag `PRIVATE` and so exports nothing — 0 of 39 translation
+    // units carry it. `core/test/CMakeLists.txt` has the measurement.
     return refuse(StatusCode::Internal,
                   std::string("reading truth.json failed: ") + thrown.what());
   }
@@ -789,11 +847,10 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     return refuse(StatusCode::InvalidArgument,
                   std::string("truth.json is shaped unexpectedly: ") + thrown.what());
   } catch (const std::exception& thrown) {
-    // Not only OpenCV's. Every consumer of this file other than its own test is compiled
-    // `-fno-exceptions`, so anything escaping here is a terminate rather than a failure — and
-    // `push_back` on the frame vector allocates, so `std::bad_alloc` is a real way out of this
-    // block and not a theoretical one. The engine this boundary is modelled on catches both for the
-    // same reason.
+    // Not only OpenCV's. `push_back` on the frame vector allocates, so `std::bad_alloc` is a real
+    // way out of this block and not a theoretical one, and the engine this boundary is modelled on
+    // catches both for the same reason. Nothing under `core/test` is built `-fno-exceptions`, so
+    // an escape from here is a refusal rather than a terminate.
     //
     // No test in the suite reaches this one. `synthetic_dataset_alloc_test` does, from outside it:
     // it replaces global `operator new` and sweeps a throw across every allocation of a full load,

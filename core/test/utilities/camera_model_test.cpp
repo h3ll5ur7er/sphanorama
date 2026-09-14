@@ -839,5 +839,89 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
+// The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
+//
+// Measured on a frame rather than a grid because the frame is what the question is about: a
+// keypoint the detector found is at a pixel of a real image, and the number of *those* with no
+// bearing behind them is what decides whether the engine's refused-row path is ever taken.
+//
+// The sampling point is `{x + 0.5, y + 0.5}` — the pixel's centre under this model's corner
+// origin — and it is written once, because a half-pixel shift applied to one copy and not the
+// other is absorbed by the percentage's half-point tolerance while moving the exact count, and so
+// would point at the wrong helper. Measured: sampling `{x, y}` instead moves the two percentages
+// to 4.4596% and 66.7487%, both inside tolerance, and the count 48 to 53. That shift is not
+// hypothetical — it is the keypoint-convention question the engine's own docblock is about.
+long RefusedCountOfFrame(const Intrinsics& lens) {
+  long refused = 0;
+  for (int32_t y = 0; y < lens.height; ++y) {
+    for (int32_t x = 0; x < lens.width; ++x) {
+      if (!Unproject(lens, Pixel{x + 0.5, y + 0.5}).valid) ++refused;
+    }
+  }
+  return refused;
+}
+
+// The same answer as a share, which is the unit the claim it checks is written in.
+double RefusedPercentOfFrame(const Intrinsics& lens) {
+  const long total = static_cast<long>(lens.width) * static_cast<long>(lens.height);
+  return 100.0 * static_cast<double>(RefusedCountOfFrame(lens)) / static_cast<double>(total);
+}
+
+TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
+  // `feature_registration_engine.cpp`'s `Bearing` docblock argues that its refused-row path is
+  // reachable in life, and the argument is two measured figures. Nothing measured them: they are
+  // prose beside code that cannot fail on them, and one is wrong by a factor of 1.72.
+  //
+  // Frame size is not a parameter of the answer, which is why 320x240 is enough to check a claim
+  // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
+  // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167% — spreads of 0.146 and 0.169
+  // points. The tolerance below is half a percentage point: **2.95 times** the wider of those and
+  // a **fifty-sixth** of the 27.96-point error it caught. ADR 0060 records what those two
+  // multiples read before they were divided, and why that is the argument for this test rather
+  // than an aside beside it.
+  Intrinsics wide = LensFromFieldOfView(78.0, 60.0, 320, 240);
+  wide.k1 = -0.20;
+  EXPECT_NEAR(RefusedPercentOfFrame(wide), 4.47, 0.5);
+
+  Intrinsics ultraWide = LensFromFieldOfView(100.0, 80.0, 320, 240);
+  ultraWide.k1 = -0.35;
+  EXPECT_NEAR(RefusedPercentOfFrame(ultraWide), 66.76, 0.5);
+}
+
+TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
+  // The other half of the engine's argument, and the reason the figures above are not academic:
+  // every dataset this repository renders uses a lens that refuses *no* pixel of its own frame,
+  // because `tools/synth_dataset.py` will not render a frame with a rayless pixel in it — there
+  // being no colour that could honestly stand for one.
+  //
+  // So the refused-row path is not reached by a rendered dataset at any lens anyone would choose,
+  // whatever distortion the renderer is given, and a test that hoped to drive it by adding
+  // distortion to a dataset would pass without ever taking it. Not "cannot be": the band below is
+  // where it can.
+  //
+  // The boundary is pinned rather than described. Bisected, the first pixel centre goes at
+  // k1 = -0.2334; -0.23 refuses none of 76,800 and -0.24 refuses 48.
+  Intrinsics rendered = LensFromFieldOfView(66.0, 50.0, 320, 240);
+  rendered.k1 = -0.23;
+  EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
+
+  // The count, not merely that there is one. `EXPECT_GT(…, 0.0)` is green for anything from 1
+  // pixel to all 76,800, which is the shape the threshold sentence above complains
+  // about — a threshold named in prose with an assertion that cannot fail on it. 48 of 76,800 is
+  // stable: identical under gcc and clang at five optimisation settings including `-ffast-math`,
+  // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
+  // 1.35e-3 relative margin between the last refused shell and the first accepted one.
+  //
+  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
+  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, which
+  // predates this branch. This count only joins in at 1e-3. So the pair below pins
+  // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
+  // whole suite — 0.44 px of accepted round-trip error against a constant documented as under a
+  // millionth of a pixel.
+  Intrinsics folding = rendered;
+  folding.k1 = -0.24;
+  EXPECT_EQ(RefusedCountOfFrame(folding), 48);
+}
+
 }  // namespace
 }  // namespace sphanorama
