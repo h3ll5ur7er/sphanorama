@@ -154,6 +154,11 @@ bool ReadToken(std::istream& in, std::string* token, TokenTrouble* why) {
       // refusal and a hang, which is why `RefusesAHeaderWhoseCommentIsNeverEnded` exists — a test
       // that times out rather than fails, this being the only way to catch a loop that does not
       // stop.
+      //
+      // `ctest` is what makes that a usable assertion rather than a stalled job: `core/test/
+      // CMakeLists.txt` discovers each case as its own test, so a hang is reported by name and
+      // marked `(Timeout)` with its siblings unaffected. The bound there is this repository's own
+      // 300 seconds; it was ctest's 1500-second default until a reviewer measured what that costs.
       while (in.good() && c != '\n' && c != '\r') c = in.get();
       continue;
     }

@@ -154,4 +154,14 @@ endif()
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 
-gtest_discover_tests(sphanorama_tests)
+# A timeout this repository chose, rather than ctest's built-in 1500 seconds. Two of the dataset
+# loader's tests assert by *hanging* — `in.good()` is the only thing that ends a comment running to
+# end of file, and a loop that does not stop has no other symptom — so the clock is their assertion
+# and it should not be a default nobody here has read. Under the default a gate that caught one of
+# them paid 1500 seconds twice, native and sanitised, before saying which test it was.
+#
+# 300 and not the 60 a reviewer proposed: the slowest case measured here is 16.36 s
+# (`EveryDetector/Accuracy…/2` under ASan), and a CI runner is slower than this machine. Eighteen
+# times the slowest is headroom against a bad afternoon; a timeout that fires on a slow runner
+# would be a flake in the one mechanism that exists to report a hang.
+gtest_discover_tests(sphanorama_tests PROPERTIES TIMEOUT 300)
