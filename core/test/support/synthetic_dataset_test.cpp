@@ -1234,7 +1234,10 @@ TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
   }
   // Bracketed because this case reaches `Allocate` and `Pin` and so could strand a frame on the
   // way out: its header parses *and agrees with the lens*, which is the last guard before the
-  // allocation.
+  // allocation. That is about the refusal path, not about the hang the two `…CommentIsNeverEnded`
+  // cases assert on — both hang loops are in `ReadToken`, upstream of `Allocate`, so a fired
+  // timeout strands no frame. What it does leave behind is this test's `Scratch` directory, which
+  // nothing reclaims when the process is killed.
   //
   // Both halves of what this said before were wrong, and a reviewer counted. It is not "the only
   // new case whose header parses" — five of the six do, including the 1x2 one whose whole subject

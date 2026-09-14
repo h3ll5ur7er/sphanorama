@@ -658,9 +658,13 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     // sweep's total describes the instrument and goes stale. Round 4 then wrote a "69 of N"
     // fraction into this line while fixing a complaint that "well over half" was vague — reaching
     // for a denominator from a sweep that no longer exists, in the file that forbids exactly that.
-    // The vague word was the smaller mistake and it is back, without the "well". Under `-fno-exceptions`, which
-    // is what every consumer other than this file's own test is compiled with, an escape is a
-    // terminate rather than a failure.
+    // The vague word was the smaller mistake and it is back, without the "well".
+    //
+    // No claim here about `-fno-exceptions`. This line used to say every consumer but this file's
+    // own test is compiled with it, so an escape would be a terminate. That is false, and this
+    // branch's own `core/test/CMakeLists.txt` says why: the core sets the flag `PRIVATE`, so
+    // nothing here inherits it — 0 of 42 `core/test` translation units carry it. An escape is
+    // caught, by this arm.
     return refuse(StatusCode::Internal,
                   std::string("reading truth.json failed: ") + thrown.what());
   }

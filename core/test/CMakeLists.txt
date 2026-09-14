@@ -139,6 +139,13 @@ if(SPHANORAMA_WITH_OPENCV)
   # the header has never contained — a refusal *does* allocate, and then gives the frames back,
   # which is a weaker claim and the true one. Five places quoted the invented version.
   add_test(NAME DatasetRefusalGivesEveryFrameBack COMMAND sphanorama_dataset_alloc_test)
+  # The same bound as the discovered tests, and it needs saying separately because
+  # `gtest_discover_tests`' PROPERTIES reach only what it discovers. This test is registered by
+  # hand, compiles `synthetic_dataset.cpp`, and therefore contains both of the hang loops the
+  # timeout below exists for — so it was the one test still sitting at the 1500-second default that
+  # paragraph opens by disowning. It costs nothing today (0.40 s under ASan); it was a hole in the
+  # ceiling rather than a bill.
+  set_tests_properties(DatasetRefusalGivesEveryFrameBack PROPERTIES TIMEOUT 300)
   # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
   # first version of this disabled leak detection for the whole binary, which is process-wide on the
   # only test that reaches the loader's exception arms — a real leak planted anywhere in it would
@@ -160,8 +167,14 @@ target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 # and it should not be a default nobody here has read. Under the default a gate that caught one of
 # them paid 1500 seconds twice, native and sanitised, before saying which test it was.
 #
-# 300 and not the 60 a reviewer proposed: the slowest case measured here is 16.36 s
-# (`EveryDetector/Accuracy…/2` under ASan), and a CI runner is slower than this machine. Eighteen
-# times the slowest is headroom against a bad afternoon; a timeout that fires on a slow runner
-# would be a flake in the one mechanism that exists to report a hang.
+# 300 and not the 60 a reviewer proposed. The slowest case is `EveryDetector/Accuracy…/2` under
+# ASan: **19.1 s** on an idle machine and **27.4 s** with a build running alongside, so 300 is
+# between eleven and sixteen times it. (This said 16.36 s and "eighteen times", from a ctest run
+# that had the machine to itself and was read off a different build than the one it named.)
+#
+# The tail nothing local bounds is the per-case `uv run` subprocess: `ci.yml` caches no uv
+# environment, so a cold resolve on a slow runner is the plausible way a case takes minutes without
+# hanging. That is the reason for the generous end of the range rather than the tight one — a
+# timeout that fires on a slow runner would be a flake in the one mechanism that exists to report a
+# hang.
 gtest_discover_tests(sphanorama_tests PROPERTIES TIMEOUT 300)
