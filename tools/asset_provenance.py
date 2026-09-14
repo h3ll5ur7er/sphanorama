@@ -748,14 +748,19 @@ def check(root: Path) -> list[Problem]:
                         problems.append(Problem(f"{rel} [{name}]",
                                                 f"`{field}` is missing, and a raster has one"))
 
+            # `here` again, not a second guard around it. The `file` check above wraps
+            # `is_symlink()` and `exists()` in the same `try` and `continue`s on an `OSError`, so by
+            # here the path is one this filesystem will answer about — `is_file()` is the same
+            # syscall and cannot newly refuse. A second `try` stood here and no input could reach
+            # it: a reviewer could not construct one, and deleting it leaves all 85 tests green and
+            # a 300-byte name still answered with "cannot be asked about" by the guard above.
+            #
+            # Deleted rather than kept with a note, because the rule is that an unreachable guard
+            # goes; keeping one because it feels safer is how a reader comes to believe the state
+            # is reachable. The race — the file removed between the two calls — is not it either:
+            # `is_file()` swallows `ENOENT` and answers `False`, which is the line below.
             path = directory / name
-            try:
-                present = path.is_file()
-            except OSError as refused:
-                problems.append(Problem(f"{rel} [{name}]",
-                                        f"cannot be asked about: {refused.strerror}"))
-                continue
-            if not present:
+            if not path.is_file():
                 problems.append(Problem(f"{rel} [{name}]", "names a file that is not here"))
                 continue
             # `digest`, not a third spelling of it: this used to inline `hashlib` here while the
