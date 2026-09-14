@@ -526,20 +526,31 @@ class BorrowedFrame {
  * It was invisible here because every lens in these tests is distortion-free, so `Unproject` never
  * refuses. It is reachable in life: a 78-degree lens with `k1 = -0.20` refuses **4.5%** of its own
  * frame's pixels, and a 100-degree one with `k1 = -0.35` refuses **66.8%**. Both are asserted by
- * `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites`, so this paragraph cannot drift
- * again. The second figure was published here as 38.8% and is retracted by ADR 0060.
+ * `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites`, to within half a percentage
+ * point — so a rewrite of the solver that moved either of them a whole point would be caught, and
+ * a rounding of the prose would not. The second figure was published here as 38.8% and is
+ * retracted by ADR 0060, whose first consequence is that producing that retraction generated three
+ * more uncomputed figures; a test is a bound on drift, not an end to it.
  *
  * It is *not* reachable from a rendered dataset as things stand: `tools/synth_dataset.py` refuses
  * to render a frame with a rayless pixel in it, so the lens of every dataset this repository
  * produces answers every pixel *centre* of its own frame. That is the second half of the same test.
  *
- * Centres, not keypoints, and the gap is real rather than rhetorical. `ReadBearings` above passes
+ * Centres, not keypoints, and the gap is real rather than rhetorical. `ReadBearings` passes
  * OpenCV keypoint coordinates through unchanged, and OpenCV puts a pixel centre at an integer
  * while this model puts the image corner at the origin — so a keypoint reported at (0, 0) arrives
  * here as the frame's corner, half a pixel further out than any centre. On a 66x50 degree lens the
  * last k1 every centre survives is -0.23340 and the last the corner survives is -0.23178, so there
- * is a narrow band of lenses the renderer would accept and this would refuse a corner keypoint on.
- * No dataset is in it today and none is distorted at all; it is written down because "by
+ * is a narrow band of lenses the renderer would accept and this would refuse a corner keypoint on
+ * — at `k1 = -0.2325`, measured, no pixel centre is refused and the corner is.
+ *
+ * The half pixel is not confined to that band: it offsets *every* bearing this reads, on every
+ * lens, by half a pixel outward from the optical centre. That is a systematic error in the
+ * measurement rather than a reachability question, and it is the larger half of what this
+ * paragraph found; it is not corrected here because doing so moves every published accuracy
+ * figure, which is a change with its own measurement and its own ADR.
+ *
+ * No dataset is in the band today and none is distorted at all; it is written down because "by
  * construction" was the wrong strength for the claim.
  */
 struct Bearing {

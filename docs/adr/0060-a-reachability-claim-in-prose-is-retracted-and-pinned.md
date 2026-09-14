@@ -72,17 +72,35 @@ draft said "by construction", which is a stronger word than the measurement supp
   on the resolution and the cost does.
 - **Two lenses rather than one, and the pair earns itself.** A reviewer swapped `fx` and `fy` —
   the mistake `camera_model.h` calls the single easiest thing here to get silently wrong — and the
-  ultra-wide figure did not move at all: 66.7552% either way, because that lens's refusal region
-  lies wholly inside the frame, so the refused area depends only on the product `fx·fy`. The wide
-  lens moves to 3.3854% and blows the tolerance. Either lens alone would let an axis swap through;
-  the second is load-bearing rather than a second example.
+  ultra-wide figure did not move at all: **66.7552% either way**, 51,268 refused of 76,800 in both
+  orientations. The wide lens moves 4.4740% → 3.3854% and blows the tolerance. So either lens alone
+  would let an axis swap through and the second is load-bearing rather than a second example, which
+  is the part that decides anything.
+
+  **Why the ultra-wide figure is invariant is not established, and this ADR is not going to guess
+  at it.** The first version of this bullet said the refusal region "lies wholly inside the frame,
+  so the refused area depends only on the product `fx·fy`"; a reviewer answered that it is the
+  *accepted* region that lies inside. Both are wrong. Measured: the accepted region reaches
+  139.6 px vertically against a 120 px half-frame, so it is clipped in both orientations and lies
+  wholly inside in neither — and 25,532 pixels are accepted against the 57,452 an unclipped fold
+  ellipse would hold, so the closed-form fold is not the only thing refusing (the ray test and the
+  round-trip tolerance refuse as well). An exact invariance that survives two wrong explanations is
+  worth understanding, and it is its own piece of work; what is recorded here is the measurement,
+  which is what the decision rests on.
 - **The roadmap's reason for rendering with distortion is now known to be partly wrong**, and that
   matters more than the figure. Distortion in the renderer is still worth having — it is the
   difference between measuring registration on a lens a phone has and one nobody sells — but it
-  will not exercise the refused-row path, and a test written to drive that path by rendering a
-  distorted dataset would pass without ever taking it. Reaching it needs a lens whose fold is
-  inside the frame, which is exactly the lens the renderer will not render; that is its own
-  increment and is not this one.
+  will not exercise the refused-row path *by itself*, and a test written to drive that path by
+  rendering a distorted dataset at a lens the renderer accepts would very likely pass without ever
+  taking it.
+
+  Not "could not", and the Centres paragraph above is why: at `k1 = -0.2325` on a 66x50 degree
+  lens, **zero** pixel centres are refused — so the renderer renders every frame happily — and
+  `Unproject` refuses the frame corner. A keypoint at (0, 0) in that dataset would take the path.
+  Nothing puts one there today, because every detector this engine builds keeps a border margin
+  and no dataset is rendered with distortion at all. Reaching it deliberately still wants a lens
+  whose fold is inside the frame, which is exactly the lens the renderer will not render; that is
+  its own increment and is not this one.
 - ADR 0057's rule is now applied to a figure published in a source comment rather than in `docs/`.
   That was already the reading — its own Rejected section notes the carrier need not be an ADR —
   but this is the first time it has been exercised, and the trigger list in

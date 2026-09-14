@@ -863,7 +863,8 @@ blur, rolling-shutter skew, exposure ramps, bursts per cell and composited mover
 their own; distortion is not on that list and belongs on it. Rendering with distortion will not,
 on its own, make that path
 reachable again — the renderer refuses to render a frame with a rayless pixel in it, so the lens of
-every dataset it produces answers every pixel of its own frame whatever coefficients it is given
+every dataset it produces answers every pixel *centre* of its own frame whatever coefficients it
+is given
 (ADR 0060). Distortion is worth rendering for the first reason rather than the second: an accuracy
 measured on a lens nobody sells is not a statement about a phone.
 And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest

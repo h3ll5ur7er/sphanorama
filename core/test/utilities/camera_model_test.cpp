@@ -845,6 +845,16 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
 // on a frame rather than a grid because the frame is what the question is about: a keypoint the
 // detector found is at a pixel of a real image, and the fraction of *those* with no bearing behind
 // them is what decides whether the engine's refused-row path is ever taken.
+long RefusedCountOfFrame(const Intrinsics& lens) {
+  long refused = 0;
+  for (int32_t y = 0; y < lens.height; ++y) {
+    for (int32_t x = 0; x < lens.width; ++x) {
+      if (!Unproject(lens, Pixel{x + 0.5, y + 0.5}).valid) ++refused;
+    }
+  }
+  return refused;
+}
+
 double RefusedPercentOfFrame(const Intrinsics& lens) {
   long refused = 0, total = 0;
   for (int32_t y = 0; y < lens.height; ++y) {
@@ -864,9 +874,10 @@ TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
   // Frame size is not a parameter of the answer, which is why 320x240 is enough to check a claim
   // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
   // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167% — spreads of 0.146 and 0.169
-  // points. The tolerance below is half a percentage point: **three times** the wider of those and
-  // a **fifty-sixth** of the 28-point error it caught. (This said "four times" and "a tenth", and
-  // a reviewer divided. Neither was computed, in a test written because a figure was not.)
+  // points. The tolerance below is half a percentage point: **2.95 times** the wider of those and
+  // a **fifty-sixth** of the 27.96-point error it caught. (This said "four times" and "a tenth"
+  // before a reviewer divided, and then "three times" — which is 2.954 rounded the one direction
+  // that makes the claim stronger than the number. The multiples are written out now.)
   Intrinsics wide = LensFromFieldOfView(78.0, 60.0, 320, 240);
   wide.k1 = -0.20;
   EXPECT_NEAR(RefusedPercentOfFrame(wide), 4.47, 0.5);
@@ -895,9 +906,16 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   rendered.k1 = -0.23;
   EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
 
+  // The count, not merely that there is one. `EXPECT_GT(…, 0.0)` is green for anything from 1
+  // pixel to all 76,800, which is the shape this test's own comment two paragraphs up complains
+  // about — a threshold named in prose with an assertion that cannot fail on it. 48 of 76,800 is
+  // stable: identical under -O0, -O2, -O3 with fast contraction, -march=native, ASan+UBSan, and
+  // against the renderer's independent numpy solver. It also pins what `> 0` could not: widening
+  // `kInverseToleranceNormalised` from 1e-9 to 1e-3 leaves the count at 44 and every other
+  // assertion here green.
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
-  EXPECT_GT(RefusedPercentOfFrame(folding), 0.0);
+  EXPECT_EQ(RefusedCountOfFrame(folding), 48);
 }
 
 }  // namespace
