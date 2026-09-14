@@ -77,16 +77,23 @@ draft said "by construction", which is a stronger word than the measurement supp
   would let an axis swap through and the second is load-bearing rather than a second example, which
   is the part that decides anything.
 
-  **Why the ultra-wide figure is invariant is not established, and this ADR is not going to guess
-  at it.** The first version of this bullet said the refusal region "lies wholly inside the frame,
-  so the refused area depends only on the product `fx·fy`"; a reviewer answered that it is the
-  *accepted* region that lies inside. Both are wrong. Measured: the accepted region reaches
-  139.6 px vertically against a 120 px half-frame, so it is clipped in both orientations and lies
-  wholly inside in neither — and 25,532 pixels are accepted against the 57,452 an unclipped fold
-  ellipse would hold, so the closed-form fold is not the only thing refusing (the ray test and the
-  round-trip tolerance refuse as well). An exact invariance that survives two wrong explanations is
-  worth understanding, and it is its own piece of work; what is recorded here is the measurement,
-  which is what the decision rests on.
+  **Why it is invariant.** The largest *distorted* radius with a preimage is
+  `rd_max = r_fold · radial(r_fold²)` — 0.65060 for this lens — so the accepted region in pixels is
+  the ellipse of semi-axes `fx·rd_max` by `fy·rd_max`: 87.3 x 93.0 px against a 160 x 120
+  half-frame, and 93.0 x 87.3 swapped. **Wholly inside the frame in both orientations**, which is
+  the clause that matters, because a swap is free to break it. Unclipped, the accepted area is
+  `π·rd_max²·fx·fy`, and `fx·fy` is exactly what a swap preserves. The model predicts 25,532
+  accepted pixels and a 66.7556% refused share; measured, 25,532 and 66.7552%. The wide lens moves
+  because its accepted ellipse is 170.1 x 178.9 px and pokes out of the short axis in both
+  orientations, so the clipped area depends on `fx` and `fy` separately rather than on their
+  product.
+
+  This bullet first said the *refusal* region lies inside the frame, which is backwards — all 1,116
+  border pixels of that frame are refused. A reviewer gave the correction above; I then checked it
+  with `r_fold` where `rd_max` belongs, got semi-axes of 131 x 139.6 px and an area of 57,452, and
+  published that neither explanation held. The reviewer was right and the arithmetic that said
+  otherwise was mine. Recorded because this ADR is about what happens to a figure nothing checks,
+  and the failure mode it describes is not confined to the original author.
 - **The roadmap's reason for rendering with distortion is now known to be partly wrong**, and that
   matters more than the figure. Distortion in the renderer is still worth having — it is the
   difference between measuring registration on a lens a phone has and one nobody sells — but it
