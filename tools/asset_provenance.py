@@ -57,8 +57,11 @@ Usage:  uv run tools/asset_provenance.py [repo_root]
 from __future__ import annotations
 
 import codecs
+import errno
 import hashlib
 import json
+import os
+import stat
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -268,11 +271,33 @@ def read_record(path: Path) -> str:
     rather than a big record. `stat` first would be a second answer — and a wrong one for a
     character device, whose length is zero — so this reads one byte past the ceiling and asks.
     """
-    with path.open("rb") as handle:
+    with open_regular(path) as handle:
         head = handle.read(RECORD_CEILING + 1)
     if len(head) > RECORD_CEILING:
         raise ValueError(f"is larger than {RECORD_CEILING} bytes, so it is not a record")
     return head.decode("utf-8")
+
+
+def open_regular(path: Path):
+    """Open `path` for reading, refusing anything that is not a regular file.
+
+    **`O_NONBLOCK`, because `open()` itself can hang.** On a FIFO it blocks in the kernel until a
+    writer appears, and no ceiling on the *read* helps: a single `mkfifo LICENSE` made this checker
+    never return. Both places that open a file here were reached from the git index, which says what
+    was committed and nothing about what is on disk now — the same sentence this file already makes
+    about records, arriving a third time.
+
+    `fstat` on the descriptor rather than `is_file()` on the path, so there is no window between the
+    question and the answer: what is opened is what is checked.
+    """
+    handle = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            raise OSError(errno.EINVAL, "is not a regular file")
+        return os.fdopen(handle, "rb")
+    except BaseException:
+        os.close(handle)
+        raise
 
 
 def says_something(path: Path) -> bool:
@@ -284,13 +309,36 @@ def says_something(path: Path) -> bool:
 
     Bounded, because this is asked about a path from the index and a checker must not be the thing
     that reads an arbitrary file whole. Anything legible is in the first block of a real licence.
+
+    An `OSError` is the caller's to report: a licence that cannot be read is not the same as one
+    that is not there, and saying "this repository has no licence file" about a file that is right
+    there sends a reader to write one. `why_asset` made the opposite choice deliberately and it is
+    the right one — the reason is what a refusal is for.
     """
-    try:
-        with path.open("rb") as handle:
-            head = handle.read(BLOCK)
-    except OSError:
-        return False
+    with open_regular(path) as handle:
+        head = handle.read(BLOCK)
     return legible(head.decode("utf-8", "surrogateescape"))
+
+
+def licence_trouble(root: Path, indexed: list[str]) -> str | None:
+    """Why this repository's own licence cannot answer a deferral, or None if it can.
+
+    **Asked once per run, not once per entry.** It sat inside `any()` inside a loop over spellings
+    inside the entry loop, so a tree with 200 deferring entries and a 1 MiB licence spent 32 seconds
+    re-reading the same file, and 600 entries spent 98 — and `RECORD_CEILING` permits some 23,000
+    entries in one record, so the bound added to stop unbounded work was also the multiplier. The
+    answer cannot change while `check` runs.
+    """
+    for spelling in LICENCE_FILES:
+        if spelling not in indexed:
+            continue
+        try:
+            if says_something(root / spelling):
+                return None
+        except OSError as refused:
+            return f"{spelling} cannot be read: {refused.strerror}"
+    return (f"this repository has no licence file for it to mean — looked for "
+            f"{', '.join(LICENCE_FILES)}")
 
 
 def defers_to_this_repository(licence: object) -> bool:
@@ -495,6 +543,9 @@ def check(root: Path) -> list[Problem]:
     # The other question, asked once for the same reason the first is: what a reader's checkout
     # would contain, which is not what this working tree contains. Only the deferral needs it.
     indexed = indexed_files(root)
+    # Resolved once. Every deferring entry asks the same question about the same file, and the
+    # answer cannot change while this runs.
+    trouble = licence_trouble(root, indexed)
     problems: list[Problem] = []
 
     found = records(root)
@@ -604,9 +655,20 @@ def check(root: Path) -> list[Problem]:
                 # the filesystem's to state and the other ways of being unaskable — a path too long
                 # in total, a permission the walk cannot pass — arrive here by the same door.
                 #
-                # A NUL in the name does *not*: `pathlib` raises `ValueError` for a path it cannot
-                # encode, before any syscall. It is refused, by the `file` field's own prose rule,
-                # and this arm never sees it. Said because the sentence here used to claim it.
+                # **A NUL in the name arrives by none of them, and is not refused either.** Measured
+                # on 3.11: `is_symlink`, `exists` and `is_file` all swallow the `ValueError` and
+                # answer `False`, so nothing raises and nothing is caught; `legible("a\0b.jpg")` is
+                # `True`, so the prose rule passes it; and `resolve()`, the one call that does
+                # raise, is unreachable behind a `False` from `exists()`. Such a record ends up at
+                # "names a file that is not here", which is a true sentence reached for none of the
+                # reasons above it.
+                #
+                # This is the third version of this comment. The first claimed the NUL arrived here;
+                # the second claimed `pathlib` raised and the prose rule refused it — a correction
+                # that replaced one unmeasured claim with two more. The rule that follows from that
+                # is the whole of why this paragraph is long: a sentence about what some *other*
+                # code does is worth measuring before it is written down, and worth deleting rather
+                # than rewriting when it is wrong twice.
                 escaped = f"cannot be asked about: {refused.strerror}"
             if escaped is not None:
                 problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
@@ -669,13 +731,10 @@ def check(root: Path) -> list[Problem]:
                     f"`licence` is {licence!r}, and our own work either says exactly "
                     f"{DEFERS_TO_THIS_REPOSITORY!r} or names a licence with a `licence_url` "
                     f"beside it{intent}"))
-            if defers_to_this_repository(entry.get("licence")) and not any(
-                    spelling in indexed and says_something(root / spelling)
-                    for spelling in LICENCE_FILES):
+            if defers_to_this_repository(entry.get("licence")) and trouble is not None:
                 problems.append(Problem(
                     f"{rel} [{name}]",
-                    f"`licence` is {DEFERS_TO_THIS_REPOSITORY!r} and this repository has no "
-                    f"licence file for it to mean — looked for {', '.join(LICENCE_FILES)}"))
+                    f"`licence` is {DEFERS_TO_THIS_REPOSITORY!r} and {trouble}"))
 
             projection = entry.get("projection")
             if projection is not None and projection not in PROJECTIONS:

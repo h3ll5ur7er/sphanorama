@@ -11,9 +11,12 @@ import ast
 import hashlib
 import inspect
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -340,14 +343,33 @@ class AssetProvenance(unittest.TestCase):
         # with `update-index --cacheinfo`, at which point the two unwrapped ones raised
         # `OSError: [Errno 36]` out of `check()`. The refusal names the path, which is the whole of
         # what this module promises.
+        # **All three, because naming three and driving one is this file's standing defect.** Where
+        # the path sits decides which call site sees it: inside a recorded directory it reaches the
+        # inner sweep, outside every record the outer one, and named by a record the entry walk.
+        # Putting it under `assets/` only, as the first version did, left the other two guards
+        # deletable with the suite green.
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.tree.root,
                               input=b"x", capture_output=True, check=True).stdout.decode().strip()
-        subprocess.run(["git", "update-index", "--add", "--cacheinfo",
-                        f"100644,{blob},assets/{'n' * 300}.bin"],
-                       cwd=self.tree.root, check=True)
-        problems = self.tree.problems()
-        self.assertTrue(any("cannot be read" in p or "cannot be asked about" in p
-                            for p in problems), problems)
+        long_name = f"{'n' * 300}.bin"
+        for where in (f"assets/{long_name}", long_name):
+            with self.subTest(sweep=where):
+                subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                                f"100644,{blob},{where}"], cwd=self.tree.root, check=True)
+                try:
+                    problems = self.tree.problems()
+                    self.assertTrue(any("cannot be read" in p for p in problems), problems)
+                finally:
+                    # Unconditionally, because a subtest that fails still has to leave the index as
+                    # it found it: without this, one failure here put the long name in front of
+                    # every later case and reported three failures for one defect.
+                    subprocess.run(["git", "update-index", "--force-remove", where],
+                                   cwd=self.tree.root, check=True)
+        with self.subTest(sweep="named by a record"):
+            entries = self.tree.entries()
+            entries[0]["file"] = long_name
+            self.tree.record({"assets": entries})
+            problems = self.tree.problems()
+            self.assertTrue(any("cannot be asked about" in p for p in problems), problems)
 
     def test_a_file_that_leaves_the_records_own_directory_is_refused(self):
         # `directory / name` accepts `../…` and an absolute path, and `is_file()` and `digest()`
@@ -552,7 +574,13 @@ class AssetProvenance(unittest.TestCase):
         for url in (["nonsense", "not a url"], [], False, "", "\u200b", "\u034f"):
             with self.subTest(url=url):
                 self.record_ours(licence="Proprietary, all rights reserved", licence_url=url)
-                named = [p for p in self.tree.problems() if "`licence" in p]
+                # The `ours` rule's own sentence. The filter here was ``"`licence" in p`` — no
+                # closing backtick — which the *generic* volunteered-answer refusal satisfies, so
+                # widening the rule to `entry.get("licence_url") is None` (the hole this test's own
+                # example is about) left the suite green. Whatever `unusable` says about the field,
+                # what must happen is that our own work is refused for having nothing behind it.
+                named = [p for p in self.tree.problems()
+                         if "names a licence with a `licence_url`" in p]
                 self.assertTrue(named, f"a licence_url of {url!r} answered for our own work")
 
     def test_the_hint_names_a_deferral_and_not_an_ordinary_licence(self):
@@ -602,6 +630,56 @@ class AssetProvenance(unittest.TestCase):
         # exist.
         subprocess.run(["git", "add", "-f", "--", "LICENSE"], cwd=self.tree.root, check=True)
         self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
+
+    def test_a_licence_or_a_record_that_is_a_fifo_does_not_hang_the_build(self):
+        # **A ceiling on the read does not bound the `open`.** A FIFO blocks in the kernel until a
+        # writer appears, so `mkfifo LICENSE` made this checker never return — the bound added to
+        # stop unbounded work, defeated by the call before the one it bounds. Both paths come from
+        # the git index, which says what was committed and nothing about what is on disk now.
+        #
+        # The alarm is the assertion: a hang has no other symptom, and a test that waits for one is
+        # the only kind that can fail on it.
+        # Deferring first, so the licence is a question this run actually asks.
+        self.defer()
+        for where, expected in (("LICENSE", "cannot be read"),
+                                ("assets/sources.json", "could not be read as JSON")):
+            with self.subTest(fifo=where):
+                target = self.tree.root / where
+                target.unlink()
+                os.mkfifo(target)
+                self.addCleanup(lambda t=target: t.exists() and t.unlink())
+                signal.signal(signal.SIGALRM, self.impatient)
+                signal.alarm(10)
+                try:
+                    problems = self.tree.problems()
+                finally:
+                    signal.alarm(0)
+                self.assertTrue(any(expected in p for p in problems), problems)
+
+    @staticmethod
+    def impatient(number, frame):
+        raise AssertionError("the checker did not return: a fifo is blocking it in open()")
+
+    def test_a_licence_that_cannot_be_read_is_not_reported_as_one_that_is_not_there(self):
+        # "This repository has no licence file" about a file that is right there sends a reader to
+        # write one that exists. `says_something` swallowed the `OSError` and returned False, which
+        # is the reason-losing choice `why_asset` refuses to make in the same file.
+        # The licence only. `read_record` opens through the same helper, so refusing everything
+        # makes the record unreadable and the entry loop never runs — the refusal under test then
+        # cannot be reached, and `named` comes back empty for the wrong reason.
+        held = asset_provenance.open_regular
+
+        def refuse(path):
+            if path.name == "LICENSE":
+                raise PermissionError(13, "Permission denied")
+            return held(path)
+
+        asset_provenance.open_regular = refuse
+        self.addCleanup(setattr, asset_provenance, "open_regular", held)
+        self.defer()
+        named = [p for p in self.tree.problems() if "`licence`" in p]
+        self.assertTrue(any("LICENSE cannot be read: Permission denied" in p for p in named), named)
+        self.assertFalse(any("no licence file for it to mean" in p for p in named), named)
 
     def test_a_record_too_large_to_be_a_record_is_refused_rather_than_read(self):
         # The last unbounded read in this file. A 400 MB `sources.json` took peak memory to 779 MiB,
@@ -1018,11 +1096,19 @@ class ReadingAFileInBlocks(unittest.TestCase):
     }
 
     def test_every_loop_that_reads_in_blocks_has_a_case_in_this_class(self):
-        # Derived from the module rather than listed beside it: `inspect` finds every function whose
-        # body mentions `BLOCK`, which is what "reads a file a block at a time" is spelled as here.
-        # The failure it produces names the function, which is the whole of what a reader needs.
+        # Derived from the module rather than listed beside it: every function that *reads* the name
+        # `BLOCK`, which is what "reads a file a block at a time" is spelled as here. The failure it
+        # produces names the function, which is the whole of what a reader needs.
+        #
+        # From the parse tree, not the text. `"BLOCK" in source` is a substring test, and
+        # `O_NONBLOCK` contains `BLOCK` — so a function that opens a file without reading one block
+        # of it joined the set and demanded a case. A comment mentioning the constant would have
+        # done the same. `ast.Name` is the question actually being asked.
         reading = {name for name, value in vars(asset_provenance).items()
-                   if inspect.isfunction(value) and "BLOCK" in inspect.getsource(value)}
+                   if inspect.isfunction(value)
+                   and any(isinstance(node, ast.Name) and node.id == "BLOCK"
+                           for node in ast.walk(ast.parse(
+                               textwrap.dedent(inspect.getsource(value)))))}
         self.assertEqual(reading, set(self.DRIVEN),
                          "a function reads in blocks with no case here, or a case names a "
                          "function that no longer does")
@@ -1036,10 +1122,22 @@ class ReadingAFileInBlocks(unittest.TestCase):
             # `test_a_digest_covers_every_block_and_not_just_the_first` contains "digest", so
             # `assertIn(function, source)` was a tautology for exactly the function the class
             # docstring names — the fix and the defect it fixed, in one line.
+            #
+            # **Parsed, not matched.** The qualified form was still text, so a case gutted to a
+            # comment naming `asset_provenance.digest(path)` plus `assertTrue(True)` satisfied it —
+            # round 16's defect reinstated by round 16's fix, which is the third spelling of this
+            # one assertion. A comment cannot be an `ast.Call`.
             self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
-            body = inspect.getsource(getattr(self, case)).split(":", 1)[1]
-            self.assertIn(f"asset_provenance.{function}(", body,
+            self.assertIn(function, self.functions_called_by(case),
                           f"{case} is named as {function}'s cover and never calls it")
+
+    def functions_called_by(self, case):
+        """The names this case calls on `asset_provenance`, from its parse tree."""
+        source = textwrap.dedent(inspect.getsource(getattr(self, case)))
+        return {node.func.attr for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "asset_provenance"}
 
     def test_no_function_here_reads_an_asset_other_than_in_blocks_of_block(self):
         # The hole the derivation above cannot see. It finds functions that mention `BLOCK`, so a
@@ -1052,9 +1150,16 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # `path.read_bytes().decode()`, the 32 MiB to 1105 MiB defect that function's own docstring
         # is about, left the suite green. It also matched read sizes quoted *in comments*, which is
         # this module's house style, so it could fail for no reason at all. `ast` sees calls.
-        reads = {"read", "read1", "readinto", "read_bytes", "read_text"}
+        # Every way `io` hands bytes over, not the three that came to mind: `readlines()` was
+        # missing, so replacing the block loop with `b"".join(handle.readlines())` — the 32 MiB to
+        # 1105 MiB defect this class exists for — left the suite green. A list of method names is a
+        # copy of `io`'s surface, which is the shape this file keeps being caught by, so the
+        # iteration case below is asserted separately rather than added to it.
+        reads = {"read", "read1", "readinto", "readinto1", "readline", "readlines",
+                 "read_bytes", "read_text"}
+        tree = ast.parse(inspect.getsource(asset_provenance))
         sized, whole = [], []
-        for node in ast.walk(ast.parse(inspect.getsource(asset_provenance))):
+        for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in reads:
@@ -1072,6 +1177,22 @@ class ReadingAFileInBlocks(unittest.TestCase):
         # this file now asks for a number.
         self.assertEqual([ast.unparse(node) for node in whole], [],
                          "something is read whole again")
+        # And nothing iterates a file handle, which is the one shape no list of method names can
+        # see: `for line in handle` reads the file a line at a time with no call to enumerate. The
+        # handles are the names bound by `with … .open(…) as name`, which is how every read in this
+        # module is opened, so the set is exact rather than a guess at what a file might be called.
+        handles = {item.optional_vars.id
+                   for node in ast.walk(tree) if isinstance(node, ast.With)
+                   for item in node.items
+                   if isinstance(item.optional_vars, ast.Name)
+                   and isinstance(item.context_expr, ast.Call)
+                   and isinstance(item.context_expr.func, ast.Attribute)
+                   and item.context_expr.func.attr == "open"}
+        iterated = [ast.unparse(node.iter) for node in ast.walk(tree)
+                    if isinstance(node, (ast.For, ast.comprehension))
+                    and isinstance(getattr(node, "iter", None), ast.Name)
+                    and node.iter.id in handles]
+        self.assertEqual(iterated, [], "a file handle is iterated, which reads it a line at a time")
 
     def test_a_licence_whose_first_legible_byte_is_past_one_block_reads_as_blank(self):
         # `says_something` reads *one* block on purpose — a checker asked about a path from the
