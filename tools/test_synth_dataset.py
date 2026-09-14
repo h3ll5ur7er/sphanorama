@@ -1534,6 +1534,16 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
             (root / ".swapped.replaced").write_text("in the way\n")
             dangling = root / "dangling"
             dangling.symlink_to(root / "does-not-exist")
+            # And the same correction `--out` got above, which these two siblings did not:
+            # `exists()` and `is_dir()` both answer through a symlink, so a link to a real
+            # directory passed the guard as though it were one. Pointing a dataset directory at a
+            # scratch disk is an ordinary thing to do, and it made run 1 write *through* the link —
+            # reporting success about a directory that is not the one named — then leave the
+            # consumed link behind, after which every later run died in `out.replace(displaced)`
+            # with the whole render already spent. Exactly what this guard exists to pre-empt.
+            (root / "elsewhere").mkdir()
+            (root / ".linked.partial").symlink_to(root / "elsewhere")
+            (root / ".linkswapped.replaced").symlink_to(root / "elsewhere")
 
             cases = {
                 "a file": root / "afile",
@@ -1541,6 +1551,8 @@ class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):
                 "under a file": root / "afile" / "ds",
                 "staging occupied": root / "occupied",
                 "displaced occupied": root / "swapped",
+                "staging is a symlink to a directory": root / "linked",
+                "displaced is a symlink to a directory": root / "linkswapped",
             }
             for name, out in cases.items():
                 rendered = {"n": 0}

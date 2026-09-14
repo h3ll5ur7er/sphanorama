@@ -59,6 +59,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
+import os
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -601,11 +602,24 @@ def check(root: Path) -> list[Problem]:
             if not isinstance(name, str) or not name.strip():
                 problems.append(Problem(rel, f"entry {position} names no `file`"))
                 continue
-            if name in recorded:
+            # **Keyed on the file, not on the spelling.** `./photo.bin` and `.//photo.bin` are one
+            # file and were two entries: the rule below — which exists because two entries cannot
+            # both be true of one file — was defeated by punctuation, and the file was opened and
+            # hashed once per spelling. It also put the walk and the orphan sweep into
+            # disagreement, since the sweep's key is the real relative path: a file recorded twice
+            # came back as "recorded nowhere", which sends its author looking for an entry they
+            # have already written.
+            #
+            # Normalised rather than resolved. This is pure string work and it is safe here for
+            # exactly that reason — it happens before the `file` rule below has ruled anything out,
+            # so it must not touch the disk. `..` and absolute paths are that rule's business and
+            # are refused there; what this settles is only that one file has one key.
+            owned = os.path.normpath(name)
+            if owned in recorded:
                 problems.append(Problem(rel, f"{name} is recorded twice, and the two entries "
                                              f"cannot both describe it"))
                 continue
-            recorded[name] = entry
+            recorded[owned] = entry
 
             # **`file` names a file in this record's own directory, and nothing else.** It is
             # joined to that directory and then hashed, and `directory / name` happily accepts

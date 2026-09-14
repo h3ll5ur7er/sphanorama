@@ -388,6 +388,31 @@ class AssetProvenance(unittest.TestCase):
                 named = [p for p in self.tree.problems() if "`file`" in p]
                 self.assertTrue(named, f"{name!r} was accepted as this record's own file")
 
+    def test_one_file_under_two_spellings_is_one_file(self):
+        # `recorded` keyed on the literal `file` string, so `./photo.bin` and `.//photo.bin` were
+        # two entries describing one file: the "recorded twice" rule — which exists because two
+        # entries cannot both be true of one file — was defeated by punctuation, and the file was
+        # opened and hashed once per spelling. `RECORD_CEILING` permits some 18,000 entries, so
+        # that is also the cost: 400 spellings of one 20 MB asset is 25 seconds of hashing.
+        #
+        # And the sweep then disagreed with the walk. Its key is the real relative path, which
+        # matched neither spelling, so a file recorded *twice* was reported as "recorded nowhere" —
+        # a sentence that sends its author looking for the entry they have already written.
+        for spellings in (("./photo.bin", ".//photo.bin"), ("photo.bin", "./photo.bin")):
+            with self.subTest(spellings=spellings):
+                entries = [dict(self.tree.entries()[0], file=s) for s in spellings]
+                self.tree.record({"assets": entries})
+                problems = self.tree.problems()
+                self.assertTrue(any("is recorded twice" in p for p in problems), problems)
+                self.assertFalse(any("recorded nowhere" in p for p in problems), problems)
+
+    def test_a_file_spelled_with_a_leading_dot_is_still_that_file(self):
+        # The other half, and the one that says the fix is a normalisation rather than a ban: a
+        # single `./photo.bin` names the file beside the record and is a perfectly good entry. A
+        # rule that refused the spelling outright would pass the test above and be wrong.
+        self.tree.record({"assets": [dict(self.tree.entries()[0], file="./photo.bin")]})
+        self.assertEqual(self.tree.problems(), [])
+
     def test_a_symlink_to_a_sibling_inside_the_directory_is_still_refused(self):
         # **The symlink clause on its own.** The case above cannot isolate it: every input there
         # points outside the record's directory, so the `resolve()` clause refuses them too and the

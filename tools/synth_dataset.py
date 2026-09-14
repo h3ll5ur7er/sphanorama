@@ -854,9 +854,16 @@ def main() -> int:
     # complaining, so the render finished and then died in `out.replace(displaced)`, and the
     # leftover stayed put so every later run failed identically. One guard covered one of two paths
     # because the second was introduced after it was written.
+    #
+    # **And `exists()` follows symlinks, which is the same correction `--out` gets two lines above
+    # and these did not.** A symlink here answered `is_dir()` through its target, so pointing a
+    # dataset directory at a scratch disk let run 1 write through the link — reporting success
+    # about a directory that is not the one named — and left the consumed link behind as
+    # `.ring.replaced`, after which every later run died in `out.replace(displaced)` with the whole
+    # render already spent. Precisely the failure this guard's own comment says it pre-empts.
     for hidden in (f".{args.out.name}.partial", f".{args.out.name}.replaced"):
         beside = args.out.parent / hidden
-        if beside.exists() and not beside.is_dir():
+        if beside.is_symlink() or (beside.exists() and not beside.is_dir()):
             parser.error(f"{beside} is in the way and is not a directory this can clear")
 
     # Read before the lens is built and long before anything renders, so that an unusable
