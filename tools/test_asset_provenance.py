@@ -7,10 +7,10 @@ unlicensed, and the only person who knew is gone. So the cases below are about t
 record stops describing the bytes — a file nobody recorded, and a file that has changed since
 somebody did.
 """
+import ast
 import hashlib
 import inspect
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -334,6 +334,21 @@ class AssetProvenance(unittest.TestCase):
         self.assertTrue(any("frame.dat" in p for p in problems), problems)
         self.assertTrue(any("not valid UTF-8" in p for p in problems), problems)
 
+    def test_a_file_git_lists_but_this_filesystem_cannot_answer_about_is_a_sentence(self):
+        # Three call sites ask `is_file()` on a path git listed — the entry walk and the two orphan
+        # sweeps — and round 15 wrapped one of them. A name past `NAME_MAX` can be put in the index
+        # with `update-index --cacheinfo`, at which point the two unwrapped ones raised
+        # `OSError: [Errno 36]` out of `check()`. The refusal names the path, which is the whole of
+        # what this module promises.
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.tree.root,
+                              input=b"x", capture_output=True, check=True).stdout.decode().strip()
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                        f"100644,{blob},assets/{'n' * 300}.bin"],
+                       cwd=self.tree.root, check=True)
+        problems = self.tree.problems()
+        self.assertTrue(any("cannot be read" in p or "cannot be asked about" in p
+                            for p in problems), problems)
+
     def test_a_file_that_leaves_the_records_own_directory_is_refused(self):
         # `directory / name` accepts `../…` and an absolute path, and `is_file()` and `digest()`
         # follow symlinks — so a record could account for a file it does not own, one outside the
@@ -417,23 +432,56 @@ class AssetProvenance(unittest.TestCase):
         # mode-000 asset came out of `check()` as a `PermissionError` traceback — the one answer
         # this module's docstring says it will not give.
         #
-        # Driven by making `digest` raise rather than by `chmod`, because the checker's own CI runs
+        # Driven by making each call raise rather than by `chmod`, because the checker's own CI runs
         # as root and root reads a mode-000 file: a permissions fixture here would skip in the one
         # place the guard has to hold, which is a test that cannot fail wearing a skip. What the
-        # guard promises is that an `OSError` out of these three calls becomes a sentence, and where
-        # the error came from is not part of that promise.
-        held = asset_provenance.digest
-
-        def refuse(path):
+        # guard promises is that an `OSError` out of these calls becomes a sentence, and where the
+        # error came from is not part of that promise.
+        #
+        # **Both openers, and that is the point.** The first version patched `digest` alone, which
+        # is the *first* call in the guarded block — so moving `git_blob` back outside the `try`,
+        # verbatim the round-14 shape this guard was written to end, left all 77 tests green. A
+        # guard over a block needs an arrow at its far end, not only at its near one.
+        #
+        # `stat` is deliberately not a third case, and the reason is worth having: it is the same
+        # syscall as the `is_file()` in the `file` guard further up, so anything that makes it fail
+        # is caught there first and reported as "cannot be asked about". It cannot be driven from
+        # here without patching so broadly that the orphan sweeps answer instead. That also means
+        # the real-world case — a mode-000 file — never reaches it: `chmod 000` permits `stat` and
+        # refuses `open`, so the two calls that matter are the two tested.
+        def refuse(*args, **kwargs):
             raise PermissionError(13, "Permission denied")
 
-        asset_provenance.digest = refuse
-        self.addCleanup(setattr, asset_provenance, "digest", held)
-        problems = self.tree.problems()
-        self.assertTrue(any("cannot be read: Permission denied" in p for p in problems), problems)
-        # And the entry is abandoned rather than carried on with, so nothing downstream compares a
-        # digest that was never computed.
-        self.assertFalse(any("sha256" in p for p in problems), problems)
+        # `source_blob` so `git_blob` is actually reached: it is computed only where a record
+        # carries one, which is the shipped shape of the panorama's record and of nothing else here.
+        entries = self.tree.entries()
+        entries[0]["source_blob"] = asset_provenance.git_blob(self.tree.assets / "photo.bin")
+        self.tree.record({"assets": entries})
+
+        for target, patch in (("digest", lambda: self.patch_module("digest", refuse)),
+                              ("git_blob", lambda: self.patch_module("git_blob", refuse))):
+            with self.subTest(raised_by=target):
+                undo = patch()
+                try:
+                    problems = self.tree.problems()
+                finally:
+                    undo()
+                named = [p for p in problems if "[photo.bin]" in p]
+                # `[photo.bin]` — the entry walk's `where`, not the orphan sweep's. Both are guarded
+                # now, and a bare "cannot be read" assertion would be satisfied by either, which is
+                # the same "passes for a reason you did not intend" this whole test exists to stop.
+                self.assertTrue(any("cannot be read: Permission denied" in p for p in named),
+                                problems)
+                # And the entry is abandoned rather than carried on with, so nothing downstream
+                # compares a digest or a size that was never computed.
+                self.assertFalse(any("sha256" in p or "bytes and holds" in p for p in problems),
+                                 problems)
+
+    def patch_module(self, name, replacement):
+        """Swap a module-level function for the duration of one subtest, and hand back the undo."""
+        held = getattr(asset_provenance, name)
+        setattr(asset_provenance, name, replacement)
+        return lambda: setattr(asset_provenance, name, held)
 
     def test_a_file_too_long_for_the_filesystem_is_reported_rather_than_raised(self):
         # `Path.is_symlink()` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so
@@ -492,6 +540,16 @@ class AssetProvenance(unittest.TestCase):
                 self.assertTrue(any("`licence`" in p for p in problems), problems)
                 self.assertFalse(any("reads as the deferral" in p for p in problems), problems)
 
+    def test_a_licence_url_spelled_as_a_list_does_not_satisfy_the_ours_rule(self):
+        # `licence_url` became read-by-a-program the moment `check` began branching on it, and the
+        # tuple and the rule were edited by different hands — so a list of prose satisfied the prose
+        # rule and cleared the very rule the field was added to serve. Fourth field to do this.
+        for url in (["nonsense", "not a url"], [], False, "", "\u200b", "\u034f"):
+            with self.subTest(url=url):
+                self.record_ours(licence="Proprietary, all rights reserved", licence_url=url)
+                named = [p for p in self.tree.problems() if "`licence" in p]
+                self.assertTrue(named, f"a licence_url of {url!r} answered for our own work")
+
     def test_a_licence_naming_a_licence_is_not_a_near_miss(self):
         # The other direction, because the rule above refuses on a substring and a rule that refuses
         # ordinary answers is worse than the hole it closes. None of these mentions this repository.
@@ -526,6 +584,25 @@ class AssetProvenance(unittest.TestCase):
         # exist.
         subprocess.run(["git", "add", "-f", "--", "LICENSE"], cwd=self.tree.root, check=True)
         self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
+
+    def test_a_record_too_large_to_be_a_record_is_refused_rather_than_read(self):
+        # The last unbounded read in this file. A 400 MB `sources.json` took peak memory to 779 MiB,
+        # and one symlinked to `/dev/zero` never returned — a build that hangs rather than fails.
+        # Refused by length and not streamed, because unlike an asset a record has no honest large
+        # form: `json.loads` needs the whole document anyway.
+        held = asset_provenance.RECORD_CEILING
+        asset_provenance.RECORD_CEILING = 64
+        self.addCleanup(setattr, asset_provenance, "RECORD_CEILING", held)
+        (self.tree.assets / "sources.json").write_text(" " * 80 + "{}")
+        problems = self.tree.problems()
+        self.assertTrue(any("is not a record" in p for p in problems), problems)
+
+    def test_a_record_nested_past_what_json_will_parse_is_a_sentence(self):
+        # `json.loads` raises `RecursionError` on deeply nested input, and that is a `RuntimeError` —
+        # so it walked past an arm naming only `OSError` and `ValueError`, straight out of `check()`.
+        (self.tree.assets / "sources.json").write_text("[" * 2000)
+        problems = self.tree.problems()
+        self.assertTrue(any("could not be read as JSON" in p for p in problems), problems)
 
     def test_a_half_that_is_not_a_list_is_reported_rather_than_crashing_its_consumer(self):
         # `{"ours": {...}}` keyed by filename reads as a record and is not one. The checker used to
@@ -572,12 +649,19 @@ class AssetProvenance(unittest.TestCase):
                 self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
                 self.tree.forget(spelling)
 
-    def test_a_deferred_licence_is_not_answered_by_an_empty_file(self):
-        # A zero-byte LICENSE is the shape a half-finished `touch` leaves behind, and it answers
-        # the question no better than no file at all.
+    def test_a_deferred_licence_is_not_answered_by_a_file_that_says_nothing(self):
+        # A zero-byte LICENSE is the shape a half-finished `touch` leaves behind, and it answers the
+        # question no better than no file at all. `st_size > 0` was the whole rule, so the four
+        # below it — a newline, spaces, a zero-width space, a combining mark — answered it: a
+        # pointer resolving to a file with nothing in it resolves to nothing.
         self.defer()
-        (self.tree.root / "LICENSE").write_text("")
-        self.assertTrue([p for p in self.tree.problems() if "`licence`" in p])
+        for content in ("", "\n", "   ", "\u200b", "\u034f", "\n\n  \t\n"):
+            with self.subTest(content=content):
+                (self.tree.root / "LICENSE").write_text(content)
+                self.assertTrue([p for p in self.tree.problems() if "`licence`" in p],
+                                f"a licence of {content!r} answered a deferral")
+        (self.tree.root / "LICENSE").write_text("MIT\n")
+        self.assertEqual([p for p in self.tree.problems() if "`licence`" in p], [])
 
     def test_a_source_blob_that_is_not_these_bytes_is_refused(self):
         # The upstream git object name was the one recorded fact nothing derived, which matters
@@ -912,6 +996,7 @@ class ReadingAFileInBlocks(unittest.TestCase):
         "digest": "test_a_digest_covers_every_block_and_not_just_the_first",
         "git_blob": "test_a_blob_name_covers_every_block_and_not_just_the_first",
         "why_asset": "test_a_character_split_across_a_block_boundary_is_still_one_character",
+        "says_something": "test_a_licence_whose_first_legible_byte_is_past_one_block_reads_as_blank",
     }
 
     def test_every_loop_that_reads_in_blocks_has_a_case_in_this_class(self):
@@ -927,21 +1012,58 @@ class ReadingAFileInBlocks(unittest.TestCase):
             # `hasattr` was the whole of this and it accepted an empty method: emptying the digest
             # case *and* truncating `digest` to its first block left the suite green, which is the
             # docstring's own "a digest that hashes the first block and stops". A case has to
-            # mention the function it claims to drive.
+            # *call* the function it claims to drive.
+            #
+            # The qualified name, because the bare one is in the case's own signature:
+            # `test_a_digest_covers_every_block_and_not_just_the_first` contains "digest", so
+            # `assertIn(function, source)` was a tautology for exactly the function the class
+            # docstring names — the fix and the defect it fixed, in one line.
             self.assertTrue(hasattr(self, case), f"{function}'s case {case} does not exist")
-            source = inspect.getsource(getattr(self, case))
-            self.assertIn(function, source,
-                          f"{case} is named as {function}'s cover and does not call it")
+            body = inspect.getsource(getattr(self, case)).split(":", 1)[1]
+            self.assertIn(f"asset_provenance.{function}(", body,
+                          f"{case} is named as {function}'s cover and never calls it")
 
-    def test_block_is_the_only_read_size_this_module_has(self):
+    def test_no_function_here_reads_an_asset_other_than_in_blocks_of_block(self):
         # The hole the derivation above cannot see. It finds functions that mention `BLOCK`, so a
         # function reading in blocks through a *differently named* constant is invisible to it and
         # would arrive with no case and nothing red. Rather than guess at what such a constant
-        # might be called, this pins the thing that makes the derivation sound: every sized read in
-        # this module asks for `BLOCK`. A second read size is then a failure here, at the line that
-        # introduced it, rather than a silent gap in the class above.
-        sized = re.findall(r"\.read\(([^)]+)\)", inspect.getsource(asset_provenance))
-        self.assertEqual({argument.strip() for argument in sized}, {"BLOCK"}, sized)
+        # might be called, this pins the two things that make the derivation sound.
+        #
+        # **Parsed, not grepped.** The first version was a regex over the module text, which could
+        # not see `read_bytes()` — so replacing `why_asset`'s incremental decoder with
+        # `path.read_bytes().decode()`, the 32 MiB to 1105 MiB defect that function's own docstring
+        # is about, left the suite green. It also matched read sizes quoted *in comments*, which is
+        # this module's house style, so it could fail for no reason at all. `ast` sees calls.
+        reads = {"read", "read1", "readinto", "read_bytes", "read_text"}
+        sized, whole = [], []
+        for node in ast.walk(ast.parse(inspect.getsource(asset_provenance))):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in reads:
+                continue
+            (sized if node.args else whole).append(node)
+        # Two sizes and no more: `BLOCK` for anything streamed, and the record ceiling for the one
+        # read that is bounded rather than streamed. Keeping the set closed is what makes
+        # "reads in blocks" and "mentions BLOCK" the same set, so the derivation above is complete.
+        self.assertEqual({ast.unparse(node.args[0]) for node in sized},
+                         {"BLOCK", "RECORD_CEILING + 1"},
+                         [ast.unparse(node) for node in sized])
+        # And **nothing here is read whole any more.** The record was the last one — `read_text()`
+        # with nothing between it and the disk — which took peak memory to 779 MiB on a 400 MB
+        # `sources.json` and never returned at all on one symlinked to `/dev/zero`. Every read in
+        # this file now asks for a number.
+        self.assertEqual([ast.unparse(node) for node in whole], [],
+                         "something is read whole again")
+
+    def test_a_licence_whose_first_legible_byte_is_past_one_block_reads_as_blank(self):
+        # `says_something` reads *one* block on purpose — a checker asked about a path from the
+        # index must not be the thing that reads an arbitrary file whole — so the bound is real and
+        # is pinned here rather than left to be discovered. Anything legible is in the first block
+        # of a licence somebody wrote; a file that hides its first word past a megabyte of spaces is
+        # not one, and reading it as blank is the answer this accepts.
+        path = self.write("LICENSE", b" " * (asset_provenance.BLOCK + 4) + b"MIT")
+        self.assertFalse(asset_provenance.says_something(path))
+        self.assertTrue(asset_provenance.says_something(self.write("ok", b"   MIT\n")))
 
     def test_a_blob_name_covers_every_block_and_not_just_the_first(self):
         # Git's own answer, not ours, so the comparison is against `git hash-object` rather than

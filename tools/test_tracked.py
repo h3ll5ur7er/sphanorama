@@ -85,6 +85,28 @@ class Listing(unittest.TestCase):
         self.assertEqual(tracked_files(self.root), ["committed.md", "written-but-not-added.md"])
         self.assertEqual(indexed_files(self.root), ["committed.md"])
 
+    def test_a_path_at_three_merge_stages_is_listed_once(self):
+        # The dedup this module's comment is about, which nothing here reached: `--cached` lists a
+        # conflicted path once per stage — base, ours, theirs — and that is exactly when the marker
+        # check runs, so without the `set()` every marker in a conflicted file is reported three
+        # times in the output somebody is reading to find them. Staged by hand rather than by
+        # provoking a real merge, because the three stages are the whole of what matters.
+        self.write(b"conflicted.md")
+        self.commit()
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.root,
+                              input=b"x", capture_output=True, check=True).stdout.decode().strip()
+        subprocess.run(["git", "rm", "--cached", "-q", "conflicted.md"], cwd=self.root, check=True)
+        for stage in (1, 2, 3):
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                            f"100644,{blob},conflicted.md"] if stage == 1 else
+                           ["git", "update-index", "--index-info"],
+                           cwd=self.root, check=True,
+                           input=f"100644 {blob} {stage}\tconflicted.md\n".encode()
+                           if stage != 1 else None,
+                           capture_output=True)
+        listed = [name for name in tracked_files(self.root) if name == "conflicted.md"]
+        self.assertEqual(listed, ["conflicted.md"], tracked_files(self.root))
+
     def test_a_git_that_will_not_answer_is_raised_rather_than_read_as_an_empty_tree(self):
         # Returning "no files" from a git that refused makes an unrunnable check indistinguishable
         # from a clean one, which is the shape of bug every caller of this exists to catch.

@@ -141,7 +141,15 @@ PROJECTIONS = ("equirectangular",)
 # came back clean. The same defect, twice, inside the commit that fixed it. It is a tuple of every
 # such field now, and the subtest table in the suite is driven from this tuple rather than from a
 # hand-written list, so a field added here cannot be added without a case.
-READ_BY_A_PROGRAM = ("file", "sha256", "licence", "projection", "produced_by", "source_blob")
+#
+# `licence_url` joined when `check` began branching on it — our own work must name a licence *with
+# somewhere to look it up* — and it is the fourth demonstration of the same thing: a field becomes
+# read-by-a-program the moment a rule consults it, and the rule and the tuple are edited by
+# different hands. Spelled as a list it satisfied the prose rule, so
+# `{"licence": "Proprietary, all rights reserved", "licence_url": ["nonsense"]}` cleared the very
+# rule that field was added to serve.
+READ_BY_A_PROGRAM = ("file", "sha256", "licence", "licence_url", "projection", "produced_by",
+                     "source_blob")
 
 def git_blob(path: Path) -> str:
     """Git's object name for a file's bytes: `sha1("blob <length>\0" + bytes)`.
@@ -183,6 +191,12 @@ LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md"
 # it forever is worse than one that stops somewhere a reader can see. Unicode's
 # `Default_Ignorable_Code_Point` covers the fillers and every `Cf` character; U+2800 is outside even
 # that, which is why the stopping place is written down rather than derived.
+# The categories whose members put something on the page: letters, numbers, punctuation, symbols.
+# Asked as a whitelist because every blacklist tried here was defeated in a round — see `visible`.
+VISIBLE_CATEGORIES = ("L", "N", "P", "S")
+
+# The exceptions inside those categories: four Hangul fillers (`Lo`) and the braille blank (`So`),
+# which are letters and symbols to Unicode and blank to a reader.
 BLANK = ("\u115f", "\u1160", "\u3164", "\uffa0", "\u2800")
 
 # A licence that gestures at this repository without being the token. This was the *guard* for one
@@ -209,21 +223,74 @@ def visible(value: str) -> str:
     quietly stopped being the sentinel — and a repository with no licence file came back clean.
     A second answer to "does this render as nothing" is a second answer.
 
-    **`isprintable()` rather than a list of categories**, which is the third spelling of this rule
-    and the first that is not a list. Naming `Cf` by hand left `Cc`, the surrogates and the
-    private-use area out: a licence holding one U+0001 was neither the sentinel nor a near-miss, so
-    a tree with no licence file came back clean again — the same defect as the zero-width space,
-    one category over, in the fix written to end it. `isprintable()` is false for every category
-    that puts nothing on the page (`Cc`, `Cf`, `Cs`, `Co`, `Cn`) and is maintained by somebody else.
-    `BLANK` survives it because those five characters *are* printable and still render as nothing.
+    **A list of what is visible, because every list of what is invisible has been incomplete.**
+    Three rules were tried here and each was defeated within a round: naming `Cf` left out `Cc`,
+    the surrogates and the private-use area; `isprintable()` covers those and leaves out `Mn`, so
+    one U+034F combining grapheme joiner answered every prose field of a real record. The set of
+    characters that render as nothing is open, keeps growing with Unicode, and is not even a
+    property of the text alone — it depends on the font.
+
+    So the question is asked the other way round. A character counts as visible if it is a letter,
+    a number, a punctuation mark or a symbol (`L*`, `N*`, `P*`, `S*`), which is a closed set that
+    does not grow in kind, minus the handful in `BLANK` that belong to those categories and still
+    render as nothing. Everything else — marks, separators, format characters, controls,
+    surrogates, private use, unassigned — is not an answer on its own.
+
+    The direction of failure is what makes this the right way round. An unknown codepoint is now
+    *not* visible, so a field holding only unknowns is refused; under the old rule it was accepted.
+    A checker written against one Unicode version therefore fails safe on text from a later one.
 
     Whitespace is left in, because the callers want it differently: `legible` strips it and the
-    sentinel collapses runs of it to single spaces. It is asked for separately since `isprintable()`
-    is false for a line separator, which is whitespace and not an invisible answer.
+    sentinel collapses runs of it to single spaces.
     """
     return "".join(character for character in value
-                   if (character.isprintable() or character.isspace())
-                   and character not in BLANK)
+                   if (character.isspace()
+                       or (unicodedata.category(character)[0] in VISIBLE_CATEGORIES
+                           and character not in BLANK)))
+
+
+# What a `sources.json` is allowed to be. Generous — the largest in this tree is under 5 KB and the
+# whole committed fixture is 25,593 bytes — and finite, which is the point.
+RECORD_CEILING = 4 * 1024 * 1024
+
+
+def read_record(path: Path) -> str:
+    """A record's text, refusing one too large to be a record.
+
+    The last unbounded read in this file. `why_asset` streams and says why, `digest` streams and
+    says why, and the record — the one file here read for its *contents* rather than its bytes —
+    was `read_text()` with nothing between it and the disk. A 400 MB `sources.json` took peak memory
+    to 779 MiB against a 34 MiB control, and a tracked `sources.json` symlinked to `/dev/zero` never
+    returned at all, which is a build that hangs rather than fails.
+
+    Refused by length rather than streamed, because unlike an asset a record has no honest large
+    form: `json.loads` needs the whole document anyway, and one this size is a mistake or an attack
+    rather than a big record. `stat` first would be a second answer — and a wrong one for a
+    character device, whose length is zero — so this reads one byte past the ceiling and asks.
+    """
+    with path.open("rb") as handle:
+        head = handle.read(RECORD_CEILING + 1)
+    if len(head) > RECORD_CEILING:
+        raise ValueError(f"is larger than {RECORD_CEILING} bytes, so it is not a record")
+    return head.decode("utf-8")
+
+
+def says_something(path: Path) -> bool:
+    """Whether this file has anything legible in it, read without trusting its length.
+
+    `st_size > 0` was the whole test, so a `LICENSE` of one newline — or three spaces, or a single
+    zero-width space — answered a deferral. A licence that says nothing is the state a half-finished
+    `touch` leaves behind, and it resolves a pointer to nothing just as a missing file does.
+
+    Bounded, because this is asked about a path from the index and a checker must not be the thing
+    that reads an arbitrary file whole. Anything legible is in the first block of a real licence.
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(BLOCK)
+    except OSError:
+        return False
+    return legible(head.decode("utf-8", "surrogateescape"))
 
 
 def defers_to_this_repository(licence: object) -> bool:
@@ -456,13 +523,17 @@ def check(root: Path) -> list[Problem]:
                                          "unrecorded there — `git add` it"))
 
         try:
-            document = json.loads(record.read_text())
+            document = json.loads(read_record(record))
         # Every way a record can fail to be a record, not only the one that has a named exception.
         # `read_text` decodes before `json.loads` sees anything, so bytes that are not UTF-8 raise
         # `UnicodeDecodeError`; and valid JSON that is a list or a string has no `.get`, so the
         # shape is checked rather than assumed. Each of those used to come out of this checker as a
         # traceback, which is a build failure that says the checker is broken rather than the record.
-        except (OSError, ValueError) as failure:
+        # `RecursionError` because `json.loads` raises it on deeply nested input — 2000 unclosed
+        # brackets is enough — and it is a `RuntimeError`, so it walked straight past an arm that
+        # names only `OSError` and `ValueError`. A record is somebody's hand-edited file, and the
+        # promise here is a sentence naming it whatever it holds.
+        except (OSError, ValueError, RecursionError) as failure:
             problems.append(Problem(rel, f"could not be read as JSON: {failure}"))
             continue
         if not isinstance(document, dict):
@@ -596,8 +667,7 @@ def check(root: Path) -> list[Problem]:
                     f"{DEFERS_TO_THIS_REPOSITORY!r} or names a licence with a `licence_url` "
                     f"beside it{intent}"))
             if defers_to_this_repository(entry.get("licence")) and not any(
-                    spelling in indexed and (root / spelling).is_file()
-                    and (root / spelling).stat().st_size > 0
+                    spelling in indexed and says_something(root / spelling)
                     for spelling in LICENCE_FILES):
                 problems.append(Problem(
                     f"{rel} [{name}]",
@@ -697,7 +767,15 @@ def check(root: Path) -> list[Problem]:
             if tail in recorded:
                 continue
             path = root / name
-            why = why_asset(path) if path.is_file() else None
+            # Guarded like the entry walk above and for the same reason: `is_file()` raises on a
+            # path this filesystem cannot answer about — an unreadable parent, a name past
+            # `NAME_MAX` — and git will happily list one. A traceback here says the checker is
+            # broken rather than naming the file, which is what this module promises not to do.
+            try:
+                why = why_asset(path) if path.is_file() else None
+            except OSError as refused:
+                problems.append(Problem(rel, f"{tail} cannot be read: {refused.strerror}"))
+                continue
             if why is not None:
                 # The reason, here as well as in the loop below. `why_asset` carries it precisely so
                 # a refusal can name it — and this call site threw it away, so a Latin-1 `.md` inside
@@ -709,7 +787,11 @@ def check(root: Path) -> list[Problem]:
         if owner_of(name, prefixes) is not None:
             continue
         path = root / name
-        if not path.is_file():
+        try:
+            if not path.is_file():
+                continue
+        except OSError as refused:
+            problems.append(Problem(name, f"cannot be read: {refused.strerror}"))
             continue
         why = why_asset(path)
         if why is None:
