@@ -210,7 +210,7 @@ core/                 C++: managers, engines, resource-access implementations, n
   test/               GoogleTest, mirroring src/; fakes in test/support/
   test/data/          synthetic-ring-4, a format fixture rather than a measurement (ADR 0053),
                       and panoramas/, the world accuracy is measured in (ADR 0059). A binary
-                      here needs an entry in its directory's sources.json
+                      here needs an entry in the nearest sources.json above it
 bridge/               the WASM boundary: a C ABI over the shared heap, and the only tree
                       permitted to reference Emscripten. A client at its root; its
                       resource_access/ subtree holds browser-backed ports and is judged as

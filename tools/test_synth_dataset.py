@@ -36,6 +36,7 @@ import math
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -1396,6 +1397,60 @@ class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
             u, v, valid = project(lens, direction)
         self.assertFalse(valid.any(), f"answered pixel ({u[0]}, {v[0]})")
         self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
+
+
+class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):
+    """Frame N is on disk before frame N+1 is rendered, which is what the streaming render is for.
+
+    The change that introduced it pinned its *side effect* — deleting the staging cleanup fails two
+    cases — and left its stated purpose asserted by nothing: reverting the loop to the batched shape
+    it replaced was 96 of 96 green, which a reviewer found by reverting it.
+
+    **Peak memory is the purpose and is not what this measures, deliberately.** `ru_maxrss` in a
+    child process was the first attempt and it cannot see this: the floor is ~195,800 KiB of numpy
+    and Pillow import, and the allocator absorbs the held frames without moving the high-water mark.
+    Measured against the batched shape, at 4 frames and at 64: 195,780 → 195,848 KiB at 128x96, and
+    195,820 → 195,728 at 256x192. It moves at 640x480, and 128 frames of that is a 26-second test.
+    So a memory assertion here would have been a test that cannot fail, which is the thing this
+    file is most often caught by.
+
+    What is asserted instead is the structure that *causes* the memory property, and it is exact
+    rather than statistical: a frame that is already written is a frame not being held. Batching the
+    loop fails this on the second frame.
+    """
+
+    def _run(self, *argv):
+        held = sys.argv
+        sys.argv = ["synth_dataset.py", *argv]
+        try:
+            return synth_dataset.main()
+        finally:
+            sys.argv = held
+
+    def test_each_frame_is_written_before_the_next_one_is_rendered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / ".ring.partial"
+            honest = synth_dataset.render_frame
+            seen = []
+
+            def watch(*arguments, **named):
+                # What is on disk at the moment this frame starts. Streamed, that is every earlier
+                # frame; held, it is none of them until the whole loop is done.
+                seen.append(sorted(p.name for p in staging.glob("frame_*.ppm"))
+                            if staging.is_dir() else [])
+                return honest(*arguments, **named)
+
+            synth_dataset.render_frame = watch
+            self.addCleanup(setattr, synth_dataset, "render_frame", honest)
+            self._run("--out", str(Path(directory) / "ring"), "--frames", "4",
+                      "--width", "16", "--height", "12")
+
+        self.assertEqual(seen, [[],
+                                ["frame_0000.ppm"],
+                                ["frame_0000.ppm", "frame_0001.ppm"],
+                                ["frame_0000.ppm", "frame_0001.ppm", "frame_0002.ppm"]],
+                         "a frame was still unwritten when the next one began: the render is "
+                         "holding them, and peak memory is linear in --frames again")
 
 
 class TheCommandLineRefusesBeforeItSpendsAnything(unittest.TestCase):

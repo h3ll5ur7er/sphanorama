@@ -36,8 +36,10 @@ expressed in a different frame from the core that reads it is worse than no data
   coordinates -- which is a pixel *corner*, not a pixel centre, since an integer here is an edge
   (see `direction_to_equirect`). On a 2048x1024 panorama that is where pixels 1023 and 1024 meet.
 
-Run it: `uv run --group datasets tools/synth_dataset.py --out datasets/ring` (the `datasets` group
-is what carries numpy; the checkers stay standard-library only — ADR 0048, ADR 0050).
+Run it: `uv run --locked --group datasets tools/synth_dataset.py --out datasets/ring` (the
+`datasets` group is what carries numpy **and Pillow**; the checkers stay standard-library only —
+ADR 0050, ADR 0059). `--locked` because every committed `produced_by` uses it: a command recorded
+as reproducing a file has to name the environment it reproduced it in.
 """
 from __future__ import annotations
 

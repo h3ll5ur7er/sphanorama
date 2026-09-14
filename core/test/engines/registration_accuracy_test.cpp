@@ -531,7 +531,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // Two are outside it:
   //
   //   7. `docs/06-roadmap.md`'s table, and separately the prose around it that the table does not
-  //      cover — `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is four times
+  //      cover — `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is 4.2 times
   //      better than ORB's` and `now reads eleven of eleven for all three`. Editing the table
   //      alone leaves all three standing, and a reader who trusts the entry stops at the table;
   //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101`.

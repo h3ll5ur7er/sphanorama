@@ -657,13 +657,6 @@ def check(root: Path) -> list[Problem]:
                 # raise, is unreachable behind a `False` from `exists()`. Such a record ends up at
                 # "names a file that is not here", which is a true sentence reached for none of the
                 # reasons above it.
-                #
-                # This is the third version of this comment. The first claimed the NUL arrived here;
-                # the second claimed `pathlib` raised and the prose rule refused it — a correction
-                # that replaced one unmeasured claim with two more. The rule that follows from that
-                # is the whole of why this paragraph is long: a sentence about what some *other*
-                # code does is worth measuring before it is written down, and worth deleting rather
-                # than rewriting when it is wrong twice.
                 escaped = f"cannot be asked about: {refused.strerror}"
             if escaped is not None:
                 problems.append(Problem(f"{rel} [{name}]", f"`file` {escaped}"))
@@ -743,22 +736,13 @@ def check(root: Path) -> list[Problem]:
                         problems.append(Problem(f"{rel} [{name}]",
                                                 f"`{field}` is missing, and a raster has one"))
 
-            # Guarded, like every other `is_file()` in this file. It was deleted one round ago as
-            # unreachable — the `file` check above wraps `is_symlink()` and `exists()` in a `try`
-            # and `continue`s on an `OSError`, so by here the path is one this filesystem answered
-            # about, and `is_file()` is the same syscall. Every clause of that is true and the
-            # conclusion does not follow: the two calls ask about the disk, and several fields are
-            # checked between them. The syscall cannot newly refuse; the *file* can.
-            #
-            # Measured this time, which the deletion was not. The removal race really is not it —
-            # `stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` — but a regular file replaced
-            # by a symlink to a 300-byte name raises `ENAMETOOLONG`, which is in no ignore set, and
-            # at the `file` rule a moment earlier it was an ordinary file that nothing refused. A
+            # Guarded, like every other `is_file()` in this file, because the `file` check above
+            # establishes only that the path was askable *then*. The two calls are a hundred lines
+            # apart with the field rules between them, and what they ask about is the disk: the
+            # syscall cannot newly refuse, the file can. `stat` swallows `ENOENT`, `ENOTDIR`,
+            # `EBADF` and `ELOOP`, so the removal race is not it — but a regular file replaced by a
+            # symlink to a 300-byte name raises `ENAMETOOLONG`, which is in no ignore set, and a
             # concurrent build step or a parallel checkout is all it takes.
-            #
-            # The rule that an unreachable guard goes still stands. What went wrong is the step
-            # before it: "I could not construct an input" was read as "there is none", by a
-            # reviewer and then by me, about a window neither of us had tried to drive.
             path = directory / name
             try:
                 present = path.is_file()
