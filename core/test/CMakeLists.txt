@@ -140,11 +140,14 @@ if(SPHANORAMA_WITH_OPENCV)
   # which is a weaker claim and the true one. Five places quoted the invented version.
   add_test(NAME DatasetRefusalGivesEveryFrameBack COMMAND sphanorama_dataset_alloc_test)
   # The same bound as the discovered tests, and it needs saying separately because
-  # `gtest_discover_tests`' PROPERTIES reach only what it discovers. This test is registered by
-  # hand, compiles `synthetic_dataset.cpp`, and therefore contains both of the hang loops the
-  # timeout below exists for — so it was the one test still sitting at the 1500-second default that
-  # paragraph opens by disowning. It costs nothing today (0.40 s under ASan); it was a hole in the
-  # ceiling rather than a bill.
+  # `gtest_discover_tests`' PROPERTIES reach only what it discovers — so this hand-registered test
+  # was the one still sitting at the 1500-second default the paragraph below opens by disowning.
+  #
+  # It links `synthetic_dataset.cpp` and so *links* both hang loops, but it cannot reach them: it
+  # reads only the committed fixture, whose headers carry no comment. Measured — with both loops
+  # made to spin it passes in 0.04 s while the two `…CommentIsNeverEnded` cases time out. The bound
+  # is here because a ceiling with one binary outside it is the wrong shape, not because this test
+  # is at risk.
   set_tests_properties(DatasetRefusalGivesEveryFrameBack PROPERTIES TIMEOUT 300)
   # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
   # first version of this disabled leak detection for the whole binary, which is process-wide on the

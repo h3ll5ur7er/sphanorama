@@ -1172,15 +1172,9 @@ TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
   // `ok()` means the payload began at exactly the byte after the separator and ran exactly its
   // promised length.
   //
-  // Not to be read as a claim about `ReadToken`'s `unget` itself, which an earlier version of this
-  // sentence was: that line is load-bearing for every header in the file, and deleting it fails
-  // **25** tests across three suites, these four among them.
-  //
-  // 25 and not the 22 this said, which is the same counting mistake twice over. The first version
-  // came from a run filtered to `Dataset.*`. The second came from an unfiltered run counted with a
-  // pattern that required a suite name of letters only, so the three `EveryDetector/Accuracy`
-  // cases — parameterised, and printed with a `GetParam()` clause before the timing — were dropped
-  // silently. A filter you did not intend is still a filter.
+  // Not a claim about `ReadToken`'s `unget` itself: that line is load-bearing for every header in
+  // the file, and deleting it fails **25** tests across three suites — 21 `Dataset`, 3
+  // `EveryDetector/Accuracy`, 1 `Acceptance` — these four among them.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1234,16 +1228,14 @@ TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
   }
   // Bracketed because this case reaches `Allocate` and `Pin` and so could strand a frame on the
   // way out: its header parses *and agrees with the lens*, which is the last guard before the
-  // allocation. That is about the refusal path, not about the hang the two `…CommentIsNeverEnded`
-  // cases assert on — both hang loops are in `ReadToken`, upstream of `Allocate`, so a fired
-  // timeout strands no frame. What it does leave behind is this test's `Scratch` directory, which
-  // nothing reclaims when the process is killed.
+  // allocation — the dimension check is the discriminator, not the parse, and five of the six new
+  // cases parse their headers. Of the 45 refusal tests in this file, 16 carry the bracket and 29
+  // do not; it is the ones that reach the store that need it.
   //
-  // Both halves of what this said before were wrong, and a reviewer counted. It is not "the only
-  // new case whose header parses" — five of the six do, including the 1x2 one whose whole subject
-  // is a header that parses. And it is not what "every other refusal test here" does: 30 of the 45
-  // refusal tests in this file carry no bracket, two of them added by this branch. The
-  // discriminator is the dimension check, not the parse.
+  // That is about the refusal path, not about the hang the two `…CommentIsNeverEnded` cases assert
+  // on — both hang loops are in `ReadToken`, upstream of `Allocate`, so a fired timeout strands no
+  // frame. What it does leave behind is this test's `Scratch` directory, which nothing reclaims
+  // when the process is killed.
   const int64_t before = HeapUsed();
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,

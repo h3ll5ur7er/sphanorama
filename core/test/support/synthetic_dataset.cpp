@@ -660,11 +660,9 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     // for a denominator from a sweep that no longer exists, in the file that forbids exactly that.
     // The vague word was the smaller mistake and it is back, without the "well".
     //
-    // No claim here about `-fno-exceptions`. This line used to say every consumer but this file's
-    // own test is compiled with it, so an escape would be a terminate. That is false, and this
-    // branch's own `core/test/CMakeLists.txt` says why: the core sets the flag `PRIVATE`, so
-    // nothing here inherits it — 0 of 42 `core/test` translation units carry it. An escape is
-    // caught, by this arm.
+    // An escape is caught, by this arm: nothing under `core/test` is built `-fno-exceptions`,
+    // because the core sets that flag `PRIVATE` and so exports nothing — 0 of 39 translation
+    // units carry it. `core/test/CMakeLists.txt` has the measurement.
     return refuse(StatusCode::Internal,
                   std::string("reading truth.json failed: ") + thrown.what());
   }
@@ -849,11 +847,10 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
     return refuse(StatusCode::InvalidArgument,
                   std::string("truth.json is shaped unexpectedly: ") + thrown.what());
   } catch (const std::exception& thrown) {
-    // Not only OpenCV's. Every consumer of this file other than its own test is compiled
-    // `-fno-exceptions`, so anything escaping here is a terminate rather than a failure — and
-    // `push_back` on the frame vector allocates, so `std::bad_alloc` is a real way out of this
-    // block and not a theoretical one. The engine this boundary is modelled on catches both for the
-    // same reason.
+    // Not only OpenCV's. `push_back` on the frame vector allocates, so `std::bad_alloc` is a real
+    // way out of this block and not a theoretical one, and the engine this boundary is modelled on
+    // catches both for the same reason. Nothing under `core/test` is built `-fno-exceptions`, so
+    // an escape from here is a refusal rather than a terminate.
     //
     // No test in the suite reaches this one. `synthetic_dataset_alloc_test` does, from outside it:
     // it replaces global `operator new` and sweeps a throw across every allocation of a full load,
