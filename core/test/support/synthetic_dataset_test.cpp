@@ -1052,11 +1052,18 @@ TEST_F(Dataset, RefusesAShortSpanForALensOfOneRow) {
 }
 
 TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
-  // `ReadToken`'s comment branch could be deleted outright with the suite green, because the
-  // generator never writes one and every damaged copy in this file is hand-written without one. The
-  // docstring claims a reader that choked on a comment would be refusing a valid file; this is the
-  // only case here that is green *because* the branch is present rather than because something else
-  // refused first.
+  // `ReadToken`'s comment branch could once be deleted outright with the suite green: the
+  // generator writes no comment, and no damaged copy in this file carried one. Six do now. The
+  // docstring claims a reader that choked on a comment would be refusing a valid file, and this was
+  // the only case green *because* the branch is present rather than because something else
+  // refused first. Seven tests are now green because a `#` branch exists: deleting the
+  // whitespace-skipping loop's fails this one, `…OwnLineCommentIsEndedByACarriageReturn` and
+  // `RefusesAHeaderWhoseCommentIsNeverEnded`; deleting the accumulation loop's fails the other
+  // four, measured over all 811. Re-measure these when a test joins either group: the commit that
+  // first wrote them added one to each and left the numbers alone.
+  //
+  // That loop meets any comment following whitespace, of which a whole line is one shape —
+  // `48 #c\n36` is another, and no test writes it.
   Scratch scratch;
   int32_t width = 0;
   int32_t height = 0;
@@ -1071,6 +1078,169 @@ TEST_F(Dataset, ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows) {
   const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
   ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
   ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, ACommentEndsTheTokenItInterruptsRatherThanJoiningItsHalves) {
+  // **A comment is whitespace to Netpbm, so it separates.** `pm_getc` reads a `#` through the next
+  // end-of-line and returns that end-of-line byte: "The effect is that Caller sees the whole
+  // comment as just white space" — which makes `P6\n4#c\n8 36\n255\n` a 4x8 frame with a maximum of 36, and not the
+  // 48x36 one its digits spell if the halves are joined.
+  //
+  // That canonical example is not what this test writes, because it is malformed in a second
+  // respect: a maximum of 36 is refused by the sample-depth guard, which fires before the
+  // dimensions are compared, so the test would have passed on a reader that never parsed the
+  // dimensions at all. `1#c\n2 255` splits a token the same way and leaves every other field
+  // valid, so the dimension check is the guard that answers.
+  //
+  // The refusal message is the assertion because it is the only place the parsed numbers surface:
+  // past the dimension check every later line reads `lens.*`, so a frame's own `width` is the
+  // lens's whatever the header said.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  // The header below is written 1x2 against this fixture on purpose, so both are pinned here: a
+  // fixture that was already 1x2 would make the refusal this test asserts impossible.
+  ASSERT_EQ(width, 48) << "this test's header disagrees with the lens deliberately";
+  ASSERT_EQ(height, 36);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    // The payload is the real one, so a short read is not what refuses this.
+    out << "P6\n1#c\n2 255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument, "frame_0000.ppm is 1x2 and"));
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseWidthIsFollowedImmediatelyByAComment) {
+  // The other half of the rule above: a comment ends a token, and the token before it is still a
+  // token. `48#c\n36` is 48 then 36 — the reader this replaced refused it, reading `48#c` whole and
+  // calling it not a number, and a reader that deleted the comment instead would read 4836.
+  //
+  // `ReadsAFrameWhoseHeaderCarriesTheCommentNetpbmAllows` above cannot see either mistake: it puts
+  // the comment on its own line, where the whitespace-skipping loop is the only loop a `#` reaches.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << "#the width, and then some prose\n" << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseOwnLineCommentIsEndedByACarriageReturn) {
+  // The same `\r` rule, in the other loop. A comment on its own line is met by the
+  // whitespace-skipping loop, which had its own end-of-line test and its own way of getting it
+  // wrong; without a case here, dropping `\r` from that loop changes nothing any test can see.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n#a whole line of it, ended by a carriage return\r"
+        << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, ReadsAFrameWhoseCommentIsEndedByACarriageReturn) {
+  // `pm_getc` stops a comment at `\n` *or* `\r`. The comment here follows the maximum, so a reader
+  // that waited for the line feed would read on into the raster hunting for one — and then refuse
+  // the frame for ending before the pixels its header promised, which is a sentence about the
+  // payload for a defect in the header.
+  //
+  // Being the last header field's neighbour is the point twice over: its `\r` is also the single
+  // whitespace byte separating the maximum from the raster, and this is the only comment test that
+  // pins *the comment branch* leaving its end-of-line unread. The other comment tests are
+  // indifferent to that, because the byte it leaves is one the next `ReadToken` would skip anyway.
+  // Here nothing reads a token after the maximum, so an eol that is swallowed — or a `#` that is
+  // not consumed — moves where the raster starts, and the loader is strict in both directions:
+  // `ok()` means the payload began at exactly the byte after the separator and ran exactly its
+  // promised length.
+  //
+  // Not a claim about `ReadToken`'s `unget` itself: that line is load-bearing for every header in
+  // the file, and deleting it fails **25** tests across three suites — 21 `Dataset`, 3
+  // `EveryDetector/Accuracy`, 1 `Acceptance` — this one among them.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  const std::vector<uint8_t> payload = PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << " " << height << "\n255#ended by a carriage return\r";
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  ForgetAll(loaded.value);
+}
+
+TEST_F(Dataset, RefusesAHeaderWhoseCommentIsNeverEnded) {
+  // A comment that runs to end of file ends no other way: `get` answers `eof` for ever and neither
+  // character test ever becomes false, so `in.good()` is the whole of what stops the scan. Delete
+  // it and this does not fail — it never returns, which is the only symptom a loop that does not
+  // stop can have. A timeout in CI is the assertion here; the `EXPECT` below only says the refusal
+  // is the right one once the loop does end.
+  //
+  // This is the whitespace-skipping loop's copy: the comment opens the header, so nothing has been
+  // accumulated when the file runs out and the reader has no token at all.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  (void)PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n#a comment nobody ended";
+  }
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "has a header that stops before its three numbers"))
+      << loaded.status.detail;
+}
+
+TEST_F(Dataset, RefusesAMaximumWhoseCommentIsNeverEnded) {
+  // The accumulation loop's copy of the same stop. Here the header is complete and the comment
+  // interrupts the maximum, so the scan runs off the end with `255` already in hand — a different
+  // path through `ReadToken` to the same `in.good()`, and the file is refused for having no pixels
+  // rather than for having no token.
+  Scratch scratch;
+  int32_t width = 0;
+  int32_t height = 0;
+  (void)PayloadOf(scratch.file("frame_0000.ppm"), &width, &height);
+  {
+    std::ofstream out(scratch.file("frame_0000.ppm"), std::ios::binary | std::ios::trunc);
+    out << "P6\n" << width << " " << height << "\n255#a comment nobody ended";
+  }
+  // Bracketed because this case reaches `Allocate` and `Pin` and so could strand a frame on the
+  // way out: its header parses *and agrees with the lens*, which is the last guard before the
+  // allocation — the dimension check is the discriminator, not the parse, and five of the six new
+  // cases parse their headers. Of the 45 refusal tests in this file, 16 carry the bracket and 29
+  // do not; it is the ones that reach the store that need it.
+  //
+  // That is about the refusal path, not about the hang the two `…CommentIsNeverEnded` cases assert
+  // on — both hang loops are in `ReadToken`, upstream of `Allocate`, so a fired timeout strands no
+  // frame. What it does leave behind is this test's `Scratch` directory, which nothing reclaims
+  // when the process is killed.
+  const int64_t before = HeapUsed();
+  const Result<SyntheticDataset> loaded = LoadSyntheticDataset(store, scratch.path());
+  EXPECT_TRUE(RefusedWith(loaded, StatusCode::InvalidArgument,
+                          "ends before the pixels its header promises"))
+      << loaded.status.detail;
+  EXPECT_EQ(HeapUsed(), before);
 }
 
 // ------------------------------------------------- refusing in our own words, at every site

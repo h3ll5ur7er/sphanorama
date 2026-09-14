@@ -139,6 +139,16 @@ if(SPHANORAMA_WITH_OPENCV)
   # the header has never contained — a refusal *does* allocate, and then gives the frames back,
   # which is a weaker claim and the true one. Five places quoted the invented version.
   add_test(NAME DatasetRefusalGivesEveryFrameBack COMMAND sphanorama_dataset_alloc_test)
+  # The same bound as the discovered tests, and it needs saying separately because
+  # `gtest_discover_tests`' PROPERTIES reach only what it discovers — so this hand-registered test
+  # was the one still sitting at the 1500-second default the paragraph below opens by disowning.
+  #
+  # It links `synthetic_dataset.cpp` and so *links* both hang loops, but it cannot reach them: it
+  # reads only the committed fixture, whose headers carry no comment. Measured — with both loops
+  # made to spin it passes in 0.04 s while the two `…CommentIsNeverEnded` cases time out. The bound
+  # is here because a ceiling with one binary outside it is the wrong shape, not because this test
+  # is at risk.
+  set_tests_properties(DatasetRefusalGivesEveryFrameBack PROPERTIES TIMEOUT 300)
   # Leak detection stays **on**, with one suppression whose reasoning is in the file it names. The
   # first version of this disabled leak detection for the whole binary, which is process-wide on the
   # only test that reaches the loader's exception arms — a real leak planted anywhere in it would
@@ -154,4 +164,20 @@ endif()
 target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 
-gtest_discover_tests(sphanorama_tests)
+# A timeout this repository chose, rather than ctest's built-in 1500 seconds. Two of the dataset
+# loader's tests assert by *hanging* — `in.good()` is the only thing that ends a comment running to
+# end of file, and a loop that does not stop has no other symptom — so the clock is their assertion
+# and it should not be a default nobody here has read. Under the default a gate that caught one of
+# them paid 1500 seconds twice, native and sanitised, before saying which test it was.
+#
+# 300 and not the 60 a reviewer proposed. The slowest case is `EveryDetector/Accuracy…/2` under
+# ASan: **19.1 s** on an idle machine and **27.4 s** with a build running alongside, so 300 is
+# between eleven and sixteen times it — measured under ASan, which is the slow build, and reported
+# as a range because the figure is load-dependent.
+#
+# The tail nothing local bounds is the per-case `uv run` subprocess: `ci.yml` caches no uv
+# environment, so a cold resolve on a slow runner is the plausible way a case takes minutes without
+# hanging. That is the reason for the generous end of the range rather than the tight one — a
+# timeout that fires on a slow runner would be a flake in the one mechanism that exists to report a
+# hang.
+gtest_discover_tests(sphanorama_tests PROPERTIES TIMEOUT 300)
