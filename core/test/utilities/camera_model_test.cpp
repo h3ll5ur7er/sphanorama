@@ -841,10 +841,15 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
 
 // The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
 //
-// Stated as a percentage because that is the unit the claim it checks is written in, and measured
-// on a frame rather than a grid because the frame is what the question is about: a keypoint the
-// detector found is at a pixel of a real image, and the fraction of *those* with no bearing behind
-// them is what decides whether the engine's refused-row path is ever taken.
+// Measured on a frame rather than a grid because the frame is what the question is about: a
+// keypoint the detector found is at a pixel of a real image, and the number of *those* with no
+// bearing behind them is what decides whether the engine's refused-row path is ever taken.
+//
+// The sampling point is `{x + 0.5, y + 0.5}` — the pixel's centre under this model's corner
+// origin — and it is written once. Two copies of it stood here, and a half-pixel shift applied to
+// one of them is absorbed by the percentage's half-point tolerance while moving the exact count,
+// which would have pointed at the wrong helper. That shift is not hypothetical: it is the
+// keypoint-convention question the engine's own docblock is about.
 long RefusedCountOfFrame(const Intrinsics& lens) {
   long refused = 0;
   for (int32_t y = 0; y < lens.height; ++y) {
@@ -855,15 +860,10 @@ long RefusedCountOfFrame(const Intrinsics& lens) {
   return refused;
 }
 
+// The same answer as a share, which is the unit the claim it checks is written in.
 double RefusedPercentOfFrame(const Intrinsics& lens) {
-  long refused = 0, total = 0;
-  for (int32_t y = 0; y < lens.height; ++y) {
-    for (int32_t x = 0; x < lens.width; ++x) {
-      if (!Unproject(lens, Pixel{x + 0.5, y + 0.5}).valid) ++refused;
-      ++total;
-    }
-  }
-  return 100.0 * static_cast<double>(refused) / static_cast<double>(total);
+  const long total = static_cast<long>(lens.width) * static_cast<long>(lens.height);
+  return 100.0 * static_cast<double>(RefusedCountOfFrame(lens)) / static_cast<double>(total);
 }
 
 TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
@@ -909,10 +909,17 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   // The count, not merely that there is one. `EXPECT_GT(…, 0.0)` is green for anything from 1
   // pixel to all 76,800, which is the shape this test's own comment two paragraphs up complains
   // about — a threshold named in prose with an assertion that cannot fail on it. 48 of 76,800 is
-  // stable: identical under -O0, -O2, -O3 with fast contraction, -march=native, ASan+UBSan, and
-  // against the renderer's independent numpy solver. It also pins what `> 0` could not: widening
-  // `kInverseToleranceNormalised` from 1e-9 to 1e-3 leaves the count at 44 and every other
-  // assertion here green.
+  // stable: identical under gcc and clang at five optimisation settings including `-ffast-math`,
+  // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
+  // 1.35e-3 relative margin between the last refused shell and the first accepted one.
+  //
+  // **It is not the most sensitive assertion here, and an earlier version of this claimed it was.**
+  // Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
+  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, twenty-five
+  // lines up and predating this branch. This count only joins in at 1e-3. So the pair below pins
+  // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
+  // whole suite — 0.44 px of accepted round-trip error against a constant documented as under a
+  // millionth of a pixel.
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
   EXPECT_EQ(RefusedCountOfFrame(folding), 48);

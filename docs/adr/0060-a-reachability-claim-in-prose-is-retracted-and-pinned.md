@@ -35,7 +35,7 @@ looks up an ADR and would carry a status update forever.
 Retract 38.8%; publish 66.8%; and **assert both figures from a test** rather than leaving them as
 prose, so the paragraph cannot drift a third time.
 `Unproject.TheTwoLensesTheEngineCitesRefuseTheFractionsItCites` measures each lens over its own
-frame and asserts the share to within half a percentage point — three times the spread across the
+frame and asserts the share to within half a percentage point — 2.95 times the spread across the
 frame sizes above (0.169 points for the ultra-wide lens, 0.146 for the wide) and a fifty-sixth of
 the 28-point error it caught. Those two multiples read "four times" and "a tenth" in the first
 draft of this ADR, in both tests and in the commit message. A reviewer divided. That is the second
