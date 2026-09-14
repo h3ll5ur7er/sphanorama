@@ -554,8 +554,7 @@ class BorrowedFrame {
  * -0.23178, so a narrow band of lenses exists that the renderer accepts and this refuses a corner
  * keypoint on — at `k1 = -0.2325`, measured, no centre is refused and the corner is.
  *
- * No dataset is in the band today and none is distorted at all; it is written down because "by
- * construction" was the wrong strength for the claim.
+ * No dataset is in the band today and none is distorted at all.
  */
 struct Bearing {
   Vec3 direction;

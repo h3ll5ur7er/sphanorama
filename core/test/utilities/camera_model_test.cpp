@@ -846,10 +846,11 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
 // bearing behind them is what decides whether the engine's refused-row path is ever taken.
 //
 // The sampling point is `{x + 0.5, y + 0.5}` — the pixel's centre under this model's corner
-// origin — and it is written once. Two copies of it stood here, and a half-pixel shift applied to
-// one of them is absorbed by the percentage's half-point tolerance while moving the exact count,
-// which would have pointed at the wrong helper. That shift is not hypothetical: it is the
-// keypoint-convention question the engine's own docblock is about.
+// origin — and it is written once, because a half-pixel shift applied to one copy and not the
+// other is absorbed by the percentage's half-point tolerance while moving the exact count, and so
+// would point at the wrong helper. Measured: sampling `{x, y}` instead moves the two percentages
+// to 4.4596% and 66.7487%, both inside tolerance, and the count 48 to 53. That shift is not
+// hypothetical — it is the keypoint-convention question the engine's own docblock is about.
 long RefusedCountOfFrame(const Intrinsics& lens) {
   long refused = 0;
   for (int32_t y = 0; y < lens.height; ++y) {
@@ -875,9 +876,9 @@ TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
   // about a phone: measured over 80x60, 160x120, 320x240, 640x480 and 1280x960, the wide lens
   // spans 4.3333% to 4.4792% and the ultra-wide 66.7474% to 66.9167% — spreads of 0.146 and 0.169
   // points. The tolerance below is half a percentage point: **2.95 times** the wider of those and
-  // a **fifty-sixth** of the 27.96-point error it caught. (This said "four times" and "a tenth"
-  // before a reviewer divided, and then "three times" — which is 2.954 rounded the one direction
-  // that makes the claim stronger than the number. The multiples are written out now.)
+  // a **fifty-sixth** of the 27.96-point error it caught. ADR 0060 records what those two
+  // multiples read before they were divided, and why that is the argument for this test rather
+  // than an aside beside it.
   Intrinsics wide = LensFromFieldOfView(78.0, 60.0, 320, 240);
   wide.k1 = -0.20;
   EXPECT_NEAR(RefusedPercentOfFrame(wide), 4.47, 0.5);
@@ -887,7 +888,7 @@ TEST(Unproject, TheTwoLensesTheEngineCitesRefuseTheFractionsItCites) {
   EXPECT_NEAR(RefusedPercentOfFrame(ultraWide), 66.76, 0.5);
 }
 
-TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
+TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
   // The other half of the engine's argument, and the reason the figures above are not academic:
   // every dataset this repository renders uses a lens that refuses *no* pixel of its own frame,
   // because `tools/synth_dataset.py` will not render a frame with a rayless pixel in it — there
@@ -899,10 +900,7 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   // where it can.
   //
   // The boundary is pinned rather than described. Bisected, the first pixel centre goes at
-  // k1 = -0.2334; -0.23 refuses none of 76,800 and -0.24 refuses 48. An earlier version of this
-  // said "-0.30 is where the first pixel goes" and asserted `> 0` there, where 3.53% are already
-  // gone — a sentence naming a threshold with a test that was green across the whole band the
-  // sentence called empty, one file from where this branch closed exactly that.
+  // k1 = -0.2334; -0.23 refuses none of 76,800 and -0.24 refuses 48.
   Intrinsics rendered = LensFromFieldOfView(66.0, 50.0, 320, 240);
   rendered.k1 = -0.23;
   EXPECT_EQ(RefusedPercentOfFrame(rendered), 0.0);
@@ -914,8 +912,7 @@ TEST(Unproject, TheLensTheDatasetsAreRenderedWithRefusesNothing) {
   // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
   // 1.35e-3 relative margin between the last refused shell and the first accepted one.
   //
-  // **It is not the most sensitive assertion here, and an earlier version of this claimed it was.**
-  // Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
+  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
   // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, which
   // predates this branch. This count only joins in at 1e-3. So the pair below pins
   // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
