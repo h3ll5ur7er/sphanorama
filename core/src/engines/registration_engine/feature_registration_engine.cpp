@@ -552,17 +552,20 @@ class BorrowedFrame {
  * contradicts itself.
  *
  * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
- * opposite of the obvious one.** The correction is geometrically exact: on the fixture's own lens,
- * 1,059 exact correspondences fitted back by Kabsch recover the rotation to 6e-16 residual at
- * `+ 0.5` and carry a real error at `+ 0.0`, linearly in the shift. And yet applying `+ 0.5` to the
- * line below turns this suite **red** — measured, by patching that one line and re-running:
+ * opposite of the obvious one.** The correction is geometrically exact: on this fixture's own lens,
+ * every pixel centre of the frame fitted back by Kabsch recovers the rotation to zero at `+ 0.5`
+ * and to 0.0104 degrees at `+ 0.0`, linearly in the shift. ADR 0061 carries that sweep and names
+ * the correspondence set; an earlier version of this sentence quoted a rig that named none, and its
+ * figures moved in the third decimal when somebody rebuilt it. And yet applying `+ 0.5` to the line
+ * below turns this suite **red** — measured, by patching that one line and re-running:
  *
  *     detector   median today -> with + 0.5    max today -> with + 0.5
  *     ORB        0.1009 -> 0.2929              0.1551 -> 0.4713
  *     AKAZE      0.0612 -> 0.0562              0.1330 -> 0.2566
  *     SIFT       0.0239 -> 0.0626              0.0435 -> 0.1062
  *
- * ORB fails `EXPECT_LT(medianDeg, 0.2)` outright. Note AKAZE's median, which *improves* by 0.005
+ * ORB fails both bounds — `EXPECT_LT(medianDeg, 0.2)` and `EXPECT_LT(maxDeg, 0.4)`, on 0.2929 and
+ * 0.4713. Note AKAZE's median, which *improves* by 0.005
  * while its worst frame nearly doubles — so "every figure gets worse" would be the wrong summary
  * and five of the six is the right one. The one that moves against the trend is the reason to read
  * the max column as well as the median, which is what that column is there for.
