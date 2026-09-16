@@ -80,10 +80,13 @@ gauge is the whole difficulty in the other direction from the scorer's — the s
 rotation, this one has to *choose* it, and the priors are the only thing that can. What it buys is
 the closing edge a chain throws away: on a twelve-frame ring whose every edge is biased by the same
 0.2 degrees, chaining leaves the worst frame 1.100 degrees out and the same edges with the twelfth
-included leave it 0.000028. Its sweep budget is measured too, and scales with the anchor weight
-rather than the frame count. `Refine` itself still refuses — `GlobalSolution::intrinsics` promises a
-refined lens and `PairwiseResult` carries no correspondences to refine one from, which is a contract
-gap rather than a missing afternoon.
+included leave it 0.000028 — a *uniform* drift, which is the one kind a loop closure removes exactly,
+so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
+and above an anchor weight of about a hundredth it is set by that weight rather than by the frame
+count; below it both matter and the budget runs out. `Refine` itself still refuses —
+`GlobalSolution::intrinsics` promises a refined lens and `PairwiseResult` carries a count of
+correspondences but not the matched points, so there is nothing to refine one from: a contract gap
+rather than a missing afternoon (ADR 0062).
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its

@@ -824,8 +824,9 @@ that has to be ordered.
   carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
   edges with the twelfth one included leave it 0.000028. What is still missing between that and
   `Refine` is the lens — `GlobalSolution::intrinsics` says "refined here" and `PairwiseResult`
-  carries no correspondences to refine it from, which is a contract gap and gets an ADR rather than a
-  quiet pass-through. The accuracy number this phase exits on **is
+  carries a *count* of correspondences but not the matched points, so there is nothing in the
+  engine's input to refine a lens from. That is a contract gap and gets an ADR rather than a quiet
+  pass-through (ADR 0062 places the solver and says the question is separate). The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
@@ -939,10 +940,16 @@ rather than the second: an accuracy measured on a lens nobody sells is not a sta
 phone.
 And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
 possible topology. The measurement throws the ring's *closing* edge away, which is the one edge that
-says how much the chain drifted, and it is now measurable what that costs: on a ring whose every
-edge is biased by the same 0.2 degrees, chaining leaves the worst frame 1.100 degrees out and
-averaging over all twelve leaves it 0.000028. So there is something for `Refine` to do here after
-all, and until it is wired up this table is a chain's number rather than a solve's.
+says how much the chain drifted, so there is something for `Refine` to do here after all and this
+table is a chain's number rather than a solve's.
+
+**What that costs on *this* ring is still unmeasured**, and the distinction matters because a
+figure is available that does not answer it. `rotation_averaging`'s own test shows a chain leaving
+its worst frame 1.100 degrees out where averaging over all twelve edges leaves it 0.000028 — but
+that fixture gives every edge *the same* 0.2-degree bias, and a uniform drift around a closed ring
+is the one case a loop closure removes exactly. The test's docblock says so in terms. Here the
+per-pair errors are independent, so what the discarded edge is worth is a number this table will
+only have once `Refine` is wired up and the ring is solved rather than chained.
 
 **And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
 hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by

@@ -1,5 +1,6 @@
 #include "utilities/quaternion_average.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "utilities/quaternion.h"
@@ -13,8 +14,12 @@ constexpr int kJacobiSweeps = 24;
 // The off-diagonal weight below which the matrix counts as diagonal. Entries are sums of weighted
 // unit-quaternion outer products, so they scale with the weight total — M's trace is exactly that
 // total — and the sum of their squares therefore scales as its square. An absolute threshold would
-// mean something different at every input size and every weight scale; comparing against the
-// squared trace is what makes one threshold mean one thing.
+// mean something different at every input size; comparing against the squared trace is what makes
+// one threshold mean one thing.
+//
+// That relative test is only well behaved while the trace is, which is why `AverageQuaternions`
+// divides by the heaviest weight before accumulating: an unscaled trace can reach an infinity, and
+// then everything is "settled" on the first pass.
 constexpr double kOffDiagonalSettled = 1e-30;
 
 // Relative separation below which the top two eigenvalues count as equal, so the maximiser is a
@@ -41,9 +46,16 @@ struct Eigen {
 Eigen DominantEigenvector(double m[4][4]) {
   // The scale the off-diagonal test is relative to. M's trace is the weight total, and it is
   // invariant under the rotations below, so it is computed once up front.
+  //
+  // **No fallback for a non-positive trace, and the absence is the point.** `AverageQuaternions`
+  // divides every weight by the heaviest before accumulating, so the heaviest input contributes
+  // exactly 1 and the trace is at least 1 and at most the input count. A reviewer proposed
+  // `trace > 1.0` as a sabotage of the guard that used to stand here and found nothing failed —
+  // correctly, because after that division the guard and its `else` branch compute the same number.
+  // It was doing nothing, and a branch that cannot be taken reads as protection and is not.
   double trace = 0;
   for (int k = 0; k < 4; ++k) trace += m[k][k];
-  const double scale = (trace > 0.0) ? trace * trace : 1.0;
+  const double scale = trace * trace;
 
   double v[4][4]{};
   for (int k = 0; k < 4; ++k) v[k][k] = 1.0;
@@ -100,8 +112,12 @@ Eigen DominantEigenvector(double m[4][4]) {
     if (k == largest) continue;
     if (second < 0 || m[k][k] > m[second][second]) second = k;
   }
+  // `top` is at least the trace over four, so it is positive and no zero case needs handling. An
+  // earlier version opened with `!(top > 0.0) ||`, which could not fire — M is a sum of weighted
+  // outer products and so positive semi-definite with a trace of at least 1 — and which said
+  // "degenerate input is unique" if it ever had, the opposite of what the flag means.
   const double top = m[largest][largest];
-  const bool separated = !(top > 0.0) || (top - m[second][second]) > kEigenvalueGap * top;
+  const bool separated = (top - m[second][second]) > kEigenvalueGap * top;
 
   return Eigen{{v[0][largest], v[1][largest], v[2][largest], v[3][largest]}, separated};
 }
@@ -120,12 +136,12 @@ QuaternionAverage AverageQuaternions(std::span<const Quat> rotations,
   for (const Quat& q : rotations) {
     if (!IsUsableRotation(q)) return out;
   }
-  double weightTotal = 0;
+  double heaviest = 0;
   for (const double w : weights) {
     if (!std::isfinite(w) || w < 0.0) return out;
-    weightTotal += w;
+    heaviest = std::max(heaviest, w);
   }
-  if (!weights.empty() && !(weightTotal > 0.0)) return out;
+  if (!weights.empty() && !(heaviest > 0.0)) return out;
 
   // Markley's average: the rotation we want maximises the weighted sum of squared dot products
   // against the inputs, and that sum is `g^T M g` for M the weighted outer-product sum. The
@@ -134,11 +150,22 @@ QuaternionAverage AverageQuaternions(std::span<const Quat> rotations,
   // Normalising each input is what makes the weights mean what they say: an unnormalised quaternion
   // contributes its squared norm as a second, unasked-for weight, and `IsUsableRotation` admits
   // norms far from one.
+  //
+  // **And dividing by the heaviest weight is what makes "only the ratios matter" true rather than
+  // true over a range nobody wrote down.** The eigensolver's off-diagonal test is relative to the
+  // squared trace and the trace is the weight total, so an unscaled total past `sqrt(DBL_MAX)`
+  // squares to an infinity, `offDiagonal <= 1e-30 * inf` holds on the first pass, and Jacobi breaks
+  // before rotating anything — returning whichever coordinate axis the scan reached first, with
+  // `valid` and `isUnique` both true. Underflow does the same at the bottom. Measured before the
+  // fix: two rotations 60 degrees apart at equal weights of 6.71e153 answered with the first of
+  // them, 30 degrees from where they belong. Dividing by the heaviest bounds every entry by one
+  // whatever scale the caller works in, and cannot itself overflow the way dividing by the total
+  // could.
   double m[4][4]{};
   for (size_t i = 0; i < rotations.size(); ++i) {
     const Quat unit = Normalize(rotations[i]);
     const double e[4]{unit.w, unit.x, unit.y, unit.z};
-    const double weight = weights.empty() ? 1.0 : weights[i];
+    const double weight = weights.empty() ? 1.0 : weights[i] / heaviest;
     for (int r = 0; r < 4; ++r) {
       for (int c = 0; c < 4; ++c) m[r][c] += weight * e[r] * e[c];
     }

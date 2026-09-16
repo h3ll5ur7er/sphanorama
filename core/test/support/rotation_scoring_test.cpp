@@ -240,10 +240,12 @@ TEST(RotationScoring, NoNearbyRotationAlignsBetterThanTheOneChosen) {
 // The regime that decided how this is computed. Residuals with no common direction leave the
 // eigenvalue gap near zero, which is where power iteration — the obvious implementation — stops
 // converging: on wholly unrelated estimates it exhausts a 200-iteration budget 45.6% of the time at
-// 60 frames, while Jacobi finishes in five working sweeps at every size measured. That is not
-// observable from outside, so what this pins is the consequence: the alignment is still the best one
-// even here. (An earlier version of this comment cited half-garbage input instead, which was a rare
-// tail stated as the norm — see ADR 0049.)
+// 60 frames, while Jacobi does not depend on the gap at all. The sweep counts that says-how-many
+// live with the eigensolver, in `core/src/utilities/quaternion_average.cpp`, and are deliberately
+// not repeated here — this file used to carry a "five working sweeps" of its own, which ADR 0049
+// had already re-measured to a mode of four and which stayed behind when the code moved out
+// (ADR 0062). What this test pins is the consequence rather than the count: the alignment is still
+// the best one even here.
 TEST(RotationScoring, TheAlignmentIsStillTheBestOneWhenHalfTheEstimatesAreWorthless) {
   std::mt19937_64 rng(20260908);
   std::normal_distribution<double> gaussian(0.0, 1.0);

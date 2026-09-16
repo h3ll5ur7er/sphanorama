@@ -57,12 +57,28 @@ struct AveragedRotations {
   std::vector<Quat> rotations;
   std::vector<int32_t> unplaced;
 
-  // How far the answer leaves each weighted edge, in degrees, over the edges that were used — an
-  // edge at weight zero is not one. Zero edges used leaves both at zero and `valid` true, which is
-  // the anchors-only case: nothing was solved, so nothing disagrees.
+  // How far the answer leaves each edge it used, in degrees. **Read them with `edgesUsed`**, which is
+  // the whole reason that field exists: zero disagreement over eleven edges and zero disagreement
+  // over none are the same pair of numbers and are not the same fact, and the second is what a
+  // reconstruction built from priors alone reports. A caller testing `valid && maxEdgeErrorDeg < x`
+  // accepts a sphere no pixel contributed to.
+  //
+  // Two kinds of edge are left out, and an earlier version of this comment named only the first.
+  // An edge at weight zero is not used (the caller discarded it). Neither is an edge whose endpoints
+  // were never placed — which for a positive-weight edge means *both* of them, since an edge is what
+  // puts two frames in one component.
   double medianEdgeErrorDeg = 0;
   double maxEdgeErrorDeg = 0;
 
+  // How many edges the two figures above are computed over, and the denominator of any judgement
+  // made from them.
+  int32_t edgesUsed = 0;
+
+  // Frames named in `unplaced` are the other half of the same question: how much of the input the
+  // answer actually rests on.
+
+  // How many sweeps were run. At least one on any `valid` answer, so zero means the whole solve was
+  // refused — which `valid` already says, and this does not independently promise.
   int32_t sweeps = 0;
 
   // False when the sweep budget ran out before the largest per-frame update fell under tolerance.
@@ -79,6 +95,18 @@ struct AveragedRotations {
 // is what every usable anchor counts for against the edges' own weights. A frame whose anchor is not
 // a usable rotation (see `IsUsableRotation`) simply has no prior — which is how a caller says "the
 // sensor did not answer for this one" without having to renumber the frames.
+//
+// **That makes an unusable anchor a silence and an unusable edge a refusal, which is an asymmetry
+// worth the sentence it costs.** A missing prior is an ordinary thing: a sensor drops a sample, a
+// frame is adopted from a resumed session, and the rest of the reconstruction is still an answer.
+// A missing *edge* rotation is not ordinary — an edge exists because something measured it, so a
+// quaternion that is not one means the measurement is broken rather than absent, and there is no
+// "this edge is present but says nothing" for it to mean.
+//
+// The cost is that a NaN arriving from upstream arithmetic is read as "no prior" rather than as the
+// defect it is, and nothing here can tell the two apart. What bounds it is `unplaced` and
+// `edgesUsed`: a caller whose priors have all quietly become NaN gets a gauge pinned by whichever
+// frames survived, and both fields say how little the answer rests on.
 //
 // An `anchorWeight` of zero leaves the anchors doing exactly one job: they are where the frames
 // start, which is what fixes the gauge, and they are not consulted again. That is a caller saying

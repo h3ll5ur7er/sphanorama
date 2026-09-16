@@ -219,7 +219,20 @@ TEST(AverageRotations, TheClosingEdgeIsWhatRemovesAChainsDrift) {
   ASSERT_TRUE(recovered.valid);
   std::fprintf(stderr, "[averaging] drift max=%.4f deg; closed max=%.7f deg in %d sweeps\n",
                drifted.maxDeg, recovered.maxDeg, closed.sweeps);
-  EXPECT_LT(recovered.maxDeg, 1e-4);
+
+  // **Where else this pair is written.** Both figures are published outside this file, so they move
+  // in one commit or not at all — the same rule the accuracy table keeps under the heading "Where
+  // else the table is written" in `registration_accuracy_test.cpp`:
+  //
+  //   1. `docs/06-roadmap.md`, in the paragraph that says what the discarded closing edge costs.
+  //   2. `CLAUDE.md`, in the `rotation_averaging` paragraph.
+  //   3. This test, here, which is the only place either is asserted.
+  //
+  // Asserted rather than bounded, and the bound is why: this was `EXPECT_LT(recovered.maxDeg, 1e-4)`
+  // — 3.6 times looser than the number it was published beside, so the published digits reached a
+  // reader through an `fprintf` and nothing could fail on them. ADR 0060 settled that a figure this
+  // repository publishes gets asserted where it is produced.
+  EXPECT_NEAR(recovered.maxDeg, 0.0000278, 5e-7);
 
   // The identical input with the twelfth edge taken out. Nothing else changes.
   const std::vector<RelativeRotation> open(edges.begin(), edges.end() - 1);
@@ -247,16 +260,112 @@ TEST(AverageRotations, TurningEveryAnchorTurnsTheWholeAnswer) {
   const std::vector<RelativeRotation> edges = RingEdges(truth, 0.0);
   const Quat turn = FromAxisAngle(Vec3{1, 2, 3}, 40.0 / kDegPerRad);
 
+  // **Anchors that are three degrees out, not the truth**, and that is the difference between
+  // testing the solver and testing the walk. With truthful anchors and exact edges the input is
+  // already a fixed point, so the sweep changes nothing and the equivariance asserted below is the
+  // breadth-first placement's rather than the solve's — a reviewer proved it by replacing the whole
+  // sweep with `(void)average` and watching this test stay green. Perturbed anchors make the solver
+  // do work, and the assertion below then says that work commutes with a common rotation.
+  std::vector<Quat> anchors;
+  for (int i = 0; i < kFrames; ++i) {
+    const Vec3 axis{std::sin(i * 1.0), std::cos(i * 1.0), std::sin(i * 2.0)};
+    anchors.push_back(
+        Normalize(Multiply(truth[static_cast<size_t>(i)], FromAxisAngle(axis, 3.0 / kDegPerRad))));
+  }
   std::vector<Quat> turned;
-  for (const Quat& q : truth) turned.push_back(Normalize(Multiply(turn, q)));
+  for (const Quat& q : anchors) turned.push_back(Normalize(Multiply(turn, q)));
 
-  const AveragedRotations plain = AverageRotations(edges, truth, 0.01);
+  const AveragedRotations plain = AverageRotations(edges, anchors, 0.01);
   const AveragedRotations moved = AverageRotations(edges, turned, 0.01);
   ASSERT_TRUE(plain.valid && moved.valid);
+  ASSERT_TRUE(plain.converged && moved.converged);
 
-  for (size_t i = 0; i < truth.size(); ++i) {
+  // The answer has to have moved off the anchors, or a solver that returned its input unchanged
+  // would satisfy the equivariance below for free.
+  double worstMove = 0;
+  for (size_t i = 0; i < anchors.size(); ++i) {
+    worstMove = std::max(worstMove, SeparationDeg(plain.rotations[i], anchors[i]));
+  }
+  EXPECT_GT(worstMove, 1.0) << "the solve left the anchors where they were";
+
+  // 1e-4 rather than 1e-9: the two solves take 590 and 591 sweeps, so they stop at slightly
+  // different points on the same trajectory. Measured at 9.8e-6 between them.
+  for (size_t i = 0; i < anchors.size(); ++i) {
     const Quat expected = Normalize(Multiply(turn, plain.rotations[i]));
-    EXPECT_NEAR(SeparationDeg(moved.rotations[i], expected), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(moved.rotations[i], expected), 0.0, 1e-4) << "frame " << i;
+  }
+}
+
+/**
+ * An `anchorWeight` of zero places the frames and then believes only the edges.
+ *
+ * Three paragraphs of the header describe this and, until a reviewer counted, no test passed it —
+ * the file used 0.01, 1e-4, 1e-6, 1000 and the refusals. It is not a cosmetic gap: the "this call
+ * cannot refuse" argument in the sweep rests on `anchorWeight > 0.0` keeping a zero-weight anchor
+ * out of the prediction list, and relaxing that comparison to `>=` puts every frame **180 degrees**
+ * from its anchor with `valid` and `converged` both true, because a lone prediction at weight zero
+ * is a matrix the averager cannot read.
+ *
+ * What the case should do is recover the truth exactly: the anchors are three degrees out, they fix
+ * the gauge by placing the frames, and the exact edges then decide everything else with nothing
+ * pulling back toward the priors.
+ */
+TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain) {
+  const std::vector<Quat> truth = Ring(kFrames);
+  const std::vector<RelativeRotation> edges = RingEdges(truth, 0.0);
+
+  std::vector<Quat> anchors;
+  for (int i = 0; i < kFrames; ++i) {
+    const Vec3 axis{std::sin(i * 1.0), std::cos(i * 1.0), std::sin(i * 2.0)};
+    anchors.push_back(
+        Normalize(Multiply(truth[static_cast<size_t>(i)], FromAxisAngle(axis, 3.0 / kDegPerRad))));
+  }
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 0.0);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_TRUE(solved.unplaced.empty()) << "the anchors did not place the frames";
+  EXPECT_TRUE(solved.converged);
+  EXPECT_EQ(solved.edgesUsed, kFrames);
+
+  // Not zero, and the reason is the solver rather than the anchors: the sweep stops when the largest
+  // per-frame move falls under `kSettledDeg`, which is 1e-5 degrees, so a residual a couple of times
+  // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
+  // with no stopping rule — the same wrong assumption as the earlier `1e-6` on the perturbed-anchor
+  // case, and a reminder that "exact edges" bounds the problem and not the iteration.
+  const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
+  ASSERT_TRUE(score.valid);
+  EXPECT_NEAR(score.medianDeg, 0.0000286, 3e-6)
+      << "the residual is no longer the stopping tolerance, so something else is moving the answer";
+
+  // **The gauge is a compromise among all twelve anchors, not a copy of one of them**, and getting
+  // that wrong is what this block is for. The assertion here was first written as "frame zero ends
+  // where its own anchor put it", on the theory that the walk chains outward from a single seed. It
+  // does not: it seeds *every* anchored frame at its own anchor, so the starting set is twelve
+  // mutually inconsistent placements and the sweep relaxes them into one consistent reconstruction
+  // whose gauge none of them chose. Measured, frame zero lands 3.31 degrees from its own anchor —
+  // the scale of the perturbation, which is what a compromise among twelve three-degree errors
+  // should cost.
+  //
+  // So the answer is on the truth up to a gauge (asserted above) and is not on any particular
+  // anchor, and both halves are needed: the first alone is satisfied by a solver that ignores the
+  // anchors, the second alone by one that ignores the edges.
+  EXPECT_NEAR(SeparationDeg(solved.rotations[0], anchors[0]), 3.3088, 1e-3);
+
+  // **And the same weight with no edges at all**, which is the case that makes `anchorWeight > 0.0`
+  // load-bearing rather than tidy. With edges present a zero-weighted anchor is harmless — it enters
+  // the prediction list beside two edge predictions and the averager ignores a zero. With no edges
+  // it would be the *only* prediction, and a lone prediction at weight zero is a set the averager
+  // refuses, leaving the frame on whatever a refused answer carries. Relaxing the comparison to
+  // `>=` puts every frame 180 degrees from its anchor here, with `valid` and `converged` true.
+  //
+  // The right answer is the anchors, untouched: nothing was measured, so nothing should move.
+  const AveragedRotations untouched = AverageRotations({}, anchors, 0.0);
+  ASSERT_TRUE(untouched.valid);
+  EXPECT_TRUE(untouched.converged);
+  EXPECT_TRUE(untouched.unplaced.empty());
+  EXPECT_EQ(untouched.edgesUsed, 0);
+  for (size_t i = 0; i < anchors.size(); ++i) {
+    EXPECT_NEAR(SeparationDeg(untouched.rotations[i], anchors[i]), 0.0, 1e-12) << "frame " << i;
   }
 }
 
@@ -520,6 +629,98 @@ TEST(AverageRotations, AFrameReachedOnlyByAZeroWeightedEdgeIsUnplaced) {
   ASSERT_TRUE(believed.valid);
   EXPECT_TRUE(believed.unplaced.empty());
   EXPECT_NEAR(SeparationDeg(believed.rotations[kFrames], AboutY(75.0)), 0.0, 1e-6);
+}
+
+/**
+ * Zero disagreement over no edges is told apart from zero disagreement over eleven.
+ *
+ * The two report the identical pair of numbers — `medianEdgeErrorDeg` and `maxEdgeErrorDeg` both
+ * zero, `valid` true, `converged` true — and they are not the same fact. The first is a
+ * reconstruction the pixels never touched; the second is one every measurement agrees with. A caller
+ * writing `valid && maxEdgeErrorDeg < 0.5` to decide whether to trust a sphere accepts the first.
+ *
+ * `edgesUsed` is the denominator that separates them, and it exists because a reviewer found the
+ * numerator published without one.
+ */
+TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
+  const std::vector<Quat> truth = Ring(kFrames);
+  const std::vector<RelativeRotation> satisfied = RingEdges(truth, 0.0);
+
+  const AveragedRotations solved = AverageRotations(satisfied, truth, 0.01);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_EQ(solved.edgesUsed, kFrames);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, 1e-9);
+
+  // Every edge discarded. The error figures are identical and the count is what says why.
+  std::vector<RelativeRotation> discarded = satisfied;
+  for (RelativeRotation& edge : discarded) edge.weight = 0.0;
+  const AveragedRotations priorsOnly = AverageRotations(discarded, truth, 0.01);
+  ASSERT_TRUE(priorsOnly.valid);
+  EXPECT_TRUE(priorsOnly.converged);
+  EXPECT_NEAR(priorsOnly.maxEdgeErrorDeg, 0.0, 1e-9)
+      << "the two cases have to be indistinguishable on this field, or the test proves nothing";
+  EXPECT_NEAR(priorsOnly.medianEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_EQ(priorsOnly.edgesUsed, 0);
+
+  // And an edge whose endpoints were never placed is not counted either, which is the second
+  // exclusion the header names. Frames 12 and 13 have no anchor and are reachable only from each
+  // other, so the edge between them is believed and never used.
+  std::vector<Quat> anchors = truth;
+  anchors.push_back(Quat{0, 0, 0, 0});
+  anchors.push_back(Quat{0, 0, 0, 0});
+  std::vector<RelativeRotation> stranded = satisfied;
+  stranded.push_back(RelativeRotation{kFrames, kFrames + 1, AboutY(90.0), 1.0});
+
+  const AveragedRotations partial = AverageRotations(stranded, anchors, 0.01);
+  ASSERT_TRUE(partial.valid);
+  EXPECT_EQ(partial.unplaced.size(), 2u);
+  EXPECT_EQ(partial.edgesUsed, kFrames) << "the stranded edge was counted";
+  EXPECT_NEAR(partial.maxEdgeErrorDeg, 0.0, 1e-9);
+
+  // **And the stranded pair still holds the identity**, which is what the sweep's own `placed`
+  // guards are for and what nothing else here asserts. A component with no anchor in it is the input
+  // that makes them load-bearing — every other unplaced case in this file is a single isolated frame
+  // with no edge to be moved by — and without them frames 12 and 13 would be averaged against each
+  // other's identities and drift away from it while `unplaced` went on naming them.
+  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames], Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames + 1], Quat{}), 0.0, 1e-12);
+}
+
+/**
+ * The median edge error is a median, over errors that are not all the same.
+ *
+ * Every other case here leaves every edge equally satisfied — exactly, or by the same uniform bias —
+ * so `medianEdgeErrorDeg` and `maxEdgeErrorDeg` carry the same number and returning the first
+ * element, or the mean, or the maximum would satisfy all of them. A reviewer showed that
+ * `errors.front()` passes the whole suite.
+ *
+ * Three edges with three different errors, and an even-count case beside it, because the even branch
+ * averages the two middle values and is a second thing that can be wrong on its own.
+ */
+TEST(AverageRotations, TheMedianEdgeErrorIsAMedianOverErrorsThatDiffer) {
+  // A chain of four frames, anchored hard at every one so the solve leaves them where they are and
+  // the edge errors are whatever the edges disagree with the anchors by. That makes the three
+  // residuals knowable in advance rather than a property of the iteration.
+  const std::vector<Quat> anchors{AboutY(0.0), AboutY(30.0), AboutY(60.0), AboutY(90.0)};
+  const std::vector<RelativeRotation> edges{
+      RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(32.0)), 1.0},   // 2 degrees out
+      RelativeRotation{1, 2, TrueEdge(AboutY(30.0), AboutY(68.0)), 1.0},  // 8 degrees out
+      RelativeRotation{2, 3, TrueEdge(AboutY(60.0), AboutY(94.0)), 1.0},  // 4 degrees out
+  };
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1e6);
+  ASSERT_TRUE(solved.valid);
+  ASSERT_EQ(solved.edgesUsed, 3);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 8.0, 1e-3);
+  EXPECT_NEAR(solved.medianEdgeErrorDeg, 4.0, 1e-3)
+      << "2, 4 and 8 have a median of 4 — the first, the mean and the max are all something else";
+
+  // Even count: drop the last edge and the median is the mean of the two that remain.
+  const std::vector<RelativeRotation> two(edges.begin(), edges.begin() + 2);
+  const AveragedRotations pair = AverageRotations(two, anchors, 1e6);
+  ASSERT_TRUE(pair.valid);
+  ASSERT_EQ(pair.edgesUsed, 2);
+  EXPECT_NEAR(pair.medianEdgeErrorDeg, 5.0, 1e-3) << "2 and 8 average to 5, they do not pick one";
 }
 
 // ----------------------------------------------------------------- refusals

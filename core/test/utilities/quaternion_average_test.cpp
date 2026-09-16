@@ -198,6 +198,46 @@ TEST(AverageQuaternions, NoWeightsMeansEqualWeights) {
 }
 
 /**
+ * "Only the ratios matter" holds at every weight scale the gate admits, not just at ordinary ones.
+ *
+ * The header promises that weights are evidence rather than a distribution, so raw inlier counts may
+ * be passed unnormalised. `TheAnswerDependsOnTheRatioOfWeightsAndNotTheirScale` checks that over a
+ * factor of a million, which is the range a caller plausibly uses and is nowhere near where it broke.
+ *
+ * **It broke above a weight *total* of `sqrt(DBL_MAX)`**, and silently. The eigensolver's
+ * off-diagonal test is relative to the squared trace, the trace is the weight total, and squaring a
+ * total past 1.34e154 gives an infinity — so `offDiagonal <= 1e-30 * inf` is true on the first pass,
+ * Jacobi breaks before rotating anything, and what comes back is whichever coordinate axis the scan
+ * reached first, with `valid` and `isUnique` both true. Underflow does the same at the bottom, where
+ * the squared entries round to zero. Found by a reviewer, reproduced here: at `6.71e153` each the
+ * answer collapses onto the first input, 30 degrees from where it belongs.
+ *
+ * The fix is to divide by the largest weight before accumulating, so the entries are bounded by one
+ * whatever scale the caller works in — which is what makes the promise true rather than true over a
+ * range nobody wrote down.
+ */
+TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
+  const std::vector<Quat> pair{AboutY(0.0), AboutY(60.0)};
+
+  // Spot values rather than a sweep, each one chosen for where it sits: ordinary, the largest total
+  // the old code survived, just past it, far past it, and the two underflow cases.
+  for (const double weight : {1.0, 1e100, 6.7039039644650269e153, 6.71e153, 1e200, 1e300,
+                              1e-100, 4.76837e-162, 1e-170, 1e-300}) {
+    const QuaternionAverage average = AverageQuaternions(pair, std::vector<double>{weight, weight});
+    ASSERT_TRUE(average.valid) << "weight " << weight;
+    EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9) << "weight " << weight;
+  }
+
+  // And an unequal pair at the top of the range still lands where the ratio says, so the fix is not
+  // "clamp everything to equal weights".
+  const QuaternionAverage lopsided =
+      AverageQuaternions(pair, std::vector<double>{3e300, 1e300});
+  ASSERT_TRUE(lopsided.valid);
+  EXPECT_NEAR(SeparationDeg(lopsided.rotation, AboutY(ExpectedAngleDeg({0, 60}, {3, 1}))), 0.0,
+              1e-9);
+}
+
+/**
  * Two rotations exactly a half turn apart leave the maximiser a continuum, and the caller is told.
  *
  * `rotation_scoring.h` names this as the reachable degenerate case. What comes back is still *a*
