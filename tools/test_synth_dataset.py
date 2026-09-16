@@ -1822,14 +1822,24 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         self.assertEqual(rendered["n"], 0, "it rendered before refusing a lens it cannot use")
 
     def test_a_coefficient_that_is_not_a_number_is_refused_by_the_parser(self):
-        # **Two assertions, because argparse exits 2 for an unrecognised flag as well as for a bad
-        # value.** The refusal alone passes in a tree where `--k1` was never added — which is the
-        # state this whole class exists to move away from — so the flag's existence is asserted
-        # first, by rendering with a value the parser must accept.
+        # **Three values, because they fail in three different places and only one of them used to
+        # be refused at all.**
+        #
+        # `banana` never reaches this module: argparse's `type=float` rejects it. That makes this
+        # case blind to whether `--k1` exists — it exits 2 for an unrecognised flag too — so the
+        # flag's existence is asserted first, by rendering with a value the parser must accept.
+        #
+        # `nan` and `inf` *are* floats, so `type=float` takes them, and they used to reach the
+        # pre-flight and raise: a traceback, exit 1 where every other refusal here exits 2, and a
+        # message about `fx, fy, width and height`, none of which was the problem. The value this
+        # case is named for is the one it could not reach.
         with tempfile.TemporaryDirectory() as directory:
             self.render(directory, "accepted", "--k1", "-0.05")
-            with self.assertRaises(SystemExit):
-                self.render(directory, "ring", "--k1", "banana")
+            for refused in ("banana", "nan", "inf", "-inf"):
+                with self.subTest(value=refused), self.assertRaises(SystemExit) as exit:
+                    self.render(directory, "ring", "--k1", refused)
+                self.assertEqual(exit.exception.code, 2,
+                                 f"--k1 {refused} did not exit the way a refusal does")
 
 
 class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):

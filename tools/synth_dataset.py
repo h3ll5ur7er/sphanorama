@@ -925,23 +925,50 @@ def main() -> int:
                     else _checkerboard_panorama(2048, 1024))
     except ValueError as refusal:
         parser.error(str(refusal))
+    # **`type=float` accepts `nan` and `inf`, and neither is a coefficient.** `is_usable_lens`
+    # refuses them, but it is reached only from inside `unproject`, which *raises* — so the
+    # pre-flight below turned `--k1 nan` into a traceback, exit 1 where every other refusal here
+    # exits 2, and a message naming `fx, fy, width and height`, none of which was the problem.
+    # Refused here instead, where the rest of this parser's refusals live and where the message can
+    # name the flag the user typed.
+    for name in ("k1", "k2", "k3", "p1", "p2"):
+        value = getattr(args, name)
+        if not math.isfinite(value):
+            parser.error(f"--{name} {value} is not a measurement: a distortion coefficient has to "
+                         f"be finite")
+
     lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height,
                          k1=args.k1, k2=args.k2, k3=args.k3, p1=args.p1, p2=args.p2)
-    # **Before the render, not during it.** `render_frame` refuses a frame with a rayless pixel and
-    # would refuse this one too — after spending every frame before it. A lens whose distortion
-    # folds inside its own frame is knowable from the lens alone, which is the same argument every
-    # `--out` and `--panorama` check above makes: an unusable input costs nothing.
+    # **Before the render, not during it — and what that buys is a sentence, not a saved render.**
+    # An earlier version of this comment said the render would refuse "after spending every frame
+    # before it". It would not: the fold depends only on the lens, so `render_frame` refuses on
+    # frame zero, and a reviewer measured exactly that — `write_dataset` with `k1 = -0.9` raises
+    # having completed no frames and leaves nothing behind but the directories `mkdir -p` made.
+    #
+    # What this is worth is the shape of the refusal. Without it the user gets a `ValueError`
+    # traceback and exit 1; with it, a sentence naming the coefficients and exit 2, which is what
+    # every other refusal in this parser does. That is a smaller claim than the one it replaces and
+    # it is the true one.
     #
     # Asked of the actual frame rather than of a whole-lens heuristic. There was one of those and it
     # is gone rather than fixed — it sampled a 33x33 grid and tested the wrong interval, passing
     # lenses with thousands of rayless pixels and refusing answerable ones. This unprojects every
     # pixel centre, which is exact and is the work the first frame does anyway.
+    #
+    # **The points are shared and the rule is not.** `_every_pixel_centre` is the one copy of *which*
+    # pixels to ask about; whether `usable.all()` is the bar lives here and again in `render_frame`.
+    # A reviewer could not make them disagree — 300 random lenses across five widths and four
+    # heights, 159 accepted and 141 refused, no split verdicts — so this is a fact about the two
+    # copies agreeing today rather than about them being one copy. The increment that would break it
+    # is on the roadmap: the day `render_frame` learns to tolerate a refused row, one of these two
+    # has to learn it as well.
     _, usable = unproject(lens, _every_pixel_centre(lens))
     if not usable.all():
         parser.error(
             f"{int((~usable).sum())} of {usable.size} pixels of this frame have no ray behind "
             f"them: k1={args.k1} k2={args.k2} k3={args.k3} p1={args.p1} p2={args.p2} stops being "
-            f"invertible inside a {args.width}x{args.height} frame at {args.hfov} degrees")
+            f"invertible inside a {args.width}x{args.height} frame at {args.hfov} by {args.vfov} "
+            f"degrees")
     written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))
     print(f"wrote {len(written)} frames and truth.json to {args.out}")
     return 0
