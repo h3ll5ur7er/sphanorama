@@ -36,6 +36,12 @@ expressed in a different frame from the core that reads it is worse than no data
   coordinates -- which is a pixel *corner*, not a pixel centre, since an integer here is an edge
   (see `direction_to_equirect`). On a 2048x1024 panorama that is where pixels 1023 and 1024 meet.
 
+**The lens takes distortion.** `--k1 --k2 --k3 --p1 --p2` are Brown-Conrady in OpenCV's
+`k1 k2 p1 p2 k3` convention, defaulting to a pinhole so that every dataset produced before they
+existed is still what this tool produces today. A lens that stops being invertible inside its own
+frame is refused before a frame is spent rather than after — see `render_frame` for why that check
+is where it is, and what it is not.
+
 Run it: `uv run --locked --group datasets tools/synth_dataset.py --out datasets/ring` (the
 `datasets` group is what carries numpy **and Pillow**; the checkers stay standard-library only —
 ADR 0050, ADR 0059). `--locked` because every committed `produced_by` uses it: a command recorded
@@ -174,9 +180,30 @@ class Pose:
         return vectors + 2.0 * w * cross + 2.0 * np.cross(u, cross)
 
 
+def _every_pixel_centre(lens: Intrinsics) -> np.ndarray:
+    """This lens's pixel centres, as an (n, 2) array of camera-model coordinates.
+
+    Shared by the render and the pre-flight fold check so the two ask about *the same points*. A
+    second spelling of "every pixel" is a second answer to the question of which pixels a frame has,
+    and this file already carries one paragraph about a whole-lens check that asked about the wrong
+    interval.
+
+    Centres at half-integers, because the origin is the top-left corner of the image: pixel index
+    `i` is sampled at `i + 0.5` (`camera_model.h` states the same convention).
+    """
+    us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5, indexing="xy")
+    return np.stack([us.ravel(), vs.ravel()], axis=-1)
+
+
 def lens_from_fov(horizontal_fov_deg: float, vertical_fov_deg: float, width: int,
-                  height: int) -> Intrinsics:
-    """The lens a camera with this field of view would have, distortion-free.
+                  height: int, *, k1: float = 0.0, k2: float = 0.0, k3: float = 0.0,
+                  p1: float = 0.0, p2: float = 0.0) -> Intrinsics:
+    """The lens a camera with this field of view would have, with the distortion it is given.
+
+    The coefficients default to zero, which is a pinhole and is what every caller before they
+    existed got. They are keyword-only because five bare floats after four positional ones is a
+    signature nobody reads correctly, and the two that are easy to swap — `p1` and `p2` — are
+    adjacent.
 
     Refuses at 180 degrees and wider, where the half-angle's tangent is infinite and a rectilinear
     lens has stopped existing — the same boundary `LensFromFieldOfView` draws.
@@ -196,6 +223,7 @@ def lens_from_fov(horizontal_fov_deg: float, vertical_fov_deg: float, width: int
         cy=half_height,
         width=width,
         height=height,
+        k1=k1, k2=k2, k3=k3, p1=p1, p2=p2,
     )
 
 
@@ -580,6 +608,27 @@ def sample_equirect(panorama: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.nd
     return top * (1.0 - fy) + bottom * fy
 
 
+def unusable_pixels(lens: Intrinsics) -> tuple[np.ndarray, int]:
+    """Every pixel centre's direction, and how many of them have no ray behind them.
+
+    **One place decides what "this lens folds in its own frame" means.** Two callers ask it — the
+    render, which cannot colour a pixel with no direction, and the command line, which would rather
+    refuse before it spends anything. They used to ask it separately, in the same words, and a
+    reviewer could not make them disagree over three hundred random lenses. That is the two copies
+    agreeing rather than one copy, and the difference matters on a known future day: the roadmap's
+    next harness increment is teaching the render to *tolerate* a refused row, and on that day one
+    of two identical paragraphs would have been edited.
+
+    Which is the failure `Distorted` exists to prevent one file over — a fold test disagreeing with
+    the solver about where the fold is.
+
+    The directions come back with the count because the render needs them anyway, and recomputing
+    them would be the same duplication one level down.
+    """
+    directions, valid = unproject(lens, _every_pixel_centre(lens))
+    return directions, int((~valid).sum())
+
+
 def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarray:
     """One frame, as a (height, width, channels) float array.
 
@@ -594,21 +643,30 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
     *distorted* radius against a cubic in the *undistorted* one, so it was both unsound and asking
     about the wrong interval — measured, it passed lenses whose frames have thousands of rayless
     pixels and refused lenses that are answerable throughout. Asking `unproject` about every pixel
-    of the actual frame is exact where that was a hope about resolution, and it is the same work
-    the render does anyway. The core has no whole-lens check either, for the same reason.
-    """
-    us, vs = np.meshgrid(np.arange(lens.width) + 0.5, np.arange(lens.height) + 0.5, indexing="xy")
-    pixels = np.stack([us.ravel(), vs.ravel()], axis=-1)
+    of the actual frame is exact where that was a hope about resolution. The core has no whole-lens
+    check either, for the same reason.
 
-    camera_directions, valid = unproject(lens, pixels)
+    **`main` now asks the same question before any frame is rendered, and that is not a
+    reinstatement of the thing ADR 0050 deleted.** What was deleted was a *heuristic* — a Jacobian
+    sampled on a coarse grid, standing in for the real question. The pre-flight asks the real
+    question, `unproject` at every pixel centre of the frame, which is this check exactly and not an
+    approximation of it; it just asks it once at the start instead of on frame zero. So the two
+    cannot disagree, which is the property the deleted one lacked.
+
+    What it does cost, said plainly because an earlier version of this paragraph claimed there was
+    no cost: it is a second full unprojection pass, where before this was "the same work the render
+    does anyway". One frame's worth, against a run that renders many, spent to fail before the
+    output directory is written rather than after.
+    """
+    camera_directions, rayless = unusable_pixels(lens)
     # Before the directions are used for anything. A refused row's direction can be non-finite, and
     # `direction_to_equirect` refuses those too — with a message that names the vector rather than
     # the lens, which is the wrong diagnosis of the frame and the wrong count in it.
-    if not valid.all():
+    if rayless:
         raise ValueError(
-            f"{int((~valid).sum())} of {valid.size} pixels of this frame have no ray behind them: "
-            "the lens stops being invertible inside its own frame, and no colour could honestly "
-            "stand for a missing direction")
+            f"{rayless} of {lens.width * lens.height} pixels of this frame have no ray behind "
+            "them: the lens stops being invertible inside its own frame, and no colour could "
+            "honestly stand for a missing direction")
 
     world = pose.rotate(camera_directions)
     u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
@@ -823,6 +881,19 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--hfov", type=float, default=66.0)
     parser.add_argument("--vfov", type=float, default=50.0)
+    # **Brown-Conrady, in OpenCV's `k1 k2 p1 p2 k3` convention**, defaulting to a pinhole.
+    #
+    # Every piece of this already existed: `Intrinsics` has carried the five coefficients since it
+    # was written, `render_frame` unprojects through the full Newton-solved inverse, `truth.json`
+    # emits `asdict(lens)`, and the C++ loader reads all five. What did not exist was any way for a
+    # caller to *ask*, so every dataset this repository has produced was rendered through a pinhole
+    # — and an accuracy measured on a lens nobody sells is not a statement about a phone.
+    #
+    # Zero by default and deliberately: the committed fixture and the accuracy dataset are both
+    # pinhole, and a default that acquired a coefficient would silently move a published figure.
+    for coefficient in ("k1", "k2", "k3", "p1", "p2"):
+        parser.add_argument(f"--{coefficient}", type=float, default=0.0,
+                            help=f"Brown-Conrady {coefficient} (default 0, a pinhole)")
     parser.add_argument("--panorama", type=Path,
                         help="an equirectangular image to render from; without it, a checkerboard")
     args = parser.parse_args()
@@ -875,7 +946,48 @@ def main() -> int:
                     else _checkerboard_panorama(2048, 1024))
     except ValueError as refusal:
         parser.error(str(refusal))
-    lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height)
+    # **`type=float` accepts `nan` and `inf`, and neither is a coefficient.** `is_usable_lens`
+    # refuses them, but it is reached only from inside `unproject`, which *raises* — so the
+    # pre-flight below turned `--k1 nan` into a traceback, exit 1 where every other refusal here
+    # exits 2, and a message naming `fx, fy, width and height`, none of which was the problem.
+    # Refused here instead, where the rest of this parser's refusals live and where the message can
+    # name the flag the user typed.
+    for name in ("k1", "k2", "k3", "p1", "p2"):
+        value = getattr(args, name)
+        if not math.isfinite(value):
+            parser.error(f"--{name} {value} is not a measurement: a distortion coefficient has to "
+                         f"be finite")
+
+    lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height,
+                         k1=args.k1, k2=args.k2, k3=args.k3, p1=args.p1, p2=args.p2)
+    # **Before the render, not during it — and what that buys is a sentence, not a saved render.**
+    # An earlier version of this comment said the render would refuse "after spending every frame
+    # before it". It would not: the fold depends only on the lens, so `render_frame` refuses on
+    # frame zero, and a reviewer measured exactly that — `write_dataset` with `k1 = -0.9` raises
+    # having completed no frames and leaves nothing behind but the directories `mkdir -p` made.
+    #
+    # What this is worth is the shape of the refusal. Without it the user gets a `ValueError`
+    # traceback and exit 1; with it, a sentence naming the coefficients and exit 2, which is what
+    # every other refusal in this parser does. That is a smaller claim than the one it replaces and
+    # it is the true one.
+    #
+    # Asked of the actual frame rather than of a whole-lens heuristic. There was one of those and it
+    # is gone rather than fixed — it sampled a 33x33 grid and tested the wrong interval, passing
+    # lenses with thousands of rayless pixels and refusing answerable ones. This unprojects every
+    # pixel centre, which is exact and is the work the first frame does anyway.
+    #
+    # **The same predicate the render asks**, so the two cannot disagree by construction rather than
+    # by both being written the same way. They were written the same way for a commit, and a
+    # reviewer could not make them disagree over 300 random lenses — 159 accepted, 141 refused, no
+    # split verdicts — which is a fact about two copies agreeing rather than about there being one.
+    # `unusable_pixels` says why that distinction has a date on it.
+    _, rayless = unusable_pixels(lens)
+    if rayless:
+        parser.error(
+            f"{rayless} of {args.width * args.height} pixels of this frame have no ray behind "
+            f"them: k1={args.k1} k2={args.k2} k3={args.k3} p1={args.p1} p2={args.p2} stops being "
+            f"invertible inside a {args.width}x{args.height} frame at {args.hfov} by {args.vfov} "
+            f"degrees")
     written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))
     print(f"wrote {len(written)} frames and truth.json to {args.out}")
     return 0

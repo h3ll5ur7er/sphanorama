@@ -32,6 +32,7 @@ import contextlib
 import gc
 import hashlib
 import io
+import itertools
 import json
 import math
 import subprocess
@@ -1399,6 +1400,446 @@ class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
             u, v, valid = project(lens, direction)
         self.assertFalse(valid.any(), f"answered pixel ({u[0]}, {v[0]})")
         self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
+
+
+class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
+    """The command line can ask for distortion, and the frames come out distorted.
+
+    **Every piece of this existed except the asking.** `Intrinsics` has carried `k1` through `p2`
+    since it was written, `render_frame` unprojects through the full Newton-solved inverse,
+    `truth.json` writes `asdict(lens)` so the coefficients are already emitted, and the C++ loader
+    already reads all five. What was missing was any way for a caller to set them, so every dataset
+    this repository has ever produced was rendered through a pinhole — and the roadmap's own
+    objection to that is the reason this exists: *an accuracy measured on a lens nobody sells is not
+    a statement about a phone*.
+
+    **These cases are about the render path, which is not the same claim as "the seam".** An earlier
+    version of this paragraph said the arithmetic is pinned elsewhere — against the core across lens
+    families, against OpenCV's term order, at the fold, along the ray — and that repeating it here
+    would be asserting twice what is asserted once. That is true of `distort_at` and false of the
+    path between a command-line flag and a byte in a `.ppm`, which nothing else in this repository
+    walks. Two review rounds found holes in exactly that gap: the tangential pair reached
+    `truth.json` and not a pixel, and then `k2` and `k3` did the same when the mutation was moved to
+    the seam instead of into `render_frame`.
+
+    So these cases do assert structure, and the list is worth stating precisely because two rounds
+    of review have found it claiming more than it covers. For **all five** coefficients: each
+    reaches a pixel, none renders identically to another, and a sign that is *dropped* is caught.
+    For **`k2` against `k3`**: the `r⁶` term is far more edge-weighted than the `r⁴` one, which is
+    what catches a routing swap that the pairwise distances cannot. For **`k1` alone**: the
+    displacement grows outward rather than uniformly, it scales with the coefficient, and a sign
+    *convention* that is flipped is caught against two undistorted reference lenses. For the
+    **tangential pair**: `p1` and `p2` act along perpendicular axes. What these do not re-derive is
+    the distortion maths itself, and what they do not cover is a sign *convention* flipped on
+    anything but `k1` — negating `k2`, `k3`, `p1` or `p2` in the render path while leaving `k1`
+    alone is green across the whole suite. The sign case below says why only `k1` can be pinned that
+    way, and the realistic bug — a convention flipped across the whole model — does show up in
+    `k1`.
+
+    **Every figure these cases *assert* is measured on the checkerboard `_checkerboard_panorama`
+    generates**, which is what `self.render` produces because it never passes `--panorama`. Several
+    comments below also quote the photograph's figures, for comparison and never as a bound; each
+    says which world it is in. The repository's committed
+    photograph is a different world and gives different numbers — measured, a ratio of 5.711 where
+    the checkerboard gives 9.618, and an attenuation of 18.71 where it gives 33.69. Both of those
+    are *below* the bounds here, so pointing this class at `--panorama` without re-deriving the two
+    thresholds would fail on a correct render. The thresholds are the checkerboard's and the
+    docstring says so rather than the comments claiming a panorama they never load.
+
+    A third constant leans the same way without failing: the `> 1.0` bound in
+    `test_every_coefficient_reaches_a_pixel_and_none_stands_in_for_another` sits
+    at less than half the tightest checkerboard margin (2.374) and at 59% of the photograph's
+    (1.684). Still passing, and worth knowing before anyone tightens it.
+    """
+
+    # Magnitudes that render on both signs. `--k3 -0.25` folds inside a 64x48 frame at 66 degrees
+    # and is refused before anything renders, so a sign case cannot be written at the magnitude a
+    # magnitude case would want — which is why these are stated once here rather than per case.
+    #
+    # Every case reads them from here rather than spelling a literal. Four of the `k1` cases used to
+    # spell `0.15` and `-0.15` inline, so this dict read as the single source while being one of
+    # five copies, and the fold constraint above it did not travel to the places that needed it.
+    # `--k1 -0.005`, the attenuated one, stays a literal on purpose: it is a *ratio* to the entry
+    # here, and the case that uses it asserts that ratio.
+    COEFFICIENTS = {"k1": 0.15, "k2": 0.08, "k3": 0.12, "p1": 0.01, "p2": 0.01}
+
+    def _run(self, *argv):
+        held = sys.argv
+        sys.argv = ["synth_dataset.py", *argv]
+        try:
+            return synth_dataset.main()
+        finally:
+            sys.argv = held
+
+    def render(self, directory, name, *extra):
+        out = Path(directory) / name
+        self._run("--out", str(out), "--frames", "2", "--width", "64", "--height", "48", *extra)
+        return out
+
+    @staticmethod
+    def read_ppm(path):
+        """The three-token P6 header this generator writes, then the payload.
+
+        Parsed rather than assumed: the header is `P6`, the dimensions and the maximum on their own
+        lines, and reading past a fixed offset would pass whatever the writer did next.
+        """
+        raw = path.read_bytes()
+        magic, dimensions, maximum, payload = raw.split(b"\n", 3)
+        assert magic == b"P6" and maximum == b"255", (magic, maximum)
+        width, height = (int(token) for token in dimensions.split())
+        return np.frombuffer(payload, dtype=np.uint8).reshape(height, width, 3)
+
+    def test_the_coefficients_reach_the_lens_the_dataset_records(self):
+        # The flags are the whole change, so this is the whole of what can be got wrong about them:
+        # a flag parsed and dropped leaves a dataset that says it is distorted and is not, which is
+        # worse than no flag at all because the C++ reads that record and believes it.
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.render(directory, "ring", "--k1", "-0.12", "--k2", "0.03",
+                              "--k3", "-0.001", "--p1", "0.0004", "--p2", "-0.0002")
+            lens = json.loads((out / "truth.json").read_text())["intrinsics"]
+        self.assertEqual(
+            {key: lens[key] for key in ("k1", "k2", "k3", "p1", "p2")},
+            {"k1": -0.12, "k2": 0.03, "k3": -0.001, "p1": 0.0004, "p2": -0.0002})
+
+    def test_a_dataset_with_no_coefficients_is_still_the_pinhole_it_always_was(self):
+        # The other half, and the reason the default matters: every dataset committed before this
+        # flag existed was rendered through a pinhole, and the accuracy table is measured on one.
+        # A default that quietly acquired a coefficient would move a published figure.
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.render(directory, "ring")
+            lens = json.loads((out / "truth.json").read_text())["intrinsics"]
+        self.assertEqual([lens[key] for key in ("k1", "k2", "k3", "p1", "p2")], [0.0] * 5)
+
+    def frame(self, directory, name, *extra):
+        """One rendered frame as floats, so two renders can be subtracted."""
+        return self.read_ppm(self.render(directory, name, *extra) / "frame_0000.ppm").astype(float)
+
+    @staticmethod
+    def edge_and_centre(a, b):
+        """Mean absolute difference outside a centred half-extent box, and inside it.
+
+        Where a difference lives is what says it is radial: a radial term is zero at the optical
+        centre by construction and grows outward.
+        """
+        difference = np.abs(a - b).mean(axis=2)
+        height, width = difference.shape
+        top, bottom = height // 4, height - height // 4
+        left, right = width // 4, width - width // 4
+        return (np.concatenate([difference[:top].ravel(), difference[bottom:].ravel(),
+                                difference[top:bottom, :left].ravel(),
+                                difference[top:bottom, right:].ravel()]).mean(),
+                difference[top:bottom, left:right].mean())
+
+    @staticmethod
+    def top_bottom_and_sides(a, b):
+        """The same difference split by axis instead of by radius, which is what tells p1 from p2."""
+        difference = np.abs(a - b).mean(axis=2)
+        height, width = difference.shape
+        top, bottom = height // 4, height - height // 4
+        left, right = width // 4, width - width // 4
+        return (np.concatenate([difference[:top].ravel(), difference[bottom:].ravel()]).mean(),
+                np.concatenate([difference[top:bottom, :left].ravel(),
+                                difference[top:bottom, right:].ravel()]).mean())
+
+    def test_distortion_moves_the_edge_far_more_than_the_centre(self):
+        # That the frames merely *differ* is satisfied by any bug that perturbs them, so what is
+        # asserted is where the difference lives.
+        #
+        # **The bound is 6 and the measurement is 9.62, and the gap between those two numbers is
+        # the finding that set it.** It was written as 2, which a reviewer showed is not a bound on
+        # anything this test is about: a 0.05% change to the focal length, with no distortion at
+        # all, scores 3.375 and would have passed. A uniform scale is radial too — it is zero at the
+        # centre and grows outward — so this ratio separates radial-ish from uniform and nothing
+        # finer. Sign and magnitude are pinned by their own cases, because they cannot be pinned
+        # here.
+        #
+        # Correctly refused at 6: a one-pixel translation (0.926), a third of a pixel (1.306), and
+        # plus-or-minus eight bytes of noise (1.004).
+        #
+        # **6 is the checkerboard's bound.** The committed photograph gives 5.711 on a correct
+        # render of the same lens, so a future change that points `self.render` at `--panorama` has
+        # to re-derive this number rather than inherit it. The class docstring says so; it is
+        # repeated here because this is the line that would go red.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
+
+        self.assertEqual(straight.shape, barrel.shape)
+        outside, middle = self.edge_and_centre(straight, barrel)
+        self.assertGreater(outside, 0.0, "a distorted render is identical to a pinhole one")
+        self.assertGreater(outside, 6.0 * middle,
+                           f"the difference is not radial enough to be distortion: "
+                           f"centre {middle:.3f}, edge {outside:.3f}")
+
+    def test_the_sign_of_k1_reaches_the_pixels(self):
+        # A ratio cannot see a sign — barrel and pincushion are both radial and both score about
+        # ten — so a render that dropped the sign would pass the case above. This is the relation
+        # that catches it, and it needs no threshold: turning a barrel into a pincushion moves the
+        # pixels *further* than removing the distortion altogether, because the two displacements
+        # are opposite rather than merely different. Measured 24.49 against 16.80.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
+            pincushion = self.frame(directory, "pincushion", "--k1", str(self.COEFFICIENTS["k1"]))
+
+        self.assertGreater(np.abs(barrel - pincushion).mean(), np.abs(barrel - straight).mean(),
+                           "flipping the sign of k1 changed the render by less than removing it")
+
+    def test_the_magnitude_of_k1_reaches_the_pixels_in_proportion(self):
+        # And a ratio cannot see a magnitude either: a render that attenuated k1 thirtyfold still
+        # scores 8.61 and passes. What pins it is that the leading Brown-Conrady term is linear in
+        # k1, so a thirtieth of the coefficient must be about a thirtieth of the displacement —
+        # measured 21.64 edge against 0.6425, a factor of 33.7. The window is 20 to 50 because the
+        # relation is only asymptotically linear (k2 and k3 are zero here, but the inverse solve is
+        # not) and because the panorama's own content sets the constant.
+        #
+        # A focal-length change cannot produce this at all: it is not parameterised by k1, so
+        # scaling k1 leaves it untouched.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            strong = self.frame(directory, "strong", "--k1", str(-self.COEFFICIENTS["k1"]))
+            weak = self.frame(directory, "weak", "--k1", "-0.005")
+
+        strong_edge, _ = self.edge_and_centre(straight, strong)
+        weak_edge, _ = self.edge_and_centre(straight, weak)
+        # **An absolute floor as well as a ratio, and this is the one place one is defensible.**
+        # A render that attenuated *every* coefficient uniformly keeps the ratio where it is — over
+        # the region this paragraph is about, factors of 0.55 to 1.0, it moves only between 9.14 and
+        # 10.38 — and passes every other assertion in this class. Only a floor can see it. (Further
+        # down the ratio does fall: 8.52 at 0.40 and 7.77 at 0.01. That is well past where the floor
+        # already catches it, so it is not what keeps this honest, and an earlier version of this
+        # comment quoted the wider sweep's bottom as though it were the region's.)
+        #
+        # **And it sees it from about 1.94x, not from any attenuation at all.** Measured: a factor
+        # of 0.55 leaves the edge at 10.99 bytes and passes everything; 0.50 leaves 9.67 and is
+        # caught, by a third of a byte. So this closes the hole rather than sealing it, and an
+        # earlier version of this comment claimed the second.
+        #
+        # The cost is that a floor is a property of the world rendered as much as of the lens:
+        # 21.64 bytes on the checkerboard this class renders, 10 asserted. The photograph gives an
+        # attenuation of 18.71 against this case's *window*, whose lower bound is 20 — a different
+        # constant from the floor, and an earlier version of this comment called it the floor — so
+        # it too would have to be re-derived. See the class docstring.
+        self.assertGreater(strong_edge, 10.0,
+                           f"k1 = -0.15 moved the edge by only {strong_edge:.2f} bytes")
+        self.assertGreater(weak_edge, 0.0, "a thirtieth of the coefficient moved nothing at all")
+        attenuation = strong_edge / weak_edge
+        self.assertGreater(attenuation, 20.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
+        self.assertLess(attenuation, 50.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
+
+    def test_every_coefficient_reaches_a_pixel_and_none_stands_in_for_another(self):
+        # **Round 1 closed this for `p1` and `p2`; round 2 found `k2` and `k3` open.** The earlier
+        # reading was that those two were covered by accident, because bypassing either inside
+        # `render_frame` stops the lens inverting and the fold guard notices. Move the bypass to the
+        # seam — where a CLI wiring bug actually lives — and take the two together, and nothing in
+        # the tree notices: `truth.json` keeps the asked-for values while the frames are a pinhole's,
+        # misstating the ray by 0.625 degrees — which is six to twenty-six times the registration
+        # medians `registration_accuracy_test.cpp` publishes.
+        #
+        # So the property is asserted for all five at once rather than coefficient by coefficient.
+        # Ten pairs, because "reaches a pixel" and "is not one of the others" are different claims
+        # and a render that routed `k2` into `k3` would satisfy the first.
+        #
+        # Measured: the smallest distance from a pinhole is `k3`'s 2.466 bytes and the smallest
+        # between two coefficients is `k2` against `k3` at 2.374, so a bound of 1.0 sits at less than
+        # half the tightest margin. Not tighter: these are properties of the checkerboard as much as
+        # of the lens, and the thing being caught is a coefficient that does nothing at all.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            each = {name: self.frame(directory, name, f"--{name}", str(value))
+                    for name, value in self.COEFFICIENTS.items()}
+
+        for name, rendered in each.items():
+            self.assertGreater(np.abs(rendered - straight).mean(), 1.0,
+                               f"{name} never reached a pixel")
+        for one, other in itertools.combinations(sorted(each), 2):
+            self.assertGreater(np.abs(each[one] - each[other]).mean(), 1.0,
+                               f"{one} and {other} render identically, so one stands in for the "
+                               f"other")
+
+        # **The ten pairs cannot see a routing swap, and this is what does.** Exchanging `k2` and
+        # `k3` at the seam permutes which render is which, so all fifteen assertions above stay
+        # comfortably true — measured, the tightest of them is 1.5497 against a bound of 1.0 — while
+        # `truth.json` claims coefficients the frames do not carry, by up to 0.3957 degrees of ray
+        # against the registration medians `registration_accuracy_test.cpp` publishes. Round 2 closed
+        # presence and distinctness and left the permutation open, which is the third time on this
+        # branch that a magnitude has turned out to be even in the thing it was meant to pin.
+        #
+        # **Those medians are named rather than quoted, on purpose.** Three comments in this file
+        # spelled `0.024 to 0.101` for one commit, in a file that catalogue does not list — three
+        # new copies of a figure, added by the change that cites the thing whose job is stopping
+        # copies of it. A pointer costs a reader one grep and cannot go stale.
+        #
+        # What separates them is the shape rather than the size. `k2` is the `r⁴` term and `k3` the
+        # `r⁶`, so `k3` is far more edge-weighted: measured as edge over centre against a pinhole,
+        # 69.08 for `--k2 0.08` and 236.42 for `--k3 0.12`. Asserted as a factor of two, which is
+        # a third of the measured 3.42 and still fails by construction under a swap.
+        k2_edge, k2_centre = self.edge_and_centre(straight, each["k2"])
+        k3_edge, k3_centre = self.edge_and_centre(straight, each["k3"])
+        self.assertGreater(k3_edge / k3_centre, 2.0 * (k2_edge / k2_centre),
+                           f"k3 is no more edge-weighted than k2 ({k3_edge / k3_centre:.1f} against "
+                           f"{k2_edge / k2_centre:.1f}), so the two are routed into each other")
+
+    def test_a_coefficient_whose_sign_is_dropped_is_caught(self):
+        # Flipping a coefficient's sign moves the pixels *further* than removing the coefficient
+        # altogether, because the two displacements are opposite rather than merely different. No
+        # threshold, and the thinnest margin is `k3`'s: 3.703 against 2.466.
+        #
+        # **What this catches is a sign *dropped*, not a sign convention *flipped*, and the case
+        # below is the one that catches the second.** Every assertion in this class is some
+        # `np.abs(one - other)` between two renders, and negating a coefficient globally in the
+        # render path merely exchanges which render is which — so `--p1 0.01` renders what `--p1
+        # -0.01` should and the distance between them is unchanged. Measured: that mutation leaves
+        # this case, the asymmetry case and every magnitude in the class untouched. It is caught
+        # only by comparing against something that is not a render of the coefficient at all.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            for name, value in self.COEFFICIENTS.items():
+                positive = self.frame(directory, f"{name}+", f"--{name}", str(value))
+                negative = self.frame(directory, f"{name}-", f"--{name}", str(-value))
+                self.assertGreater(
+                    np.abs(positive - negative).mean(), np.abs(positive - straight).mean(),
+                    f"flipping the sign of {name} changed the render by less than removing it")
+
+    def test_the_sign_of_k1_decides_whether_the_lens_sees_wider_or_narrower(self):
+        # **The one assertion in this class that is odd in the sign**, because it compares a
+        # distorted render against two renders that contain no distortion at all.
+        #
+        # A barrel lens (`k1 < 0`) maps a pixel at radius r to a direction further from the axis
+        # than a pinhole would, so the frame takes in *more* of the world; a pincushion takes in
+        # less.
+        #
+        # **The two reference lenses hold `fy / fx` at the lens under test's 1.044494**, so they are
+        # the same shape seen wider and narrower rather than three different shapes. At 4:3 that
+        # ratio is `0.75 · tan(hfov/2) / tan(vfov/2)`, which puts the vertical angles at 45.0345 and
+        # 55.1016 degrees. An earlier version used 45.36 and 54.55 and claimed the same 1.0445 for
+        # them; they give 1.036166 and 1.056869, and every figure quoted for them was measured on a
+        # third pair of lenses again.
+        #
+        # Measured through this class's own helpers, mean absolute bytes: the barrel render is
+        # 31.64 from the wide reference and 41.58 from the narrow; the pincushion is 34.66 from the
+        # narrow and 41.04 from the wide. Margins of 9.9 and 6.4, asserted as the relation.
+        #
+        # **`k1` only, and the other four are not covered against this mutation.** Measured against
+        # the same two references: `--k3 +0.12` comes out *wider* than narrower, which is backwards
+        # for a pincushion, and `--k2 +0.08` gets it right by 0.39 bytes. The negative sides are
+        # correct with 2.14 and 1.53 to spare.
+        #
+        # **And what disqualifies them is not the size of the signature but that it flips with the
+        # content.** On the committed photograph *both* pincushion sides invert — `--k2 +0.08` and
+        # `--k3 +0.12` each come out nearer the wrong reference — while the barrel sides stay
+        # correct at 3.25 and 2.49 bytes, which is larger than anything on the checkerboard. So the
+        # margins are not small; they are a property of the world, and a relation that reverses when
+        # the panorama changes is a coin however wide it is. `k1` holds in both worlds, and by more
+        # on the photograph: 11.69 and 6.57 against the checkerboard's 9.93 and 6.38.
+        #
+        # (Those four photograph figures were 12.47, 6.39, 3.57 and 2.83 for one commit. They were
+        # measured on the reference lenses this case *used* to use, and when those were corrected
+        # the checkerboard numbers were re-measured and these were not — which is the same mistake,
+        # one commit later, in the half of the comment nothing runs.) `p1` and `p2` are shears and have no
+        # field-of-view analogue at all. What this does cover is the realistic version of the bug: a
+        # convention flipped across the whole distortion model shows up in `k1`, because `k1` is the
+        # term that carries almost all of a real lens.
+        with tempfile.TemporaryDirectory() as directory:
+            narrower = self.frame(directory, "narrow", "--hfov", "60", "--vfov", "45.0345")
+            wider = self.frame(directory, "wide", "--hfov", "72", "--vfov", "55.1016")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
+            pincushion = self.frame(directory, "pincushion", "--k1", str(self.COEFFICIENTS["k1"]))
+
+        self.assertLess(np.abs(barrel - wider).mean(), np.abs(barrel - narrower).mean(),
+                        "a barrel lens does not take in more of the world, so k1's sign is flipped")
+        self.assertLess(np.abs(pincushion - narrower).mean(), np.abs(pincushion - wider).mean(),
+                        "a pincushion lens does not take in less of the world, so k1's sign is "
+                        "flipped")
+
+    def test_the_tangential_terms_act_along_perpendicular_axes(self):
+        # **The hole this closes was open and a reviewer walked through it.** Every case above
+        # spends `--k1` alone, and the record case reads `truth.json` and never a pixel — so
+        # `render_frame` zeroing p1 and p2, or swapping them, left the whole suite green while writing
+        # a `truth.json` that claims coefficients the frames do not carry. That is the exact failure
+        # the class docstring names: a dataset that says it is distorted and is not, which the C++
+        # loader reads and believes.
+        #
+        # The ray error that makes this a dataset-integrity bug rather than a coverage gap, and the
+        # two numbers are different worlds: **0.4567 degrees** at this case's own `--p1 0.01` on its
+        # 64x48 frame, and 0.8520 at `k1 = -0.15` with `p1` zeroed on a 640x480 one, which is the
+        # lens a reviewer measured and which this case never renders. Both are several times the
+        # registration medians `registration_accuracy_test.cpp` publishes. An earlier version of
+        # this comment quoted 0.856 for the first, which is neither.
+        #
+        # Three differences rather than two, because two would be satisfied by one term standing in
+        # for the other: p1 and p2 are tangential along perpendicular axes, so a frame distorted by
+        # one is not the frame distorted by the other. Measured 5.39, 5.20 and 7.41 mean absolute
+        # bytes.
+        #
+        # **The one property that a magnitude cannot carry, and the only thing that catches a swap.**
+        # Exchanging `p1` and `p2` in the render path relabels two frames and leaves every magnitude
+        # in this class identical — the case above included, since it compares the two renders
+        # without caring which is which. What is asymmetric is *where* each term acts. OpenCV's
+        # tangential pair is `x + 2·p1·x·y + p2·(r² + 2x²)` and `y + p1·(r² + 2y²) + 2·p2·x·y`, so
+        # `p1` alone displaces mostly along **y** and is largest at the top and bottom of the frame,
+        # and `p2` alone mostly along **x** and is largest at the sides.
+        #
+        # The names below follow that: `moves_y` is the `--p1` render. An earlier version called it
+        # `along_x`, which says the opposite of the algebra three lines above it, inside the one
+        # assertion whose whole job is telling the two apart.
+        #
+        # Measured as top-and-bottom over left-and-right: 2.085 for `p1` and 0.780 for `p2`.
+        # Asserted as the relation rather than against either number, so a swap fails it by
+        # construction and no threshold has to be defended.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            moves_y = self.frame(directory, "p1", "--p1", "0.01")
+            moves_x = self.frame(directory, "p2", "--p2", "0.01")
+
+        p1_tall, p1_wide = self.top_bottom_and_sides(straight, moves_y)
+        p2_tall, p2_wide = self.top_bottom_and_sides(straight, moves_x)
+        self.assertGreater(p1_tall / p1_wide, p2_tall / p2_wide,
+                           f"p1 is no more vertical than p2 ({p1_tall / p1_wide:.3f} against "
+                           f"{p2_tall / p2_wide:.3f}), so the two are swapped")
+
+    def test_a_lens_that_folds_inside_its_own_frame_is_refused_before_anything_renders(self):
+        # `render_frame` has refused a rayless pixel since it was written, and until this flag
+        # existed **nothing could reach that refusal through the command line** — every lens the CLI
+        # could build was distortion-free, and a pinhole has a ray behind every pixel. The guard was
+        # reachable only from a test that constructed an `Intrinsics` by hand.
+        #
+        # Before rendering, not during: the refusal is the same either way, but spending a full
+        # render to discover the lens was never going to work is the cost every other `--out` and
+        # `--panorama` check here exists to avoid.
+        rendered = {"n": 0}
+        honest = synth_dataset.render_frame
+
+        def count(*arguments, **named):
+            rendered["n"] += 1
+            return honest(*arguments, **named)
+
+        synth_dataset.render_frame = count
+        self.addCleanup(setattr, synth_dataset, "render_frame", honest)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(SystemExit):
+                self.render(directory, "folded", "--k1", "-0.9")
+        self.assertEqual(rendered["n"], 0, "it rendered before refusing a lens it cannot use")
+
+    def test_a_coefficient_that_is_not_a_number_is_refused_by_the_parser(self):
+        # **Three values, because they fail in three different places and only one of them used to
+        # be refused at all.**
+        #
+        # `banana` never reaches this module: argparse's `type=float` rejects it. That makes this
+        # case blind to whether `--k1` exists — it exits 2 for an unrecognised flag too — so the
+        # flag's existence is asserted first, by rendering with a value the parser must accept.
+        #
+        # `nan` and `inf` *are* floats, so `type=float` takes them, and they used to reach the
+        # pre-flight and raise: a traceback, exit 1 where every other refusal here exits 2, and a
+        # message about `fx, fy, width and height`, none of which was the problem. The value this
+        # case is named for is the one it could not reach.
+        with tempfile.TemporaryDirectory() as directory:
+            self.render(directory, "accepted", "--k1", "-0.05")
+            for refused in ("banana", "nan", "inf", "-inf"):
+                with self.subTest(value=refused), self.assertRaises(SystemExit) as exit:
+                    self.render(directory, "ring", "--k1", refused)
+                self.assertEqual(exit.exception.code, 2,
+                                 f"--k1 {refused} did not exit the way a refusal does")
 
 
 class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):

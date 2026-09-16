@@ -195,14 +195,19 @@ pinning of both to hand-worked decimals derived from neither (ADR 0050).
 
 Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, a
 procedural panorama, and **a real photographed one** — `--panorama` reads an equirectangular image
-and the accuracy measurement is made in it rather than in a checkerboard (ADR 0059). Still to come,
-each its own increment with its own invariant: **lens distortion**, a noise and blur model,
-rolling-shutter skew, an exposure ramp, a burst per cell, and composited movers for known ghost
-regions. Distortion is not in ADR 0050's original list and belongs there — `docs/06-roadmap.md`
-says why, and says which half of the reason for it turned out to be wrong (ADR 0060).
+and the accuracy measurement is made in it rather than in a checkerboard (ADR 0059) — and
+**lens distortion**, which `--k1` through `--p2` now ask for, defaulting to a pinhole, with a lens
+that folds inside its own frame refused before a frame is spent. Distortion was not in ADR 0050's
+original list and belonged there — `docs/06-roadmap.md` says why, and says which half of the reason
+for it turned out to be wrong (ADR 0060).
 
-It gives none of these *yet*, and the first is the only one whose machinery is complete. A reviewer
-pointed out that "what it gives today is the first of these" — which is what this line used to say —
+Still to come, each its own increment with its own invariant: a noise and blur model,
+rolling-shutter skew, an exposure ramp, a burst per cell, and composited movers for known ghost
+regions. And one that is not a renderer feature at all — *measuring* accuracy through a distorted
+lens, which moves the published table and so moves with it.
+
+It gives none of those *yet*. A reviewer pointed out that "what it gives today is the first of
+these" — which is what this line used to say —
 is contradicted by the bullet immediately under it:
 
 - registration accuracy measured in degrees against truth, not eyeballed — all three parts that
