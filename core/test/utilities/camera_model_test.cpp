@@ -944,7 +944,15 @@ TEST(Unproject, TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit) {
   const auto displacementDeg = [&lens](const Pixel& centre) {
     const UnprojectedDirection truth = Unproject(lens, centre);
     const UnprojectedDirection read = Unproject(lens, Pixel{centre.x - 0.5, centre.y - 0.5});
-    EXPECT_TRUE(truth.valid && read.valid);
+    // Unreachable on this lens and kept anyway, with the pixel in it. Every coefficient is zero, so
+    // `DistortAt` is the identity, Newton converges in one pass and `Unproject` cannot refuse a
+    // finite pixel — which makes this a check on the assumption rather than on the arithmetic, and
+    // the assumption is what a future distorted variant of this test would break. Located, because
+    // an unlocated one fires 307,200 times and names no pixel; and it cannot be an `ASSERT` because
+    // the lambda returns a value. Without it the refusal still surfaces — a zero direction gives
+    // `acos(0)`, 90 degrees, and the bounds below fail — but it surfaces as "the largest
+    // displacement is 90 degrees", which diagnoses the wrong thing.
+    EXPECT_TRUE(truth.valid && read.valid) << "no ray at pixel " << centre.x << ", " << centre.y;
     return std::acos(std::clamp(Dot(truth.direction, read.direction), -1.0, 1.0)) * kDegPerRad;
   };
 

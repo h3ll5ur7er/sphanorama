@@ -515,8 +515,10 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
   // green.** The bounds here are what fail; the figures are prose in ten places that may be
-  // corrected, and nothing invalidates them. **Counting the two sub-entries, which is how the
-  // total below is reached.** Seven are in this file:
+  // corrected, and nothing invalidates them. **There is deliberately no count.** This list has had
+  // a total three times — eight, then nine, then ten — and every one of them was left stale by the
+  // edit that added an entry, in a comment whose entire job is stopping a figure from going stale
+  // somewhere. "Every entry below" is greppable and survives the next `6c`. In this file:
   //
   //   1. this comment's `0.024 to 0.101` and `0.1551` — **and the refit paragraph above it**,
   //      whose `0.2108 / 0.6477`, `0.1826 / 0.2989` and `0.0535 / 0.1147` are hangar measurements
@@ -552,7 +554,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // `0.1551` came to name one quantity — keep the rounding where it is and the claims exact.
   //
   // **ADR 0059 carries `0.652` and the live medians, and ADR 0061 carries this file's whole table
-  // beside the figures a correction would produce. Neither is one of the ten.** An ADR is never
+  // beside the figures a correction would produce. Neither is an entry here.** An ADR is never
   // edited into agreement with the present (`docs/adr/README.md`), so a bump that moves these
   // figures supersedes both rather than correcting either. That is the same reason the `+ 0.5`
   // above is listed apart from the ten: these are things the correction *touches*, and the ten are
@@ -561,7 +563,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // ADR is about, so it is not a copy of this table.)
   //
   // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
-  // each — correct all ten, and supersede ADR 0059 rather than correcting it. Otherwise the next
+  // each — correct every entry below, and supersede ADR 0059 rather than correcting it. Otherwise the next
   // reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.

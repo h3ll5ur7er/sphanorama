@@ -139,7 +139,7 @@ Concretely:
    a pixel out, and now points here for what correcting them costs.
 4. When the correction is made it moves **in one commit**, and the list of what moves is
    **already written**: the comment headed **"Where else the table is written"** in
-   `registration_accuracy_test.cpp` catalogues ten figure sites, both `EXPECT_LT` bounds, the
+   `registration_accuracy_test.cpp` catalogues every figure site, both `EXPECT_LT` bounds, the
    `+ 0.5` in `ReadBearings`, and the rule that ADRs 0059 and 0061 are *superseded* rather than
    corrected. Read that catalogue, not a list here.
 
