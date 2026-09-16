@@ -1401,6 +1401,127 @@ class AProjectedPixelIsAFiniteNumber(unittest.TestCase):
         self.assertTrue(np.isnan(u).all() and np.isnan(v).all())
 
 
+class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
+    """The command line can ask for distortion, and the frames come out distorted.
+
+    **Every piece of this existed except the asking.** `Intrinsics` has carried `k1` through `p2`
+    since it was written, `render_frame` unprojects through the full Newton-solved inverse,
+    `truth.json` writes `asdict(lens)` so the coefficients are already emitted, and the C++ loader
+    already reads all five. What was missing was any way for a caller to set them, so every dataset
+    this repository has ever produced was rendered through a pinhole — and the roadmap's own
+    objection to that is the reason this exists: *an accuracy measured on a lens nobody sells is not
+    a statement about a phone*.
+
+    So these cases are about the seam, not the arithmetic. The distortion maths is pinned elsewhere
+    and thoroughly — against the core across lens families, against OpenCV's term order, at the fold,
+    and along the ray for the tangential case. Repeating any of that here would be asserting a second
+    time what is already asserted once.
+    """
+
+    def _run(self, *argv):
+        held = sys.argv
+        sys.argv = ["synth_dataset.py", *argv]
+        try:
+            return synth_dataset.main()
+        finally:
+            sys.argv = held
+
+    def render(self, directory, name, *extra):
+        out = Path(directory) / name
+        self._run("--out", str(out), "--frames", "2", "--width", "64", "--height", "48", *extra)
+        return out
+
+    @staticmethod
+    def read_ppm(path):
+        """The three-token P6 header this generator writes, then the payload.
+
+        Parsed rather than assumed: the header is `P6`, the dimensions and the maximum on their own
+        lines, and reading past a fixed offset would pass whatever the writer did next.
+        """
+        raw = path.read_bytes()
+        magic, dimensions, maximum, payload = raw.split(b"\n", 3)
+        assert magic == b"P6" and maximum == b"255", (magic, maximum)
+        width, height = (int(token) for token in dimensions.split())
+        return np.frombuffer(payload, dtype=np.uint8).reshape(height, width, 3)
+
+    def test_the_coefficients_reach_the_lens_the_dataset_records(self):
+        # The flags are the whole change, so this is the whole of what can be got wrong about them:
+        # a flag parsed and dropped leaves a dataset that says it is distorted and is not, which is
+        # worse than no flag at all because the C++ reads that record and believes it.
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.render(directory, "ring", "--k1", "-0.12", "--k2", "0.03",
+                              "--k3", "-0.001", "--p1", "0.0004", "--p2", "-0.0002")
+            lens = json.loads((out / "truth.json").read_text())["intrinsics"]
+        self.assertEqual(
+            {key: lens[key] for key in ("k1", "k2", "k3", "p1", "p2")},
+            {"k1": -0.12, "k2": 0.03, "k3": -0.001, "p1": 0.0004, "p2": -0.0002})
+
+    def test_a_dataset_with_no_coefficients_is_still_the_pinhole_it_always_was(self):
+        # The other half, and the reason the default matters: every dataset committed before this
+        # flag existed was rendered through a pinhole, and the accuracy table is measured on one.
+        # A default that quietly acquired a coefficient would move a published figure.
+        with tempfile.TemporaryDirectory() as directory:
+            out = self.render(directory, "ring")
+            lens = json.loads((out / "truth.json").read_text())["intrinsics"]
+        self.assertEqual([lens[key] for key in ("k1", "k2", "k3", "p1", "p2")], [0.0] * 5)
+
+    def test_distortion_moves_the_pixels_and_moves_the_edge_more_than_the_centre(self):
+        # That the frames merely *differ* is satisfied by any bug that perturbs them. What says the
+        # distortion is radial is where the difference lives: a radial term is zero at the optical
+        # centre by construction and grows outward, so the edge must move more than the middle.
+        #
+        # Measured as a ratio rather than a threshold, because the absolute displacement depends on
+        # the panorama's content and the ratio depends only on the lens.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.render(directory, "pinhole")
+            barrel = self.render(directory, "barrel", "--k1", "-0.15")
+            a = self.read_ppm(straight / "frame_0000.ppm").astype(float)
+            b = self.read_ppm(barrel / "frame_0000.ppm").astype(float)
+
+        self.assertEqual(a.shape, b.shape)
+        difference = np.abs(a - b).mean(axis=2)
+        height, width = difference.shape
+        # A centred box of half the frame's extent against everything outside it.
+        top, bottom = height // 4, height - height // 4
+        left, right = width // 4, width - width // 4
+        middle = difference[top:bottom, left:right]
+        outside = np.concatenate([difference[:top].ravel(), difference[bottom:].ravel(),
+                                  difference[top:bottom, :left].ravel(),
+                                  difference[top:bottom, right:].ravel()])
+        self.assertGreater(outside.mean(), 0.0, "a distorted render is identical to a pinhole one")
+        self.assertGreater(outside.mean(), 2.0 * middle.mean(),
+                           f"the difference is not radial: centre {middle.mean():.3f}, "
+                           f"edge {outside.mean():.3f}")
+
+    def test_a_lens_that_folds_inside_its_own_frame_is_refused_before_anything_renders(self):
+        # `render_frame` has refused a rayless pixel since it was written, and until this flag
+        # existed **nothing could reach that refusal through the command line** — every lens the CLI
+        # could build was distortion-free, and a pinhole has a ray behind every pixel. The guard was
+        # reachable only from a test that constructed an `Intrinsics` by hand.
+        #
+        # Before rendering, not during: the refusal is the same either way, but spending a full
+        # render to discover the lens was never going to work is the cost every other `--out` and
+        # `--panorama` check here exists to avoid.
+        rendered = {"n": 0}
+        honest = synth_dataset.render_frame
+
+        def count(*arguments, **named):
+            rendered["n"] += 1
+            return honest(*arguments, **named)
+
+        synth_dataset.render_frame = count
+        self.addCleanup(setattr, synth_dataset, "render_frame", honest)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(SystemExit):
+                self.render(directory, "folded", "--k1", "-0.9")
+        self.assertEqual(rendered["n"], 0, "it rendered before refusing a lens it cannot use")
+
+    def test_a_coefficient_that_is_not_a_number_is_refused_by_the_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(SystemExit):
+                self.render(directory, "ring", "--k1", "banana")
+
+
 class TheRenderIsStreamedRatherThanHeld(unittest.TestCase):
     """Frame N is on disk before frame N+1 is rendered, which is what the streaming render is for.
 

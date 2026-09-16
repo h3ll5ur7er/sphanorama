@@ -752,8 +752,8 @@ that has to be ordered.
   `tools/synth_dataset.py` renders the frames a phone would have captured from a panorama and emits
   the rotation each was taken at. It re-implements the lens rather than calling the core, because a
   dataset rendered through the code under test cancels any error the two share and would certify a
-  broken projection as accurate (ADR 0050). Noise, blur, rolling shutter, exposure, bursts per cell
-  and movers are each still to come.
+  broken projection as accurate (ADR 0050). **It renders distortion now, on request.** Noise, blur,
+  rolling shutter, exposure, bursts per cell and movers are each still to come.
 - **The two halves of the harness now meet** — `core/test/support/synthetic_dataset` reads a rendered
   dataset into a frame store, with the lens it was rendered through and the rotation recorded for
   each frame. Until it existed no C++ here read a dataset, so the median below could not be computed
@@ -873,7 +873,13 @@ bearing reader dropped the rows the lens could not unproject, desynchronising th
 descriptors, was invisible to every test in this repository for exactly that reason: with no
 distortion nothing is ever unprojectable, so the compaction never happened. ADR 0050 names noise,
 blur, rolling-shutter skew, exposure ramps, bursts per cell and composited movers as increments of
-their own; distortion is not on that list and belongs on it. Rendering with distortion will not, on
+their own; distortion was not on that list and belonged on it. **It is renderable now** —
+`--k1 --k2 --k3 --p1 --p2`, defaulting to a pinhole, with a lens that folds inside its own frame
+refused before a frame is spent rather than after. Everything but the asking already existed:
+`Intrinsics` has carried the coefficients since it was written, `render_frame` unprojects through
+the full Newton-solved inverse, `truth.json` emits them and the C++ loader reads them. What is still
+open is *measuring* accuracy on a distorted lens, which moves this table and is therefore its own
+increment under ADR 0061's rule. Rendering with distortion will not, on
 its own, make that path reachable again — the renderer refuses to render a frame with a rayless
 pixel in it, so the lens of every dataset it produces answers every pixel *centre* of its own frame
 whatever coefficients it is given (ADR 0060). Distortion is worth rendering for the first reason
