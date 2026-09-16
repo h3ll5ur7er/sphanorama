@@ -1422,11 +1422,16 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     `truth.json` and not a pixel, and then `k2` and `k3` did the same when the mutation was moved to
     the seam instead of into `render_frame`.
 
-    So these cases do assert structure, and say which: that every coefficient reaches a pixel, that
-    none of the five stands in for another, that each one's *sign* reaches a pixel, that the radial
-    displacement grows outward, that it scales with the coefficient, and that the tangential pair
-    acts along perpendicular axes. What they deliberately do not re-derive is the distortion maths
-    itself.
+    So these cases do assert structure, and the list is worth stating precisely because two rounds
+    of review have found it claiming more than it covers. For **all five** coefficients: each
+    reaches a pixel, none renders identically to another, and a sign that is *dropped* is caught.
+    For **`k2` against `k3`**: the `r⁶` term is far more edge-weighted than the `r⁴` one, which is
+    what catches a routing swap that the pairwise distances cannot. For **`k1` alone**: the
+    displacement grows outward rather than uniformly, it scales with the coefficient, and a sign
+    *convention* that is flipped is caught against two undistorted reference lenses. For the
+    **tangential pair**: `p1` and `p2` act along perpendicular axes. What these do not re-derive is
+    the distortion maths itself, and what they do not cover is negating `p1` and `p2` while leaving
+    `k1` alone.
 
     **Every figure below is measured on the checkerboard `_checkerboard_panorama` generates**, which
     is what `self.render` produces because it never passes `--panorama`. The repository's committed
@@ -1440,6 +1445,12 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     # Magnitudes that render on both signs. `--k3 -0.25` folds inside a 64x48 frame at 66 degrees
     # and is refused before anything renders, so a sign case cannot be written at the magnitude a
     # magnitude case would want — which is why these are stated once here rather than per case.
+    #
+    # Every case reads them from here rather than spelling a literal. Four of the `k1` cases used to
+    # spell `0.15` and `-0.15` inline, so this dict read as the single source while being one of
+    # five copies, and the fold constraint above it did not travel to the places that needed it.
+    # `--k1 -0.005`, the attenuated one, stays a literal on purpose: it is a *ratio* to the entry
+    # here, and the case that uses it asserts that ratio.
     COEFFICIENTS = {"k1": 0.15, "k2": 0.08, "k3": 0.12, "p1": 0.01, "p2": 0.01}
 
     def _run(self, *argv):
@@ -1541,7 +1552,7 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # repeated here because this is the line that would go red.
         with tempfile.TemporaryDirectory() as directory:
             straight = self.frame(directory, "pinhole")
-            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
 
         self.assertEqual(straight.shape, barrel.shape)
         outside, middle = self.edge_and_centre(straight, barrel)
@@ -1558,8 +1569,8 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # are opposite rather than merely different. Measured 24.49 against 16.80.
         with tempfile.TemporaryDirectory() as directory:
             straight = self.frame(directory, "pinhole")
-            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
-            pincushion = self.frame(directory, "pincushion", "--k1", "0.15")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
+            pincushion = self.frame(directory, "pincushion", "--k1", str(self.COEFFICIENTS["k1"]))
 
         self.assertGreater(np.abs(barrel - pincushion).mean(), np.abs(barrel - straight).mean(),
                            "flipping the sign of k1 changed the render by less than removing it")
@@ -1576,15 +1587,18 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # scaling k1 leaves it untouched.
         with tempfile.TemporaryDirectory() as directory:
             straight = self.frame(directory, "pinhole")
-            strong = self.frame(directory, "strong", "--k1", "-0.15")
+            strong = self.frame(directory, "strong", "--k1", str(-self.COEFFICIENTS["k1"]))
             weak = self.frame(directory, "weak", "--k1", "-0.005")
 
         strong_edge, _ = self.edge_and_centre(straight, strong)
         weak_edge, _ = self.edge_and_centre(straight, weak)
         # **An absolute floor as well as a ratio, and this is the one place one is defensible.**
-        # A render that attenuated *every* coefficient uniformly keeps the ratio where it is — the
-        # ratio moves only between 8.66 and 10.38 across the whole sweep — and passes every other
-        # assertion in this class. Only a floor can see it.
+        # A render that attenuated *every* coefficient uniformly keeps the ratio where it is — over
+        # the region this paragraph is about, factors of 0.55 to 1.0, it moves only between 9.14 and
+        # 10.38 — and passes every other assertion in this class. Only a floor can see it. (Further
+        # down the ratio does fall: 8.52 at 0.40 and 7.77 at 0.01. That is well past where the floor
+        # already catches it, so it is not what keeps this honest, and an earlier version of this
+        # comment quoted the wider sweep's bottom as though it were the region's.)
         #
         # **And it sees it from about 1.94x, not from any attenuation at all.** Measured: a factor
         # of 0.55 leaves the edge at 10.99 bytes and passes everything; 0.50 leaves 9.67 and is
@@ -1593,8 +1607,9 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         #
         # The cost is that a floor is a property of the world rendered as much as of the lens:
         # 21.64 bytes on the checkerboard this class renders, 10 asserted. The photograph gives an
-        # attenuation window of 18.71 against this case's floor of 20, so it too would have to be
-        # re-derived — see the class docstring.
+        # attenuation of 18.71 against this case's *window*, whose lower bound is 20 — a different
+        # constant from the floor, and an earlier version of this comment called it the floor — so
+        # it too would have to be re-derived. See the class docstring.
         self.assertGreater(strong_edge, 10.0,
                            f"k1 = -0.15 moved the edge by only {strong_edge:.2f} bytes")
         self.assertGreater(weak_edge, 0.0, "a thirtieth of the coefficient moved nothing at all")
@@ -1631,6 +1646,24 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
                                f"{one} and {other} render identically, so one stands in for the "
                                f"other")
 
+        # **The ten pairs cannot see a routing swap, and this is what does.** Exchanging `k2` and
+        # `k3` at the seam permutes which render is which, so all fifteen assertions above stay
+        # comfortably true — measured, the tightest of them is 1.5497 against a bound of 1.0 — while
+        # `truth.json` claims coefficients the frames do not carry, by up to 0.3957 degrees of ray
+        # against registration medians of 0.024 to 0.101. Round 2 closed presence and distinctness
+        # and left the permutation open, which is the third time on this branch that a magnitude has
+        # turned out to be even in the thing it was meant to pin.
+        #
+        # What separates them is the shape rather than the size. `k2` is the `r⁴` term and `k3` the
+        # `r⁶`, so `k3` is far more edge-weighted: measured as edge over centre against a pinhole,
+        # 69.08 for `--k2 0.08` and 236.42 for `--k3 0.12`. Asserted as a factor of two, which is
+        # a third of the measured 3.42 and still fails by construction under a swap.
+        k2_edge, k2_centre = self.edge_and_centre(straight, each["k2"])
+        k3_edge, k3_centre = self.edge_and_centre(straight, each["k3"])
+        self.assertGreater(k3_edge / k3_centre, 2.0 * (k2_edge / k2_centre),
+                           f"k3 is no more edge-weighted than k2 ({k3_edge / k3_centre:.1f} against "
+                           f"{k2_edge / k2_centre:.1f}), so the two are routed into each other")
+
     def test_a_coefficient_whose_sign_is_dropped_is_caught(self):
         # Flipping a coefficient's sign moves the pixels *further* than removing the coefficient
         # altogether, because the two displacements are opposite rather than merely different. No
@@ -1658,27 +1691,32 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         #
         # A barrel lens (`k1 < 0`) maps a pixel at radius r to a direction further from the axis
         # than a pinhole would, so the frame takes in *more* of the world; a pincushion takes in
-        # less. The two reference lenses are a pinhole at 60 by 45.36 degrees and one at 72 by
-        # 54.55 — chosen so that `fy / fx` is the 1.0445 of the 66 by 50 lens under test, which
-        # makes them the same lens seen wider and narrower rather than three different shapes.
+        # less.
         #
-        # Measured, mean absolute bytes: the barrel render is 29.86 from the wide reference and
-        # 40.62 from the narrow one; the pincushion is 32.94 from the narrow and 40.74 from the
-        # wide. Roughly ten bytes of margin each way, asserted as the relation.
+        # **The two reference lenses hold `fy / fx` at the lens under test's 1.044494**, so they are
+        # the same shape seen wider and narrower rather than three different shapes. At 4:3 that
+        # ratio is `0.75 · tan(hfov/2) / tan(vfov/2)`, which puts the vertical angles at 45.0345 and
+        # 55.1016 degrees. An earlier version used 45.36 and 54.55 and claimed the same 1.0445 for
+        # them; they give 1.036166 and 1.056869, and every figure quoted for them was measured on a
+        # third pair of lenses again.
         #
-        # **`k1` only, and the other four are not covered against this mutation.** `k2` and `k3` are
-        # higher-order radial terms whose field-of-view signature is under a byte at the magnitudes
-        # that render on both signs — measured 37.72 against 39.98 for `--k2 -0.08`, and `--k3
-        # +0.12` gets it the wrong way round at 38.55 against 38.13, so asserting it would be
-        # asserting noise. `p1` and `p2` are shears and have no field-of-view analogue at all. What
-        # this does cover is the realistic version of the bug: a convention flipped across the whole
-        # distortion model shows up in `k1`, because `k1` is the term that carries almost all of a
-        # real lens.
+        # Measured through this class's own helpers, mean absolute bytes: the barrel render is
+        # 31.64 from the wide reference and 41.58 from the narrow; the pincushion is 34.66 from the
+        # narrow and 41.04 from the wide. Margins of 9.9 and 6.4, asserted as the relation.
+        #
+        # **`k1` only, and the other four are not covered against this mutation.** Measured against
+        # the same two references: `--k3 +0.12` comes out *wider* than narrower, which is backwards
+        # for a pincushion, and `--k2 +0.08` gets it right by 0.39 bytes. The negative sides are
+        # correct with 2.14 and 1.53 to spare, so the relation holds on one side of zero and not the
+        # other — which is not a bound, it is a coin. `p1` and `p2` are shears and have no
+        # field-of-view analogue at all. What this does cover is the realistic version of the bug: a
+        # convention flipped across the whole distortion model shows up in `k1`, because `k1` is the
+        # term that carries almost all of a real lens.
         with tempfile.TemporaryDirectory() as directory:
-            narrower = self.frame(directory, "narrow", "--hfov", "60", "--vfov", "45.36")
-            wider = self.frame(directory, "wide", "--hfov", "72", "--vfov", "54.55")
-            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
-            pincushion = self.frame(directory, "pincushion", "--k1", "0.15")
+            narrower = self.frame(directory, "narrow", "--hfov", "60", "--vfov", "45.0345")
+            wider = self.frame(directory, "wide", "--hfov", "72", "--vfov", "55.1016")
+            barrel = self.frame(directory, "barrel", "--k1", str(-self.COEFFICIENTS["k1"]))
+            pincushion = self.frame(directory, "pincushion", "--k1", str(self.COEFFICIENTS["k1"]))
 
         self.assertLess(np.abs(barrel - wider).mean(), np.abs(barrel - narrower).mean(),
                         "a barrel lens does not take in more of the world, so k1's sign is flipped")
@@ -1692,8 +1730,14 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # `render_frame` zeroing p1 and p2, or swapping them, left all 103 tests green while writing
         # a `truth.json` that claims coefficients the frames do not carry. That is the exact failure
         # the class docstring names: a dataset that says it is distorted and is not, which the C++
-        # loader reads and believes. Measured ray error of the zeroing sabotage: up to 0.856
-        # degrees, against published registration medians of 0.024 to 0.101.
+        # loader reads and believes.
+        #
+        # The ray error that makes this a dataset-integrity bug rather than a coverage gap, and the
+        # two numbers are different worlds: **0.4567 degrees** at this case's own `--p1 0.01` on its
+        # 64x48 frame, and 0.8520 at `k1 = -0.15` with `p1` zeroed on a 640x480 one, which is the
+        # lens a reviewer measured and which this case never renders. Both are four to thirty-five
+        # times the published registration medians of 0.024 to 0.101. An earlier version of this
+        # comment quoted 0.856 for the first, which is neither.
         #
         # Three differences rather than two, because two would be satisfied by one term standing in
         # for the other: p1 and p2 are tangential along perpendicular axes, so a frame distorted by
@@ -1750,7 +1794,12 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         self.assertEqual(rendered["n"], 0, "it rendered before refusing a lens it cannot use")
 
     def test_a_coefficient_that_is_not_a_number_is_refused_by_the_parser(self):
+        # **Two assertions, because argparse exits 2 for an unrecognised flag as well as for a bad
+        # value.** The refusal alone passes in a tree where `--k1` was never added — which is the
+        # state this whole class exists to move away from — so the flag's existence is asserted
+        # first, by rendering with a value the parser must accept.
         with tempfile.TemporaryDirectory() as directory:
+            self.render(directory, "accepted", "--k1", "-0.05")
             with self.assertRaises(SystemExit):
                 self.render(directory, "ring", "--k1", "banana")
 
