@@ -262,6 +262,36 @@ TEST(AverageQuaternions, AnOrdinarySpreadIsUnique) {
   EXPECT_TRUE(average.isUnique);
 }
 
+/**
+ * A near-tie is still a tie broken, which is what pins the threshold rather than its direction.
+ *
+ * The two cases above sit at the extremes — an exact tie and a spread whose eigenvalues differ by
+ * most of their size — and between them they leave `kEigenvalueGap` free anywhere from zero to about
+ * a half: a reviewer moved it to 0.5 and to 0.0 with the whole suite green. That is a constant
+ * carrying a measured claim with nothing measuring it.
+ *
+ * A tenth of a degree short of a half turn is what closes the gap. About one axis the two
+ * eigenvalues are `1 ± cos(sep/2) sin(sep/2)`, so at 179.9 degrees the relative separation is
+ * **1.744e-3** — six orders above the threshold and two below the 0.5 that used to pass, so the
+ * constant is now pinned from both sides. It is the right answer as well as a convenient one: the
+ * maximiser really is a single rotation here, and the comment on `kEigenvalueGap` claims only that
+ * exact ties are caught.
+ */
+TEST(AverageQuaternions, ATenthOfADegreeShortOfAHalfTurnIsStillUnique) {
+  const std::vector<Quat> nearly{AboutY(0.0), AboutY(179.9)};
+  const QuaternionAverage average = AverageQuaternions(nearly, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_TRUE(average.isUnique)
+      << "a relative eigenvalue gap of 1.7e-3 is being read as a tie";
+
+  // The exact half turn beside it, so the pair says the threshold discriminates rather than that it
+  // answers one way.
+  const std::vector<Quat> exactly{AboutY(0.0), AboutY(180.0)};
+  const QuaternionAverage tied = AverageQuaternions(exactly, {});
+  ASSERT_TRUE(tied.valid);
+  EXPECT_FALSE(tied.isUnique);
+}
+
 // ----------------------------------------------------------------- refusals
 //
 // Each way of having no answer is asserted on its own rather than in a loop over "bad inputs": a

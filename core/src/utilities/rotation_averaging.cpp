@@ -175,8 +175,19 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // many as there are frames.
   std::vector<Quat> predictions;
   std::vector<double> weights;
+  std::vector<int32_t> ambiguous;
   for (int sweep = 1; sweep <= kMaxSweeps; ++sweep) {
     double largestMoveDeg = 0;
+    // Cleared each sweep rather than accumulated, so what comes back describes the answer being
+    // returned and not every frame that was ever unsure on the way to it.
+    //
+    // **No test distinguishes this from accumulating, and that is worth saying rather than leaving
+    // for someone to find.** The two differ only on a frame that is ambiguous on one sweep and not
+    // on the last, which needs its neighbours to move through opposition and settle elsewhere — and
+    // a weakly anchored arrangement that does it on cue has not been constructible. Deleting this
+    // line fails nothing. It stays because the field's contract says "last average", and a reader
+    // deciding otherwise should change the contract first.
+    ambiguous.clear();
     for (int32_t i = 0; i < frames; ++i) {
       if (placed[static_cast<size_t>(i)] == 0) continue;
       predictions.clear();
@@ -215,6 +226,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // as protection to the next person and could never fire, which this repository treats as worse
       // than none.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
+      if (!average.isUnique) ambiguous.push_back(i);
+
       largestMoveDeg = std::max(
           largestMoveDeg,
           AngleBetween(solved[static_cast<size_t>(i)], average.rotation) * kDegPerRad);
@@ -255,6 +268,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     out.maxEdgeErrorDeg = errors.back();
   }
 
+  out.ambiguous = std::move(ambiguous);
   out.rotations = std::move(solved);
   out.valid = true;
   return out;

@@ -49,7 +49,9 @@ struct RelativeRotation {
 };
 
 struct AveragedRotations {
-  // Parallel to `anchors`. A frame that could not be placed holds the identity and is named in
+  // Parallel to `anchors` **on a valid answer**, and empty on a refusal — a qualification a reviewer
+  // had to ask for, since a caller reading the field name rather than `valid` would index an empty
+  // vector. A frame that could not be placed holds the identity and is named in
   // `unplaced` — never a silent identity, because the identity is a perfectly ordinary rotation that
   // a phone held level reports, and a caller has no other way to tell one that was solved for from
   // one that was given up on. An unplaced frame is always one with no usable anchor: a frame that
@@ -76,6 +78,16 @@ struct AveragedRotations {
 
   // Frames named in `unplaced` are the other half of the same question: how much of the input the
   // answer actually rests on.
+
+  // Frames whose last average had no single maximiser, so where they sit was settled by the
+  // eigensolver's scan order rather than by the evidence. Reachable when everything speaking for a
+  // frame disagrees by a half turn — two neighbours pointing opposite ways, which in a capture means
+  // a registration that has gone badly wrong rather than one that is merely imprecise.
+  //
+  // Reported because `AverageQuaternions` computes it on every frame of every sweep and this used to
+  // throw it away, which a reviewer found: a frame placed by a coin flip came back indistinguishable
+  // from one the edges agreed on. Disjoint from `unplaced` — an unplaced frame is never averaged.
+  std::vector<int32_t> ambiguous;
 
   // How many sweeps were run. At least one on any `valid` answer, so zero means the whole solve was
   // refused — which `valid` already says, and this does not independently promise.

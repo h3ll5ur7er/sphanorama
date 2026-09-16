@@ -723,6 +723,43 @@ TEST(AverageRotations, TheMedianEdgeErrorIsAMedianOverErrorsThatDiffer) {
   EXPECT_NEAR(pair.medianEdgeErrorDeg, 5.0, 1e-3) << "2 and 8 average to 5, they do not pick one";
 }
 
+/**
+ * A frame whose evidence cancels is named, not silently placed by the eigensolver's scan order.
+ *
+ * `AverageQuaternions` reports when the top two eigenvalues tie, which means every rotation in a
+ * whole plane maximises the objective equally and the one returned is decided by the order the
+ * diagonal was scanned in. The solver computed that flag on every frame of every sweep and threw it
+ * away, so a frame placed by a coin flip came back looking exactly like one the edges agreed on.
+ *
+ * Reachable rather than theoretical: two neighbours predicting orientations a half turn apart is a
+ * registration that has gone badly wrong, which is precisely when a caller wants to be told. Frame 1
+ * here has no anchor and two edges saying it is at 0 and at 180 degrees.
+ */
+TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
+  const std::vector<Quat> anchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
+  const std::vector<RelativeRotation> opposed{
+      RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
+      RelativeRotation{2, 1, TrueEdge(AboutY(0.0), AboutY(180.0)), 1.0},
+  };
+
+  const AveragedRotations solved = AverageRotations(opposed, anchors, 1000.0);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_TRUE(solved.unplaced.empty()) << "frame 1 was reachable, so it is placed and merely unsure";
+  ASSERT_EQ(solved.ambiguous.size(), 1u);
+  EXPECT_EQ(solved.ambiguous.front(), 1);
+
+  // The same shape with the two edges agreeing leaves nobody ambiguous, so the flag is reporting the
+  // cancellation rather than the topology.
+  const std::vector<RelativeRotation> agreed{
+      RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
+      RelativeRotation{2, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
+  };
+  const AveragedRotations settled = AverageRotations(agreed, anchors, 1000.0);
+  ASSERT_TRUE(settled.valid);
+  EXPECT_TRUE(settled.ambiguous.empty());
+  EXPECT_NEAR(SeparationDeg(settled.rotations[1], AboutY(0.0)), 0.0, 1e-9);
+}
+
 // ----------------------------------------------------------------- refusals
 //
 // Asserted one at a time rather than in a loop over "bad inputs", because a loop proves that
