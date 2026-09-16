@@ -80,7 +80,8 @@ gauge is the whole difficulty in the other direction from the scorer's — the s
 rotation, this one has to *choose* it, and the priors are the only thing that can. What it buys is
 the closing edge a chain throws away: on a twelve-frame ring whose every edge is biased by the same
 0.2 degrees, chaining leaves the worst frame 1.100 degrees out and the same edges with the twelfth
-included leave it 0.000028 — a *uniform* drift, which is the one kind a loop closure removes exactly,
+included leave it 0.000028, which is where the solver stops rather than the 0.0000024 it is heading
+for. A *uniform* drift, too, which is the one kind a loop closure removes exactly,
 so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
 and above an anchor weight of about a hundredth it is set by that weight rather than by the frame
 count; below it both matter and the budget runs out. `Refine` itself still refuses —

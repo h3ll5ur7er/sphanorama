@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <limits>
 #include <numbers>
+#include <span>
 #include <vector>
 
 #include "support/rotation_scoring.h"
@@ -136,9 +137,18 @@ TEST(AverageRotations, ConsistentEdgesAndTruthfulAnchorsReproduceTheTruth) {
  * 0.01 each frame's average is two exact edge predictions against one anchor that is three degrees
  * wrong, so about a two-hundredth of that error survives — measured, 0.0477 degrees of median
  * against the anchors' own 2.97, a factor of 62. Turning the anchors down to a millionth takes it to
- * 0.0000226, which is what says the residual is the anchors being believed and not the solver being
- * approximate. An earlier version of this test asserted the median below 1e-6 at `anchorWeight`
- * 0.01, which assumed the anchors contribute nothing — the thing they are passed in order to do.
+ * 0.0000226, three and a half orders down, which is what says the 0.0477 is the anchors being
+ * believed rather than the solver being approximate.
+ *
+ * **What 0.0000226 is *not* is the solver's precision**, and an earlier version of this paragraph
+ * said it was. Run to the fixed point it is 4.83e-6: about four fifths of what this asserts is the
+ * stopping rule, not the anchors. The conclusion above survives because 0.0477 is two thousand times
+ * the stopping floor and cannot be explained by it — but the small number is where `kSettledDeg`
+ * stops, and reading it as anything else gets the cause wrong. Found by a reviewer making the
+ * tolerance tunable and running the same fixture down a decade.
+ *
+ * An earlier version also asserted the median below 1e-6 at `anchorWeight` 0.01, which assumed the
+ * anchors contribute nothing — the thing they are passed in order to do.
  */
 TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   const std::vector<Quat> truth = Ring(kFrames);
@@ -219,6 +229,13 @@ TEST(AverageRotations, TheClosingEdgeIsWhatRemovesAChainsDrift) {
   ASSERT_TRUE(recovered.valid);
   std::fprintf(stderr, "[averaging] drift max=%.4f deg; closed max=%.7f deg in %d sweeps\n",
                drifted.maxDeg, recovered.maxDeg, closed.sweeps);
+
+  // **0.0000278 is where the solver stops, not what it converges to.** Run to the fixed point the
+  // worst frame is 2.4e-6 degrees — this figure is `kSettledDeg` showing through, and it moves if
+  // that constant does. It is asserted anyway, and published anyway, because the claim it supports
+  // is a comparison across five orders of magnitude: 1.100000 against 0.0000278 says the same thing
+  // about the closing edge that 1.100000 against 0.0000024 would. What it must not be read as is the
+  // precision of the solve.
 
   // **Where else this pair is written.** Both figures are published outside this file, so they move
   // in one commit or not at all — the same rule the accuracy table keeps under the heading "Where
@@ -767,6 +784,34 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
 
 TEST(AverageRotations, NoFramesIsARefusal) {
   EXPECT_FALSE(AverageRotations({}, {}, 0.01).valid);
+}
+
+/**
+ * More frames than an `int32_t` can name is a refusal, not a cast.
+ *
+ * `anchors.size()` is a `size_t` and the frame index is an `int32_t`, so the conversion between them
+ * is where this stops being arithmetic. A reviewer reproduced both ends on a `MAP_NORESERVE`
+ * mapping, which hands out a span of any length for no physical pages: at `2^31` the cast wraps
+ * negative and the first allocation throws, which under `-fno-exceptions` is `std::terminate` rather
+ * than a refusal; at `2^32 + 3` it wraps to 3 and answers `valid == true` over a silently truncated
+ * solve whose `rotations` is not parallel to its `anchors`.
+ *
+ * The test cannot allocate that, so it asserts the gate rather than the wrap: a span constructed over
+ * a null pointer with a length past `INT32_MAX` is refused before anything reads it. That is a real
+ * span of that length — `std::span` does no dereferencing to be built — and the refusal happens on
+ * the first two lines of the function, which is the whole claim.
+ */
+TEST(AverageRotations, MoreFramesThanAnIndexCanNameIsARefusal) {
+  const size_t tooMany = static_cast<size_t>(std::numeric_limits<int32_t>::max()) + 1;
+  const std::span<const Quat> unreadable(static_cast<const Quat*>(nullptr), tooMany);
+  EXPECT_FALSE(AverageRotations({}, unreadable, 0.01).valid);
+
+  // And the same on the edge list, which is counted into an `int32_t` for `Incidence::edge`.
+  const std::vector<Quat> truth = Ring(kFrames);
+  const std::span<const RelativeRotation> tooManyEdges(
+      static_cast<const RelativeRotation*>(nullptr),
+      static_cast<size_t>(std::numeric_limits<int32_t>::max()) + 1);
+  EXPECT_FALSE(AverageRotations(tooManyEdges, truth, 0.01).valid);
 }
 
 TEST(AverageRotations, AnEdgeNamingAFrameThatIsNotThereIsARefusal) {

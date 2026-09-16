@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include "utilities/quaternion.h"
@@ -27,9 +28,29 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 //
 // A reviewer caught the floor itself stated at half its value — 8.5e-7 is `acos`, and `AngleBetween`
 // doubles it — in the same paragraph whose own measurements are the doubled figures. So 1e-5 degrees
-// is **5.9 times** the floor rather than the order of magnitude claimed here before. That is still
-// 0.036 arcseconds, four orders below the hundredths of a degree registration is quoted in, so the
-// constant does not move; what was wrong was the margin it was described as having.
+// is **5.9 times** the floor rather than the order of magnitude claimed here before.
+//
+// **And 5.9 times is close enough to the floor that the next decade down is not available**, which
+// is the measurement that pins this constant from below for the first time. At 1e-6 the largest
+// move can only fall under the threshold by being *exactly* zero, since the smallest non-zero answer
+// is 1.7e-6 — so an arrangement whose moves settle into a quantisation cycle rather than onto zero
+// never converges at all. Measured, with a budget of 200,000 and three-degree anchors:
+//
+//     frames / anchorWeight      1e-5        1e-6
+//               12 / 0.01     590         768
+//               60 / 1.00      16          34
+//               90 / 10.0       6      never settles
+//
+// The last row is the argument: ninety frames at an anchor weight of ten is the *easy* case, six
+// sweeps at the committed tolerance, and tightening by one decade turns it into a solve that runs
+// forever. So this number is bracketed — 1.7e-6 below it and a regime that stops converging just
+// past that — rather than chosen for roundness.
+//
+// What it costs is that **the answer is where the solver stopped, not the fixed point it was heading
+// for**: run the closing-edge fixture to convergence and its worst frame is 2.4e-6 degrees rather
+// than the 2.8e-5 this tolerance returns. That is a fact about this constant and is written wherever
+// those figures are, because a reader who takes 2.8e-5 for the solver's precision has the cause
+// wrong by a factor of eleven.
 constexpr double kSettledDeg = 1e-5;
 
 // How many sweeps the solver is allowed before it reports that it did not settle.
@@ -88,6 +109,20 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // **`anchors` is what says how many frames there are.** There is no separate count for an edge to
   // be checked against, which is deliberate: two numbers meaning "how many frames" is two numbers
   // that can disagree, and the disagreement would be invisible until an index went past one of them.
+  //
+  // Refused above `INT32_MAX` rather than cast, because the cast is where this stops being arithmetic
+  // and starts being undefined. A reviewer reproduced both ends of it on a `MAP_NORESERVE` mapping,
+  // which hands out a span of any length for no physical pages: at 2^31 frames the cast wraps to
+  // `INT32_MIN`, the `anchored` vector asks for 1.8e19 bytes and throws — and the core is built
+  // `-fno-exceptions`, so that is a `std::terminate` rather than a refusal. At 2^32 + 3 it wraps to
+  // 3 and answers `valid == true` over a silently truncated three-frame solve, with every edge naming
+  // a frame that is right there refused as "naming a frame that is not there".
+  //
+  // Not reachable from any caller in this tree, and wasm32 cannot reach it at all — `size_t` is 32
+  // bits there and this would need 64 GiB inside a 4 GiB space. It is one line, and the header
+  // already promises `int32_t` indexing, so the promise may as well be the one that is enforced.
+  if (anchors.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
+  if (edges.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
   const int32_t frames = static_cast<int32_t>(anchors.size());
 
   // The whole input is checked before any of it is used, so a refusal is decided by the input rather

@@ -822,7 +822,9 @@ that has to be ordered.
   rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
   ring's closing edge stops being thrown away. Measured on a twelve-frame ring whose every edge
   carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
-  edges with the twelfth one included leave it 0.000028. What is still missing between that and
+  edges with the twelfth one included leave it 0.000028 — where the solver stops rather than the
+  0.0000024 it is heading for, which matters for reading the second figure and not at all for the
+  five orders between them. What is still missing between that and
   `Refine` is the lens — `GlobalSolution::intrinsics` says "refined here" and `PairwiseResult`
   carries a *count* of correspondences but not the matched points, so there is nothing in the
   engine's input to refine a lens from. That is a contract gap and gets an ADR rather than a quiet
@@ -945,7 +947,8 @@ table is a chain's number rather than a solve's.
 
 **What that costs on *this* ring is still unmeasured**, and the distinction matters because a
 figure is available that does not answer it. `rotation_averaging`'s own test shows a chain leaving
-its worst frame 1.100 degrees out where averaging over all twelve edges leaves it 0.000028 — but
+its worst frame 1.100 degrees out where averaging over all twelve edges leaves it 0.000028 (where
+the solver's stopping rule halts it; the fixed point is 0.0000024) — but
 that fixture gives every edge *the same* 0.2-degree bias, and a uniform drift around a closed ring
 is the one case a loop closure removes exactly. The test's docblock says so in terms. Here the
 per-pair errors are independent, so what the discarded edge is worth is a number this table will
