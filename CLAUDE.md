@@ -115,8 +115,8 @@ thing exists to serve. Geometry only so far, but no longer *undistorted* geometr
 takes `--k1` through `--p2` and refuses a lens that folds inside its own frame before it spends one.
 Noise, blur, rolling shutter, exposure, bursts and movers are each still their own increment, and so
 is measuring accuracy through a distorted lens — that moves the published table, and
-`registration_accuracy_test.cpp` catalogues the eight places it is written and says they move in one
-commit or not at all. Which feature
+the comment headed "Where else the table is written" in `registration_accuracy_test.cpp`
+catalogues every place it is written and says they move in one commit or not at all. Which feature
 detector wins is a measurement that harness makes rather than a preference the roadmap states:
 SIFT's patent expired in 2020 and it has been in `features2d` since OpenCV 4.4, so it costs no new
 dependency and the reason it was once excluded is gone.

@@ -1430,18 +1430,24 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     displacement grows outward rather than uniformly, it scales with the coefficient, and a sign
     *convention* that is flipped is caught against two undistorted reference lenses. For the
     **tangential pair**: `p1` and `p2` act along perpendicular axes. What these do not re-derive is
-    the distortion maths itself, and what they do not cover is negating `p1` and `p2` while leaving
-    `k1` alone.
+    the distortion maths itself, and what they do not cover is a sign *convention* flipped on
+    anything but `k1` — negating `k2`, `k3`, `p1` or `p2` in the render path while leaving `k1`
+    alone is green across the whole suite. The sign case below says why only `k1` can be pinned that
+    way, and the realistic bug — a convention flipped across the whole model — does show up in
+    `k1`.
 
-    **Every figure below is measured on the checkerboard `_checkerboard_panorama` generates**, which
-    is what `self.render` produces because it never passes `--panorama`. The repository's committed
+    **Every figure these cases *assert* is measured on the checkerboard `_checkerboard_panorama`
+    generates**, which is what `self.render` produces because it never passes `--panorama`. Several
+    comments below also quote the photograph's figures, for comparison and never as a bound; each
+    says which world it is in. The repository's committed
     photograph is a different world and gives different numbers — measured, a ratio of 5.711 where
     the checkerboard gives 9.618, and an attenuation of 18.71 where it gives 33.69. Both of those
     are *below* the bounds here, so pointing this class at `--panorama` without re-deriving the two
     thresholds would fail on a correct render. The thresholds are the checkerboard's and the
     docstring says so rather than the comments claiming a panorama they never load.
 
-    A third constant leans the same way without failing: the `> 1.0` bound in the coverage case sits
+    A third constant leans the same way without failing: the `> 1.0` bound in
+    `test_every_coefficient_reaches_a_pixel_and_none_stands_in_for_another` sits
     at less than half the tightest checkerboard margin (2.374) and at 59% of the photograph's
     (1.684). Still passing, and worth knowing before anyone tightens it.
     """
@@ -1627,7 +1633,8 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # `render_frame` stops the lens inverting and the fold guard notices. Move the bypass to the
         # seam — where a CLI wiring bug actually lives — and take the two together, and nothing in
         # the tree notices: `truth.json` keeps the asked-for values while the frames are a pinhole's,
-        # misstating the ray by 0.625 degrees against registration medians of 0.024 to 0.101.
+        # misstating the ray by 0.625 degrees — which is six to twenty-six times the registration
+        # medians `registration_accuracy_test.cpp` publishes.
         #
         # So the property is asserted for all five at once rather than coefficient by coefficient.
         # Ten pairs, because "reaches a pixel" and "is not one of the others" are different claims
@@ -1654,9 +1661,14 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # `k3` at the seam permutes which render is which, so all fifteen assertions above stay
         # comfortably true — measured, the tightest of them is 1.5497 against a bound of 1.0 — while
         # `truth.json` claims coefficients the frames do not carry, by up to 0.3957 degrees of ray
-        # against registration medians of 0.024 to 0.101. Round 2 closed presence and distinctness
-        # and left the permutation open, which is the third time on this branch that a magnitude has
-        # turned out to be even in the thing it was meant to pin.
+        # against the registration medians `registration_accuracy_test.cpp` publishes. Round 2 closed
+        # presence and distinctness and left the permutation open, which is the third time on this
+        # branch that a magnitude has turned out to be even in the thing it was meant to pin.
+        #
+        # **Those medians are named rather than quoted, on purpose.** Three comments in this file
+        # spelled `0.024 to 0.101` for one commit, in a file that catalogue does not list — three
+        # new copies of a figure, added by the change that cites the thing whose job is stopping
+        # copies of it. A pointer costs a reader one grep and cannot go stale.
         #
         # What separates them is the shape rather than the size. `k2` is the `r⁴` term and `k3` the
         # `r⁶`, so `k3` is far more edge-weighted: measured as edge over centre against a pinhole,
@@ -1714,12 +1726,17 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # correct with 2.14 and 1.53 to spare.
         #
         # **And what disqualifies them is not the size of the signature but that it flips with the
-        # content.** On the committed photograph, measured by a reviewer, *both* pincushion sides
-        # invert — `--k2 +0.08` and `--k3 +0.12` each come out nearer the wrong reference — while
-        # the barrel sides stay correct at 3.57 and 2.83 bytes, which is larger than anything on the
-        # checkerboard. So the margins are not small; they are a property of the world, and a
-        # relation that reverses when the panorama changes is a coin however wide it is. `k1` holds
-        # in both worlds, and by more on the photograph (12.47 and 6.39 against 9.9 and 6.4). `p1` and `p2` are shears and have no
+        # content.** On the committed photograph *both* pincushion sides invert — `--k2 +0.08` and
+        # `--k3 +0.12` each come out nearer the wrong reference — while the barrel sides stay
+        # correct at 3.25 and 2.49 bytes, which is larger than anything on the checkerboard. So the
+        # margins are not small; they are a property of the world, and a relation that reverses when
+        # the panorama changes is a coin however wide it is. `k1` holds in both worlds, and by more
+        # on the photograph: 11.69 and 6.57 against the checkerboard's 9.93 and 6.38.
+        #
+        # (Those four photograph figures were 12.47, 6.39, 3.57 and 2.83 for one commit. They were
+        # measured on the reference lenses this case *used* to use, and when those were corrected
+        # the checkerboard numbers were re-measured and these were not — which is the same mistake,
+        # one commit later, in the half of the comment nothing runs.) `p1` and `p2` are shears and have no
         # field-of-view analogue at all. What this does cover is the realistic version of the bug: a
         # convention flipped across the whole distortion model shows up in `k1`, because `k1` is the
         # term that carries almost all of a real lens.
@@ -1738,7 +1755,7 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     def test_the_tangential_terms_act_along_perpendicular_axes(self):
         # **The hole this closes was open and a reviewer walked through it.** Every case above
         # spends `--k1` alone, and the record case reads `truth.json` and never a pixel — so
-        # `render_frame` zeroing p1 and p2, or swapping them, left all 103 tests green while writing
+        # `render_frame` zeroing p1 and p2, or swapping them, left the whole suite green while writing
         # a `truth.json` that claims coefficients the frames do not carry. That is the exact failure
         # the class docstring names: a dataset that says it is distorted and is not, which the C++
         # loader reads and believes.
@@ -1746,9 +1763,9 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # The ray error that makes this a dataset-integrity bug rather than a coverage gap, and the
         # two numbers are different worlds: **0.4567 degrees** at this case's own `--p1 0.01` on its
         # 64x48 frame, and 0.8520 at `k1 = -0.15` with `p1` zeroed on a 640x480 one, which is the
-        # lens a reviewer measured and which this case never renders. Both are four to thirty-five
-        # times the published registration medians of 0.024 to 0.101. An earlier version of this
-        # comment quoted 0.856 for the first, which is neither.
+        # lens a reviewer measured and which this case never renders. Both are several times the
+        # registration medians `registration_accuracy_test.cpp` publishes. An earlier version of
+        # this comment quoted 0.856 for the first, which is neither.
         #
         # Three differences rather than two, because two would be satisfied by one term standing in
         # for the other: p1 and p2 are tangential along perpendicular axes, so a frame distorted by

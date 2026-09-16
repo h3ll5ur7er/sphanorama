@@ -879,8 +879,9 @@ refused before a frame is spent rather than after. Everything but the asking alr
 `Intrinsics` has carried the coefficients since it was written, `render_frame` unprojects through
 the full Newton-solved inverse, `truth.json` emits them and the C++ loader reads them. What is still
 open is *measuring* accuracy on a distorted lens, which moves this table and is therefore its own
-increment: `registration_accuracy_test.cpp` catalogues the eight places that table is written and
-says they move together or not at all. Rendering with distortion will not, on
+increment: the comment headed "Where else the table is written" in
+`registration_accuracy_test.cpp` catalogues every place that table is written and says they move
+together or not at all. Rendering with distortion will not, on
 its own, make that path reachable again — the renderer refuses to render a frame with a rayless
 pixel in it, so the lens of every dataset it produces answers every pixel *centre* of its own frame
 whatever coefficients it is given (ADR 0060). Distortion is worth rendering for the first reason

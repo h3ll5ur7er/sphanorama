@@ -36,6 +36,12 @@ expressed in a different frame from the core that reads it is worse than no data
   coordinates -- which is a pixel *corner*, not a pixel centre, since an integer here is an edge
   (see `direction_to_equirect`). On a 2048x1024 panorama that is where pixels 1023 and 1024 meet.
 
+**The lens takes distortion.** `--k1 --k2 --k3 --p1 --p2` are Brown-Conrady in OpenCV's
+`k1 k2 p1 p2 k3` convention, defaulting to a pinhole so that every dataset produced before they
+existed is still what this tool produces today. A lens that stops being invertible inside its own
+frame is refused before a frame is spent rather than after — see `render_frame` for why that check
+is where it is, and what it is not.
+
 Run it: `uv run --locked --group datasets tools/synth_dataset.py --out datasets/ring` (the
 `datasets` group is what carries numpy **and Pillow**; the checkers stay standard-library only —
 ADR 0050, ADR 0059). `--locked` because every committed `produced_by` uses it: a command recorded
@@ -616,8 +622,20 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
     *distorted* radius against a cubic in the *undistorted* one, so it was both unsound and asking
     about the wrong interval — measured, it passed lenses whose frames have thousands of rayless
     pixels and refused lenses that are answerable throughout. Asking `unproject` about every pixel
-    of the actual frame is exact where that was a hope about resolution, and it is the same work
-    the render does anyway. The core has no whole-lens check either, for the same reason.
+    of the actual frame is exact where that was a hope about resolution. The core has no whole-lens
+    check either, for the same reason.
+
+    **`main` now asks the same question before any frame is rendered, and that is not a
+    reinstatement of the thing ADR 0050 deleted.** What was deleted was a *heuristic* — a Jacobian
+    sampled on a coarse grid, standing in for the real question. The pre-flight asks the real
+    question, `unproject` at every pixel centre of the frame, which is this check exactly and not an
+    approximation of it; it just asks it once at the start instead of on frame zero. So the two
+    cannot disagree, which is the property the deleted one lacked.
+
+    What it does cost, said plainly because an earlier version of this paragraph claimed there was
+    no cost: it is a second full unprojection pass, where before this was "the same work the render
+    does anyway". One frame's worth, against a run that renders many, spent to fail before the
+    output directory is written rather than after.
     """
     camera_directions, valid = unproject(lens, _every_pixel_centre(lens))
     # Before the directions are used for anything. A refused row's direction can be non-finite, and

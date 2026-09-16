@@ -40,9 +40,9 @@ those choices is a fact about how we *test*, not about what the app does on a ph
 holds the decision; the day a bench client or a shipped feature needs the same number, it earns a
 row and a `utilities/` home together.
 
-**How a synthetic dataset is produced** — the panorama it is rendered from, the lens model, the pose
-trajectory, the distortion and noise and blur and rolling-shutter and exposure models still to come
-— varies as much
+**How a synthetic dataset is produced** — the panorama it is rendered from, the lens model and its
+distortion, the pose trajectory, the noise and blur and rolling-shutter and exposure models still to
+come — varies as much
 as anything in this map and has no component here either, for the same reason as the axis above it:
 it is a fact about how we test, and nothing in `core/src` reads it. ADR 0050 holds the decision,
 including why that tool implements the lens itself rather than calling `camera_model`; ADR 0059
