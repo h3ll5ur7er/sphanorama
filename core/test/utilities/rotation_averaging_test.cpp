@@ -259,7 +259,12 @@ TEST(AverageRotations, TheClosingEdgeIsWhatRemovesAChainsDrift) {
   //   1. `docs/06-roadmap.md`, in the `RegistrationEngine` bullet.
   //   2. `docs/06-roadmap.md` again, in the paragraph on what the discarded closing edge costs.
   //   3. `CLAUDE.md`, in the `rotation_averaging` paragraph.
-  //   4. This test, here, which is the only place either is asserted.
+  //   4. `rotation_averaging.cpp`, in `kSettledDeg`'s own docblock, which publishes the stopped
+  //      figure and the fixed point as `2.8e-5` and `2.4e-6` and derives "a factor of eleven" from
+  //      them. Half the pair rather than both, which is exactly why it was missed — and the
+  //      registry recording that a previous miss said "the roadmap" and meant one of its two sites
+  //      then made a partial-site miss of its own, on its first outing.
+  //   5. This test, here, which is the only place either is asserted.
   //
   // The list said "the roadmap" and meant one of its two sites — the same defect the accuracy
   // table's catalogue records making three times, in a list written to prevent it. Note also that the three prose sites round to `0.000028` where this asserts `0.0000278`, so
@@ -369,11 +374,19 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
   // with no stopping rule — "exact edges" bounds the problem and not the iteration.
   //
-  // **This measures `kSettledDeg` rather than the solver**, and it is one of five on the branch that
-  // do: the two the roadmap publishes, `0.0000226` at the top of this file, this one, and
-  // `EXPECT_EQ(believed.sweeps, 590)` — which is the `[12 frames, 0.01]` cell of the sweep table in
-  // `rotation_averaging.cpp` and moves whenever that constant does. Tightening the tolerance 5.6x
-  // moves this figure to 4.67e-6 and that one to 742.
+  // **This measures `kSettledDeg` rather than the solver**, and it is one of **four** on the branch
+  // that do. Measured rather than counted by eye, by tightening the tolerance to 1.786e-6 and
+  // reading which assertions fire: `EXPECT_EQ(believed.sweeps, 590)` -> 742, `0.0000226` -> 8.62e-6,
+  // `0.0000278` -> 7.04e-6, and this one -> 4.67e-6. Nothing else in the suite moves.
+  //
+  // The count stood at five, and before that at three. Five came from saying "the two the roadmap
+  // publishes" when the roadmap's pair is `1.100000` and `0.0000278` and only the second is a
+  // stopping-rule figure — `1.100000` is the *chained* answer, a drift measurement that survives
+  // any tolerance untouched. The fixed point `0.0000024` is not a fifth either: it is asserted
+  // nowhere, because reaching it needs the stopping rule switched off.
+  //
+  // Three counts, three wrong, on a comment whose whole job is to say how many there are. What it
+  // took to get right was running the experiment instead of reading the file.
   //
   // The count matters because two earlier versions of this comment gave a smaller one, each time
   // after an audit that reached only the figures published *outside* the file. The failure message

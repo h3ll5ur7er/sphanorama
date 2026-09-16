@@ -167,7 +167,13 @@ double RollBetween(const Quat& current, const Quat& target) {
   const double along = Dot(there, axis);
   const Vec3 flattened =
       Normalize(Vec3{there.x - axis.x * along, there.y - axis.y * along, there.z - axis.z * along});
-  // Antipodal: the target's frame collapses onto the viewing axis and roll has no meaning.
+  // **Not antipodal** — this said so, which was the third copy of a claim the declaration retracts
+  // and the test disproves. It fires when the *target's +X axis* lands on the current viewing axis,
+  // which is a fact about how the target is rolled and says nothing about whether roll is defined.
+  // Measured over 32,000,000 constructed collapse inputs it changes the answer 4,307,507 times,
+  // always between zero and ±180: without it `flattened` is `Normalize`'s zero fallback and
+  // `atan2(+0.0, -0.0)` is pi, so a current held at azimuth 90 and rolled 45 degrees reads -180
+  // where it should read 0.
   if (Dot(flattened, flattened) < 0.5) return 0.0;
   return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
 }

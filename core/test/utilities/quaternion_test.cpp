@@ -471,6 +471,48 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   const Quat nearby = FromAzimuthElevation(3.0, 0.0);
   const Quat rolled = Multiply(FromAxisAngle(Direction(nearby), 10.0 / kDegPerRad), nearby);
   EXPECT_NEAR(RollBetween(rolled, nearby) * kDegPerRad, 10.0, 1e-6);
+
+  // **The two signed figures the declaration publishes**, which it first published positive. They
+  // are negative, and the sign is the whole of what "signed and in (-pi, pi]" promises — so leaving
+  // them unasserted is what let the declaration be wrong about them. Rolled about
+  // `Direction`, the actual viewing axis, rather than about body +Z, which is its negative and is
+  // how the wrong sign was measured in the first place.
+  const Quat awayRolled =
+      Multiply(FromAxisAngle(Direction(away), 30.0 / kDegPerRad), away);
+  EXPECT_NEAR(RollBetween(target, awayRolled) * kDegPerRad, -150.0, 1e-6);
+
+  const Quat side = FromAzimuthElevation(90.0, 0.0);
+  const Quat sideRolled = Multiply(FromAxisAngle(Direction(side), 15.0 / kDegPerRad), side);
+  EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
+}
+
+/**
+ * The collapse guard, pinned by an input where removing it changes the answer.
+ *
+ * `IsOnlyMeaningfulWhileTheTwoLookTheSameWay` says two of its assertions pin "where the projection
+ * actually collapses", and they do not: the whole suite passes with the guard made unreachable.
+ * They were derived from the case in hand — a *level* phone at azimuth 90, where the unguarded
+ * `atan2(+0.0, +0.0)` is zero and agrees with the guarded answer by luck.
+ *
+ * The guard is not redundant. When it fires, `flattened` is `Normalize`'s zero-vector fallback, and
+ * `atan2(+0.0, -0.0)` is pi — so the sign of a zero decides between 0 and half a turn. Over
+ * 32,000,000 constructed collapse inputs the guard changes the answer 4,307,507 times.
+ *
+ * What was missing was a *rolled* current. Both arms below read zero as committed and ±180 with the
+ * guard unreachable, which is the difference the two arms in the other test cannot see.
+ */
+TEST(RollBetween, TheCollapseGuardDecidesBetweenZeroAndAHalfTurn) {
+  const Quat target = FromAzimuthElevation(0.0, 0.0);
+
+  const Quat side = FromAzimuthElevation(90.0, 0.0);
+  const Quat rolledSide = Multiply(FromAxisAngle(Direction(side), 45.0 / kDegPerRad), side);
+  EXPECT_NEAR(RollBetween(rolledSide, target) * kDegPerRad, 0.0, 1e-6)
+      << "without the collapse guard this is -180";
+
+  const Quat other = FromAzimuthElevation(-90.0, 0.0);
+  const Quat rolledOther = Multiply(FromAxisAngle(Direction(other), 180.0 / kDegPerRad), other);
+  EXPECT_NEAR(RollBetween(rolledOther, target) * kDegPerRad, 0.0, 1e-6)
+      << "without the collapse guard this is +180";
 }
 
 }  // namespace

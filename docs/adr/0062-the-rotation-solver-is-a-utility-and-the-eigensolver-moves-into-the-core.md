@@ -92,8 +92,22 @@ not written yet is a contract gap rather than a change of mind. Until then `rota
 compiled into the core — including the WASM build, where it costs size budget — and reached only
 from tests. If the `Refine` wiring does not follow, this ADR is the thing to supersede.
 
-**The WASM builds carry code no browser path executes yet**, and the size budget covers it. It is
-small — quaternion arithmetic and a fixed 4x4 solve — and the gate's size step passes with it in.
+**The WASM builds carry no such code, and this section said they did.** `sphanorama_core` is a
+static archive and nothing references `AverageRotations`, so the member is never extracted. The
+exception costs **zero bytes** until a caller exists.
+
+Measured by removing both sources from `core/CMakeLists.txt` and rebuilding: `sphanorama-core.wasm`
+is byte-identical, 266,819 bytes and the same MD5, with and without them. That experiment rather
+than a symbol dump, because the symbol dump does not work here and saying so is the useful part —
+the release wasm has no usable name section (`ArmBurst` and `Normalize` are certainly linked and
+appear nowhere in it), and the archive members are LLVM bitcode that the system `llvm-nm` cannot
+read at all. A first pass "confirmed" this consequence from a `0` that was a tool failure.
+
+That is better for this ADR than what it claimed, and it moves the real cost somewhere the original
+sentence pointed away from: compiled-but-unlinked is the one regime a size budget cannot police, so
+the gate's size step will not notice the day a composition root wires `Refine` up and the code
+arrives in the binary for the first time. The budget is a backstop for that change, not evidence
+about this one.
 
 **ADR 0049's banner now points at a file that no longer holds its figures.** The banner says
 "`core/test/support/rotation_scoring.cpp` carries the current figures where the code is", and the

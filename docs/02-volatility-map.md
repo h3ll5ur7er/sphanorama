@@ -51,8 +51,9 @@ not, so a browser build — which gets the null engine (ADR 0052) — can have t
 that is quaternions the day a composition root wants it. `quaternion_average` sits under both it and
 the test-side scorer, so the eigensolver ADR 0049 measured exists once.
 
-That makes it the one thing in `core/src` the rule two paragraphs down would exclude — "nothing in
-`core/src` reads it" is exactly why registration *scoring* has no row — and ADR 0062 takes that cost
+That makes it the one thing in `core/src` that the **"how registration accuracy is judged"**
+paragraph's rule would exclude — "nothing in `core/src` reads it" is exactly why registration
+*scoring* has no row — and ADR 0062 takes that cost
 deliberately and names the caller it is waiting for. If `Refine` never arrives, 0062 is the thing to
 supersede.
 
