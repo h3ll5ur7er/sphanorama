@@ -170,9 +170,21 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   const AveragedRotations believed = AverageRotations(edges, anchors, 0.01);
   ASSERT_TRUE(believed.valid);
   EXPECT_TRUE(believed.converged);
-  // The `[12 frames, 0.01]` cell of the sweep table in `rotation_averaging.cpp`, and the only
-  // assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves. So the table is not "the
-  // only copy" ADR 0062 calls it — this is the second, and it is the one with teeth.
+  // The `[12 frames, 0.01]` cell of the sweep table in `rotation_averaging.cpp`, so the table is not
+  // "the only copy" ADR 0062 calls it — this is the second, and it is the one with teeth.
+  //
+  // **It pins `kSettledDeg` and not `kMaxSweeps`**, which is narrower than the claim that stood here
+  // ("the only assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves") and wrong in
+  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 742 and fails — but so do
+  // `AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain` and
+  // `TheClosingEdgeIsWhatRemovesAChainsDrift`, so it is not the only one. And a sweep *budget* it
+  // cannot see at all: 590 is under any budget worth setting, so `kMaxSweeps` at 700 leaves this
+  // green and fails exactly one test — `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`, whose
+  // `EXPECT_EQ(solved.sweeps, 1000)` is the only pin on that constant anywhere.
+  //
+  // Worth the paragraph because the wrong version was load-bearing: it was the reason ADR 0062 named
+  // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
+  // strength of it would have been told the wrong test would catch them.
   EXPECT_EQ(believed.sweeps, 590);
 
   const test::RotationScore after = test::ScoreRotations(believed.rotations, truth);
@@ -961,6 +973,23 @@ TEST(AverageRotations, HowMuchOfTheAnswerRestsOnPriorsIsReadable) {
   ASSERT_TRUE(joined.valid);
   ASSERT_EQ(joined.priorOnly.size(), 4u);
   EXPECT_EQ(joined.priorOnly.front(), 8);
+
+  // **Frame zero, because this list is the third copy of a loop whose other two were given exactly
+  // this fixture and it was not.** `unplaced` and `ambiguous` are built by the same four lines and
+  // both are pinned against a start at index 1; this one was written in the commit that pinned
+  // them, twelve lines under a comment spelling out that skipping index 0 is a one-token change
+  // leaving the promise false, and every fixture above puts its prior-only frames at 6 or higher.
+  // Three frames: the first has a prior and no edge, the other two have a believed edge between
+  // them, so `priorOnly` is exactly `{0}` and a loop starting at 1 answers `{}`.
+  const std::vector<Quat> threeAnchors{AboutY(0.0), AboutY(10.0), AboutY(40.0)};
+  const std::vector<RelativeRotation> edgeAwayFromZero{
+      RelativeRotation{1, 2, TrueEdge(AboutY(10.0), AboutY(40.0)), 1.0},
+  };
+  const AveragedRotations firstAlone = AverageRotations(edgeAwayFromZero, threeAnchors, 0.01);
+  ASSERT_TRUE(firstAlone.valid);
+  EXPECT_TRUE(firstAlone.unplaced.empty()) << "every frame has a prior";
+  ASSERT_EQ(firstAlone.priorOnly.size(), 1u);
+  EXPECT_EQ(firstAlone.priorOnly.front(), 0) << "the list skips index zero";
 }
 
 // ----------------------------------------------------------------- refusals

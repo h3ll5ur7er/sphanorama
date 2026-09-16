@@ -535,6 +535,40 @@ TEST(RotationScoring, TheMedianOfAnEvenCountIsTheMeanOfTheTwoMiddleValues) {
   EXPECT_NEAR(score.medianDeg, (sorted[1] + sorted[2]) * 0.5, 1e-9);
 }
 
+/**
+ * The odd branch's counterpart to the test above, which it did not have.
+ *
+ * `medianDeg` is `sorted[half]` for an odd count and the mean of the middle pair for an even one,
+ * and only the even half was pinned. Both neighbours of the odd index were free: `sorted[half + 1]`
+ * and `sorted[half - 1]` each pass the whole suite. The cause is that every odd-count fixture
+ * asserting `medianDeg` is one outlier against a flat rest — a ring with a single frame perturbed —
+ * so `sorted[3]`, `sorted[4]` and `sorted[5]` are the same number to 1e-12 and the index is
+ * invisible to an assertion comparing against any of them.
+ *
+ * Five frames, each off by a different amount, so the five sorted errors are genuinely spread. The
+ * gaps either side are asserted rather than assumed, for the reason the even test states: a
+ * difference of 1e-12 satisfies `EXPECT_NE` and pins nothing.
+ */
+TEST(RotationScoring, TheMedianOfAnOddCountIsTheMiddleValueAndNotItsNeighbour) {
+  const std::vector<Quat> truth = ARing(5);
+  std::vector<Quat> estimated = truth;
+  estimated[1] = Multiply(Roll(2.0), estimated[1]);
+  estimated[2] = Multiply(Pitch(6.0), estimated[2]);
+  estimated[3] = Multiply(Yaw(12.0), estimated[3]);
+  estimated[4] = Multiply(Roll(20.0), estimated[4]);
+
+  const RotationScore score = ScoreRotations(estimated, truth);
+
+  ASSERT_TRUE(score.valid);
+  ASSERT_EQ(score.perFrameDeg.size(), 5u);
+  std::vector<double> sorted = score.perFrameDeg;
+  std::sort(sorted.begin(), sorted.end());
+
+  ASSERT_GT(sorted[2] - sorted[1], 1.0) << "the index below is not distinguishable";
+  ASSERT_GT(sorted[3] - sorted[2], 1.0) << "the index above is not distinguishable";
+  EXPECT_NEAR(score.medianDeg, sorted[2], 1e-12);
+}
+
 TEST(RotationScoring, TheMeanAndMaxDescribeTheSamePerFrameNumbers) {
   const std::vector<Quat> truth = ARing(5);
   std::vector<Quat> estimated = truth;

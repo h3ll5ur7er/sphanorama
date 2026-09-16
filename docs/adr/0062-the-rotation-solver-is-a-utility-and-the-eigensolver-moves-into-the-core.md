@@ -109,9 +109,16 @@ rather than left in a component that no longer owns the code.
 **The sweep budget is a new measured number and it will be quoted.** `kMaxSweeps` is 1000, chosen
 from a table in `rotation_averaging.cpp`. That table has one *prose* copy, the paragraph beneath it,
 and one *executable* copy — `EXPECT_EQ(believed.sweeps, 590)` in `rotation_averaging_test.cpp`, which
-is the `[12 frames, 0.01]` cell and the only assertion anywhere that fails when `kSettledDeg` or
-`kMaxSweeps` moves. This section said "the only copy" and was wrong about the one that matters most,
-since it is the one that would catch a change rather than merely disagree with it. Anything quoting
+is the `[12 frames, 0.01]` cell. This section said "the only copy" and was wrong about the one that
+matters most, since it is the one that would catch a change rather than merely disagree with it.
+
+**And then it was wrong about what that assertion catches**, which is worth recording because the
+error was the same shape twice: a claim about coverage made from the case in front of it. It read
+"the only assertion anywhere that fails when `kSettledDeg` or `kMaxSweeps` moves". Measured, it is
+neither. `kSettledDeg` at 1.786e-6 fails it *and* two other tests. `kMaxSweeps` at 700 does not fail
+it at all — 590 is under any budget worth setting — and the only pin on that constant anywhere is
+`EXPECT_EQ(solved.sweeps, 1000)` in `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`. So the two
+constants have two different guards, and this ADR named one of them for both. Anything quoting
 the table inherits the obligation the accuracy table has: the figures move together or not at all.
 
 **Normalising each input changed behaviour, in a case nothing was reaching.** `IsUsableRotation`
