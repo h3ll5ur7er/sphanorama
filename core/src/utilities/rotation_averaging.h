@@ -1,0 +1,102 @@
+#pragma once
+
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "sphanorama/types.h"
+
+namespace sphanorama {
+
+// One consistent set of absolute rotations from many independently measured relative ones.
+//
+// **This is the maths under `IRegistrationEngine::Refine`, and it is here rather than in that engine
+// because it needs no pixels.** `EstimatePairwise` needs OpenCV; this needs quaternions. Keeping
+// them apart is what lets a build without OpenCV — every browser build today (ADR 0052) — have the
+// half of registration that is arithmetic, the day something wires it up.
+//
+// **The problem it solves is that a chain has no memory.** Eleven pairwise rotations chained in
+// order give twelve absolute rotations, and every error in step k is carried by every frame after
+// it: the last frame holds the accumulated error of eleven independent estimates. A ring closes, so
+// the twelfth edge — the last frame back to the first — is a measurement the chain throws away, and
+// it is exactly the one that says how much drift accumulated. Averaging uses every edge at once and
+// spreads the disagreement instead of piling it on the end.
+//
+// **The gauge comes from the anchors and nothing else.** Relative rotations determine the answer
+// only up to one common rotation applied to every frame — turn the whole reconstruction and it is
+// the same reconstruction — so a solver given edges alone cannot say which way is north. The anchors
+// are what fix it, and they are weighted low on purpose: a fused phone orientation is out by degrees
+// where a registered pair is out by hundredths, so the anchors make the answer absolute and the
+// edges make it right.
+
+// A measured relation between two frames, in the convention `IRegistrationEngine` answers in.
+//
+// `rotation` is `conjugate(q[to]) * q[from]`, so `q[from] = q[to] * rotation` and
+// `q[to] = q[from] * conjugate(rotation)`. That is what `PairwiseResult::relativeRotation` carries
+// for `EstimatePairwise(a, b, ...)` with `from = a` and `to = b`, derived in the `Chain` docblock of
+// `core/test/engines/registration_accuracy_test.cpp` rather than discovered by trying both.
+struct RelativeRotation {
+  int32_t from = 0;
+  int32_t to = 0;
+  Quat rotation;
+
+  // How much this edge is believed, relative to the others and to the anchors. Evidence rather than
+  // a distribution: raw inlier counts are a fine thing to pass. Zero removes the edge from the solve
+  // without removing it from the input, which is what a caller holding a parallel array of
+  // `PairwiseResult` wants for an unaccepted one (ADR 0056: an unaccepted result still carries the
+  // best rotation the pixels offered, and a caller may decide to weigh it at nothing).
+  double weight = 1.0;
+};
+
+struct AveragedRotations {
+  // Parallel to `anchors`. A frame that could not be placed holds the identity and is named in
+  // `unplaced` — never a silent identity, because the identity is a perfectly ordinary rotation that
+  // a phone held level reports, and a caller has no other way to tell one that was solved for from
+  // one that was given up on. An unplaced frame is always one with no usable anchor: a frame that
+  // has one is placed by it before any edge is walked.
+  std::vector<Quat> rotations;
+  std::vector<int32_t> unplaced;
+
+  // How far the answer leaves each weighted edge, in degrees, over the edges that were used — an
+  // edge at weight zero is not one. Zero edges used leaves both at zero and `valid` true, which is
+  // the anchors-only case: nothing was solved, so nothing disagrees.
+  double medianEdgeErrorDeg = 0;
+  double maxEdgeErrorDeg = 0;
+
+  int32_t sweeps = 0;
+
+  // False when the sweep budget ran out before the largest per-frame update fell under tolerance.
+  // The rotations are still the best the solver reached; what is not promised is that another sweep
+  // would leave them alone.
+  bool converged = false;
+
+  bool valid = false;
+};
+
+// Solve for absolute rotations, given relative measurements between frames and per-frame priors.
+//
+// `anchors` is one entry per frame, indexed by the same `int32_t` the edges name, and `anchorWeight`
+// is what every usable anchor counts for against the edges' own weights. A frame whose anchor is not
+// a usable rotation (see `IsUsableRotation`) simply has no prior — which is how a caller says "the
+// sensor did not answer for this one" without having to renumber the frames.
+//
+// An `anchorWeight` of zero leaves the anchors doing exactly one job: they are where the frames
+// start, which is what fixes the gauge, and they are not consulted again. That is a caller saying
+// "start from the priors and then believe only the pixels", and it is still one usable anchor away
+// from a refusal.
+//
+// **The whole answer is refused rather than partly given** when the input cannot be read as a
+// problem: no frames, an edge naming a frame that is not there, an edge from a frame to itself, an
+// edge whose rotation is not one, an edge weight that is negative or not finite, an `anchorWeight`
+// that is negative or not finite, or no usable anchor at all — with no anchor the gauge is free and
+// every answer is as good as every other, so there is nothing to return that a caller could act on.
+//
+// An index is checked whatever the weight beside it: the weight says how much a *measurement* is
+// believed, and an index naming no frame is not a measurement to disbelieve at a low weight.
+//
+// A frame with no usable anchor that no surviving edge reaches is a different case and is not a
+// refusal: the rest of the reconstruction is still an answer. It is named in `unplaced`.
+AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
+                                   std::span<const Quat> anchors, double anchorWeight);
+
+}  // namespace sphanorama

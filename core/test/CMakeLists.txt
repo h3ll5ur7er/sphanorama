@@ -69,6 +69,7 @@ add_executable(sphanorama_tests
   utilities/pixel_format_test.cpp
   utilities/quaternion_test.cpp
   utilities/quaternion_average_test.cpp
+  utilities/rotation_averaging_test.cpp
   utilities/result_test.cpp
 )
 target_include_directories(sphanorama_tests PRIVATE

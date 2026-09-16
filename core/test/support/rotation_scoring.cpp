@@ -47,13 +47,12 @@ GaugeAlignment BestGaugeAlignment(const std::vector<Quat>& estimated,
     residuals.push_back(Residual(estimated[i], truth[i]));
   }
 
+  // **Unchecked, because this call cannot refuse**, for the same reason the eigenvector below it
+  // needs no usability check. `Residual` is a `Normalize` of a product, so every entry is a unit
+  // quaternion whatever the gate above let through; the set is non-empty because `estimated` is; and
+  // no weights are passed, so there are none to be negative or to sum to zero. That leaves
+  // `AverageQuaternions` no way to answer `valid == false` from here.
   const QuaternionAverage average = AverageQuaternions(residuals, {});
-
-  // Not a guard that cannot fire, and worth saying which it is. The input gate above admits exactly
-  // what `AverageQuaternions` admits — a non-empty set of usable rotations, no weights — so this
-  // cannot be false today. It is here because the two gates are in different files now: a refusal
-  // this one learns to make is a refusal this function has to pass on rather than average past.
-  if (!average.valid) return out;
 
   out.rotation = average.rotation;
   out.isUnique = average.isUnique;

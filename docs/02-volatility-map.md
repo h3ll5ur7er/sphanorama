@@ -40,6 +40,15 @@ those choices is a fact about how we *test*, not about what the app does on a ph
 holds the decision; the day a bench client or a shipped feature needs the same number, it earns a
 row and a `utilities/` home together.
 
+**V7's "global refinement" now has half its implementation outside `RegistrationEngine`**, in
+`core/src/utilities/rotation_averaging`, and that is not a second owner of the axis. The engine still
+decides *whether and how* frames are aligned; the utility is arithmetic it calls, in the same
+relationship `camera_model` and `quaternion` have to the engines that use them. It is separate for a
+reason the map cares about: `EstimatePairwise` needs OpenCV and this does not, so a browser build —
+which gets the null engine (ADR 0052) — can still have the half of registration that is quaternions
+the day a composition root wants it. `quaternion_average` sits under both it and the test-side
+scorer, so the eigensolver ADR 0049 measured exists once.
+
 **How a synthetic dataset is produced** — the panorama it is rendered from, the lens model and its
 distortion, the pose trajectory, the noise and blur and rolling-shutter and exposure models still to
 come — varies as much

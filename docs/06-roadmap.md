@@ -817,7 +817,15 @@ that has to be ordered.
   in too* — ratio-test matching, bearings through `camera_model`, and a RANSAC rotation refitted on
   its inliers — which is what forced `EstimatePairwise` to take the lens, since a rotation cannot be
   recovered from pixels without one (ADR 0054). **Refinement still refuses** rather than returning an
-  empty solution that would look like a solved sphere. The accuracy number this phase exits on **is
+  empty solution that would look like a solved sphere — but **the maths under it now exists**, in
+  `core/src/utilities/rotation_averaging`, where a build without OpenCV can also have it: relative
+  rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
+  ring's closing edge stops being thrown away. Measured on a twelve-frame ring whose every edge
+  carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
+  edges with the twelfth one included leave it 0.000028. What is still missing between that and
+  `Refine` is the lens — `GlobalSolution::intrinsics` says "refined here" and `PairwiseResult`
+  carries no correspondences to refine it from, which is a contract gap and gets an ADR rather than a
+  quiet pass-through. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
@@ -930,7 +938,11 @@ whatever coefficients it is given (ADR 0060). Distortion is worth rendering for 
 rather than the second: an accuracy measured on a lens nobody sells is not a statement about a
 phone.
 And it is not a whole-sphere number — one ring of twelve frames chained in order is the easiest
-possible topology, with no loop closure and nothing for `Refine` to do.
+possible topology. The measurement throws the ring's *closing* edge away, which is the one edge that
+says how much the chain drifted, and it is now measurable what that costs: on a ring whose every
+edge is biased by the same 0.2 degrees, chaining leaves the worst frame 1.100 degrees out and
+averaging over all twelve leaves it 0.000028. So there is something for `Refine` to do here after
+all, and until it is wired up this table is a chain's number rather than a solve's.
 
 **And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
 hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by

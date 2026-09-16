@@ -73,6 +73,18 @@ rather than a pixel: an unusable lens, a direction behind the camera, a radius p
 the distortion stops being invertible, an inverse that does not land back where it started
 (ADR 0046). Its iteration budget is a measured number, not a chosen one.
 
+**And the second half of `Refine` exists**, also as a utility rather than in the engine, because it
+needs quaternions where `EstimatePairwise` needs OpenCV: `utilities/rotation_averaging` takes
+relative rotations and per-frame priors and returns one consistent set of absolute rotations. The
+gauge is the whole difficulty in the other direction from the scorer's — the scorer removes a common
+rotation, this one has to *choose* it, and the priors are the only thing that can. What it buys is
+the closing edge a chain throws away: on a twelve-frame ring whose every edge is biased by the same
+0.2 degrees, chaining leaves the worst frame 1.100 degrees out and the same edges with the twelfth
+included leave it 0.000028. Its sweep budget is measured too, and scales with the anchor weight
+rather than the frame count. `Refine` itself still refuses — `GlobalSolution::intrinsics` promises a
+refined lens and `PairwiseResult` carries no correspondences to refine one from, which is a contract
+gap rather than a missing afternoon.
+
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
 first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, asking
