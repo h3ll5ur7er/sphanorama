@@ -2,6 +2,21 @@
 
 **Status:** accepted
 
+> **The Jacobi sweep count below is a sample maximum reported as a norm, and it is the second time
+> this decision's own paragraph has made that mistake.** "**5 sweeps, every regime, every frame
+> count from 2 to 60**" was measured over 5,000 trials. Re-measured over 200,000 per size, against
+> the committed constants: the mode is **4** at every frame count from 3 up, and **6** occurs at
+> roughly 2 per 100,000 — which a 5,000-trial run expects 0.1 of and therefore cannot see. At 60
+> frames: 5,820 threes, 173,780 fours, 20,398 fives, 2 sixes.
+>
+> **What this does not change is the decision.** Jacobi's independence from the eigenvalue gap is
+> the argument for it, and that holds: the count does not grow with frame count, and the budget of
+> 24 is untouched and was never close. The power-iteration half of the table below was measured
+> against an implementation this repository does not contain and is left as recorded.
+>
+> The correction is here rather than in the text, because an ADR records what was believed at the
+> time. `core/test/support/rotation_scoring.cpp` carries the current figures where the code is.
+
 ## Context
 
 Phase 2's exit criterion is "synthetic-dataset registration median error under a stated angular

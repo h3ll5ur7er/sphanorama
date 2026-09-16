@@ -52,8 +52,17 @@ bool EveryOneIsARotation(const std::vector<Quat>& frames) {
 // as (lambda2/lambda1)^k, so it is fast when the residuals agree and slow when they do not. Measured
 // over 5,000 trials at each frame count: on wholly unrelated estimates it exhausts a 200-iteration
 // budget 13.9% of the time at 12 frames and **45.6% at 60** — which is the size a real sphere plans.
-// Jacobi does not depend on the gap at all: 5 working sweeps, every regime, every frame count from
-// 2 to 60. See ADR 0049, including what the first version of this comment got wrong.
+// Jacobi does not depend on the gap at all, and that is the whole reason it is here. The count is
+// **typically 4 working sweeps and occasionally 6**, at every frame count from 2 to 60, against a
+// budget of 24. Measured over 200,000 trials per size: at 60 frames, 5,820 threes, 173,780 fours,
+// 20,398 fives and 2 sixes.
+//
+// This comment said "5 sweeps, every regime" until it was re-measured. That was a 5,000-trial
+// instrument reporting its own sample maximum as the norm — at roughly 2 sixes per 100,000 it
+// expected 0.1 of them and could not have seen one, and 4 rather than 5 is simply where the mode
+// is. Which is the second time this one paragraph has stated a tail as a typical value, the first
+// being recorded in ADR 0049. The budget of 24 was never in question and does not move: what
+// changes is only the sentence describing how much of it gets used.
 struct Eigen {
   Vec4 vector;
   bool separated = true;   // false when the top two eigenvalues are equal
