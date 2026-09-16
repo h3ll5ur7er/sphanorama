@@ -208,21 +208,24 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // later in the same sweep, so information crosses the graph in one pass instead of one hop per
   // pass — which on a ring is the difference between converging in a handful of sweeps and in as
   // many as there are frames.
+  // **Accumulated across sweeps rather than cleared at the top of each**, and that is a correction
+  // rather than the first instinct. This cleared, on the reading that what comes back should describe
+  // the answer being returned; the comment beside it claimed the difference was untestable and that
+  // a transient ambiguity "has not been constructible". A reviewer constructed one in three lines —
+  // three frames, two believed edges a half turn apart, the middle frame unanchored — and it settles
+  // in three sweeps with the middle frame at the identity, exactly between two neighbours pointing
+  // opposite ways. Cleared, it came back unnamed.
+  //
+  // That input is what settles which predicate is right, and it is not the one the field started
+  // with. A frame whose placement was decided by the eigensolver's scan order on *any* sweep is
+  // sitting where an arbitrary choice put it, and a later sweep finding a unique maximiser does not
+  // undo the choice — it inherits it. "Was this frame ever placed by a coin flip" is the question a
+  // caller is asking; "did the last iteration happen to re-roll it" is not.
   std::vector<Quat> predictions;
   std::vector<double> weights;
-  std::vector<int32_t> ambiguous;
+  std::vector<char> everAmbiguous(static_cast<size_t>(frames), 0);
   for (int sweep = 1; sweep <= kMaxSweeps; ++sweep) {
     double largestMoveDeg = 0;
-    // Cleared each sweep rather than accumulated, so what comes back describes the answer being
-    // returned and not every frame that was ever unsure on the way to it.
-    //
-    // **No test distinguishes this from accumulating, and that is worth saying rather than leaving
-    // for someone to find.** The two differ only on a frame that is ambiguous on one sweep and not
-    // on the last, which needs its neighbours to move through opposition and settle elsewhere — and
-    // a weakly anchored arrangement that does it on cue has not been constructible. Deleting this
-    // line fails nothing. It stays because the field's contract says "last average", and a reader
-    // deciding otherwise should change the contract first.
-    ambiguous.clear();
     for (int32_t i = 0; i < frames; ++i) {
       if (placed[static_cast<size_t>(i)] == 0) continue;
       predictions.clear();
@@ -261,7 +264,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // as protection to the next person and could never fire, which this repository treats as worse
       // than none.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
-      if (!average.isUnique) ambiguous.push_back(i);
+      if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
 
       largestMoveDeg = std::max(
           largestMoveDeg,
@@ -303,7 +306,15 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     out.maxEdgeErrorDeg = errors.back();
   }
 
-  out.ambiguous = std::move(ambiguous);
+  // Built from the flags at the end rather than appended to as they are set, which makes both of the
+  // header's promises — each frame once, ascending — true by construction instead of by luck. A
+  // sabotage of the append version failed nothing, because no arrangement yet built makes a frame
+  // ambiguous on two separate sweeps; and the ascending half was simply false, since a frame first
+  // flagged on a later sweep would have landed after one flagged earlier with a lower index. There
+  // is now nothing to test, which is the better answer than a guard nothing reaches.
+  for (int32_t i = 0; i < frames; ++i) {
+    if (everAmbiguous[static_cast<size_t>(i)] != 0) out.ambiguous.push_back(i);
+  }
   out.rotations = std::move(solved);
   out.valid = true;
   return out;

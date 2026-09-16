@@ -765,6 +765,26 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_EQ(solved.ambiguous.size(), 1u);
   EXPECT_EQ(solved.ambiguous.front(), 1);
 
+  // **And a frame that is unsure only partway through is still named**, which is the case that
+  // decided "any sweep" over "the last". Three frames, the middle one unanchored, two believed edges
+  // a half turn apart: it settles in three sweeps with the middle frame at the identity, exactly
+  // between two neighbours pointing opposite ways. On the final sweep its average has a single
+  // maximiser — so a per-sweep `clear()` reported nothing, and the frame whose placement was a coin
+  // flip came back looking like one the edges agreed on. Constructed by a reviewer after this file
+  // claimed the case was not constructible.
+  const std::vector<Quat> opposedAnchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(180.0)};
+  const Quat halfTurn = TrueEdge(AboutY(0.0), AboutY(180.0));
+  const std::vector<RelativeRotation> transient{
+      RelativeRotation{1, 0, halfTurn, 1.0},
+      RelativeRotation{2, 1, halfTurn, 1.0},
+  };
+  const AveragedRotations partway = AverageRotations(transient, opposedAnchors, 0.01);
+  ASSERT_TRUE(partway.valid);
+  EXPECT_TRUE(partway.converged);
+  EXPECT_EQ(partway.sweeps, 3);
+  ASSERT_EQ(partway.ambiguous.size(), 1u);
+  EXPECT_EQ(partway.ambiguous.front(), 1);
+
   // The same shape with the two edges agreeing leaves nobody ambiguous, so the flag is reporting the
   // cancellation rather than the topology.
   const std::vector<RelativeRotation> agreed{

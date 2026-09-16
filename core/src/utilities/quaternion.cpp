@@ -58,6 +58,18 @@ Quat FromAxisAngle(const Vec3& axis, double radians) {
   // axis asked for.
   if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
 
+  // **The angle needs the same guard as the axis, and did not have one.** `sin` and `cos` of a NaN
+  // or an infinity are NaN, so every component came back NaN — which this file's opening promise
+  // ("every function here is total: degenerate input yields identity rather than NaN") says must not
+  // happen. The examples beside that promise are all about the axis, which is how the angle went
+  // unguarded: the sentence generalised and the code did not.
+  //
+  // Not reachable from today's callers, checked rather than assumed — `OrientationPoseEngine::Turned`
+  // can only produce a non-finite angle from a non-finite rate, which the axis guard above already
+  // refuses, and `FromAzimuthElevation`'s trailing `Normalize` absorbs it. Found by reading the
+  // header against the code rather than by a failure.
+  if (!std::isfinite(radians)) return Quat{};
+
   const double half = radians * 0.5;
   const double s = std::sin(half) / length;
   return Quat{std::cos(half), axis.x * s, axis.y * s, axis.z * s};

@@ -64,6 +64,35 @@ TEST(AngleBetween, IsFiniteForDegenerateInput) {
   EXPECT_TRUE(std::isfinite(AngleBetween(Quat{0, 0, 0, 0}, Yaw(10))));
 }
 
+// An angle that is not a measurement gives the identity, like an axis that is not one.
+//
+// This file's header promises that *every* function here is total — degenerate input yields the
+// identity rather than NaN — and the examples beside that promise are all about the axis, which is
+// how the angle came to be unguarded. `sin` and `cos` of a NaN are NaN, so every component came back
+// NaN and the promise was false for one of its two arguments.
+//
+// `IsUsableRotation` would have caught the result downstream, which is why nothing failed. That is
+// the difference between a defect and a crash, not between a defect and nothing: the header says
+// identity, and a caller that trusts it and skips the check gets four NaNs.
+TEST(FromAxisAngle, AnAngleThatIsNotAMeasurementGivesTheIdentity) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+  const Vec3 axis{0, 1, 0};
+
+  for (const double degenerate : {nan, infinity, -infinity}) {
+    const Quat q = FromAxisAngle(axis, degenerate);
+    EXPECT_EQ(q.w, 1.0) << "angle " << degenerate;
+    EXPECT_EQ(q.x, 0.0) << "angle " << degenerate;
+    EXPECT_EQ(q.y, 0.0) << "angle " << degenerate;
+    EXPECT_EQ(q.z, 0.0) << "angle " << degenerate;
+    EXPECT_TRUE(IsUsableRotation(q)) << "the identity is a rotation; angle " << degenerate;
+  }
+
+  // A finite angle still turns, so the guard is refusing the degenerate case rather than everything.
+  const Quat real = FromAxisAngle(axis, 1.0);
+  EXPECT_NE(real.w, 1.0);
+}
+
 TEST(FromAxisAngle, ProducesAUnitQuaternion) {
   EXPECT_NEAR(Norm(FromAxisAngle(Vec3{0, 0, 1}, 1.2)), 1.0, 1e-12);
 }

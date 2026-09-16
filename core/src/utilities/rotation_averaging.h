@@ -57,6 +57,11 @@ struct AveragedRotations {
   // one that was given up on. An unplaced frame is always one with no usable anchor: a frame that
   // has one is placed by it before any edge is walked.
   std::vector<Quat> rotations;
+
+  // Frames no anchor placed and no believed edge reached, ascending. Their `rotations` entry is the
+  // identity, which is why they have to be named: the identity is a rotation a level phone reports,
+  // so nothing about the value says it was given up on. With `edgesUsed` and `ambiguous`, this is
+  // how much of the answer rests on nothing.
   std::vector<int32_t> unplaced;
 
   // How far the answer leaves each edge it used, in degrees. **Read them with `edgesUsed`**, which is
@@ -76,17 +81,21 @@ struct AveragedRotations {
   // made from them.
   int32_t edgesUsed = 0;
 
-  // Frames named in `unplaced` are the other half of the same question: how much of the input the
-  // answer actually rests on.
-
-  // Frames whose last average had no single maximiser, so where they sit was settled by the
-  // eigensolver's scan order rather than by the evidence. Reachable when everything speaking for a
-  // frame disagrees by a half turn — two neighbours pointing opposite ways, which in a capture means
-  // a registration that has gone badly wrong rather than one that is merely imprecise.
+  // Frames whose average had no single maximiser **on any sweep**, so where they sit was settled at
+  // some point by the eigensolver's scan order rather than by the evidence. Ascending, each frame
+  // named once. Reachable when everything speaking for a frame disagrees by a half turn — two
+  // neighbours pointing opposite ways, which in a capture means a registration that has gone badly
+  // wrong rather than one that is merely imprecise.
   //
-  // Reported because `AverageQuaternions` computes it on every frame of every sweep and this used to
-  // throw it away, which a reviewer found: a frame placed by a coin flip came back indistinguishable
-  // from one the edges agreed on. Disjoint from `unplaced` — an unplaced frame is never averaged.
+  // **"On any sweep" rather than "on the last"**, which is a correction: a frame placed by a coin
+  // flip inherits that placement through every sweep that follows, so a later iteration finding a
+  // single maximiser does not make the answer evidence-based. The question a caller is asking is
+  // whether the answer rests on an arbitrary choice, not whether the final iteration re-rolled it.
+  //
+  // Reported at all because `AverageQuaternions` computes it on every frame of every sweep and this
+  // used to throw it away, which a reviewer found: a frame placed by a coin flip came back
+  // indistinguishable from one the edges agreed on. Disjoint from `unplaced` — an unplaced frame is
+  // never averaged — so the two together say how much of the answer rests on something.
   std::vector<int32_t> ambiguous;
 
   // How many sweeps were run. At least one on any `valid` answer, so zero means the whole solve was
@@ -136,6 +145,19 @@ struct AveragedRotations {
 //
 // A frame with no usable anchor that no surviving edge reaches is a different case and is not a
 // refusal: the rest of the reconstruction is still an answer. It is named in `unplaced`.
+//
+// **The order of `edges` can change the answer, and only on input that is already contradictory.**
+// The breadth-first placement walks edges in the order it is given them, so on a graph whose edges
+// disagree about where a frame belongs, which one places it first decides which basin the sweep then
+// relaxes into. Measured by a reviewer: three mutually contradictory edges reordered give frames at
+// `0/120/0` versus `180/60/0`, both converged. On well-conditioned input it does not arise — 6,426
+// trials with consistent edges jittered half a degree and priors three degrees out produced zero
+// divergences.
+//
+// Left as it is rather than made order-independent, because the case it affects is one the answer
+// already reports as bad: `maxEdgeErrorDeg` is 180 degrees in both of those orderings, so a caller
+// reading the number this struct exists to give them is told the reconstruction is worthless either
+// way. Making the traversal canonical would buy a *reproducible* worthless answer.
 AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
                                    std::span<const Quat> anchors, double anchorWeight);
 
