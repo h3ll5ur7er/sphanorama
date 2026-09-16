@@ -1465,33 +1465,144 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
             lens = json.loads((out / "truth.json").read_text())["intrinsics"]
         self.assertEqual([lens[key] for key in ("k1", "k2", "k3", "p1", "p2")], [0.0] * 5)
 
-    def test_distortion_moves_the_pixels_and_moves_the_edge_more_than_the_centre(self):
-        # That the frames merely *differ* is satisfied by any bug that perturbs them. What says the
-        # distortion is radial is where the difference lives: a radial term is zero at the optical
-        # centre by construction and grows outward, so the edge must move more than the middle.
-        #
-        # Measured as a ratio rather than a threshold, because the absolute displacement depends on
-        # the panorama's content and the ratio depends only on the lens.
-        with tempfile.TemporaryDirectory() as directory:
-            straight = self.render(directory, "pinhole")
-            barrel = self.render(directory, "barrel", "--k1", "-0.15")
-            a = self.read_ppm(straight / "frame_0000.ppm").astype(float)
-            b = self.read_ppm(barrel / "frame_0000.ppm").astype(float)
+    def frame(self, directory, name, *extra):
+        """One rendered frame as floats, so two renders can be subtracted."""
+        return self.read_ppm(self.render(directory, name, *extra) / "frame_0000.ppm").astype(float)
 
-        self.assertEqual(a.shape, b.shape)
+    @staticmethod
+    def edge_and_centre(a, b):
+        """Mean absolute difference outside a centred half-extent box, and inside it.
+
+        Where a difference lives is what says it is radial: a radial term is zero at the optical
+        centre by construction and grows outward.
+        """
         difference = np.abs(a - b).mean(axis=2)
         height, width = difference.shape
-        # A centred box of half the frame's extent against everything outside it.
         top, bottom = height // 4, height - height // 4
         left, right = width // 4, width - width // 4
-        middle = difference[top:bottom, left:right]
-        outside = np.concatenate([difference[:top].ravel(), difference[bottom:].ravel(),
-                                  difference[top:bottom, :left].ravel(),
-                                  difference[top:bottom, right:].ravel()])
-        self.assertGreater(outside.mean(), 0.0, "a distorted render is identical to a pinhole one")
-        self.assertGreater(outside.mean(), 2.0 * middle.mean(),
-                           f"the difference is not radial: centre {middle.mean():.3f}, "
-                           f"edge {outside.mean():.3f}")
+        return (np.concatenate([difference[:top].ravel(), difference[bottom:].ravel(),
+                                difference[top:bottom, :left].ravel(),
+                                difference[top:bottom, right:].ravel()]).mean(),
+                difference[top:bottom, left:right].mean())
+
+    @staticmethod
+    def top_bottom_and_sides(a, b):
+        """The same difference split by axis instead of by radius, which is what tells p1 from p2."""
+        difference = np.abs(a - b).mean(axis=2)
+        height, width = difference.shape
+        top, bottom = height // 4, height - height // 4
+        left, right = width // 4, width - width // 4
+        return (np.concatenate([difference[:top].ravel(), difference[bottom:].ravel()]).mean(),
+                np.concatenate([difference[top:bottom, :left].ravel(),
+                                difference[top:bottom, right:].ravel()]).mean())
+
+    def test_distortion_moves_the_edge_far_more_than_the_centre(self):
+        # That the frames merely *differ* is satisfied by any bug that perturbs them, so what is
+        # asserted is where the difference lives.
+        #
+        # **The bound is 6 and the measurement is 9.62, and the gap between those two numbers is
+        # the finding that set it.** It was written as 2, which a reviewer showed is not a bound on
+        # anything this test is about: a 0.05% change to the focal length, with no distortion at
+        # all, scores 3.375 and would have passed. A uniform scale is radial too — it is zero at the
+        # centre and grows outward — so this ratio separates radial-ish from uniform and nothing
+        # finer. Sign and magnitude are pinned by the two cases below, because they cannot be
+        # pinned here.
+        #
+        # Correctly refused at 6, measured by the same reviewer: a one-pixel translation (0.926), a
+        # third of a pixel (1.306), and plus-or-minus eight bytes of noise (1.004).
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
+
+        self.assertEqual(straight.shape, barrel.shape)
+        outside, middle = self.edge_and_centre(straight, barrel)
+        self.assertGreater(outside, 0.0, "a distorted render is identical to a pinhole one")
+        self.assertGreater(outside, 6.0 * middle,
+                           f"the difference is not radial enough to be distortion: "
+                           f"centre {middle:.3f}, edge {outside:.3f}")
+
+    def test_the_sign_of_k1_reaches_the_pixels(self):
+        # A ratio cannot see a sign — barrel and pincushion are both radial and both score about
+        # ten — so a render that dropped the sign would pass the case above. This is the relation
+        # that catches it, and it needs no threshold: turning a barrel into a pincushion moves the
+        # pixels *further* than removing the distortion altogether, because the two displacements
+        # are opposite rather than merely different. Measured 24.49 against 16.80.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
+            pincushion = self.frame(directory, "pincushion", "--k1", "0.15")
+
+        self.assertGreater(np.abs(barrel - pincushion).mean(), np.abs(barrel - straight).mean(),
+                           "flipping the sign of k1 changed the render by less than removing it")
+
+    def test_the_magnitude_of_k1_reaches_the_pixels_in_proportion(self):
+        # And a ratio cannot see a magnitude either: a render that attenuated k1 thirtyfold still
+        # scores 8.61 and passes. What pins it is that the leading Brown-Conrady term is linear in
+        # k1, so a thirtieth of the coefficient must be about a thirtieth of the displacement —
+        # measured 21.64 edge against 0.6425, a factor of 33.7. The window is 20 to 50 because the
+        # relation is only asymptotically linear (k2 and k3 are zero here, but the inverse solve is
+        # not) and because the panorama's own content sets the constant.
+        #
+        # A focal-length change cannot produce this at all: it is not parameterised by k1, so
+        # scaling k1 leaves it untouched.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            strong = self.frame(directory, "strong", "--k1", "-0.15")
+            weak = self.frame(directory, "weak", "--k1", "-0.005")
+
+        strong_edge, _ = self.edge_and_centre(straight, strong)
+        weak_edge, _ = self.edge_and_centre(straight, weak)
+        # **An absolute floor as well as a ratio, and this is the one place one is defensible.**
+        # A render that attenuated *both* coefficients uniformly keeps the ratio below exactly where
+        # it is and passes everything else in this class — measured, that is the last hole a
+        # reviewer's sweep left open. The floor closes it, at the cost of depending on the committed
+        # panorama's content rather than on the lens alone: 21.64 bytes measured, 10 asserted.
+        self.assertGreater(strong_edge, 10.0,
+                           f"k1 = -0.15 moved the edge by only {strong_edge:.2f} bytes")
+        self.assertGreater(weak_edge, 0.0, "a thirtieth of the coefficient moved nothing at all")
+        attenuation = strong_edge / weak_edge
+        self.assertGreater(attenuation, 20.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
+        self.assertLess(attenuation, 50.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
+
+    def test_the_tangential_terms_reach_the_pixels_and_are_not_each_other(self):
+        # **The hole this closes was open and a reviewer walked through it.** Every case above
+        # spends `--k1` alone, and the record case reads `truth.json` and never a pixel — so
+        # `render_frame` zeroing p1 and p2, or swapping them, left all 103 tests green while writing
+        # a `truth.json` that claims coefficients the frames do not carry. That is the exact failure
+        # the class docstring names: a dataset that says it is distorted and is not, which the C++
+        # loader reads and believes. Measured ray error of the zeroing sabotage: up to 0.856
+        # degrees, against published registration medians of 0.024 to 0.101.
+        #
+        # Three differences rather than two, because two would be satisfied by one term standing in
+        # for the other: p1 and p2 are tangential along perpendicular axes, so a frame distorted by
+        # one is not the frame distorted by the other. Measured 5.39, 5.20 and 7.41 mean absolute
+        # bytes.
+        #
+        # **And a fourth assertion, because those three are all symmetric and a swap is not.** Three
+        # magnitudes cannot tell `p1` from `p2`: exchanging them in the render path relabels the two
+        # frames and leaves every number above identical, which is the second sabotage the reviewer
+        # got past the first draft of this case. What is asymmetric is *where* each term acts.
+        # OpenCV's tangential pair is `x + 2·p1·x·y + p2·(r² + 2x²)` and `y + p1·(r² + 2y²) +
+        # 2·p2·x·y`, so p1 alone displaces mostly along y and is largest at the top and bottom of
+        # the frame, and p2 alone mostly along x and is largest at the sides. Measured as
+        # top-and-bottom over left-and-right: 2.085 for p1 and 0.780 for p2. Asserted as the
+        # relation rather than against either number, so a swap fails it by construction and no
+        # threshold has to be defended.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            along_x = self.frame(directory, "p1", "--p1", "0.01")
+            along_y = self.frame(directory, "p2", "--p2", "0.01")
+
+        self.assertGreater(np.abs(along_x - straight).mean(), 1.0, "p1 never reached a pixel")
+        self.assertGreater(np.abs(along_y - straight).mean(), 1.0, "p2 never reached a pixel")
+        self.assertGreater(np.abs(along_x - along_y).mean(), 1.0,
+                           "p1 and p2 render identically, so one is standing in for the other")
+
+        p1_tall, p1_wide = self.top_bottom_and_sides(straight, along_x)
+        p2_tall, p2_wide = self.top_bottom_and_sides(straight, along_y)
+        self.assertGreater(p1_tall / p1_wide, p2_tall / p2_wide,
+                           f"p1 is no more vertical than p2 ({p1_tall / p1_wide:.3f} against "
+                           f"{p2_tall / p2_wide:.3f}), so the two are swapped")
 
     def test_a_lens_that_folds_inside_its_own_frame_is_refused_before_anything_renders(self):
         # `render_frame` has refused a rayless pixel since it was written, and until this flag
