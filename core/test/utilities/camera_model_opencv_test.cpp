@@ -194,6 +194,18 @@ cv::Matx33d TurnAboutY(double degrees) {
   return cv::Matx33d(std::cos(t), 0, std::sin(t), 0, 1, 0, -std::sin(t), 0, std::cos(t));
 }
 
+// Rodrigues, for a turn about an axis that is not one of the three. A rotation about a coordinate
+// axis commutes with a sign flip of that axis; a tilted one commutes with nothing, which is the
+// whole reason the second sweep below exists.
+cv::Matx33d TurnAbout(const cv::Vec3d& axis, double degrees) {
+  const cv::Vec3d n = cv::normalize(axis);
+  const double t = degrees / kDegPerRad;
+  const double c = std::cos(t), s = std::sin(t), k = 1.0 - c;
+  return cv::Matx33d(c + n[0] * n[0] * k,        n[0] * n[1] * k - n[2] * s, n[0] * n[2] * k + n[1] * s,
+                     n[1] * n[0] * k + n[2] * s, c + n[1] * n[1] * k,        n[1] * n[2] * k - n[0] * s,
+                     n[2] * n[0] * k - n[1] * s, n[2] * n[1] * k + n[0] * s, c + n[2] * n[2] * k);
+}
+
 cv::Vec3d ToCv(const Vec3& v) { return cv::Vec3d(v.x, v.y, v.z); }
 
 /**
@@ -292,7 +304,9 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // vertical extent of the overlap is the whole frame and the two `image.pixel.y` bounds reject
   // nothing: setting `fy` to `fx`, or the vertical field of view to 66 degrees, leaves the count at
   // exactly 160,000. It moves for `fx` — 159,150 at `fx x 1.01` and 160,844 at `x 0.99` — and for
-  // a half-pixel shift in `cx` (159,960; 159,962 if `cy` moves with it). The one mistake this ADR's
+  // a half-pixel shift in `cx` — 159,960 *down*, 160,036 *up*, and 159,962 if `cy` moves down with
+  // it. The sign is named because it changes the answer, in the comment about unrecorded rig
+  // parameters. The one mistake this ADR's
   // table has actually made is a square lens, and it walks straight past this line — which is why
   // `fy` is asserted by name above.
   //
@@ -337,24 +351,45 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
         << "shift " << row.shift << " fits the turn " << error << " degrees out";
   }
 
-  // **What this test cannot do, stated because a draft of it claimed otherwise.** The
+  // **What a consistently-mutated model does to this table, measured rather than reasoned.** The
   // correspondences are built by unprojecting a pixel, turning the direction, and projecting it
-  // back — all through the model under test — so a mutation applied consistently to `Project` and
-  // `Unproject` cancels exactly. Write `b = Unproject(Project(M * turn.t() * Unproject(pa)))` for
-  // any invertible `M` the model is mutated by and the `M`s meet in the middle: `b` comes out as
-  // `turn.t() * a` whatever `M` was, and every row is unchanged.
+  // back — all through the model under test — so for a mutation `M` applied to both halves the two
+  // `M`s meet in the middle and `b` comes out as `turn.t() * a` whatever `M` was. That makes the
+  // `+0.50` row exactly zero under any `M`, and it is where the cancellation stops.
   //
-  // A reviewer demonstrated that with a y-sign flip, which is the case where it bites hardest,
-  // because the accuracy dataset's turn is about `+Y` and `diag(1, -1, 1)` commutes with it. The
-  // first attempt to fix this added a second sweep about a tilted axis on the theory that
-  // non-commutation would expose the flip. It does not: the cancellation above has nothing to do
-  // with the axis, so the tilted sweep passed under the mutation too, and the figure this comment
-  // briefly claimed for it had never been measured. It is gone rather than weakened.
+  // The other four rows survive **only when `M` commutes with the turn**, because that is what
+  // decides whether the correspondence *pixels* move: `pb` is `Project(M.inv() * turn.t() * M * a)`,
+  // which is `pb` unmutated iff `M.inv() * turn.t() * M` is `turn.t()`. Measured against this
+  // table:
   //
-  // So this test measures the *shift* and is silent about the model. What checks the model is what
-  // compares it against something outside itself: the two OpenCV agreement tests above, which the
-  // flip fails, and `Unproject.ImageYRunsDownAndCameraYRunsUp`, which is three assertions and no
-  // sweep at all.
+  //   - a y-sign flip commutes with a turn about `+Y`, and every row is unchanged — a reviewer
+  //     demonstrated it, and it is why `Unproject.ImageYRunsDownAndCameraYRunsUp` exists;
+  //   - an x mirror does not: `diag(-1,1,1) * Ry(30) * diag(-1,1,1)` is `Ry(-30)`, so the
+  //     correspondences run the other way and three of five rows fail, at 0.020964 / 0.015727 /
+  //     0.010487 — which is the reversed-turn family, the same numbers a negated `TurnAboutY`
+  //     produces;
+  //   - a z flip does not either, for the same reason.
+  //
+  // **An earlier version of this paragraph said the cancellation held for any invertible `M`, and
+  // deleted a working test on the strength of it.** That version had added a second sweep about a
+  // tilted axis, run a y-flip against it, seen it pass, and concluded no axis could help. The sweep
+  // was fine; its assertion was `EXPECT_GT(error, 1e-3)` — a lower bound a moved value clears as
+  // easily as an unmoved one. With the figure asserted instead, the same sweep moves from 0.021664
+  // to 0.022093 under that flip, which is forty-three times this test's tolerance.
+  //
+  // So the sweep is back, with its number.
+  const cv::Matx33d tilted = TurnAbout(cv::Vec3d(1.0, 2.0, 3.0), 20.0);
+  std::vector<Pixel> tiltedA, tiltedB;
+  correspond(tilted, &tiltedA, &tiltedB);
+  ASSERT_EQ(tiltedA.size(), 223602u) << "the tilted overlap is not the one these figures come from";
+
+  // Exactly zero at the correction, which is the claim that does not depend on the axis, and a
+  // specific figure at what the engine does today, which is the claim that does. 20 degrees about
+  // `(1, 2, 3)`: three unequal components, so none of the three sign flips commutes with it.
+  EXPECT_NEAR(fitErrorDeg(tiltedA, tiltedB, tilted, 0.5), 0.0, 1e-5)
+      << "the correction is not exact about a tilted axis";
+  EXPECT_NEAR(fitErrorDeg(tiltedA, tiltedB, tilted, 0.0), 0.021664, 1e-5)
+      << "the uncorrected shift costs a different angle about a tilted axis than it did";
 }
 
 }  // namespace

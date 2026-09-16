@@ -548,7 +548,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //      more that are only correct relative to them. It was missing from this list until ADR 0061
   //      went to add a figure to it and a reviewer asked which of the eight that was;
   //   7. `docs/06-roadmap.md`'s table, and separately the prose around it that the table does not
-  //      cover — `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is 4.2 times
+  //      cover — `ORB's median roughly triples` beside the half-pixel paragraph, which carries no
+  //      digits on purpose and still has to move when the ratio stops being three;
+  //      `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is 4.2 times
   //      better than ORB's` and `now reads eleven of eleven for all three`. Editing the table
   //      alone leaves all three standing, and a reader who trusts the entry stops at the table;
   //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101`.

@@ -945,7 +945,8 @@ here was standing in for the largest.
 
 So the table is a comparison between detectors on equal terms and is not yet a statement of how well
 this estimator locates a rotation. **ADR 0061 measures what correcting it costs, and the answer is that the table
-gets worse**: ORB's median roughly triples and fails its own bound, because these figures are
+gets worse**: ORB's median roughly triples and fails **both** of its bounds, because these figures
+are
 green partly by cancellation against the detectors' sub-pixel localisation bias. That ADR names what
 a correction has to move in one commit — this table among it. (`camera_model.h` has stated the
 convention gap since it was written.)

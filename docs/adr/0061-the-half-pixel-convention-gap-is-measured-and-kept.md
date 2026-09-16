@@ -50,10 +50,15 @@ lens is caught one line earlier, by `ASSERT_NEAR(lens.fy, 514.681661, 1e-6)`, so
 row is fitted. 0.010395 is what the sweep produces with that guard removed. Both are the test doing
 its job; only the second is a statement about the table.
 
-Linear in the shift, exactly zero at `+0.5`. Reproduced on the committed `synthetic-ring-4` lens
+**Linear to about a part in a thousand, and exactly zero at `+0.5`.** The zero is exact and the
+linearity is not: doubling the `+0.00` row gives 0.020996 against the measured 0.021008, a ratio of
+2.0011 and a gap of 1.2e-5 — which is larger than the 1e-5 the test asserts each row to, so it is a
+real second-order term rather than rounding. An earlier version of this sentence said "linear" and
+"twice, as a linear term must be" without qualification; the tangent of a growing offset is not
+quite linear in it, and at this precision that shows. Reproduced on the committed `synthetic-ring-4` lens
 (48x36, `fx` 36.957, `fy` 38.601, a 7-degree rotation **about `y`**, as above), again over every
 pixel centre — 1,488 of
-1,728: 0.054141° at `+0.0` and 0.108482° at `-0.5`, twice as a linear term must be, and zero at
+1,728: 0.054141° at `+0.0` and 0.108482° at `-0.5` — a ratio of 2.0037, not 2 — and zero at
 `+0.5`. A smaller lens gives a larger angle for the same half pixel, which is what a fixed
 image-plane offset should do. Two lenses, one geometry.
 

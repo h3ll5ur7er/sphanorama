@@ -49,7 +49,8 @@ reached from tests. `Refine` still refuses. **The pair estimator is now scored a
 which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
 panorama, against a sensor prior perturbed three degrees, all three detectors register all eleven
 consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101 (ORB) — the
-roadmap's table, ADR 0059 for the world it is measured in, and ADR 0057 for the figures retracted
+roadmap's table, ADR 0061 for the half-pixel offset every one of them is measured through, ADR
+0059 for the world it is measured in, and ADR 0057 for the figures retracted
 when the first harness was found to be handing the estimator the exact truth and measuring itself.
 **The world matters more than the ranking.** Against the checkerboard that photograph replaced, ORB
 declined three of eleven pairs among hundreds of indistinguishable corners — two answered with

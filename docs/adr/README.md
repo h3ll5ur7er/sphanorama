@@ -10,19 +10,29 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the twelve bannered ADRs do not have a Status line at all. For a claim in the body
-  that a reader would otherwise meet and believe. This is the common shape: twelve ADRs carry a
-  banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0052, 0053, 0055, 0056); six of those
-  carry a Status line (0006, 0047, 0052, 0053, 0055, 0056), and three of *those* carry a Status
-  **chain** — a "narrowed by", "superseded by" or "extended by" pointer (0006, 0047, 0052).
+  has one; six of the fourteen bannered ADRs do not have a Status line at all. For a claim in the
+  body that a reader would otherwise meet and believe. This is the common shape: fourteen ADRs carry
+  a banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0049, 0052, 0053, 0055, 0056, 0060);
+  eight of those carry a Status line (0006, 0047, 0049, 0052, 0053, 0055, 0056, 0060), and four of
+  *those* carry a Status **chain** — a "narrowed by", "superseded by" or "extended by" pointer
+  (0006, 0047, 0052, 0060).
 
-  **0022's leading blockquote is a quotation, not a banner**, which is why it is absent from all
-  three lists and why counting `^> ` in the first twenty lines of every file returns one candidate
-  more than the set has members — thirteen against twelve today. Said here because two separate
+  **Three leading blockquotes are not banners** — 0022's is a quotation, 0023's and 0038's are the
+  passages they are arguing with — which is why they are absent from all three lists and why
+  counting `^> ` in the first twenty lines of every file returns three candidates more than the set
+  has members: seventeen against fourteen today. Said here because two separate
   recounts have had to rediscover it, and phrased as an offset rather than a total because the first
   version of this note said "twelve candidates" and was made stale by the same commit that wrote it:
   bannering 0056 moved the grep total the sentence had just quoted. That is a fifth quantity, and
   the "recompute all three" rule above did not cover it.
+
+  **A fifth time, and the first where the rule was simply not run.** ADR 0061's branch added a
+  banner to 0060 and recomputed nothing, so all five quantities were stale at once. Recomputing them
+  found a sixth thing: 0049 has carried a banner since it was written and has never been in this
+  list, so the count was wrong before that branch touched it. The offset was two rather than one for
+  the same reason — 0023 and 0038 open with the passages they argue against, which look exactly like
+  banners to a grep and are not. Every number in the two paragraphs above is now derived from the
+  files rather than from the previous version of those paragraphs.
 
   **This census has now gone wrong four times on one branch, and the third was the worst.** The
   fourth is the smallest and the most on-the-nose: the sentence added to stop the next recounter
@@ -123,5 +133,5 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0057](0057-the-retracted-figures-are-recorded-here-not-in-the-roadmap.md) | The first published accuracy figures measured the sensor prior rather than the estimator and are retracted — and a retracted measurement is recorded in an ADR from now on, leaving the roadmap to carry the live table and a pointer |
 | [0058](0058-a-feature-set-names-its-extractor.md) | A `FeatureSet` names the extractor that produced it, as an opaque identity rather than a detector enum — so a pair from a foreign extractor is refused instead of matched under the wrong metric |
 | [0059](0059-the-measurement-is-made-in-a-photograph.md) | Registration accuracy is measured in a licensed photograph rather than a checkerboard, the bytes are committed as received with a record beside them, and a checker fails the build for a binary that cannot say where it came from |
-| [0060](0060-a-reachability-claim-in-prose-is-retracted-and-pinned.md) | A lens refusing 38.8% of its frame was published in a source comment and is wrong — it is 66.8%; both figures the engine cites are asserted by a test now, and the refused-row path they argue for is not reached by any dataset this repository renders |
+| [0060](0060-a-reachability-claim-in-prose-is-retracted-and-pinned.md) | *(one figure retracted by [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md): the half-pixel offset is 0.0805° across two axes, not the 0.0581° of one.)* A lens refusing 38.8% of its frame was published in a source comment and is wrong — it is 66.8%; both figures the engine cites are asserted by a test now, and the refused-row path they argue for is not reached by any dataset this repository renders |
 | [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md) | Keypoints reach `camera_model` half a pixel out, worth 0.0105° per fitted pair against 0.0805° per bearing — and correcting it makes five of the six published figures *worse* (AKAZE's median is the one that improves) and fails both of ORB's bounds, because the table is green partly by cancellation against the detectors' own localisation bias. Kept, measured, and the blast radius left where it already lives |
