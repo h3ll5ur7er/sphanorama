@@ -59,8 +59,10 @@ not a defect, and ADR 0056 is the record of it. A periodic world is the one plac
 must not be scored. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
-conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
-build, not finished.
+conditions on one device — a Pixel 9 Pro XL, which captured a full sphere and survived both a reload
+and a browser close-and-reopen (see the roadmap). The third is peak memory per device class, and it
+is blocked on nothing being able to *read* the number rather than on the number not existing. Far
+enough along that stitching is the next thing to build, not finished.
 
 **Phase 2 has started at the bottom.** `utilities/camera_model` projects a direction to the pixel it
 lands on and back again, through Brown-Conrady distortion, and it is the first code in this

@@ -263,10 +263,26 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
 recorded per device class.
 
-*Where this stands:* two of the three conditions are met on one device. A Pixel 9 Pro XL captured a
-full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
-build. The reload-and-resume condition is met in a real browser — an end-to-end test drives it —
-but not yet demonstrated on a phone. What is left, and what has landed since:
+*Where this stands:* two of the three conditions are met on one device, and the second of them is
+now met **on the phone** rather than only in a test browser. A Pixel 9 Pro XL captured a full
+sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed build, and
+the maintainer reports that capture surviving both a reload **and a browser close-and-reopen**. The
+second is the stronger result and is worth separating: a reload re-runs the document-and-adopt path
+(ADR 0029), while a close-and-reopen also proves the OPFS tier outlived the *process*, which is what
+ADR 0030's fixed preferred name and sibling index exist for and what an end-to-end test in one
+browser session cannot show.
+
+A Pixel 9 Pro XL is not the mid-range Android the exit names, and it is the device that exists. The
+iPhone half is untouched.
+
+**What is left is the third condition, and it is not blocked on code we have not written — it is
+blocked on the number being unreadable.** "Measured peak memory recorded per device class" needs
+somebody holding the phone to be able to read a figure off it. The core already knows: the frame
+store's browser ceiling is probed rather than stated (ADR 0023) and the tiers know what they hold.
+Nothing surfaces it. Until it does, this condition cannot be met by anyone without a debugger
+attached to a phone, which is not a thing a maintainer does after a capture.
+
+What is left, and what has landed since:
 
 - **Reload and resume — done, and wired to a button.** The core reads a session document written
   at every committed cell, replans from the spec and lens that document carries, and hands the
@@ -888,9 +904,11 @@ half a pixel in each axis — a constant `(-0.5, -0.5)` px translation, absorbed
 centre rather than by the focal length. At this dataset's `fx` of 492.757 that is **0.0581
 degrees**, which is the same order as the medians above and larger than SIFT's. So the table is a
 comparison between detectors on equal terms and is not yet a statement of how well this estimator
-locates a rotation. Correcting it moves every figure here and wants its own measurement and its
-own ADR (ADR 0060 records the geometry; `camera_model.h` has stated the convention gap since it was
-written).
+locates a rotation. **ADR 0061 measures what correcting it costs, and the answer is that the table
+gets worse**: ORB's median goes 0.1009 to 0.2929 and fails its own bound, because these figures are
+green partly by cancellation against the detectors' sub-pixel localisation bias. That ADR names what
+a correction has to move in one commit — this table among it. (`camera_model.h` has stated the
+convention gap since it was written.)
 
 **What the measurement caught, which is the argument for having made it first.** Before the sensor
 prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of

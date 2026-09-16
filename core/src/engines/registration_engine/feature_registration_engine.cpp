@@ -547,7 +547,9 @@ class BorrowedFrame {
  *
  * That is a systematic error in the measurement rather than a reachability question, and it is the
  * larger half of what this paragraph found. It is not corrected here: doing so moves every
- * published accuracy figure, which wants its own measurement and its own ADR.
+ * published accuracy figure. **ADR 0061 is that measurement and that decision** — including the
+ * list of what a correction has to move in one commit, since any subset of it is a tree that
+ * contradicts itself.
  *
  * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
  * opposite of the obvious one.** The correction is geometrically exact: on the fixture's own lens,
