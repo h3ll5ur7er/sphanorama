@@ -514,8 +514,11 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
-  // green.** The bounds here are what fail; the figures are prose in the places listed below, which
-  // may be corrected and which nothing invalidates. **There is deliberately no count.** This list has had
+  // green.** The bounds here are what fail — **both of them**, `EXPECT_LT(score.medianDeg, 0.2)` and
+  // `EXPECT_LT(score.maxDeg, 0.4)`, which is worth naming together because a correction that moves
+  // one and forgets the other leaves a red suite for a reason the commit message will not mention.
+  // The figures are prose in the places listed below, which may be corrected and which nothing
+  // invalidates. **There is deliberately no count.** This list has had
   // a total three times — eight, then nine, then ten — and every one of them was left stale by the
   // edit that added an entry, in a comment whose entire job is stopping a figure from going stale
   // somewhere. "Every entry below" is greppable and survives the next `6c`. In this file:
@@ -523,7 +526,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //   1. this comment's `0.024 to 0.101` and `0.1551` — **and the refit paragraph above it**,
   //      whose `0.2108 / 0.6477`, `0.1826 / 0.2989` and `0.0535 / 0.1147` are hangar measurements
   //      an OpenCV bump moves and no bound asserts. Re-run the refit sabotage to get them;
-  //   2. the `Today's run, for comparison:` transcript that closes this comment — the whole triple;
+  //   2. the `Today's run, for comparison:` transcript below — the whole triple;
   //   3. the worst-frame bound's `0.1551`, under `EXPECT_LT(score.maxDeg, 0.4)`;
   //   4. the acceptance docblock's `20 of 141 / 42 of 199 / 61 of 178`;
   //   5. its repeat beside `kFirst`;

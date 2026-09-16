@@ -155,10 +155,12 @@ Concretely:
    and the rule that ADRs 0059 and 0061 are *superseded* rather than corrected. Read that
    catalogue, not a list here.
 
-   The two `EXPECT_LT` bounds are deliberately **not** in it — its first sentence puts them outside
-   the list, because they are what *fails* when the figures move rather than prose that has to be
-   corrected. An earlier version of this paragraph claimed the catalogue held both; it names the
-   max bound in passing, as the assertion one figure sits under, and that is all.
+   The two `EXPECT_LT` bounds are deliberately **not** entries in it — they are what *fails* when
+   the figures move, rather than prose that has to be corrected. Its first sentence names both, for
+   the reason a reviewer gave: a correction that moves one and forgets the other leaves a red suite
+   for a cause the commit message will not mention. An earlier version of this paragraph claimed
+   they were in the list, when only the max bound appeared, in passing, as the assertion one figure
+   sits under.
 
    **Named by its heading rather than by a line range, which is the third version of this pointer.**
    A five-item list came first and reached two of the eight it was duplicating. Then `516-541`,
