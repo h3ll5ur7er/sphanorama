@@ -49,10 +49,9 @@ Eigen DominantEigenvector(double m[4][4]) {
   //
   // **No fallback for a non-positive trace, and the absence is the point.** `AverageQuaternions`
   // divides every weight by the heaviest before accumulating, so the heaviest input contributes
-  // exactly 1 and the trace is at least 1 and at most the input count. A reviewer proposed
-  // `trace > 1.0` as a sabotage of the guard that used to stand here and found nothing failed —
-  // correctly, because after that division the guard and its `else` branch compute the same number.
-  // It was doing nothing, and a branch that cannot be taken reads as protection and is not.
+  // exactly 1 and the trace is at least 1 and at most the input count. A `trace > 0.0` guard with a
+  // constant fallback stood here, and after that division its two arms compute the same number — a
+  // branch that cannot be taken reads as protection and is not.
   double trace = 0;
   for (int k = 0; k < 4; ++k) trace += m[k][k];
   const double scale = trace * trace;

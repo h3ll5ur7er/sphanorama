@@ -64,6 +64,12 @@ is false: the engine will build the edges, choose the weights, decide what an un
 worth, and answer for the result. The relationship is the one `camera_model` and `quaternion` have
 to the engines that call them — arithmetic a component uses, not a component that decides something.
 
+**With the caveat `docs/02-volatility-map.md` insists on**, and which this paragraph should not be
+read without: those two are called from `core/src` today and `rotation_averaging` is not. The
+analogy is to the *shape* of the relationship, not to its current state, and the Consequences below
+say what the difference costs. A reviewer found the two documents disagreeing about whether the
+caveat was needed; it is, and it belongs in both.
+
 **What this does not decide.** `Refine` still refuses, and wiring it up is a separate change with a
 separate question in front of it: `GlobalSolution::intrinsics` is documented as "shared across
 frames, refined here", and `PairwiseResult` carries a *count* of correspondences but not the matched
@@ -73,12 +79,17 @@ false.
 
 ## Consequences
 
-**Two components in `core/src` that nothing in `core/src` calls.** This is the cost worth stating
-plainly, because it is the one a reader will notice first and the volatility map's own line elsewhere
-is that a thing nothing in `core/src` reads does not earn a component. The exception taken here is
-narrow and time-limited: the caller is `IRegistrationEngine::Refine`, it is named above, and the
-reason it is not written yet is a contract gap rather than a change of mind. Until then both are
-compiled into the core — including the WASM build, where they cost size budget — and reached only
+**One component in `core/src` that nothing in `core/src` calls.** `rotation_averaging` is it:
+`quaternion_average` has a caller from the moment it exists, since the solver includes it and calls
+`AverageQuaternions` in its sweep. The first version of this section said "two", which a reviewer
+caught — and the count is load-bearing rather than cosmetic, because it is both the exception this
+ADR takes and the condition under which it should be superseded.
+
+This is the cost worth stating plainly, because the volatility map's own line elsewhere is that a
+thing nothing in `core/src` reads does not earn a component. The exception is narrow and
+time-limited: the caller is `IRegistrationEngine::Refine`, it is named above, and the reason it is
+not written yet is a contract gap rather than a change of mind. Until then `rotation_averaging` is
+compiled into the core — including the WASM build, where it costs size budget — and reached only
 from tests. If the `Refine` wiring does not follow, this ADR is the thing to supersede.
 
 **The WASM builds carry code no browser path executes yet**, and the size budget covers it. It is

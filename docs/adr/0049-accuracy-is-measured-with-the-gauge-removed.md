@@ -1,6 +1,6 @@
 # 0049 — Accuracy is measured with the gauge removed, and the median is the number
 
-**Status:** accepted; the address of its evidence moved by [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md)
+**Status:** accepted; its banner's pointer moved by [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md)
 
 > **The Jacobi sweep count below is a sample maximum reported as a norm, and it is the second time
 > this decision's own paragraph has made that mistake.** "**5 sweeps, every regime, every frame

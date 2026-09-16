@@ -33,6 +33,9 @@ bool IsUsableRotation(const Quat& q);
 // silence.
 bool IsUsableVector(const Vec3& v);
 
+// Identity for a degenerate *axis* — zero, or one whose length is not finite — and identity for a
+// degenerate *angle*. Both halves, because `sin` and `cos` of a non-finite angle are NaN and the
+// promise above is about the whole input rather than the interesting part of it.
 Quat FromAxisAngle(const Vec3& axis, double radians);
 
 // Rotation separating two orientations, in radians, in [0, pi]. Treats q and -q as the same

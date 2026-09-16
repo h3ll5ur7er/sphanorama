@@ -144,7 +144,7 @@ TEST(AverageRotations, ConsistentEdgesAndTruthfulAnchorsReproduceTheTruth) {
  * said it was. Run to the fixed point it is 4.83e-6: about four fifths of what this asserts is the
  * stopping rule, not the anchors. The conclusion above survives because 0.0477 is two thousand times
  * the stopping floor and cannot be explained by it — but the small number is where `kSettledDeg`
- * stops, and reading it as anything else gets the cause wrong. Found by a reviewer making the
+ * stops, and reading it as anything else gets the cause wrong. What settles it is making the
  * tolerance tunable and running the same fixture down a decade.
  *
  * An earlier version also asserted the median below 1e-6 at `anchorWeight` 0.01, which assumed the
@@ -241,9 +241,15 @@ TEST(AverageRotations, TheClosingEdgeIsWhatRemovesAChainsDrift) {
   // in one commit or not at all — the same rule the accuracy table keeps under the heading "Where
   // else the table is written" in `registration_accuracy_test.cpp`:
   //
-  //   1. `docs/06-roadmap.md`, in the paragraph that says what the discarded closing edge costs.
-  //   2. `CLAUDE.md`, in the `rotation_averaging` paragraph.
-  //   3. This test, here, which is the only place either is asserted.
+  //   1. `docs/06-roadmap.md`, in the `RegistrationEngine` bullet.
+  //   2. `docs/06-roadmap.md` again, in the paragraph on what the discarded closing edge costs.
+  //   3. `CLAUDE.md`, in the `rotation_averaging` paragraph.
+  //   4. This test, here, which is the only place either is asserted.
+  //
+  // The list said "the roadmap" and meant one of its two sites — the same defect the accuracy
+  // table's catalogue records making three times, in a list written to prevent it. Note also that the three prose sites round to `0.000028` where this asserts `0.0000278`, so
+  // a drift small enough to move only the fourth decimal fails here and leaves them true. That is
+  // deliberate: the prose is quoting a figure, not specifying a tolerance.
   //
   // Asserted rather than bounded, and the bound is why: this was `EXPECT_LT(recovered.maxDeg, 1e-4)`
   // — 3.6 times looser than the number it was published beside, so the published digits reached a
@@ -280,8 +286,8 @@ TEST(AverageRotations, TurningEveryAnchorTurnsTheWholeAnswer) {
   // **Anchors that are three degrees out, not the truth**, and that is the difference between
   // testing the solver and testing the walk. With truthful anchors and exact edges the input is
   // already a fixed point, so the sweep changes nothing and the equivariance asserted below is the
-  // breadth-first placement's rather than the solve's — a reviewer proved it by replacing the whole
-  // sweep with `(void)average` and watching this test stay green. Perturbed anchors make the solver
+  // breadth-first placement's rather than the solve's — replacing the whole sweep with
+  // `(void)average` leaves it green. Perturbed anchors make the solver
   // do work, and the assertion below then says that work commutes with a common rotation.
   std::vector<Quat> anchors;
   for (int i = 0; i < kFrames; ++i) {
@@ -316,8 +322,7 @@ TEST(AverageRotations, TurningEveryAnchorTurnsTheWholeAnswer) {
 /**
  * An `anchorWeight` of zero places the frames and then believes only the edges.
  *
- * Three paragraphs of the header describe this and, until a reviewer counted, no test passed it —
- * the file used 0.01, 1e-4, 1e-6, 1000 and the refusals. It is not a cosmetic gap: the "this call
+ * Three paragraphs of the header describe this and no test passed it until this one — the file used 0.01, 1e-4, 1e-6, 1000 and the refusals. It is not a cosmetic gap: the "this call
  * cannot refuse" argument in the sweep rests on `anchorWeight > 0.0` keeping a zero-weight anchor
  * out of the prediction list, and relaxing that comparison to `>=` puts every frame **180 degrees**
  * from its anchor with `valid` and `converged` both true, because a lone prediction at weight zero
@@ -347,12 +352,18 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // Not zero, and the reason is the solver rather than the anchors: the sweep stops when the largest
   // per-frame move falls under `kSettledDeg`, which is 1e-5 degrees, so a residual a couple of times
   // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
-  // with no stopping rule — the same wrong assumption as the earlier `1e-6` on the perturbed-anchor
-  // case, and a reminder that "exact edges" bounds the problem and not the iteration.
+  // with no stopping rule — "exact edges" bounds the problem and not the iteration.
+  //
+  // **This is the branch's third figure that measures `kSettledDeg` rather than the solver**, after
+  // the two the roadmap publishes, and it is the one nothing outside this file quotes — which is why
+  // an audit of the published pair did not reach it. Tightening the tolerance 5.6x moves it to
+  // 4.67e-6. The failure message says so, because an earlier one said "the residual is no longer the
+  // stopping tolerance", which names the opposite of the cause.
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
   EXPECT_NEAR(score.medianDeg, 0.0000286, 3e-6)
-      << "the residual is no longer the stopping tolerance, so something else is moving the answer";
+      << "this is a kSettledDeg figure; if it moved, either that constant did or something else is "
+         "now moving the answer";
 
   // **The gauge is a compromise among all twelve anchors, not a copy of one of them**, and getting
   // that wrong is what this block is for. The assertion here was first written as "frame zero ends
@@ -656,8 +667,8 @@ TEST(AverageRotations, AFrameReachedOnlyByAZeroWeightedEdgeIsUnplaced) {
  * reconstruction the pixels never touched; the second is one every measurement agrees with. A caller
  * writing `valid && maxEdgeErrorDeg < 0.5` to decide whether to trust a sphere accepts the first.
  *
- * `edgesUsed` is the denominator that separates them, and it exists because a reviewer found the
- * numerator published without one.
+ * `edgesUsed` is the denominator that separates them, and it exists because the numerator was
+ * published without one.
  */
 TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
   const std::vector<Quat> truth = Ring(kFrames);
@@ -770,8 +781,8 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   // a half turn apart: it settles in three sweeps with the middle frame at the identity, exactly
   // between two neighbours pointing opposite ways. On the final sweep its average has a single
   // maximiser — so a per-sweep `clear()` reported nothing, and the frame whose placement was a coin
-  // flip came back looking like one the edges agreed on. Constructed by a reviewer after this file
-  // claimed the case was not constructible.
+  // flip came back looking like one the edges agreed on. Constructed after this file claimed the case was
+  // not constructible.
   const std::vector<Quat> opposedAnchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(180.0)};
   const Quat halfTurn = TrueEdge(AboutY(0.0), AboutY(180.0));
   const std::vector<RelativeRotation> transient{
@@ -785,6 +796,13 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_EQ(partway.ambiguous.size(), 1u);
   EXPECT_EQ(partway.ambiguous.front(), 1);
 
+  // The settling point the docblock describes, asserted rather than described — without it this arm
+  // could drift into a duplicate of the first and stay green, since both would report one ambiguous
+  // frame. Frame 1 at the identity between two neighbours a half turn apart is what makes this the
+  // *transient* case: it is unsure on sweep one and not on sweep three.
+  EXPECT_NEAR(SeparationDeg(partway.rotations[1], Quat{}), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(partway.rotations[0], AboutY(180.0)), 0.0, 1e-9);
+
   // The same shape with the two edges agreeing leaves nobody ambiguous, so the flag is reporting the
   // cancellation rather than the topology.
   const std::vector<RelativeRotation> agreed{
@@ -795,6 +813,38 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_TRUE(settled.valid);
   EXPECT_TRUE(settled.ambiguous.empty());
   EXPECT_NEAR(SeparationDeg(settled.rotations[1], AboutY(0.0)), 0.0, 1e-9);
+
+  // **Frame zero, so the list is not built by a loop that could skip it.** Every other fixture here
+  // puts the ambiguous frame at index 1, which leaves a `for` loop that starts at 1 — or one that
+  // runs backwards — indistinguishable from the right one. The field exists to stop a coin-flipped
+  // frame reading as evidence-based, and frame zero is as able to be one as any other.
+  const std::vector<Quat> firstUnanchored{Quat{0, 0, 0, 0}, AboutY(0.0), AboutY(0.0)};
+  const std::vector<RelativeRotation> ontoZero{
+      RelativeRotation{1, 0, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
+      RelativeRotation{2, 0, TrueEdge(AboutY(0.0), AboutY(180.0)), 1.0},
+  };
+  const AveragedRotations atZero = AverageRotations(ontoZero, firstUnanchored, 1000.0);
+  ASSERT_TRUE(atZero.valid);
+  EXPECT_TRUE(atZero.unplaced.empty());
+  ASSERT_EQ(atZero.ambiguous.size(), 1u);
+  EXPECT_EQ(atZero.ambiguous.front(), 0);
+
+  // **Two ambiguous frames, so "ascending" says something.** A list of one is sorted however it is
+  // built, which made both of the header's promises about this field vacuous on every fixture the
+  // branch had. Two disjoint components, each with its own unanchored middle frame.
+  const std::vector<Quat> twoPairs{AboutY(0.0),   Quat{0, 0, 0, 0}, AboutY(0.0),
+                                   AboutY(0.0),   Quat{0, 0, 0, 0}, AboutY(0.0)};
+  const Quat agreeing = TrueEdge(AboutY(0.0), AboutY(0.0));
+  const Quat opposing = TrueEdge(AboutY(0.0), AboutY(180.0));
+  const std::vector<RelativeRotation> both{
+      RelativeRotation{0, 1, agreeing, 1.0}, RelativeRotation{2, 1, opposing, 1.0},
+      RelativeRotation{3, 4, agreeing, 1.0}, RelativeRotation{5, 4, opposing, 1.0},
+  };
+  const AveragedRotations pair = AverageRotations(both, twoPairs, 1000.0);
+  ASSERT_TRUE(pair.valid);
+  ASSERT_EQ(pair.ambiguous.size(), 2u);
+  EXPECT_EQ(pair.ambiguous[0], 1);
+  EXPECT_EQ(pair.ambiguous[1], 4) << "the list is not ascending";
 }
 
 // ----------------------------------------------------------------- refusals

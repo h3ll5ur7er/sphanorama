@@ -209,7 +209,7 @@ TEST(AverageQuaternions, NoWeightsMeansEqualWeights) {
  * total past 1.34e154 gives an infinity — so `offDiagonal <= 1e-30 * inf` is true on the first pass,
  * Jacobi breaks before rotating anything, and what comes back is whichever coordinate axis the scan
  * reached first, with `valid` and `isUnique` both true. Underflow does the same at the bottom, where
- * the squared entries round to zero. Found by a reviewer, reproduced here: at `6.71e153` each the
+ * the squared entries round to zero. Reproduced here: at `6.71e153` each the
  * answer collapses onto the first input, 30 degrees from where it belongs.
  *
  * The fix is to divide by the largest weight before accumulating, so the entries are bounded by one
@@ -221,7 +221,14 @@ TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
 
   // Spot values rather than a sweep, each one chosen for where it sits: ordinary, the largest total
   // the old code survived, just past it, far past it, and the two underflow cases.
+  // `DBL_MAX` is the entry that makes this test about the *divisor*. The rest stop at 1e300, whose
+  // total over two inputs is 2e300 — nowhere near overflowing — so every one of them passes just as
+  // happily if the implementation divides by the weight **total** instead of the largest. That
+  // variant is the one the fix's own comment rules out, and at 1e308 it answers 30 degrees from
+  // where it belongs with `valid` true. The top of the admissible range is where the two diverge,
+  // and `AverageQuaternions` admits any finite non-negative weight.
   for (const double weight : {1.0, 1e100, 6.7039039644650269e153, 6.71e153, 1e200, 1e300,
+                              std::numeric_limits<double>::max(),
                               1e-100, 4.76837e-162, 1e-170, 1e-300}) {
     const QuaternionAverage average = AverageQuaternions(pair, std::vector<double>{weight, weight});
     ASSERT_TRUE(average.valid) << "weight " << weight;
@@ -267,7 +274,7 @@ TEST(AverageQuaternions, AnOrdinarySpreadIsUnique) {
  *
  * The two cases above sit at the extremes — an exact tie and a spread whose eigenvalues differ by
  * most of their size — and between them they leave `kEigenvalueGap` free anywhere from zero to about
- * a half: a reviewer moved it to 0.5 and to 0.0 with the whole suite green. That is a constant
+ * a half: moved to 0.5 and to 0.0, the whole suite stays green. That is a constant
  * carrying a measured claim with nothing measuring it.
  *
  * A tenth of a degree short of a half turn is what closes the gap. About one axis the two
@@ -290,6 +297,23 @@ TEST(AverageQuaternions, ATenthOfADegreeShortOfAHalfTurnIsStillUnique) {
   const QuaternionAverage tied = AverageQuaternions(exactly, {});
   ASSERT_TRUE(tied.valid);
   EXPECT_FALSE(tied.isUnique);
+
+  // **And a tie that is a few ulps wide rather than bit-exact**, which is the case that makes this a
+  // tolerance instead of an equality test. An exact half turn gives eigenvalues that are equal to
+  // the bit, so `(top - second) > 0.0 * top` is false and a threshold of **zero** passes both cases
+  // above. The solver does not reach this shape by being handed a literal 180: it reaches it through
+  // accumulated Jacobi arithmetic, where the two eigenvalues land a few ulps apart and an equality
+  // test calls the continuum unique.
+  //
+  // Measured at 179.999999999999 degrees: not unique at the committed 1e-12, unique at 0.0. So the
+  // constant is bracketed from below as well as above, and an earlier answer of mine on this — that
+  // being free down to zero was consistent with the comment's claim about exact ties — was wrong for
+  // exactly this reason.
+  const std::vector<Quat> almostTied{AboutY(0.0), AboutY(179.999999999999)};
+  const QuaternionAverage barely = AverageQuaternions(almostTied, {});
+  ASSERT_TRUE(barely.valid);
+  EXPECT_FALSE(barely.isUnique)
+      << "a tie a few ulps wide is being read as a single maximiser";
 }
 
 // ----------------------------------------------------------------- refusals

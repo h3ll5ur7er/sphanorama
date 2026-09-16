@@ -56,7 +56,7 @@ constexpr double kSettledDeg = 1e-5;
 // How many sweeps the solver is allowed before it reports that it did not settle.
 //
 // **Measured, and what it is measured against is `anchorWeight` rather than the frame count.** Sweeps
-// to settle, over a ring with anchors three degrees out, a dash where 20,000 was not enough:
+// to settle, over a ring with anchors three degrees out:
 //
 //     frames   1e-4     1e-3     0.01     0.03      0.1        1       10
 //          2  27676     5072      744      287      100       16        5
@@ -65,22 +65,22 @@ constexpr double kSettledDeg = 1e-5;
 //         60    650     2184      453      198       79       16        6
 //         90    894     1328      399      184       74       15        6
 //
-// Every row is a closed ring, including the first — and that is a correction rather than a detail. A
-// reviewer found the two-frame row measured on a *single* edge while every other row had the closing
-// one, which is the topology this whole file exists to be about; re-measured as a ring it reads 27676
-// rather than 17283 and 744 rather than 407. The 1e-4 column also needed a budget of 60,000 to finish
-// at all, so the dashes an earlier version of this table carried at three and four frames were the
-// 20,000 it was measured under, not a failure to converge.
+// **Every row is a closed ring, including the first**, which is worth saying because a two-frame
+// ring's closing edge is a second copy of its only edge and behaves quite differently from a single
+// one: measured on one edge that row reads 17283 and 407 rather than 27676 and 744. The 1e-4 column
+// needs a budget of 60,000 to finish at all, so a run under 20,000 shows dashes at three and four
+// frames that are the budget rather than a failure to converge.
 //
 // From 1e-3 rightward it scales as roughly 1/anchorWeight and hardly with size at all, which is not
 // the shape a reader expects and is worth knowing: what is still moving in the slow cases is the
 // **gauge** — one common rotation shared by every frame — and a weak anchor is exactly a weak
 // constraint on the gauge. The relative structure is settled long before.
 //
-// **The 1e-4 column is the exception and is not read that way.** It runs from 650 to 17,283 across
-// frame counts and refuses to settle at three and four, so at that weight the size matters again. It
-// is left in the table rather than trimmed out of it, because a table that only showed the regime
-// the claim holds in would be evidence for a claim nobody could check.
+// **The 1e-4 column is the exception and is not read that way.** It runs from 650 to 27,676 across
+// frame counts, so at that weight the size matters again. It is left in the table rather than
+// trimmed out of it, because a table that only showed the regime the claim holds in would be
+// evidence for a claim nobody could check.
+
 //
 // 1000 covers every size from 2 to 90 at `anchorWeight` 0.01 and above, where the worst is **744**.
 // It does not cover 1e-3 and below, and deliberately: that regime wants thousands of sweeps to pin a
@@ -101,10 +101,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   AveragedRotations out;
   if (!std::isfinite(anchorWeight) || anchorWeight < 0.0) return out;
 
-  // No separate empty check, and a reviewer had to point out why one is not needed: with no anchors
-  // there is no usable anchor either, so the gate further down refuses the same input for a reason
-  // that is actually about the problem. The test named for the empty case was reaching that gate
-  // rather than an empty check all along.
+  // No separate empty check: with no anchors there is no usable anchor either, so the gate further
+  // down refuses the same input for a reason that is actually about the problem. Nothing between
+  // here and there indexes `anchors` or needs `frames` positive.
 
   // **`anchors` is what says how many frames there are.** There is no separate count for an edge to
   // be checked against, which is deliberate: two numbers meaning "how many frames" is two numbers
@@ -157,8 +156,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // A weight of zero removes the edge from the solve without removing it from the caller's array
   // (ADR 0056). **Decided once, here, and recorded** — the error report below reads `believed` rather
   // than re-testing the weight, because a predicate written in two places is a predicate that can
-  // come to mean two things, and a reviewer found this comment already claiming the single decision
-  // it did not yet have.
+  // come to mean two things.
   std::vector<std::vector<Incidence>> incident(static_cast<size_t>(frames));
   std::vector<char> believed(edges.size(), 0);
   for (size_t k = 0; k < edges.size(); ++k) {
@@ -239,11 +237,10 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         predictions.push_back(Normalize(anchors[static_cast<size_t>(i)]));
         weights.push_back(anchorWeight);
       }
-      // No `placed` test on the neighbour, and it was there until a reviewer showed that neither of
-      // the two guards could be removed *alone* without the other hiding it. A believed edge is what
-      // puts two frames in one component, so `i` being placed means every frame a believed edge
-      // reaches from it is placed too. One of the pair is load-bearing and the other is decoration;
-      // the one kept is the cheaper, since it skips the whole loop rather than each turn of it.
+      // No `placed` test on the neighbour, and one is not needed: a believed edge is what puts two
+      // frames in one component, so `i` being placed means every frame a believed edge reaches from
+      // it is placed too. The guard above does the work for both, and does it by skipping the whole
+      // loop rather than each turn of it.
       for (const Incidence& touch : incident[static_cast<size_t>(i)]) {
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t other = touch.asTo ? edge.from : edge.to;
@@ -283,10 +280,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // — it is not evidence about the answer in either direction — and `edgesUsed` is what lets a caller
   // tell "nothing disagrees" from "nothing was consulted".
   //
-  // One `placed` test rather than two, and the missing one is deliberate. A believed edge is exactly
-  // what puts its two frames in one component, so its endpoints are placed together or not at all;
-  // checking `to` as well was a guard a reviewer showed could not fire, over an exhaustive search of
-  // every graph on two to four frames.
+  // One `placed` test rather than two, and the missing one is deliberate: a believed edge is exactly
+  // what puts its two frames in one component, so its endpoints are placed together or not at all.
+  // Checking `to` as well is a guard that cannot fire, over every graph on two to four frames.
   std::vector<double> errors;
   errors.reserve(edges.size());
   for (size_t k = 0; k < edges.size(); ++k) {
@@ -306,12 +302,16 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     out.maxEdgeErrorDeg = errors.back();
   }
 
-  // Built from the flags at the end rather than appended to as they are set, which makes both of the
-  // header's promises — each frame once, ascending — true by construction instead of by luck. A
-  // sabotage of the append version failed nothing, because no arrangement yet built makes a frame
-  // ambiguous on two separate sweeps; and the ascending half was simply false, since a frame first
-  // flagged on a later sweep would have landed after one flagged earlier with a lower index. There
-  // is now nothing to test, which is the better answer than a guard nothing reaches.
+  // Built from the flags at the end rather than appended to as they are set, which is what makes both
+  // of the header's promises — each frame once, ascending — properties of this loop rather than of
+  // the order sweeps happened to touch things in. Appending gave neither: a frame first flagged on a
+  // later sweep landed after one flagged earlier with a lower index, and nothing deduplicated.
+  //
+  // The loop is covered rather than self-evident, which is a correction to what stood here. Skipping
+  // index 0, or running the range backwards, is a one-token change that leaves both promises false —
+  // so the fixtures below it include an ambiguous frame **at index zero** and a case with **two**
+  // ambiguous frames, neither of which the branch had while every fixture put its unanchored frame
+  // at index 1.
   for (int32_t i = 0; i < frames; ++i) {
     if (everAmbiguous[static_cast<size_t>(i)] != 0) out.ambiguous.push_back(i);
   }

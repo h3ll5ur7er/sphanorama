@@ -49,9 +49,9 @@ struct RelativeRotation {
 };
 
 struct AveragedRotations {
-  // Parallel to `anchors` **on a valid answer**, and empty on a refusal — a qualification a reviewer
-  // had to ask for, since a caller reading the field name rather than `valid` would index an empty
-  // vector. A frame that could not be placed holds the identity and is named in
+  // Parallel to `anchors` **on a valid answer**, and empty on a refusal — the qualification matters
+  // because a caller reading the field name rather than `valid` would index an empty vector. A frame
+  // that could not be placed holds the identity and is named in
   // `unplaced` — never a silent identity, because the identity is a perfectly ordinary rotation that
   // a phone held level reports, and a caller has no other way to tell one that was solved for from
   // one that was given up on. An unplaced frame is always one with no usable anchor: a frame that
@@ -70,10 +70,9 @@ struct AveragedRotations {
   // reconstruction built from priors alone reports. A caller testing `valid && maxEdgeErrorDeg < x`
   // accepts a sphere no pixel contributed to.
   //
-  // Two kinds of edge are left out, and an earlier version of this comment named only the first.
-  // An edge at weight zero is not used (the caller discarded it). Neither is an edge whose endpoints
-  // were never placed — which for a positive-weight edge means *both* of them, since an edge is what
-  // puts two frames in one component.
+  // Two kinds of edge are left out. An edge at weight zero is not used — the caller discarded it.
+  // Neither is an edge whose endpoints were never placed, which for a positive-weight edge means
+  // *both* of them, since an edge is what puts two frames in one component.
   double medianEdgeErrorDeg = 0;
   double maxEdgeErrorDeg = 0;
 
@@ -87,15 +86,13 @@ struct AveragedRotations {
   // neighbours pointing opposite ways, which in a capture means a registration that has gone badly
   // wrong rather than one that is merely imprecise.
   //
-  // **"On any sweep" rather than "on the last"**, which is a correction: a frame placed by a coin
-  // flip inherits that placement through every sweep that follows, so a later iteration finding a
-  // single maximiser does not make the answer evidence-based. The question a caller is asking is
-  // whether the answer rests on an arbitrary choice, not whether the final iteration re-rolled it.
+  // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
+  // every sweep that follows, so a later iteration finding a single maximiser does not make the
+  // answer evidence-based. The question a caller is asking is whether the answer rests on an
+  // arbitrary choice, not whether the final iteration re-rolled it.
   //
-  // Reported at all because `AverageQuaternions` computes it on every frame of every sweep and this
-  // used to throw it away, which a reviewer found: a frame placed by a coin flip came back
-  // indistinguishable from one the edges agreed on. Disjoint from `unplaced` — an unplaced frame is
-  // never averaged — so the two together say how much of the answer rests on something.
+  // Disjoint from `unplaced` — an unplaced frame is never averaged — so the two together say how
+  // much of the answer rests on something.
   std::vector<int32_t> ambiguous;
 
   // How many sweeps were run. At least one on any `valid` answer, so zero means the whole solve was
@@ -149,10 +146,9 @@ struct AveragedRotations {
 // **The order of `edges` can change the answer, and only on input that is already contradictory.**
 // The breadth-first placement walks edges in the order it is given them, so on a graph whose edges
 // disagree about where a frame belongs, which one places it first decides which basin the sweep then
-// relaxes into. Measured by a reviewer: three mutually contradictory edges reordered give frames at
-// `0/120/0` versus `180/60/0`, both converged. On well-conditioned input it does not arise — 6,426
-// trials with consistent edges jittered half a degree and priors three degrees out produced zero
-// divergences.
+// relaxes into. Measured: three mutually contradictory edges reordered give frames at `0/120/0`
+// versus `180/60/0`, both converged. On well-conditioned input it does not arise — 6,426 trials with
+// consistent edges jittered half a degree and priors three degrees out produced zero divergences.
 //
 // Left as it is rather than made order-independent, because the case it affects is one the answer
 // already reports as bad: `maxEdgeErrorDeg` is 180 degrees in both of those orderings, so a caller
