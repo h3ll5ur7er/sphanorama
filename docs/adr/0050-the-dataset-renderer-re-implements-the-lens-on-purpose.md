@@ -2,6 +2,16 @@
 
 **Status:** accepted
 
+> **One consequence below no longer describes the tool.** This ADR records that a whole-lens fold
+> check "is deleted, not repaired", and supports it with "the core has no whole-lens check either —
+> which should have been the clue that inventing one was the wrong move". `main` now runs one before
+> any frame is rendered. The distinction that makes that defensible, and the reason it is not a
+> reinstatement of what was deleted: the deleted check was a *heuristic*, a Jacobian sampled on a
+> coarse grid standing in for the question, and it disagreed with the render in both directions.
+> The pre-flight asks the question itself — `unproject` at every pixel centre of the frame — so it
+> cannot disagree with the render, and it costs one extra pass to fail before the output directory
+> is written. `render_frame`'s docstring carries the argument; nothing else here changes.
+
 ## Context
 
 ADR 0049 built the thing that says how wrong a set of estimated rotations is. It has nothing to
