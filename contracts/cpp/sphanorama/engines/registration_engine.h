@@ -50,9 +50,11 @@ class IRegistrationEngine {
   // return type, which is the kind of gap a stub hides (ADR 0054).
   //
   // Passed rather than held, because engines are stateless per session and everything that is not
-  // compute placement or pixel residency arrives as an argument. `Refine` already takes an
-  // `Intrinsics` for the same reason, and takes it as the value it goes on to *improve*; here it is
-  // read and not improved, which is why this one is `const` and that one is named `initial`.
+  // compute placement or pixel residency arrives as an argument. `Refine` takes an `Intrinsics` for
+  // the same reason and puts it to a different use — it is where a solve starts and a refined lens
+  // comes back in the result, which is why that one is named `initial` and this one is not. Both
+  // are `const`: an earlier version of this sentence contrasted them on constness, which was never
+  // the difference.
   // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
   // `StatusCode` can only do so against what the contract promises, and this method is the first in
   // the repository to return `RegistrationFailed` at all.
@@ -101,6 +103,30 @@ class IRegistrationEngine {
   virtual Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
                                                   const Quat& prior, const Intrinsics& lens) = 0;
 
+  // **Nothing implements this yet, and the contract has to say so.** Both engines refuse with
+  // `Unsupported` — `FeatureRegistrationEngine` with "the global refinement is a later increment",
+  // `NullRegistrationEngine` with "bundle adjustment is Phase 2" — so a caller branching on
+  // `StatusCode` gets exactly one code from this method in every build that exists today.
+  //
+  // Stated here because the `Unsupported` bullet above is scoped to `EstimatePairwise` *and*
+  // attributed to "`NullRegistrationEngine`, which is what a build without OpenCV gets". A reader
+  // generalising it across the interface concludes that the OpenCV engine implements this one. It
+  // does not, and the header was silent on the only method where that inference is wrong: every
+  // other method on this interface has a paragraph, and this had a bare declaration.
+  //
+  // **What it will do when it exists.** Take the pairwise rotations, which are relative and
+  // independently estimated, and the sensor priors, which are absolute and drift; solve for one
+  // consistent set of absolute rotations plus a refined lens. `initial` is named for its role in
+  // that: it is where the solve *starts*, and a `GlobalSolution` carries the lens it *ends* with.
+  // The parameter is `const` because this engine is stateless per session and improves a value by
+  // returning a new one, not by writing through its argument — which is the distinction the
+  // paragraph on `EstimatePairwise`'s lens draws, and draws badly by contrasting `const` against
+  // `initial` as though those were alternatives. Both parameters are `const Intrinsics&`. The
+  // difference is what the caller does with the answer.
+  //
+  // The first `PairwiseResult` span is unnamed because a refusal reads none of it. Name it when
+  // something reads it (ADR 0054: a signature that cannot honour its own return type is a gap a
+  // stub hides, and this one is declared honestly and refuses honestly until it can).
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult>,
                                         std::span<const PoseSample> priors,
                                         const Intrinsics& initial) = 0;

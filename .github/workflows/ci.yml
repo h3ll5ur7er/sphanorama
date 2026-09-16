@@ -43,6 +43,14 @@ jobs:
         run: uv run --locked tools/test_markdown_table_check.py
       - name: no markdown table broken open
         run: uv run --locked tools/markdown_table_check.py
+      - name: listing checker tests
+        run: uv run --locked tools/test_tracked.py
+      - name: reader tests
+        run: uv run --locked tools/test_reading.py
+      - name: provenance checker tests
+        run: uv run --locked tools/test_asset_provenance.py
+      - name: every committed asset says where it came from
+        run: uv run --locked tools/asset_provenance.py
       # The only tooling step with a dependency, and it names the group that carries it rather than
       # putting numpy in every job's environment (ADR 0050).
       - name: dataset renderer tests

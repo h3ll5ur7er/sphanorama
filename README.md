@@ -50,10 +50,10 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
 - **Tooling** — Python, run through `uv`, for contract codegen, the architecture checks CI runs, and
-  synthetic dataset generation (`tools/synth_dataset.py`, ADR 0050 — the one tool with a dependency,
-  named at its call site so the checkers stay standard-library only). Scoring a reconstruction
-  against ground truth is C++ rather than Python, because it belongs beside the tests that read it
-  (ADR 0049).
+  synthetic dataset generation (`tools/synth_dataset.py`, ADR 0050 — the one tool with dependencies,
+  numpy and Pillow, named at its call site so the checkers stay standard-library only). Scoring a
+  reconstruction against ground truth is C++ rather than Python, because it belongs beside the
+  tests that read it (ADR 0049).
 
 ## Building it
 

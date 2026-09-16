@@ -291,6 +291,13 @@ opt-in dependency group.**
   for the same reason — a checkerboard with a sine wash, enough texture for features to exist,
   no asset to fetch and nothing to make the tests non-deterministic.
 
+  > **This last clause is no longer true, and ADR 0059 is why.** A checkerboard is periodic, so a
+  > match onto the wrong square agrees with as many neighbours as the right one, and the accuracy
+  > measured there described a scene no lens will see. The panorama is a photograph now, fetched
+  > and committed with a record beside it, and a dataset's exact bytes therefore depend on a JPEG
+  > decoder and a Pillow version. That was a real cost and 0059 accepts it explicitly. Five things
+  > on that branch cite this ADR; this is the pointer that tells them where the trade went.
+
 ## Rejected
 
 ***Calling the core's `camera_model` through a binding.*** One implementation, no drift, and it

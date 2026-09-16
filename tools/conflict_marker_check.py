@@ -20,10 +20,12 @@ Usage:  uv run tools/conflict_marker_check.py [repo_root]
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import reading
+from tracked import tracked_files
 
 # Built from repeated characters, so that no line of this file or its tests can be one. Spelling
 # them out would eventually make the checker flag itself, and the usual answer to that — excluding
@@ -42,11 +44,9 @@ SPLIT = "=" * 7
 # so a marker in the engineering skill would have gone unnoticed. A hand-written list beside an
 # existing one drifts, and this one drifted before it was ever merged.
 #
-# `--cached --others --exclude-standard` is precisely the set that can become a commit: tracked
-# files, plus untracked ones git is not ignoring. An ignored file cannot carry a marker into the
-# history, and an untracked-but-not-ignored one is exactly what somebody is about to add.
-LS_FILES = ("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-
+# `tools/tracked.py` answers that question now, for this checker and two others, and carries the
+# rest of this paragraph with it.
+#
 # Read as text; anything that is not decodes to replacement characters and simply will not match.
 # A size ceiling because a marker lives in a hand-edited file, and walking a large binary line by
 # line to prove it has none is work for nothing.
@@ -88,22 +88,6 @@ def is_marker(text: str) -> bool:
     return text.rstrip() == SPLIT
 
 
-def tracked_files(root: Path) -> list[str]:
-    """Every path git would let you commit, relative to `root`.
-
-    A failure to ask is reported rather than swallowed. Returning "no files" from a git that would
-    not answer would make an unrunnable check indistinguishable from a clean tree, which is the
-    shape of bug this whole checker exists to catch.
-    """
-    result = subprocess.run(LS_FILES, cwd=root, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"git could not list this tree: {result.stderr.strip()}")
-    # Deduplicated, because `--cached` lists a path once per stage while a merge is unresolved —
-    # base, ours, theirs. That is exactly when this check runs, so without it every marker in a
-    # conflicted file is reported three times, in the output somebody is reading to find them.
-    return sorted({name for name in result.stdout.split("\0") if name})
-
-
 def check(root: Path) -> list[Marker]:
     root = Path(root)
     found: list[Marker] = []
@@ -112,12 +96,23 @@ def check(root: Path) -> list[Marker]:
         path = root / rel
         # Not every listed path is a file to read: a submodule is a gitlink, and a tracked file
         # deleted from the working tree is still in the index. Neither has content to scan.
-        if not path.is_file():
-            continue
+        # **Inside the `try`, like every other `is_file()` this project has been caught by.**
+        # `Path.stat` swallows `ENOENT`, `ENOTDIR`, `EBADF` and `ELOOP` and nothing else, so a
+        # tracked symlink whose target is a 300-character name raises `ENAMETOOLONG` out of here —
+        # a traceback from the one call this loop makes before it is ready to report anything. The
+        # provenance checker guards the identical call in three places; these two did not, and the
+        # `/proc/kmsg` case that tests the promise walks straight past it because `is_file()`
+        # succeeds for that file.
         try:
-            if path.stat().st_size > MAX_BYTES:
+            if not path.is_file():
                 continue
-            body = path.read_text(errors="replace")
+            # **The ceiling is measured, not read from `stat`.** `st_size > MAX_BYTES` looks
+            # equivalent and is a second answer to the same question — and it is wrong for exactly
+            # the files that need bounding: a `/proc` file reports zero, so the ceiling let through
+            # the one input it existed for and `read_text` then blocked in the kernel forever.
+            body = reading.text(path, MAX_BYTES)
+            if body is None:
+                continue
         except OSError as failure:
             # Reported, not skipped. A tracked file this cannot read is a file it cannot clear,
             # and swallowing that would make an unreadable tree look like a clean one — which is
@@ -131,7 +126,18 @@ def check(root: Path) -> list[Marker]:
 
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parent.parent
-    markers = check(root)
+    # **A refusal to run is a sentence, not a traceback.** `tracked.py` raises when git will not
+    # answer, and these checkers raise when a tracked file cannot be read — both deliberately, since
+    # returning "nothing found" from a check that could not run is the one false pass they exist to
+    # prevent. What was not deliberate is that the message then arrived as a `RuntimeError` under
+    # four frames of checker source, with git's own remedy buried at the bottom. The commonest
+    # trigger needs no hostile input at all: git refuses a repository whose checkout and whose
+    # caller are different users, which is an ordinary container shape.
+    try:
+        markers = check(root)
+    except RuntimeError as refused:
+        print(f"this check could not run: {refused}", file=sys.stderr)
+        return 1
     if not markers:
         return 0
     print(f"{len(markers)} conflict marker(s) left behind:\n", file=sys.stderr)

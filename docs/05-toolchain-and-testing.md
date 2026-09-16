@@ -10,7 +10,7 @@ makes them checkable.
 | -------- | -------- | --------- |
 | **C++20** | Managers, engines, resource-access contracts, native resource-access implementations | The whole point: one implementation of the business logic, compiled to WASM for the browser and to a native binary for the bench. OpenCV is C++ |
 | **TypeScript** | Clients, browser resource-access adapters, PWA shell, service worker | Thin by design. If a `.ts` file contains geometry or pixel maths, it is in the wrong layer |
-| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy is in a group so the checkers stay standard-library only (ADR 0050). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
+| **Python**, run through `uv` | Contract codegen, synthetic dataset generation, reference implementations | The auxiliary language. Nothing shipped to the device is written in it. `uv run tools/…` everywhere, with `pyproject.toml` and a committed `uv.lock` (ADR 0048) — dependencies are added with `uv add`, never pip. The dataset renderer is the exception to the invocation: it needs `uv run --group datasets tools/…`, because numpy and Pillow are in a group so the checkers stay standard-library only (ADR 0050, ADR 0059). Result scoring is *not* here — ADR 0049 put it in C++, in `core/test/support/rotation_scoring` |
 
 No Rust/Swift/C# — nothing in the design needs them, and each would add a toolchain without
 removing one.
@@ -104,18 +104,37 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
 8. **Broken tables** — `tools/markdown_table_check.py`. A paragraph between two rows closes a
    GitHub-flavoured table, and eleven rows of the volatility map rendered as pipe text for five
    review rounds because everybody read the prose and nobody rendered the page.
-9. **Dataset renderer tests** — `tools/test_synth_dataset.py`, in the `contracts` job. It predates
+9. **Asset provenance** — `tools/asset_provenance.py`. A `.jpg` in a commit carries no author, no
+   licence and no origin, and nothing else in this gate would ever say so. Every tracked asset —
+   bytes that are not valid UTF-8, or a name whose extension is a media format, since an SVG is
+   text and is still a picture — must have an entry in the nearest `sources.json` above it, naming
+   the work, author, licence and upstream path for something fetched, or an author and a licence
+   for something of ours. The recorded digest must still match the bytes, so a file swapped later
+   cannot inherit the clearance of the one it replaced. Where an entry records the command that
+   produces it, item 10 runs that command and compares (ADR 0059).
+
+   Two rules are easy to miss because the checker cannot verify them itself. **A raster must record
+   `width` and `height`** — extensions in `asset_provenance.SHAPED` — and item 10 opens the file and
+   compares them, since deciding a shape needs a decoder this gate refuses to load. And **an entry
+   that records a `projection` must use a token from `asset_provenance.PROJECTIONS`**, because a
+   test branches on it: while one record spelled it `equirectangular, 360 by 180 degrees` the 2:1
+   assertion keyed on that field was dead for every record in the tree. Every field an entry
+   carries is type-checked, not only the ones on the required list, so `false`, `[]` and `{}` answer
+   nothing — including on the optional half, where a blank `produced_by` was once carried, never
+   run, and read as though it still reproduced the bytes.
+10. **Dataset renderer tests** — `tools/test_synth_dataset.py`, in the `contracts` job. It predates
    this list's last revision and was simply missed; it is here because the renderer is checked
    against hand-worked decimals rather than against the code it feeds (ADR 0050), so a change to it
    is a change to what every accuracy figure means.
-10. **The accuracy measurement actually ran** — in *both* the `native` and `sanitizers` jobs. Not a
+11. **The accuracy measurement actually ran** — in *both* the `native` and `sanitizers` jobs. Not a
     checker but a guard on one: the measurement skips without `uv`, and `ctest` reported "100%
     tests passed" while running none of it. The step derives the expected count from
     `--gtest_list_tests` and fails on a skip, a shortfall or a floor of zero.
 
-**This list has been short before, and that is the argument for the sentence below it.** Items 9 and
-10 were missing until the branch was reviewed as a whole against `main` rather than by commit range
-— 9 predating the branch entirely. `docs/00-principles.md` and `README.md` both promise a reader
+**This list has been short before, and that is the argument for the sentence below it.** What are now
+items 10 and 11 were missing until the branch that added them was reviewed as a whole against `main`
+rather than by commit range — the renderer tests predating that branch entirely — and item 9 was
+missing from the branch that added the checker until a reviewer read this list against `gate.sh`. `docs/00-principles.md` and `README.md` both promise a reader
 that `tools/gate.sh` mirrors `.github/workflows/ci.yml` step for step, so a list here that is not
 the list makes that promise false one level up.
 
@@ -124,9 +143,10 @@ most of them immediately before the check they guard. The reason is in that file
 the checkers never change while you are working, which is exactly what makes a broken one the
 easiest thing not to notice. Two cannot be adjacent, and it is worth saying which
 rather than claiming a tidiness the file does not have: `test_size_budget.py` runs with the other
-checker suites at the top, seventeen steps before the budget it guards — fifteen until this branch
-inserted `accuracy measured` and `asan accuracy` between them — because that budget needs a
-wasm build — and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
+checker suites at the top, twenty steps before the budget it guards — count them with
+`grep -c 'step "' tools/gate.sh` and the two ordinals, since every checker added since has widened
+the gap — because that budget needs a
+wasm build, and in CI the two are different jobs; `check_dist_fresh.test.mjs` runs inside
 `npm test`, with `npm run build` between it and the Playwright run it gates.
 
 Every job that runs a checker sets up `uv` rather than a bare interpreter (ADR 0048), and invokes
@@ -150,7 +170,7 @@ than a browser call.
 
 | Level | What | How |
 | ----- | ---- | --- |
-| Engine unit | Pure functions with fixed inputs | GoogleTest, native, with inputs written in the test. One dataset is committed — `core/test/data/synthetic-ring-4`, a *format* fixture for the loader (ADR 0053) — and it is the only one; an earlier version of this row said "golden outputs checked in as small fixtures", which described a practice this repository has never followed: no golden outputs have ever been checked in. It was already false before this branch; what this branch added was a line in `docs/00-principles.md`'s repo map — "the one committed dataset" — that makes the two contradict each other on the page, which is how it was finally noticed |
+| Engine unit | Pure functions with fixed inputs | GoogleTest, native, with inputs written in the test. One dataset is committed — `core/test/data/synthetic-ring-4`, a *format* fixture for the loader (ADR 0053) — and it is the only one; the panorama beside it under `core/test/data/panoramas/` is not a dataset but the world a dataset is rendered from (ADR 0059). An earlier version of this row said "golden outputs checked in as small fixtures", which described a practice this repository has never followed: no golden outputs have ever been checked in. It was already false before this branch; what this branch added was a line in `docs/00-principles.md`'s repo map — "the one committed dataset" — that makes the two contradict each other on the page, which is how it was finally noticed |
 | Engine accuracy | "Is the estimated rotation right?" | `core/test/support/rotation_scoring` scores a set of estimated rotations against known truth with the global gauge removed first, and reports a median (ADR 0049) — **built**. The synthetic datasets of §5.5 that feed it are built (geometry and ground truth; §5.5 lists what is not), and `core/test/support/synthetic_dataset` now reads one into a frame store, so the two are joined rather than merely both present (ADR 0053). `FeatureRegistrationEngine::EstimatePairwise` is the thing that estimates rotations for it to score, and `core/test/engines/registration_accuracy_test.cpp` joins all four: it renders a ring, registers each consecutive pair against a perturbed prior, chains the answers and asserts a median, a maximum and the share of pairs that registered at all. **Two different numbers live here and they are not interchangeable**: `docs/06-roadmap.md` states 0.5 degrees as what *Phase 2 exits on*, a claim about what a panorama needs, while this test asserts `medianDeg < 0.2` and `maxDeg < 0.4` — regression bounds set at roughly twice the measurement, whose job is to notice the estimator getting worse. A bound generous enough to be a product statement is far too loose for that, and the test says so at its own assertions; this row used to quote only the 0.5 and so repeated the conflation a reviewer had already made the test stop making. Still to come: `Refine`, so the score is over a global solution rather than a chain |
 | Manager behaviour | Sequencing and state machines | Native tests with **fake** resource accesses (a recorded IMU log + a folder of frames implements `IMotionSensorAccess`/`ICameraAccess` exactly). This is why those are contracts and not `getUserMedia` calls |
 | Boundary | Facade marshalling, error codes | Vitest against the real WASM module in Node |
@@ -163,8 +183,9 @@ than a browser call.
 `tools/synth_dataset.py` renders the frames a phone *would* have captured from an equirectangular
 panorama: given a lens field of view and a list of camera orientations, it emits one image per
 orientation **plus the ground-truth rotation of every frame**, as binary Netpbm beside a
-`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy — the
-checkers above stay standard-library only (ADR 0050).
+`truth.json`. It runs through the `datasets` dependency group, which is what carries numpy and — since it
+learned to read a photographed panorama — Pillow; the checkers above stay standard-library only
+(ADR 0050, ADR 0059).
 
 **It implements the lens itself rather than calling the core**, so a dataset is never rendered by
 the code it will be used to measure — an error the two shared would cancel, and the harness would
@@ -172,10 +193,13 @@ score a broken projection as perfect. What carries the weight is not the separat
 reviewer showed the arithmetic is close enough to the core's to be called a transcription. It is the
 pinning of both to hand-worked decimals derived from neither (ADR 0050).
 
-Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, and a
-procedural panorama. Still to come, each its own increment with its own invariant: real HDRIs, a
-noise and blur model, rolling-shutter skew, an exposure ramp, a burst per cell, and composited
-movers for known ghost regions.
+Built so far: the geometry, the equirectangular sampling with a wrapping seam, ground truth, a
+procedural panorama, and **a real photographed one** — `--panorama` reads an equirectangular image
+and the accuracy measurement is made in it rather than in a checkerboard (ADR 0059). Still to come,
+each its own increment with its own invariant: **lens distortion**, a noise and blur model,
+rolling-shutter skew, an exposure ramp, a burst per cell, and composited movers for known ghost
+regions. Distortion is not in ADR 0050's original list and belongs there — `docs/06-roadmap.md`
+says why, and says which half of the reason for it turned out to be wrong (ADR 0060).
 
 It gives none of these *yet*, and the first is the only one whose machinery is complete. A reviewer
 pointed out that "what it gives today is the first of these" — which is what this line used to say —

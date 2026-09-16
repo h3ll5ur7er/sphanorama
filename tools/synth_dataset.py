@@ -36,8 +36,10 @@ expressed in a different frame from the core that reads it is worse than no data
   coordinates -- which is a pixel *corner*, not a pixel centre, since an integer here is an edge
   (see `direction_to_equirect`). On a 2048x1024 panorama that is where pixels 1023 and 1024 meet.
 
-Run it: `uv run --group datasets tools/synth_dataset.py --out datasets/ring` (the `datasets` group
-is what carries numpy; the checkers stay standard-library only — ADR 0048, ADR 0050).
+Run it: `uv run --locked --group datasets tools/synth_dataset.py --out datasets/ring` (the
+`datasets` group is what carries numpy **and Pillow**; the checkers stay standard-library only —
+ADR 0050, ADR 0059). `--locked` because every committed `produced_by` uses it: a command recorded
+as reproducing a file has to name the environment it reproduced it in.
 """
 from __future__ import annotations
 
@@ -49,6 +51,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageOps
 
 # Newton on the distortion, matching the core's solver in shape if not in code. The core measured
 # its own budget; this one is generous because it runs offline on whole images at a time and an
@@ -641,9 +644,11 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     regenerated rather than committed, so the size is a cost nobody carries for long.
 
     One output of this function *is* committed, and it is the exception that proves the rule:
-    `core/test/data/synthetic-ring-4` is four 48x36 frames and their `truth.json`, 22,570 bytes of
-    content altogether (20,788 of frames, 1,782 of JSON). Not "on disk": `du` reports 40 KiB, of
-    which 36 is the five files rounded up to 4 KiB blocks and the fortieth is the directory entry.
+    `core/test/data/synthetic-ring-4` is four 48x36 frames, their `truth.json` and the `sources.json`
+    that accounts for them — six files, 25,593 bytes of content altogether (20,788 of frames, 4,805
+    of JSON). Not "on disk": `du` reports 44 KiB, which is the six files rounded up to 4 KiB blocks
+    plus the directory entry. Re-count all three when a file joins this directory: adding the
+    provenance record moved every one of them, in the commit that wrote them.
     It is read by the C++ loader's tests, and it is a **format** fixture rather than a measurement —
     it exists so that loader is read against bytes this writer produced rather than against its
     author's idea of the format (ADR 0053).
@@ -660,12 +665,6 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     # handed — while claiming "unit quaternion" in its own convention block.
     poses = [pose.normalised() for pose in poses]
 
-    # Everything renders before anything is written, so a refusal part way through leaves no files
-    # rather than frames with no truth to describe them. A dozen-line consumer globs
-    # `frame_*.ppm` — which is the whole pitch for P6 — and cannot tell a half-written dataset from
-    # a whole one.
-    rendered = [_to_bytes(render_frame(panorama, lens, pose)) for pose in poses]
-
     # Written into a staging directory first, and moved into place only once every byte is on
     # disk. The previous version swept the old frames *before* the write loop, so all-or-nothing
     # covered rendering and stopped there: a failure while writing left the earlier dataset deleted
@@ -678,9 +677,14 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
 
+    # **Rendered one at a time, into the staging directory.** Every frame used to be held in memory
+    # until the last one was done, for all-or-nothing — which the staging directory already gives,
+    # since nothing is swapped into place until every byte is written. What it cost was linear in
+    # the dataset: 480 frames at 640x480 is 406 MB of peak RSS, and `--frames` has no ceiling.
     frames = []
     try:
-        for index, (pose, frame) in enumerate(zip(poses, rendered)):
+        for index, pose in enumerate(poses):
+            frame = _to_bytes(render_frame(panorama, lens, pose))
             name = f"frame_{index:04d}.ppm"
             with (staging / name).open("wb") as handle:
                 handle.write(b"P6\n%d %d\n255\n" % (lens.width, lens.height))
@@ -746,8 +750,60 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     return [out / f"frame_{index:04d}.ppm" for index in range(len(frames))]
 
 
+def read_panorama(path: Path) -> np.ndarray:
+    """An equirectangular photograph, in the signed unit range the renderer samples.
+
+    [-1, 1] rather than [0, 1] because that is what `_to_bytes` encodes and what
+    `direction_encoded_panorama` produces; a byte read here and the byte written for a pixel that
+    samples it are the same number.
+
+    Three refusals and a correction, and they are not alike. Two of them — a file too large to
+    decode, and one that is not an image — render *nothing* if let through, so they are refusals of
+    convenience: they turn a traceback into a sentence. The third is the one worth the word, because
+    a panorama that is not 2:1 renders perfectly well and is wrong:
+
+    A panorama that is not 2:1 is not one. Longitude spans the width and latitude the height
+    whatever the ratio, so the world comes out squashed in elevation while every rotation in
+    `truth.json` stays exactly right — a harness measuring an estimator against a world nobody can
+    see is wrong.
+
+    The orientation tag is applied before that ratio is judged, because a phone writes the tag
+    rather than turning the pixels, and a sideways panorama is 1:2.
+    """
+    try:
+        with Image.open(path) as opened:
+            upright = ImageOps.exif_transpose(opened)
+            pixels = np.asarray(upright.convert("RGB"), dtype=np.float64)
+    # Its own arm, because "could not be read as an image" is the wrong sentence for a file that
+    # decodes fine and is merely large — it sends a reader looking for corruption. `Image` raises
+    # this above twice `MAX_IMAGE_PIXELS`, which a 2:1 panorama crosses at about 18,900 wide, and
+    # Poly Haven, where the committed one came from, publishes 16k and 24k. It is not an `OSError`,
+    # so before this arm existed it escaped `main`'s `except ValueError` as well and arrived as a
+    # traceback where every other unusable `--panorama` gets a sentence.
+    except Image.DecompressionBombError as failure:
+        raise ValueError(
+            f"{path} holds more pixels than Pillow will decode: {failure}. A 2:1 panorama crosses "
+            f"that limit at about 18,900 pixels wide, so downscale it, or raise "
+            f"Image.MAX_IMAGE_PIXELS if you know where the file came from") from failure
+    except OSError as failure:
+        raise ValueError(f"{path} could not be read as an image: {failure}") from failure
+
+    height, width = pixels.shape[:2]
+    if width != 2 * height:
+        raise ValueError(
+            f"{path} is {width}x{height}, and an equirectangular panorama covers 360 degrees of "
+            f"longitude by 180 of latitude, so it is twice as wide as it is tall")
+    return pixels / 255.0 * 2.0 - 1.0
+
+
 def _checkerboard_panorama(width: int, height: int, squares: int = 64) -> np.ndarray:
-    """A stand-in until real panoramas are wired in — enough texture for features to exist."""
+    """Texture with no photograph behind it, for a render that is not measuring accuracy.
+
+    Kept as the default because the tests that pin this file's arithmetic want a panorama they can
+    compute rather than one they have to read, and because it costs nothing to generate at any size.
+    A measurement wants `--panorama`: a checkerboard is periodic, so a wrong match looks exactly
+    like a right one, which is the one property a world for scoring a feature matcher must not have.
+    """
     v, u = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     cell = ((u * squares // width) + (v * squares // height)) % 2
     noise = np.sin(u * 0.11) * np.cos(v * 0.07)
@@ -767,6 +823,8 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--hfov", type=float, default=66.0)
     parser.add_argument("--vfov", type=float, default=50.0)
+    parser.add_argument("--panorama", type=Path,
+                        help="an equirectangular image to render from; without it, a checkerboard")
     args = parser.parse_args()
 
     # Checked before anything is rendered, because rendering is the expensive part and these are
@@ -793,11 +851,30 @@ def main() -> int:
         parser.error(f"--out must be a directory, and {args.out} is not one")
     if not args.out.parent.is_dir():
         parser.error(f"--out's parent must be an existing directory, and {args.out.parent} is not")
-    staging = args.out.parent / f".{args.out.name}.partial"
-    if staging.exists() and not staging.is_dir():
-        parser.error(f"{staging} is in the way and is not a directory this can clear")
+    # Both hidden siblings, not just the one. `write_dataset` swaps through `.{name}.replaced` too,
+    # and that one is cleared with `ignore_errors=True` — which no-ops on a file rather than
+    # complaining, so the render finished and then died in `out.replace(displaced)`, and the
+    # leftover stayed put so every later run failed identically. One guard covered one of two paths
+    # because the second was introduced after it was written.
+    #
+    # **And `exists()` follows symlinks, which is the same correction `--out` gets two lines above
+    # and these did not.** A symlink here answered `is_dir()` through its target, so pointing a
+    # dataset directory at a scratch disk let run 1 write through the link — reporting success
+    # about a directory that is not the one named — and left the consumed link behind as
+    # `.ring.replaced`, after which every later run died in `out.replace(displaced)` with the whole
+    # render already spent. Precisely the failure this guard's own comment says it pre-empts.
+    for hidden in (f".{args.out.name}.partial", f".{args.out.name}.replaced"):
+        beside = args.out.parent / hidden
+        if beside.is_symlink() or (beside.exists() and not beside.is_dir()):
+            parser.error(f"{beside} is in the way and is not a directory this can clear")
 
-    panorama = _checkerboard_panorama(2048, 1024)
+    # Read before the lens is built and long before anything renders, so that an unusable
+    # `--panorama` costs nothing — the same reason every `--out` shape is judged above.
+    try:
+        panorama = (read_panorama(args.panorama) if args.panorama is not None
+                    else _checkerboard_panorama(2048, 1024))
+    except ValueError as refusal:
+        parser.error(str(refusal))
     lens = lens_from_fov(args.hfov, args.vfov, args.width, args.height)
     written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))
     print(f"wrote {len(written)} frames and truth.json to {args.out}")

@@ -549,6 +549,32 @@ class BorrowedFrame {
  * larger half of what this paragraph found. It is not corrected here: doing so moves every
  * published accuracy figure, which wants its own measurement and its own ADR.
  *
+ * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
+ * opposite of the obvious one.** The correction is geometrically exact: on the fixture's own lens,
+ * 1,059 exact correspondences fitted back by Kabsch recover the rotation to 6e-16 residual at
+ * `+ 0.5` and carry a real error at `+ 0.0`, linearly in the shift. And yet applying `+ 0.5` to the
+ * line below turns this suite **red** — measured, by patching that one line and re-running:
+ *
+ *     detector   median today -> with + 0.5    max today -> with + 0.5
+ *     ORB        0.1009 -> 0.2929              0.1551 -> 0.4713
+ *     AKAZE      0.0612 -> 0.0562              0.1330 -> 0.2566
+ *     SIFT       0.0239 -> 0.0626              0.0435 -> 0.1062
+ *
+ * ORB fails `EXPECT_LT(medianDeg, 0.2)` outright. Note AKAZE's median, which *improves* by 0.005
+ * while its worst frame nearly doubles — so "every figure gets worse" would be the wrong summary
+ * and five of the six is the right one. The one that moves against the trend is the reason to read
+ * the max column as well as the median, which is what that column is there for.
+ *
+ * So the table is green partly by **cancellation**: this model error runs against the detectors'
+ * own localisation bias, and removing one of the two leaves the other. OpenCV says as much in
+ * passing while the suite runs — "SIFT_Impl precise upscale disabled, this is now deprecated as it
+ * was found to induce a location bias".
+ *
+ * The consequence for whoever picks this up: a red ORB after the correction is **not** an estimator
+ * regression, and must not be read as one. It is this engine becoming honest about its own geometry
+ * while the bound above it still encodes the cancelled number. The bound and the figures move
+ * together with the fix, or not at all, which is the ADR that owes this its own measurement.
+ *
  * The reachability curiosity is that the two conventions also disagree at the fold. On that lens
  * the last k1 every pixel centre survives is -0.23340 and the last the frame corner survives is
  * -0.23178, so a narrow band of lenses exists that the renderer accepts and this refuses a corner

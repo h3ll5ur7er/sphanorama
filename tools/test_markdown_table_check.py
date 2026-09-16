@@ -7,11 +7,16 @@ fenced example. A checker nobody can leave green is one somebody turns off.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import markdown_table_check  # noqa: E402
+import reading  # noqa: E402
 from markdown_table_check import breaks_in  # noqa: E402
 
 
@@ -82,5 +87,84 @@ class TableBreaks(unittest.TestCase):
         self.assertEqual(len(breaks_in(body)), 1)
 
 
+class WalkingARepository(unittest.TestCase):
+    """`check` and `main`, which had no case at all.
+
+    The suite above covers `breaks_in` thoroughly and nothing else, so `check` could be replaced by
+    `return []` — and `markdown_files`, the bounded read and `main`'s refusal arm could each be
+    removed — with every Python suite green and the build at exit 0. A checker whose walk is
+    untested is a checker that can quietly stop walking.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+
+    def write(self, name, text, track=True):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        if track:
+            subprocess.run(["git", "add", "--", name], cwd=self.root, check=True)
+        return path
+
+    def test_a_broken_table_in_a_tracked_file_is_found_and_located(self):
+        self.write("docs/a.md", SPLIT)
+        broken = markdown_table_check.check(self.root)
+        self.assertEqual([entry.path for entry in broken], ["docs/a.md"])
+        self.assertEqual(markdown_table_check.main(["checker", str(self.root)]), 1)
+
+    def test_a_whole_table_is_clean_and_exits_zero(self):
+        self.write("docs/a.md", WHOLE)
+        self.assertEqual(markdown_table_check.check(self.root), [])
+        self.assertEqual(markdown_table_check.main(["checker", str(self.root)]), 0)
+
+    def test_a_file_that_is_not_markdown_is_not_walked(self):
+        # `markdown_files` filters by suffix, and without it this content — which is a broken table
+        # — would be reported from a `.txt` nobody writes tables in.
+        self.write("docs/a.txt", SPLIT)
+        self.assertEqual(markdown_table_check.check(self.root), [])
+
+    def test_an_untracked_markdown_file_is_still_walked(self):
+        # `--others` is the half this branch added, and it is the reason the ceiling below matters:
+        # a file nobody has committed is exactly the one most likely to be enormous.
+        self.write("docs/a.md", SPLIT, track=False)
+        self.assertEqual([entry.path for entry in markdown_table_check.check(self.root)],
+                         ["docs/a.md"])
+
+    def test_a_file_past_the_ceiling_is_skipped_rather_than_read(self):
+        # Skipped, not reported: a markdown table does not live past four megabytes, and a file
+        # that big has nothing this checker can say about it. Asserted by lowering the ceiling
+        # rather than by writing four megabytes, because the property is "past the ceiling".
+        self.addCleanup(setattr, markdown_table_check, "MAX_BYTES",
+                        markdown_table_check.MAX_BYTES)
+        markdown_table_check.MAX_BYTES = 64
+        self.write("docs/a.md", SPLIT)
+        self.assertGreater(len(SPLIT), markdown_table_check.MAX_BYTES, "the fixture is under it")
+        self.assertEqual(markdown_table_check.check(self.root), [])
+        # And the ceiling is not simply "refuse everything".
+        markdown_table_check.MAX_BYTES = len(SPLIT)
+        self.assertEqual([entry.path for entry in markdown_table_check.check(self.root)],
+                         ["docs/a.md"])
+
+    def test_a_file_it_cannot_read_is_an_error_not_a_pass(self):
+        # The same refusal the git failure gets, and the reason it is a raise: a tracked file this
+        # cannot read is a file it cannot clear, so a silent skip would be a false pass.
+        self.write("docs/a.md", WHOLE)
+        with mock.patch.object(reading, "text", side_effect=OSError("permission denied")):
+            with self.assertRaises(RuntimeError):
+                markdown_table_check.check(self.root)
+
+    def test_and_main_turns_that_refusal_into_a_sentence(self):
+        self.write("docs/a.md", WHOLE)
+        with mock.patch.object(reading, "text", side_effect=OSError("permission denied")):
+            self.assertEqual(markdown_table_check.main(["checker", str(self.root)]), 1)
+
+    def test_a_directory_that_is_not_a_repository_is_an_error_and_not_an_empty_answer(self):
+        with tempfile.TemporaryDirectory() as bare:
+            with self.assertRaises(RuntimeError):
+                markdown_table_check.check(Path(bare))
 if __name__ == "__main__":
     unittest.main()
