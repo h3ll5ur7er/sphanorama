@@ -49,7 +49,8 @@ reached from tests. `Refine` still refuses. **The pair estimator is now scored a
 which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
 panorama, against a sensor prior perturbed three degrees, all three detectors register all eleven
 consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101 (ORB) — the
-roadmap's table, ADR 0059 for the world it is measured in, and ADR 0057 for the figures retracted
+roadmap's table, ADR 0061 for the half-pixel offset every one of them is measured through, ADR
+0059 for the world it is measured in, and ADR 0057 for the figures retracted
 when the first harness was found to be handing the estimator the exact truth and measuring itself.
 **The world matters more than the ranking.** Against the checkerboard that photograph replaced, ORB
 declined three of eleven pairs among hundreds of indistinguishable corners — two answered with
@@ -59,8 +60,10 @@ not a defect, and ADR 0056 is the record of it. A periodic world is the one plac
 must not be scored. `Composition` is
 untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
-conditions on one device (see the roadmap) — far enough along that stitching is the next thing to
-build, not finished.
+conditions on one device — a Pixel 9 Pro XL, which captured a full sphere and survived both a reload
+and a browser close-and-reopen. The third is peak memory per device class, and nothing in the tree
+can answer it yet — the roadmap says what is missing and what it would take. Far enough along that
+stitching is the next thing to build, not finished.
 
 **Phase 2 has started at the bottom.** `utilities/camera_model` projects a direction to the pixel it
 lands on and back again, through Brown-Conrady distortion, and it is the first code in this

@@ -263,10 +263,52 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 survives a tab reload and resumes, and every cell holds a scored burst. Measured peak memory
 recorded per device class.
 
-*Where this stands:* two of the three conditions are met on one device. A Pixel 9 Pro XL captured a
-full sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed
-build. The reload-and-resume condition is met in a real browser — an end-to-end test drives it —
-but not yet demonstrated on a phone. What is left, and what has landed since:
+*Where this stands:* two of the three conditions are met on one device, and the second of them is
+now met **on the phone** rather than only in a test browser. A Pixel 9 Pro XL captured a full
+sphere — 28 of 28 cells, every one holding a scored burst, no OOM — through the deployed build, and
+the maintainer reports that capture surviving both a reload **and a browser close-and-reopen**.
+
+**The two are less different than they look, and an earlier draft of this entry claimed otherwise.**
+Both run the same path. A reload drops the heap as surely as a close does, so both need the
+document, the tier generation and the resident spill pair to be found again — ADR 0029 *and* ADR
+0030, whose own context is written about a reload. What the close-and-reopen adds is narrower: the
+tier's files outlive the *process* rather than a navigation within a live one, which an end-to-end
+test in a single browser session cannot reach.
+
+**And on the one axis where they differ the other way, the reload is the harder case.** The resident
+spill pair is taken under an exclusive sync access handle, so a reload can race the outgoing worker,
+fall back to a tier of its own, and then fail `TierGeneration`. A close-and-reopen removes that race
+outright. So the close-and-reopen is the stronger result for process survival and the weaker one for
+the handoff — which is an argument for having both reports rather than for ranking them.
+
+**Neither report reaches the pixels, and that is the part still owed.** `Resume` reads the document,
+compares the tier generation, replans, and `Adopt`s each candidate; it never `Pin`s, and `Adopt`
+cannot verify the bytes are down there (ADR 0029) — a frame whose sink lost it fails at the `Pin`.
+So "the candidates came back through the tier" is a claim about handles and accounting, not about
+bytes, and an earlier version of this entry made it about bytes. So a successful resume establishes that the session document and the tier
+generation survived, which is real, and says nothing about whether the frames are readable. ADR 0029
+names the un-pinned version of that state as the worst artefact available: a sphere reporting 28 of
+28 cells captured, pointing at frames nothing can pin. Opening the candidate strip on one restored
+cell after the next close-and-reopen is what turns this from a report into a measurement, and it is
+one tap.
+
+A Pixel 9 Pro XL is not the mid-range Android the exit names, and it is the device that exists. The
+iPhone half is untouched.
+
+**What is left is the third condition, and nothing in the tree can answer it today.** "Measured
+peak memory recorded per device class" needs somebody holding the phone to be able to read a figure
+off it, and there are two gaps rather than the one an earlier version of this entry claimed.
+
+The core does **not** already know. `FrameStoreBudget` carries the ceiling, what is used and what is
+spilled, and all three are instantaneous — nothing in `core/src`, `shell/src` or `bridge/` retains a
+maximum, so the peak of a capture is gone the moment a cell is cooled. And no manager contract
+returns a `FrameStoreBudget` at all, so even the current figure has no route across the boundary.
+
+So this is a store-held high-water mark plus a manager method plus somewhere on the page to put it,
+not a wire-up of something that exists. Until it lands, the condition cannot be met by anyone without
+a debugger attached to a phone, which is not a thing a maintainer does after a capture.
+
+What is left, and what has landed since:
 
 - **Reload and resume — done, and wired to a button.** The core reads a session document written
   at every committed cell, replans from the spec and lens that document carries, and hands the
@@ -885,12 +927,29 @@ possible topology, with no loop closure and nothing for `Refine` to do.
 **And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
 hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by
 half a pixel in each axis — a constant `(-0.5, -0.5)` px translation, absorbed by the optical
-centre rather than by the focal length. At this dataset's `fx` of 492.757 that is **0.0581
-degrees**, which is the same order as the medians above and larger than SIFT's. So the table is a
-comparison between detectors on equal terms and is not yet a statement of how well this estimator
-locates a rotation. Correcting it moves every figure here and wants its own measurement and its
-own ADR (ADR 0060 records the geometry; `camera_model.h` has stated the convention gap since it was
-written).
+centre rather than by the focal length. On this dataset's lens that moves a bearing by **0.0805
+degrees** at the optical centre, falling to 0.0494 toward a corner — the same order as the medians
+above, and larger than SIFT's.
+
+**That is what it does to a bearing, and not what it does to an answer.** A rotation fitted over a
+whole frame absorbs most of a constant image-plane translation into itself, so what survives the fit
+is 0.0105 degrees per pair — an eighth of it, or one part in 7.7 (ADR 0061, measured over every
+pixel centre of the frame and asserted by a test). The larger figure is the honest description of the error in each bearing the
+engine computes; the smaller one is the honest description of what it costs the rotation. Neither
+can be subtracted from the medians above, which are chained and gauge-removed and so a third
+quantity again.
+
+This paragraph quoted 0.0581 degrees until ADR 0061 measured it: `atan(0.5 / fx)`, which is one axis
+of a two-axis offset and the axis with the longer focal length, so the smallest of the three numbers
+here was standing in for the largest.
+
+So the table is a comparison between detectors on equal terms and is not yet a statement of how well
+this estimator locates a rotation. **ADR 0061 measures what correcting it costs, and the answer is that the table
+gets worse**: ORB's median roughly triples and fails **both** of its bounds, because these figures
+are
+green partly by cancellation against the detectors' sub-pixel localisation bias. That ADR names what
+a correction has to move in one commit — this table among it. (`camera_model.h` has stated the
+convention gap since it was written.)
 
 **What the measurement caught, which is the argument for having made it first.** Before the sensor
 prior *bounded* the search rather than merely seeding it, ORB and AKAZE each returned two steps of

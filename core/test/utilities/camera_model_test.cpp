@@ -5,6 +5,7 @@
 // every way of having no answer is a refusal rather than a pixel.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -921,6 +922,90 @@ TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
   EXPECT_EQ(RefusedCountOfFrame(folding), 48);
+}
+
+/**
+ * And what the same offset does to one bearing, which is a different number and was published as a
+ * third one.
+ *
+ * `docs/06-roadmap.md` quoted 0.0581 degrees, which is `atan(0.5 / fx)` — the displacement along
+ * *one* axis. The offset is `(-0.5, -0.5)`, so both axes move, and on a lens whose axes differ the
+ * two do not even move by the same angle. 0.0805 degrees at the optical centre is the real figure,
+ * and it falls toward the corners because a pixel out there subtends less angle.
+ *
+ * Asserted beside the table above because the two are constantly confused and the confusion is
+ * load-bearing: the per-bearing figure is larger than SIFT's median and the per-fit one is half of
+ * it, so which number a reader picks up decides whether the gap looks like the dominant error or a
+ * minor one. It is neither — it is 7.7 times the error it leaves in a fitted rotation, and the fit
+ * is what absorbs the difference.
+ */
+TEST(Unproject, TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit) {
+  const Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 640, 480);
+
+  const auto displacementDeg = [&lens](const Pixel& centre) {
+    const UnprojectedDirection truth = Unproject(lens, centre);
+    const UnprojectedDirection read = Unproject(lens, Pixel{centre.x - 0.5, centre.y - 0.5});
+    // Unreachable on this lens and kept anyway, with the pixel in it. Every coefficient is zero, so
+    // `DistortAt` is the identity, Newton converges in one pass and `Unproject` cannot refuse a
+    // finite pixel — which makes this a check on the assumption rather than on the arithmetic, and
+    // the assumption is what a future distorted variant of this test would break. Located, because
+    // an unlocated one fires 307,200 times and names no pixel; and it cannot be an `ASSERT` because
+    // the lambda returns a value. Without it the refusal still surfaces — a zero direction gives
+    // `acos(0)`, 90 degrees, and the bounds below fail — but it surfaces as "the largest
+    // displacement is 90 degrees", which diagnoses the wrong thing.
+    EXPECT_TRUE(truth.valid && read.valid) << "no ray at pixel " << centre.x << ", " << centre.y;
+    return std::acos(std::clamp(Dot(truth.direction, read.direction), -1.0, 1.0)) * kDegPerRad;
+  };
+
+  EXPECT_NEAR(displacementDeg(Pixel{lens.cx, lens.cy}), 0.0805, 1e-4);
+
+  double smallest = 180.0, largest = 0.0;
+  for (int32_t y = 0; y < lens.height; ++y) {
+    for (int32_t x = 0; x < lens.width; ++x) {
+      const double moved =
+          displacementDeg(Pixel{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5});
+      smallest = std::min(smallest, moved);
+      largest = std::max(largest, moved);
+    }
+  }
+  // Largest at the centre, smallest at a corner — the opposite of a radial distortion, which is the
+  // sign that this is a translation in the image plane rather than a lens term.
+  EXPECT_NEAR(largest, 0.0805, 1e-4);
+  EXPECT_NEAR(smallest, 0.0494, 1e-4);
+  // One axis is not the answer, and this is the figure that was published as though it were. There
+  // used to be an `EXPECT_GT(largest, ...)` under this line asserting that the diagonal beats the
+  // axis; it could not fail, because the two `EXPECT_NEAR`s above pin both operands into intervals
+  // 222 times their own width apart. Two pinned numbers do not need a third assertion to be
+  // ordered, and one that cannot fail reads as coverage.
+  EXPECT_NEAR(std::atan(0.5 / lens.fx) * kDegPerRad, 0.0581, 1e-4);
+}
+
+/**
+ * Which way is up, asserted directly, because the sweep above cannot see it.
+ *
+ * **A reviewer flipped the model's y sign and every row of ADR 0061's shift table came back
+ * unchanged.** `Project` and `Unproject` are mutated together, so the round trip still closes; what
+ * changes is the handedness, and the shift table is fitted about a turn on `+Y`. A y-sign flip is
+ * `diag(1, -1, 1)`, which commutes with a rotation about y, so the fitted rotation comes back
+ * conjugated by something that leaves it alone. The one handedness a single-axis sweep is blind to
+ * is the axis it turns about — and that is the axis the accuracy dataset's ring turns about, so it
+ * is not a hypothetical choice of test.
+ *
+ * `camera_model.cpp` builds `(xn, -yn, -1)`: image y runs down, camera y runs up, and forward is
+ * `-Z`. Three assertions, one per axis, against a pixel offset from the optical centre — which is
+ * cheaper than any sweep and fails on exactly the mutation the sweep sails past.
+ */
+TEST(Unproject, ImageYRunsDownAndCameraYRunsUp) {
+  const Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 640, 480);
+
+  const UnprojectedDirection below = Unproject(lens, Pixel{lens.cx, lens.cy + 40.0});
+  const UnprojectedDirection right = Unproject(lens, Pixel{lens.cx + 40.0, lens.cy});
+  const UnprojectedDirection centre = Unproject(lens, Pixel{lens.cx, lens.cy});
+  ASSERT_TRUE(below.valid && right.valid && centre.valid);
+
+  EXPECT_LT(below.direction.y, 0.0) << "a pixel below the optical centre does not look downward";
+  EXPECT_GT(right.direction.x, 0.0) << "a pixel right of the optical centre does not look right";
+  EXPECT_LT(centre.direction.z, 0.0) << "the optical centre does not look along -Z";
 }
 
 }  // namespace

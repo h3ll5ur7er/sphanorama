@@ -547,20 +547,33 @@ class BorrowedFrame {
  *
  * That is a systematic error in the measurement rather than a reachability question, and it is the
  * larger half of what this paragraph found. It is not corrected here: doing so moves every
- * published accuracy figure, which wants its own measurement and its own ADR.
+ * published accuracy figure. **ADR 0061 is that measurement and that decision** — including the
+ * list of what a correction has to move in one commit, since any subset of it is a tree that
+ * contradicts itself.
  *
  * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
- * opposite of the obvious one.** The correction is geometrically exact: on the fixture's own lens,
- * 1,059 exact correspondences fitted back by Kabsch recover the rotation to 6e-16 residual at
- * `+ 0.5` and carry a real error at `+ 0.0`, linearly in the shift. And yet applying `+ 0.5` to the
- * line below turns this suite **red** — measured, by patching that one line and re-running:
+ * opposite of the obvious one.** The correction is geometrically exact: on the lens the accuracy
+ * dataset is rendered through, a Kabsch fit over every pixel centre of the frame recovers the
+ * rotation exactly at `+ 0.5`, and the error is linear in the shift between there and here.
+ *
+ * **The size of it is ADR 0061's and is deliberately not repeated here**, which is that ADR's own
+ * rule about where its shift table lives, and which two earlier versions of this sentence broke in
+ * different ways — one quoted a rig that recorded no correspondence set, the next measured it on a
+ * square lens no generator in this repository builds, and a third wrote the figure into this
+ * docblock after the ADR had said it would not.
+ * `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes` asserts the table, so
+ * the number has somewhere to live that cannot drift.
+ *
+ * And yet applying `+ 0.5` to the line
+ * below turns this suite **red** — measured, by patching that one line and re-running:
  *
  *     detector   median today -> with + 0.5    max today -> with + 0.5
  *     ORB        0.1009 -> 0.2929              0.1551 -> 0.4713
  *     AKAZE      0.0612 -> 0.0562              0.1330 -> 0.2566
  *     SIFT       0.0239 -> 0.0626              0.0435 -> 0.1062
  *
- * ORB fails `EXPECT_LT(medianDeg, 0.2)` outright. Note AKAZE's median, which *improves* by 0.005
+ * ORB fails both bounds — `EXPECT_LT(medianDeg, 0.2)` and `EXPECT_LT(maxDeg, 0.4)`, on 0.2929 and
+ * 0.4713. Note AKAZE's median, which *improves* by 0.005
  * while its worst frame nearly doubles — so "every figure gets worse" would be the wrong summary
  * and five of the six is the right one. The one that moves against the trend is the reason to read
  * the max column as well as the median, which is what that column is there for.
