@@ -32,6 +32,7 @@ import contextlib
 import gc
 import hashlib
 import io
+import itertools
 import json
 import math
 import subprocess
@@ -1412,11 +1413,34 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     objection to that is the reason this exists: *an accuracy measured on a lens nobody sells is not
     a statement about a phone*.
 
-    So these cases are about the seam, not the arithmetic. The distortion maths is pinned elsewhere
-    and thoroughly — against the core across lens families, against OpenCV's term order, at the fold,
-    and along the ray for the tangential case. Repeating any of that here would be asserting a second
-    time what is already asserted once.
+    **These cases are about the render path, which is not the same claim as "the seam".** An earlier
+    version of this paragraph said the arithmetic is pinned elsewhere — against the core across lens
+    families, against OpenCV's term order, at the fold, along the ray — and that repeating it here
+    would be asserting twice what is asserted once. That is true of `distort_at` and false of the
+    path between a command-line flag and a byte in a `.ppm`, which nothing else in this repository
+    walks. Two review rounds found holes in exactly that gap: the tangential pair reached
+    `truth.json` and not a pixel, and then `k2` and `k3` did the same when the mutation was moved to
+    the seam instead of into `render_frame`.
+
+    So these cases do assert structure, and say which: that every coefficient reaches a pixel, that
+    none of the five stands in for another, that each one's *sign* reaches a pixel, that the radial
+    displacement grows outward, that it scales with the coefficient, and that the tangential pair
+    acts along perpendicular axes. What they deliberately do not re-derive is the distortion maths
+    itself.
+
+    **Every figure below is measured on the checkerboard `_checkerboard_panorama` generates**, which
+    is what `self.render` produces because it never passes `--panorama`. The repository's committed
+    photograph is a different world and gives different numbers — measured, a ratio of 5.711 where
+    the checkerboard gives 9.618, and an attenuation of 18.71 where it gives 33.69. Both of those
+    are *below* the bounds here, so pointing this class at `--panorama` without re-deriving the two
+    thresholds would fail on a correct render. The thresholds are the checkerboard's and the
+    docstring says so rather than the comments claiming a panorama they never load.
     """
+
+    # Magnitudes that render on both signs. `--k3 -0.25` folds inside a 64x48 frame at 66 degrees
+    # and is refused before anything renders, so a sign case cannot be written at the magnitude a
+    # magnitude case would want — which is why these are stated once here rather than per case.
+    COEFFICIENTS = {"k1": 0.15, "k2": 0.08, "k3": 0.12, "p1": 0.01, "p2": 0.01}
 
     def _run(self, *argv):
         held = sys.argv
@@ -1505,11 +1529,16 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # anything this test is about: a 0.05% change to the focal length, with no distortion at
         # all, scores 3.375 and would have passed. A uniform scale is radial too — it is zero at the
         # centre and grows outward — so this ratio separates radial-ish from uniform and nothing
-        # finer. Sign and magnitude are pinned by the two cases below, because they cannot be
-        # pinned here.
+        # finer. Sign and magnitude are pinned by their own cases, because they cannot be pinned
+        # here.
         #
-        # Correctly refused at 6, measured by the same reviewer: a one-pixel translation (0.926), a
-        # third of a pixel (1.306), and plus-or-minus eight bytes of noise (1.004).
+        # Correctly refused at 6: a one-pixel translation (0.926), a third of a pixel (1.306), and
+        # plus-or-minus eight bytes of noise (1.004).
+        #
+        # **6 is the checkerboard's bound.** The committed photograph gives 5.711 on a correct
+        # render of the same lens, so a future change that points `self.render` at `--panorama` has
+        # to re-derive this number rather than inherit it. The class docstring says so; it is
+        # repeated here because this is the line that would go red.
         with tempfile.TemporaryDirectory() as directory:
             straight = self.frame(directory, "pinhole")
             barrel = self.frame(directory, "barrel", "--k1", "-0.15")
@@ -1553,10 +1582,19 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         strong_edge, _ = self.edge_and_centre(straight, strong)
         weak_edge, _ = self.edge_and_centre(straight, weak)
         # **An absolute floor as well as a ratio, and this is the one place one is defensible.**
-        # A render that attenuated *both* coefficients uniformly keeps the ratio below exactly where
-        # it is and passes everything else in this class — measured, that is the last hole a
-        # reviewer's sweep left open. The floor closes it, at the cost of depending on the committed
-        # panorama's content rather than on the lens alone: 21.64 bytes measured, 10 asserted.
+        # A render that attenuated *every* coefficient uniformly keeps the ratio where it is — the
+        # ratio moves only between 8.66 and 10.38 across the whole sweep — and passes every other
+        # assertion in this class. Only a floor can see it.
+        #
+        # **And it sees it from about 1.94x, not from any attenuation at all.** Measured: a factor
+        # of 0.55 leaves the edge at 10.99 bytes and passes everything; 0.50 leaves 9.67 and is
+        # caught, by a third of a byte. So this closes the hole rather than sealing it, and an
+        # earlier version of this comment claimed the second.
+        #
+        # The cost is that a floor is a property of the world rendered as much as of the lens:
+        # 21.64 bytes on the checkerboard this class renders, 10 asserted. The photograph gives an
+        # attenuation window of 18.71 against this case's floor of 20, so it too would have to be
+        # re-derived — see the class docstring.
         self.assertGreater(strong_edge, 10.0,
                            f"k1 = -0.15 moved the edge by only {strong_edge:.2f} bytes")
         self.assertGreater(weak_edge, 0.0, "a thirtieth of the coefficient moved nothing at all")
@@ -1564,7 +1602,91 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         self.assertGreater(attenuation, 20.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
         self.assertLess(attenuation, 50.0, f"k1/30 moved the edge by 1/{attenuation:.1f}")
 
-    def test_the_tangential_terms_reach_the_pixels_and_are_not_each_other(self):
+    def test_every_coefficient_reaches_a_pixel_and_none_stands_in_for_another(self):
+        # **Round 1 closed this for `p1` and `p2`; round 2 found `k2` and `k3` open.** The earlier
+        # reading was that those two were covered by accident, because bypassing either inside
+        # `render_frame` stops the lens inverting and the fold guard notices. Move the bypass to the
+        # seam — where a CLI wiring bug actually lives — and take the two together, and nothing in
+        # the tree notices: `truth.json` keeps the asked-for values while the frames are a pinhole's,
+        # misstating the ray by 0.625 degrees against registration medians of 0.024 to 0.101.
+        #
+        # So the property is asserted for all five at once rather than coefficient by coefficient.
+        # Ten pairs, because "reaches a pixel" and "is not one of the others" are different claims
+        # and a render that routed `k2` into `k3` would satisfy the first.
+        #
+        # Measured: the smallest distance from a pinhole is `k3`'s 2.466 bytes and the smallest
+        # between two coefficients is `k2` against `k3` at 2.374, so a bound of 1.0 sits at less than
+        # half the tightest margin. Not tighter: these are properties of the checkerboard as much as
+        # of the lens, and the thing being caught is a coefficient that does nothing at all.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            each = {name: self.frame(directory, name, f"--{name}", str(value))
+                    for name, value in self.COEFFICIENTS.items()}
+
+        for name, rendered in each.items():
+            self.assertGreater(np.abs(rendered - straight).mean(), 1.0,
+                               f"{name} never reached a pixel")
+        for one, other in itertools.combinations(sorted(each), 2):
+            self.assertGreater(np.abs(each[one] - each[other]).mean(), 1.0,
+                               f"{one} and {other} render identically, so one stands in for the "
+                               f"other")
+
+    def test_a_coefficient_whose_sign_is_dropped_is_caught(self):
+        # Flipping a coefficient's sign moves the pixels *further* than removing the coefficient
+        # altogether, because the two displacements are opposite rather than merely different. No
+        # threshold, and the thinnest margin is `k3`'s: 3.703 against 2.466.
+        #
+        # **What this catches is a sign *dropped*, not a sign convention *flipped*, and the case
+        # below is the one that catches the second.** Every assertion in this class is some
+        # `np.abs(one - other)` between two renders, and negating a coefficient globally in the
+        # render path merely exchanges which render is which — so `--p1 0.01` renders what `--p1
+        # -0.01` should and the distance between them is unchanged. Measured: that mutation leaves
+        # this case, the asymmetry case and every magnitude in the class untouched. It is caught
+        # only by comparing against something that is not a render of the coefficient at all.
+        with tempfile.TemporaryDirectory() as directory:
+            straight = self.frame(directory, "pinhole")
+            for name, value in self.COEFFICIENTS.items():
+                positive = self.frame(directory, f"{name}+", f"--{name}", str(value))
+                negative = self.frame(directory, f"{name}-", f"--{name}", str(-value))
+                self.assertGreater(
+                    np.abs(positive - negative).mean(), np.abs(positive - straight).mean(),
+                    f"flipping the sign of {name} changed the render by less than removing it")
+
+    def test_the_sign_of_k1_decides_whether_the_lens_sees_wider_or_narrower(self):
+        # **The one assertion in this class that is odd in the sign**, because it compares a
+        # distorted render against two renders that contain no distortion at all.
+        #
+        # A barrel lens (`k1 < 0`) maps a pixel at radius r to a direction further from the axis
+        # than a pinhole would, so the frame takes in *more* of the world; a pincushion takes in
+        # less. The two reference lenses are a pinhole at 60 by 45.36 degrees and one at 72 by
+        # 54.55 — chosen so that `fy / fx` is the 1.0445 of the 66 by 50 lens under test, which
+        # makes them the same lens seen wider and narrower rather than three different shapes.
+        #
+        # Measured, mean absolute bytes: the barrel render is 29.86 from the wide reference and
+        # 40.62 from the narrow one; the pincushion is 32.94 from the narrow and 40.74 from the
+        # wide. Roughly ten bytes of margin each way, asserted as the relation.
+        #
+        # **`k1` only, and the other four are not covered against this mutation.** `k2` and `k3` are
+        # higher-order radial terms whose field-of-view signature is under a byte at the magnitudes
+        # that render on both signs — measured 37.72 against 39.98 for `--k2 -0.08`, and `--k3
+        # +0.12` gets it the wrong way round at 38.55 against 38.13, so asserting it would be
+        # asserting noise. `p1` and `p2` are shears and have no field-of-view analogue at all. What
+        # this does cover is the realistic version of the bug: a convention flipped across the whole
+        # distortion model shows up in `k1`, because `k1` is the term that carries almost all of a
+        # real lens.
+        with tempfile.TemporaryDirectory() as directory:
+            narrower = self.frame(directory, "narrow", "--hfov", "60", "--vfov", "45.36")
+            wider = self.frame(directory, "wide", "--hfov", "72", "--vfov", "54.55")
+            barrel = self.frame(directory, "barrel", "--k1", "-0.15")
+            pincushion = self.frame(directory, "pincushion", "--k1", "0.15")
+
+        self.assertLess(np.abs(barrel - wider).mean(), np.abs(barrel - narrower).mean(),
+                        "a barrel lens does not take in more of the world, so k1's sign is flipped")
+        self.assertLess(np.abs(pincushion - narrower).mean(), np.abs(pincushion - wider).mean(),
+                        "a pincushion lens does not take in less of the world, so k1's sign is "
+                        "flipped")
+
+    def test_the_tangential_terms_act_along_perpendicular_axes(self):
         # **The hole this closes was open and a reviewer walked through it.** Every case above
         # spends `--k1` alone, and the record case reads `truth.json` and never a pixel — so
         # `render_frame` zeroing p1 and p2, or swapping them, left all 103 tests green while writing
@@ -1578,28 +1700,28 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # one is not the frame distorted by the other. Measured 5.39, 5.20 and 7.41 mean absolute
         # bytes.
         #
-        # **And a fourth assertion, because those three are all symmetric and a swap is not.** Three
-        # magnitudes cannot tell `p1` from `p2`: exchanging them in the render path relabels the two
-        # frames and leaves every number above identical, which is the second sabotage the reviewer
-        # got past the first draft of this case. What is asymmetric is *where* each term acts.
-        # OpenCV's tangential pair is `x + 2·p1·x·y + p2·(r² + 2x²)` and `y + p1·(r² + 2y²) +
-        # 2·p2·x·y`, so p1 alone displaces mostly along y and is largest at the top and bottom of
-        # the frame, and p2 alone mostly along x and is largest at the sides. Measured as
-        # top-and-bottom over left-and-right: 2.085 for p1 and 0.780 for p2. Asserted as the
-        # relation rather than against either number, so a swap fails it by construction and no
-        # threshold has to be defended.
+        # **The one property that a magnitude cannot carry, and the only thing that catches a swap.**
+        # Exchanging `p1` and `p2` in the render path relabels two frames and leaves every magnitude
+        # in this class identical — the case above included, since it compares the two renders
+        # without caring which is which. What is asymmetric is *where* each term acts. OpenCV's
+        # tangential pair is `x + 2·p1·x·y + p2·(r² + 2x²)` and `y + p1·(r² + 2y²) + 2·p2·x·y`, so
+        # `p1` alone displaces mostly along **y** and is largest at the top and bottom of the frame,
+        # and `p2` alone mostly along **x** and is largest at the sides.
+        #
+        # The names below follow that: `moves_y` is the `--p1` render. An earlier version called it
+        # `along_x`, which says the opposite of the algebra three lines above it, inside the one
+        # assertion whose whole job is telling the two apart.
+        #
+        # Measured as top-and-bottom over left-and-right: 2.085 for `p1` and 0.780 for `p2`.
+        # Asserted as the relation rather than against either number, so a swap fails it by
+        # construction and no threshold has to be defended.
         with tempfile.TemporaryDirectory() as directory:
             straight = self.frame(directory, "pinhole")
-            along_x = self.frame(directory, "p1", "--p1", "0.01")
-            along_y = self.frame(directory, "p2", "--p2", "0.01")
+            moves_y = self.frame(directory, "p1", "--p1", "0.01")
+            moves_x = self.frame(directory, "p2", "--p2", "0.01")
 
-        self.assertGreater(np.abs(along_x - straight).mean(), 1.0, "p1 never reached a pixel")
-        self.assertGreater(np.abs(along_y - straight).mean(), 1.0, "p2 never reached a pixel")
-        self.assertGreater(np.abs(along_x - along_y).mean(), 1.0,
-                           "p1 and p2 render identically, so one is standing in for the other")
-
-        p1_tall, p1_wide = self.top_bottom_and_sides(straight, along_x)
-        p2_tall, p2_wide = self.top_bottom_and_sides(straight, along_y)
+        p1_tall, p1_wide = self.top_bottom_and_sides(straight, moves_y)
+        p2_tall, p2_wide = self.top_bottom_and_sides(straight, moves_x)
         self.assertGreater(p1_tall / p1_wide, p2_tall / p2_wide,
                            f"p1 is no more vertical than p2 ({p1_tall / p1_wide:.3f} against "
                            f"{p2_tall / p2_wide:.3f}), so the two are swapped")
