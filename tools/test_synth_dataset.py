@@ -1440,6 +1440,10 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
     are *below* the bounds here, so pointing this class at `--panorama` without re-deriving the two
     thresholds would fail on a correct render. The thresholds are the checkerboard's and the
     docstring says so rather than the comments claiming a panorama they never load.
+
+    A third constant leans the same way without failing: the `> 1.0` bound in the coverage case sits
+    at less than half the tightest checkerboard margin (2.374) and at 59% of the photograph's
+    (1.684). Still passing, and worth knowing before anyone tightens it.
     """
 
     # Magnitudes that render on both signs. `--k3 -0.25` folds inside a 64x48 frame at 66 degrees
@@ -1707,8 +1711,15 @@ class ADatasetCanBeRenderedThroughARealLens(unittest.TestCase):
         # **`k1` only, and the other four are not covered against this mutation.** Measured against
         # the same two references: `--k3 +0.12` comes out *wider* than narrower, which is backwards
         # for a pincushion, and `--k2 +0.08` gets it right by 0.39 bytes. The negative sides are
-        # correct with 2.14 and 1.53 to spare, so the relation holds on one side of zero and not the
-        # other — which is not a bound, it is a coin. `p1` and `p2` are shears and have no
+        # correct with 2.14 and 1.53 to spare.
+        #
+        # **And what disqualifies them is not the size of the signature but that it flips with the
+        # content.** On the committed photograph, measured by a reviewer, *both* pincushion sides
+        # invert — `--k2 +0.08` and `--k3 +0.12` each come out nearer the wrong reference — while
+        # the barrel sides stay correct at 3.57 and 2.83 bytes, which is larger than anything on the
+        # checkerboard. So the margins are not small; they are a property of the world, and a
+        # relation that reverses when the panorama changes is a coin however wide it is. `k1` holds
+        # in both worlds, and by more on the photograph (12.47 and 6.39 against 9.9 and 6.4). `p1` and `p2` are shears and have no
         # field-of-view analogue at all. What this does cover is the realistic version of the bug: a
         # convention flipped across the whole distortion model shows up in `k1`, because `k1` is the
         # term that carries almost all of a real lens.
