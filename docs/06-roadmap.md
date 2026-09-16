@@ -933,8 +933,8 @@ above, and larger than SIFT's.
 
 **That is what it does to a bearing, and not what it does to an answer.** A rotation fitted over a
 whole frame absorbs most of a constant image-plane translation into itself, so what survives the fit
-is 0.0105 degrees per pair, a seventh of it (ADR 0061, measured over every pixel centre of the frame
-and asserted by a test). The larger figure is the honest description of the error in each bearing the
+is 0.0105 degrees per pair — an eighth of it, or one part in 7.7 (ADR 0061, measured over every
+pixel centre of the frame and asserted by a test). The larger figure is the honest description of the error in each bearing the
 engine computes; the smaller one is the honest description of what it costs the rotation. Neither
 can be subtracted from the medians above, which are chained and gauge-removed and so a third
 quantity again.

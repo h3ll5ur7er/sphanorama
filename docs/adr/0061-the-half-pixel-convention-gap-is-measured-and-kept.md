@@ -25,8 +25,10 @@ so `fx` 492.757 and **`fy` 514.682**, `cx`/`cy` at 320/240, a 30-degree rotation
 
 **The correspondence set is every pixel centre of the frame whose image lands inside the other
 frame — 160,000 of 307,200.** A set chosen by a sampling stride is a parameter, and a parameter
-nobody records is how this table was wrong the first time: strides of 8 to 32 move the `+0.00` row
-between 0.0103° and 0.0110° on their own. Every pixel centre is a property of the lens.
+nobody records is how this table was wrong the first time. Over **every integer stride from 8 to 32,
+starting from the first pixel centre**, the `+0.00` row runs from 0.010301° (stride 29) to 0.011022°
+(stride 31) — seven per cent of spread on a figure published to four places, from a choice nobody
+would think to write down. Every pixel centre is a property of the lens instead.
 
 | shift | rotation error |
 | ----- | -------------- |
@@ -38,9 +40,15 @@ between 0.0103° and 0.0110° on their own. Every pixel centre is a property of 
 
 **Asserted by `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes`**, which
 runs this sweep through the engine's own `Unproject` and fails on a row that moves by more than 1e-5
-degrees. That test exists because a reviewer rejected this ADR's first argument for not having one,
-and it earned its place immediately: sabotaged to use a square lens — which is exactly the mistake
-the previous version of this table made — it fails at 0.010395 against 0.010498.
+degrees. That test exists because a reviewer rejected this ADR's first argument for not having one, and it
+earned its place immediately: sabotaged to use a square lens — which is exactly the mistake the
+previous version of this table made — the `+0.00` row fits 0.010395 against the published 0.010498,
+ten times the tolerance out.
+
+To be exact about what fails, since a reviewer went and ran it: on the committed test the square
+lens is caught one line earlier, by `ASSERT_NEAR(lens.fy, 514.681661, 1e-6)`, so it dies before any
+row is fitted. 0.010395 is what the sweep produces with that guard removed. Both are the test doing
+its job; only the second is a statement about the table.
 
 Linear in the shift, exactly zero at `+0.5`. Reproduced on the committed `synthetic-ring-4` lens
 (48x36, `fx` 36.957, `fy` 38.601, a 7-degree rotation), again over every pixel centre — 1,488 of
@@ -130,20 +138,23 @@ Concretely:
 3. `docs/06-roadmap.md` keeps its live table and its existing paragraph saying the bearings are half
    a pixel out, and now points here for what correcting them costs.
 4. When the correction is made it moves **in one commit**, and the list of what moves is
-   **already written**: `registration_accuracy_test.cpp:516-558` catalogues the places the accuracy
-   table is spelled, both `EXPECT_LT` bounds, and the rule that ADR 0059 is *superseded* rather than
-   corrected. Read that catalogue, not a list here. A five-item list is what an earlier draft of this
-   ADR carried, and it reached two of the eight it was duplicating — a second copy of a fact, born
-   wrong, which is exactly the drift the catalogue exists to stop. (An earlier version of *this*
-   paragraph cited `516-541`, a range that stops before two of the three things it claims for it.
-   A pointer is only better than a copy if it points at the whole thing.)
+   **already written**: the comment headed **"Where else the table is written"** in
+   `registration_accuracy_test.cpp` catalogues ten figure sites, both `EXPECT_LT` bounds, the
+   `+ 0.5` in `ReadBearings`, and the rule that ADRs 0059 and 0061 are *superseded* rather than
+   corrected. Read that catalogue, not a list here.
 
-   This ADR adds two entries to that catalogue rather than the one it first claimed. The `+ 0.5` in
-   `ReadBearings`, which is not a figure. And the `Bearing` docblock, which **is** one: it spells the
-   live table's today column in a source comment outside the catalogue's original eight, and this
-   change writes another figure into it. Both are in the catalogue now, which is where they belong —
-   §2 says the shift table lives here and not there, and that is true of the shift table and was
-   never true of the detector table beside it.
+   **Named by its heading rather than by a line range, which is the third version of this pointer.**
+   A five-item list came first and reached two of the eight it was duplicating. Then `516-541`,
+   which stopped before two of the three things it was cited for. Then `516-558`, which went stale
+   the moment the catalogue was edited to hold the entries this change adds. A range into a comment
+   that grows is a copy of a fact in disguise — it is the line numbers that drift instead of the
+   figures — so this points at a string a reader can search for.
+
+   This ADR added two entries to that catalogue. The `+ 0.5` in `ReadBearings`, which is not a
+   figure and is listed apart from the ten for that reason. And the `Bearing` docblock, which **is**
+   one: it spells the live table's today column in a source comment the catalogue had never listed,
+   and this change writes another figure into it. §2 says the shift table lives here and not there,
+   which is true of the shift table and was never true of the detector table beside it.
 
 **Why not simply correct it now.** Because the honest correction is not one line, and the one-line
 version is worse than the gap. Moving `ReadBearings` alone leaves a red build. Moving the bound with

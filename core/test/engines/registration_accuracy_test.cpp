@@ -514,8 +514,9 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
-  // green.** The bounds here are what fail; the figures are prose in eight places that may be
-  // corrected, and nothing invalidates them. Six are in this file:
+  // green.** The bounds here are what fail; the figures are prose in ten places that may be
+  // corrected, and nothing invalidates them. **Counting the two sub-entries, which is how the
+  // total below is reached.** Seven are in this file:
   //
   //   1. this comment's `0.024 to 0.101` and `0.1551` — **and the refit paragraph above it**,
   //      whose `0.2108 / 0.6477`, `0.1826 / 0.2989` and `0.0535 / 0.1147` are hangar measurements
@@ -527,6 +528,12 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //   5b. the margin `0.2 - 0.1826 = 0.0174` below, which is arithmetic over two of those;
   //   6. the `0.6522` lowest inlier fraction in `World`'s docblock, which is the one figure here
   //      that no bound asserts and no probe in the tree reproduces.
+  //
+  // **And one thing that is not a figure at all**, listed because ADR 0061 points a reader here for
+  // the whole blast radius rather than keeping a second copy of it: the `+ 0.5` that a correction
+  // adds to `ReadBearings` in `feature_registration_engine.cpp`. It moves in the same commit as
+  // every figure here, and it is the only entry whose absence leaves the tree self-consistent —
+  // which is exactly why it is the one that would be forgotten.
   //
   // Three are outside it:
   //
@@ -544,13 +551,17 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // The table rounds to three places and the bounds above claim four, which is how `0.155` and
   // `0.1551` came to name one quantity — keep the rounding where it is and the claims exact.
   //
-  // **ADR 0059 carries `0.652` and the live medians, and is not one of the eight.** An ADR is never edited into agreement
-  // with the present (`docs/adr/README.md`), so a bump that moves these figures supersedes it.
+  // **ADR 0059 carries `0.652` and the live medians, and ADR 0061 carries this file's whole table
+  // beside the figures a correction would produce. Neither is one of the ten.** An ADR is never
+  // edited into agreement with the present (`docs/adr/README.md`), so a bump that moves these
+  // figures supersedes both rather than correcting either. That is the same reason the `+ 0.5`
+  // above is listed apart from the ten: these are things the correction *touches*, and the ten are
+  // figures it *rewrites*.
   // (`docs/adr/0056` is deliberately absent: its numbers are the checkerboard's, which is what that
   // ADR is about, so it is not a copy of this table.)
   //
   // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
-  // each — correct all nine, and supersede ADR 0059 rather than correcting it. Otherwise the next
+  // each — correct all ten, and supersede ADR 0059 rather than correcting it. Otherwise the next
   // reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.

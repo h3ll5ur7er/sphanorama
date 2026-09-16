@@ -6,7 +6,7 @@
 // pinned them. `Project.TheDistortionTermsAreOpenCVsInOpenCVsOrder` pins them against constants a
 // human worked out. This pins them against the implementation the claim actually names.
 //
-// The two tests below are deliberately different in kind:
+// The agreement tests below are deliberately different in kind:
 //
 //   - The forward one is an *agreement* test. `cv::projectPoints` is closed-form, so any difference
 //     is a difference in the model rather than in a solver, and the tolerance is tight enough that
@@ -16,6 +16,11 @@
 //     the one that is wrong. So instead our `Unproject` is asked to invert *their* forward map. That
 //     is a stronger statement than agreeing with their inverse, and it is the one that would have
 //     caught the round-three defect had it existed then.
+//
+// A third test joined them later and is neither: `TheHalfPixelShiftCostsTheAngleADR0061Publishes`
+// uses OpenCV for its SVD and asks nothing of OpenCV's camera model. It is here because that is
+// where the SVD is, and its own docblock says what it does and does not check. Its companion —
+// which needs no OpenCV at all — lives in `camera_model_test.cpp` for the same reason.
 #include <gtest/gtest.h>
 
 #include <opencv2/calib3d.hpp>
@@ -149,10 +154,22 @@ TEST(CameraModelAgainstOpenCV, TheWideLensOpenCVsOwnInverseCannotSolveIsSolvedHe
 // The rotation that best carries `from` onto `to`, both unit directions, by Kabsch.
 //
 // OpenCV's SVD rather than a hand-rolled one: a three-by-three eigen decomposition written here
-// would be a second answer to a question this repository already has a dependency for, and it is
-// the step whose sign convention is easy to get wrong. The reflection guard is the whole of that
-// convention — without it a degenerate correspondence set returns an improper rotation with
-// determinant -1, which scores as a perfect fit and is not a rotation.
+// would be a second answer to a question this repository already has a dependency for.
+//
+// **This is the same arithmetic as production's `KabschRotation`, and the `+0.50` row is what keeps
+// that from mattering.** A reviewer is right that a test fitting with a copy of the engine's own
+// fit cannot tell you the fit is correct — that is ADR 0050's argument, one layer up. What rescues
+// it here is that the correspondences at `+0.5` are *exact*: a wrong Kabsch does not recover the
+// turn to 1e-5 degrees from exact input, so the zero row is a check on the fit and the other four
+// rows are then a measurement of the shift. A shared error would move the zero row too.
+//
+// Two things production has that this does not, and both are deliberate. `BearingsSpanAPlane`,
+// which refuses a degenerate set: the set here is 160,000 correspondences spanning a frame, and a
+// test that silently tolerated a degenerate one would have nothing to measure anyway. And the
+// reflection guard — `flip(2, 2) = determinant < 0 ? -1 : 1` — which was here and is gone, because
+// it cannot fire on this input and a reviewer proved it: replacing it with a constant `1.0` leaves
+// every row green. An untested guard kept because it feels safer is the thing the engineering skill
+// names; the general-purpose version of this function is `KabschRotation` and it has the guard.
 cv::Matx33d BestRotation(const std::vector<cv::Vec3d>& from, const std::vector<cv::Vec3d>& to) {
   cv::Matx33d covariance = cv::Matx33d::zeros();
   for (size_t at = 0; at < from.size(); ++at) {
@@ -163,9 +180,7 @@ cv::Matx33d BestRotation(const std::vector<cv::Vec3d>& from, const std::vector<c
   cv::Matx33d u, vt;
   cv::Matx31d w;
   cv::SVD::compute(covariance, w, u, vt);
-  cv::Matx33d flip = cv::Matx33d::eye();
-  flip(2, 2) = cv::determinant(u * vt) < 0 ? -1.0 : 1.0;
-  return u * flip * vt;
+  return u * vt;
 }
 
 double AngleBetweenDeg(const cv::Matx33d& a, const cv::Matx33d& b) {
@@ -202,10 +217,17 @@ cv::Vec3d ToCv(const Vec3& v) { return cv::Vec3d(v.x, v.y, v.z); }
  *
  * **Cross-checked against a numpy reimplementation of the same geometry, which agrees to 1e-6 —
  * after that reimplementation was corrected.** It first built directions as `(x, y, +1)` where
- * `camera_model.cpp:431` builds `(x, -y, -1)`, and the mirror-image convention moved the table by
- * 0.2% at every row while leaving the linearity and the exact zero intact. So the structure of this
- * measurement survives getting the handedness wrong and the value does not, which is the argument
- * for pinning it here, through the model the engine actually calls, rather than beside it.
+ * `camera_model.cpp` builds `(x, -y, -1)`. That is a y flip *and* a z flip together, and it moved
+ * the table by 0.209% at `-0.50` down to 0.052% at `+0.25`, leaving the linearity and the exact
+ * zero intact — so a second implementation can get the handedness wrong and still produce a table
+ * with the right shape. In absolute terms the two lower rows move by less than the 1e-5 tolerance
+ * here, so this test would catch that mutation on three rows of five.
+ *
+ * **A mutation applied to the model itself it would not catch at all.** Mutating `Project` and
+ * `Unproject` together to put image-up at camera-up leaves every row of this table unchanged — a
+ * reviewer did it, and the two OpenCV agreement tests above failed while this one passed. The
+ * reason is structural rather than a choice of axis, and the body says why.
+ * `Unproject.ImageYRunsDownAndCameraYRunsUp` is what asserts the handedness.
  *
  * Linear in the shift and exactly zero at `+0.5`, which is the claim that matters — the gap is a
  * constant image-plane translation and correcting it is geometrically exact. The absolute figure
@@ -224,104 +246,110 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
 
   const cv::Matx33d turn = TurnAboutY(30.0);
 
-  // The correspondences, as pixel coordinates under the model's own corner convention. Built once:
-  // the shift is applied to these, so every row of the table is fitted to the same set and the
-  // sweep is a property of the shift rather than of five different samplings.
-  std::vector<Pixel> inA, inB;
-  for (int32_t y = 0; y < lens.height; ++y) {
-    for (int32_t x = 0; x < lens.width; ++x) {
-      const Pixel centre{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5};
-      const UnprojectedDirection ray = Unproject(lens, centre);
-      if (!ray.valid) continue;
-      // The same world point in the other frame. `turn` is applied to the direction, so this is
-      // where the second camera sees what the first saw at `centre`.
-      const cv::Vec3d turned = turn.t() * ToCv(ray.direction);
-      const ProjectedPixel image = Project(lens, Vec3{turned[0], turned[1], turned[2]});
-      if (!image.valid) continue;
-      if (image.pixel.x < 0 || image.pixel.x > lens.width) continue;
-      if (image.pixel.y < 0 || image.pixel.y > lens.height) continue;
-      inA.push_back(centre);
-      inB.push_back(image.pixel);
+  // The correspondences, as pixel coordinates under the model's own corner convention. Built once
+  // per turn: the shift is applied to these, so every row of a table is fitted to the same set and
+  // a sweep is a property of the shift rather than of five different samplings.
+  const auto correspond = [&lens](const cv::Matx33d& about, std::vector<Pixel>* a,
+                                  std::vector<Pixel>* b) {
+    for (int32_t y = 0; y < lens.height; ++y) {
+      for (int32_t x = 0; x < lens.width; ++x) {
+        const Pixel centre{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5};
+        const UnprojectedDirection ray = Unproject(lens, centre);
+        if (!ray.valid) continue;
+        // The same world point in the other frame, so this is where the second camera sees what
+        // the first saw at `centre`.
+        const cv::Vec3d turned = about.t() * ToCv(ray.direction);
+        const ProjectedPixel image = Project(lens, Vec3{turned[0], turned[1], turned[2]});
+        if (!image.valid) continue;
+        if (image.pixel.x < 0 || image.pixel.x > lens.width) continue;
+        if (image.pixel.y < 0 || image.pixel.y > lens.height) continue;
+        a->push_back(centre);
+        b->push_back(image.pixel);
+      }
     }
-  }
+  };
+
+  const auto fitErrorDeg = [&lens](const std::vector<Pixel>& a, const std::vector<Pixel>& b,
+                                   const cv::Matx33d& about, double shift) {
+    std::vector<cv::Vec3d> from, to;
+    from.reserve(a.size());
+    to.reserve(b.size());
+    for (size_t at = 0; at < a.size(); ++at) {
+      const UnprojectedDirection ra = Unproject(lens, Pixel{a[at].x - 0.5 + shift,
+                                                            a[at].y - 0.5 + shift});
+      const UnprojectedDirection rb = Unproject(lens, Pixel{b[at].x - 0.5 + shift,
+                                                            b[at].y - 0.5 + shift});
+      if (!ra.valid || !rb.valid) return -1.0;
+      from.push_back(ToCv(ra.direction));
+      to.push_back(ToCv(rb.direction));
+    }
+    return AngleBetweenDeg(BestRotation(to, from), about);
+  };
+
+  std::vector<Pixel> inA, inB;
+  correspond(turn, &inA, &inB);
+  // **This guards `fx`, the width and the turn — not `fy`.** The turn is about `+Y`, so the
+  // vertical extent of the overlap is the whole frame and the two `image.pixel.y` bounds reject
+  // nothing: setting `fy` to `fx`, or the vertical field of view to 66 degrees, leaves the count at
+  // exactly 160,000. It moves for `fx` (156,164 at a one per cent change) and for a half-pixel
+  // shift in `cx` (159,962). The one mistake this ADR's table has actually made is a square lens,
+  // and it walks straight past this line — which is why `fy` is asserted by name above.
   ASSERT_EQ(inA.size(), 160000u) << "the overlap is not the one the ADR's figures were measured on";
 
   struct Row { double shift; double expectedDeg; };
-  // ADR 0061's table, to the digit. A tolerance of 1e-5 degrees is four orders below the smallest
-  // non-zero row, so a row that moved at all would fail rather than round into agreement — which is
-  // the failure mode ADR 0060 records, a bound loose enough to be satisfied by the wrong number.
+  // ADR 0061's table, to the digit, at a tolerance of 1e-5 degrees.
+  //
+  // **That is sized against the rows and not against every error it has to reject, and the
+  // difference is measured rather than assumed.** Against a square lens — the mistake this table
+  // has actually made — the `+0.00` row lands at 0.010395, ten times the tolerance out. Against a
+  // reversed turn it lands 1.1e-5 out, which clears 1e-5 by ten per cent rather than by the four
+  // orders an earlier version of this comment claimed; and the `+0.25` and `+0.50` rows do not
+  // catch that one at all, because the thing being perturbed scales with the row. So the rows are
+  // not five independent checks of equal strength: the two large-shift rows carry the sensitivity
+  // and the two small ones are close to free.
+  //
+  // Not tightened, because the figures are published to six places and a tolerance below the sixth
+  // would be asserting the platform's `acos` rather than the geometry.
   const Row rows[] = {{-0.50, 0.021008}, {-0.25, 0.015752}, {0.00, 0.010498},
                       {0.25, 0.005248},  {0.50, 0.000000}};
 
   for (const Row& row : rows) {
-    std::vector<cv::Vec3d> a, b;
-    a.reserve(inA.size());
-    b.reserve(inB.size());
-    for (size_t at = 0; at < inA.size(); ++at) {
-      const UnprojectedDirection ra =
-          Unproject(lens, Pixel{inA[at].x - 0.5 + row.shift, inA[at].y - 0.5 + row.shift});
-      const UnprojectedDirection rb =
-          Unproject(lens, Pixel{inB[at].x - 0.5 + row.shift, inB[at].y - 0.5 + row.shift});
-      ASSERT_TRUE(ra.valid && rb.valid) << "a shifted pixel of a pinhole lens has no ray";
-      a.push_back(ToCv(ra.direction));
-      b.push_back(ToCv(rb.direction));
-    }
     // `b` holds `turn.t() * a` by construction, so the rotation that carries **b onto a** is
-    // `turn` itself. Written this way round rather than comparing against `turn.t()`, because the
-    // quantity the engine returns is the one that carries the second frame's bearings onto the
-    // first — `PairwiseResult::relativeRotation` is `Conjugate(q[b]) * q[a]` — and a test fitting
-    // the inverse would be measuring the same geometry against a different claim. The first draft
-    // had the arguments the other way and failed by exactly 60 degrees, which is 30 twice: a fit
-    // that is wrong by the turn rather than by the shift.
-    const double error = AngleBetweenDeg(BestRotation(b, a), turn);
+    // `turn` itself, and `fitErrorDeg` passes them in that order to recover it rather than its
+    // inverse. The first draft had them the other way and failed by exactly 60 degrees, which is 30
+    // twice — a fit wrong by the whole turn rather than by the shift.
+    //
+    // **Which of the two the engine returns does not matter here, and a previous version of this
+    // comment claimed it did and got it backwards.** `AngleBetweenDeg(R, turn)` equals
+    // `AngleBetweenDeg(R.t(), turn.t())`, so the table is the same either way round. For the
+    // record, since the wrong version is on a review thread: the engine calls
+    // `KabschRotation(from = frame A's bearings, to = frame B's)`, which carries the **first**
+    // frame onto the second, and `PairwiseResult::relativeRotation` is `Conjugate(q[b]) * q[a]`,
+    // which is what `registration_accuracy_test.cpp`'s `Chain` consumes.
+    const double error = fitErrorDeg(inA, inB, turn, row.shift);
+    ASSERT_GE(error, 0.0) << "a shifted pixel of a pinhole lens has no ray";
     EXPECT_NEAR(error, row.expectedDeg, 1e-5)
         << "shift " << row.shift << " fits the turn " << error << " degrees out";
   }
-}
 
-/**
- * And what the same offset does to one bearing, which is a different number and was published as a
- * third one.
- *
- * `docs/06-roadmap.md` quoted 0.0581 degrees, which is `atan(0.5 / fx)` — the displacement along
- * *one* axis. The offset is `(-0.5, -0.5)`, so both axes move, and on a lens whose axes differ the
- * two do not even move by the same angle. 0.0805 degrees at the optical centre is the real figure,
- * and it falls toward the corners because a pixel out there subtends less angle.
- *
- * Asserted beside the table above because the two are constantly confused and the confusion is
- * load-bearing: the per-bearing figure is larger than SIFT's median and the per-fit one is half of
- * it, so which number a reader picks up decides whether the gap looks like the dominant error or a
- * minor one. It is neither — it is 7.7 times the error it leaves in a fitted rotation, and the fit
- * is what absorbs the difference.
- */
-TEST(CameraModelAgainstOpenCV, TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit) {
-  const Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 640, 480);
-
-  const auto displacementDeg = [&lens](const Pixel& centre) {
-    const UnprojectedDirection truth = Unproject(lens, centre);
-    const UnprojectedDirection read = Unproject(lens, Pixel{centre.x - 0.5, centre.y - 0.5});
-    EXPECT_TRUE(truth.valid && read.valid);
-    return std::acos(std::clamp(Dot(truth.direction, read.direction), -1.0, 1.0)) * kDegPerRad;
-  };
-
-  EXPECT_NEAR(displacementDeg(Pixel{lens.cx, lens.cy}), 0.0805, 1e-4);
-
-  double smallest = 180.0, largest = 0.0;
-  for (int32_t y = 0; y < lens.height; ++y) {
-    for (int32_t x = 0; x < lens.width; ++x) {
-      const double moved =
-          displacementDeg(Pixel{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5});
-      smallest = std::min(smallest, moved);
-      largest = std::max(largest, moved);
-    }
-  }
-  // Largest at the centre, smallest at a corner — the opposite of a radial distortion, which is the
-  // sign that this is a translation in the image plane rather than a lens term.
-  EXPECT_NEAR(largest, 0.0805, 1e-4);
-  EXPECT_NEAR(smallest, 0.0494, 1e-4);
-  // One axis is not the answer, and this is the figure that was published as though it were.
-  EXPECT_NEAR(std::atan(0.5 / lens.fx) * kDegPerRad, 0.0581, 1e-4);
-  EXPECT_GT(largest, std::atan(0.5 / lens.fx) * kDegPerRad);
+  // **What this test cannot do, stated because a draft of it claimed otherwise.** The
+  // correspondences are built by unprojecting a pixel, turning the direction, and projecting it
+  // back — all through the model under test — so a mutation applied consistently to `Project` and
+  // `Unproject` cancels exactly. Write `b = Unproject(Project(M * turn.t() * Unproject(pa)))` for
+  // any invertible `M` the model is mutated by and the `M`s meet in the middle: `b` comes out as
+  // `turn.t() * a` whatever `M` was, and every row is unchanged.
+  //
+  // A reviewer demonstrated that with a y-sign flip, which is the case where it bites hardest,
+  // because the accuracy dataset's turn is about `+Y` and `diag(1, -1, 1)` commutes with it. The
+  // first attempt to fix this added a second sweep about a tilted axis on the theory that
+  // non-commutation would expose the flip. It does not: the cancellation above has nothing to do
+  // with the axis, so the tilted sweep passed under the mutation too, and the figure this comment
+  // briefly claimed for it had never been measured. It is gone rather than weakened.
+  //
+  // So this test measures the *shift* and is silent about the model. What checks the model is what
+  // compares it against something outside itself: the two OpenCV agreement tests above, which the
+  // flip fails, and `Unproject.ImageYRunsDownAndCameraYRunsUp`, which is three assertions and no
+  // sweep at all.
 }
 
 }  // namespace
