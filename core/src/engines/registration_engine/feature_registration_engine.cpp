@@ -554,9 +554,10 @@ class BorrowedFrame {
  * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
  * opposite of the obvious one.** The correction is geometrically exact: on this fixture's own lens,
  * every pixel centre of the frame fitted back by Kabsch recovers the rotation to zero at `+ 0.5`
- * and to 0.0104 degrees at `+ 0.0`, linearly in the shift. ADR 0061 carries that sweep and names
- * the correspondence set; an earlier version of this sentence quoted a rig that named none, and its
- * figures moved in the third decimal when somebody rebuilt it. And yet applying `+ 0.5` to the line
+ * and to 0.0105 degrees at `+ 0.0`, linearly in the shift. ADR 0061 carries that sweep and
+ * `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes` asserts it, which is
+ * what two earlier versions of this sentence lacked — one quoted a rig that recorded no
+ * correspondence set, and the next measured it on a square lens this generator never builds. And yet applying `+ 0.5` to the line
  * below turns this suite **red** — measured, by patching that one line and re-running:
  *
  *     detector   median today -> with + 0.5    max today -> with + 0.5

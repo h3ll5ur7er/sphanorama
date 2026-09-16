@@ -528,8 +528,13 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //   6. the `0.6522` lowest inlier fraction in `World`'s docblock, which is the one figure here
   //      that no bound asserts and no probe in the tree reproduces.
   //
-  // Two are outside it:
+  // Three are outside it:
   //
+  //   6b. the `Bearing` docblock in `feature_registration_engine.cpp`, which spells the whole
+  //      *today* column in its own table and is not a copy of the roadmap's — it carries a second
+  //      column of corrected figures beside it, so a bump moves six numbers there and leaves six
+  //      more that are only correct relative to them. It was missing from this list until ADR 0061
+  //      went to add a figure to it and a reviewer asked which of the eight that was;
   //   7. `docs/06-roadmap.md`'s table, and separately the prose around it that the table does not
   //      cover — `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is 4.2 times
   //      better than ORB's` and `now reads eleven of eleven for all three`. Editing the table
@@ -545,7 +550,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // ADR is about, so it is not a copy of this table.)
   //
   // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
-  // each — correct all eight, and supersede ADR 0059 rather than correcting it. Otherwise the next
+  // each — correct all nine, and supersede ADR 0059 rather than correcting it. Otherwise the next
   // reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.
