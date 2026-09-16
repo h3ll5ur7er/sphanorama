@@ -552,12 +552,19 @@ class BorrowedFrame {
  * contradicts itself.
  *
  * **Which direction it moves them is the part worth knowing before anyone tries, because it is the
- * opposite of the obvious one.** The correction is geometrically exact: on this fixture's own lens,
- * every pixel centre of the frame fitted back by Kabsch recovers the rotation to zero at `+ 0.5`
- * and to 0.0105 degrees at `+ 0.0`, linearly in the shift. ADR 0061 carries that sweep and
- * `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes` asserts it, which is
- * what two earlier versions of this sentence lacked — one quoted a rig that recorded no
- * correspondence set, and the next measured it on a square lens this generator never builds. And yet applying `+ 0.5` to the line
+ * opposite of the obvious one.** The correction is geometrically exact: on the lens the accuracy
+ * dataset is rendered through, a Kabsch fit over every pixel centre of the frame recovers the
+ * rotation exactly at `+ 0.5`, and the error is linear in the shift between there and here.
+ *
+ * **The size of it is ADR 0061's and is deliberately not repeated here**, which is that ADR's own
+ * rule about where its shift table lives, and which two earlier versions of this sentence broke in
+ * different ways — one quoted a rig that recorded no correspondence set, the next measured it on a
+ * square lens no generator in this repository builds, and a third wrote the figure into this
+ * docblock after the ADR had said it would not.
+ * `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes` asserts the table, so
+ * the number has somewhere to live that cannot drift.
+ *
+ * And yet applying `+ 0.5` to the line
  * below turns this suite **red** — measured, by patching that one line and re-running:
  *
  *     detector   median today -> with + 0.5    max today -> with + 0.5

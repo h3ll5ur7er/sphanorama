@@ -514,8 +514,8 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // move these numbers at all (the dataset, the seed and the detectors are pinned).
   //
   // **Where else the table is written, because a bump moves all of it and the suite would stay
-  // green.** The bounds here are what fail; the figures are prose in ten places that may be
-  // corrected, and nothing invalidates them. **There is deliberately no count.** This list has had
+  // green.** The bounds here are what fail; the figures are prose in the places listed below, which
+  // may be corrected and which nothing invalidates. **There is deliberately no count.** This list has had
   // a total three times — eight, then nine, then ten — and every one of them was left stale by the
   // edit that added an entry, in a comment whose entire job is stopping a figure from going stale
   // somewhere. "Every entry below" is greppable and survives the next `6c`. In this file:
@@ -537,7 +537,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // every figure here, and it is the only entry whose absence leaves the tree self-consistent —
   // which is exactly why it is the one that would be forgotten.
   //
-  // Three are outside it:
+  // And outside it:
   //
   //   6b. the `Bearing` docblock in `feature_registration_engine.cpp`, which spells the whole
   //      *today* column in its own table and is not a copy of the roadmap's — it carries a second
@@ -557,13 +557,13 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   // beside the figures a correction would produce. Neither is an entry here.** An ADR is never
   // edited into agreement with the present (`docs/adr/README.md`), so a bump that moves these
   // figures supersedes both rather than correcting either. That is the same reason the `+ 0.5`
-  // above is listed apart from the ten: these are things the correction *touches*, and the ten are
-  // figures it *rewrites*.
+  // above is listed apart from the figure sites: those are things the correction *touches*, and the
+  // entries below are figures it *rewrites*.
   // (`docs/adr/0056` is deliberately absent: its numbers are the checkerboard's, which is what that
   // ADR is about, so it is not a copy of this table.)
   //
   // Re-run `--gtest_filter='*Accuracy*'` — it prints `[accuracy] detector=N … median=… max=…` for
-  // each — correct every entry below, and supersede ADR 0059 rather than correcting it. Otherwise the next
+  // each — correct every entry in the list above, and supersede ADR 0059 rather than correcting it. Otherwise the next
   // reader inherits a table that was true of a different OpenCV.
   // Today's run, for comparison: ORB 0.1009/0.1091/0.1551, AKAZE 0.0612/0.0673/0.1330, SIFT
   // 0.0239/0.0250/0.0435, eleven of eleven each.

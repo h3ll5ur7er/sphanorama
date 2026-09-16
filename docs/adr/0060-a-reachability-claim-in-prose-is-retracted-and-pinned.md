@@ -2,6 +2,14 @@
 
 **Status:** accepted
 
+> **One figure here is superseded by [ADR 0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md).**
+> This ADR gives the half-pixel offset's size as 0.0581 degrees. That is `atan(0.5 / fx)`, the
+> displacement along *one* axis; the offset is `(-0.5, -0.5)` and moves a bearing by 0.0805 degrees
+> at the optical centre, on a lens whose two focal lengths differ. 0061 measures it, measures what
+> survives a fitted rotation (0.0105 degrees), and asserts all three from a test. Everything else
+> here — the refused-row argument, the 4.5% and 66.8% reachability figures, and the rule that a
+> published figure gets a test rather than a paragraph — stands.
+
 ## Context
 
 `feature_registration_engine.cpp`'s `Bearing` docblock argues that `ReadBearings` keeping a refused

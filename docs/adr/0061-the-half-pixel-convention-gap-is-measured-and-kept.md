@@ -51,10 +51,17 @@ row is fitted. 0.010395 is what the sweep produces with that guard removed. Both
 its job; only the second is a statement about the table.
 
 Linear in the shift, exactly zero at `+0.5`. Reproduced on the committed `synthetic-ring-4` lens
-(48x36, `fx` 36.957, `fy` 38.601, a 7-degree rotation), again over every pixel centre — 1,488 of
+(48x36, `fx` 36.957, `fy` 38.601, a 7-degree rotation **about `y`**, as above), again over every
+pixel centre — 1,488 of
 1,728: 0.054141° at `+0.0` and 0.108482° at `-0.5`, twice as a linear term must be, and zero at
 `+0.5`. A smaller lens gives a larger angle for the same half pixel, which is what a fixed
 image-plane offset should do. Two lenses, one geometry.
+
+The axis is stated because it was not, and it decides the figures: about `x` the same lens and angle
+give 1,470 correspondences and 0.027560°, half the published number, since the frame is wider than
+it is tall. This row is prose where the row above it is asserted — the test pins the accuracy lens,
+which is the one the published table is about, and a second fixture would be a second thing to keep
+true for a claim that is already made twice.
 
 **And one column is gone rather than corrected.** There was a "worst reprojection" beside each row,
 and it failed to reproduce under both of this table's retractions — the second time against a
@@ -69,7 +76,9 @@ absorbs most of a constant image-plane translation into itself, so 0.0105° is w
 The two are not alternative measurements of one thing — one is what the offset does to a bearing and
 the other is what it does to the answer — and the first is 7.7 times the second. Both are asserted:
 the second by the test above, the first by
-`CameraModelAgainstOpenCV.TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit`.
+`Unproject.TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit` — that suite, not
+`CameraModelAgainstOpenCV`, because it uses no OpenCV and moved to the file that does not
+need it.
 
 `docs/06-roadmap.md` used to quote 0.0581° for that first figure, which is `atan(0.5 / fx)`: one
 axis of a two-axis offset, and the axis with the longer focal length at that. It is the smallest of
@@ -130,7 +139,10 @@ move, so the next person starts from a measurement rather than a sign.**
 
 Concretely:
 
-1. `ReadBearings` is unchanged. The line stays `Pixel{xy[0], xy[1]}`.
+1. `ReadBearings` is unchanged. The line stays
+   `const Pixel pixel{static_cast<double>(xy[0]), static_cast<double>(xy[1])};` — quoted exactly,
+   because an earlier version of this ADR paraphrased it as `Pixel{xy[0], xy[1]}` and a
+   paraphrase of the one line a document turns on is not a citation of it.
 2. The `Bearing` docblock carries the red-suite table — not the shift table, which lives here —
    and the sentence that matters operationally:
    **a red ORB after the correction is not an estimator regression.** It is the engine becoming
@@ -139,9 +151,14 @@ Concretely:
    a pixel out, and now points here for what correcting them costs.
 4. When the correction is made it moves **in one commit**, and the list of what moves is
    **already written**: the comment headed **"Where else the table is written"** in
-   `registration_accuracy_test.cpp` catalogues every figure site, both `EXPECT_LT` bounds, the
-   `+ 0.5` in `ReadBearings`, and the rule that ADRs 0059 and 0061 are *superseded* rather than
-   corrected. Read that catalogue, not a list here.
+   `registration_accuracy_test.cpp` catalogues every figure site, the `+ 0.5` in `ReadBearings`,
+   and the rule that ADRs 0059 and 0061 are *superseded* rather than corrected. Read that
+   catalogue, not a list here.
+
+   The two `EXPECT_LT` bounds are deliberately **not** in it — its first sentence puts them outside
+   the list, because they are what *fails* when the figures move rather than prose that has to be
+   corrected. An earlier version of this paragraph claimed the catalogue held both; it names the
+   max bound in passing, as the assertion one figure sits under, and that is all.
 
    **Named by its heading rather than by a line range, which is the third version of this pointer.**
    A five-item list came first and reached two of the eight it was duplicating. Then `516-541`,
@@ -218,7 +235,7 @@ description omitted that the lens is not square.
 
 So the table is asserted now, by
 `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheAngleADR0061Publishes`, and the per-bearing
-figure beside it by `…TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit`. What the tests pin is
+figure beside it by `Unproject.TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit`. What the tests pin is
 the geometry, not the accuracy table: they need no dataset and no detector, so an OpenCV bump cannot
 move them and a red row means the model changed. When one does go red, this ADR is superseded rather
 than corrected.

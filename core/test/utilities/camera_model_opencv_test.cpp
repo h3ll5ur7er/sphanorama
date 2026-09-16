@@ -291,9 +291,14 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // **This guards `fx`, the width and the turn — not `fy`.** The turn is about `+Y`, so the
   // vertical extent of the overlap is the whole frame and the two `image.pixel.y` bounds reject
   // nothing: setting `fy` to `fx`, or the vertical field of view to 66 degrees, leaves the count at
-  // exactly 160,000. It moves for `fx` (156,164 at a one per cent change) and for a half-pixel
-  // shift in `cx` (159,962). The one mistake this ADR's table has actually made is a square lens,
-  // and it walks straight past this line — which is why `fy` is asserted by name above.
+  // exactly 160,000. It moves for `fx` — 159,150 at `fx x 1.01` and 160,844 at `x 0.99` — and for
+  // a half-pixel shift in `cx` (159,960; 159,962 if `cy` moves with it). The one mistake this ADR's
+  // table has actually made is a square lens, and it walks straight past this line — which is why
+  // `fy` is asserted by name above.
+  //
+  // An earlier version of this comment said `156,164 at a one per cent change`. That count is real
+  // and it is `fx x 1.044`, a four per cent change — so the guard was being sold as four times
+  // tighter on the one axis it does guard.
   ASSERT_EQ(inA.size(), 160000u) << "the overlap is not the one the ADR's figures were measured on";
 
   struct Row { double shift; double expectedDeg; };

@@ -5,6 +5,7 @@
 // every way of having no answer is a refusal rather than a pixel.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numbers>
