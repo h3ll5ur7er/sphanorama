@@ -1,0 +1,280 @@
+#include "utilities/quaternion_average.h"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <limits>
+#include <numbers>
+#include <vector>
+
+#include "utilities/quaternion.h"
+
+namespace sphanorama {
+namespace {
+
+constexpr double kDegPerRad = 180.0 / std::numbers::pi;
+
+Quat AboutY(double degrees) { return FromAxisAngle(Vec3{0, 1, 0}, degrees / kDegPerRad); }
+
+double SeparationDeg(const Quat& a, const Quat& b) { return AngleBetween(a, b) * kDegPerRad; }
+
+/**
+ * Where a weighted average of rotations *about one axis* lands, in closed form.
+ *
+ * About a common axis the problem collapses to two dimensions: a rotation of `a` degrees is the
+ * quaternion `(cos(a/2), sin(a/2) * axis)`, its outer product's traceless part is built from
+ * `cos(a)` and `sin(a)`, and the principal eigenvector of the weighted sum therefore sits at
+ * `atan2(sum w sin a, sum w cos a)`. So an expected value is knowable in advance here rather than
+ * merely bounded, which is what lets the tests below assert a number.
+ *
+ * Derived rather than measured from the implementation: a fixture that took its expectation from
+ * the code under test would certify whatever that code does.
+ */
+double ExpectedAngleDeg(const std::vector<double>& degrees, const std::vector<double>& weights) {
+  double s = 0;
+  double c = 0;
+  for (size_t i = 0; i < degrees.size(); ++i) {
+    s += weights[i] * std::sin(degrees[i] / kDegPerRad);
+    c += weights[i] * std::cos(degrees[i] / kDegPerRad);
+  }
+  return std::atan2(s, c) * kDegPerRad;
+}
+
+/**
+ * One rotation averaged is that rotation.
+ *
+ * The weakest statement the function makes, and the one every other test here is measured against:
+ * with a single input the outer-product sum is rank one, its principal eigenvector is the input,
+ * and anything else means the eigensolver is not solving.
+ */
+TEST(AverageQuaternions, OneRotationIsItsOwnAverage) {
+  const std::vector<Quat> only{AboutY(37.0)};
+  const QuaternionAverage average = AverageQuaternions(only, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_NEAR(SeparationDeg(average.rotation, only[0]), 0.0, 1e-9);
+}
+
+/**
+ * The average of a rotation and itself negated is that rotation, not the identity.
+ *
+ * `q` and `-q` are the same orientation, and the component-wise mean of the two is the zero
+ * quaternion — which `Normalize` answers with the identity, a perfectly ordinary rotation pointing
+ * somewhere else entirely. Squaring is what makes the hemisphere question disappear rather than
+ * needing handling: the outer product is invariant under `q -> -q`, so both inputs contribute the
+ * same matrix.
+ *
+ * This is the case that separates Markley's average from the arithmetic mean reached for first, and
+ * it is reachable in life — nothing upstream of this normalises a measured quaternion's sign.
+ */
+TEST(AverageQuaternions, ASignFlippedCopyIsTheSameOrientationAndNotACancellingOne) {
+  const Quat turn = AboutY(37.0);
+  const std::vector<Quat> both{turn, Quat{-turn.w, -turn.x, -turn.y, -turn.z}};
+  const QuaternionAverage average = AverageQuaternions(both, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_NEAR(SeparationDeg(average.rotation, turn), 0.0, 1e-9);
+}
+
+/**
+ * Two rotations about one axis average to the angle halfway between them.
+ *
+ * The simplest case of `ExtractAngleDeg`'s closed form, spelled out with its own literal so that a
+ * mistake in the helper and a matching mistake in the implementation cannot agree with each other.
+ */
+TEST(AverageQuaternions, TwoTurnsAboutOneAxisAverageToTheAngleBetweenThem) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  ASSERT_NEAR(ExpectedAngleDeg({10.0, 50.0}, {1.0, 1.0}), 30.0, 1e-9);
+
+  const QuaternionAverage average = AverageQuaternions(pair, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9);
+}
+
+/**
+ * A weight moves the answer, and moves it the amount the closed form says.
+ *
+ * The point of the weights is that a caller with unequal evidence can say so, and the assertion has
+ * to be a value rather than an inequality: "closer to the heavier one" is satisfied by a function
+ * that ignores the weights entirely and answers the heavier input.
+ *
+ * Three to one across a forty-degree gap lands 9.686 degrees from the heavier rotation. Both
+ * distances are asserted, so a sign error in the weighting cannot be absorbed by symmetry — and the
+ * closed form's own number is pinned first, so a change to the helper fails here rather than moving
+ * the expectation along with the answer.
+ */
+TEST(AverageQuaternions, AWeightMovesTheAnswerTowardTheHeavierRotationByAMeasuredAmount) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  const std::vector<double> weights{3.0, 1.0};
+
+  const double expected = ExpectedAngleDeg({10.0, 50.0}, weights);
+  ASSERT_NEAR(expected, 19.685895, 1e-6) << "the closed form these figures come from has moved";
+
+  const QuaternionAverage average = AverageQuaternions(pair, weights);
+  ASSERT_TRUE(average.valid);
+  EXPECT_NEAR(SeparationDeg(average.rotation, pair[0]), expected - 10.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(average.rotation, pair[1]), 50.0 - expected, 1e-9);
+}
+
+/**
+ * A zero weight removes a rotation from the average without removing it from the input.
+ *
+ * This is the property the rotation solver needs for an unaccepted pair (ADR 0056): the caller holds
+ * a rotation the pixels offered and does not want it counted, and rebuilding the input without it
+ * would mean rebuilding the index space every parallel array is addressed by.
+ */
+TEST(AverageQuaternions, AZeroWeightRemovesARotationFromTheAverage) {
+  const std::vector<Quat> three{AboutY(10.0), AboutY(50.0), AboutY(170.0)};
+
+  const QuaternionAverage without = AverageQuaternions(three, std::vector<double>{1, 1, 0});
+  ASSERT_TRUE(without.valid);
+  EXPECT_NEAR(SeparationDeg(without.rotation, AboutY(30.0)), 0.0, 1e-9);
+
+  // And it is the zero doing the removing rather than the ordering: counted, the third input moves
+  // the answer to 60 degrees, which is where the closed form puts three equal weights.
+  const QuaternionAverage with = AverageQuaternions(three, std::vector<double>{1, 1, 1});
+  ASSERT_TRUE(with.valid);
+  EXPECT_NEAR(SeparationDeg(with.rotation, AboutY(60.0)), 0.0, 1e-9);
+}
+
+/**
+ * A rotation that arrives longer than unit does not thereby weigh more.
+ *
+ * `IsUsableRotation` admits any finite norm above 1e-12, so an input is not unit merely because it
+ * passed the gate — and an unnormalised quaternion contributes its **squared** norm to the
+ * outer-product sum, which is a second weight nobody asked for. A tripled quaternion would count
+ * nine times.
+ *
+ * Reachable rather than theoretical: a relative rotation recovered from a fitted 3x3 matrix is unit
+ * only to the precision of the fit, and the caller that will pass these is holding exactly that.
+ * Tripled here rather than nudged, so the assertion is about the mechanism and not about a
+ * tolerance.
+ */
+TEST(AverageQuaternions, ALongerThanUnitRotationDoesNotCountForMore) {
+  const Quat ten = AboutY(10.0);
+  const std::vector<Quat> pair{Quat{3 * ten.w, 3 * ten.x, 3 * ten.y, 3 * ten.z}, AboutY(50.0)};
+  ASSERT_TRUE(IsUsableRotation(pair[0])) << "the tripled input does not reach the average at all";
+
+  const QuaternionAverage average = AverageQuaternions(pair, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9);
+
+  // The number this would be instead, so the assertion above is pinned against the specific failure
+  // rather than against "not 30": squared, the triple weighs nine.
+  EXPECT_NEAR(ExpectedAngleDeg({10.0, 50.0}, {9.0, 1.0}), 13.765698, 1e-6);
+}
+
+/**
+ * Scaling every weight by one factor leaves the answer alone.
+ *
+ * The objective is a quadratic form in the weights, so a common factor scales the matrix and not its
+ * principal eigenvector. Worth asserting because it is what lets a caller pass raw inlier counts —
+ * evidence, not a distribution — rather than having to normalise first, and because any threshold
+ * written against an absolute weight would break it.
+ */
+TEST(AverageQuaternions, TheAnswerDependsOnTheRatioOfWeightsAndNotTheirScale) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  const QuaternionAverage small = AverageQuaternions(pair, std::vector<double>{3.0, 1.0});
+  const QuaternionAverage large = AverageQuaternions(pair, std::vector<double>{3.0e6, 1.0e6});
+  ASSERT_TRUE(small.valid && large.valid);
+  EXPECT_NEAR(SeparationDeg(small.rotation, large.rotation), 0.0, 1e-9);
+}
+
+/**
+ * An empty weight span means equal weights, and says so by agreeing with explicit ones.
+ *
+ * The spelling that passes no weights is the one `rotation_scoring` uses, so the two have to be one
+ * function rather than two paths that happen to agree today.
+ */
+TEST(AverageQuaternions, NoWeightsMeansEqualWeights) {
+  const std::vector<Quat> three{AboutY(10.0), AboutY(50.0), AboutY(-20.0)};
+  const QuaternionAverage implicitly = AverageQuaternions(three, {});
+  const QuaternionAverage explicitly = AverageQuaternions(three, std::vector<double>{2, 2, 2});
+  ASSERT_TRUE(implicitly.valid && explicitly.valid);
+  EXPECT_NEAR(SeparationDeg(implicitly.rotation, explicitly.rotation), 0.0, 1e-9);
+
+  // Against the closed form rather than only against each other, so two identical wrong answers
+  // cannot satisfy this.
+  EXPECT_NEAR(SeparationDeg(implicitly.rotation, AboutY(ExpectedAngleDeg({10, 50, -20}, {1, 1, 1}))),
+              0.0, 1e-9);
+}
+
+/**
+ * Two rotations exactly a half turn apart leave the maximiser a continuum, and the caller is told.
+ *
+ * `rotation_scoring.h` names this as the reachable degenerate case. What comes back is still *a*
+ * maximiser — the objective genuinely has no single best answer here — so this is a flag beside a
+ * usable value rather than a `valid` of false.
+ */
+TEST(AverageQuaternions, AHalfTurnApartIsReportedAsNotUnique) {
+  const std::vector<Quat> opposed{AboutY(0.0), AboutY(180.0)};
+  const QuaternionAverage average = AverageQuaternions(opposed, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_FALSE(average.isUnique);
+}
+
+/**
+ * An ordinary spread is unique, so the flag above reports the degeneracy rather than the input
+ * count.
+ */
+TEST(AverageQuaternions, AnOrdinarySpreadIsUnique) {
+  const std::vector<Quat> three{AboutY(0.0), AboutY(20.0), AboutY(-15.0)};
+  const QuaternionAverage average = AverageQuaternions(three, {});
+  ASSERT_TRUE(average.valid);
+  EXPECT_TRUE(average.isUnique);
+}
+
+// ----------------------------------------------------------------- refusals
+//
+// Each way of having no answer is asserted on its own rather than in a loop over "bad inputs": a
+// loop proves that something refused and not that the right thing did. The identity is what a
+// silent failure here would return, and the identity is a rotation a caller cannot tell from a
+// measurement.
+
+TEST(AverageQuaternions, NoRotationsIsARefusal) {
+  const std::vector<Quat> none;
+  EXPECT_FALSE(AverageQuaternions(none, {}).valid);
+}
+
+TEST(AverageQuaternions, AWeightSpanOfTheWrongLengthIsARefusal) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{1.0}).valid);
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{1.0, 1.0, 1.0}).valid);
+}
+
+TEST(AverageQuaternions, AQuaternionThatIsNotARotationIsARefusal) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<Quat> zeroed{AboutY(10.0), Quat{0, 0, 0, 0}};
+  const std::vector<Quat> notANumber{AboutY(10.0), Quat{nan, 0, 0, 0}};
+  EXPECT_FALSE(AverageQuaternions(zeroed, {}).valid);
+  EXPECT_FALSE(AverageQuaternions(notANumber, {}).valid);
+}
+
+TEST(AverageQuaternions, AWeightThatIsNotAMeasurementIsARefusal) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+  // Three against minus one, not one against minus one, and the difference is the whole test. The
+  // pair that sums to zero is refused by the all-weights-zero gate instead, so with the negative
+  // check deleted it still comes back false and this case passes without ever reaching the line it
+  // is named for. Caught by sabotage: removing `w < 0.0` failed nothing until the total went
+  // positive.
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{3.0, -1.0}).valid)
+      << "a negative weight is not less evidence, it is evidence for the opposite";
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{1.0, nan}).valid);
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{1.0, infinity}).valid);
+}
+
+/**
+ * Weights that are all zero are a refusal, and not the average of nothing dressed as a rotation.
+ *
+ * Reachable: a caller weighting by inlier count, over a set of pairs that were every one refused,
+ * passes exactly this. The outer-product sum is the zero matrix, whose principal eigenvector is
+ * whatever the eigensolver's scan order reaches first — so without this gate the answer is an
+ * arbitrary axis with `valid` true.
+ */
+TEST(AverageQuaternions, EveryWeightZeroIsARefusal) {
+  const std::vector<Quat> pair{AboutY(10.0), AboutY(50.0)};
+  EXPECT_FALSE(AverageQuaternions(pair, std::vector<double>{0.0, 0.0}).valid);
+}
+
+}  // namespace
+}  // namespace sphanorama
