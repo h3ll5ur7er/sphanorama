@@ -608,6 +608,27 @@ def sample_equirect(panorama: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.nd
     return top * (1.0 - fy) + bottom * fy
 
 
+def unusable_pixels(lens: Intrinsics) -> tuple[np.ndarray, int]:
+    """Every pixel centre's direction, and how many of them have no ray behind them.
+
+    **One place decides what "this lens folds in its own frame" means.** Two callers ask it — the
+    render, which cannot colour a pixel with no direction, and the command line, which would rather
+    refuse before it spends anything. They used to ask it separately, in the same words, and a
+    reviewer could not make them disagree over three hundred random lenses. That is the two copies
+    agreeing rather than one copy, and the difference matters on a known future day: the roadmap's
+    next harness increment is teaching the render to *tolerate* a refused row, and on that day one
+    of two identical paragraphs would have been edited.
+
+    Which is the failure `Distorted` exists to prevent one file over — a fold test disagreeing with
+    the solver about where the fold is.
+
+    The directions come back with the count because the render needs them anyway, and recomputing
+    them would be the same duplication one level down.
+    """
+    directions, valid = unproject(lens, _every_pixel_centre(lens))
+    return directions, int((~valid).sum())
+
+
 def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarray:
     """One frame, as a (height, width, channels) float array.
 
@@ -637,15 +658,15 @@ def render_frame(panorama: np.ndarray, lens: Intrinsics, pose: Pose) -> np.ndarr
     does anyway". One frame's worth, against a run that renders many, spent to fail before the
     output directory is written rather than after.
     """
-    camera_directions, valid = unproject(lens, _every_pixel_centre(lens))
+    camera_directions, rayless = unusable_pixels(lens)
     # Before the directions are used for anything. A refused row's direction can be non-finite, and
     # `direction_to_equirect` refuses those too — with a message that names the vector rather than
     # the lens, which is the wrong diagnosis of the frame and the wrong count in it.
-    if not valid.all():
+    if rayless:
         raise ValueError(
-            f"{int((~valid).sum())} of {valid.size} pixels of this frame have no ray behind them: "
-            "the lens stops being invertible inside its own frame, and no colour could honestly "
-            "stand for a missing direction")
+            f"{rayless} of {lens.width * lens.height} pixels of this frame have no ray behind "
+            "them: the lens stops being invertible inside its own frame, and no colour could "
+            "honestly stand for a missing direction")
 
     world = pose.rotate(camera_directions)
     u, v = direction_to_equirect(world, panorama.shape[1], panorama.shape[0])
@@ -955,17 +976,15 @@ def main() -> int:
     # lenses with thousands of rayless pixels and refusing answerable ones. This unprojects every
     # pixel centre, which is exact and is the work the first frame does anyway.
     #
-    # **The points are shared and the rule is not.** `_every_pixel_centre` is the one copy of *which*
-    # pixels to ask about; whether `usable.all()` is the bar lives here and again in `render_frame`.
-    # A reviewer could not make them disagree — 300 random lenses across five widths and four
-    # heights, 159 accepted and 141 refused, no split verdicts — so this is a fact about the two
-    # copies agreeing today rather than about them being one copy. The increment that would break it
-    # is on the roadmap: the day `render_frame` learns to tolerate a refused row, one of these two
-    # has to learn it as well.
-    _, usable = unproject(lens, _every_pixel_centre(lens))
-    if not usable.all():
+    # **The same predicate the render asks**, so the two cannot disagree by construction rather than
+    # by both being written the same way. They were written the same way for a commit, and a
+    # reviewer could not make them disagree over 300 random lenses — 159 accepted, 141 refused, no
+    # split verdicts — which is a fact about two copies agreeing rather than about there being one.
+    # `unusable_pixels` says why that distinction has a date on it.
+    _, rayless = unusable_pixels(lens)
+    if rayless:
         parser.error(
-            f"{int((~usable).sum())} of {usable.size} pixels of this frame have no ray behind "
+            f"{rayless} of {args.width * args.height} pixels of this frame have no ray behind "
             f"them: k1={args.k1} k2={args.k2} k3={args.k3} p1={args.p1} p2={args.p2} stops being "
             f"invertible inside a {args.width}x{args.height} frame at {args.hfov} by {args.vfov} "
             f"degrees")
