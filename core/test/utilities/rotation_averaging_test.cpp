@@ -170,6 +170,9 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   const AveragedRotations believed = AverageRotations(edges, anchors, 0.01);
   ASSERT_TRUE(believed.valid);
   EXPECT_TRUE(believed.converged);
+  // The `[12 frames, 0.01]` cell of the sweep table in `rotation_averaging.cpp`, and the only
+  // assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves. So the table is not "the
+  // only copy" ADR 0062 calls it — this is the second, and it is the one with teeth.
   EXPECT_EQ(believed.sweeps, 590);
 
   const test::RotationScore after = test::ScoreRotations(believed.rotations, truth);
@@ -354,11 +357,16 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
   // with no stopping rule — "exact edges" bounds the problem and not the iteration.
   //
-  // **This is the branch's third figure that measures `kSettledDeg` rather than the solver**, after
-  // the two the roadmap publishes, and it is the one nothing outside this file quotes — which is why
-  // an audit of the published pair did not reach it. Tightening the tolerance 5.6x moves it to
-  // 4.67e-6. The failure message says so, because an earlier one said "the residual is no longer the
-  // stopping tolerance", which names the opposite of the cause.
+  // **This measures `kSettledDeg` rather than the solver**, and it is one of five on the branch that
+  // do: the two the roadmap publishes, `0.0000226` at the top of this file, this one, and
+  // `EXPECT_EQ(believed.sweeps, 590)` — which is the `[12 frames, 0.01]` cell of the sweep table in
+  // `rotation_averaging.cpp` and moves whenever that constant does. Tightening the tolerance 5.6x
+  // moves this figure to 4.67e-6 and that one to 742.
+  //
+  // The count matters because two earlier versions of this comment gave a smaller one, each time
+  // after an audit that reached only the figures published *outside* the file. The failure message
+  // names the cause, since an earlier one said "the residual is no longer the stopping tolerance",
+  // which is the opposite of it.
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
   EXPECT_NEAR(score.medianDeg, 0.0000286, 3e-6)
@@ -447,6 +455,11 @@ TEST(AverageRotations, AFrameWithNoAnchorAndNoEdgeIsNamedUnplaced) {
   ASSERT_EQ(solved.unplaced.size(), 1u);
   EXPECT_EQ(solved.unplaced.front(), kFrames);
   EXPECT_NEAR(SeparationDeg(solved.rotations[kFrames], Quat{}), 0.0, 1e-12);
+
+  // And it is not *also* in `priorOnly`: the two lists answer different questions, and an unplaced
+  // frame rests on nothing rather than on its prior. Without this the placed test in that loop can
+  // be deleted with the suite green.
+  EXPECT_TRUE(solved.priorOnly.empty());
 
   // And the twelve that could be placed are unaffected by the one that could not.
   for (size_t i = 0; i < truth.size(); ++i) {
@@ -845,6 +858,85 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_EQ(pair.ambiguous.size(), 2u);
   EXPECT_EQ(pair.ambiguous[0], 1);
   EXPECT_EQ(pair.ambiguous[1], 4) << "the list is not ascending";
+}
+
+/**
+ * How much of the answer rests on priors rather than on pixels is readable.
+ *
+ * **Two ways a reconstruction can be mostly priors, and until these fields existed neither showed.**
+ *
+ * The first is the worse one, because the degraded input reports *better* than the healthy one on
+ * every field there was. Twelve frames, exact edges, and one usable prior instead of twelve: a
+ * single anchor plus a spanning tree is an exact fixed point, so the solve settles in one sweep with
+ * `medianEdgeErrorDeg` and `maxEdgeErrorDeg` at zero, `edgesUsed` at twelve and `unplaced` empty —
+ * against the healthy solve's 590 sweeps and a residual, because there twelve mutually inconsistent
+ * priors have to be compromised. A caller reading those fields would pick the broken one.
+ *
+ * The second is quieter: frames no believed edge touches at all. They are placed, by their own
+ * anchors, and `edgesUsed` counts edges rather than frames — so eleven edges among half the sphere
+ * reads exactly like eleven edges across all of it.
+ *
+ * `anchorsUsed` and `priorOnly` are the two denominators that were missing.
+ */
+TEST(AverageRotations, HowMuchOfTheAnswerRestsOnPriorsIsReadable) {
+  const std::vector<Quat> truth = Ring(kFrames);
+  const std::vector<RelativeRotation> edges = RingEdges(truth, 0.0);
+
+  std::vector<Quat> anchors;
+  for (int i = 0; i < kFrames; ++i) {
+    const Vec3 axis{std::sin(i * 1.0), std::cos(i * 1.0), std::sin(i * 2.0)};
+    anchors.push_back(
+        Normalize(Multiply(truth[static_cast<size_t>(i)], FromAxisAngle(axis, 3.0 / kDegPerRad))));
+  }
+
+  const AveragedRotations healthy = AverageRotations(edges, anchors, 0.01);
+  ASSERT_TRUE(healthy.valid);
+  EXPECT_EQ(healthy.anchorsUsed, kFrames);
+  EXPECT_TRUE(healthy.priorOnly.empty());
+
+  // One prior of twelve. Every field the struct had before is equal or *better* here.
+  std::vector<Quat> lonely(static_cast<size_t>(kFrames), Quat{0, 0, 0, 0});
+  lonely[0] = anchors[0];
+  const AveragedRotations starved = AverageRotations(edges, lonely, 0.01);
+  ASSERT_TRUE(starved.valid);
+  EXPECT_EQ(starved.edgesUsed, healthy.edgesUsed) << "the old fields have to agree, or this proves nothing";
+  EXPECT_TRUE(starved.unplaced.empty());
+  EXPECT_LT(starved.maxEdgeErrorDeg, healthy.maxEdgeErrorDeg)
+      << "the starved solve should look better on the old fields, which is the point";
+  EXPECT_EQ(starved.anchorsUsed, 1) << "the one field that tells them apart";
+
+  // Frames no believed edge touches. Eleven edges, all among the first six frames.
+  std::vector<RelativeRotation> lopsided;
+  for (int32_t a = 0; a < 6 && lopsided.size() < 11; ++a) {
+    for (int32_t b = a + 1; b < 6 && lopsided.size() < 11; ++b) {
+      lopsided.push_back(RelativeRotation{a, b, TrueEdge(truth[static_cast<size_t>(a)],
+                                                        truth[static_cast<size_t>(b)]), 1.0});
+    }
+  }
+  ASSERT_EQ(lopsided.size(), 11u);
+
+  const AveragedRotations partial = AverageRotations(lopsided, anchors, 0.1);
+  ASSERT_TRUE(partial.valid);
+  EXPECT_EQ(partial.edgesUsed, 11) << "edges are counted, and six frames have none";
+  EXPECT_TRUE(partial.unplaced.empty()) << "they are placed, by their anchors";
+  ASSERT_EQ(partial.priorOnly.size(), 6u);
+  for (size_t i = 0; i < partial.priorOnly.size(); ++i) {
+    EXPECT_EQ(partial.priorOnly[i], static_cast<int32_t>(i) + 6) << "ascending, from frame six";
+  }
+
+  // A discarded edge does not count as touching a frame, which is the same rule `edgesUsed` keeps.
+  std::vector<RelativeRotation> discarded = lopsided;
+  discarded.push_back(RelativeRotation{6, 7, TrueEdge(truth[6], truth[7]), 0.0});
+  const AveragedRotations stillPriorOnly = AverageRotations(discarded, anchors, 0.1);
+  ASSERT_TRUE(stillPriorOnly.valid);
+  EXPECT_EQ(stillPriorOnly.priorOnly.size(), 6u);
+
+  // And believed, it takes two of them out.
+  discarded.back().weight = 1.0;
+  const AveragedRotations joined = AverageRotations(discarded, anchors, 0.1);
+  ASSERT_TRUE(joined.valid);
+  ASSERT_EQ(joined.priorOnly.size(), 4u);
+  EXPECT_EQ(joined.priorOnly.front(), 8);
 }
 
 // ----------------------------------------------------------------- refusals

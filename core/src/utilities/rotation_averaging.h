@@ -80,6 +80,23 @@ struct AveragedRotations {
   // made from them.
   int32_t edgesUsed = 0;
 
+  // How many anchors were usable rotations — the priors' counterpart to `edgesUsed`, and the only
+  // field that separates a reconstruction the sensors agreed on from one a single surviving prior
+  // pinned. **The degraded case reports better than the healthy one on everything else**, which is
+  // why it needs its own number: one anchor plus a spanning tree is an exact fixed point, so the
+  // solve settles in one sweep with both edge errors at zero, while twelve mutually inconsistent
+  // priors take hundreds of sweeps and leave a residual.
+  int32_t anchorsUsed = 0;
+
+  // Frames no believed edge touches, ascending. They are placed — by their own anchor — so they are
+  // not in `unplaced`, and they rest on no pixel at all.
+  //
+  // `edgesUsed` cannot say this, because it counts edges and the hazard is measured in frames:
+  // eleven edges among half a sphere reads exactly like eleven edges across all of it. Reachable
+  // without anything going wrong, since ADR 0056 leaves a caller weighing an unaccepted pair at zero
+  // and a run of those can strand a whole arc on its priors.
+  std::vector<int32_t> priorOnly;
+
   // Frames whose average had no single maximiser **on any sweep**, so where they sit was settled at
   // some point by the eigensolver's scan order rather than by the evidence. Ascending, each frame
   // named once. Reachable when everything speaking for a frame disagrees by a half turn — two

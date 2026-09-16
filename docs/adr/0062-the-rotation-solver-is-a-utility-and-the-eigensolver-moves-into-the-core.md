@@ -107,8 +107,12 @@ still carried "five working sweeps" from before 0049's own re-measurement; it is
 rather than left in a component that no longer owns the code.
 
 **The sweep budget is a new measured number and it will be quoted.** `kMaxSweeps` is 1000, chosen
-from a table in `rotation_averaging.cpp` that is the only copy. Anything quoting it elsewhere
-inherits the obligation the accuracy table has: the figures move together or not at all.
+from a table in `rotation_averaging.cpp`. That table has one *prose* copy, the paragraph beneath it,
+and one *executable* copy — `EXPECT_EQ(believed.sweeps, 590)` in `rotation_averaging_test.cpp`, which
+is the `[12 frames, 0.01]` cell and the only assertion anywhere that fails when `kSettledDeg` or
+`kMaxSweeps` moves. This section said "the only copy" and was wrong about the one that matters most,
+since it is the one that would catch a change rather than merely disagree with it. Anything quoting
+the table inherits the obligation the accuracy table has: the figures move together or not at all.
 
 **Normalising each input changed behaviour, in a case nothing was reaching.** `IsUsableRotation`
 admits any finite norm above 1e-12, and an unnormalised quaternion contributes its *squared* norm to

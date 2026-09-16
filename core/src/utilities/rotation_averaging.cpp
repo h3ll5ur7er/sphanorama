@@ -139,6 +139,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   for (int32_t i = 0; i < frames; ++i) {
     anchored[static_cast<size_t>(i)] = IsUsableRotation(anchors[static_cast<size_t>(i)]) ? 1 : 0;
     anyAnchor = anyAnchor || anchored[static_cast<size_t>(i)] != 0;
+    if (anchored[static_cast<size_t>(i)] != 0) ++out.anchorsUsed;
   }
   // **Without one usable anchor there is nothing to start from**, which is a stronger fact than the
   // gauge being free and is the one that decides this. The walk below seeds from anchored frames and
@@ -314,6 +315,14 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // at index 1.
   for (int32_t i = 0; i < frames; ++i) {
     if (everAmbiguous[static_cast<size_t>(i)] != 0) out.ambiguous.push_back(i);
+  }
+
+  // Frames no believed edge reaches, which `incident` already knows — it holds only believed edges,
+  // so an empty entry is exactly "nothing measured touches this frame". Placed ones only: an
+  // unplaced frame rests on nothing at all and is named in `unplaced` instead.
+  for (int32_t i = 0; i < frames; ++i) {
+    if (placed[static_cast<size_t>(i)] == 0) continue;
+    if (incident[static_cast<size_t>(i)].empty()) out.priorOnly.push_back(i);
   }
   out.rotations = std::move(solved);
   out.valid = true;
