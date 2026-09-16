@@ -6,9 +6,19 @@ namespace sphanorama {
 
 // Orientation maths shared by the coverage planner, the pose engine and registration.
 //
-// Every function here is total: degenerate input (a zero quaternion from an uninitialised sensor
-// read, a zero axis) yields identity rather than NaN. NaN does not fail loudly — it propagates
-// through a whole capture session and surfaces as a sphere that will not close.
+// **The functions that answer a question about orientations are total**: degenerate input (a zero
+// quaternion from an uninitialised sensor read, a zero axis) yields identity, or zero for the ones
+// returning an angle, rather than NaN. NaN does not fail loudly — it propagates through a whole
+// capture session and surfaces as a sphere that will not close.
+//
+// **`Multiply` and `Conjugate` are algebra and are deliberately outside that**, which is a
+// correction: this paragraph said "every function here" and named a zero quaternion as its worked
+// example, and `Multiply(Quat{0,0,0,0}, q)` is the zero quaternion. Substituting the identity there
+// would be a lie about what the product is, and a worse failure than the one it prevents — the zero
+// propagates to `IsUsableRotation`, which refuses it, whereas an identity is a perfectly ordinary
+// rotation nothing downstream can question. Every `Multiply` under `core/src` bar one is wrapped in
+// `Normalize`; the exception is `OrientationPoseEngine`'s `RotationBetween`, whose inputs are
+// normalised behind an `IsUsableRotation` gate.
 
 double Norm(const Quat& q);
 
@@ -70,8 +80,25 @@ Vec3 Normalize(const Vec3& v);
 double AngleBetweenDirections(const Vec3& a, const Vec3& b);
 
 // Rotation about the viewing axis separating two orientations, in radians, signed and in
-// (-pi, pi]. Zero when both are held the same way up. Zero, too, when the two look in opposite
-// directions, where roll has no meaning.
+// (-pi, pi]. Zero when both are held the same way up.
+//
+// **Meaningful only while the two look in roughly the same direction, and this is the whole of the
+// promise.** What stood here — "Zero, too, when the two look in opposite directions, where roll has
+// no meaning" — is false twice over, measured. Opposite directions give **180 degrees**, not zero,
+// and the answer is responsive there rather than nonsense: roll the target 30 degrees about its own
+// viewing axis and it reads 150. The zero arrives at *ninety* degrees of separation instead, which
+// is a different configuration entirely.
+//
+// Worse, it is not a degeneracy of roll but of the method. The implementation projects the target's
+// +X axis off the current viewing axis, and that projection collapses when the two happen to align
+// — a fact about the target's roll, not about whether roll exists. At azimuth 90 a target rolled by
+// 15 degrees reads 90, and azimuth 89 versus 91 at zero roll flips between -0.0000 and 180.0000. A
+// two-degree change in aim, 180 degrees of answer.
+//
+// Left as it is rather than fixed here, because every caller asks it against the *nearest* cell,
+// where the separation is small and the function is well behaved, and rewriting it is a change to
+// shipped guidance rather than to this branch's subject. The fix is a swing-twist decomposition,
+// which is defined and continuous everywhere except exactly antipodal.
 double RollBetween(const Quat& current, const Quat& target);
 
 }  // namespace sphanorama

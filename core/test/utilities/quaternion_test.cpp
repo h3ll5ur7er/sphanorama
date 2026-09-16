@@ -433,12 +433,44 @@ TEST(RollBetween, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
   }
 }
 
-TEST(RollBetween, SaysNothingRatherThanNonsenseWhenLookingTheOppositeWay) {
-  // Roll about an axis is undefined once the two frames point opposite ways; reporting zero is
-  // the honest answer, and it keeps the number out of NaN territory.
+/**
+ * What `RollBetween` actually does at large separation, which is not what it used to claim.
+ *
+ * This test asserted `std::isfinite` and nothing else, under a comment saying roll is undefined at
+ * opposite directions and that zero is reported there. Both halves were false and the assertion
+ * could not see it: 180.0 is perfectly finite. A test whose only predicate is satisfied by every
+ * plausible wrong answer is not a test, and this one guarded the exact input its comment described.
+ *
+ * Pinned as measured, so the behaviour cannot drift unnoticed and so the declaration's new
+ * qualification has something executable under it. These are not assertions that the numbers are
+ * *right* — the declaration says at length that they are not — they are assertions that they are
+ * what they are until someone fixes the function on purpose.
+ */
+TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   const Quat target = FromAzimuthElevation(0.0, 0.0);
+
+  // Opposite directions: 180, not the zero the comment here used to promise, and responsive to the
+  // target's own roll rather than degenerate.
   const Quat away = FromAzimuthElevation(180.0, 0.0);
-  EXPECT_TRUE(std::isfinite(RollBetween(away, target)));
+  EXPECT_NEAR(RollBetween(away, target) * kDegPerRad, 180.0, 1e-6);
+
+  // Ninety degrees is where the projection actually collapses, and the zero lands there instead.
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(90.0, 0.0), target) * kDegPerRad, 0.0, 1e-6);
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(0.0, 90.0), target) * kDegPerRad, 0.0, 1e-6);
+
+  // And the discontinuity, which is the reason the declaration says "roughly the same direction":
+  // two degrees of aim either side of ninety, at identical roll, differ by half a turn.
+  const double justBelow = RollBetween(FromAzimuthElevation(89.0, 0.0), target) * kDegPerRad;
+  const double justAbove = RollBetween(FromAzimuthElevation(91.0, 0.0), target) * kDegPerRad;
+  EXPECT_NEAR(justBelow, 0.0, 1e-6);
+  EXPECT_NEAR(justAbove, 180.0, 1e-6);
+
+  // Near the target, where every caller asks it, it is well behaved — which is what bounds all of
+  // the above and is asserted here rather than assumed. Same construction as
+  // `MeasuresRotationAboutTheViewingAxisAndIsSigned`, at a separation instead of at zero.
+  const Quat nearby = FromAzimuthElevation(3.0, 0.0);
+  const Quat rolled = Multiply(FromAxisAngle(Direction(nearby), 10.0 / kDegPerRad), nearby);
+  EXPECT_NEAR(RollBetween(rolled, nearby) * kDegPerRad, 10.0, 1e-6);
 }
 
 }  // namespace

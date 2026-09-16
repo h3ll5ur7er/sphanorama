@@ -58,10 +58,18 @@ struct AveragedRotations {
   // has one is placed by it before any edge is walked.
   std::vector<Quat> rotations;
 
-  // Frames no anchor placed and no believed edge reached, ascending. Their `rotations` entry is the
-  // identity, which is why they have to be named: the identity is a rotation a level phone reports,
-  // so nothing about the value says it was given up on. With `edgesUsed` and `ambiguous`, this is
-  // how much of the answer rests on nothing.
+  // Frames no chain of believed edges connects to an anchor, ascending. Their `rotations` entry is
+  // the identity, which is why they have to be named: the identity is a rotation a level phone
+  // reports, so nothing about the value says it was given up on. With `edgesUsed` and `ambiguous`,
+  // this is how much of the answer rests on nothing.
+  //
+  // **Connectivity, not incidence**, which is a correction: this said "no believed edge reached" and
+  // the two differ on the case that matters. A whole component with no anchor in it is unplaced
+  // however well its frames are measured against each other — there is nothing to place it
+  // *relative to*, since the gauge inside it is free — so two frames joined by a perfect edge and
+  // anchored by neither are both named here, and `edgesUsed` does not count the edge between them.
+  // `TheEdgeErrorCarriesTheCountItWasComputedOver` builds exactly that. Reachable in life through
+  // ADR 0056: a run of unaccepted pairs weighed at zero severs an arc from the rest.
   std::vector<int32_t> unplaced;
 
   // How far the answer leaves each edge it used, in degrees. **Read them with `edgesUsed`**, which is
@@ -157,8 +165,10 @@ struct AveragedRotations {
 // An index is checked whatever the weight beside it: the weight says how much a *measurement* is
 // believed, and an index naming no frame is not a measurement to disbelieve at a low weight.
 //
-// A frame with no usable anchor that no surviving edge reaches is a different case and is not a
-// refusal: the rest of the reconstruction is still an answer. It is named in `unplaced`.
+// A frame with no usable anchor that no surviving edge connects back to an anchored one is a
+// different case and is not a refusal: the rest of the reconstruction is still an answer. It is
+// named in `unplaced`. "Connects back to", rather than "reaches", for the reason that field's own
+// docblock now gives at length — an unanchored component is unplaced however well measured.
 //
 // **The order of `edges` can change the answer, and only on input that is already contradictory.**
 // The breadth-first placement walks edges in the order it is given them, so on a graph whose edges
