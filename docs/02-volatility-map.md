@@ -40,6 +40,23 @@ those choices is a fact about how we *test*, not about what the app does on a ph
 holds the decision; the day a bench client or a shipped feature needs the same number, it earns a
 row and a `utilities/` home together.
 
+**V7's "global refinement" now has half its implementation outside `RegistrationEngine`**, in
+`core/src/utilities/rotation_averaging`, and that is not a second owner of the axis. The engine will
+still decide *whether and how* frames are aligned; the utility is arithmetic for it to call, in the
+relationship `camera_model` and `quaternion` have to the engines that use them — **with one
+difference worth stating rather than glossing, because this paragraph first glossed it: those two
+are called from `core/src` today and this is not.** `Refine` still refuses, so the only caller is a
+test. It is separate for a reason the map cares about: `EstimatePairwise` needs OpenCV and this does
+not, so a browser build — which gets the null engine (ADR 0052) — can have the half of registration
+that is quaternions the day a composition root wants it. `quaternion_average` sits under both it and
+the test-side scorer, so the eigensolver ADR 0049 measured exists once.
+
+That makes it the one thing in `core/src` that the **"how registration accuracy is judged"**
+paragraph's rule would exclude — "nothing in `core/src` reads it" is exactly why registration
+*scoring* has no row — and ADR 0062 takes that cost
+deliberately and names the caller it is waiting for. If `Refine` never arrives, 0062 is the thing to
+supersede.
+
 **How a synthetic dataset is produced** — the panorama it is rendered from, the lens model and its
 distortion, the pose trajectory, the noise and blur and rolling-shutter and exposure models still to
 come — varies as much

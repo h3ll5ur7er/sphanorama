@@ -27,7 +27,7 @@ bool IsUsableRotation(const Quat& q) {
   // is that the infinity does not have to arrive in a component. `Norm` squares before it sums, so
   // every component of `Quat{0, 1e200, 0, 0}` is finite and its norm is not.
   //
-  // A reviewer ran what that bought: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
+  // What that bought, run: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
   // real `Direction` is `(0,0,+1)`, `Normalize` answered `{0,0,0,0}`, and `Direction` of *that* is
   // `(0,0,-1)` — straight ahead. `OrientationPoseEngine::Integrate` anchored the pose at
   // confidence 1.0 on a direction 180 degrees from the sample it was given, after which
@@ -57,6 +57,13 @@ Quat FromAxisAngle(const Vec3& axis, double radians) {
   // quaternion of norm |cos(half)| — zero for a half-turn — rather than any rotation about the
   // axis asked for.
   if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
+
+  // The same guard the axis gets, for the reason the header now states beside this function's
+  // declaration. Not reachable from today's callers, checked rather than assumed:
+  // `OrientationPoseEngine::Turned` can only produce a non-finite angle from a non-finite rate,
+  // which the axis guard above already refuses, and `FromAzimuthElevation`'s trailing `Normalize`
+  // absorbs it.
+  if (!std::isfinite(radians)) return Quat{};
 
   const double half = radians * 0.5;
   const double s = std::sin(half) / length;
@@ -160,7 +167,13 @@ double RollBetween(const Quat& current, const Quat& target) {
   const double along = Dot(there, axis);
   const Vec3 flattened =
       Normalize(Vec3{there.x - axis.x * along, there.y - axis.y * along, there.z - axis.z * along});
-  // Antipodal: the target's frame collapses onto the viewing axis and roll has no meaning.
+  // **Not antipodal** — this said so, which was the third copy of a claim the declaration retracts
+  // and the test disproves. It fires when the *target's +X axis* lands on the current viewing axis,
+  // which is a fact about how the target is rolled and says nothing about whether roll is defined.
+  // Measured over 32,000,000 constructed collapse inputs it changes the answer 4,307,507 times,
+  // always between zero and ±180: without it `flattened` is `Normalize`'s zero fallback and
+  // `atan2(+0.0, -0.0)` is pi, so a current held at azimuth 90 and rolled 45 degrees reads -180
+  // where it should read 0.
   if (Dot(flattened, flattened) < 0.5) return 0.0;
   return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
 }

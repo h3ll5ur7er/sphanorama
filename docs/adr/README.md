@@ -10,17 +10,20 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the fourteen bannered ADRs do not have a Status line at all. For a claim in the
-  body that a reader would otherwise meet and believe. This is the common shape: fourteen ADRs carry
-  a banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0049, 0052, 0053, 0055, 0056, 0060);
-  eight of those carry a Status line (0006, 0047, 0049, 0052, 0053, 0055, 0056, 0060), and four of
-  *those* carry a Status **chain** — a "narrowed by", "superseded by" or "extended by" pointer
-  (0006, 0047, 0052, 0060).
+  has one; six of the fifteen bannered ADRs do not have a Status line at all. For a claim in the
+  body that a reader would otherwise meet and believe. This is the common shape: fifteen ADRs carry
+  a banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0049, 0050, 0052, 0053, 0055, 0056,
+  0060); nine of those carry a Status line (0006, 0047, 0049, 0050, 0052, 0053, 0055, 0056, 0060),
+  and five of *those* carry a Status **chain** — a "narrowed by", "superseded by", "extended by",
+  "moved by" or "retracted by" pointer (0006, 0047, 0049, 0052, 0060). The membership list has been
+  right through two extensions of this vocabulary and the vocabulary has been one short of it both
+  times: 0060's line reads "one figure retracted by", and the word was missing from this sentence
+  while 0060 was listed in it.
 
-  **Three leading blockquotes are not banners** — 0022's is a quotation, 0023's and 0038's are the
-  passages they are arguing with — which is why they are absent from all three lists and why
-  counting `^> ` in the first twenty lines of every file returns three candidates more than the set
-  has members: seventeen against fourteen today. Said here because two separate
+  **One leading blockquote is not a banner** — 0022's is a quotation — which is why it is absent
+  from all three lists and why counting `^> ` in the first twenty lines of every file returns one
+  candidate more than the set has members: sixteen against fifteen today. Said here because two
+  separate
   recounts have had to rediscover it, and phrased as an offset rather than a total because the first
   version of this note said "twelve candidates" and was made stale by the same commit that wrote it:
   bannering 0056 moved the grep total the sentence had just quoted. That is a fifth quantity, and
@@ -29,10 +32,21 @@ forward, one is *added* in one of three places, and the body below it is left al
   **A fifth time, and the first where the rule was simply not run.** ADR 0061's branch added a
   banner to 0060 and recomputed nothing, so all five quantities were stale at once. Recomputing them
   found a sixth thing: 0049 has carried a banner since it was written and has never been in this
-  list, so the count was wrong before that branch touched it. The offset was two rather than one for
-  the same reason — 0023 and 0038 open with the passages they argue against, which look exactly like
-  banners to a grep and are not. Every number in the two paragraphs above is now derived from the
-  files rather than from the previous version of those paragraphs.
+  list, so the count was wrong before that branch touched it.
+
+  **A sixth time, and the first where the rule could not have fired.** Four of the five quantities
+  were wrong again when ADR 0062's branch was reviewed: a merge had bannered **0050** without
+  recounting, and 0062's own branch added a Status **chain** to 0049 — which moves a census quantity
+  while adding no banner, so the rule as written ("anyone adding a banner recomputes all five") never
+  applied. It is scoped to the event that is easiest to notice rather than to the quantities that
+  move. **Anyone editing this file, or any ADR's Status line, recomputes all five from the files.**
+
+  That recount also corrected a claim this note has carried since the fifth time. The offset is
+  **one**, not two or three: 0023's and 0038's leading blockquotes are at lines 56 and 80, outside
+  the twenty-line window the grep looks in, so they were never candidates. Only 0022's is. Every
+  number in the two paragraphs above is derived from the files rather than from the previous version
+  of those paragraphs — which is now the third consecutive time that derivation found the previous
+  version wrong.
 
   **This census has now gone wrong four times on one branch, and the third was the worst.** The
   fourth is the smallest and the most on-the-nose: the sentence added to stop the next recounter
@@ -122,7 +136,7 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0046](0046-the-lens-is-a-utility-and-an-uninvertible-pixel-is-refused.md) | The lens is a utility rather than an engine, and every way of having no answer — an unusable lens, a direction behind the camera, a radius past the fold, an inverse that does not land — is a refusal rather than a pixel |
 | [0047](0047-opencv-is-fetched-pinned-and-trimmed-and-earns-its-place-on-a-cross-check.md) | OpenCV is fetched from source at a pinned **commit**, trimmed to ADR 0005's six modules, linked natively only — and its first use is a cross-check of the camera model against `cv::projectPoints` rather than an engine. Its sanitizer remedy is **superseded by [0052](0052-opencv-enters-the-core-behind-a-build-flag.md)** |
 | [0048](0048-the-python-tooling-runs-through-uv.md) | The Python tooling runs through `uv` with a committed lock file, so the interpreter and any future dependency are facts about the repository rather than about a machine |
-| [0049](0049-accuracy-is-measured-with-the-gauge-removed.md) | Registration accuracy is scored with the global gauge rotation removed first, by Markley's chordal average found with Jacobi rather than power iteration, and the headline number is the median |
+| [0049](0049-accuracy-is-measured-with-the-gauge-removed.md) | *(its banner's pointer moved by [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md): the Jacobi figures live in `core/src/utilities/quaternion_average.cpp` now, not in `rotation_scoring.cpp`.)* Registration accuracy is scored with the global gauge rotation removed first, by Markley's chordal average found with Jacobi rather than power iteration, and the headline number is the median |
 | [0050](0050-the-dataset-renderer-re-implements-the-lens-on-purpose.md) | The synthetic dataset renderer re-implements the lens rather than calling the core, because a dataset rendered through the code under test cancels any error the two share — and numpy arrives in an opt-in group so the checkers stay standard-library only |
 | [0051](0051-a-feature-set-points-at-frames-not-at-buffers.md) | A `FeatureSet` points at frames, not at buffers |
 | [0052](0052-opencv-enters-the-core-behind-a-build-flag.md) | OpenCV enters the core behind a build flag; the browser gets a null registration — and it builds the exception boundary 0047 named, and supersedes 0047's suppressions-file remedy |
@@ -135,3 +149,4 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0059](0059-the-measurement-is-made-in-a-photograph.md) | Registration accuracy is measured in a licensed photograph rather than a checkerboard, the bytes are committed as received with a record beside them, and a checker fails the build for a binary that cannot say where it came from |
 | [0060](0060-a-reachability-claim-in-prose-is-retracted-and-pinned.md) | *(one figure retracted by [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md): the half-pixel offset is 0.0805° across two axes, not the 0.0581° of one.)* A lens refusing 38.8% of its frame was published in a source comment and is wrong — it is 66.8%; both figures the engine cites are asserted by a test now, and the refused-row path they argue for is not reached by any dataset this repository renders |
 | [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md) | Keypoints reach `camera_model` half a pixel out, worth 0.0105° per fitted pair against 0.0805° per bearing — and correcting it makes five of the six published figures *worse* (AKAZE's median is the one that improves) and fails both of ORB's bounds, because the table is green partly by cancellation against the detectors' own localisation bias. Kept, measured, and the blast radius left where it already lives |
+| [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md) | The rotation solve under `Refine` is a utility rather than an engine — it needs quaternions where `EstimatePairwise` needs OpenCV — and the Jacobi eigensolver [0049] measured moves out of test support into `core/src` so there is one copy. One component in `core/src` that nothing in `core/src` calls yet, which is the cost it takes knowingly and names the caller for |

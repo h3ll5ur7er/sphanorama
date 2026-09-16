@@ -64,6 +64,35 @@ TEST(AngleBetween, IsFiniteForDegenerateInput) {
   EXPECT_TRUE(std::isfinite(AngleBetween(Quat{0, 0, 0, 0}, Yaw(10))));
 }
 
+// An angle that is not a measurement gives the identity, like an axis that is not one.
+//
+// This file's header promises that *every* function here is total — degenerate input yields the
+// identity rather than NaN — and the examples beside that promise are all about the axis, which is
+// how the angle came to be unguarded. `sin` and `cos` of a NaN are NaN, so every component came back
+// NaN and the promise was false for one of its two arguments.
+//
+// `IsUsableRotation` would have caught the result downstream, which is why nothing failed. That is
+// the difference between a defect and a crash, not between a defect and nothing: the header says
+// identity, and a caller that trusts it and skips the check gets four NaNs.
+TEST(FromAxisAngle, AnAngleThatIsNotAMeasurementGivesTheIdentity) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+  const Vec3 axis{0, 1, 0};
+
+  for (const double degenerate : {nan, infinity, -infinity}) {
+    const Quat q = FromAxisAngle(axis, degenerate);
+    EXPECT_EQ(q.w, 1.0) << "angle " << degenerate;
+    EXPECT_EQ(q.x, 0.0) << "angle " << degenerate;
+    EXPECT_EQ(q.y, 0.0) << "angle " << degenerate;
+    EXPECT_EQ(q.z, 0.0) << "angle " << degenerate;
+    EXPECT_TRUE(IsUsableRotation(q)) << "the identity is a rotation; angle " << degenerate;
+  }
+
+  // A finite angle still turns, so the guard is refusing the degenerate case rather than everything.
+  const Quat real = FromAxisAngle(axis, 1.0);
+  EXPECT_NE(real.w, 1.0);
+}
+
 TEST(FromAxisAngle, ProducesAUnitQuaternion) {
   EXPECT_NEAR(Norm(FromAxisAngle(Vec3{0, 0, 1}, 1.2)), 1.0, 1e-12);
 }
@@ -84,6 +113,33 @@ TEST(FromAxisAngle, ADegenerateAxisYieldsIdentityRatherThanNaN) {
   const Quat q = FromAxisAngle(Vec3{0, 0, 0}, 1.0);
   EXPECT_TRUE(std::isfinite(q.w));
   EXPECT_NEAR(Norm(q), 1.0, 1e-12);
+}
+
+/**
+ * An axis whose components are finite and whose *length* is not.
+ *
+ * The declaration promises identity for "a degenerate axis — zero, or one whose length is not
+ * finite", and only the first half had a test: deleting `!std::isfinite(length)` left the whole
+ * suite green. The two halves are not the same guard. A zero axis fails `length > 1e-12` and is
+ * caught by the other operand; an overflowing one passes it, divides by an infinity, and returns
+ * `{cos(half), 0, 0, 0}`.
+ *
+ * **What makes that worse than the usual degradation is that it is a rotation.** `Norm` is
+ * `|cos(half)|`, which for a 57-degree turn is 0.878 — comfortably past `IsUsableRotation`'s 1e-12,
+ * so a caller asking "was this measured?" is told yes, and `Normalize` then answers the identity.
+ * A caller that did everything right gets "straight ahead" where it asked for a turn. The
+ * implementation comment beside the guard reaches for a half turn as its example, where `cos(half)`
+ * is zero and the usability gate catches it; the ordinary angle is the dangerous one.
+ *
+ * Asserted on the norm rather than on the separation from identity, because the wrong answer
+ * *normalises* to the identity — a test comparing rotations cannot tell the two apart, and that is
+ * how this survived.
+ */
+TEST(FromAxisAngle, AnAxisWhoseLengthOverflowsYieldsIdentityRatherThanAShortenedQuaternion) {
+  const Quat q = FromAxisAngle(Vec3{1e200, 1e200, 0}, 1.0);
+  EXPECT_TRUE(std::isfinite(Norm(q)));
+  EXPECT_NEAR(Norm(q), 1.0, 1e-12) << "an axis of infinite length produced a sub-unit quaternion";
+  EXPECT_TRUE(IsUsableRotation(q));
 }
 
 TEST(Direction, PointsForwardForIdentity) {
@@ -257,8 +313,8 @@ TEST(Vec3Maths, NormalizeIsTotal) {
   // overflows and the length is an infinity that `length > 1e-12` waves through. Dividing by it
   // gives NaN wherever the component was itself infinite, and zero elsewhere — half a vector.
   // The `isfinite` half of the guard is what makes this the origin like every other degenerate
-  // input, and a reviewer found it had no test: dropping it left all 554 green, because
-  // `AngleBetweenDirections` catches both spellings one call later.
+  // input, and it had no test: dropping it left all 554 green, because `AngleBetweenDirections`
+  // catches both spellings one call later.
   const double inf = std::numeric_limits<double>::infinity();
   for (const Vec3 unusable : {Vec3{inf, 0, 0}, Vec3{1e300, 1e300, 1e300}, Vec3{-inf, inf, 0}}) {
     const Vec3 answered = Normalize(unusable);
@@ -298,7 +354,7 @@ TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinit
 // above catches, so no caller has ever seen a NaN angle from one.
 //
 // **This test cannot fail on either guard alone, and that is worth stating rather than fixing.**
-// A reviewer deleted `AngleBetweenDirections`'s degeneracy check and it stayed green, because
+// Delete `AngleBetweenDirections`'s degeneracy check and this stays green, because
 // `Normalize(Vec3)`'s own gate catches the same inputs one line earlier; delete that instead and
 // this guard catches them. Two independent holders of one guarantee, so no test can name which is
 // load-bearing here. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is the one that
@@ -377,12 +433,86 @@ TEST(RollBetween, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
   }
 }
 
-TEST(RollBetween, SaysNothingRatherThanNonsenseWhenLookingTheOppositeWay) {
-  // Roll about an axis is undefined once the two frames point opposite ways; reporting zero is
-  // the honest answer, and it keeps the number out of NaN territory.
+/**
+ * What `RollBetween` actually does at large separation, which is not what it used to claim.
+ *
+ * This test asserted `std::isfinite` and nothing else, under a comment saying roll is undefined at
+ * opposite directions and that zero is reported there. Both halves were false and the assertion
+ * could not see it: 180.0 is perfectly finite. A test whose only predicate is satisfied by every
+ * plausible wrong answer is not a test, and this one guarded the exact input its comment described.
+ *
+ * Pinned as measured, so the behaviour cannot drift unnoticed and so the declaration's new
+ * qualification has something executable under it. These are not assertions that the numbers are
+ * *right* — the declaration says at length that they are not — they are assertions that they are
+ * what they are until someone fixes the function on purpose.
+ */
+TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   const Quat target = FromAzimuthElevation(0.0, 0.0);
+
+  // Opposite directions: 180, not the zero the comment here used to promise, and responsive to the
+  // target's own roll rather than degenerate.
   const Quat away = FromAzimuthElevation(180.0, 0.0);
-  EXPECT_TRUE(std::isfinite(RollBetween(away, target)));
+  EXPECT_NEAR(RollBetween(away, target) * kDegPerRad, 180.0, 1e-6);
+
+  // Ninety degrees is where the projection actually collapses, and the zero lands there instead.
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(90.0, 0.0), target) * kDegPerRad, 0.0, 1e-6);
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(0.0, 90.0), target) * kDegPerRad, 0.0, 1e-6);
+
+  // And the discontinuity, which is the reason the declaration says "roughly the same direction":
+  // two degrees of aim either side of ninety, at identical roll, differ by half a turn.
+  const double justBelow = RollBetween(FromAzimuthElevation(89.0, 0.0), target) * kDegPerRad;
+  const double justAbove = RollBetween(FromAzimuthElevation(91.0, 0.0), target) * kDegPerRad;
+  EXPECT_NEAR(justBelow, 0.0, 1e-6);
+  EXPECT_NEAR(justAbove, 180.0, 1e-6);
+
+  // Near the target, where every caller asks it, it is well behaved — which is what bounds all of
+  // the above and is asserted here rather than assumed. Same construction as
+  // `MeasuresRotationAboutTheViewingAxisAndIsSigned`, at a separation instead of at zero.
+  const Quat nearby = FromAzimuthElevation(3.0, 0.0);
+  const Quat rolled = Multiply(FromAxisAngle(Direction(nearby), 10.0 / kDegPerRad), nearby);
+  EXPECT_NEAR(RollBetween(rolled, nearby) * kDegPerRad, 10.0, 1e-6);
+
+  // **The two signed figures the declaration publishes**, which it first published positive. They
+  // are negative, and the sign is the whole of what "signed and in (-pi, pi]" promises — so leaving
+  // them unasserted is what let the declaration be wrong about them. Rolled about
+  // `Direction`, the actual viewing axis, rather than about body +Z, which is its negative and is
+  // how the wrong sign was measured in the first place.
+  const Quat awayRolled =
+      Multiply(FromAxisAngle(Direction(away), 30.0 / kDegPerRad), away);
+  EXPECT_NEAR(RollBetween(target, awayRolled) * kDegPerRad, -150.0, 1e-6);
+
+  const Quat side = FromAzimuthElevation(90.0, 0.0);
+  const Quat sideRolled = Multiply(FromAxisAngle(Direction(side), 15.0 / kDegPerRad), side);
+  EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
+}
+
+/**
+ * The collapse guard, pinned by an input where removing it changes the answer.
+ *
+ * `IsOnlyMeaningfulWhileTheTwoLookTheSameWay` says two of its assertions pin "where the projection
+ * actually collapses", and they do not: the whole suite passes with the guard made unreachable.
+ * They were derived from the case in hand — a *level* phone at azimuth 90, where the unguarded
+ * `atan2(+0.0, +0.0)` is zero and agrees with the guarded answer by luck.
+ *
+ * The guard is not redundant. When it fires, `flattened` is `Normalize`'s zero-vector fallback, and
+ * `atan2(+0.0, -0.0)` is pi — so the sign of a zero decides between 0 and half a turn. Over
+ * 32,000,000 constructed collapse inputs the guard changes the answer 4,307,507 times.
+ *
+ * What was missing was a *rolled* current. Both arms below read zero as committed and ±180 with the
+ * guard unreachable, which is the difference the two arms in the other test cannot see.
+ */
+TEST(RollBetween, TheCollapseGuardDecidesBetweenZeroAndAHalfTurn) {
+  const Quat target = FromAzimuthElevation(0.0, 0.0);
+
+  const Quat side = FromAzimuthElevation(90.0, 0.0);
+  const Quat rolledSide = Multiply(FromAxisAngle(Direction(side), 45.0 / kDegPerRad), side);
+  EXPECT_NEAR(RollBetween(rolledSide, target) * kDegPerRad, 0.0, 1e-6)
+      << "without the collapse guard this is -180";
+
+  const Quat other = FromAzimuthElevation(-90.0, 0.0);
+  const Quat rolledOther = Multiply(FromAxisAngle(Direction(other), 180.0 / kDegPerRad), other);
+  EXPECT_NEAR(RollBetween(rolledOther, target) * kDegPerRad, 0.0, 1e-6)
+      << "without the collapse guard this is +180";
 }
 
 }  // namespace

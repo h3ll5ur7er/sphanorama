@@ -73,6 +73,22 @@ rather than a pixel: an unusable lens, a direction behind the camera, a radius p
 the distortion stops being invertible, an inverse that does not land back where it started
 (ADR 0046). Its iteration budget is a measured number, not a chosen one.
 
+**And the second half of `Refine` exists**, also as a utility rather than in the engine, because it
+needs quaternions where `EstimatePairwise` needs OpenCV: `utilities/rotation_averaging` takes
+relative rotations and per-frame priors and returns one consistent set of absolute rotations. The
+gauge is the whole difficulty in the other direction from the scorer's — the scorer removes a common
+rotation, this one has to *choose* it, and the priors are the only thing that can. What it buys is
+the closing edge a chain throws away: on a twelve-frame ring whose every edge is biased by the same
+0.2 degrees, chaining leaves the worst frame 1.100 degrees out and the same edges with the twelfth
+included leave it 0.000028, which is where the solver stops rather than the 0.0000024 it is heading
+for. A *uniform* drift, too, which is the one kind a loop closure removes exactly,
+so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
+and above an anchor weight of about a hundredth it is set by that weight rather than by the frame
+count; below it both matter and the budget runs out. `Refine` itself still refuses —
+`GlobalSolution::intrinsics` promises a refined lens and `PairwiseResult` carries a count of
+correspondences but not the matched points, so there is nothing to refine one from: a contract gap
+rather than a missing afternoon (ADR 0062).
+
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
 first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, asking
@@ -91,8 +107,12 @@ one common rotation and it is the same panorama, so a perfect reconstruction com
 reads as wrong by that angle on every frame at once. The gauge comes off first and the median is the
 number (ADR 0049). Two things it taught. Power iteration — the obvious way to find the alignment —
 exhausts a 200-iteration budget on 45.6% of wholly-unrelated inputs at sixty frames, which is the
-size a real sphere plans, while Jacobi takes four sweeps at every size; that is a measurement, and
-the first version of it was a rare tail stated as the norm until a reviewer re-ran it. And four of
+size a real sphere plans, while Jacobi typically takes four working sweeps and occasionally six; that
+is a measurement, and the first version of it was a rare tail stated as the norm until a reviewer
+re-ran it. The figures live with the eigensolver, which is `utilities/quaternion_average` since
+ADR 0062 moved it out of the scorer — this sentence went on naming the old address, and said "four
+sweeps at every size", which is the mode reported as the whole distribution and is the very error
+0049's banner exists to record. And four of
 its own tests were satisfied by their arrangement rather than by the behaviour — including a shared
 fixture that could be replaced with the identity rotation without failing anything — every one found
 by sabotage rather than by reading.
