@@ -27,7 +27,7 @@ bool IsUsableRotation(const Quat& q) {
   // is that the infinity does not have to arrive in a component. `Norm` squares before it sums, so
   // every component of `Quat{0, 1e200, 0, 0}` is finite and its norm is not.
   //
-  // A reviewer ran what that bought: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
+  // What that bought, run: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
   // real `Direction` is `(0,0,+1)`, `Normalize` answered `{0,0,0,0}`, and `Direction` of *that* is
   // `(0,0,-1)` — straight ahead. `OrientationPoseEngine::Integrate` anchored the pose at
   // confidence 1.0 on a direction 180 degrees from the sample it was given, after which

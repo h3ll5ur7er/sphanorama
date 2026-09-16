@@ -117,9 +117,9 @@ TEST(RotationScoring, TwoFramesSplitTheirRelativeErrorBetweenThem) {
 }
 
 // One frame off by itself, and the three statistics say three different things about it. The
-// assertions are against the *sorted per-frame values*, not against loose bounds: a reviewer
-// pointed out that the previous version could not tell the median from the minimum, since both are
-// small and both are under any threshold generous enough to pass.
+// assertions are against the *sorted per-frame values*, not against loose bounds: the previous
+// version could not tell the median from the minimum, since both are small and both are under any
+// threshold generous enough to pass.
 TEST(RotationScoring, OneFrameOffByItselfMovesTheMaxFarAndTheMedianOnlyALittle) {
   const std::vector<Quat> truth = ARing(9);
   std::vector<Quat> estimated = truth;
@@ -302,8 +302,8 @@ TEST(RotationScoring, ALargeGaugeIsRemovedJustAsCompletelyAsASmallOne) {
   ASSERT_TRUE(score.valid);
   // The answers here are known in closed form rather than approximately: seven frames are exact and
   // one is out by 2 degrees, so the gauge takes 2/8 of it and the seven inherit that while the
-  // eighth keeps the rest. Loose bounds were hiding that — a reviewer noted this was the least
-  // sensitive test that ought to have caught a wrong alignment.
+  // eighth keeps the rest. Loose bounds were hiding that, in the least sensitive test that ought to
+  // have caught a wrong alignment.
   std::vector<double> sorted = score.perFrameDeg;
   std::sort(sorted.begin(), sorted.end());
   for (size_t i = 0; i < 7; ++i) EXPECT_NEAR(sorted[i], 2.0 / 8.0, 1e-3) << "frame " << i;
@@ -339,9 +339,8 @@ TEST(RotationScoring, ThePerFrameErrorsComeBackInTheOrderTheFramesWereGiven) {
 // It was found the hard way. Every other test here perturbs the estimate on the *left*, and a
 // left-multiplied error cancels the frame out entirely: `Residual(g (x) t, t)` is
 // `t (x) conj(t) (x) conj(g)`, which is `conj(g)` whatever `t` was. So M came out rank one, the
-// eigensolver saw the same matrix regardless of the ring, and a reviewer proved the point by
-// replacing every frame in `ARing` with the identity — all fifteen tests still passed. The fixture
-// was decorative.
+// eigensolver saw the same matrix regardless of the ring. Replace every frame in `ARing` with the
+// identity and all fifteen tests still passed: the fixture was decorative.
 //
 // Right-multiplying puts the frame back in: `Residual(t (x) e, t)` is `t (x) conj(e) (x) conj(t)`,
 // which is the error seen from that frame's orientation and differs for every frame. This is the
@@ -416,8 +415,8 @@ TEST(RotationScoring, AnOrdinaryReconstructionsAlignmentIsUnique) {
 // A quaternion that is a rotation but not a unit one scores identically.
 //
 // **This test does not distinguish the two implementations of that**, and saying so is the point.
-// A reviewer read the per-frame loop as an overflow: `IsUsableRotation` admits norms up to
-// sqrt(DBL_MAX), so a product whose squares overflow would have `Normalize` substitute the identity
+// The per-frame loop reads as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), so
+// a product whose squares overflow would have `Normalize` substitute the identity
 // and measure against that. Not reachable — `Multiply` is exactly norm-multiplicative, so the gate
 // and the product overflow at the same threshold; 133,266 quaternions straddling it and 400,000 in
 // the small-norm band produced zero differences. Removing the explicit `Normalize` this test was

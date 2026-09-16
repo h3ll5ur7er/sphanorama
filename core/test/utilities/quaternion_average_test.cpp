@@ -242,6 +242,30 @@ TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
   ASSERT_TRUE(lopsided.valid);
   EXPECT_NEAR(SeparationDeg(lopsided.rotation, AboutY(ExpectedAngleDeg({0, 60}, {3, 1}))), 0.0,
               1e-9);
+
+  // **Everything above pins the scale and leaves the divisor's *rank* free**, which is the hole the
+  // `DBL_MAX` entry was written to close and does not. Eleven of the twelve cases pass two equal
+  // weights, where every candidate divisor — largest, total, smallest, first — is the same number;
+  // the twelfth holds the ratio at three, where they differ by a factor of at most four and nothing
+  // overflows either way. So dividing by the **smallest** non-zero weight, or by the **first**,
+  // survives this test and the whole suite.
+  //
+  // A ratio the width of the range is what separates them, because the divisor decides which end of
+  // the pair lands at one. Measured on `{1.0, 1e308}`: dividing by the largest gives entries of
+  // `{1e-308, 1}` and the right answer; dividing by the smallest gives `{1, 1e308}`, whose squared
+  // trace is an infinity, and the same silent collapse onto the first input — `valid` and `isUnique`
+  // both true, sixty degrees from where it belongs — that the fix above removed. The mirrored pair
+  // catches a "first non-zero" divisor at the other end.
+  //
+  // Not an exotic input: `AverageRotations(edges, anchors, 1e-6)` is in the shipped tests, and an
+  // anchor weight against raw inlier counts is a ratio of millions before anyone tries.
+  for (const std::vector<double>& ratio :
+       {std::vector<double>{1.0, 1e308}, std::vector<double>{1e-300, 1.0}}) {
+    const QuaternionAverage dominated = AverageQuaternions(pair, ratio);
+    ASSERT_TRUE(dominated.valid) << ratio[0] << " " << ratio[1];
+    EXPECT_NEAR(SeparationDeg(dominated.rotation, AboutY(60.0)), 0.0, 1e-9)
+        << "the heavier of " << ratio[0] << " and " << ratio[1] << " did not decide the answer";
+  }
 }
 
 /**
@@ -314,6 +338,22 @@ TEST(AverageQuaternions, ATenthOfADegreeShortOfAHalfTurnIsStillUnique) {
   ASSERT_TRUE(barely.valid);
   EXPECT_FALSE(barely.isUnique)
       << "a tie a few ulps wide is being read as a single maximiser";
+
+  // **The two arms above still leave eleven orders of magnitude free**, which is the correction this
+  // paragraph exists for. Bracketed is not the same as pinned: the near-tie sets the floor at 2e-14
+  // and the 179.9 arm sets the ceiling at its own 1.7e-3, so every value between — 1e-9, 1e-6, 1e-4,
+  // 1e-3 — passes the whole suite. At 1e-4 the constant is a general conditioning test, which is
+  // precisely what its declaration says it is not.
+  //
+  // This arm is the ceiling brought down to meet the floor. Relative gap is `sin(180 - sep)`, so a
+  // ten-millionth of a degree short of a half turn gives **1.745e-9** — measured, not derived, and
+  // the derivation is included only because it says which direction to move the literal. That leaves
+  // the constant free over [2e-14, 1.7e-9] rather than [2e-14, 1.7e-3]: still a range, and now one
+  // that contains no value at which the threshold would be doing a different job.
+  const std::vector<Quat> hairsbreadth{AboutY(0.0), AboutY(179.9999999)};
+  const QuaternionAverage sharp = AverageQuaternions(hairsbreadth, {});
+  ASSERT_TRUE(sharp.valid);
+  EXPECT_TRUE(sharp.isUnique) << "a relative eigenvalue gap of 1.7e-9 is being read as a tie";
 }
 
 // ----------------------------------------------------------------- refusals

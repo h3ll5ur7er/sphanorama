@@ -26,9 +26,9 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 // thousands of sweeps. Those two plateaus are the first and third steps above, which is the evidence
 // that the floor is what they are.
 //
-// A reviewer caught the floor itself stated at half its value — 8.5e-7 is `acos`, and `AngleBetween`
-// doubles it — in the same paragraph whose own measurements are the doubled figures. So 1e-5 degrees
-// is **5.9 times** the floor rather than the order of magnitude claimed here before.
+// The floor stood here at half its value for a while — 8.5e-7 is `acos`, and `AngleBetween` doubles
+// it — in the same paragraph whose own measurements are the doubled figures. So 1e-5 degrees is
+// **5.9 times** the floor rather than the order of magnitude once claimed.
 //
 // **And 5.9 times is close enough to the floor that the next decade down is not available**, which
 // is the measurement that pins this constant from below for the first time. At 1e-6 the largest
@@ -110,8 +110,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // that can disagree, and the disagreement would be invisible until an index went past one of them.
   //
   // Refused above `INT32_MAX` rather than cast, because the cast is where this stops being arithmetic
-  // and starts being undefined. A reviewer reproduced both ends of it on a `MAP_NORESERVE` mapping,
-  // which hands out a span of any length for no physical pages: at 2^31 frames the cast wraps to
+  // and starts being undefined. Both ends of it reproduce on a `MAP_NORESERVE` mapping, which hands
+  // out a span of any length for no physical pages: at 2^31 frames the cast wraps to
   // `INT32_MIN`, the `anchored` vector asks for 1.8e19 bytes and throws — and the core is built
   // `-fno-exceptions`, so that is a `std::terminate` rather than a refusal. At 2^32 + 3 it wraps to
   // 3 and answers `valid == true` over a silently truncated three-frame solve, with every edge naming
@@ -149,9 +149,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   //
   // Stated this way because the reason written here first — "an arbitrary gauge with `valid` true on
   // it" — is word for word the case this function *accepts* two paragraphs later, where
-  // `anchorWeight` is zero and the anchors place the frames without being believed. A reviewer put
-  // the two side by side. The difference is not how much the anchors are trusted; it is whether
-  // there is a frame to begin at.
+  // `anchorWeight` is zero and the anchors place the frames without being believed. Side by side,
+  // the difference is not how much the anchors are trusted; it is whether there is a frame to begin
+  // at.
   if (!anyAnchor) return out;
 
   // A weight of zero removes the edge from the solve without removing it from the caller's array
@@ -210,8 +210,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // **Accumulated across sweeps rather than cleared at the top of each**, and that is a correction
   // rather than the first instinct. This cleared, on the reading that what comes back should describe
   // the answer being returned; the comment beside it claimed the difference was untestable and that
-  // a transient ambiguity "has not been constructible". A reviewer constructed one in three lines —
-  // three frames, two believed edges a half turn apart, the middle frame unanchored — and it settles
+  // a transient ambiguity "has not been constructible". One takes three lines — three frames, two
+  // believed edges a half turn apart, the middle frame unanchored — and it settles
   // in three sweeps with the middle frame at the identity, exactly between two neighbours pointing
   // opposite ways. Cleared, it came back unnamed.
   //

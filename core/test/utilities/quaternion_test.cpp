@@ -115,6 +115,33 @@ TEST(FromAxisAngle, ADegenerateAxisYieldsIdentityRatherThanNaN) {
   EXPECT_NEAR(Norm(q), 1.0, 1e-12);
 }
 
+/**
+ * An axis whose components are finite and whose *length* is not.
+ *
+ * The declaration promises identity for "a degenerate axis — zero, or one whose length is not
+ * finite", and only the first half had a test: deleting `!std::isfinite(length)` left the whole
+ * suite green. The two halves are not the same guard. A zero axis fails `length > 1e-12` and is
+ * caught by the other operand; an overflowing one passes it, divides by an infinity, and returns
+ * `{cos(half), 0, 0, 0}`.
+ *
+ * **What makes that worse than the usual degradation is that it is a rotation.** `Norm` is
+ * `|cos(half)|`, which for a 57-degree turn is 0.878 — comfortably past `IsUsableRotation`'s 1e-12,
+ * so a caller asking "was this measured?" is told yes, and `Normalize` then answers the identity.
+ * A caller that did everything right gets "straight ahead" where it asked for a turn. The
+ * implementation comment beside the guard reaches for a half turn as its example, where `cos(half)`
+ * is zero and the usability gate catches it; the ordinary angle is the dangerous one.
+ *
+ * Asserted on the norm rather than on the separation from identity, because the wrong answer
+ * *normalises* to the identity — a test comparing rotations cannot tell the two apart, and that is
+ * how this survived.
+ */
+TEST(FromAxisAngle, AnAxisWhoseLengthOverflowsYieldsIdentityRatherThanAShortenedQuaternion) {
+  const Quat q = FromAxisAngle(Vec3{1e200, 1e200, 0}, 1.0);
+  EXPECT_TRUE(std::isfinite(Norm(q)));
+  EXPECT_NEAR(Norm(q), 1.0, 1e-12) << "an axis of infinite length produced a sub-unit quaternion";
+  EXPECT_TRUE(IsUsableRotation(q));
+}
+
 TEST(Direction, PointsForwardForIdentity) {
   const Vec3 forward = Direction(Quat{});
   EXPECT_NEAR(forward.x, 0.0, 1e-12);
@@ -286,8 +313,8 @@ TEST(Vec3Maths, NormalizeIsTotal) {
   // overflows and the length is an infinity that `length > 1e-12` waves through. Dividing by it
   // gives NaN wherever the component was itself infinite, and zero elsewhere — half a vector.
   // The `isfinite` half of the guard is what makes this the origin like every other degenerate
-  // input, and a reviewer found it had no test: dropping it left all 554 green, because
-  // `AngleBetweenDirections` catches both spellings one call later.
+  // input, and it had no test: dropping it left all 554 green, because `AngleBetweenDirections`
+  // catches both spellings one call later.
   const double inf = std::numeric_limits<double>::infinity();
   for (const Vec3 unusable : {Vec3{inf, 0, 0}, Vec3{1e300, 1e300, 1e300}, Vec3{-inf, inf, 0}}) {
     const Vec3 answered = Normalize(unusable);
@@ -327,7 +354,7 @@ TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinit
 // above catches, so no caller has ever seen a NaN angle from one.
 //
 // **This test cannot fail on either guard alone, and that is worth stating rather than fixing.**
-// A reviewer deleted `AngleBetweenDirections`'s degeneracy check and it stayed green, because
+// Delete `AngleBetweenDirections`'s degeneracy check and this stays green, because
 // `Normalize(Vec3)`'s own gate catches the same inputs one line earlier; delete that instead and
 // this guard catches them. Two independent holders of one guarantee, so no test can name which is
 // load-bearing here. `ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite` above is the one that

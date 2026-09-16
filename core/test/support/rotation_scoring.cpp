@@ -70,8 +70,8 @@ RotationScore ScoreRotations(const std::vector<Quat>& estimated, const std::vect
   out.perFrameDeg.reserve(estimated.size());
   double sum = 0;
   for (size_t i = 0; i < estimated.size(); ++i) {
-    // Normalised before the product, which `Residual` already does on the same value. A reviewer
-    // read this line as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), and a
+    // Normalised before the product, which `Residual` already does on the same value. This line
+    // reads as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), and a
     // product whose squares overflow would make `Normalize` substitute the identity and measure the
     // angle against that. It is not reachable — `Multiply` is exactly norm-multiplicative, so the
     // gate's own `Norm` and this product overflow at precisely the same threshold, and 133,266

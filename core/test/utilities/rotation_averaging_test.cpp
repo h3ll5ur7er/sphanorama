@@ -465,6 +465,22 @@ TEST(AverageRotations, AFrameWithNoAnchorAndNoEdgeIsNamedUnplaced) {
   for (size_t i = 0; i < truth.size(); ++i) {
     EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
   }
+
+  // **Frame zero unplaced, and two of them, so the list's promises are properties of the loop.**
+  // Every other unplaced fixture on this branch appends the frame nobody reached, so it is always at
+  // the highest index — which leaves a loop starting at 1, or running backwards, indistinguishable
+  // from the right one, and both of those passed the whole suite. The same hole was found and closed
+  // in `ambiguous` a round earlier; the two lists are built by copies of one loop and only one copy
+  // was fixed, which is the more useful half of this fixture's existence.
+  const std::vector<Quat> ends{Quat{0, 0, 0, 0}, AboutY(0.0), AboutY(30.0), Quat{0, 0, 0, 0}};
+  const std::vector<RelativeRotation> middle{
+      RelativeRotation{1, 2, TrueEdge(AboutY(0.0), AboutY(30.0)), 1.0},
+  };
+  const AveragedRotations bothEnds = AverageRotations(middle, ends, 0.01);
+  ASSERT_TRUE(bothEnds.valid);
+  ASSERT_EQ(bothEnds.unplaced.size(), 2u);
+  EXPECT_EQ(bothEnds.unplaced[0], 0) << "the list skips index zero";
+  EXPECT_EQ(bothEnds.unplaced[1], 3) << "the list is not ascending";
 }
 
 /**
@@ -714,7 +730,9 @@ TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
 
   const AveragedRotations partial = AverageRotations(stranded, anchors, 0.01);
   ASSERT_TRUE(partial.valid);
-  EXPECT_EQ(partial.unplaced.size(), 2u);
+  ASSERT_EQ(partial.unplaced.size(), 2u);
+  EXPECT_EQ(partial.unplaced[0], kFrames);
+  EXPECT_EQ(partial.unplaced[1], kFrames + 1) << "the list is not ascending";
   EXPECT_EQ(partial.edgesUsed, kFrames) << "the stranded edge was counted";
   EXPECT_NEAR(partial.maxEdgeErrorDeg, 0.0, 1e-9);
 
@@ -732,8 +750,8 @@ TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
  *
  * Every other case here leaves every edge equally satisfied — exactly, or by the same uniform bias —
  * so `medianEdgeErrorDeg` and `maxEdgeErrorDeg` carry the same number and returning the first
- * element, or the mean, or the maximum would satisfy all of them. A reviewer showed that
- * `errors.front()` passes the whole suite.
+ * element, or the mean, or the maximum would satisfy all of them: `errors.front()` passes the whole
+ * suite.
  *
  * Three edges with three different errors, and an even-count case beside it, because the even branch
  * averages the two middle values and is a second thing that can be wrong on its own.
@@ -845,19 +863,25 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   // **Two ambiguous frames, so "ascending" says something.** A list of one is sorted however it is
   // built, which made both of the header's promises about this field vacuous on every fixture the
   // branch had. Two disjoint components, each with its own unanchored middle frame.
+  //
+  // **And the second one is the last frame**, which closes the other end of the same loop. With the
+  // ambiguous frames at 1 and 4 of six, a bound of `i < frames - 1` reaches both and the fixture
+  // cannot tell it from the right one — the mirror image of the index-zero case above, and left open
+  // by the round that closed that one. Putting it at index 5 costs nothing and makes the upper bound
+  // load-bearing.
   const std::vector<Quat> twoPairs{AboutY(0.0),   Quat{0, 0, 0, 0}, AboutY(0.0),
-                                   AboutY(0.0),   Quat{0, 0, 0, 0}, AboutY(0.0)};
+                                   AboutY(0.0),   AboutY(0.0),      Quat{0, 0, 0, 0}};
   const Quat agreeing = TrueEdge(AboutY(0.0), AboutY(0.0));
   const Quat opposing = TrueEdge(AboutY(0.0), AboutY(180.0));
   const std::vector<RelativeRotation> both{
       RelativeRotation{0, 1, agreeing, 1.0}, RelativeRotation{2, 1, opposing, 1.0},
-      RelativeRotation{3, 4, agreeing, 1.0}, RelativeRotation{5, 4, opposing, 1.0},
+      RelativeRotation{3, 5, agreeing, 1.0}, RelativeRotation{4, 5, opposing, 1.0},
   };
   const AveragedRotations pair = AverageRotations(both, twoPairs, 1000.0);
   ASSERT_TRUE(pair.valid);
   ASSERT_EQ(pair.ambiguous.size(), 2u);
   EXPECT_EQ(pair.ambiguous[0], 1);
-  EXPECT_EQ(pair.ambiguous[1], 4) << "the list is not ascending";
+  EXPECT_EQ(pair.ambiguous[1], 5) << "the list is not ascending, or the loop stops one short";
 }
 
 /**
@@ -952,8 +976,8 @@ TEST(AverageRotations, NoFramesIsARefusal) {
  * More frames than an `int32_t` can name is a refusal, not a cast.
  *
  * `anchors.size()` is a `size_t` and the frame index is an `int32_t`, so the conversion between them
- * is where this stops being arithmetic. A reviewer reproduced both ends on a `MAP_NORESERVE`
- * mapping, which hands out a span of any length for no physical pages: at `2^31` the cast wraps
+ * is where this stops being arithmetic. Both ends reproduce on a `MAP_NORESERVE` mapping, which
+ * hands out a span of any length for no physical pages: at `2^31` the cast wraps
  * negative and the first allocation throws, which under `-fno-exceptions` is `std::terminate` rather
  * than a refusal; at `2^32 + 3` it wraps to 3 and answers `valid == true` over a silently truncated
  * solve whose `rotations` is not parallel to its `anchors`.
