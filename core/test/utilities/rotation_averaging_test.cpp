@@ -182,6 +182,11 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   // green and fails exactly one test — `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`, whose
   // `EXPECT_EQ(solved.sweeps, 1000)` is the only pin on that constant anywhere.
   //
+  // "Only pin on that constant" and not "pin on only that constant", which this sentence has since
+  // been read as meaning. It is a **joint** pin: loosening `kSettledDeg` to 5.6e-5 makes that same
+  // solve settle in 44 sweeps, so it stops running out of budget and both its assertions fail
+  // without `kMaxSweeps` moving at all. The census at `:377` carries the full table.
+  //
   // Worth the paragraph because the wrong version was load-bearing: it was the reason ADR 0062 named
   // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
   // strength of it would have been told the wrong test would catch them.
@@ -374,19 +379,25 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
   // with no stopping rule — "exact edges" bounds the problem and not the iteration.
   //
-  // **This measures `kSettledDeg` rather than the solver**, and it is one of **four** on the branch
-  // that do. Measured rather than counted by eye, by tightening the tolerance to 1.786e-6 and
-  // reading which assertions fire: `EXPECT_EQ(believed.sweeps, 590)` -> 742, `0.0000226` -> 8.62e-6,
-  // `0.0000278` -> 7.04e-6, and this one -> 4.67e-6. Nothing else in the suite moves.
+  // **This measures `kSettledDeg` rather than the solver**, and it is one of **seven** on the branch
+  // that do. A threshold is sensitive in both directions and the count depends on which way you
+  // push it, so all three figures are given rather than one:
   //
-  // The count stood at five, and before that at three. Five came from saying "the two the roadmap
-  // publishes" when the roadmap's pair is `1.100000` and `0.0000278` and only the second is a
-  // stopping-rule figure — `1.100000` is the *chained* answer, a drift measurement that survives
-  // any tolerance untouched. The fixed point `0.0000024` is not a fifth either: it is asserted
-  // nowhere, because reaching it needs the stopping rule switched off.
+  //   tightened to 1.786e-6  ->  four move:  `:188` 590->742, `:204` 2.26e-5->8.62e-6,
+  //                              `:278` 2.78e-5->7.04e-6, `:397` (this one) 2.86e-5->4.67e-6
+  //   loosened to 5.6e-5     ->  six:        those four, plus `:701` `EXPECT_FALSE(converged)` and
+  //                              `:702` `EXPECT_EQ(sweeps, 1000)` — that solve now settles in 44
+  //   loosened to 1e-4       ->  seven:      plus `:194` `after.medianDeg` 0.047665 -> 0.0476528
   //
-  // Three counts, three wrong, on a comment whose whole job is to say how many there are. What it
-  // took to get right was running the experiment instead of reading the file.
+  // **The count has now been wrong four times: three, five, four, and each for a different reason.**
+  // Three and five came from reading the file. Four came from *measuring* — and measuring in one
+  // direction only, which is the subtler failure and the one worth recording, because the
+  // experiment felt like the fix for the first two.
+  //
+  // Two consequences a reader should carry. `:194` was twice declared not a stopping-rule figure
+  // at all, on the strength of the tightening run; it is one, with a dead band wide enough to
+  // survive 5.6x either way. And `:701`/`:702` were called the only pin on `kMaxSweeps`; they are a
+  // *joint* pin on both constants, since loosening this one stops that solve running out of budget.
   //
   // The count matters because two earlier versions of this comment gave a smaller one, each time
   // after an audit that reached only the figures published *outside* the file. The failure message

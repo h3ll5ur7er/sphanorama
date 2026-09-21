@@ -142,6 +142,44 @@ TEST(FromAxisAngle, AnAxisWhoseLengthOverflowsYieldsIdentityRatherThanAShortened
   EXPECT_TRUE(IsUsableRotation(q));
 }
 
+/**
+ * The three exceptions the totality promise names, asserted rather than asserted *about*.
+ *
+ * `quaternion.h`'s opening paragraph says the functions answering a question about orientations are
+ * total, and then names three that are not: `Multiply`, which is algebra and answers the zero
+ * quaternion; `Conjugate`, which normalises first and so answers the *identity* — the paragraph's
+ * own example of a worse failure; and `Norm`, which propagates NaN and infinity because
+ * `IsUsableRotation` is built on exactly that.
+ *
+ * All three were named in a commit whose argument was that a published claim gets an assertion
+ * under it, and none of the three got one. The header is the specification and this is the copy
+ * that runs — if the two ever disagree, something here fails rather than a reader believing the
+ * wrong one.
+ */
+TEST(Quaternion, TheTotalityPromiseNamesThreeExceptionsAndTheyBehaveAsNamed) {
+  // `Multiply` is algebra: zero in, zero out. `IsUsableRotation` then refuses it, which is the
+  // whole reason this is the *safer* of the two possible behaviours.
+  const Quat zeroProduct = Multiply(Quat{0, 0, 0, 0}, Quat{});
+  EXPECT_EQ(zeroProduct.w, 0.0);
+  EXPECT_EQ(zeroProduct.x, 0.0);
+  EXPECT_EQ(zeroProduct.y, 0.0);
+  EXPECT_EQ(zeroProduct.z, 0.0);
+  EXPECT_FALSE(IsUsableRotation(zeroProduct)) << "the zero has to stay detectable downstream";
+
+  // `Conjugate` normalises first, so it answers the identity — and `IsUsableRotation` says yes to
+  // it. That is the substitution the header calls the worse failure, and it is pinned here so the
+  // carve-out cannot quietly stop being true.
+  const Quat conjugated = Conjugate(Quat{0, 0, 0, 0});
+  EXPECT_NEAR(Norm(conjugated), 1.0, 1e-12);
+  EXPECT_TRUE(IsUsableRotation(conjugated));
+  EXPECT_NEAR(AngleBetween(conjugated, Quat{}), 0.0, 1e-12) << "it is the identity, not the zero";
+
+  // `Norm` propagates. A `Norm` that answered zero for a NaN would break the predicate that catches
+  // the NaN, so this is correct rather than tolerated.
+  EXPECT_TRUE(std::isnan(Norm(Quat{std::numeric_limits<double>::quiet_NaN(), 0, 0, 0})));
+  EXPECT_TRUE(std::isinf(Norm(Quat{0, 1e200, 0, 0})));
+}
+
 TEST(Direction, PointsForwardForIdentity) {
   const Vec3 forward = Direction(Quat{});
   EXPECT_NEAR(forward.x, 0.0, 1e-12);
@@ -454,7 +492,11 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   const Quat away = FromAzimuthElevation(180.0, 0.0);
   EXPECT_NEAR(RollBetween(away, target) * kDegPerRad, 180.0, 1e-6);
 
-  // Ninety degrees is where the projection actually collapses, and the zero lands there instead.
+  // Ninety degrees of *azimuth* is where the projection collapses, and the zero lands there. The
+  // elevation arm reads zero for a different reason and this said they were the same: at elevation
+  // 90 `Dot(flattened, flattened)` is **1**, `flattened` is the honest `(1,0,0)`, and the guard is
+  // never reached. Two arms, two causes, one explanation covering both — the move the header
+  // confesses to about `Conjugate` a few lines into the same commit that wrote this.
   EXPECT_NEAR(RollBetween(FromAzimuthElevation(90.0, 0.0), target) * kDegPerRad, 0.0, 1e-6);
   EXPECT_NEAR(RollBetween(FromAzimuthElevation(0.0, 90.0), target) * kDegPerRad, 0.0, 1e-6);
 
@@ -481,6 +523,18 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
       Multiply(FromAxisAngle(Direction(away), 30.0 / kDegPerRad), away);
   EXPECT_NEAR(RollBetween(target, awayRolled) * kDegPerRad, -150.0, 1e-6);
 
+  //
+  // **The second of them is inert in its roll and the first is not**, which is worth stating beside
+  // them rather than leaving for the next reader to discover. Swept: the azimuth-90 arm reads
+  // exactly -90 for *every* roll in (0, 180) and +90 for every roll in (-180, 0), so `15.0` could
+  // be `3.0` or `179.0` and nothing moves — only the sign is load-bearing. At 90 degrees of
+  // separation the projection leaves exactly the ±Y component whatever the roll, which is the
+  // collapse the declaration describes three paragraphs above this figure. Its companion is
+  // genuinely responsive: 30 -> -150, 60 -> -120, 120 -> -60, 170 -> -10.
+  //
+  // Kept rather than replaced, because the figure it pins is one the declaration publishes and the
+  // sign is what was wrong about it. But an assertion that does not measure what it appears to
+  // measure is a trap for whoever edits it next, so it says so.
   const Quat side = FromAzimuthElevation(90.0, 0.0);
   const Quat sideRolled = Multiply(FromAxisAngle(Direction(side), 15.0 / kDegPerRad), side);
   EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
@@ -489,14 +543,17 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
 /**
  * The collapse guard, pinned by an input where removing it changes the answer.
  *
- * `IsOnlyMeaningfulWhileTheTwoLookTheSameWay` says two of its assertions pin "where the projection
- * actually collapses", and they do not: the whole suite passes with the guard made unreachable.
- * They were derived from the case in hand — a *level* phone at azimuth 90, where the unguarded
- * `atan2(+0.0, +0.0)` is zero and agrees with the guarded answer by luck.
+ * `IsOnlyMeaningfulWhileTheTwoLookTheSameWay` has an assertion claiming to pin "where the
+ * projection actually collapses", and it does not: the whole suite passes with the guard made
+ * unreachable. It was derived from the case in hand — a *level* phone at azimuth 90, where the
+ * unguarded `atan2` of two zeros is zero and agrees with the guarded answer by luck.
  *
- * The guard is not redundant. When it fires, `flattened` is `Normalize`'s zero-vector fallback, and
- * `atan2(+0.0, -0.0)` is pi — so the sign of a zero decides between 0 and half a turn. Over
- * 32,000,000 constructed collapse inputs the guard changes the answer 4,307,507 times.
+ * The guard is not redundant. When it fires, `flattened` is `Normalize`'s zero-vector fallback, so
+ * both `atan2` operands are signed zeros and the sign of `x` decides between 0 and half a turn.
+ * `x` is `-0.0` exactly when all three components of `here` are negative — over 2,000,000
+ * constructed collapses that predicate agrees with "the guard changed the answer" 100.000% of the
+ * time, at 12.548% against an analytic one in eight. Random orientations never reach it at all:
+ * 4,000,000 random pairs produce zero collapses, so the input has to be built.
  *
  * What was missing was a *rolled* current. Both arms below read zero as committed and ±180 with the
  * guard unreachable, which is the difference the two arms in the other test cannot see.

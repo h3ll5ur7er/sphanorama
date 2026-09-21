@@ -170,10 +170,20 @@ double RollBetween(const Quat& current, const Quat& target) {
   // **Not antipodal** — this said so, which was the third copy of a claim the declaration retracts
   // and the test disproves. It fires when the *target's +X axis* lands on the current viewing axis,
   // which is a fact about how the target is rolled and says nothing about whether roll is defined.
-  // Measured over 32,000,000 constructed collapse inputs it changes the answer 4,307,507 times,
-  // always between zero and ±180: without it `flattened` is `Normalize`'s zero fallback and
-  // `atan2(+0.0, -0.0)` is pi, so a current held at azimuth 90 and rolled 45 degrees reads -180
-  // where it should read 0.
+  //
+  // Without it `flattened` is `Normalize`'s zero-vector fallback, so both `atan2` operands are a
+  // signed zero and the sign of one decides between 0 and half a turn. `x` is
+  // `Dot(flattened, here)` — a sum of three products of `+0.0` with a component of `here` — so it
+  // is `-0.0` exactly when all three components of `here` are negative, and `atan2(y, -0.0)` is
+  // ±pi. **That predicate is the whole mechanism**: over 2,000,000 constructed collapses it agrees
+  // with "the guard changed the answer" 100.000% of the time, at a rate of 12.548% against an
+  // analytic one in eight.
+  //
+  // The figure here was "4,307,507 of 32,000,000", which recorded no construction and so could not
+  // be re-derived — and the natural reading of it is wrong, because a collapse is measure zero
+  // under random orientations: 4,000,000 random pairs produce **none**. It has to be built, by
+  // putting the target's +X axis exactly on the current viewing axis. A rate quoted without the
+  // construction that produced it is not a measurement anybody else can check.
   if (Dot(flattened, flattened) < 0.5) return 0.0;
   return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
 }
