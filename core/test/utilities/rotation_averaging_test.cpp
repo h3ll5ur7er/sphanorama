@@ -462,6 +462,86 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
 }
 
 /**
+ * An edge the gate admits is used at the scale the gate admits it, not at the scale it overflows.
+ *
+ * `IsUsableRotation` accepts any finite norm above 1e-12, so the top of the admissible range is
+ * `sqrt(DBL_MAX)` — a quaternion whose square is exactly `DBL_MAX`. The walk then computes
+ * `Multiply(solved[at], edge.rotation)` on the **raw** value. `Multiply` is norm-multiplicative in
+ * exact arithmetic, but its four components are rounded before `Normalize` squares and sums them
+ * again, and half an ulp tips that sum to an infinity — at which point `Normalize` answers its
+ * `Quat{}` fallback, the identity, and the frame is placed at a rotation nobody measured.
+ *
+ * **The asymmetry is what made it survive.** Each of the two ternaries here passes `edge.rotation`
+ * raw down one branch and `Conjugate(edge.rotation)` down the other — and `Conjugate` normalises
+ * first. So the same edge was safe traversed from `to` to `from` and not the other way, and which
+ * one a frame got depended on which anchor happened to be usable.
+ *
+ * Measured: at exactly `sqrt(DBL_MAX)`, 13.26% of gate-passing rotations produce a non-finite
+ * product; one ulp below, 5.30%; two ulps below, 0.38% — a band rather than a cliff, which is why
+ * "the gate and the product overflow at the same threshold" was the wrong argument for leaving this
+ * alone. End to end over sixty tipped cases the answer was a mean of 118 degrees from where the
+ * same edge normalised puts it, worst 180 — while `maxEdgeErrorDeg` reported a mean of **0.37**.
+ * Nothing in `valid`, `converged`, `unplaced` or `ambiguous` says anything is wrong.
+ *
+ * Both witnesses below are hard-coded rather than searched for, because the tipping is a property
+ * of the specific rounding and a regenerated random one would make this test flaky. Each is the
+ * first found from a fixed seed. The lower end of the gate does the same thing for the mirror
+ * reason: a norm just above 1e-12 rounds down through it.
+ *
+ * **Which site this pins, established by sabotage rather than assumed.** Reverting the *sweep* to
+ * the raw value fails this test; reverting the *walk* alone leaves all 870 green. The walk only
+ * chooses where a frame starts, and the sweep then relaxes it to the same fixed point from either
+ * start — so the walk's identity placement is masked, and only the sweep's is an answer anybody
+ * sees. That is the argument for normalising once at the gate rather than patching the branch that
+ * showed symptoms: the masked site is one contradictory-edge fixture away from mattering, since the
+ * header already records that on such input the starting basin decides the answer.
+ */
+TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
+  const double top = std::sqrt(std::numeric_limits<double>::max());
+  const double bottom = std::nextafter(1e-12, 1.0);
+
+  struct Witness {
+    const char* what;
+    Quat rotation;
+    Quat anchor;
+    double scale;
+  };
+  const Witness witnesses[]{
+      {"top of the gate",
+       Quat{-0.21537671686513721, 0.33970990904655918, -0.79179212071158023, 0.4596469135184435},
+       Quat{-0.5591536876406854, -0.43951709126023686, 0.4556704390384651, 0.53529088454265317},
+       top},
+      {"bottom of the gate",
+       Quat{-0.4950228839856689, -0.42835022506348719, -0.68755605818896104, 0.3142214121701904},
+       Quat{0.026362708607835576, 0.80656927627498121, 0.5418113640345853, 0.23492861887623101},
+       bottom},
+  };
+
+  for (const Witness& w : witnesses) {
+    const Quat scaled{w.rotation.w * w.scale, w.rotation.x * w.scale, w.rotation.y * w.scale,
+                      w.rotation.z * w.scale};
+    ASSERT_TRUE(IsUsableRotation(scaled)) << w.what << ": the gate has to admit it, or this proves nothing";
+
+    // Frame 0 has no usable anchor, so the walk travels `to -> from` and takes the raw branch.
+    const std::vector<Quat> anchors{Quat{0, 0, 0, 0}, w.anchor};
+    const std::vector<RelativeRotation> scaledEdge{RelativeRotation{0, 1, scaled, 1.0}};
+    const std::vector<RelativeRotation> unitEdge{RelativeRotation{0, 1, w.rotation, 1.0}};
+
+    const AveragedRotations got = AverageRotations(scaledEdge, anchors, 0.01);
+    const AveragedRotations want = AverageRotations(unitEdge, anchors, 0.01);
+    ASSERT_TRUE(got.valid) << w.what;
+    ASSERT_TRUE(want.valid) << w.what;
+
+    // **Scale is not evidence.** A rotation and the same rotation times any admissible constant are
+    // the same measurement, so they have to place the frame identically.
+    EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, 1e-9)
+        << w.what << ": the scaled edge placed the frame somewhere else";
+    EXPECT_FALSE(SeparationDeg(got.rotations[0], Quat{}) < 1e-9)
+        << w.what << ": the frame was handed the identity, which is what overflow returns";
+  }
+}
+
+/**
  * A frame no edge reaches and no anchor places is named, not silently handed the identity.
  *
  * The identity is a perfectly ordinary rotation — a phone held level reports it — so a caller

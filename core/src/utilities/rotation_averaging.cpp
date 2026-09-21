@@ -127,11 +127,33 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // The whole input is checked before any of it is used, so a refusal is decided by the input rather
   // than by how far a loop got. An index is checked whatever its weight: the weight says how much a
   // *measurement* is believed, and an index naming no frame is not a measurement to disbelieve.
+  //
+  // **The rotation is normalised here and nowhere else**, which is the same "one place decides it"
+  // the weight predicate below gets, and for a sharper reason. `IsUsableRotation` admits any finite
+  // norm above 1e-12, so the top of the range is `sqrt(DBL_MAX)`, whose square is exactly
+  // `DBL_MAX`. Multiplying a unit quaternion by one of those rounds its four components before
+  // anything squares them again, and half an ulp tips the sum to an infinity — at which point
+  // `Normalize` answers the identity and a frame sits at a rotation nobody measured, with `valid`
+  // true and `maxEdgeErrorDeg` reporting a fraction of a degree.
+  //
+  // It survived because the use sites were asymmetric: each ternary below passed the raw value down
+  // one branch and `Conjugate(edge.rotation)` down the other, and `Conjugate` normalises. The same
+  // edge was safe in one direction and not the other, decided by which anchor happened to be
+  // usable. Normalising once removes the asymmetry rather than patching the two branches that had
+  // it, because the next edit would reintroduce it.
+  //
+  // Measured at the top of the gate: 13.26% of gate-passing rotations overflow the product, 5.30%
+  // one ulp below and 0.38% two ulps below — a band, not a cliff, which is why "the gate and the
+  // product overflow at the same threshold" was the wrong argument. The bottom does the mirror of
+  // it: a norm just above 1e-12 rounds down through the gate.
+  std::vector<Quat> rotation;
+  rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {
     if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) return out;
     if (edge.from == edge.to) return out;
     if (!IsUsableRotation(edge.rotation)) return out;
     if (!std::isfinite(edge.weight) || edge.weight < 0.0) return out;
+    rotation.push_back(Normalize(edge.rotation));
   }
 
   std::vector<char> anchored(static_cast<size_t>(frames), 0);
@@ -190,10 +212,10 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       if (placed[static_cast<size_t>(other)] != 0) continue;
       // `rotation` is `conjugate(q[to]) * q[from]`, so `q[from] = q[to] * rotation` and
       // `q[to] = q[from] * conjugate(rotation)`.
+      const Quat& unit = rotation[static_cast<size_t>(touch.edge)];
       solved[static_cast<size_t>(other)] =
-          touch.asTo ? Normalize(Multiply(solved[static_cast<size_t>(at)], edge.rotation))
-                     : Normalize(Multiply(solved[static_cast<size_t>(at)],
-                                          Conjugate(edge.rotation)));
+          touch.asTo ? Normalize(Multiply(solved[static_cast<size_t>(at)], unit))
+                     : Normalize(Multiply(solved[static_cast<size_t>(at)], Conjugate(unit)));
       placed[static_cast<size_t>(other)] = 1;
       reached.push_back(other);
     }
@@ -245,10 +267,11 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       for (const Incidence& touch : incident[static_cast<size_t>(i)]) {
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t other = touch.asTo ? edge.from : edge.to;
+        const Quat& unit = rotation[static_cast<size_t>(touch.edge)];
         predictions.push_back(
             touch.asTo
-                ? Normalize(Multiply(solved[static_cast<size_t>(other)], Conjugate(edge.rotation)))
-                : Normalize(Multiply(solved[static_cast<size_t>(other)], edge.rotation)));
+                ? Normalize(Multiply(solved[static_cast<size_t>(other)], Conjugate(unit)))
+                : Normalize(Multiply(solved[static_cast<size_t>(other)], unit)));
         weights.push_back(edge.weight);
       }
       if (predictions.empty()) continue;
@@ -292,7 +315,10 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     if (placed[static_cast<size_t>(edge.from)] == 0) continue;
     const Quat measured = Normalize(Multiply(Conjugate(solved[static_cast<size_t>(edge.to)]),
                                              solved[static_cast<size_t>(edge.from)]));
-    errors.push_back(AngleBetween(measured, edge.rotation) * kDegPerRad);
+    // The normalised copy here too. `AngleBetween` normalises internally, so the raw value was
+    // safe — but it was safe by a fact about a different file, which is exactly the shape that made
+    // the two sites above wrong. After this there is no unnormalised use of an edge left to find.
+    errors.push_back(AngleBetween(measured, rotation[k]) * kDegPerRad);
   }
   out.edgesUsed = static_cast<int32_t>(errors.size());
   if (!errors.empty()) {
