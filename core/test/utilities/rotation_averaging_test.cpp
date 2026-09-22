@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -185,7 +186,7 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   // "Only pin on that constant" and not "pin on only that constant", which this sentence has since
   // been read as meaning. It is a **joint** pin: loosening `kSettledDeg` to 5.6e-5 makes that same
   // solve settle in 44 sweeps, so it stops running out of budget and both its assertions fail
-  // without `kMaxSweeps` moving at all. The census at `:377` carries the full table.
+  // without `kMaxSweeps` moving at all. The census beside `score.medianDeg` carries the full table.
   //
   // Worth the paragraph because the wrong version was load-bearing: it was the reason ADR 0062 named
   // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
@@ -383,21 +384,31 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that do. A threshold is sensitive in both directions and the count depends on which way you
   // push it, so all three figures are given rather than one:
   //
-  //   tightened to 1.786e-6  ->  four move:  `:188` 590->742, `:204` 2.26e-5->8.62e-6,
-  //                              `:278` 2.78e-5->7.04e-6, `:397` (this one) 2.86e-5->4.67e-6
-  //   loosened to 5.6e-5     ->  six:        those four, plus `:701` `EXPECT_FALSE(converged)` and
-  //                              `:702` `EXPECT_EQ(sweeps, 1000)` — that solve now settles in 44
-  //   loosened to 1e-4       ->  seven:      plus `:194` `after.medianDeg` 0.047665 -> 0.0476528
+  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 742,
+  //                              `trusted.medianDeg 0.0000226` -> 8.62e-6,
+  //                              `recovered.maxDeg 0.0000278` -> 7.04e-6,
+  //                              `score.medianDeg 0.0000286` (this one) -> 4.67e-6
+  //   loosened to 5.6e-5     ->  six:        those four, plus `EXPECT_FALSE(solved.converged)` and
+  //                              `EXPECT_EQ(solved.sweeps, 1000)` in
+  //                              `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers` — it now settles in 44
+  //   loosened to 1e-4       ->  seven:      plus `after.medianDeg 0.047665` -> 0.0476528
+  //
+  // Named by assertion rather than by line, which is a correction: the first version of this table
+  // gave eight line numbers and every one was wrong on the commit that wrote it, because the same
+  // commit inserted a paragraph above them and the table was not renumbered after its own edit. The
+  // engineering skill bans locating by distance for exactly this reason; a line number is a
+  // distance from the top of the file.
   //
   // **The count has now been wrong four times: three, five, four, and each for a different reason.**
   // Three and five came from reading the file. Four came from *measuring* — and measuring in one
   // direction only, which is the subtler failure and the one worth recording, because the
   // experiment felt like the fix for the first two.
   //
-  // Two consequences a reader should carry. `:194` was twice declared not a stopping-rule figure
-  // at all, on the strength of the tightening run; it is one, with a dead band wide enough to
-  // survive 5.6x either way. And `:701`/`:702` were called the only pin on `kMaxSweeps`; they are a
-  // *joint* pin on both constants, since loosening this one stops that solve running out of budget.
+  // Two consequences a reader should carry. `after.medianDeg` was twice declared not a
+  // stopping-rule figure at all, on the strength of the tightening run; it is one, with a dead band
+  // wide enough to survive 5.6x either way. And the run-out-of-sweeps pair were called the only pin
+  // on `kMaxSweeps`; they are a *joint* pin on both constants, since loosening this one stops that
+  // solve running out of budget.
   //
   // The count matters because two earlier versions of this comment gave a smaller one, each time
   // after an audit that reached only the figures published *outside* the file. The failure message
@@ -476,79 +487,140 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
  * An edge the gate admits is used at the scale the gate admits it, not at the scale it overflows.
  *
  * `IsUsableRotation` accepts any finite norm above 1e-12, so the top of the admissible range is
- * `sqrt(DBL_MAX)` — a quaternion whose square is exactly `DBL_MAX`. The walk then computes
- * `Multiply(solved[at], edge.rotation)` on the **raw** value. `Multiply` is norm-multiplicative in
- * exact arithmetic, but its four components are rounded before `Normalize` squares and sums them
- * again, and half an ulp tips that sum to an infinity — at which point `Normalize` answers its
- * `Quat{}` fallback, the identity, and the frame is placed at a rotation nobody measured.
+ * `sqrt(DBL_MAX)` — a quaternion whose square is exactly `DBL_MAX`. Multiplying a unit quaternion by
+ * one rounds four components before `Normalize` squares and sums them again, and half an ulp tips
+ * that sum to an infinity — at which point `Normalize` answers its `Quat{}` fallback, the identity,
+ * and the frame is placed at a rotation nobody measured. The bottom of the gate does the mirror:
+ * a norm just above 1e-12 rounds down through it.
  *
- * **The asymmetry is what made it survive.** Each of the two ternaries here passes `edge.rotation`
- * raw down one branch and `Conjugate(edge.rotation)` down the other — and `Conjugate` normalises
- * first. So the same edge was safe traversed from `to` to `from` and not the other way, and which
- * one a frame got depended on which anchor happened to be usable.
+ * **The asymmetry is what made it survive.** Each of the two ternaries in the solver passed
+ * `edge.rotation` raw down one branch and `Conjugate(edge.rotation)` down the other, and
+ * `Conjugate` normalises first. The same edge was safe traversed one way and not the other.
  *
- * Measured: at exactly `sqrt(DBL_MAX)`, 13.26% of gate-passing rotations produce a non-finite
+ * Measured at exactly `sqrt(DBL_MAX)`: 13.26% of gate-passing rotations produce a non-finite
  * product; one ulp below, 5.30%; two ulps below, 0.38% — a band rather than a cliff, which is why
- * "the gate and the product overflow at the same threshold" was the wrong argument for leaving this
- * alone. End to end over sixty tipped cases the answer was a mean of 118 degrees from where the
- * same edge normalised puts it, worst 180 — while `maxEdgeErrorDeg` reported a mean of **0.37**.
- * Nothing in `valid`, `converged`, `unplaced` or `ambiguous` says anything is wrong.
+ * "the gate and the product overflow at the same threshold" was the wrong argument. End to end over
+ * sixty tipped cases the answer was a mean of 118 degrees from where the same edge normalised puts
+ * it, worst 180 — while `maxEdgeErrorDeg` reported a mean of **0.37**.
  *
- * Both witnesses below are hard-coded rather than searched for, because the tipping is a property
- * of the specific rounding and a regenerated random one would make this test flaky. Each is the
- * first found from a fixed seed. The lower end of the gate does the same thing for the mirror
- * reason: a norm just above 1e-12 rounds down through it.
+ * **The witnesses are found at run time, not hard-coded, because the tipping is a property of the
+ * build.** The first version of this test carried two hand-copied quaternions from a fixed seed,
+ * and under FMA contraction (`-mfma -ffp-contract=fast`, or Clang's *default* on every aarch64
+ * build) `Norm` fuses its four products, the bottom witness's norm rounds to exactly 1e-12, the gate
+ * refuses it, and the test went red on **correct** code. Worse, it only ever asserted half its
+ * premise — that the gate admits the witness — and never that the raw product actually tips, so a
+ * witness that stopped tipping would have left the test green on the broken code. Both halves are
+ * asserted now: the search below walks a seeded pool of (edge, anchor) pairs and a few thousand ulps
+ * of scale until the gate says yes *and* the raw product fails, and refuses to proceed if no such
+ * pair exists on this build. Under FMA about 18% of pairs tip at the bottom within 4096 ulps, so a
+ * pool of a few dozen always finds one.
  *
- * **Which site this pins, established by sabotage rather than assumed.** Reverting the *sweep* to
- * the raw value fails this test; reverting the *walk* alone leaves all 870 green. The walk only
- * chooses where a frame starts, and the sweep then relaxes it to the same fixed point from either
- * start — so the walk's identity placement is masked, and only the sweep's is an answer anybody
- * sees. That is the argument for normalising once at the gate rather than patching the branch that
- * showed symptoms: the masked site is one contradictory-edge fixture away from mattering, since the
- * header already records that on such input the starting basin decides the answer.
+ * **Which site each witness pins, established by sabotage rather than assumed.** On a consistent
+ * two-frame graph the walk only chooses where a frame starts and the sweep relaxes it to the same
+ * fixed point either way — so reverting the *walk* alone left the whole suite green, and this
+ * docblock once said so as if it were a property of the code. It was a property of the fixtures.
+ * The third witness is a **contradictory** triangle — three edges that cannot all be satisfied, one
+ * of them at the top of the gate — where the starting basin decides the answer: under a walk-only
+ * revert frames 1 and 2 land **120 degrees** from where the normalised edge puts them, both solves
+ * converged, `ambiguous` empty, `maxEdgeErrorDeg` 76.6 against 43.4. Now all three sites are pinned.
  */
 TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
-  const double top = std::sqrt(std::numeric_limits<double>::max());
-  const double bottom = std::nextafter(1e-12, 1.0);
+  // A pool of unit (edge, anchor) pairs from a fixed seed, the same on every run and every build.
+  std::mt19937_64 rng(0x5eed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  const auto randomUnit = [&] { return Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)}); };
+  std::vector<std::pair<Quat, Quat>> pool;
+  for (int i = 0; i < 64; ++i) pool.emplace_back(randomUnit(), randomUnit());
 
-  struct Witness {
-    const char* what;
-    Quat rotation;
-    Quat anchor;
-    double scale;
+  // Walk the scale from the gate's edge until both halves of the premise hold: the gate admits the
+  // scaled edge, and the raw product with the anchor tips. Returns the scale, or NaN if this build
+  // never tips for this pair within the budget.
+  const auto tippingScale = [](const Quat& edge, const Quat& anchor, double start, bool top) {
+    double scale = start;
+    for (int step = 0; step < 4096; ++step) {
+      const Quat scaled{edge.w * scale, edge.x * scale, edge.y * scale, edge.z * scale};
+      if (IsUsableRotation(scaled)) {
+        const double norm = Norm(Multiply(anchor, scaled));
+        if (top ? !std::isfinite(norm) : !(norm > 1e-12)) return scale;
+      }
+      scale = top ? std::nextafter(scale, 0.0) : std::nextafter(scale, 1.0);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
   };
-  const Witness witnesses[]{
-      {"top of the gate",
-       Quat{-0.21537671686513721, 0.33970990904655918, -0.79179212071158023, 0.4596469135184435},
-       Quat{-0.5591536876406854, -0.43951709126023686, 0.4556704390384651, 0.53529088454265317},
-       top},
-      {"bottom of the gate",
-       Quat{-0.4950228839856689, -0.42835022506348719, -0.68755605818896104, 0.3142214121701904},
-       Quat{0.026362708607835576, 0.80656927627498121, 0.5418113640345853, 0.23492861887623101},
-       bottom},
-  };
+
+  struct Witness { const char* what; Quat rotation; Quat anchor; double scale; };
+  std::vector<Witness> witnesses;
+  for (const bool top : {true, false}) {
+    const double start = top ? std::sqrt(std::numeric_limits<double>::max()) : 1e-12;
+    for (const auto& [edge, anchor] : pool) {
+      const double scale = tippingScale(edge, anchor, start, top);
+      if (!std::isnan(scale)) {
+        witnesses.push_back({top ? "top of the gate" : "bottom of the gate", edge, anchor, scale});
+        break;
+      }
+    }
+  }
+  ASSERT_EQ(witnesses.size(), 2u)
+      << "no (edge, anchor) pair in the pool tips on this build — the test cannot see the defect here";
 
   for (const Witness& w : witnesses) {
     const Quat scaled{w.rotation.w * w.scale, w.rotation.x * w.scale, w.rotation.y * w.scale,
                       w.rotation.z * w.scale};
-    ASSERT_TRUE(IsUsableRotation(scaled)) << w.what << ": the gate has to admit it, or this proves nothing";
+    // Both halves of the premise, asserted rather than assumed: admitted, and tipping raw.
+    ASSERT_TRUE(IsUsableRotation(scaled)) << w.what;
+    const double rawNorm = Norm(Multiply(w.anchor, scaled));
+    ASSERT_TRUE(w.scale > 1.0 ? !std::isfinite(rawNorm) : !(rawNorm > 1e-12))
+        << w.what << ": the raw product did not tip, so the arm below cannot distinguish anything";
 
-    // Frame 0 has no usable anchor, so the walk travels `to -> from` and takes the raw branch.
+    // Frame 0 has no usable anchor, so the walk travels `to -> from` and the sweep re-reads the edge.
     const std::vector<Quat> anchors{Quat{0, 0, 0, 0}, w.anchor};
     const std::vector<RelativeRotation> scaledEdge{RelativeRotation{0, 1, scaled, 1.0}};
     const std::vector<RelativeRotation> unitEdge{RelativeRotation{0, 1, w.rotation, 1.0}};
-
     const AveragedRotations got = AverageRotations(scaledEdge, anchors, 0.01);
     const AveragedRotations want = AverageRotations(unitEdge, anchors, 0.01);
     ASSERT_TRUE(got.valid) << w.what;
     ASSERT_TRUE(want.valid) << w.what;
 
     // **Scale is not evidence.** A rotation and the same rotation times any admissible constant are
-    // the same measurement, so they have to place the frame identically.
+    // the same measurement, so they have to place the frame identically. This single assertion is
+    // what pins both witnesses; an earlier "was not handed the identity" arm beside it was implied by
+    // this one whenever this one passed, and under the revert fired for only one witness, because
+    // a frame the walk parks at the identity can still be relaxed *off* it by the sweep.
     EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, 1e-9)
         << w.what << ": the scaled edge placed the frame somewhere else";
-    EXPECT_FALSE(SeparationDeg(got.rotations[0], Quat{}) < 1e-9)
-        << w.what << ": the frame was handed the identity, which is what overflow returns";
+  }
+
+  // **The contradictory triangle, which is the only shape that can see the walk site.** Frame 0 is
+  // anchored and is `to` on both edges that touch it, so the walk places 1 and 2 through the branch
+  // that once read the raw value; the three edges disagree, so which basin the sweep relaxes into
+  // is decided by where the walk started it. Quaternions found by a seeded search for a triangle
+  // whose scaled edge tips *and* whose basins differ under the walk-only revert, then hard-coded —
+  // this one does not need to tip on every build to be worth having, because on a build where it
+  // does not tip the two solves trivially agree and the arm is simply inert rather than wrong.
+  {
+    const double top = std::sqrt(std::numeric_limits<double>::max());
+    const Quat A{0.43878364022034455, 0.68063647960042006, -0.3101546627047056, 0.49800299689325211};
+    const Quat r10{-0.23944522930708118, 0.12455265009765085, 0.7831054172279619, -0.56026647679827424};
+    const Quat r20{-0.28727398563401113, -0.19952800768733256, -0.1521751301939713, -0.92439437529483148};
+    const Quat r21{0.19940249302043805, 0.28420178869418866, 0.40918182963451877, -0.84382357123820939};
+    const Quat r20Scaled{r20.w * top, r20.x * top, r20.y * top, r20.z * top};
+    ASSERT_TRUE(IsUsableRotation(r20Scaled));
+
+    const std::vector<Quat> anchors{A, Quat{0, 0, 0, 0}, Quat{0, 0, 0, 0}};
+    const std::vector<RelativeRotation> scaled{
+        RelativeRotation{1, 0, r10, 1.0}, RelativeRotation{2, 0, r20Scaled, 1.0},
+        RelativeRotation{2, 1, r21, 1.0}};
+    const std::vector<RelativeRotation> unit{
+        RelativeRotation{1, 0, r10, 1.0}, RelativeRotation{2, 0, r20, 1.0},
+        RelativeRotation{2, 1, r21, 1.0}};
+    const AveragedRotations got = AverageRotations(scaled, anchors, 1000.0);
+    const AveragedRotations want = AverageRotations(unit, anchors, 1000.0);
+    ASSERT_TRUE(got.valid);
+    ASSERT_TRUE(want.valid);
+    for (size_t i = 0; i < 3; ++i) {
+      EXPECT_NEAR(SeparationDeg(got.rotations[i], want.rotations[i]), 0.0, 1e-9)
+          << "frame " << i << ": the walk placed it in the wrong basin from a raw product";
+    }
   }
 }
 

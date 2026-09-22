@@ -170,9 +170,17 @@ TEST(Quaternion, TheTotalityPromiseNamesThreeExceptionsAndTheyBehaveAsNamed) {
   // it. That is the substitution the header calls the worse failure, and it is pinned here so the
   // carve-out cannot quietly stop being true.
   const Quat conjugated = Conjugate(Quat{0, 0, 0, 0});
-  EXPECT_NEAR(Norm(conjugated), 1.0, 1e-12);
+  EXPECT_NEAR(Norm(conjugated), 1.0, 1e-12) << "it is the identity, not the zero";
   EXPECT_TRUE(IsUsableRotation(conjugated));
-  EXPECT_NEAR(AngleBetween(conjugated, Quat{}), 0.0, 1e-12) << "it is the identity, not the zero";
+  // `Quat{}` by name — `w == 1` exactly — and not merely some representative of the identity
+  // rotation. An `AngleBetween(conjugated, Quat{})` arm stood here captioned "not the zero", and it
+  // was the one arm of the three that could not tell: `AngleBetween` normalises both inputs and
+  // `Normalize(Quat{0,0,0,0})` *is* `Quat{}`, so the zero, `{-1,0,0,0}` and `{2,0,0,0}` all read as
+  // zero degrees from it. The `Norm` arm above is what catches the zero; this one catches a sign.
+  EXPECT_EQ(conjugated.w, 1.0);
+  EXPECT_EQ(conjugated.x, 0.0);
+  EXPECT_EQ(conjugated.y, 0.0);
+  EXPECT_EQ(conjugated.z, 0.0);
 
   // `Norm` propagates. A `Norm` that answered zero for a NaN would break the predicate that catches
   // the NaN, so this is correct rather than tolerated.
@@ -538,6 +546,11 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   const Quat side = FromAzimuthElevation(90.0, 0.0);
   const Quat sideRolled = Multiply(FromAxisAngle(Direction(side), 15.0 / kDegPerRad), side);
   EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
+  // And the same at a roll eleven times larger, so "the roll is not in the answer" is asserted
+  // rather than only stated: two rolls reading the same -90 is the collapse, in executable form.
+  const Quat sideRolledFar = Multiply(FromAxisAngle(Direction(side), 170.0 / kDegPerRad), side);
+  EXPECT_NEAR(RollBetween(target, sideRolledFar) * kDegPerRad, -90.0, 1e-6)
+      << "at ninety degrees of separation the roll is not in the answer";
 }
 
 /**
