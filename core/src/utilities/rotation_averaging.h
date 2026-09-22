@@ -42,7 +42,8 @@ struct RelativeRotation {
   // never written is *refused* instead of answered as a full-weight claim that its two frames share
   // an orientation. The identity is the right default for a value that has to be some rotation; it
   // is the wrong one for a measurement, where "nobody wrote this" has to stay distinguishable from
-  // "these two agree exactly".
+  // "these two agree exactly". Zero is one refused value among many — NaN, or any norm under 1e-12,
+  // would serve — and the zero is chosen because it is the one a reader can see is not a rotation.
   //
   // Both ways of forgetting the field reach this default. Field-by-field assignment obviously does.
   // Aggregate initialisation does too, and this comment first said the opposite — that the build

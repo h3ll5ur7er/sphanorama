@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/same_rotation.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama::test {
@@ -46,9 +47,9 @@ TEST(RotationScoring, TruthScoredAgainstItselfIsZeroEverywhere) {
 
   ASSERT_TRUE(score.valid);
   ASSERT_EQ(score.perFrameDeg.size(), truth.size());
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(score.medianDeg, 0.0, 1e-9);
-  EXPECT_NEAR(score.maxDeg, 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(score.medianDeg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(score.maxDeg, 0.0, kSameRotationDeg);
 }
 
 // The reason this file exists. Every frame is wrong by the same 30 degrees and the reconstruction
@@ -62,8 +63,8 @@ TEST(RotationScoring, AWholeReconstructionTurnedByOneRotationScoresZero) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, kSameRotationDeg);
 }
 
 // The previous test proves nothing unless the un-quotiented comparison would have failed it. This
@@ -85,7 +86,7 @@ TEST(RotationScoring, WithoutTheGaugeThatSameReconstructionWouldReadAsWrongOnEve
   // makes the gauge test mean something.
   const RotationScore score = ScoreRotations(estimated, truth);
   ASSERT_TRUE(score.valid);
-  EXPECT_NEAR(score.maxDeg, 0.0, 1e-9);
+  EXPECT_NEAR(score.maxDeg, 0.0, kSameRotationDeg);
 }
 
 // With one pair there is always a gauge that lands the estimate exactly on the truth, so nothing
@@ -98,7 +99,7 @@ TEST(RotationScoring, ASingleFrameAlwaysScoresZeroBecauseTheGaugeAbsorbsAllOfIt)
 
   ASSERT_TRUE(score.valid);
   ASSERT_EQ(score.perFrameDeg.size(), 1u);
-  EXPECT_NEAR(score.perFrameDeg[0], 0.0, 1e-9);
+  EXPECT_NEAR(score.perFrameDeg[0], 0.0, kSameRotationDeg);
 }
 
 // Two frames pin down exactly one thing: how they sit relative to each other. The gauge takes the
@@ -167,8 +168,8 @@ TEST(RotationScoring, NegatingHalfTheQuaternionsChangesNothing) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, kSameRotationDeg);
 
   // And in the truth set too, which is a different code path into the same residual.
   std::vector<Quat> negatedTruth = truth;
@@ -177,7 +178,7 @@ TEST(RotationScoring, NegatingHalfTheQuaternionsChangesNothing) {
   negatedTruth[4] = negate(truth[4]);
   const RotationScore fromTruthSide = ScoreRotations(TurnedBy(Conjugate(gauge), truth), negatedTruth);
   ASSERT_TRUE(fromTruthSide.valid);
-  for (double deg : fromTruthSide.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
+  for (double deg : fromTruthSide.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
 }
 
 // The alignment claims to be the best one. This checks it by trying to beat it: nudge it in six

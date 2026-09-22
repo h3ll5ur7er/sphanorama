@@ -7,10 +7,14 @@
 #include <limits>
 #include <numbers>
 
+#include "support/same_rotation.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
 namespace {
+
+using test::kSameRotationDeg;
+using test::kSameRotationRad;
 
 constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
@@ -32,7 +36,7 @@ TEST(Normalize, LeavesADegenerateQuaternionAsIdentityRatherThanNaN) {
 }
 
 TEST(AngleBetween, IsZeroForIdenticalOrientations) {
-  EXPECT_NEAR(AngleBetween(Yaw(30), Yaw(30)), 0.0, 1e-9);
+  EXPECT_NEAR(AngleBetween(Yaw(30), Yaw(30)), 0.0, kSameRotationRad);
 }
 
 TEST(AngleBetween, MeasuresTheRotationSeparatingTwoOrientations) {
@@ -49,7 +53,7 @@ TEST(AngleBetween, TreatsQAndMinusQAsTheSameOrientation) {
   // a cell as 180 degrees away the moment the sensor's sign flipped, and the reticle would jump.
   const Quat q = Yaw(37);
   const Quat negated{-q.w, -q.x, -q.y, -q.z};
-  EXPECT_NEAR(AngleBetween(q, negated), 0.0, 1e-9);
+  EXPECT_NEAR(AngleBetween(q, negated), 0.0, kSameRotationRad);
 }
 
 TEST(AngleBetween, NeverExceedsPi) {
@@ -99,7 +103,7 @@ TEST(FromAxisAngle, ProducesAUnitQuaternion) {
 
 TEST(FromAxisAngle, ARotationOfZeroIsIdentity) {
   const Quat q = FromAxisAngle(Vec3{0, 1, 0}, 0.0);
-  EXPECT_NEAR(AngleBetween(q, Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(AngleBetween(q, Quat{}), 0.0, kSameRotationRad);
 }
 
 TEST(FromAxisAngle, IgnoresAxisLength) {
@@ -221,7 +225,7 @@ TEST(Direction, IsAlwaysUnitLength) {
 
 TEST(Conjugate, UndoesARotation) {
   const Quat q = FromAxisAngle(Vec3{0.3, 1.0, -0.2}, 0.8);
-  EXPECT_NEAR(AngleBetween(Multiply(q, Conjugate(q)), Quat{}), 0.0, 1e-9);
+  EXPECT_NEAR(AngleBetween(Multiply(q, Conjugate(q)), Quat{}), 0.0, kSameRotationRad);
 }
 
 TEST(Rotate, LeavesAVectorAloneUnderIdentity) {
@@ -258,7 +262,7 @@ TEST(Rotate, RoundTripsThroughTheConjugate) {
 }
 
 TEST(FromAzimuthElevation, PointsForwardAtTheOrigin) {
-  EXPECT_NEAR(AngleBetween(FromAzimuthElevation(0, 0), Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(AngleBetween(FromAzimuthElevation(0, 0), Quat{}), 0.0, kSameRotationRad);
 }
 
 TEST(FromAzimuthElevation, ElevationLooksUpAndDown) {
@@ -373,7 +377,7 @@ TEST(Vec3Maths, NormalizeIsTotal) {
 TEST(AngleBetweenDirections, IgnoresLengthAndMeasuresTheAngle) {
   EXPECT_NEAR(AngleBetweenDirections(Vec3{5, 0, 0}, Vec3{0, 2, 0}) * kDegPerRad, 90.0, 1e-9);
   EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{-1, 0, 0}) * kDegPerRad, 180.0, 1e-9);
-  EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{1, 0, 0}), 0.0, 1e-9);
+  EXPECT_NEAR(AngleBetweenDirections(Vec3{1, 0, 0}, Vec3{1, 0, 0}), 0.0, kSameRotationRad);
 }
 
 TEST(AngleBetweenDirections, ADegenerateDirectionIsNotAnAngleEvenWhenItIsInfinite) {
@@ -467,7 +471,7 @@ TEST(IsUsableRotation, AcceptsTheRotationsAPhoneActuallyProduces) {
 
 TEST(RollBetween, IsZeroForTheSameOrientation) {
   const Quat q = FromAzimuthElevation(37.0, -12.0);
-  EXPECT_NEAR(RollBetween(q, q), 0.0, 1e-12);
+  EXPECT_NEAR(RollBetween(q, q), 0.0, kSameRotationRad);
 }
 
 TEST(RollBetween, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
@@ -548,9 +552,12 @@ TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
   EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
   // And the same at a roll eleven times larger, so "the roll is not in the answer" is asserted
   // rather than only stated: two rolls reading the same -90 is the collapse, in executable form.
+  // The *magnitude*, precisely — the answer is `sign(sin roll) * 90`, so this arm and the one above
+  // are the same assertion (a sign flip fails both, nothing fails one without the other) and what the
+  // pair pins is that the roll's size has left the answer entirely.
   const Quat sideRolledFar = Multiply(FromAxisAngle(Direction(side), 170.0 / kDegPerRad), side);
   EXPECT_NEAR(RollBetween(target, sideRolledFar) * kDegPerRad, -90.0, 1e-6)
-      << "at ninety degrees of separation the roll is not in the answer";
+      << "at ninety degrees of separation the magnitude of the roll is not in the answer";
 }
 
 /**

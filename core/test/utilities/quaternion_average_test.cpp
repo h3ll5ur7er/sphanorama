@@ -7,10 +7,14 @@
 #include <numbers>
 #include <vector>
 
+#include "support/same_rotation.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
 namespace {
+
+using test::kSameRotationDeg;
+using test::kSameRotationRad;
 
 constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
@@ -51,7 +55,7 @@ TEST(AverageQuaternions, OneRotationIsItsOwnAverage) {
   const std::vector<Quat> only{AboutY(37.0)};
   const QuaternionAverage average = AverageQuaternions(only, {});
   ASSERT_TRUE(average.valid);
-  EXPECT_NEAR(SeparationDeg(average.rotation, only[0]), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(average.rotation, only[0]), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -71,7 +75,7 @@ TEST(AverageQuaternions, ASignFlippedCopyIsTheSameOrientationAndNotACancellingOn
   const std::vector<Quat> both{turn, Quat{-turn.w, -turn.x, -turn.y, -turn.z}};
   const QuaternionAverage average = AverageQuaternions(both, {});
   ASSERT_TRUE(average.valid);
-  EXPECT_NEAR(SeparationDeg(average.rotation, turn), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(average.rotation, turn), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -86,7 +90,7 @@ TEST(AverageQuaternions, TwoTurnsAboutOneAxisAverageToTheAngleBetweenThem) {
 
   const QuaternionAverage average = AverageQuaternions(pair, {});
   ASSERT_TRUE(average.valid);
-  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -126,13 +130,13 @@ TEST(AverageQuaternions, AZeroWeightRemovesARotationFromTheAverage) {
 
   const QuaternionAverage without = AverageQuaternions(three, std::vector<double>{1, 1, 0});
   ASSERT_TRUE(without.valid);
-  EXPECT_NEAR(SeparationDeg(without.rotation, AboutY(30.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(without.rotation, AboutY(30.0)), 0.0, kSameRotationDeg);
 
   // And it is the zero doing the removing rather than the ordering: counted, the third input moves
   // the answer to 60 degrees, which is where the closed form puts three equal weights.
   const QuaternionAverage with = AverageQuaternions(three, std::vector<double>{1, 1, 1});
   ASSERT_TRUE(with.valid);
-  EXPECT_NEAR(SeparationDeg(with.rotation, AboutY(60.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(with.rotation, AboutY(60.0)), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -155,7 +159,7 @@ TEST(AverageQuaternions, ALongerThanUnitRotationDoesNotCountForMore) {
 
   const QuaternionAverage average = AverageQuaternions(pair, {});
   ASSERT_TRUE(average.valid);
-  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, kSameRotationDeg);
 
   // The number this would be instead, so the assertion above is pinned against the specific failure
   // rather than against "not 30": squared, the triple weighs nine.
@@ -175,7 +179,7 @@ TEST(AverageQuaternions, TheAnswerDependsOnTheRatioOfWeightsAndNotTheirScale) {
   const QuaternionAverage small = AverageQuaternions(pair, std::vector<double>{3.0, 1.0});
   const QuaternionAverage large = AverageQuaternions(pair, std::vector<double>{3.0e6, 1.0e6});
   ASSERT_TRUE(small.valid && large.valid);
-  EXPECT_NEAR(SeparationDeg(small.rotation, large.rotation), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(small.rotation, large.rotation), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -189,7 +193,7 @@ TEST(AverageQuaternions, NoWeightsMeansEqualWeights) {
   const QuaternionAverage implicitly = AverageQuaternions(three, {});
   const QuaternionAverage explicitly = AverageQuaternions(three, std::vector<double>{2, 2, 2});
   ASSERT_TRUE(implicitly.valid && explicitly.valid);
-  EXPECT_NEAR(SeparationDeg(implicitly.rotation, explicitly.rotation), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(implicitly.rotation, explicitly.rotation), 0.0, kSameRotationDeg);
 
   // Against the closed form rather than only against each other, so two identical wrong answers
   // cannot satisfy this.
@@ -232,7 +236,7 @@ TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
                               1e-100, 4.76837e-162, 1e-170, 1e-300}) {
     const QuaternionAverage average = AverageQuaternions(pair, std::vector<double>{weight, weight});
     ASSERT_TRUE(average.valid) << "weight " << weight;
-    EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, 1e-9) << "weight " << weight;
+    EXPECT_NEAR(SeparationDeg(average.rotation, AboutY(30.0)), 0.0, kSameRotationDeg) << "weight " << weight;
   }
 
   // And an unequal pair at the top of the range still lands where the ratio says, so the fix is not
@@ -263,7 +267,7 @@ TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
        {std::vector<double>{1.0, 1e308}, std::vector<double>{1e-300, 1.0}}) {
     const QuaternionAverage dominated = AverageQuaternions(pair, ratio);
     ASSERT_TRUE(dominated.valid) << ratio[0] << " " << ratio[1];
-    EXPECT_NEAR(SeparationDeg(dominated.rotation, AboutY(60.0)), 0.0, 1e-9)
+    EXPECT_NEAR(SeparationDeg(dominated.rotation, AboutY(60.0)), 0.0, kSameRotationDeg)
         << "the heavier of " << ratio[0] << " and " << ratio[1] << " did not decide the answer";
   }
 }

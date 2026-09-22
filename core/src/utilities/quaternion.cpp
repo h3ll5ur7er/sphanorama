@@ -37,8 +37,15 @@ bool IsUsableRotation(const Quat& q) {
   //
   // Checking the norm alone would be enough — a component that is NaN or infinite makes the norm
   // one — but the component test stays because it is the cheaper of the two and says what it
-  // means. Together they answer exactly the question this predicate is for: "will `Normalize`
-  // return something derived from this, or its fallback identity?"
+  // means. Together they answer the question this predicate is for: "will `Normalize` return
+  // something derived from this, or its fallback identity?"
+  //
+  // **Answer it here and trust it there only if both compute the same `Norm`, which a compiler is
+  // free to break.** Under `-ffp-contract=fast` (Clang's default on aarch64) the sum of squares is
+  // fused differently at different inlining sites, and a norm within an ulp of 1e-12 can read above
+  // it here and below it inside `Normalize`. Measured at 6 in 262,074 gate-edge inputs. A caller
+  // that has already passed this gate and needs the unit quaternion should divide by its own `Norm`
+  // rather than call `Normalize`, which is what `rotation_averaging` does — and why.
   if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
     return false;
   }

@@ -11,10 +11,14 @@
 #include <vector>
 
 #include "support/rotation_scoring.h"
+#include "support/same_rotation.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
 namespace {
+
+using test::kSameRotationDeg;
+using test::kSameRotationRad;
 
 constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 
@@ -116,9 +120,9 @@ TEST(AverageRotations, ConsistentEdgesAndTruthfulAnchorsReproduceTheTruth) {
   EXPECT_TRUE(solved.converged);
 
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
-  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, kSameRotationDeg);
 }
 
 /**
@@ -191,7 +195,10 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   // Worth the paragraph because the wrong version was load-bearing: it was the reason ADR 0062 named
   // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
   // strength of it would have been told the wrong test would catch them.
-  EXPECT_EQ(believed.sweeps, 590);
+  // Within one, not exactly: the sweep count is where a rounding-dependent iteration first fell under
+  // `kSettledDeg`, and under `clang -O3 -ffp-contract=fast` it reads 589. A tolerance of one still
+  // catches the constant moving — tightening it lands at 742.
+  EXPECT_NEAR(believed.sweeps, 590, 1);
 
   const test::RotationScore after = test::ScoreRotations(believed.rotations, truth);
   ASSERT_TRUE(after.valid);
@@ -416,7 +423,10 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // which is the opposite of it.
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
-  EXPECT_NEAR(score.medianDeg, 0.0000286, 3e-6)
+  // `kSameRotationDeg` rather than the ±10% band this carried: the figure is where the solver
+  // *stopped*, so it is rounding-dependent to about `kSettledDeg` itself, and under fast contraction
+  // it reads 2.28e-5. Tightening `kSettledDeg` still moves it to 4.67e-6, well outside this band.
+  EXPECT_NEAR(score.medianDeg, 0.0000286, kSameRotationDeg)
       << "this is a kSettledDeg figure; if it moved, either that constant did or something else is "
          "now moving the answer";
 
@@ -448,7 +458,7 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   EXPECT_TRUE(untouched.unplaced.empty());
   EXPECT_EQ(untouched.edgesUsed, 0);
   for (size_t i = 0; i < anchors.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(untouched.rotations[i], anchors[i]), 0.0, 1e-12) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(untouched.rotations[i], anchors[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
 }
 
@@ -468,7 +478,7 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
   const AveragedRotations solved = AverageRotations(edges, truth, 0.01);
   ASSERT_TRUE(solved.valid);
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
 
   // The same edge at weight one moves the answer a long way, so the zero is doing the work and not
@@ -530,7 +540,14 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
   std::normal_distribution<double> gauss(0.0, 1.0);
   const auto randomUnit = [&] { return Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)}); };
   std::vector<std::pair<Quat, Quat>> pool;
-  for (int i = 0; i < 64; ++i) pool.emplace_back(randomUnit(), randomUnit());
+  for (int i = 0; i < 64; ++i) {
+    // Two statements, not `emplace_back(randomUnit(), randomUnit())`: argument evaluation order is
+    // unspecified, and GCC and Clang pair the stream the other way round. "The same on every build"
+    // was false until this was sequenced.
+    const Quat edge = randomUnit();
+    const Quat anchor = randomUnit();
+    pool.emplace_back(edge, anchor);
+  }
 
   // Walk the scale from the gate's edge until both halves of the premise hold: the gate admits the
   // scaled edge, and the raw product with the anchor tips. Returns the scale, or NaN if this build
@@ -540,7 +557,10 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
     for (int step = 0; step < 4096; ++step) {
       const Quat scaled{edge.w * scale, edge.x * scale, edge.y * scale, edge.z * scale};
       if (IsUsableRotation(scaled)) {
-        const double norm = Norm(Multiply(anchor, scaled));
+        // `Normalize(anchor)`, not `anchor`: production multiplies the *solved* frame, which is the
+        // anchor after `Normalize`, and the two differ by an ulp often enough that a premise
+        // asserted on the raw anchor tipped where the walk's product did not — 61% of bottom pairs.
+        const double norm = Norm(Multiply(Normalize(anchor), scaled));
         if (top ? !std::isfinite(norm) : !(norm > 1e-12)) return scale;
       }
       scale = top ? std::nextafter(scale, 0.0) : std::nextafter(scale, 1.0);
@@ -568,7 +588,7 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
                       w.rotation.z * w.scale};
     // Both halves of the premise, asserted rather than assumed: admitted, and tipping raw.
     ASSERT_TRUE(IsUsableRotation(scaled)) << w.what;
-    const double rawNorm = Norm(Multiply(w.anchor, scaled));
+    const double rawNorm = Norm(Multiply(Normalize(w.anchor), scaled));
     ASSERT_TRUE(w.scale > 1.0 ? !std::isfinite(rawNorm) : !(rawNorm > 1e-12))
         << w.what << ": the raw product did not tip, so the arm below cannot distinguish anything";
 
@@ -586,7 +606,7 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
     // what pins both witnesses; an earlier "was not handed the identity" arm beside it was implied by
     // this one whenever this one passed, and under the revert fired for only one witness, because
     // a frame the walk parks at the identity can still be relaxed *off* it by the sweep.
-    EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, 1e-9)
+    EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, kSameRotationDeg)
         << w.what << ": the scaled edge placed the frame somewhere else";
   }
 
@@ -618,7 +638,7 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
     ASSERT_TRUE(got.valid);
     ASSERT_TRUE(want.valid);
     for (size_t i = 0; i < 3; ++i) {
-      EXPECT_NEAR(SeparationDeg(got.rotations[i], want.rotations[i]), 0.0, 1e-9)
+      EXPECT_NEAR(SeparationDeg(got.rotations[i], want.rotations[i]), 0.0, kSameRotationDeg)
           << "frame " << i << ": the walk placed it in the wrong basin from a raw product";
     }
   }
@@ -642,7 +662,7 @@ TEST(AverageRotations, AFrameWithNoAnchorAndNoEdgeIsNamedUnplaced) {
   ASSERT_EQ(solved.rotations.size(), anchors.size());
   ASSERT_EQ(solved.unplaced.size(), 1u);
   EXPECT_EQ(solved.unplaced.front(), kFrames);
-  EXPECT_NEAR(SeparationDeg(solved.rotations[kFrames], Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(SeparationDeg(solved.rotations[kFrames], Quat{}), 0.0, kSameRotationDeg);
 
   // And it is not *also* in `priorOnly`: the two lists answer different questions, and an unplaced
   // frame rests on nothing rather than on its prior. Without this the placed test in that loop can
@@ -651,7 +671,7 @@ TEST(AverageRotations, AFrameWithNoAnchorAndNoEdgeIsNamedUnplaced) {
 
   // And the twelve that could be placed are unaffected by the one that could not.
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
 
   // **Frame zero unplaced, and two of them, so the list's promises are properties of the loop.**
@@ -687,7 +707,7 @@ TEST(AverageRotations, AFrameWithNoAnchorThatAnEdgeReachesIsStillSolvedFor) {
   const AveragedRotations solved = AverageRotations(edges, anchors, 0.01);
   ASSERT_TRUE(solved.valid);
   EXPECT_TRUE(solved.unplaced.empty());
-  EXPECT_NEAR(SeparationDeg(solved.rotations[5], truth[5]), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(solved.rotations[5], truth[5]), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -705,7 +725,7 @@ TEST(AverageRotations, NoEdgesLeavesTheAnchorsAloneAndReportsNoEdgeError) {
   EXPECT_TRUE(solved.unplaced.empty());
   EXPECT_TRUE(solved.converged);
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-12) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
   EXPECT_EQ(solved.medianEdgeErrorDeg, 0.0);
   EXPECT_EQ(solved.maxEdgeErrorDeg, 0.0);
@@ -812,7 +832,7 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotCountedInTheReportedError) {
 
   const AveragedRotations solved = AverageRotations(edges, truth, 0.01);
   ASSERT_TRUE(solved.valid);
-  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, kSameRotationDeg);
 
   // The same edge counted, so the zero is what keeps it out rather than the edge agreeing.
   edges.back().weight = 1.0;
@@ -840,9 +860,9 @@ TEST(AverageRotations, AnUnevenRingCatchesAnInvertedEdgeConvention) {
   ASSERT_TRUE(solved.valid);
   EXPECT_TRUE(solved.converged);
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
-  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, kSameRotationDeg);
 }
 
 /**
@@ -866,7 +886,7 @@ TEST(AverageRotations, AFrameReachedOnlyByAZeroWeightedEdgeIsUnplaced) {
   ASSERT_TRUE(discarded.valid);
   ASSERT_EQ(discarded.unplaced.size(), 1u);
   EXPECT_EQ(discarded.unplaced.front(), kFrames);
-  EXPECT_NEAR(SeparationDeg(discarded.rotations[kFrames], Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(SeparationDeg(discarded.rotations[kFrames], Quat{}), 0.0, kSameRotationDeg);
 
   // The same edge believed places the frame where it says, so the zero is what withheld it.
   edges.back().weight = 1.0;
@@ -894,7 +914,7 @@ TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
   const AveragedRotations solved = AverageRotations(satisfied, truth, 0.01);
   ASSERT_TRUE(solved.valid);
   EXPECT_EQ(solved.edgesUsed, kFrames);
-  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(solved.maxEdgeErrorDeg, 0.0, kSameRotationDeg);
 
   // Every edge discarded. The error figures are identical and the count is what says why.
   std::vector<RelativeRotation> discarded = satisfied;
@@ -902,9 +922,9 @@ TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
   const AveragedRotations priorsOnly = AverageRotations(discarded, truth, 0.01);
   ASSERT_TRUE(priorsOnly.valid);
   EXPECT_TRUE(priorsOnly.converged);
-  EXPECT_NEAR(priorsOnly.maxEdgeErrorDeg, 0.0, 1e-9)
+  EXPECT_NEAR(priorsOnly.maxEdgeErrorDeg, 0.0, kSameRotationDeg)
       << "the two cases have to be indistinguishable on this field, or the test proves nothing";
-  EXPECT_NEAR(priorsOnly.medianEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(priorsOnly.medianEdgeErrorDeg, 0.0, kSameRotationDeg);
   EXPECT_EQ(priorsOnly.edgesUsed, 0);
 
   // And an edge whose endpoints were never placed is not counted either, which is the second
@@ -922,15 +942,15 @@ TEST(AverageRotations, TheEdgeErrorCarriesTheCountItWasComputedOver) {
   EXPECT_EQ(partial.unplaced[0], kFrames);
   EXPECT_EQ(partial.unplaced[1], kFrames + 1) << "the list is not ascending";
   EXPECT_EQ(partial.edgesUsed, kFrames) << "the stranded edge was counted";
-  EXPECT_NEAR(partial.maxEdgeErrorDeg, 0.0, 1e-9);
+  EXPECT_NEAR(partial.maxEdgeErrorDeg, 0.0, kSameRotationDeg);
 
   // **And the stranded pair still holds the identity**, which is what the sweep's own `placed`
   // guards are for and what nothing else here asserts. A component with no anchor in it is the input
   // that makes them load-bearing — every other unplaced case in this file is a single isolated frame
   // with no edge to be moved by — and without them frames 12 and 13 would be averaged against each
   // other's identities and drift away from it while `unplaced` went on naming them.
-  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames], Quat{}), 0.0, 1e-12);
-  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames + 1], Quat{}), 0.0, 1e-12);
+  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames], Quat{}), 0.0, kSameRotationDeg);
+  EXPECT_NEAR(SeparationDeg(partial.rotations[kFrames + 1], Quat{}), 0.0, kSameRotationDeg);
 }
 
 /**
@@ -1019,8 +1039,8 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   // could drift into a duplicate of the first and stay green, since both would report one ambiguous
   // frame. Frame 1 at the identity between two neighbours a half turn apart is what makes this the
   // *transient* case: it is unsure on sweep one and not on sweep three.
-  EXPECT_NEAR(SeparationDeg(partway.rotations[1], Quat{}), 0.0, 1e-9);
-  EXPECT_NEAR(SeparationDeg(partway.rotations[0], AboutY(180.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(partway.rotations[1], Quat{}), 0.0, kSameRotationDeg);
+  EXPECT_NEAR(SeparationDeg(partway.rotations[0], AboutY(180.0)), 0.0, kSameRotationDeg);
 
   // The same shape with the two edges agreeing leaves nobody ambiguous, so the flag is reporting the
   // cancellation rather than the topology.
@@ -1031,7 +1051,7 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   const AveragedRotations settled = AverageRotations(agreed, anchors, 1000.0);
   ASSERT_TRUE(settled.valid);
   EXPECT_TRUE(settled.ambiguous.empty());
-  EXPECT_NEAR(SeparationDeg(settled.rotations[1], AboutY(0.0)), 0.0, 1e-9);
+  EXPECT_NEAR(SeparationDeg(settled.rotations[1], AboutY(0.0)), 0.0, kSameRotationDeg);
 
   // **Frame zero, so the list is not built by a loop that could skip it.** Every other fixture here
   // puts the ambiguous frame at index 1, which leaves a `for` loop that starts at 1 — or one that
@@ -1265,8 +1285,8 @@ TEST(AverageRotations, AnEdgeWhoseRotationIsNotOneIsARefusal) {
  * the more ordinary mistake: a caller filling `from`, `to` and `weight` from a `PairwiseResult` and
  * forgetting the field.
  *
- * So `RelativeRotation::rotation` defaults to the zero quaternion, which is the one value the gate
- * refuses. Every edge in this file spells its rotation, so nothing else moves — and the default
+ * So `RelativeRotation::rotation` defaults to the zero quaternion, a value the gate refuses — one of
+ * many; the test pins the refusal, not the zero, and NaN or a norm under 1e-12 would do as well. Every edge in this file spells its rotation, so nothing else moves — and the default
  * `RelativeRotation{}` was already refused, but only because `from == to`, which is not the reason
  * that should be doing the work.
  *
@@ -1343,7 +1363,7 @@ TEST(AverageRotations, NoUsableAnchorAnywhereIsARefusal) {
   ASSERT_TRUE(solved.valid);
   EXPECT_TRUE(solved.unplaced.empty());
   for (size_t i = 0; i < truth.size(); ++i) {
-    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, 1e-9) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
   }
 }
 

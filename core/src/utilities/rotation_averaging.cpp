@@ -146,6 +146,16 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // one ulp below and 0.38% two ulps below — a band, not a cliff, which is why "the gate and the
   // product overflow at the same threshold" was the wrong argument. The bottom does the mirror of
   // it: a norm just above 1e-12 rounds down through the gate.
+  //
+  // **Divided here, not passed to `Normalize`.** `Normalize` has a gate of its own — the same
+  // predicate as `IsUsableRotation`, computed again — and under fast floating-point contraction
+  // (`clang -O3 -ffp-contract=fast`, or Clang's default on every aarch64 build) the two evaluations
+  // of the same `Norm` can land on different sides of 1e-12 because they are inlined at different
+  // sites. Measured: 6 of 262,074 gate-accepted rotations at the bottom of the gate had `Normalize`
+  // return its identity fallback, and the solver then placed a frame 101 degrees wrong with `valid`
+  // true — on the code that had just fixed the raw-product overflow. Dividing by the norm read here
+  // cannot fall back: the gate has already said this norm is finite and positive, and an ulp of
+  // disagreement about *which* positive number it is changes the unit quaternion by an ulp.
   std::vector<Quat> rotation;
   rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {
@@ -153,13 +163,24 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     if (edge.from == edge.to) return out;
     if (!IsUsableRotation(edge.rotation)) return out;
     if (!std::isfinite(edge.weight) || edge.weight < 0.0) return out;
-    rotation.push_back(Normalize(edge.rotation));
+    const double norm = Norm(edge.rotation);
+    rotation.push_back(Quat{edge.rotation.w / norm, edge.rotation.x / norm, edge.rotation.y / norm,
+                            edge.rotation.z / norm});
   }
 
+  // `prior` is the anchor made unit by the same division as the edges above, for the same reason:
+  // an anchor the gate accepted must not be handed to `Normalize`'s second gate. Unanchored frames
+  // hold the identity here and are never read, since every read is behind `anchored`.
   std::vector<char> anchored(static_cast<size_t>(frames), 0);
+  std::vector<Quat> prior(static_cast<size_t>(frames));
   for (int32_t i = 0; i < frames; ++i) {
-    anchored[static_cast<size_t>(i)] = IsUsableRotation(anchors[static_cast<size_t>(i)]) ? 1 : 0;
-    if (anchored[static_cast<size_t>(i)] != 0) ++out.anchorsUsed;
+    const Quat& anchor = anchors[static_cast<size_t>(i)];
+    anchored[static_cast<size_t>(i)] = IsUsableRotation(anchor) ? 1 : 0;
+    if (anchored[static_cast<size_t>(i)] != 0) {
+      ++out.anchorsUsed;
+      const double norm = Norm(anchor);
+      prior[static_cast<size_t>(i)] = Quat{anchor.w / norm, anchor.x / norm, anchor.y / norm, anchor.z / norm};
+    }
   }
   // **Without one usable anchor there is nothing to start from**, which is a stronger fact than the
   // gauge being free and is the one that decides this. The walk below seeds from anchored frames and
@@ -203,7 +224,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   reached.reserve(static_cast<size_t>(frames));
   for (int32_t i = 0; i < frames; ++i) {
     if (anchored[static_cast<size_t>(i)] == 0) continue;
-    solved[static_cast<size_t>(i)] = Normalize(anchors[static_cast<size_t>(i)]);
+    solved[static_cast<size_t>(i)] = prior[static_cast<size_t>(i)];
     placed[static_cast<size_t>(i)] = 1;
     reached.push_back(i);
   }
@@ -260,7 +281,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // saying "start from the priors and then believe only the pixels", and it is a weight of zero
       // meaning what it means everywhere else here.
       if (anchored[static_cast<size_t>(i)] != 0 && anchorWeight > 0.0) {
-        predictions.push_back(Normalize(anchors[static_cast<size_t>(i)]));
+        predictions.push_back(prior[static_cast<size_t>(i)]);
         weights.push_back(anchorWeight);
       }
       // No `placed` test on the neighbour, and one is not needed: a believed edge is what puts two
