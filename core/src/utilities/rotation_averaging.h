@@ -38,7 +38,13 @@ namespace sphanorama {
 struct RelativeRotation {
   int32_t from = 0;
   int32_t to = 0;
-  Quat rotation;
+  // The zero quaternion rather than `Quat`'s own identity default, so an edge whose rotation was
+  // never written is *refused* instead of answered as a full-weight claim that its two frames share
+  // an orientation. The identity is the right default for a value that has to be some rotation; it
+  // is the wrong one for a measurement, where "nobody wrote this" has to stay distinguishable from
+  // "these two agree exactly". Aggregate initialisation cannot forget the field — the build refuses
+  // a missing initialiser — but field-by-field assignment from a `PairwiseResult` can.
+  Quat rotation{0, 0, 0, 0};
 
   // How much this edge is believed, relative to the others and to the anchors. Evidence rather than
   // a distribution: raw inlier counts are a fine thing to pass. Zero removes the edge from the solve
@@ -137,7 +143,11 @@ struct AveragedRotations {
 // `anchors` is one entry per frame, indexed by the same `int32_t` the edges name, and `anchorWeight`
 // is what every usable anchor counts for against the edges' own weights. A frame whose anchor is not
 // a usable rotation (see `IsUsableRotation`) simply has no prior — which is how a caller says "the
-// sensor did not answer for this one" without having to renumber the frames.
+// sensor did not answer for this one" without having to renumber the frames. **Spell it
+// `Quat{0, 0, 0, 0}`.** `Quat`'s own default is the identity, which is a usable rotation, so
+// `std::vector<Quat>(n)` is *n* priors all claiming the phone was held level — placed, counted in
+// `anchorsUsed`, and named in `priorOnly` if nothing else touches them. That default belongs to the
+// contract and cannot change here; the sentence can.
 //
 // **That makes an unusable anchor a silence and an unusable edge a refusal, which is an asymmetry
 // worth the sentence it costs.** A missing prior is an ordinary thing: a sensor drops a sample, a

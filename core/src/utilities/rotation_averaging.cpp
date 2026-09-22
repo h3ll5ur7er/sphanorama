@@ -157,10 +157,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   }
 
   std::vector<char> anchored(static_cast<size_t>(frames), 0);
-  bool anyAnchor = false;
   for (int32_t i = 0; i < frames; ++i) {
     anchored[static_cast<size_t>(i)] = IsUsableRotation(anchors[static_cast<size_t>(i)]) ? 1 : 0;
-    anyAnchor = anyAnchor || anchored[static_cast<size_t>(i)] != 0;
     if (anchored[static_cast<size_t>(i)] != 0) ++out.anchorsUsed;
   }
   // **Without one usable anchor there is nothing to start from**, which is a stronger fact than the
@@ -174,7 +172,12 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // `anchorWeight` is zero and the anchors place the frames without being believed. Side by side,
   // the difference is not how much the anchors are trusted; it is whether there is a frame to begin
   // at.
-  if (!anyAnchor) return out;
+  //
+  // Read off `anchorsUsed` rather than from a flag kept beside it, which is what stood here: the two
+  // were the same fact held twice, and the count was already written into `out` before the flag was
+  // read — so any gate added between them would have returned a positive `anchorsUsed` next to
+  // `valid == false`, and nothing reads a refused answer past `valid` to notice.
+  if (out.anchorsUsed == 0) return out;
 
   // A weight of zero removes the edge from the solve without removing it from the caller's array
   // (ADR 0056). **Decided once, here, and recorded** — the error report below reads `believed` rather

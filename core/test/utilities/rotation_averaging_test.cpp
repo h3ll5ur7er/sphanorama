@@ -1181,6 +1181,40 @@ TEST(AverageRotations, AnEdgeWhoseRotationIsNotOneIsARefusal) {
   EXPECT_FALSE(AverageRotations(edges, truth, 0.01).valid);
 }
 
+/**
+ * An edge whose rotation was never written is refused, not answered as the identity.
+ *
+ * `Quat` defaults to the identity — the contract's choice, and the right one for a value that has to
+ * be *some* rotation — so `RelativeRotation{0, 1}` used to carry a perfectly admissible claim that
+ * frames 0 and 1 share an orientation, at full weight. `valid = 1`, `edgesUsed = 1`,
+ * `maxEdgeErrorDeg = 0`: a measurement nobody made, reported as a perfect one. The header's
+ * asymmetry argument — an unusable *edge* rotation is a refusal because "an edge exists because
+ * something measured it" — covered a broken rotation and not an absent one, and the absent one is
+ * the more ordinary mistake: a caller filling `from`, `to` and `weight` from a `PairwiseResult` and
+ * forgetting the field.
+ *
+ * So `RelativeRotation::rotation` defaults to the zero quaternion, which is the one value the gate
+ * refuses. Every edge in this file spells its rotation, so nothing else moves — and the default
+ * `RelativeRotation{}` was already refused, but only because `from == to`, which is not the reason
+ * that should be doing the work.
+ *
+ * Built by default-constructing and assigning fields rather than by aggregate initialisation, and
+ * not for style: `-Werror=missing-field-initializers` refuses `RelativeRotation{0, 1}` at compile
+ * time, so the aggregate form cannot forget the field. Assignment can, and it is how a caller
+ * translating a `PairwiseResult` field by field would write it.
+ */
+TEST(AverageRotations, AnEdgeWhoseRotationWasNeverWrittenIsARefusal) {
+  const std::vector<Quat> anchors{AboutY(0.0), AboutY(30.0)};
+  RelativeRotation edge;
+  edge.from = 0;
+  edge.to = 1;
+  edge.weight = 1.0;
+  const std::vector<RelativeRotation> unwritten{edge};
+  const AveragedRotations solved = AverageRotations(unwritten, anchors, 0.01);
+  EXPECT_FALSE(solved.valid) << "an edge nobody wrote a rotation into was answered";
+  EXPECT_TRUE(solved.rotations.empty());
+}
+
 TEST(AverageRotations, AnEdgeWeightThatIsNotAMeasurementIsARefusal) {
   const std::vector<Quat> truth = Ring(kFrames);
   const double nan = std::numeric_limits<double>::quiet_NaN();
