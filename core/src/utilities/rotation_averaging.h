@@ -42,8 +42,16 @@ struct RelativeRotation {
   // never written is *refused* instead of answered as a full-weight claim that its two frames share
   // an orientation. The identity is the right default for a value that has to be some rotation; it
   // is the wrong one for a measurement, where "nobody wrote this" has to stay distinguishable from
-  // "these two agree exactly". Aggregate initialisation cannot forget the field — the build refuses
-  // a missing initialiser — but field-by-field assignment from a `PairwiseResult` can.
+  // "these two agree exactly".
+  //
+  // Both ways of forgetting the field reach this default. Field-by-field assignment obviously does.
+  // Aggregate initialisation does too, and this comment first said the opposite — that the build
+  // refuses `RelativeRotation{0, 1}` under `-Werror=missing-field-initializers`. It did, against the
+  // header *before* this line: GCC and Clang both exempt a field that has a default member
+  // initialiser from that warning, so adding the default is exactly what made the aggregate form
+  // compile. An observation of the old header, generalised to the new one by the commit that changed
+  // it. The result is stronger than the claim was: there is no way to spell an edge without a
+  // rotation that the gate then accepts.
   Quat rotation{0, 0, 0, 0};
 
   // How much this edge is believed, relative to the others and to the anchors. Evidence rather than
@@ -96,7 +104,10 @@ struct AveragedRotations {
 
   // How many anchors were usable rotations — the priors' counterpart to `edgesUsed`, and the only
   // field that separates a reconstruction the sensors agreed on from one a single surviving prior
-  // pinned. **The degraded case reports better than the healthy one on everything else**, which is
+  // pinned. **Zero on any refusal**, including one decided before the anchors were counted, so it
+  // says nothing about the input when `valid` is false — read it with `valid`, like `rotations`. It
+  // is also the field the no-usable-anchor refusal is decided from, so "zero anchors" and "refused
+  // for want of an anchor" are the same fact held once rather than twice. **The degraded case reports better than the healthy one on everything else**, which is
   // why it needs its own number: one anchor plus a spanning tree is an exact fixed point, so the
   // solve settles in one sweep with both edge errors at zero, while twelve mutually inconsistent
   // priors take hundreds of sweeps and leave a residual.

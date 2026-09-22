@@ -1270,21 +1270,29 @@ TEST(AverageRotations, AnEdgeWhoseRotationIsNotOneIsARefusal) {
  * `RelativeRotation{}` was already refused, but only because `from == to`, which is not the reason
  * that should be doing the work.
  *
- * Built by default-constructing and assigning fields rather than by aggregate initialisation, and
- * not for style: `-Werror=missing-field-initializers` refuses `RelativeRotation{0, 1}` at compile
- * time, so the aggregate form cannot forget the field. Assignment can, and it is how a caller
- * translating a `PairwiseResult` field by field would write it.
+ * Both spellings of forgetting the field are here, and the docblock first said only one was
+ * possible. It claimed `-Werror=missing-field-initializers` refuses `RelativeRotation{0, 1}` at
+ * compile time — which it did, against the header before the default was added. A field with a
+ * default member initialiser is exempt from that warning in both GCC and Clang, so the fix that
+ * introduced the default is what made the aggregate form compile. The claim was an observation of
+ * the old header carried into the commit that changed it. Both arms now reach the zero default and
+ * both are refused, which is the property that matters.
  */
 TEST(AverageRotations, AnEdgeWhoseRotationWasNeverWrittenIsARefusal) {
   const std::vector<Quat> anchors{AboutY(0.0), AboutY(30.0)};
-  RelativeRotation edge;
-  edge.from = 0;
-  edge.to = 1;
-  edge.weight = 1.0;
-  const std::vector<RelativeRotation> unwritten{edge};
-  const AveragedRotations solved = AverageRotations(unwritten, anchors, 0.01);
-  EXPECT_FALSE(solved.valid) << "an edge nobody wrote a rotation into was answered";
-  EXPECT_TRUE(solved.rotations.empty());
+
+  RelativeRotation assigned;
+  assigned.from = 0;
+  assigned.to = 1;
+  assigned.weight = 1.0;
+  const AveragedRotations byAssignment = AverageRotations(std::vector<RelativeRotation>{assigned}, anchors, 0.01);
+  EXPECT_FALSE(byAssignment.valid) << "an edge nobody wrote a rotation into was answered";
+  EXPECT_TRUE(byAssignment.rotations.empty());
+
+  const std::vector<RelativeRotation> aggregate{RelativeRotation{0, 1}};
+  const AveragedRotations byAggregate = AverageRotations(aggregate, anchors, 0.01);
+  EXPECT_FALSE(byAggregate.valid) << "the aggregate spelling compiles now, and it has to be refused too";
+  EXPECT_TRUE(byAggregate.rotations.empty());
 }
 
 TEST(AverageRotations, AnEdgeWeightThatIsNotAMeasurementIsARefusal) {

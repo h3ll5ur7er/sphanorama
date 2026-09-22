@@ -23,9 +23,15 @@ constexpr int kJacobiSweeps = 24;
 constexpr double kOffDiagonalSettled = 1e-30;
 
 // Relative separation below which the top two eigenvalues count as equal, so the maximiser is a
-// continuum rather than a rotation. Exact ties are what this is for — two rotations 180 degrees
-// apart give equal eigenvalues — and a threshold this tight claims only that, not a general
-// conditioning test.
+// continuum rather than a rotation. A threshold this tight claims only that, not a general
+// conditioning test: the relative gap is `sin(180 - sep)`, so anything in the range the tests pin
+// it to, [2e-14, 1.7e-9], calls a separation within about 1e-7 degrees of a half turn a tie and
+// nothing else.
+//
+// **Not for exact ties**, which is what this said. Two rotations exactly 180 degrees apart give
+// eigenvalues equal to the bit, and a threshold of zero catches those. The non-zero value exists for
+// the tie Jacobi *reaches* rather than is handed — a few ulps wide after the sweeps' own rounding —
+// which zero calls unique. The floor of the pinned range is that width.
 constexpr double kEigenvalueGap = 1e-12;
 
 struct Eigen {
