@@ -71,14 +71,22 @@ RotationScore ScoreRotations(const std::vector<Quat>& estimated, const std::vect
   double sum = 0;
   for (size_t i = 0; i < estimated.size(); ++i) {
     // Normalised before the product, which `Residual` already does on the same value. This line
-    // reads as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), and a
-    // product whose squares overflow would make `Normalize` substitute the identity and measure the
-    // angle against that. It is not reachable — `Multiply` is exactly norm-multiplicative, so the
-    // gate's own `Norm` and this product overflow at precisely the same threshold, and 133,266
-    // gate-passing quaternions straddling that boundary produced zero overflows and zero changed
-    // answers. But the line was correct only because `AngleBetween` normalises internally, which is
-    // a fact about a different file that nothing here asserts; an `AngleBetween` optimised to
-    // assume unit input would break this silently, and in the under-reporting direction.
+    // reads as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), and a product
+    // whose squares overflow would make `Normalize` substitute the identity and measure the angle
+    // against that. It is not reachable here, **and the reason this comment used to give was wrong
+    // twice.** It said `Multiply` is exactly norm-multiplicative so the gate and the product
+    // overflow "at precisely the same threshold" — false by a two-ulp band, measured at 13.26%,
+    // 5.30% and 0.38% of gate-passing inputs at zero, one and two ulps below `sqrt(DBL_MAX)`. And it
+    // cited 133,266 straddling trials with zero overflows, which could not have tested the claim:
+    // both operands on this line are already unit, so the product's norm is one and there was no
+    // boundary to straddle. Zero was guaranteed however wide the sweep.
+    //
+    // What actually makes this line safe is the inner `Normalize` — and that same argument, taken
+    // at face value, excused `rotation_averaging.cpp`'s raw `edge.rotation` multiply, which *did*
+    // overflow and placed frames at the identity with `valid` true. The line was also correct only
+    // because `AngleBetween` normalises internally, a fact about a different file that nothing here
+    // asserts; an `AngleBetween` optimised to assume unit input would break this silently, and in
+    // the under-reporting direction.
     const Quat aligned = Normalize(Multiply(gauge.rotation, Normalize(estimated[i])));
     const double deg = AngleBetween(aligned, truth[i]) * kDegPerRad;
     out.perFrameDeg.push_back(deg);
