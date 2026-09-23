@@ -266,7 +266,9 @@ jobs:
       # the same norm again cannot disagree there — and twice on PR #80 a fix that was green on
       # both of them stored a zero quaternion or an identity on a build that fused one copy and not
       # the other. This job is that build, and it is clang: gcc fuses as readily and never split the
-      # two copies, which the preset's description measures. No OpenCV, so no cache: the question is
+      # two copies, which the preset's description measures. The flags are CMake's to choose per
+      # architecture (`SPHANORAMA_FUSED_ARITHMETIC`), not the preset's, after `-march=native` met a
+      # runner with AVX10 and a clang that warns about it. No OpenCV, so no cache: the question is
       # about the core's own arithmetic.
       - name: configure
         run: cmake --preset native-contracting

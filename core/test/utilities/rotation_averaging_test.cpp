@@ -523,7 +523,8 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
  *
  * **The witnesses are found at run time, not hard-coded, because the tipping is a property of the
  * build.** The first version of this test carried two hand-copied quaternions from a fixed seed,
- * and under FMA contraction (`-march=native -ffp-contract=fast`, the `native-contracting` preset)
+ * and under FMA contraction (`-ffp-contract=fast` on a fusing target, the `native-contracting`
+ * preset)
  * `Norm` fuses its four products, the bottom witness's norm rounds to exactly 1e-12, the gate
  * refuses it, and the test went red on **correct** code. Worse, it only ever asserted half its
  * premise — that the gate admits the witness — and never that the raw product actually tips, so a

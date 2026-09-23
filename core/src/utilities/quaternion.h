@@ -56,8 +56,8 @@ bool IsUsableRotation(const Quat& q);
 // and by nothing else. Empty exactly when `IsUsableRotation` is false.
 //
 // This exists because "gate, then normalise" is two evaluations of one expression, and a compiler
-// is free to contract them differently: under `clang -O3 -march=native -ffp-contract=fast` — the
-// `native-contracting` preset — the sum of squares inlined into the gate fused and the one inside
+// is free to contract them differently: under `clang -O3 -ffp-contract=fast` on a target with fused
+// multiply-add — the `native-contracting` preset — the sum of squares inlined into the gate fused and the one inside
 // `Normalize`, or a separate `Norm` call, did not, so within an ulp of either end of the admissible
 // range the gate said yes and the divisor read zero or infinity. The solver stored `q / inf`, the
 // zero quaternion, as a unit edge with `valid` true. Counted at both ends, with the construction,

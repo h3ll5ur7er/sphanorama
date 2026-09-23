@@ -33,7 +33,7 @@
     {
       "name": "native-contracting",
       "displayName": "Native, clang, optimised with fused floating point \u2014 the build the debug preset cannot stand in for",
-      "description": "At -O0 nothing is inlined, so every evaluation of the same expression is the one compiled copy and they agree bit for bit; a gate and a divisor that read the same sum twice cannot disagree there. Under fast contraction one inlined copy fuses its multiply-adds and another does not, and the two land on different sides of a threshold: round 9 and round 10 on PR #80 each shipped a fix whose defect was visible only on such a build, and CI ran none. clang rather than the default compiler because this is a property of the inliner and not only of the instruction set: gcc 13 emits 98 fused multiply-adds from quaternion.cpp at -O3 -march=native with or without -ffp-contract=fast and never once split the gate's norm from the divisor's on 262,000 inputs at either end of the gate, while clang 18 under -ffp-contract=fast did (6 of 86 at the top) and under its default contraction did not. -march=native so the host's fused instructions exist; the gate's 'the build contracts' step refuses a run where the compiler fused nothing, which is necessary and not sufficient. OpenCV is off because the question is about the core's own arithmetic, and a third from-source OpenCV build is a cost the answer does not need.",
+      "description": "At -O0 nothing is inlined, so every evaluation of the same expression is the one compiled copy and they agree bit for bit; a gate and a divisor that read the same sum twice cannot disagree there. Under fast contraction one inlined copy fuses its multiply-adds and another does not, and the two land on different sides of a threshold: round 9 and round 10 on PR #80 each shipped a fix whose defect was visible only on such a build, and CI ran none. clang rather than the default compiler because this is a property of the inliner and not only of the instruction set: gcc 13 emits 98 fused multiply-adds from quaternion.cpp at -O3 -march=native with or without -ffp-contract=fast and never once split the gate's norm from the divisor's on 262,000 inputs at either end of the gate, while clang 18 under -ffp-contract=fast did (6 of 86 at the top) and under its default contraction did not. The flags live behind SPHANORAMA_FUSED_ARITHMETIC in CMakeLists.txt, which picks the instruction set per architecture (x86-64-v3 on x86-64, nothing on aarch64) \u2014 not -march=native, which the CI runner's AVX10 CPU turned into a -Werror failure through clang's feature-promotion warning; the gate's 'the build contracts' step refuses a run where the compiler fused nothing, which is necessary and not sufficient. OpenCV is off because the question is about the core's own arithmetic, and a third from-source OpenCV build is a cost the answer does not need.",
       "binaryDir": "${sourceDir}/build/native-contracting",
       "generator": "Ninja",
       "cacheVariables": {
@@ -41,7 +41,7 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
         "SPHANORAMA_WITH_OPENCV": "OFF",
-        "CMAKE_CXX_FLAGS": "-march=native -ffp-contract=fast"
+        "SPHANORAMA_FUSED_ARITHMETIC": "ON"
       }
     },
     {
