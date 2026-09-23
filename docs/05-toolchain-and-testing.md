@@ -26,8 +26,12 @@ removing one.
   probe" until seven rounds of review on PR #67 swept the file — neither name nor probe has ever
   existed. `IComputeDeviceAccess::Capabilities` does report `threads`, which is probably where the
   idea came from, but nothing chooses an artefact from it.
-- **CMake** presets, all six: `native-debug` (the default for TDD), `native-asan` (the sanitizer
-  job), `wasm-release` and `wasm-release-threaded` (both built by the gate and by CI), and two that
+- **CMake** presets, all seven: `native-debug` (the default for TDD), `native-asan` (the sanitizer
+  job), `native-contracting` (clang, optimised, with fused multiply-adds and without OpenCV — the
+  build on which a gate and a divisor can disagree about one norm, which the two `-O0` trees cannot
+  show and gcc's inliner never did; its CI job refuses to pass unless the compiler actually fused
+  something), `wasm-release` and
+  `wasm-release-threaded` (all built by the gate and by CI), and two that
   nothing builds automatically — `wasm-debug`, for a person chasing something in the browser, and
   `native-release`, for a timing run somebody does by hand. This line used to gloss the latter as
   "what the bench measures", which was false twice over: `bench/` does not exist (ADR 0052 says so

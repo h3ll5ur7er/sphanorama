@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <vector>
 
 #include "utilities/quaternion.h"
 
@@ -138,8 +140,15 @@ QuaternionAverage AverageQuaternions(std::span<const Quat> rotations,
   // The whole input is checked before any of it is summed, so a refusal is decided by the input
   // rather than by how far the loop got — and so a caller cannot get a partial average of the
   // prefix that happened to be well formed.
+  // The norm each input was admitted on, kept so the accumulation below divides by that number and
+  // not by a second evaluation of it — the gate-then-`Normalize` shape the solver had to give up for
+  // the same reason (see `UsableNorm`).
+  std::vector<double> norms;
+  norms.reserve(rotations.size());
   for (const Quat& q : rotations) {
-    if (!IsUsableRotation(q)) return out;
+    const std::optional<double> norm = UsableNorm(q);
+    if (!norm) return out;
+    norms.push_back(*norm);
   }
   double heaviest = 0;
   for (const double w : weights) {
@@ -168,8 +177,8 @@ QuaternionAverage AverageQuaternions(std::span<const Quat> rotations,
   // could.
   double m[4][4]{};
   for (size_t i = 0; i < rotations.size(); ++i) {
-    const Quat unit = Normalize(rotations[i]);
-    const double e[4]{unit.w, unit.x, unit.y, unit.z};
+    const Quat& q = rotations[i];
+    const double e[4]{q.w / norms[i], q.x / norms[i], q.y / norms[i], q.z / norms[i]};
     const double weight = weights.empty() ? 1.0 : weights[i] / heaviest;
     for (int r = 0; r < 4; ++r) {
       for (int c = 0; c < 4; ++c) m[r][c] += weight * e[r] * e[c];

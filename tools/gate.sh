@@ -82,6 +82,16 @@ step "asan test"         ctest --test-dir build/native-asan --output-on-failure
 # mirroring only the native one, which is the drift its own header exists to prevent.
 step "asan accuracy"      sh -c 'log=$(mktemp); expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests --gtest_filter="EveryDetector/Accuracy.ConsecutiveFrames*" | grep -c ConsecutiveFrames); acceptance=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests --gtest_filter="Acceptance.*" | grep -c AnAnswerWithAMinority); ./build/native-asan/bin/sphanorama_tests --gtest_filter="EveryDetector/Accuracy.*:Acceptance.*" >"$log" 2>&1; status=$?; cat "$log"; measured=$(grep -c "^\\[accuracy\\]" "$log" || true); if [ "$expected" -lt 1 ]; then echo "the binary contains no accuracy measurement to run" >&2; status=1; fi; if [ "$acceptance" -lt 1 ]; then echo "the binary contains no acceptance test to run" >&2; status=1; fi; if [ "$measured" -ne "$expected" ]; then echo "the measurement ran $measured detectors and the binary has $expected" >&2; status=1; fi; if grep -q SKIPPED "$log"; then echo "something skipped, and a skip is not a pass" >&2; status=1; fi; rm -f "$log"; exit $status'
 
+echo "== contracting =="
+# Mirrors CI's job of the same name: the -O0 trees above cannot see a gate and a divisor disagree
+# about one norm, because at -O0 they are the same compiled copy. The preset is clang for the
+# reason its description measures, and the "build contracts" step is what stops this section
+# passing on a host that fused nothing.
+step "contracting configure" cmake --preset native-contracting
+step "contracting build"     cmake --build build/native-contracting
+step "build contracts"       sh -c 'object=build/native-contracting/core/CMakeFiles/sphanorama_core.dir/src/utilities/quaternion.cpp.o; fused=$(objdump -d "$object" | grep -c -E "vfn?m(add|sub)|fmadd|fmsub|fmla|fmls" || true); echo "fused multiply-adds in quaternion.cpp: $fused"; if [ "$fused" -lt 1 ]; then echo "this build did not fuse a single multiply-add, so it cannot see the defects it exists to catch" >&2; exit 1; fi'
+step "contracting test"      ctest --test-dir build/native-contracting --output-on-failure
+
 echo "== wasm, size budget and browser tests =="
 if [ "$have_emcc" = no ]; then
   # Loudly, not silently: a skipped half of the gate that reads as a pass is worse than no gate.

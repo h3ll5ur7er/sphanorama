@@ -198,7 +198,7 @@ TEST(AverageQuaternions, NoWeightsMeansEqualWeights) {
   // Against the closed form rather than only against each other, so two identical wrong answers
   // cannot satisfy this.
   EXPECT_NEAR(SeparationDeg(implicitly.rotation, AboutY(ExpectedAngleDeg({10, 50, -20}, {1, 1, 1}))),
-              0.0, 1e-9);
+              0.0, kSameRotationDeg);
 }
 
 /**
@@ -245,7 +245,7 @@ TEST(AverageQuaternions, TheRatioStillDecidesAtWeightsNearTheEdgeOfTheRange) {
       AverageQuaternions(pair, std::vector<double>{3e300, 1e300});
   ASSERT_TRUE(lopsided.valid);
   EXPECT_NEAR(SeparationDeg(lopsided.rotation, AboutY(ExpectedAngleDeg({0, 60}, {3, 1}))), 0.0,
-              1e-9);
+              kSameRotationDeg);
 
   // **Everything above pins the scale and leaves the divisor's *rank* free**, which is the hole the
   // `DBL_MAX` entry was written to close and does not. Eleven of the twelve cases pass two equal

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "sphanorama/types.h"
 
 namespace sphanorama {
@@ -49,6 +51,22 @@ Quat Normalize(const Quat& q);
 // `Normalize`'s answer afterwards, because the identity is also what a phone genuinely held level
 // reports.
 bool IsUsableRotation(const Quat& q);
+
+// The norm `IsUsableRotation` tested, returned so the caller divides by the value that was tested
+// and by nothing else. Empty exactly when `IsUsableRotation` is false.
+//
+// This exists because "gate, then normalise" is two evaluations of one expression, and a compiler
+// is free to contract them differently: under `clang -O3 -march=native -ffp-contract=fast` — the
+// `native-contracting` preset — the sum of squares inlined into the gate fused and the one inside
+// `Normalize`, or a separate `Norm` call, did not, so within an ulp of either end of the admissible
+// range the gate said yes and the divisor read zero or infinity. The solver stored `q / inf`, the
+// zero quaternion, as a unit edge with `valid` true. Counted at both ends, with the construction,
+// beside the edge loop in `rotation_averaging.cpp`. Dividing by *this* value cannot disagree with
+// the gate that admitted it, because it is the same double.
+//
+// Whether an input within an ulp of the ceiling is admitted may therefore differ between builds.
+// What cannot differ is what happens after admission.
+std::optional<double> UsableNorm(const Quat& q);
 
 // Whether this vector is a measurement — every component finite. Not whether it is non-zero: a
 // stationary phone really does report a zero angular velocity, and that is a rate rather than a

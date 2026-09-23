@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <limits>
 #include <numbers>
 
@@ -147,39 +148,48 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // product overflow at the same threshold" was the wrong argument. The bottom does the mirror of
   // it: a norm just above 1e-12 rounds down through the gate.
   //
-  // **Divided here, not passed to `Normalize`.** `Normalize` has a gate of its own — the same
-  // predicate as `IsUsableRotation`, computed again — and under fast floating-point contraction
-  // (`clang -O3 -ffp-contract=fast`, or Clang's default on every aarch64 build) the two evaluations
-  // of the same `Norm` can land on different sides of 1e-12 because they are inlined at different
-  // sites. Measured: 6 of 262,074 gate-accepted rotations at the bottom of the gate had `Normalize`
-  // return its identity fallback, and the solver then placed a frame 101 degrees wrong with `valid`
-  // true — on the code that had just fixed the raw-product overflow. Dividing by the norm read here
-  // cannot fall back: the gate has already said this norm is finite and positive, and an ulp of
-  // disagreement about *which* positive number it is changes the unit quaternion by an ulp.
+  // **Divided by the norm the gate tested, and by nothing else.** Two earlier shapes of this line
+  // were each wrong in the same way. `Normalize(edge.rotation)` re-evaluated the norm inside its own
+  // gate; a local `Norm(edge.rotation)` re-evaluated it as an out-of-line call. Either way the gate's
+  // sum of squares and the divisor's were two evaluations, and under fast contraction one fused and
+  // the other did not — so within an ulp of 1e-12 the first shape
+  // fell back to the identity on an accepted input, and within an ulp of `sqrt(DBL_MAX)` the second
+  // read infinity and stored `q / inf`, the zero quaternion, as a unit edge. A frame then sat 169
+  // degrees out with `valid` true and `maxEdgeErrorDeg` reading zero. `UsableNorm` returns the
+  // double it tested; dividing by that cannot disagree with the gate because it is the gate.
+  //
+  // Counted on one construction, the witness test's pool — `std::mt19937_64` seeded 0x5eed,
+  // `N(0, 1)` components, 64 sequenced (edge, anchor) pairs, each edge walked 4,096 `nextafter`
+  // steps upward from the threshold — under `clang++ -O3 -march=native -ffp-contract=fast`: from
+  // 1e-12, 262,074 admitted and 6 fell back; from `sqrt(DBL_MAX)`, 86 admitted and 6 read an
+  // infinite norm. gcc at -O0 and at -O3 -march=native admit 262,073 and 262,068 at the bottom, 78
+  // and 89 at the top, and disagree on none — the denominators move with the build too, which is
+  // why the construction is written down rather than the rate alone (see `RollBetween`).
   std::vector<Quat> rotation;
   rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {
     if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) return out;
     if (edge.from == edge.to) return out;
-    if (!IsUsableRotation(edge.rotation)) return out;
+    const std::optional<double> norm = UsableNorm(edge.rotation);
+    if (!norm) return out;
     if (!std::isfinite(edge.weight) || edge.weight < 0.0) return out;
-    const double norm = Norm(edge.rotation);
-    rotation.push_back(Quat{edge.rotation.w / norm, edge.rotation.x / norm, edge.rotation.y / norm,
-                            edge.rotation.z / norm});
+    rotation.push_back(Quat{edge.rotation.w / *norm, edge.rotation.x / *norm,
+                            edge.rotation.y / *norm, edge.rotation.z / *norm});
   }
 
-  // `prior` is the anchor made unit by the same division as the edges above, for the same reason:
-  // an anchor the gate accepted must not be handed to `Normalize`'s second gate. Unanchored frames
-  // hold the identity here and are never read, since every read is behind `anchored`.
+  // `prior` is the anchor divided by the norm its gate tested, for the reason given above the edge
+  // loop. Unanchored frames hold the identity here and are never read, since every read is behind
+  // `anchored`.
   std::vector<char> anchored(static_cast<size_t>(frames), 0);
   std::vector<Quat> prior(static_cast<size_t>(frames));
   for (int32_t i = 0; i < frames; ++i) {
     const Quat& anchor = anchors[static_cast<size_t>(i)];
-    anchored[static_cast<size_t>(i)] = IsUsableRotation(anchor) ? 1 : 0;
-    if (anchored[static_cast<size_t>(i)] != 0) {
+    const std::optional<double> norm = UsableNorm(anchor);
+    anchored[static_cast<size_t>(i)] = norm ? 1 : 0;
+    if (norm) {
       ++out.anchorsUsed;
-      const double norm = Norm(anchor);
-      prior[static_cast<size_t>(i)] = Quat{anchor.w / norm, anchor.x / norm, anchor.y / norm, anchor.z / norm};
+      prior[static_cast<size_t>(i)] =
+          Quat{anchor.w / *norm, anchor.x / *norm, anchor.y / *norm, anchor.z / *norm};
     }
   }
   // **Without one usable anchor there is nothing to start from**, which is a stronger fact than the
@@ -303,8 +313,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // **No check on the answer, because this call cannot refuse.** `AverageQuaternions` turns down
       // an empty set, a mismatched weight span, an input that is not a rotation, a negative or
       // non-finite weight, or weights that are all zero. None is reachable from here: the empty case
-      // returns above, the spans are filled together, every prediction is a `Normalize` of a product
-      // of rotations and so is one, and every weight pushed is either `anchorWeight` past its
+      // returns above, the spans are filled together, every prediction is either a `prior` — unit by the
+      // division above, on the norm its own gate tested — or a `Normalize` of a product of two unit
+      // rotations and so is one, and every weight pushed is either `anchorWeight` past its
       // `> 0.0` test or an edge weight past the filter that built `incident`. A guard here would read
       // as protection to the next person and could never fire, which this repository treats as worse
       // than none.

@@ -135,6 +135,19 @@ it at all — 590 is under any budget worth setting — and the only pin on that
 constants have two different guards, and this ADR named one of them for both. Anything quoting
 the table inherits the obligation the accuracy table has: the figures move together or not at all.
 
+**A third native preset, and a CI job for it, exist because of this component's review.** Rounds 9
+and 10 each fixed a defect — a gate that admitted a quaternion and a divisor that then read its norm
+again and got a different answer — that no build CI ran could show, because at `-O0` nothing is
+inlined and two evaluations of one expression are the same compiled copy. `native-contracting` is
+clang at `-O3 -march=native -ffp-contract=fast`, without OpenCV, and its job refuses to pass when
+the compiler fused nothing. It is clang and not the default compiler for a measured reason: gcc 13
+fuses 98 multiply-adds in `quaternion.cpp` at the same flags and never once split the gate from the
+divisor, on 262,000 inputs at either end of the gate; clang 18 under `-ffp-contract=fast` did, and
+under its default contraction did not. The property the job depends on is the inliner's, so the
+"build contracts" check is necessary and not sufficient, and the preset's description says so. The
+fix itself is `UsableNorm`, which returns the double the gate tested so that a caller has nothing
+else to divide by.
+
 **Normalising each input changed behaviour, in a case nothing was reaching.** `IsUsableRotation`
 admits any finite norm above 1e-12, and an unnormalised quaternion contributes its *squared* norm to
 the outer-product sum — a second, unasked-for weight, so a tripled quaternion counted nine times.

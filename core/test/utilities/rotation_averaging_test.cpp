@@ -13,6 +13,7 @@
 #include "support/rotation_scoring.h"
 #include "support/same_rotation.h"
 #include "utilities/quaternion.h"
+#include "utilities/quaternion_average.h"
 
 namespace sphanorama {
 namespace {
@@ -180,7 +181,8 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   //
   // **It pins `kSettledDeg` and not `kMaxSweeps`**, which is narrower than the claim that stood here
   // ("the only assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves") and wrong in
-  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 742 and fails — but so do
+  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 742 (732 under fast
+  // contraction) and fails — but so do
   // `AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain` and
   // `TheClosingEdgeIsWhatRemovesAChainsDrift`, so it is not the only one. And a sweep *budget* it
   // cannot see at all: 590 is under any budget worth setting, so `kMaxSweeps` at 700 leaves this
@@ -197,7 +199,8 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   // strength of it would have been told the wrong test would catch them.
   // Within one, not exactly: the sweep count is where a rounding-dependent iteration first fell under
   // `kSettledDeg`, and under `clang -O3 -ffp-contract=fast` it reads 589. A tolerance of one still
-  // catches the constant moving — tightening it lands at 742.
+  // catches the constant moving — tightening it lands at 742 under gcc and 732 under clang with
+  // fast contraction, both a long way outside it.
   EXPECT_NEAR(believed.sweeps, 590, 1);
 
   const test::RotationScore after = test::ScoreRotations(believed.rotations, truth);
@@ -391,7 +394,7 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that do. A threshold is sensitive in both directions and the count depends on which way you
   // push it, so all three figures are given rather than one:
   //
-  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 742,
+  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 742 (732 under fast contraction),
   //                              `trusted.medianDeg 0.0000226` -> 8.62e-6,
   //                              `recovered.maxDeg 0.0000278` -> 7.04e-6,
   //                              `score.medianDeg 0.0000286` (this one) -> 4.67e-6
@@ -426,6 +429,11 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // `kSameRotationDeg` rather than the ±10% band this carried: the figure is where the solver
   // *stopped*, so it is rounding-dependent to about `kSettledDeg` itself, and under fast contraction
   // it reads 2.28e-5. Tightening `kSettledDeg` still moves it to 4.67e-6, well outside this band.
+  // Loosening is the direction the wider band gave up: at `kSettledDeg` 1.5e-5 this reads inside
+  // it, where the ±3e-6 band would have failed, and the suite is failed there by `believed.sweeps`
+  // (549) and `recovered.maxDeg` (4.43e-5) instead. Measured, both builds. So the failure message
+  // below over-promises by about half in that direction — this pin catches the constant moving by
+  // a factor of two, not by half — and the two beside it are what catch less than that.
   EXPECT_NEAR(score.medianDeg, 0.0000286, kSameRotationDeg)
       << "this is a kSettledDeg figure; if it moved, either that constant did or something else is "
          "now moving the answer";
@@ -515,8 +523,8 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
  *
  * **The witnesses are found at run time, not hard-coded, because the tipping is a property of the
  * build.** The first version of this test carried two hand-copied quaternions from a fixed seed,
- * and under FMA contraction (`-mfma -ffp-contract=fast`, or Clang's *default* on every aarch64
- * build) `Norm` fuses its four products, the bottom witness's norm rounds to exactly 1e-12, the gate
+ * and under FMA contraction (`-march=native -ffp-contract=fast`, the `native-contracting` preset)
+ * `Norm` fuses its four products, the bottom witness's norm rounds to exactly 1e-12, the gate
  * refuses it, and the test went red on **correct** code. Worse, it only ever asserted half its
  * premise — that the gate admits the witness — and never that the raw product actually tips, so a
  * witness that stopped tipping would have left the test green on the broken code. Both halves are
@@ -535,7 +543,10 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
  * converged, `ambiguous` empty, `maxEdgeErrorDeg` 76.6 against 43.4. Now all three sites are pinned.
  */
 TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
-  // A pool of unit (edge, anchor) pairs from a fixed seed, the same on every run and every build.
+  // A pool of unit (edge, anchor) pairs from a fixed seed, paired the same way on every run and
+  // every build. Not the same *bits*: `Normalize` inside `randomUnit` contracts differently, so gcc
+  // and clang differ in the last place of a component here and there. Nothing below depends on the
+  // bits — the witness is searched for per build and its premise asserted on what was found.
   std::mt19937_64 rng(0x5eed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   const auto randomUnit = [&] { return Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)}); };
@@ -608,6 +619,82 @@ TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
     // a frame the walk parks at the identity can still be relaxed *off* it by the sweep.
     EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, kSameRotationDeg)
         << w.what << ": the scaled edge placed the frame somewhere else";
+  }
+
+  // **The third kind of witness: one the gate admits and the divisor cannot divide by.** Round 9
+  // replaced `Normalize(edge.rotation)` with a division by a locally computed `Norm`, so the value
+  // divided by would be the value the gate tested. It was not: the gate's `Norm` is inlined into
+  // `IsUsableRotation`, the divisor's is an out-of-line call, and under `-ffp-contract=fast` one is
+  // fused and the other is not. At the top of the gate the unfused sum overflows where the fused one
+  // did not — on this pool, 6 of the 86 inputs the gate admits in 4,096 ulps above `sqrt(DBL_MAX)`,
+  // under `clang++ -O3 -march=native -ffp-contract=fast` —
+  // and `q / inf` is the zero quaternion, stored as a unit edge with `valid` true. A frame then sat
+  // 169 degrees from where the same edge normalised puts it, and `maxEdgeErrorDeg` read **0**,
+  // because `AngleBetween` normalises the zero edge to the identity and the frames coincide with it.
+  //
+  // The witness search reproduces the disagreement in this translation unit the same way: ask the
+  // gate, then ask `Norm` separately, walking *upward* from `sqrt(DBL_MAX)` where the divisor
+  // witnesses live. A build that never fuses — gcc in ISO mode, which is the `native-debug` and
+  // `native-asan` presets — finds none, and that is recorded rather than failed: the defect is a
+  // property of the build, and a test that goes red for not being able to see it is the round-8
+  // mistake in reverse. Which is also why the `native-contracting` preset exists and CI runs it:
+  // until round 10 no build CI ran could fail this arm, and round 9's fix had no test that could
+  // fail on the build that checked it. It is a clang preset because the split is the inliner's and
+  // not the instruction set's: with round 9's shape put back, gcc 13 at `-O3 -march=native
+  // -ffp-contract=fast` fuses 98 multiply-adds in `quaternion.cpp` and still finds no witness here,
+  // clang 18 under its default contraction finds none, and clang 18 under `-ffp-contract=fast`
+  // finds one and fails this arm. Measured on this test, not inferred.
+  //
+  // What the fixed solver must do with such an input is *either* refuse it *or* agree with the unit
+  // edge — whichever the single evaluation of its norm says — and never the third thing, a valid
+  // answer that is wrong. So the assertion is on that disjunction.
+  {
+    const Quat* divisorEdge = nullptr;
+    const Quat* divisorAnchor = nullptr;
+    Quat divisorScaled;
+    for (const auto& [edge, anchor] : pool) {
+      double scale = std::sqrt(std::numeric_limits<double>::max());
+      for (int step = 0; step < 8 && divisorEdge == nullptr; ++step) {
+        const Quat scaled{edge.w * scale, edge.x * scale, edge.y * scale, edge.z * scale};
+        // Two evaluations on purpose: the gate's, and a separate one the compiler may contract
+        // differently. Their disagreement is the input under test.
+        if (IsUsableRotation(scaled) && !std::isfinite(Norm(scaled))) {
+          divisorEdge = &edge;
+          divisorAnchor = &anchor;
+          divisorScaled = scaled;
+        }
+        scale = std::nextafter(scale, std::numeric_limits<double>::infinity());
+      }
+      if (divisorEdge != nullptr) break;
+    }
+    if (divisorEdge == nullptr) {
+      std::fprintf(stderr, "[gate] this build's gate and divisor agree at the top; no divisor witness\n");
+    } else {
+      const std::vector<Quat> anchors{Quat{0, 0, 0, 0}, *divisorAnchor};
+      const std::vector<RelativeRotation> scaledEdge{RelativeRotation{0, 1, divisorScaled, 1.0}};
+      const std::vector<RelativeRotation> unitEdge{RelativeRotation{0, 1, *divisorEdge, 1.0}};
+      const AveragedRotations got = AverageRotations(scaledEdge, anchors, 0.01);
+      const AveragedRotations want = AverageRotations(unitEdge, anchors, 0.01);
+      ASSERT_TRUE(want.valid);
+      if (got.valid) {
+        for (const Quat& q : got.rotations) {
+          EXPECT_TRUE(IsUsableRotation(q)) << "a stored rotation that is not one";
+        }
+        EXPECT_NEAR(SeparationDeg(got.rotations[0], want.rotations[0]), 0.0, kSameRotationDeg)
+            << "divisor witness: admitted, then placed somewhere else — the gate and the divisor "
+               "disagreed";
+      }
+      // The averager had the same shape — gate, then `Normalize` — and is shared with the scorer,
+      // so the same witness is put to it directly rather than only through the solver's sweep, whose
+      // predictions are unit and cannot carry it there. As the one input it is either refused or
+      // averaged to the unit edge; the identity, which `Normalize`'s fallback would have summed at
+      // full weight, is the third thing.
+      const QuaternionAverage lone = AverageQuaternions(std::vector<Quat>{divisorScaled}, {});
+      if (lone.valid) {
+        EXPECT_NEAR(SeparationDeg(lone.rotation, *divisorEdge), 0.0, kSameRotationDeg)
+            << "divisor witness: the averager admitted it and answered somewhere else";
+      }
+    }
   }
 
   // **The contradictory triangle, which is the only shape that can see the walk site.** Frame 0 is

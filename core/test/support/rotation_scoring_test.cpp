@@ -370,12 +370,19 @@ TEST(RotationScoring, AnErrorInEachCamerasOwnFrameMakesTheFramesThemselvesMatter
   EXPECT_GT(largest - smallest, 1.0) << "the per-frame errors do not depend on the frames";
 
   // And the control: the same error applied on the left collapses to one residual and every frame
-  // reports the identical number.
+  // reports the identical number — to the instrument's floor, not to the bit. `AngleBetween` cannot
+  // say anything between zero and 1.7e-6 degrees, and which of the two it says for a residual that
+  // is the identity up to rounding depends on how the compiler contracted the multiplies: under
+  // gcc at -O3 -march=native the first frame read zero and the others read the floor, and a 1e-9
+  // tolerance here — the same defect round 9 removed from fifty-one other sites, in a shape that
+  // sweep did not match — turned the control red.
   std::vector<Quat> leftInstead;
   for (const Quat& q : truth) leftInstead.push_back(Multiply(localError, q));
   const RotationScore collapsed = ScoreRotations(leftInstead, truth);
   ASSERT_TRUE(collapsed.valid);
-  for (double deg : collapsed.perFrameDeg) EXPECT_NEAR(deg, collapsed.perFrameDeg[0], 1e-9);
+  for (double deg : collapsed.perFrameDeg) {
+    EXPECT_NEAR(deg, collapsed.perFrameDeg[0], kSameRotationDeg);
+  }
 }
 
 // Two frames exactly 180 degrees apart leave the top two eigenvalues equal, so every rotation in a

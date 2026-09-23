@@ -254,6 +254,42 @@ jobs:
           rm -f "$log"
           exit $status
 
+  contracting:
+    name: optimised, with fused floating point
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # The two jobs above compile at -O0, where nothing is inlined and every evaluation of an
+      # expression is the one compiled copy of it. A gate that tests a norm and a divisor that reads
+      # the same norm again cannot disagree there — and twice on PR #80 a fix that was green on
+      # both of them stored a zero quaternion or an identity on a build that fused one copy and not
+      # the other. This job is that build, and it is clang: gcc fuses as readily and never split the
+      # two copies, which the preset's description measures. No OpenCV, so no cache: the question is
+      # about the core's own arithmetic.
+      - name: configure
+        run: cmake --preset native-contracting
+      - name: build
+        run: cmake --build build/native-contracting
+      # A run on a host without fused multiply-add, or with a compiler that ignored the flag, would
+      # pass every test below for the same reason the -O0 jobs do, and read as this job having
+      # looked. Count the fused instructions in the one translation unit the defects lived in; zero
+      # is a job that cannot see what it exists to see, and says so rather than passing. Necessary
+      # and not sufficient — whether two inlined copies fuse *differently* is the inliner's call —
+      # which is why the preset names the compiler that did.
+      - name: the build contracts
+        run: |
+          object=build/native-contracting/core/CMakeFiles/sphanorama_core.dir/src/utilities/quaternion.cpp.o
+          fused=$(objdump -d "$object" | grep -c -E 'vfn?m(add|sub)|fmadd|fmsub|fmla|fmls' || true)
+          echo "fused multiply-adds in quaternion.cpp: $fused"
+          if [ "$fused" -lt 1 ]; then
+            echo "this build did not fuse a single multiply-add, so it cannot see the defects it exists to catch" >&2
+            exit 1
+          fi
+      - name: test
+        run: ctest --test-dir build/native-contracting --output-on-failure
+
   wasm:
     name: wasm builds, size budget and browser tests
     runs-on: ubuntu-latest
