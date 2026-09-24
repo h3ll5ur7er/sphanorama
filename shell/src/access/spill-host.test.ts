@@ -872,6 +872,10 @@ describe('the spill file', () => {
     // On a name of its own, both halves of it, rather than half-sharing the resident pair.
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);
+    // And the resident frames it took on the way are let go: holding them for the life of the
+    // worker would push the next reload onto a tier it cannot resume.
+    const resident = await opfs.directory.getFileHandle('sphanorama-spill-resident');
+    await expect(resident.createSyncAccessHandle!()).resolves.toBeDefined();
   });
 
   it('gives a fallback file back even when the handle will not close', async () => {
@@ -982,6 +986,34 @@ describe('a reload that finds the last worker still holding the tier', () => {
     expect(slept).toHaveLength(wait.attempts - 1);
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);
+  });
+
+  it('waits only for the resident pair, never for a name of its own', async () => {
+    // A fallback name is fresh, so nobody else can be holding it; a refusal there is a fault that
+    // waiting cannot fix, and waiting would add a second pause before the same error.
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident'
+      || (name.endsWith('.index') && name !== 'sphanorama-spill-resident.index'));
+    const { slept, wait } = recording(50);
+
+    await expect(openSpillTier(opfs.directory, wait)).rejects.toThrow(/in use/);
+    expect(slept).toHaveLength(wait.attempts - 1);
+  });
+
+  it('waits by default, which is what the worker gets', async () => {
+    // The worker calls `openSpillTier()` with no handoff, so the shipped values are the ones that
+    // decide whether a reload resumes. The previous worker lets go after 1.5 s here.
+    vi.useFakeTimers();
+    try {
+      let heldUntil = 1500;
+      const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && Date.now() < heldUntil);
+      heldUntil += Date.now();
+      const opening = openSpillTier(opfs.directory);
+      await vi.advanceTimersByTimeAsync(2500);
+      await opening;
+      expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not wait at all on a browser that cannot lock a file', async () => {

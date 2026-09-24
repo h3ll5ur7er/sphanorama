@@ -29,12 +29,15 @@ keeps what a killed worker wrote.
 
 **`openSpillTier` waits for the resident pair before falling back.** It retries the lock on the
 frames file, and separately on the index file, since the old worker releases its two handles
-independently. It gives up after `RELOAD_HANDOFF`: 20 attempts, 100 ms apart, about two seconds.
-Only then does it take a name of its own, exactly as before. A browser that cannot lock a file at
+independently. Each file gets `RELOAD_HANDOFF`: 20 attempts, 100 ms apart, about two seconds, so
+a reload whose old worker lets go of the frames late and the index later still can wait close to
+four. Only then does it take a name of its own, exactly as before. A name of its own is never
+waited for, since nobody else can be holding a fresh one. A browser that cannot lock a file at
 all still fails at once, since waiting cannot help it.
 
-The wait is a parameter (`ResidentHandoff`), so the tests drive it with a recording sleep rather
-than the clock.
+The wait is a parameter (`ResidentHandoff`), so most tests drive it with a recording sleep rather
+than the clock. One runs the shipped default under fake timers, because the worker calls
+`openSpillTier()` without one and those are the values that decide whether a reload resumes.
 
 ## Consequences
 
