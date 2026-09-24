@@ -407,10 +407,12 @@ test('a pick survives the tab that made it', async ({ page }) => {
   // The worker says when it falls back from the resident spill tier, and a fallback is what
   // refuses the resume below, so a failure carries the worker's own account of the tier it got
   // rather than only the refusal (ADR 0063).
+  // On the page rather than the worker: Playwright's `Worker` emits nothing but `close`, and a
+  // dedicated worker's console arrives as the page's.
   const spillNotes = [];
-  page.on('worker', (worker) => worker.on('console', (message) => {
+  page.on('console', (message) => {
     if (message.text().includes('spill')) spillNotes.push(message.text());
-  }));
+  });
   // The claim, end to end. A selection used to live in the review panel's own memory, so what the
   // strip showed as "in force" was whatever this tab had clicked — and a reload started again
   // from the ranking, silently disagreeing with the build, which reads the document. Everything

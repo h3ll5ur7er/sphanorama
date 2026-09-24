@@ -11,11 +11,11 @@
  * fault a spilled frame back in synchronously cannot do it from the main thread.
  */
 import { createCaptureHost } from '../access/capture-host';
-import { createDocumentHost, type DocumentHost } from '../access/document-host';
-import { createIndexedDbStore } from '../access/indexeddb-store';
-import { createSpillHost, openSpillTier, type SpillHost } from '../access/spill-host';
+import type { DocumentHost } from '../access/document-host';
+import type { SpillHost } from '../access/spill-host';
 import { loadCoreRuntime, type CoreRuntime } from './core';
 import type { FromWorker, ToWorker } from './protocol';
+import { openStores } from './stores';
 
 const scope = self as unknown as {
   postMessage(message: FromWorker, transfer?: Transferable[]): void;
@@ -39,25 +39,9 @@ function fail(seq: number, cause: unknown): void {
 }
 
 async function boot(seq: number, coreUrl: string): Promise<void> {
-  // Opened before the module and separately from it, because it can fail on its own and the
-  // failure is not fatal: a browser with no origin private file system, or one whose handle will
-  // not open, gets a core whose frame store has nowhere to spill. The composition root reads
-  // whether this is installed and hands the store a sink or not (ADR 0020), so a sphere on such a
-  // browser is capped at what fits in RAM rather than told that spilling freed memory.
-  try {
-    const tier = await openSpillTier();
-    spill = createSpillHost(tier.frames, tier.index);
-  } catch (cause) {
-    spill = null;
-    console.warn('sphanorama worker: no spill tier —', String(cause));
-  }
-
-  // Hydrated after the tier and before the module. After the tier, because on a reload the resident
-  // pair is released only when the previous worker is gone (ADR 0063), so holding it means the
-  // documents that worker flushed on `pagehide` are all there to read. Before the module, because
-  // the core reads documents through a synchronous port and a store that is still loading would
-  // answer "no such project" to a session it should resume.
-  documents = await createDocumentHost(createIndexedDbStore());
+  // Before the module, because the core reads documents through a synchronous port and a store
+  // that is still loading would answer "no such project" to a session it should resume.
+  ({ spill, documents } = await openStores());
 
   // Imported at runtime rather than bundled: the module is an artifact of the C++ build, and the
   // two builds (ADR 0011) are selected by which one the deploy copied in. The page resolved the

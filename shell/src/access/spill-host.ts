@@ -531,9 +531,16 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
  * refused as lost. A second tab holds the pair for as long as it lives, and waits this long before
  * it falls back — a startup cost paid only by the tab that cannot resume anyway.
  *
- * The budget is per file, and the frames and the index are waited for separately, so a reload can
- * wait up to twice this. Only the browser's held-file error is waited out; anything else — a full
- * disk, a broken handle — will not clear by waiting.
+ * **Sized from a measurement, not chosen.** Chromium lets go of an idle worker's handles before
+ * the new worker first asks; a busy one it terminates about 1.98 s after the new worker starts
+ * polling, however long that worker was going to be busy for (3, 8 and 20 s all measured the same).
+ * Twenty attempts, 1.9 s, gave up about 70 ms before that and refused the resume. Thirty is 2.9 s:
+ * the measured release with a second to spare, paid in full only by a second tab.
+ *
+ * The budget is per file, and the frames and the index are waited for separately. Chromium
+ * releases the two together, so the index has never needed a second try; a browser that let them
+ * go apart could make a reload wait up to twice this. Only the browser's held-file error is waited
+ * out; anything else — a full disk, a broken handle — will not clear by waiting.
  */
 export interface ResidentHandoff {
   attempts: number;
@@ -541,7 +548,7 @@ export interface ResidentHandoff {
   sleep?: (ms: number) => Promise<void>;
 }
 
-const RELOAD_HANDOFF: ResidentHandoff = { attempts: 20, delayMs: 100 };
+const RELOAD_HANDOFF: ResidentHandoff = { attempts: 30, delayMs: 100 };
 
 function isHeld(cause: unknown): boolean {
   return (cause as { name?: unknown } | null)?.name === 'NoModificationAllowedError';

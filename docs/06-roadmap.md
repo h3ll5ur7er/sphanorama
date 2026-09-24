@@ -277,9 +277,9 @@ test in a single browser session cannot reach.
 
 **And on the one axis where they differ the other way, the reload is the harder case.** The resident
 spill pair is taken under an exclusive sync access handle, so a reload can race the outgoing worker,
-fall back to a tier of its own, and then fail `TierGeneration`. A reload now waits up to about two
-seconds per file for the pair before falling back (ADR 0063), which narrows that race without
-closing it. A
+fall back to a tier of its own, and then fail `TierGeneration`. A reload now waits up to about 2.9
+seconds per file for the pair before falling back, a second longer than desktop Chromium was
+measured to take releasing a busy worker (ADR 0063); a phone is unmeasured. A
 close-and-reopen removes it outright. So the close-and-reopen is the stronger result for process survival and the weaker one for
 the handoff — which is an argument for having both reports rather than for ranking them.
 
