@@ -89,7 +89,7 @@ echo "== contracting =="
 # passing on a host that fused nothing.
 step "contracting configure" cmake --preset native-contracting
 step "contracting build"     cmake --build build/native-contracting
-step "build contracts"       sh -c 'object=build/native-contracting/core/CMakeFiles/sphanorama_core.dir/src/utilities/quaternion.cpp.o; fused=$(objdump -d "$object" | grep -c -E "vfn?m(add|sub)|fmadd|fmsub|fmla|fmls" || true); echo "fused multiply-adds in quaternion.cpp: $fused"; if [ "$fused" -lt 1 ]; then echo "this build did not fuse a single multiply-add, so it cannot see the defects it exists to catch" >&2; exit 1; fi'
+step "build contracts"       tools/check_fused_build.sh build/native-contracting
 step "contracting test"      ctest --test-dir build/native-contracting --output-on-failure
 
 echo "== wasm, size budget and browser tests =="

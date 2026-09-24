@@ -274,21 +274,14 @@ jobs:
         run: cmake --preset native-contracting
       - name: build
         run: cmake --build build/native-contracting
-      # A run on a host without fused multiply-add, or with a compiler that ignored the flag, would
-      # pass every test below for the same reason the -O0 jobs do, and read as this job having
-      # looked. Count the fused instructions in the one translation unit the defects lived in; zero
-      # is a job that cannot see what it exists to see, and says so rather than passing. Necessary
-      # and not sufficient — whether two inlined copies fuse *differently* is the inliner's call —
-      # which is why the preset names the compiler that did.
+      # A build that lost the flag, or a host that cannot fuse, passes every test below for the same
+      # reason the -O0 jobs do, and reads as this job having looked. So both are checked, each for
+      # itself: the flag in the compile command, because counting fused instructions cannot tell
+      # `-ffp-contract=fast` from clang's default contraction (a round-11 reviewer built without the
+      # flag and counted 114); and at least one fused instruction in the object, because the flag
+      # does nothing on a host without them. Each failure says which of the two it was.
       - name: the build contracts
-        run: |
-          object=build/native-contracting/core/CMakeFiles/sphanorama_core.dir/src/utilities/quaternion.cpp.o
-          fused=$(objdump -d "$object" | grep -c -E 'vfn?m(add|sub)|fmadd|fmsub|fmla|fmls' || true)
-          echo "fused multiply-adds in quaternion.cpp: $fused"
-          if [ "$fused" -lt 1 ]; then
-            echo "this build did not fuse a single multiply-add, so it cannot see the defects it exists to catch" >&2
-            exit 1
-          fi
+        run: tools/check_fused_build.sh build/native-contracting
       - name: test
         run: ctest --test-dir build/native-contracting --output-on-failure
 

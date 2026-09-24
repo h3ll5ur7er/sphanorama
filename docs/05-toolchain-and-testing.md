@@ -28,9 +28,9 @@ removing one.
   idea came from, but nothing chooses an artefact from it.
 - **CMake** presets, all seven: `native-debug` (the default for TDD), `native-asan` (the sanitizer
   job), `native-contracting` (clang, optimised, with fused multiply-adds and without OpenCV — the
-  build on which a gate and a divisor can disagree about one norm, which the two `-O0` trees cannot
-  show and gcc's inliner never did; its CI job refuses to pass unless the compiler actually fused
-  something), `wasm-release` and
+  build on which two compiled copies of one expression can round differently, which the two `-O0`
+  trees cannot show; its CI job refuses to pass unless the flag reached the compile and the compiler
+  actually fused something), `wasm-release` and
   `wasm-release-threaded` (all built by the gate and by CI), and two that
   nothing builds automatically — `wasm-debug`, for a person chasing something in the browser, and
   `native-release`, for a timing run somebody does by hand. This line used to gloss the latter as

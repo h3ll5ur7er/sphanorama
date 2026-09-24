@@ -55,11 +55,11 @@ endif()
 # for, and it is asked for as a fixed level rather than `-march=native`: the GitHub runner's CPU
 # carries AVX10, clang 18 promotes `avx10.1-256` to `-512` with a warning, and `-Werror` made that
 # warning the whole job's failure on the first push. `x86-64-v3` is AVX2 plus FMA on every runner
-# and every developer machine this could reasonably meet, and it reproduces the gate/divisor split
-# the option exists to expose (measured: the round-9 shape fails the divisor witness under it
-# exactly as under `-march=native`). On aarch64 fused multiply-add is baseline and no flag is needed.
-# `-ffp-contract=fast` is global on purpose — the tests' own inlined copies are part of what has to
-# fuse for the witness search to see anything.
+# and every developer machine this could reasonably meet, and it reproduces the rounding split the
+# option exists to expose (measured: with `Norm` written as a plain sum, seven quaternions the gate
+# admits come back from `Normalize` as the identity under it). On aarch64 fused multiply-add is
+# baseline and no flag is needed. `-ffp-contract=fast` is global on purpose, so the tests are
+# compiled the way the code they check is.
 option(SPHANORAMA_FUSED_ARITHMETIC
        "Contract floating-point multiply-adds across statements, on a target that can fuse them" OFF)
 if(SPHANORAMA_FUSED_ARITHMETIC)

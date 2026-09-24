@@ -346,6 +346,36 @@ TEST(RotationScoring, ThePerFrameErrorsComeBackInTheOrderTheFramesWereGiven) {
 // Right-multiplying puts the frame back in: `Residual(t (x) e, t)` is `t (x) conj(e) (x) conj(t)`,
 // which is the error seen from that frame's orientation and differs for every frame. This is the
 // only test here whose arrangement the eigensolver cannot reduce to a single residual.
+// Scale is not evidence: an estimate equal to the truth up to a scale the gate admits scores zero.
+// The round-11 arithmetic lens scored `{a, b * 1.3407807929942596e154}` against `{a, b}` at 149
+// degrees under `clang -O3 -ffp-contract=fast`, because the scorer's gate and its `Normalize` read
+// the same sum of squares from two differently compiled copies. Walked across the top of the gate
+// for the same reason the quaternion test walks it.
+TEST(RotationScoring, AnEstimateOnlyScaledFromTheTruthScoresZero) {
+  std::mt19937_64 rng(0x5eed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  const Quat a = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+  int scored = 0;
+  int wrong = 0;
+  for (int i = 0; i < 64; ++i) {
+    const Quat b = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+    double scale = std::sqrt(std::numeric_limits<double>::max());
+    for (int step = 0; step < 256; ++step) scale = std::nextafter(scale, 0.0);
+    for (int step = 0; step < 512; ++step) {
+      const std::vector<Quat> estimated{a, Quat{b.w * scale, b.x * scale, b.y * scale, b.z * scale}};
+      const RotationScore score = ScoreRotations(estimated, {a, b});
+      if (score.valid) {
+        ++scored;
+        if (!(score.maxDeg < kSameRotationDeg)) ++wrong;
+      }
+      scale = std::nextafter(scale, std::numeric_limits<double>::infinity());
+    }
+  }
+  EXPECT_GT(scored, 0);
+  EXPECT_LT(scored, 64 * 512);
+  EXPECT_EQ(wrong, 0) << wrong << " estimates equal to the truth up to scale scored as wrong";
+}
+
 TEST(RotationScoring, AnErrorInEachCamerasOwnFrameMakesTheFramesThemselvesMatter) {
   const std::vector<Quat> truth = ARing(8);
   // Large enough that the signal is unmistakable. Conjugation preserves a rotation's *angle*, so

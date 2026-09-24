@@ -9,7 +9,15 @@
 namespace sphanorama {
 
 double Norm(const Quat& q) {
-  return std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+  // **Fused by hand, so every compiled copy rounds the same way.** Written as `w*w + x*x + ...`,
+  // the compiler may contract some of those multiply-adds and not others, and it chose differently
+  // per copy: under `clang -O3 -ffp-contract=fast` the gate's copy became a scalar fused chain and
+  // `Normalize`'s a vectorised multiply with three plain adds. Within an ulp of 1e-12 or of
+  // `sqrt(DBL_MAX)` the two copies then disagreed on whether this quaternion was usable. That
+  // shipped in three different callers across three review rounds. `std::fma` is a single rounding
+  // by definition, so no compiler is free to split it, and no caller has to remember to avoid a
+  // second evaluation.
+  return std::sqrt(std::fma(q.w, q.w, std::fma(q.x, q.x, std::fma(q.y, q.y, q.z * q.z))));
 }
 
 Quat Normalize(const Quat& q) {
@@ -41,13 +49,9 @@ std::optional<double> UsableNorm(const Quat& q) {
   // one — but the component test stays because it is the cheaper of the two and says what it
   // means.
   //
-  // **Returned rather than answered yes or no**, and this is the whole reason the function exists in
-  // this shape. A caller that asks the predicate and then divides — by `Normalize`, or by its own
-  // `Norm` — has evaluated the sum of squares twice, and under fast contraction the two evaluations
-  // can straddle 1e-12 or the overflow threshold. The header's earlier advice here, "divide by your
-  // own `Norm` rather than call `Normalize`", recommended precisely the pattern that fails: it moved
-  // the disagreement from the bottom of the gate to the top and made it silent. The only division
-  // that cannot disagree with the gate is a division by the number the gate tested.
+  // **Returned rather than answered yes or no**, so a caller that gates and then divides evaluates
+  // the sum of squares once. See `Norm` for why a second evaluation used to disagree with the
+  // first, and why it no longer can.
   if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
     return std::nullopt;
   }

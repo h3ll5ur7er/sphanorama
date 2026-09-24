@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <random>
 
 #include "support/same_rotation.h"
 #include "utilities/quaternion.h"
@@ -160,6 +161,43 @@ TEST(FromAxisAngle, AnAxisWhoseLengthOverflowsYieldsIdentityRatherThanAShortened
  * that runs — if the two ever disagree, something here fails rather than a reader believing the
  * wrong one.
  */
+// A quaternion the gate admits is one `Normalize` can derive a rotation from, at both ends of the
+// admissible range. Rounds 9, 10 and 11 on PR #80 each found a caller where the two disagreed under
+// `clang -O3 -ffp-contract=fast`: the gate's sum of squares compiled to a fused chain and
+// `Normalize`'s to a vectorised multiply and three plain adds, so within an ulp of 1e-12 or of
+// `sqrt(DBL_MAX)` an admitted quaternion came back as the identity. Walked at run time rather than
+// hard-coded, because which inputs straddle is a property of the build; on a build that computes
+// every copy the same way the walk simply finds agreement.
+TEST(Quaternion, EveryQuaternionTheGateAdmitsNormalizesToItsOwnRotation) {
+  std::mt19937_64 rng(0x5eed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  const double ends[] = {1e-12, std::sqrt(std::numeric_limits<double>::max())};
+  int admitted = 0;
+  int wrong = 0;
+  for (int i = 0; i < 64; ++i) {
+    const Quat unit = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+    for (const double end : ends) {
+      double scale = end;
+      for (int step = 0; step < 2048; ++step) scale = std::nextafter(scale, 0.0);
+      for (int step = 0; step < 4096; ++step) {
+        const Quat scaled{unit.w * scale, unit.x * scale, unit.y * scale, unit.z * scale};
+        if (IsUsableRotation(scaled)) {
+          ++admitted;
+          if (AngleBetween(Normalize(scaled), unit) * 180.0 / std::numbers::pi > kSameRotationDeg) {
+            ++wrong;
+          }
+        }
+        scale = std::nextafter(scale, std::numeric_limits<double>::infinity());
+      }
+    }
+  }
+  // Both ends straddle the gate, so the walk admitted inputs at both — not the whole walk and not
+  // none of it, which would mean it never reached the threshold it exists to cross.
+  EXPECT_GT(admitted, 0);
+  EXPECT_LT(admitted, 64 * 2 * 4096);
+  EXPECT_EQ(wrong, 0) << "the gate admitted " << wrong << " quaternions Normalize could not use";
+}
+
 TEST(Quaternion, TheTotalityPromiseNamesThreeExceptionsAndTheyBehaveAsNamed) {
   // `Multiply` is algebra: zero in, zero out. `IsUsableRotation` then refuses it, which is the
   // whole reason this is the *safer* of the two possible behaviours.

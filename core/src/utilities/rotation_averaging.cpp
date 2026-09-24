@@ -148,23 +148,14 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // product overflow at the same threshold" was the wrong argument. The bottom does the mirror of
   // it: a norm just above 1e-12 rounds down through the gate.
   //
-  // **Divided by the norm the gate tested, and by nothing else.** Two earlier shapes of this line
-  // were each wrong in the same way. `Normalize(edge.rotation)` re-evaluated the norm inside its own
-  // gate; a local `Norm(edge.rotation)` re-evaluated it as an out-of-line call. Either way the gate's
-  // sum of squares and the divisor's were two evaluations, and under fast contraction one fused and
-  // the other did not — so within an ulp of 1e-12 the first shape
-  // fell back to the identity on an accepted input, and within an ulp of `sqrt(DBL_MAX)` the second
-  // read infinity and stored `q / inf`, the zero quaternion, as a unit edge. A frame then sat 169
-  // degrees out with `valid` true and `maxEdgeErrorDeg` reading zero. `UsableNorm` returns the
-  // double it tested; dividing by that cannot disagree with the gate because it is the gate.
-  //
-  // Counted on one construction, the witness test's pool — `std::mt19937_64` seeded 0x5eed,
-  // `N(0, 1)` components, 64 sequenced (edge, anchor) pairs, each edge walked 4,096 `nextafter`
-  // steps upward from the threshold — under `clang++ -O3 -march=native -ffp-contract=fast`: from
-  // 1e-12, 262,074 admitted and 6 fell back; from `sqrt(DBL_MAX)`, 86 admitted and 6 read an
-  // infinite norm. gcc at -O0 and at -O3 -march=native admit 262,073 and 262,068 at the bottom, 78
-  // and 89 at the top, and disagree on none — the denominators move with the build too, which is
-  // why the construction is written down rather than the rate alone (see `RollBetween`).
+  // **Divided by the norm the gate tested**, which `UsableNorm` hands back so the sum of squares is
+  // evaluated once. Two earlier shapes of this line evaluated it twice — through `Normalize`, then
+  // through a separate `Norm` call — and under `clang -O3 -ffp-contract=fast` the copies rounded
+  // differently, so an admitted edge near the bottom of the gate fell back to the identity, and one
+  // near the top was divided by infinity and stored as the zero quaternion: a frame 169 degrees out
+  // with `valid` true and `maxEdgeErrorDeg` reading zero. `Norm` now fuses by hand, so the copies
+  // agree wherever they are; `Quaternion.EveryQuaternionTheGateAdmitsNormalizesToItsOwnRotation`
+  // is the test that says so.
   std::vector<Quat> rotation;
   rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {

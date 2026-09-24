@@ -192,8 +192,15 @@ TEST(CoveragePlanner, PlanningTwiceGivesTheSamePlan) {
   ASSERT_EQ(a.nodes.size(), b.nodes.size());
   for (size_t i = 0; i < a.nodes.size(); ++i) {
     EXPECT_EQ(a.nodes[i].id.value, b.nodes[i].id.value);
-    EXPECT_NEAR(AngleBetween(a.nodes[i].targetOrientation, b.nodes[i].targetOrientation), 0.0,
-                1e-12);
+    // Bit for bit, because a build is keyed on the plan. Not `AngleBetween(...) < 1e-12`, which is
+    // below the smallest angle it can report (2.98e-8 radians) and so asked for rounding luck: an
+    // identical pair of plans read 2.98e-8 apart as soon as `Norm` rounded differently.
+    const Quat& first = a.nodes[i].targetOrientation;
+    const Quat& second = b.nodes[i].targetOrientation;
+    EXPECT_EQ(first.w, second.w);
+    EXPECT_EQ(first.x, second.x);
+    EXPECT_EQ(first.y, second.y);
+    EXPECT_EQ(first.z, second.z);
   }
 }
 
