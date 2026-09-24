@@ -69,8 +69,14 @@ the pair to the wrong session in the real app:
   reloaded: 5 of 5 with a 500 ms gap.
 
 Against the claim, all of those got the pair: reload, same URL and Back 3 of 3 each over a busy old
-worker; two reloads 0 of 5 and 0 of 3 lost; a new tab opened a second before, or at the same
-instant as, the reload 0 of 5 and 0 of 10 lost.
+worker; two reloads 0 of 5 and 0 of 3 lost; a new tab opened a second before the reload 0 of 5
+lost.
+
+**One race is left, and nothing here closes it.** A new tab that tries once, in the gap between the
+old worker letting go and the claimed page's next poll, gets the pair. Measured losing the reload's
+pair in 3 of 10 runs with the new tab opened at the same instant and 2 of 6 at 20 ms; none at 50 ms
+or later. (A later run of the same experiment lost 0 of 10, which is variance in a race, not a
+fix: a new tab behaves the same with or without the claim.)
 
 A name of its own is never waited for, since nobody else can be holding a fresh one, and only the
 browser's held-file error (`NoModificationAllowedError`) is waited out: a full disk or a broken
@@ -115,6 +121,9 @@ wait, nor does its reload, and once given a claim its reload waits all thirty at
   queue.
 - **A duplicated tab can still take the pair from its original's reload**, since it carries a copy
   of the claim. Narrower than either earlier version's hole, and not measured.
+- **A new tab opened within a few tens of milliseconds of a reload can still win the pair** (above).
+  Closing that needs the holder to hand over rather than the opener to poll — a tab-keyed Web Lock
+  that only the claimed page's worker may request is the direction, and it is not built here.
 - A tab whose storage is switched off never holds a claim, so it never waits: the behaviour before
   this decision.
 - A reload whose previous worker takes longer than 2.9 s to release still falls back and still
