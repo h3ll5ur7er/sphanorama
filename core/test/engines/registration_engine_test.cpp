@@ -1150,15 +1150,9 @@ TEST_P(Extraction, APriorOnlyScaledFromAnotherGetsTheSameAnswer) {
   ASSERT_EQ(fromUnit.status.code, StatusCode::RegistrationFailed) << fromUnit.status.detail;
   const Result<PairwiseResult> fromScaled =
       engine.EstimatePairwise(a.value, b.value, scaled, Lens());
-  EXPECT_EQ(fromScaled.status.code, fromUnit.status.code)
-      << "the unit prior gave \"" << fromUnit.status.detail << "\" and the same prior scaled gave \""
-      << fromScaled.status.detail << "\"";
-  if (fromUnit.ok() && fromScaled.ok()) {
-    EXPECT_EQ(fromScaled.value.accepted, fromUnit.value.accepted);
-    EXPECT_LT(AngleBetween(fromScaled.value.relativeRotation, fromUnit.value.relativeRotation) *
-                  180.0 / std::numbers::pi,
-              1e-5);
-  }
+  EXPECT_EQ(fromScaled.status.code, StatusCode::RegistrationFailed)
+      << "the unit prior was refused and the same prior scaled gave \"" << fromScaled.status.detail
+      << "\"";
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);

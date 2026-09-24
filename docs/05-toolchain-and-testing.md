@@ -29,8 +29,8 @@ removing one.
 - **CMake** presets, all seven: `native-debug` (the default for TDD), `native-asan` (the sanitizer
   job), `native-contracting` (clang, optimised, with fused multiply-adds and without OpenCV — the
   build on which two compiled copies of one expression can round differently, which the two `-O0`
-  trees cannot show; its CI job refuses to pass unless `-ffp-contract=fast` is the last word on
-  every compile), `wasm-release` and
+  trees cannot show; its CI job refuses to pass unless every compile asked for fast contraction
+  and the compiler visibly did it), `wasm-release` and
   `wasm-release-threaded` (all built by the gate and by CI), and two that
   nothing builds automatically — `wasm-debug`, for a person chasing something in the browser, and
   `native-release`, for a timing run somebody does by hand. This line used to gloss the latter as

@@ -180,8 +180,8 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   //
   // **It pins `kSettledDeg` and not `kMaxSweeps`**, which is narrower than the claim that stood here
   // ("the only assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves") and wrong in
-  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 742 (732 under fast
-  // contraction) and fails — but so do
+  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 743 under gcc and 738 under
+  // clang with fast contraction, and fails — but so do
   // `AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain` and
   // `TheClosingEdgeIsWhatRemovesAChainsDrift`, so it is not the only one. And a sweep *budget* it
   // cannot see at all: 590 is under any budget worth setting, so `kMaxSweeps` at 700 leaves this
@@ -197,8 +197,9 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
   // strength of it would have been told the wrong test would catch them.
   // Within one, not exactly: the sweep count is where a rounding-dependent iteration first fell under
-  // `kSettledDeg`, and under `clang -O3 -ffp-contract=fast` it reads 589. A tolerance of one still
-  // catches the constant moving — tightening it lands at 742 under gcc and 732 under clang with
+  // `kSettledDeg`. It read 589 under `clang -O3 -ffp-contract=fast` until `Norm` fused by hand, and
+  // reads 590 on both builds since; `Multiply` still rounds per build, so the one stays. It still
+  // catches the constant moving — tightening it lands at 743 under gcc and 738 under clang with
   // fast contraction, both a long way outside it.
   EXPECT_NEAR(believed.sweeps, 590, 1);
 
@@ -393,10 +394,10 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that do. A threshold is sensitive in both directions and the count depends on which way you
   // push it, so all three figures are given rather than one:
   //
-  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 742 (732 under fast contraction),
-  //                              `trusted.medianDeg 0.0000226` -> 8.62e-6,
-  //                              `recovered.maxDeg 0.0000278` -> 7.04e-6,
-  //                              `score.medianDeg 0.0000286` (this one) -> 4.67e-6
+  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 743 (738 under fast contraction),
+  //                              `trusted.medianDeg 0.0000226` -> 8.71e-6 (7.82e-6),
+  //                              `recovered.maxDeg 0.0000278` -> 6.39e-6,
+  //                              `score.medianDeg 0.0000229` (this one) -> 5.79e-6 (5.92e-6)
   //   loosened to 5.6e-5     ->  six:        those four, plus `EXPECT_FALSE(solved.converged)` and
   //                              `EXPECT_EQ(solved.sweeps, 1000)` in
   //                              `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers` — it now settles in 44
@@ -425,15 +426,16 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // which is the opposite of it.
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
-  // `kSameRotationDeg` rather than the ±10% band this carried: the figure is where the solver
-  // *stopped*, so it is rounding-dependent to about `kSettledDeg` itself, and under fast contraction
-  // it reads 2.28e-5. Tightening `kSettledDeg` still moves it to 4.67e-6, well outside this band.
-  // Loosening is the direction the wider band gave up: at `kSettledDeg` 1.5e-5 this reads inside
-  // it, where the ±3e-6 band would have failed, and the suite is failed there by `believed.sweeps`
-  // (549) and `recovered.maxDeg` (4.43e-5) instead. Measured, both builds. So the failure message
-  // below over-promises by about half in that direction — this pin catches the constant moving by
-  // a factor of two, not by half — and the two beside it are what catch less than that.
-  EXPECT_NEAR(score.medianDeg, 0.0000286, kSameRotationDeg)
+  // `kSameRotationDeg` rather than a tight band: the figure is where the solver *stopped*, so it
+  // is rounding-dependent to about `kSettledDeg` itself. It reads 2.290e-5 under gcc and 2.284e-5
+  // under clang with fast contraction; it read 2.86e-5 until `Norm` fused by hand, which moved it
+  // by more than half this tolerance and is why the pin was re-measured rather than left passing.
+  // Tightening `kSettledDeg` moves it to 5.79e-6, outside this band. Loosening is the direction the
+  // band gives up: at `kSettledDeg` 1.5e-5 this reads 2.02e-5, inside it, and the suite is failed
+  // there by `believed.sweeps` (549) and `recovered.maxDeg` (4.43e-5) instead. Measured, both
+  // builds. So the failure message below over-promises in that direction — this pin catches the
+  // constant moving by a factor of two, not by half — and the two beside it catch less than that.
+  EXPECT_NEAR(score.medianDeg, 0.0000229, kSameRotationDeg)
       << "this is a kSettledDeg figure; if it moved, either that constant did or something else is "
          "now moving the answer";
 

@@ -142,8 +142,8 @@ back as the identity or as the zero quaternion, and a frame landed up to 169 deg
 `valid` true. None of it could show on a build CI ran, because at `-O0` every evaluation of an
 expression is compiled the same way. `native-contracting` is clang at `-O3 -ffp-contract=fast` on
 `x86-64-v3` (a fixed target, because the runner's AVX10 CPU made `-march=native` a `-Werror`
-failure), without OpenCV, and its job refuses to pass unless `-ffp-contract=fast` is the last word
-on every compile in the build's compile database (`tools/fused_build_check.py`).
+failure), without OpenCV, and its job refuses to pass unless fast contraction is what every compile
+asked for and the averager's object shows the compiler did it (`tools/fused_build_check.py`).
 
 The cause was vectorisation, not inlining, which the first version of this paragraph said. Read
 from the object code: the gate's copy of the sum of squares compiled to a scalar fused chain and

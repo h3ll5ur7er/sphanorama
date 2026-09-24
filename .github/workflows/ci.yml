@@ -278,9 +278,10 @@ jobs:
       - name: build
         run: cmake --build build/native-contracting
       # A build that lost the flag passes every test below for the same reason the -O0 jobs do,
-      # and reads as this job having looked. The checker reads the compile database and requires
-      # the last `-ffp-contract=` on every compile to be `fast`, since that is the one the compiler
-      # obeys (a round-12 reviewer appended `-ffp-contract=off` and the grep this replaced passed).
+      # and reads as this job having looked. The checker asks two things: that the last flag
+      # setting contraction on every compile says `fast`, and that the averager's object actually
+      # holds fused instructions — which catches a lost `-march` or a `-frounding-math` that the
+      # flags alone do not. Its docstring has the measurements.
       - name: the build contracts
         run: uv run --locked tools/fused_build_check.py build/native-contracting
       - name: test
