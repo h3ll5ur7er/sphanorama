@@ -279,9 +279,9 @@ test in a single browser session cannot reach.
 spill pair is taken under an exclusive sync access handle, so a reload can race the outgoing worker,
 fall back to a tier of its own, and then fail `TierGeneration`. A reload now waits up to about 2.9
 seconds per file for the pair before falling back, a second longer than desktop Chromium was
-measured to take releasing a busy worker (ADR 0063); a phone is unmeasured. Only a reload
-waits, so a close-and-reopen is safe once the closed tab's worker is gone — about two seconds at
-worst, which a person reopening an app nearly always allows. So the close-and-reopen is the stronger result for process survival and the weaker one for
+measured to take releasing a busy worker (ADR 0063); a phone is unmeasured. Only a tab that held
+the pair waits, so a close-and-reopen is safe once the closed tab's worker is gone — about two
+seconds at worst, which a person reopening an app nearly always allows. So the close-and-reopen is the stronger result for process survival and the weaker one for
 the handoff — which is an argument for having both reports rather than for ranking them.
 
 **Neither report reaches the pixels, and that is the part still owed.** `Resume` reads the document,

@@ -7,12 +7,12 @@ const spillHost = { kind: 'spill' } as unknown as SpillHost;
 const documentHost = { kind: 'documents' } as unknown as DocumentHost;
 
 describe('the stores a worker opens before the core', () => {
-  it('waits for the resident pair on a reload, and only then', async () => {
+  it('waits for the resident pair only when this tab held it', async () => {
     // Anything else that waited would be first in line when a reload of the session holding the
     // pair let go, and would take it from that reload (ADR 0063).
     const asked: ResidentHandoff[] = [];
     const open = {
-      spill: async (handoff: ResidentHandoff) => { asked.push(handoff); return spillHost; },
+      spill: async (handoff: ResidentHandoff) => { asked.push(handoff); return { host: spillHost, resident: true }; },
       documents: async () => documentHost,
     };
 
@@ -24,13 +24,14 @@ describe('the stores a worker opens before the core', () => {
     expect(handoffFor(false).attempts).toBe(1);
   });
 
-  it('opens both', async () => {
-    const stores = await openStores(false, {
-      spill: async () => spillHost,
-      documents: async () => documentHost,
-    });
-    expect(stores.spill).toBe(spillHost);
-    expect(stores.documents).toBe(documentHost);
+  it('opens both, and says whether the tier is the resident one', async () => {
+    for (const resident of [true, false]) {
+      const stores = await openStores(false, {
+        spill: async () => ({ host: spillHost, resident }),
+        documents: async () => documentHost,
+      });
+      expect(stores).toEqual({ spill: spillHost, resident, documents: documentHost });
+    }
   });
 
   it('still opens the documents when there is no tier', async () => {
@@ -40,8 +41,7 @@ describe('the stores a worker opens before the core', () => {
         spill: async () => { throw new Error('no origin private file system'); },
         documents: async () => documentHost,
       });
-      expect(stores.spill).toBeNull();
-      expect(stores.documents).toBe(documentHost);
+      expect(stores).toEqual({ spill: null, resident: false, documents: documentHost });
       expect(warn).toHaveBeenCalledWith('sphanorama worker: no spill tier —', expect.stringContaining('no origin private'));
     } finally {
       warn.mockRestore();

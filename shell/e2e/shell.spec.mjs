@@ -241,6 +241,48 @@ test('a second tab open on the app gets a spill tier of its own', async ({ page,
   }
 });
 
+test('only a tab that held the spill tier waits for it', async ({ page, context }) => {
+  // The page records in sessionStorage whether its tab got the resident pair, and the next page
+  // in that tab waits for it; nothing else does (ADR 0063). A second tab that waited — even a
+  // reloaded one — would be first in line when its sibling's reload let go, and take the pair from
+  // it. The attempt count the worker logs on falling back is where the whole chain shows.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const claimOf = (tab) => tab.evaluate(() => sessionStorage.getItem('sphanorama-resident-tier'));
+    expect(await claimOf(page)).toBe('held');
+
+    const second = await context.newPage();
+    const notes = [];
+    second.on('console', (message) => {
+      if (message.text().includes('still held')) notes.push(message.text());
+    });
+    const booted = async () => {
+      await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+      const seen = [...notes];
+      notes.length = 0;
+      return seen;
+    };
+
+    await second.goto(server.appUrl);
+    expect(await booted()).toEqual([expect.stringContaining('after 1 attempts')]);
+    expect(await claimOf(second)).toBeNull();
+
+    // Reloaded, it still has no claim, so it still does not wait.
+    await second.reload();
+    expect(await booted()).toEqual([expect.stringContaining('after 1 attempts')]);
+
+    // Given one, it waits the whole budget for a pair its sibling is not letting go of.
+    await second.evaluate(() => sessionStorage.setItem('sphanorama-resident-tier', 'held'));
+    await second.reload();
+    expect(await booted()).toEqual([expect.stringContaining('after 30 attempts')]);
+    expect(await claimOf(second)).toBeNull();
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which build it is', async ({ page }) => {
   // A screenshot from a phone is the only evidence some of this project has — the OPFS spill
   // tier, the lens the camera chose, the cell count — and every one of those readings is worth

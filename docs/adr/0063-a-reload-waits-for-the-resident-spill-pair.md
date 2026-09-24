@@ -38,22 +38,39 @@ OS crash and the page cache keeps what a killed worker wrote.
 
 ## Decision
 
-**A reload waits for the resident pair before falling back, and nothing else waits.** The page
-reads its own navigation type (`wasReloaded`) and sends it with `boot`, because a worker has none;
-the worker picks the wait from it (`handoffFor`).
+**A page whose tab held the resident pair last time waits for it before falling back, and nothing
+else waits.** The page records in `sessionStorage` whether its tab got the resident pair
+(`tabClaim`), reads that claim at startup and sends it with `boot`, because a worker has no tab;
+the worker picks the wait from it (`handoffFor`) and reports whether it got the resident pair, so
+the claim is kept or given up.
 
-- **A reload** retries the lock on the frames file, and separately on the index file, each with
+`sessionStorage` is the right scope because the question is whether the worker holding the pair is
+the one this tab is leaving. It survives everything that replaces a page in place — a reload, the
+same URL again, Back — and is empty in a new tab.
+
+- **A claimed page** retries the lock on the frames file, and separately on the index file, each with
   `RELOAD_HANDOFF`: 30 attempts, 100 ms apart, about 2.9 s — the measured release with a second to
   spare. Twenty attempts, the first version of this decision, gave up about 70 ms before Chromium
   let go, and the reload it was written for was refused anyway. Chromium releases the two files
   together, so the index has never needed a second try; a browser that let them go apart could
   make a reload wait up to twice the budget.
-- **Anything else** — a second tab, a fresh launch — tries once and falls back, as before this
-  decision. The second version of this decision waited in every session, and a second tab opened a
-  second before the first was reloaded was then first in line when the reload's old worker let go:
-  it took the pair in 5 of 5 runs on a minimal page and 3 of 5 in the real app, and the reloaded
-  tab could not resume. With the wait confined to reloads, the same experiment lost the reload's
-  pair in 0 of 5.
+- **Anything else** — a second tab, a fresh launch, a reload of a tab that fell back — tries once
+  and falls back, as before this decision.
+
+Two earlier versions of this decision chose the waiter differently, and each was measured losing
+the pair to the wrong session in the real app:
+
+- **Every session waited.** A second tab opened a second before the first was reloaded was first
+  in line when the reload's old worker let go, and took the pair: 3 of 5 runs (5 of 5 on a minimal
+  page), and the reloaded tab could not resume.
+- **Every reload waited** (the navigation type). Same-URL navigation and Back leave a worker behind
+  in the tab just as a reload does, and fell back in 3 of 3 runs each with the old worker busy.
+  And a reloaded second tab waited for a pair its sibling held, and took it when the sibling
+  reloaded: 5 of 5 with a 500 ms gap.
+
+Against the claim, all of those got the pair: reload, same URL and Back 3 of 3 each over a busy old
+worker; two reloads 0 of 5 and 0 of 3 lost; a new tab opened a second before, or at the same
+instant as, the reload 0 of 5 and 0 of 10 lost.
 
 A name of its own is never waited for, since nobody else can be holding a fresh one, and only the
 browser's held-file error (`NoModificationAllowedError`) is waited out: a full disk or a broken
@@ -77,22 +94,29 @@ reloads of the real app without the explicit `flush()` the browser test makes. T
 this ADR and is tracked in issue #83.
 
 The wait is a parameter (`ResidentHandoff`), so most tests drive it with a recording sleep rather
-than the clock. Two run the reload's budget under fake timers — a pair held for 2.9 s, the measured
+than the clock. Two run the claimed budget under fake timers — a pair held for 2.9 s, the measured
 release plus the promised second, is waited for, and a pair never released is given up on within
-3 s, so the budget is pinned to 30 or 31 attempts — and one shows a session that was not reloaded
-does not wait at all.
+3 s, so the budget is pinned to 30 or 31 attempts at 100 ms — and one shows an unclaimed session
+does not wait at all. A browser test drives the whole chain, page to tier: a second tab does not
+wait, nor does its reload, and once given a claim its reload waits all thirty attempts.
 
 ## Consequences
 
 - A reload whose previous worker is slow to go now gets the resident pair and can resume, instead
-  of a tier that makes its own capture unresumable. The reload pays up to 2.9 s of startup when the
-  pair is really held by a live second tab. `#enable` starts disabled in the markup until its
+  of a tier that makes its own capture unresumable. A claimed page pays up to 2.9 s of startup when
+  the pair is really held by a live second tab — which happens when a duplicated tab, whose
+  `sessionStorage` is a copy of the original's, starts while the original is still open. `#enable` starts disabled in the markup until its
   handler is attached, so the wait is a button that cannot be pressed rather than one that does
   nothing when it is.
 - A second tab starts exactly as fast as before.
-- **A close-and-reopen does not wait.** It is a navigation, not a reload, so a relaunch within about
-  two seconds of closing a tab whose worker was busy still falls back. Unmeasured whether that
-  happens in life; it is the price of not letting a live sibling jump the queue.
+- **A close-and-reopen does not wait.** A new tab has no claim, so a relaunch within about two
+  seconds of closing a tab whose worker was busy still falls back (measured: at 500 and 1500 ms it
+  fell back, from 2000 ms it got the pair). It is the price of not letting a live sibling jump the
+  queue.
+- **A duplicated tab can still take the pair from its original's reload**, since it carries a copy
+  of the claim. Narrower than either earlier version's hole, and not measured.
+- A tab whose storage is switched off never holds a claim, so it never waits: the behaviour before
+  this decision.
 - A reload whose previous worker takes longer than 2.9 s to release still falls back and still
   loses the resume — including one whose own main thread is busy around the two-second mark. The
   budget is measured on desktop Chromium only: nothing here measures how long a torn-down worker
@@ -103,9 +127,9 @@ does not wait at all.
 
 ## Rejected alternatives
 
-**Waiting in every session.** Simpler, and it was this ADR's second version. Rejected because the
-waiter that is not a reload has no claim on the pair, yet the one that has waited longest is the
-one that gets it when it comes free — measured above.
+**Waiting in every session**, and **waiting on every reload.** Both were versions of this decision,
+and both let a session with no claim on the pair wait for it — and the one that has waited longest
+is the one that gets it when it comes free. Measured above.
 
 **The Web Locks API**, holding a named lock for the worker's lifetime and having the next worker
 request it. It releases exactly when the old context dies, with no polling. Rejected for now

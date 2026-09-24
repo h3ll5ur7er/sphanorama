@@ -448,6 +448,8 @@ const INDEX_SUFFIX = '.index';
 export interface SpillTier {
   frames: SpillFile;
   index: SpillFile;
+  /** Whether this is the resident pair, which is the one a later page in this tab may wait for. */
+  resident: boolean;
 }
 
 /**
@@ -528,7 +530,7 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
  * A reload starts the new worker before the old one is reliably gone, and the old one holds the
  * resident pair under exclusive handles until it is. Taking a tier of its own at the first
  * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
- * refused as lost. Only a reload waits (`handoffFor`).
+ * refused as lost. Only a page whose tab held the pair last time waits (`handoffFor`).
  *
  * **Sized from a measurement, not chosen.** Chromium lets go of an idle worker's handles before
  * the new worker first asks. A busy one it terminates about 2 s after the reload tears its page
@@ -552,15 +554,16 @@ const RELOAD_HANDOFF: ResidentHandoff = { attempts: 30, delayMs: 100 };
 const AT_ONCE: ResidentHandoff = { attempts: 1, delayMs: 0 };
 
 /**
- * The wait for a page that was reloaded, and none for any other.
+ * The wait for a page whose tab held the resident pair last time, and none for any other.
  *
- * A reload is the only opener whose rival is on its way out. Any other — a second tab, a fresh
- * launch — finds the pair held by a session that is staying, and if it waited it would be first in
- * line when a reload of *that* session let go: measured, a second tab opened a second before the
- * first was reloaded took the pair in 5 of 5 runs, and the reloaded tab could not resume.
+ * That tab's previous worker is the only rival on its way out — whether the page came back by a
+ * reload, by the same URL again, or by Back. Any other opener finds the pair held by a session
+ * that is staying, and if it waited it would be first in line when a reload of *that* session let
+ * go: measured, a second tab that waited took the pair from its sibling's reload in 5 of 5 runs,
+ * and so did a reloaded second tab when the only test was whether the page had been reloaded.
  */
-export function handoffFor(reloaded: boolean): ResidentHandoff {
-  return reloaded ? RELOAD_HANDOFF : AT_ONCE;
+export function handoffFor(claimed: boolean): ResidentHandoff {
+  return claimed ? RELOAD_HANDOFF : AT_ONCE;
 }
 
 function isHeld(cause: unknown): boolean {
@@ -591,9 +594,8 @@ async function lockWaiting(directory: SpillDirectory, name: string,
 // the way to the page records why. A held file has already said so, with how long it waited.
 function fallingBack(file: string, cause: unknown): void {
   if (isHeld(cause)) return;
-  const { name, message } = (cause ?? {}) as { name?: unknown; message?: unknown };
-  const why = name !== undefined ? `${String(name)}: ${String(message)}` : String(cause);
-  console.warn(`sphanorama spill: ${file} refused (${why}); taking a tier of its own`);
+  // `String` of an `Error` or a `DOMException` is its name and its message, which is both halves.
+  console.warn(`sphanorama spill: ${file} refused (${String(cause)}); taking a tier of its own`);
 }
 
 function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: string,
@@ -629,9 +631,9 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
  *
  * The handle underneath is exclusive, though, so the resident pair cannot always be had at once: a
  * reload whose previous worker has not been torn down yet gets `NoModificationAllowedError` for a
- * moment, and a second tab open on the app gets it for good. So a reload waits for the pair
- * (`handoffFor`) and only then falls back to a name of its own, and anything else falls back at
- * once. That keeps a second tab capturing — with a tier that is not resumable, which is correct,
+ * moment, and a second tab open on the app gets it for good. So a page whose tab held the pair
+ * waits for it (`handoffFor`) and only then falls back to a name of its own, and anything else
+ * falls back at once. That keeps a second tab capturing — with a tier that is not resumable, which is correct,
  * because the capture it would resume belongs to whoever is holding the resident one — without
  * handing a reload the same unresumable tier.
  */
@@ -694,5 +696,6 @@ export async function openSpillTier(directory: SpillDirectory | undefined,
   return {
     frames: fileOver(frames, root, name, disposable),
     index: fileOver(index, root, name + INDEX_SUFFIX, disposable),
+    resident: !disposable,
   };
 }

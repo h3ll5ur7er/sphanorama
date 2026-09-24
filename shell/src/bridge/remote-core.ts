@@ -13,6 +13,7 @@ import { coreFrom, type CoreRuntime, type HostState, type RuntimeCapabilities, t
   from './core';
 import type { GrabbedFrame } from '../access/preview-frame';
 import type { CameraOpening, FromWorker, LockReport, ToWorker } from './protocol';
+import type { TierClaim } from './tier-claim';
 
 /**
  * A request minus the number that pairs it with its answer, so callers describe what they want
@@ -75,17 +76,8 @@ export interface RemoteCoreHandle {
   remote: RemoteCore;
 }
 
-/**
- * Whether this page was reached by reloading it, which is the one case whose previous worker is
- * on its way out rather than staying (ADR 0063). Nothing reported reads as not a reload.
- */
-export function wasReloaded(timing: Pick<Performance, 'getEntriesByType'>): boolean {
-  const [navigation] = timing.getEntriesByType('navigation') as PerformanceNavigationTiming[];
-  return navigation?.type === 'reload';
-}
-
 export async function connectCore(worker: WorkerLike, coreUrl: string,
-                                  reloaded: boolean): Promise<RemoteCoreHandle> {
+                                  claim: TierClaim): Promise<RemoteCoreHandle> {
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let releaseLocks: () => void = () => {};
@@ -161,7 +153,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
   // `die` is idempotent, so an `error` event that arrives alongside this is not a second death.
   let booted: FromWorker;
   try {
-    booted = await ask({ kind: 'boot', coreUrl, reloaded });
+    booted = await ask({ kind: 'boot', coreUrl, claimed: claim.held });
   } catch (cause) {
     die(`the core worker failed to boot: ${cause instanceof Error ? cause.message : String(cause)}`);
     throw cause;
@@ -170,6 +162,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     die('the worker answered boot with something else');
     throw new Error('the worker answered boot with something else');
   }
+  // Recorded as soon as it is known, so the next page in this tab waits only for a pair this tab
+  // actually held.
+  claim.record(booted.resident);
   const methodNames = booted.methods;
 
   const runtime: CoreRuntime = {

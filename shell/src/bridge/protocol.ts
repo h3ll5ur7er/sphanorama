@@ -34,11 +34,11 @@ export interface LockReport {
 
 export type ToWorker =
   /**
-   * The core module is fetched at runtime, so the page passes the URL it resolved. `reloaded` is
-   * the page's navigation type, which a worker cannot read and the spill tier's wait depends on
-   * (ADR 0063).
+   * The core module is fetched at runtime, so the page passes the URL it resolved. `claimed` is
+   * whether this tab held the resident spill pair last time — tab-scoped, which a worker is not —
+   * and the tier's wait depends on it (ADR 0063).
    */
-  | { kind: 'boot'; seq: number; coreUrl: string; reloaded: boolean }
+  | { kind: 'boot'; seq: number; coreUrl: string; claimed: boolean }
   | { kind: 'call'; seq: number; method: string; args: Uint8Array }
   | {
       kind: 'capabilities';
@@ -77,7 +77,8 @@ export type FromWorker =
   // the composition root inside the module decides that from the same fact — but a page that
   // cannot spill will hit a ceiling early, and the client has to be able to say so rather than
   // present it as a mysterious refusal (ADR 0020).
-  | { kind: 'booted'; seq: number; methods: string[]; spill: boolean }
+  /** `resident` says whether the tier is the resident pair, so the page can record its claim. */
+  | { kind: 'booted'; seq: number; methods: string[]; spill: boolean; resident: boolean }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }
   | { kind: 'flushed'; seq: number; persistError: string | null }

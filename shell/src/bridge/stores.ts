@@ -12,37 +12,40 @@ import {
 
 export interface Stores {
   spill: SpillHost | null;
+  /** Whether the tier is the resident pair, which the page records as this tab's claim. */
+  resident: boolean;
   documents: DocumentHost;
 }
 
 export interface StoreOpeners {
-  spill(handoff: ResidentHandoff): Promise<SpillHost>;
+  spill(handoff: ResidentHandoff): Promise<{ host: SpillHost; resident: boolean }>;
   documents(): Promise<DocumentHost>;
 }
 
 const BROWSER: StoreOpeners = {
   spill: async (handoff) => {
     const tier = await openSpillTier(undefined, handoff);
-    return createSpillHost(tier.frames, tier.index);
+    return { host: createSpillHost(tier.frames, tier.index), resident: tier.resident };
   },
   documents: () => createDocumentHost(createIndexedDbStore()),
 };
 
 /**
- * `reloaded` is the page's own navigation type, because only the page has one: a reload waits for
- * its previous worker to let the resident pair go, and nothing else does (ADR 0063).
+ * `claimed` is whether this tab held the resident pair last time, which only the page can say: a
+ * page in that tab waits for its previous worker to let the pair go, and nothing else does
+ * (ADR 0063).
  */
-export async function openStores(reloaded: boolean, open: StoreOpeners = BROWSER): Promise<Stores> {
+export async function openStores(claimed: boolean, open: StoreOpeners = BROWSER): Promise<Stores> {
   // The tier can fail on its own and the failure is not fatal: a browser with no origin private
   // file system, or one whose handle will not open, gets a core whose frame store has nowhere to
   // spill. The composition root reads whether this is installed and hands the store a sink or not
   // (ADR 0020), so a sphere on such a browser is capped at what fits in RAM rather than told that
   // spilling freed memory.
-  let spill: SpillHost | null;
+  let spill: SpillHost | null = null;
+  let resident = false;
   try {
-    spill = await open.spill(handoffFor(reloaded));
+    ({ host: spill, resident } = await open.spill(handoffFor(claimed)));
   } catch (cause) {
-    spill = null;
     console.warn('sphanorama worker: no spill tier —', String(cause));
   }
 
@@ -51,5 +54,5 @@ export async function openStores(reloaded: boolean, open: StoreOpeners = BROWSER
   // (ADR 0063). Hydrated whether or not the tier opened, since a missing tier costs spilling and a
   // missing document store costs every session.
   const documents = await open.documents();
-  return { spill, documents };
+  return { spill, resident, documents };
 }

@@ -38,10 +38,11 @@ function fail(seq: number, cause: unknown): void {
   scope.postMessage({ kind: 'failed', seq, detail: String(cause) });
 }
 
-async function boot(seq: number, coreUrl: string, reloaded: boolean): Promise<void> {
+async function boot(seq: number, coreUrl: string, claimed: boolean): Promise<void> {
   // Before the module, because the core reads documents through a synchronous port and a store
   // that is still loading would answer "no such project" to a session it should resume.
-  ({ spill, documents } = await openStores(reloaded));
+  const stores = await openStores(claimed);
+  ({ spill, documents } = stores);
 
   // Imported at runtime rather than bundled: the module is an artifact of the C++ build, and the
   // two builds (ADR 0011) are selected by which one the deploy copied in. The page resolved the
@@ -50,7 +51,9 @@ async function boot(seq: number, coreUrl: string, reloaded: boolean): Promise<vo
   const host = { ...documents, ...captureHost };
   runtime = await loadCoreRuntime(async () => factory({ sphHost: host, sphSpill: spill }));
 
-  scope.postMessage({ kind: 'booted', seq, methods: runtime.methods(), spill: spill !== null });
+  scope.postMessage({
+    kind: 'booted', seq, methods: runtime.methods(), spill: spill !== null, resident: stores.resident,
+  });
 }
 
 scope.onmessage = (event: MessageEvent<ToWorker>) => {
@@ -59,7 +62,7 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
     try {
       switch (message.kind) {
         case 'boot':
-          await boot(message.seq, message.coreUrl, message.reloaded);
+          await boot(message.seq, message.coreUrl, message.claimed);
           return;
 
         case 'call': {

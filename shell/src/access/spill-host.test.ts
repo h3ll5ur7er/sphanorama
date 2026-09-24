@@ -971,10 +971,11 @@ describe('a reload that finds the last worker still holding the tier', () => {
     const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && refusals-- > 0);
     const { slept, wait } = recording(50);
 
-    await openSpillTier(opfs.directory, wait);
+    const tier = await openSpillTier(opfs.directory, wait);
 
     expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
     expect(slept).toEqual([50, 50]);
+    expect(tier.resident).toBe(true);
   });
 
   it('waits for the index too, which the last worker lets go of separately', async () => {
@@ -995,6 +996,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     const tier = await openSpillTier(opfs.directory, wait);
 
     expect(tier.frames).toBeDefined();
+    expect(tier.resident).toBe(false);
     expect(slept).toHaveLength(wait.attempts - 1);
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);
@@ -1011,7 +1013,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     expect(slept).toHaveLength(wait.attempts - 1);
   });
 
-  it('waits on a reload for as long as the shipped budget promises', async () => {
+  it('waits, in a tab that held the pair, for as long as the shipped budget promises', async () => {
     // The shipped values are the ones that decide whether a reload resumes. The previous worker
     // lets go after 2.9 s here: Chromium was measured releasing a busy one about 2 s after the
     // reload, and the budget promises a second on top of that.
@@ -1022,6 +1024,9 @@ describe('a reload that finds the last worker still holding the tier', () => {
       heldUntil += Date.now();
       const opening = openSpillTier(opfs.directory, handoffFor(true));
       await vi.advanceTimersByTimeAsync(3500);
+      // The poll as well as the total: a coarser one notices the release late, and the reload
+      // pays the difference in startup.
+      expect(handoffFor(true).delayMs).toBe(100);
       await opening;
       expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
     } finally {
@@ -1029,7 +1034,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     }
   });
 
-  it('gives up on a reload within about three seconds', async () => {
+  it('gives up, in a tab that held the pair, within about three seconds', async () => {
     // The other half of the shipped budget. A reloaded tab whose pair is held by a live sibling
     // never gets it, and every millisecond of waiting is a millisecond its button stays disabled.
     vi.useFakeTimers();
@@ -1047,7 +1052,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     }
   });
 
-  it('does not wait at all when the page was not reloaded', async () => {
+  it('does not wait at all in a tab that never held the pair', async () => {
     // A second tab that waited would be first in line when a reload of the tab holding the pair
     // let go, and would take the pair from that reload.
     vi.useFakeTimers();
@@ -1080,7 +1085,8 @@ describe('a reload that finds the last worker still holding the tier', () => {
       expect(slept).toEqual([]);
       // And says why it fell back, since a fallback that is not a held file is otherwise silent.
       expect(warn).toHaveBeenCalledWith(
-        expect.stringMatching(/sphanorama-spill-resident refused \(QuotaExceededError/));
+        'sphanorama spill: sphanorama-spill-resident refused (QuotaExceededError: '
+        + 'sphanorama-spill-resident: QuotaExceededError); taking a tier of its own');
     } finally {
       warn.mockRestore();
     }
@@ -1094,7 +1100,8 @@ describe('a reload that finds the last worker still holding the tier', () => {
       await openSpillTier(opfs.directory, noWait);
 
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('sphanorama-spill-resident.index refused (InvalidStateError'));
+        expect.stringContaining('sphanorama-spill-resident.index refused (InvalidStateError: '
+          + 'sphanorama-spill-resident.index: InvalidStateError)'));
     } finally {
       warn.mockRestore();
     }
