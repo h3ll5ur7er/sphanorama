@@ -49,6 +49,8 @@ jobs:
         run: uv run --locked tools/test_reading.py
       - name: provenance checker tests
         run: uv run --locked tools/test_asset_provenance.py
+      - name: fused build checker tests
+        run: uv run --locked tools/test_fused_build_check.py
       - name: every committed asset says where it came from
         run: uv run --locked tools/asset_provenance.py
       # The only tooling step with a dependency, and it names the group that carries it rather than
@@ -253,6 +255,37 @@ jobs:
           fi
           rm -f "$log"
           exit $status
+
+  contracting:
+    name: optimised, with fused floating point
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # The two jobs above compile at -O0, where nothing is inlined and every evaluation of an
+      # expression is the one compiled copy of it. A gate that tests a norm and a divisor that reads
+      # the same norm again cannot disagree there — and twice on PR #80 a fix that was green on
+      # both of them stored a zero quaternion or an identity on a build that fused one copy and not
+      # the other. This job is that build, and it is clang: gcc fuses as readily and never split the
+      # two copies, which the preset's description measures. The flags are CMake's to choose per
+      # architecture (`SPHANORAMA_FUSED_ARITHMETIC`), not the preset's, after `-march=native` met a
+      # runner with AVX10 and a clang that warns about it. No OpenCV, so no cache: the question is
+      # about the core's own arithmetic.
+      - name: configure
+        run: cmake --preset native-contracting
+      - name: build
+        run: cmake --build build/native-contracting
+      # A build that lost the flag passes every test below for the same reason the -O0 jobs do,
+      # and reads as this job having looked. The checker asks two things: that the last flag
+      # setting contraction on every compile says `fast`, and that the averager's object actually
+      # holds fused instructions — which catches a lost `-march` or a `-frounding-math` that the
+      # flags alone do not. Its docstring has the measurements.
+      - name: the build contracts
+        run: uv run --locked tools/fused_build_check.py build/native-contracting
+      - name: test
+        run: ctest --test-dir build/native-contracting --output-on-failure
 
   wasm:
     name: wasm builds, size budget and browser tests

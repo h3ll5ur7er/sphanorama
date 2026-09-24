@@ -25,6 +25,8 @@ add_library(sphanorama_core
   src/utilities/logger.cpp
   src/utilities/pixel_format.cpp
   src/utilities/quaternion.cpp
+  src/utilities/quaternion_average.cpp
+  src/utilities/rotation_averaging.cpp
 )
 
 # The registration engine is the first shipped core code that depends on OpenCV, and the WASM build

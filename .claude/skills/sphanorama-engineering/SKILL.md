@@ -248,8 +248,8 @@ contracts. Feature-shaped directories are how layer discipline erodes.
 
 Run the whole gate, not the parts you think you touched. `tools/gate.sh` mirrors
 `.github/workflows/ci.yml` step for step — layer and contract rules, the checkers' own test
-suites, native, sanitizers, both WASM builds, size budgets, shell units, and the browser suite
-against the built bundle (served with and without COOP/COEP, which is what the deployment target
+suites, native, sanitizers, the optimised build with fused floating point, both WASM builds, size
+budgets, shell units, and the browser suite against the built bundle (served with and without COOP/COEP, which is what the deployment target
 does — ADR 0011).
 
 A remembered subset is how a red build reaches the branch. The checkers' own suites

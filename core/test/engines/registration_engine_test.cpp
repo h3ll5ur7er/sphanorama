@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -1089,6 +1090,69 @@ TEST_P(Extraction, ThePriorBoundsTheSearchAndTheAnswerStaysInsideIt) {
   // clumsy.
   EXPECT_EQ(pair.status.code, StatusCode::RegistrationFailed)
       << "refused, but not for the reason this test is about: " << pair.status.detail;
+
+  ForgetOutputs(a.value);
+  ForgetOutputs(b.value);
+}
+
+// The norm a hand-written `sqrt(w*w + x*x + y*y + z*z)` computes, one rounding per step. Each
+// product and partial sum is stored through a `volatile`, so no compiler can fuse or reorder it and
+// this is the same plain sum on every build.
+double PlainSumNorm(const Quat& q) {
+  volatile double ww = q.w * q.w;
+  volatile double xx = q.x * q.x;
+  volatile double yy = q.y * q.y;
+  volatile double zz = q.z * q.z;
+  volatile double sum = ww;
+  sum = sum + xx;
+  sum = sum + yy;
+  sum = sum + zz;
+  return std::sqrt(sum);
+}
+
+TEST_P(Extraction, APriorOnlyScaledFromAnotherGetsTheSameAnswer) {
+  // **Scale is not evidence.** A prior the gate admits is a rotation at any scale, so it must seed
+  // the search exactly as its unit version does. `RotationMatrix` used to recompute the norm as a
+  // plain sum after the gate; once `Norm` fused by hand, the two disagreed on every build just below
+  // the ceiling, the plain sum overflowed, and the seed became exactly the identity — which, on two
+  // identical frames, is the answer the pixels want. A prior far outside the bound was then answered
+  // instead of refused.
+  //
+  // The witness is searched for rather than hard-coded: a scale the gate admits and a plain sum
+  // reads as overflowing. It exists on every build, because the plain sum rounds once per step and
+  // the gate's norm does not.
+  std::mt19937_64 rng(0x5eed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  Quat unit{};
+  Quat scaled{};
+  bool found = false;
+  for (int i = 0; i < 64 && !found; ++i) {
+    unit = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+    double scale = std::sqrt(std::numeric_limits<double>::max());
+    for (int step = 0; step < 64; ++step) scale = std::nextafter(scale, 0.0);
+    for (int step = 0; step < 128 && !found; ++step) {
+      scaled = Quat{unit.w * scale, unit.x * scale, unit.y * scale, unit.z * scale};
+      found = IsUsableRotation(scaled) && !std::isfinite(PlainSumNorm(scaled));
+      scale = std::nextafter(scale, std::numeric_limits<double>::infinity());
+    }
+  }
+  ASSERT_TRUE(found) << "no scale the gate admits made a plain sum of squares overflow";
+
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
+  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
+  ASSERT_TRUE(a.ok() && b.ok());
+
+  const Result<PairwiseResult> fromUnit = engine.EstimatePairwise(a.value, b.value, unit, Lens());
+  // The premise, asserted rather than assumed: the witness lies outside the prior bound, so the
+  // unit prior is refused. That is what lets a prior collapsed to the identity — which the pixels
+  // of two identical frames agree with — show up as an answer where there should be a refusal.
+  ASSERT_EQ(fromUnit.status.code, StatusCode::RegistrationFailed) << fromUnit.status.detail;
+  const Result<PairwiseResult> fromScaled =
+      engine.EstimatePairwise(a.value, b.value, scaled, Lens());
+  EXPECT_EQ(fromScaled.status.code, StatusCode::RegistrationFailed)
+      << "the unit prior was refused and the same prior scaled gave \"" << fromScaled.status.detail
+      << "\"";
 
   ForgetOutputs(a.value);
   ForgetOutputs(b.value);

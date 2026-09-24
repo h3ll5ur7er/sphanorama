@@ -31,6 +31,20 @@
       }
     },
     {
+      "name": "native-contracting",
+      "displayName": "Native, clang, optimised with fused floating point \u2014 the build the debug preset cannot stand in for",
+      "description": "At -O0 every evaluation of an expression is compiled the same way, so rounding differences between compiled copies cannot show. Optimised with -ffp-contract=fast, the compiler chose per copy whether to fuse multiply-adds or vectorise: before Norm was fused by hand, the gate's copy of the sum of squares became a scalar fused chain and Normalize's a vectorised multiply with plain adds, and near either end of the admissible range they disagreed about whether a quaternion was usable. Rounds 9, 10 and 11 on PR #80 each found a caller shipped with that defect, visible only on such a build. clang because it is the compiler measured doing it; gcc 13 at the same flags produced the same fused chain in every copy. The flags live behind SPHANORAMA_FUSED_ARITHMETIC in CMakeLists.txt, which picks the instruction set per architecture (x86-64-v3 on x86-64, nothing on aarch64) rather than -march=native, which the CI runner's AVX10 CPU turned into a -Werror failure. The CI job checks, through tools/fused_build_check.py, that every compile asked for fast contraction and that the compiler actually fused. OpenCV is off because the question is about the core's own arithmetic.",
+      "binaryDir": "${sourceDir}/build/native-contracting",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "SPHANORAMA_WITH_OPENCV": "OFF",
+        "SPHANORAMA_FUSED_ARITHMETIC": "ON"
+      }
+    },
+    {
       "name": "wasm-release",
       "displayName": "WASM, single-threaded \u2014 the build GitHub Pages can serve",
       "binaryDir": "${sourceDir}/build/wasm-release",
@@ -78,6 +92,10 @@
       "configurePreset": "native-asan"
     },
     {
+      "name": "native-contracting",
+      "configurePreset": "native-contracting"
+    },
+    {
       "name": "wasm-release",
       "configurePreset": "wasm-release"
     },
@@ -101,6 +119,13 @@
     {
       "name": "native-asan",
       "configurePreset": "native-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-contracting",
+      "configurePreset": "native-contracting",
       "output": {
         "outputOnFailure": true
       }

@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/same_rotation.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama::test {
@@ -46,9 +47,9 @@ TEST(RotationScoring, TruthScoredAgainstItselfIsZeroEverywhere) {
 
   ASSERT_TRUE(score.valid);
   ASSERT_EQ(score.perFrameDeg.size(), truth.size());
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(score.medianDeg, 0.0, 1e-9);
-  EXPECT_NEAR(score.maxDeg, 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(score.medianDeg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(score.maxDeg, 0.0, kSameRotationDeg);
 }
 
 // The reason this file exists. Every frame is wrong by the same 30 degrees and the reconstruction
@@ -62,8 +63,8 @@ TEST(RotationScoring, AWholeReconstructionTurnedByOneRotationScoresZero) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, kSameRotationDeg);
 }
 
 // The previous test proves nothing unless the un-quotiented comparison would have failed it. This
@@ -85,7 +86,7 @@ TEST(RotationScoring, WithoutTheGaugeThatSameReconstructionWouldReadAsWrongOnEve
   // makes the gauge test mean something.
   const RotationScore score = ScoreRotations(estimated, truth);
   ASSERT_TRUE(score.valid);
-  EXPECT_NEAR(score.maxDeg, 0.0, 1e-9);
+  EXPECT_NEAR(score.maxDeg, 0.0, kSameRotationDeg);
 }
 
 // With one pair there is always a gauge that lands the estimate exactly on the truth, so nothing
@@ -98,7 +99,7 @@ TEST(RotationScoring, ASingleFrameAlwaysScoresZeroBecauseTheGaugeAbsorbsAllOfIt)
 
   ASSERT_TRUE(score.valid);
   ASSERT_EQ(score.perFrameDeg.size(), 1u);
-  EXPECT_NEAR(score.perFrameDeg[0], 0.0, 1e-9);
+  EXPECT_NEAR(score.perFrameDeg[0], 0.0, kSameRotationDeg);
 }
 
 // Two frames pin down exactly one thing: how they sit relative to each other. The gauge takes the
@@ -117,9 +118,9 @@ TEST(RotationScoring, TwoFramesSplitTheirRelativeErrorBetweenThem) {
 }
 
 // One frame off by itself, and the three statistics say three different things about it. The
-// assertions are against the *sorted per-frame values*, not against loose bounds: a reviewer
-// pointed out that the previous version could not tell the median from the minimum, since both are
-// small and both are under any threshold generous enough to pass.
+// assertions are against the *sorted per-frame values*, not against loose bounds: the previous
+// version could not tell the median from the minimum, since both are small and both are under any
+// threshold generous enough to pass.
 TEST(RotationScoring, OneFrameOffByItselfMovesTheMaxFarAndTheMedianOnlyALittle) {
   const std::vector<Quat> truth = ARing(9);
   std::vector<Quat> estimated = truth;
@@ -167,8 +168,8 @@ TEST(RotationScoring, NegatingHalfTheQuaternionsChangesNothing) {
   const RotationScore score = ScoreRotations(estimated, truth);
 
   ASSERT_TRUE(score.valid);
-  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
-  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, 1e-9);
+  for (double deg : score.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
+  EXPECT_NEAR(DegBetween(score.alignment, gauge), 0.0, kSameRotationDeg);
 
   // And in the truth set too, which is a different code path into the same residual.
   std::vector<Quat> negatedTruth = truth;
@@ -177,7 +178,7 @@ TEST(RotationScoring, NegatingHalfTheQuaternionsChangesNothing) {
   negatedTruth[4] = negate(truth[4]);
   const RotationScore fromTruthSide = ScoreRotations(TurnedBy(Conjugate(gauge), truth), negatedTruth);
   ASSERT_TRUE(fromTruthSide.valid);
-  for (double deg : fromTruthSide.perFrameDeg) EXPECT_NEAR(deg, 0.0, 1e-9);
+  for (double deg : fromTruthSide.perFrameDeg) EXPECT_NEAR(deg, 0.0, kSameRotationDeg);
 }
 
 // The alignment claims to be the best one. This checks it by trying to beat it: nudge it in six
@@ -240,10 +241,12 @@ TEST(RotationScoring, NoNearbyRotationAlignsBetterThanTheOneChosen) {
 // The regime that decided how this is computed. Residuals with no common direction leave the
 // eigenvalue gap near zero, which is where power iteration — the obvious implementation — stops
 // converging: on wholly unrelated estimates it exhausts a 200-iteration budget 45.6% of the time at
-// 60 frames, while Jacobi finishes in five working sweeps at every size measured. That is not
-// observable from outside, so what this pins is the consequence: the alignment is still the best one
-// even here. (An earlier version of this comment cited half-garbage input instead, which was a rare
-// tail stated as the norm — see ADR 0049.)
+// 60 frames, while Jacobi does not depend on the gap at all. The sweep counts that says-how-many
+// live with the eigensolver, in `core/src/utilities/quaternion_average.cpp`, and are deliberately
+// not repeated here — this file used to carry a "five working sweeps" of its own, which ADR 0049
+// had already re-measured to a mode of four and which stayed behind when the code moved out
+// (ADR 0062). What this test pins is the consequence rather than the count: the alignment is still
+// the best one even here.
 TEST(RotationScoring, TheAlignmentIsStillTheBestOneWhenHalfTheEstimatesAreWorthless) {
   std::mt19937_64 rng(20260908);
   std::normal_distribution<double> gaussian(0.0, 1.0);
@@ -300,8 +303,8 @@ TEST(RotationScoring, ALargeGaugeIsRemovedJustAsCompletelyAsASmallOne) {
   ASSERT_TRUE(score.valid);
   // The answers here are known in closed form rather than approximately: seven frames are exact and
   // one is out by 2 degrees, so the gauge takes 2/8 of it and the seven inherit that while the
-  // eighth keeps the rest. Loose bounds were hiding that — a reviewer noted this was the least
-  // sensitive test that ought to have caught a wrong alignment.
+  // eighth keeps the rest. Loose bounds were hiding that, in the least sensitive test that ought to
+  // have caught a wrong alignment.
   std::vector<double> sorted = score.perFrameDeg;
   std::sort(sorted.begin(), sorted.end());
   for (size_t i = 0; i < 7; ++i) EXPECT_NEAR(sorted[i], 2.0 / 8.0, 1e-3) << "frame " << i;
@@ -331,15 +334,44 @@ TEST(RotationScoring, ThePerFrameErrorsComeBackInTheOrderTheFramesWereGiven) {
   }
 }
 
+// Scale is not evidence: an estimate equal to the truth up to a scale the gate admits scores zero.
+// The round-11 arithmetic lens scored `{a, b * 1.3407807929942596e154}` against `{a, b}` at 149
+// degrees under `clang -O3 -ffp-contract=fast`, because the scorer's gate and its `Normalize` read
+// the same sum of squares from two differently compiled copies. `Norm` fuses by hand now; this
+// walks across the top of the gate to hold the scorer to it.
+TEST(RotationScoring, AnEstimateOnlyScaledFromTheTruthScoresZero) {
+  std::mt19937_64 rng(0x5eed);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  const Quat a = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+  int scored = 0;
+  int wrong = 0;
+  for (int i = 0; i < 64; ++i) {
+    const Quat b = Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)});
+    double scale = std::sqrt(std::numeric_limits<double>::max());
+    for (int step = 0; step < 256; ++step) scale = std::nextafter(scale, 0.0);
+    for (int step = 0; step < 512; ++step) {
+      const std::vector<Quat> estimated{a, Quat{b.w * scale, b.x * scale, b.y * scale, b.z * scale}};
+      const RotationScore score = ScoreRotations(estimated, {a, b});
+      if (score.valid) {
+        ++scored;
+        if (!(score.maxDeg < kSameRotationDeg)) ++wrong;
+      }
+      scale = std::nextafter(scale, std::numeric_limits<double>::infinity());
+    }
+  }
+  EXPECT_GT(scored, 0);
+  EXPECT_LT(scored, 64 * 512);
+  EXPECT_EQ(wrong, 0) << wrong << " estimates equal to the truth up to scale scored as wrong";
+}
+
 // A registration error is in the camera's own frame, not the world's, and that distinction is what
 // makes the frames themselves matter.
 //
 // It was found the hard way. Every other test here perturbs the estimate on the *left*, and a
 // left-multiplied error cancels the frame out entirely: `Residual(g (x) t, t)` is
 // `t (x) conj(t) (x) conj(g)`, which is `conj(g)` whatever `t` was. So M came out rank one, the
-// eigensolver saw the same matrix regardless of the ring, and a reviewer proved the point by
-// replacing every frame in `ARing` with the identity — all fifteen tests still passed. The fixture
-// was decorative.
+// eigensolver saw the same matrix regardless of the ring. Replace every frame in `ARing` with the
+// identity and all fifteen tests still passed: the fixture was decorative.
 //
 // Right-multiplying puts the frame back in: `Residual(t (x) e, t)` is `t (x) conj(e) (x) conj(t)`,
 // which is the error seen from that frame's orientation and differs for every frame. This is the
@@ -368,12 +400,19 @@ TEST(RotationScoring, AnErrorInEachCamerasOwnFrameMakesTheFramesThemselvesMatter
   EXPECT_GT(largest - smallest, 1.0) << "the per-frame errors do not depend on the frames";
 
   // And the control: the same error applied on the left collapses to one residual and every frame
-  // reports the identical number.
+  // reports the identical number — to the instrument's floor, not to the bit. `AngleBetween` cannot
+  // say anything between zero and 1.7e-6 degrees, and which of the two it says for a residual that
+  // is the identity up to rounding depends on how the compiler contracted the multiplies: under
+  // gcc at -O3 -march=native the first frame read zero and the others read the floor, and a 1e-9
+  // tolerance here — the same defect round 9 removed from fifty-one other sites, in a shape that
+  // sweep did not match — turned the control red.
   std::vector<Quat> leftInstead;
   for (const Quat& q : truth) leftInstead.push_back(Multiply(localError, q));
   const RotationScore collapsed = ScoreRotations(leftInstead, truth);
   ASSERT_TRUE(collapsed.valid);
-  for (double deg : collapsed.perFrameDeg) EXPECT_NEAR(deg, collapsed.perFrameDeg[0], 1e-9);
+  for (double deg : collapsed.perFrameDeg) {
+    EXPECT_NEAR(deg, collapsed.perFrameDeg[0], kSameRotationDeg);
+  }
 }
 
 // Two frames exactly 180 degrees apart leave the top two eigenvalues equal, so every rotation in a
@@ -414,8 +453,8 @@ TEST(RotationScoring, AnOrdinaryReconstructionsAlignmentIsUnique) {
 // A quaternion that is a rotation but not a unit one scores identically.
 //
 // **This test does not distinguish the two implementations of that**, and saying so is the point.
-// A reviewer read the per-frame loop as an overflow: `IsUsableRotation` admits norms up to
-// sqrt(DBL_MAX), so a product whose squares overflow would have `Normalize` substitute the identity
+// The per-frame loop reads as an overflow: `IsUsableRotation` admits norms up to sqrt(DBL_MAX), so
+// a product whose squares overflow would have `Normalize` substitute the identity
 // and measure against that. Not reachable — `Multiply` is exactly norm-multiplicative, so the gate
 // and the product overflow at the same threshold; 133,266 quaternions straddling it and 400,000 in
 // the small-norm band produced zero differences. Removing the explicit `Normalize` this test was
@@ -532,6 +571,40 @@ TEST(RotationScoring, TheMedianOfAnEvenCountIsTheMeanOfTheTwoMiddleValues) {
   // whether a difference is meaningful.
   ASSERT_GT(sorted[2] - sorted[1], 1.0);
   EXPECT_NEAR(score.medianDeg, (sorted[1] + sorted[2]) * 0.5, 1e-9);
+}
+
+/**
+ * The odd branch's counterpart to the test above, which it did not have.
+ *
+ * `medianDeg` is `sorted[half]` for an odd count and the mean of the middle pair for an even one,
+ * and only the even half was pinned. Both neighbours of the odd index were free: `sorted[half + 1]`
+ * and `sorted[half - 1]` each pass the whole suite. The cause is that every odd-count fixture
+ * asserting `medianDeg` is one outlier against a flat rest — a ring with a single frame perturbed —
+ * so `sorted[3]`, `sorted[4]` and `sorted[5]` are the same number to 1e-12 and the index is
+ * invisible to an assertion comparing against any of them.
+ *
+ * Five frames, each off by a different amount, so the five sorted errors are genuinely spread. The
+ * gaps either side are asserted rather than assumed, for the reason the even test states: a
+ * difference of 1e-12 satisfies `EXPECT_NE` and pins nothing.
+ */
+TEST(RotationScoring, TheMedianOfAnOddCountIsTheMiddleValueAndNotItsNeighbour) {
+  const std::vector<Quat> truth = ARing(5);
+  std::vector<Quat> estimated = truth;
+  estimated[1] = Multiply(Roll(2.0), estimated[1]);
+  estimated[2] = Multiply(Pitch(6.0), estimated[2]);
+  estimated[3] = Multiply(Yaw(12.0), estimated[3]);
+  estimated[4] = Multiply(Roll(20.0), estimated[4]);
+
+  const RotationScore score = ScoreRotations(estimated, truth);
+
+  ASSERT_TRUE(score.valid);
+  ASSERT_EQ(score.perFrameDeg.size(), 5u);
+  std::vector<double> sorted = score.perFrameDeg;
+  std::sort(sorted.begin(), sorted.end());
+
+  ASSERT_GT(sorted[2] - sorted[1], 1.0) << "the index below is not distinguishable";
+  ASSERT_GT(sorted[3] - sorted[2], 1.0) << "the index above is not distinguishable";
+  EXPECT_NEAR(score.medianDeg, sorted[2], 1e-12);
 }
 
 TEST(RotationScoring, TheMeanAndMaxDescribeTheSamePerFrameNumbers) {

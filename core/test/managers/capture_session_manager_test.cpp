@@ -6,6 +6,7 @@
 // argument for that layer.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <numbers>

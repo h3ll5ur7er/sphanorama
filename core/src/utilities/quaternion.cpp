@@ -1,5 +1,7 @@
 #include "utilities/quaternion.h"
 
+#include <optional>
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -7,7 +9,15 @@
 namespace sphanorama {
 
 double Norm(const Quat& q) {
-  return std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+  // **Fused by hand, so every compiled copy rounds the same way.** Written as `w*w + x*x + ...`,
+  // the compiler may contract some of those multiply-adds and not others, and it chose differently
+  // per copy: under `clang -O3 -ffp-contract=fast` the gate's copy became a scalar fused chain and
+  // `Normalize`'s a vectorised multiply with three plain adds. Within an ulp of 1e-12 or of
+  // `sqrt(DBL_MAX)` the two copies then disagreed on whether this quaternion was usable. That
+  // shipped in three different callers across three review rounds. `std::fma` is a single rounding
+  // by definition, so no compiler is free to split it, and no caller has to remember to avoid a
+  // second evaluation.
+  return std::sqrt(std::fma(q.w, q.w, std::fma(q.x, q.x, std::fma(q.y, q.y, q.z * q.z))));
 }
 
 Quat Normalize(const Quat& q) {
@@ -20,14 +30,14 @@ Quat Normalize(const Quat& q) {
   return Quat{q.w / norm, q.x / norm, q.y / norm, q.z / norm};
 }
 
-bool IsUsableRotation(const Quat& q) {
+std::optional<double> UsableNorm(const Quat& q) {
   // The *norm* has to be finite, not merely the components — which is where the first version of
   // this stopped, and it stopped one step short. Its own comment had the mechanism right: `Norm`
   // of a quaternion carrying an infinity is an infinity and `inf > 1e-12` is true. What it missed
   // is that the infinity does not have to arrive in a component. `Norm` squares before it sums, so
   // every component of `Quat{0, 1e200, 0, 0}` is finite and its norm is not.
   //
-  // A reviewer ran what that bought: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
+  // What that bought, run: `Quat{0, 1e200, 0, 0}` is a 180-degree flip about X whose
   // real `Direction` is `(0,0,+1)`, `Normalize` answered `{0,0,0,0}`, and `Direction` of *that* is
   // `(0,0,-1)` — straight ahead. `OrientationPoseEngine::Integrate` anchored the pose at
   // confidence 1.0 on a direction 180 degrees from the sample it was given, after which
@@ -37,14 +47,20 @@ bool IsUsableRotation(const Quat& q) {
   //
   // Checking the norm alone would be enough — a component that is NaN or infinite makes the norm
   // one — but the component test stays because it is the cheaper of the two and says what it
-  // means. Together they answer exactly the question this predicate is for: "will `Normalize`
-  // return something derived from this, or its fallback identity?"
+  // means.
+  //
+  // **Returned rather than answered yes or no**, so a caller that gates and then divides evaluates
+  // the sum of squares once. See `Norm` for why a second evaluation used to disagree with the
+  // first, and why it no longer can.
   if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
-    return false;
+    return std::nullopt;
   }
   const double norm = Norm(q);
-  return std::isfinite(norm) && norm > 1e-12;
+  if (!std::isfinite(norm) || !(norm > 1e-12)) return std::nullopt;
+  return norm;
 }
+
+bool IsUsableRotation(const Quat& q) { return UsableNorm(q).has_value(); }
 
 bool IsUsableVector(const Vec3& v) {
   return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -57,6 +73,13 @@ Quat FromAxisAngle(const Vec3& axis, double radians) {
   // quaternion of norm |cos(half)| — zero for a half-turn — rather than any rotation about the
   // axis asked for.
   if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
+
+  // The same guard the axis gets, for the reason the header now states beside this function's
+  // declaration. Not reachable from today's callers, checked rather than assumed:
+  // `OrientationPoseEngine::Turned` can only produce a non-finite angle from a non-finite rate,
+  // which the axis guard above already refuses, and `FromAzimuthElevation`'s trailing `Normalize`
+  // absorbs it.
+  if (!std::isfinite(radians)) return Quat{};
 
   const double half = radians * 0.5;
   const double s = std::sin(half) / length;
@@ -160,7 +183,23 @@ double RollBetween(const Quat& current, const Quat& target) {
   const double along = Dot(there, axis);
   const Vec3 flattened =
       Normalize(Vec3{there.x - axis.x * along, there.y - axis.y * along, there.z - axis.z * along});
-  // Antipodal: the target's frame collapses onto the viewing axis and roll has no meaning.
+  // **Not antipodal** — this said so, which was the third copy of a claim the declaration retracts
+  // and the test disproves. It fires when the *target's +X axis* lands on the current viewing axis,
+  // which is a fact about how the target is rolled and says nothing about whether roll is defined.
+  //
+  // Without it `flattened` is `Normalize`'s zero-vector fallback, so both `atan2` operands are a
+  // signed zero and the sign of one decides between 0 and half a turn. `x` is
+  // `Dot(flattened, here)` — a sum of three products of `+0.0` with a component of `here` — so it
+  // is `-0.0` exactly when all three components of `here` are negative, and `atan2(y, -0.0)` is
+  // ±pi. **That predicate is the whole mechanism**: over 2,000,000 constructed collapses it agrees
+  // with "the guard changed the answer" 100.000% of the time, at a rate of 12.548% against an
+  // analytic one in eight.
+  //
+  // The figure here was "4,307,507 of 32,000,000", which recorded no construction and so could not
+  // be re-derived — and the natural reading of it is wrong, because a collapse is measure zero
+  // under random orientations: 4,000,000 random pairs produce **none**. It has to be built, by
+  // putting the target's +X axis exactly on the current viewing axis. A rate quoted without the
+  // construction that produced it is not a measurement anybody else can check.
   if (Dot(flattened, flattened) < 0.5) return 0.0;
   return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
 }

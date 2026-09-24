@@ -58,6 +58,7 @@ step "no broken tables"           uv run --locked tools/markdown_table_check.py
 step "listing checker tests"      uv run --locked tools/test_tracked.py
 step "reader tests"               uv run --locked tools/test_reading.py
 step "provenance checker tests"   uv run --locked tools/test_asset_provenance.py
+step "fused build checker tests"  uv run --locked tools/test_fused_build_check.py
 step "assets say where they came from" uv run --locked tools/asset_provenance.py
 # The one step that needs a dependency, so it names the group that carries it. Everything
 # above is standard-library only and stays that way (ADR 0048, ADR 0050).
@@ -81,6 +82,16 @@ step "asan test"         ctest --test-dir build/native-asan --output-on-failure
 # CI's sanitizer job has this step too, and `tools/gate.sh` mirrors CI step for step — it was
 # mirroring only the native one, which is the drift its own header exists to prevent.
 step "asan accuracy"      sh -c 'log=$(mktemp); expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests --gtest_filter="EveryDetector/Accuracy.ConsecutiveFrames*" | grep -c ConsecutiveFrames); acceptance=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests --gtest_filter="Acceptance.*" | grep -c AnAnswerWithAMinority); ./build/native-asan/bin/sphanorama_tests --gtest_filter="EveryDetector/Accuracy.*:Acceptance.*" >"$log" 2>&1; status=$?; cat "$log"; measured=$(grep -c "^\\[accuracy\\]" "$log" || true); if [ "$expected" -lt 1 ]; then echo "the binary contains no accuracy measurement to run" >&2; status=1; fi; if [ "$acceptance" -lt 1 ]; then echo "the binary contains no acceptance test to run" >&2; status=1; fi; if [ "$measured" -ne "$expected" ]; then echo "the measurement ran $measured detectors and the binary has $expected" >&2; status=1; fi; if grep -q SKIPPED "$log"; then echo "something skipped, and a skip is not a pass" >&2; status=1; fi; rm -f "$log"; exit $status'
+
+echo "== contracting =="
+# Mirrors CI's job of the same name: the -O0 trees above cannot see a gate and a divisor disagree
+# about one norm, because at -O0 they are the same compiled copy. The preset is clang for the
+# reason its description measures, and the "build contracts" step is what stops this section
+# passing on a build that lost the flag.
+step "contracting configure" cmake --preset native-contracting
+step "contracting build"     cmake --build build/native-contracting
+step "build contracts"       uv run --locked tools/fused_build_check.py build/native-contracting
+step "contracting test"      ctest --test-dir build/native-contracting --output-on-failure
 
 echo "== wasm, size budget and browser tests =="
 if [ "$have_emcc" = no ]; then

@@ -46,6 +46,29 @@ if(SPHANORAMA_WITH_OPENCV)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/opencv.cmake")
 endif()
 
+# The build on which two inlined copies of one sum of squares can fuse differently and land on
+# opposite sides of a threshold — which the -O0 presets cannot show, because there nothing is
+# inlined and every evaluation is the one compiled copy. `native-contracting` turns this on.
+#
+# An option rather than raw flags in the preset, because the instruction-set half is the host's
+# business and the preset cannot ask which host it is on. On x86-64 fused multiply-add needs asking
+# for, and it is asked for as a fixed level rather than `-march=native`: the GitHub runner's CPU
+# carries AVX10, clang 18 promotes `avx10.1-256` to `-512` with a warning, and `-Werror` made that
+# warning the whole job's failure on the first push. `x86-64-v3` is AVX2 plus FMA on every runner
+# and every developer machine this could reasonably meet, and it reproduces the rounding split the
+# option exists to expose (measured: with `Norm` written as a plain sum, seven quaternions the gate
+# admits come back from `Normalize` as the identity under it). On aarch64 fused multiply-add is
+# baseline and no flag is needed. `-ffp-contract=fast` is global on purpose, so the tests are
+# compiled the way the code they check is.
+option(SPHANORAMA_FUSED_ARITHMETIC
+       "Contract floating-point multiply-adds across statements, on a target that can fuse them" OFF)
+if(SPHANORAMA_FUSED_ARITHMETIC)
+  add_compile_options(-ffp-contract=fast)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    add_compile_options(-march=x86-64-v3)
+  endif()
+endif()
+
 # The contracts directory is the include root rather than being mirrored into core/include:
 # two copies of an interface is exactly the drift problem the contract-check exists to prevent.
 # See docs/adr/0008-contracts-are-the-include-path.md.
