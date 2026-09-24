@@ -576,11 +576,11 @@ async function lockWaiting(directory: SpillDirectory, name: string,
 
 // Said out loud, because a session that falls back cannot resume its capture and nothing else on
 // the way to the page records why. A held file has already said so, with how long it waited.
-function fallingBack(cause: unknown): void {
+function fallingBack(file: string, cause: unknown): void {
   if (isHeld(cause)) return;
-  const name = (cause as { name?: unknown } | null)?.name;
-  console.warn(`sphanorama spill: ${RESIDENT} refused (${String(name ?? cause)}); `
-    + 'taking a tier of its own');
+  const { name, message } = (cause ?? {}) as { name?: unknown; message?: unknown };
+  const why = name !== undefined ? `${String(name)}: ${String(message)}` : String(cause);
+  console.warn(`sphanorama spill: ${file} refused (${why}); taking a tier of its own`);
 }
 
 function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: string,
@@ -634,7 +634,7 @@ export async function openSpillTier(directory?: SpillDirectory,
     // No name will help on a platform that cannot lock at all, so this is where it stops.
     if (cause instanceof NoSyncAccessHandles) throw cause;
     // Held by somebody, or refused some other way. A tier of its own beats no tier at all.
-    fallingBack(cause);
+    fallingBack(RESIDENT, cause);
     name = SPILL_PREFIX + crypto.randomUUID();
     frames = await lock(root, name);
   }
@@ -652,7 +652,7 @@ export async function openSpillTier(directory?: SpillDirectory,
     // the session the tier the fallback below exists to give it.
     release(frames);
     if (name !== RESIDENT) throw cause;
-    fallingBack(cause);
+    fallingBack(RESIDENT + INDEX_SUFFIX, cause);
 
     // Two files and two locks, and only one of them has to be unavailable. Giving up here would
     // cost this session its spill tier entirely — a sphere capped at RAM — over a file that holds

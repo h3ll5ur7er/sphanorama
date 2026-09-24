@@ -1013,11 +1013,11 @@ describe('a reload that finds the last worker still holding the tier', () => {
 
   it('waits by default, which is what the worker gets', async () => {
     // The worker calls `openSpillTier()` with no handoff, so the shipped values are the ones that
-    // decide whether a reload resumes. The previous worker lets go after 2 s here, which is when
-    // Chromium was measured to release a busy one.
+    // decide whether a reload resumes. The previous worker lets go after 2.9 s here: Chromium was
+    // measured releasing a busy one at 1.98 s, and the budget promises a second on top of that.
     vi.useFakeTimers();
     try {
-      let heldUntil = 2000;
+      let heldUntil = 2900;
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && Date.now() < heldUntil);
       heldUntil += Date.now();
       const opening = openSpillTier(opfs.directory);
@@ -1037,7 +1037,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
       let settled = false;
       const opening = openSpillTier(opfs.directory).finally(() => { settled = true; });
-      await vi.advanceTimersByTimeAsync(3500);
+      await vi.advanceTimersByTimeAsync(3000);
       expect(settled).toBe(true);
       await opening;
       const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
@@ -1059,7 +1059,8 @@ describe('a reload that finds the last worker still holding the tier', () => {
 
       expect(slept).toEqual([]);
       // And says why it fell back, since a fallback that is not a held file is otherwise silent.
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('QuotaExceededError'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/sphanorama-spill-resident refused \(QuotaExceededError/));
     } finally {
       warn.mockRestore();
     }
@@ -1072,7 +1073,8 @@ describe('a reload that finds the last worker still holding the tier', () => {
     try {
       await openSpillTier(opfs.directory, noWait);
 
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('InvalidStateError'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('sphanorama-spill-resident.index refused (InvalidStateError'));
     } finally {
       warn.mockRestore();
     }

@@ -58,8 +58,9 @@ prints those logs when its resume is refused, so the next failure says which tie
 all still fails at once, since waiting cannot help it.
 
 The wait is a parameter (`ResidentHandoff`), so most tests drive it with a recording sleep rather
-than the clock. Two run the shipped default under fake timers — a pair held for the measured 2 s
-is waited for, a pair never released is given up on within 3.5 s — because the worker calls
+than the clock. Two run the shipped default under fake timers — a pair held for 2.9 s, the
+measured release plus the promised second, is waited for, and a pair never released is given up
+on within 3 s, so the shipped budget is pinned to 30 or 31 attempts — because the worker calls
 `openSpillTier()` without one and those are the values that decide whether a reload resumes and
 whether a second tab boots.
 
