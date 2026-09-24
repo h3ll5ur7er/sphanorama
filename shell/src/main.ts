@@ -274,7 +274,7 @@ function reportMotionSource(capability?: string, lostReason = '') {
 async function startCore() {
   const worker = new Worker(new URL('./bridge/worker.ts', import.meta.url), { type: 'module' });
   return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`,
-                     tabClaim(globalThis.sessionStorage));
+                     tabClaim(() => globalThis.sessionStorage));
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {

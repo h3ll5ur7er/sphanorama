@@ -881,6 +881,9 @@ describe('the spill file', () => {
 
     expect(tier.frames).toBeDefined();
     expect(tier.index).toBeDefined();
+    // Not the resident tier, though it held the resident frames for a moment: a claim recorded
+    // from this would make the tab's next page wait for a pair it never had.
+    expect(tier.resident).toBe(false);
     // On a name of its own, both halves of it, rather than half-sharing the resident pair.
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
     expect(fallbacks).toHaveLength(2);

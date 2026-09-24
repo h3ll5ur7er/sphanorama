@@ -241,6 +241,25 @@ test('a second tab open on the app gets a spill tier of its own', async ({ page,
   }
 });
 
+test('a page whose storage is switched off still loads', async ({ page }) => {
+  // Chromium refuses switched-off storage by throwing from the `sessionStorage` property itself,
+  // before any method is called. The tab claim reads it, and a read outside its guard stopped the
+  // core loading altogether — worse than the wait it exists for (ADR 0063).
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', {
+      get() { throw new DOMException("Failed to read the 'sessionStorage' property", 'SecurityError'); },
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#enable')).toBeEnabled();
+  } finally {
+    await server.close();
+  }
+});
+
 test('only a tab that held the spill tier waits for it', async ({ page, context }) => {
   // The page records in sessionStorage whether its tab got the resident pair, and the next page
   // in that tab waits for it; nothing else does (ADR 0063). A second tab that waited — even a

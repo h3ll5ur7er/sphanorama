@@ -14,11 +14,18 @@ export interface TierClaim {
 
 const KEY = 'sphanorama-resident-tier';
 
+type ClaimStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
 // Every access guarded: storage can be switched off, and a tab that cannot remember its claim
-// only loses the wait, which is what every tab had before this existed.
-export function tabClaim(storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | undefined): TierClaim {
+// only loses the wait, which is what every tab had before this existed. The storage arrives as an
+// accessor because switching it off makes Chromium throw from `sessionStorage` itself, before any
+// method is reached — read as an argument, that throw escapes to the caller and stops the core
+// loading.
+export function tabClaim(storageOf: () => ClaimStorage | undefined): TierClaim {
+  let storage: ClaimStorage | undefined;
   let held = false;
   try {
+    storage = storageOf();
     held = storage?.getItem(KEY) === 'held';
   } catch {
     // No storage, no claim.
