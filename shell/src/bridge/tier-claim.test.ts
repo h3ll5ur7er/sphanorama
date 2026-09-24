@@ -62,7 +62,15 @@ function origin() {
     session: () => tab, local: () => local, locks, now: () => clock,
     token: () => `page-${++tokens}`, lockWaitMs,
   });
-  return { locks, local, open, tab: memoryStorage, advance: (ms: number) => { clock += ms; } };
+  // A page that has stamped its departure but whose lock has not been let go yet — its release still
+  // on the way, or a page that died without `pagehide` after an earlier stamp.
+  const departedStillHolding = (tab: ReturnType<typeof memoryStorage>) => {
+    const left = JSON.stringify({ token: 'old-page', leftAt: clock });
+    tab.setItem(TAB_KEY, left);
+    local.setItem(HOLDER_KEY, left);
+    void locks.request(LOCK, {}, () => new Promise(() => {}));
+  };
+  return { locks, local, open, tab: memoryStorage, departedStillHolding, advance: (ms: number) => { clock += ms; } };
 }
 
 const pendingAfter = async <T>(promise: Promise<T>) =>
@@ -82,7 +90,7 @@ describe("a page's right to the resident spill tier", () => {
   it('is handed to the page that replaces its holder, even while that holder is slow to go', async () => {
     const o = origin();
     const tab = o.tab();
-    (await o.open(tab)).depart();
+    o.departedStillHolding(tab);
     o.advance(300);
 
     const successor = o.open(tab);
@@ -161,7 +169,7 @@ describe("a page's right to the resident spill tier", () => {
   it('is given up on after a while by a successor whose holder never goes', async () => {
     const o = origin();
     const tab = o.tab();
-    (await o.open(tab)).depart();
+    o.departedStillHolding(tab);
     o.advance(300);
     expect((await o.open(tab, 30)).access).toBe('skip');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('not handed over within 30 ms'));
@@ -244,7 +252,7 @@ describe("a page's right to the resident spill tier", () => {
   it('does without AbortSignal.timeout, which arrived after Web Locks', async () => {
     const o = origin();
     const tab = o.tab();
-    (await o.open(tab)).depart();
+    o.departedStillHolding(tab);
     o.advance(300);
     const original = AbortSignal.timeout;
     (AbortSignal as unknown as { timeout?: unknown }).timeout = undefined;
@@ -253,6 +261,99 @@ describe("a page's right to the resident spill tier", () => {
     } finally {
       AbortSignal.timeout = original;
     }
+  });
+
+  it('is let go on departure, so the page can go into the back/forward cache', async () => {
+    // Chromium never caches a page holding a Web Lock; the departure keeps newcomers off instead.
+    const o = origin();
+    const tab = o.tab();
+    const page = await o.open(tab);
+    page.settle(true);
+    page.depart();
+    await pendingAfter(Promise.resolve());
+    expect(o.locks.held).toBe(false);
+    expect(JSON.parse(tab.items.get(TAB_KEY)!)).toMatchObject({ token: 'page-1' });
+  });
+
+  it('is taken back by a page restored from the cache with the pair, and not by one without it', async () => {
+    for (const resident of [true, false]) {
+      const o = origin();
+      const tab = o.tab();
+      const page = await o.open(tab);
+      page.settle(resident);
+      page.depart();
+      await pendingAfter(Promise.resolve());
+
+      page.resume();
+      await pendingAfter(Promise.resolve());
+      expect(o.locks.held).toBe(resident);
+      expect(tab.items.has(TAB_KEY)).toBe(false);
+      if (resident) expect(JSON.parse(o.local.items.get(HOLDER_KEY)!)).toEqual({ token: 'page-1' });
+    }
+  });
+
+  it('is handed back to the cached page by a newcomer that took it meanwhile', async () => {
+    // The newcomer's one try fails on the files the frozen worker still holds, and it lets go.
+    const o = origin();
+    const cached = await o.open(o.tab());
+    cached.settle(true);
+    cached.depart();
+    await pendingAfter(Promise.resolve());
+    o.advance(HANDOVER_MS);
+    const newcomer = await o.open(o.tab());
+    expect(newcomer.access).toBe('try');
+
+    cached.resume();
+    expect(await pendingAfter(Promise.resolve('queued'))).toBe('queued');
+    newcomer.settle(false);
+    await pendingAfter(Promise.resolve());
+    expect(o.locks.held).toBe(true);
+    expect(JSON.parse(o.local.items.get(HOLDER_KEY)!)).toEqual({ token: 'page-1' });
+  });
+
+  it('never stops the page loading: anything thrown on the way leaves the files to decide', async () => {
+    const throwing: LockManagerLike = { request() { throw new TypeError('no locks here'); } };
+    const decided = await tierAccess({ session: () => memoryStorage(), local: () => memoryStorage(), locks: throwing });
+    expect(decided.access).toBe('try');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not decide'));
+  });
+
+  it('says a refused request was refused, not that it timed out', async () => {
+    // What Chromium is expected to do with Web Locks where storage is blocked.
+    const refusing: LockManagerLike = {
+      request: () => Promise.reject(new DOMException('storage is blocked', 'SecurityError')),
+    };
+    const decided = await tierAccess({ session: () => memoryStorage(), local: () => memoryStorage(), locks: refusing });
+    expect(decided.access).toBe('skip');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refused (SecurityError'));
+  });
+
+  it('counts nothing from the future, which a clock set back would make of every stamp', async () => {
+    const o = origin();
+    const tab = o.tab();
+    (await o.open(tab)).depart();
+    await o.locks.holderDies();
+    o.advance(-60_000);
+    expect((await o.open(o.tab())).access).toBe('try');
+    expect((await o.open(tab)).access).toBe('skip');
+  });
+
+  it('is not claimed by a duplicate of a successor, even where only the tab can be read', async () => {
+    // With the origin's record unreadable, removing the departure on reading is the only guard.
+    const o = origin();
+    const tab = o.tab();
+    (await o.open(tab)).depart();
+    await o.locks.holderDies();
+    const noOrigin = () => { throw new DOMException('denied', 'SecurityError'); };
+    const open = (session: ReturnType<typeof memoryStorage>) => tierAccess({
+      session: () => session, local: noOrigin, locks: o.locks, now: () => 1_000_000, lockWaitMs: 30,
+    });
+    expect((await open(tab)).access).toBe('wait');
+
+    const duplicate = o.tab();
+    for (const [key, value] of tab.items) duplicate.items.set(key, value);
+    const answer = await pendingAfter(open(duplicate));
+    expect(answer === 'pending' ? answer : answer.access).toBe('skip');
   });
 
   it('treats storage it cannot reach as no departure, as Chromium throws when storage is off', async () => {

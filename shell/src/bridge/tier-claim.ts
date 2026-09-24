@@ -25,8 +25,10 @@ export interface TierAccess {
   access: ResidentAccess;
   /** Called with whether the worker got the resident pair; a page that did not gives up the right. */
   settle(resident: boolean): void;
-  /** Called on `pagehide`: a page holding the right stamps its departure for its successor. */
+  /** Called on `pagehide`: a page holding the right stamps its departure and lets the right go. */
   depart(): void;
+  /** Called on `pageshow` from the back/forward cache: a page whose worker has the pair takes the right back. */
+  resume(): void;
 }
 
 type ClaimStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -60,11 +62,29 @@ export const LOCK_WAIT_MS = 3000;
 
 interface Stamp { token: string; leftAt?: number }
 
+const FALLBACK: TierAccess = { access: 'try', settle() {}, depart() {}, resume() {} };
+
+/**
+ * Decides this page's access, and never stops the page loading over it: anything that throws on
+ * the way leaves the files as the only arbiter, which is what every page had before the right.
+ */
 export async function tierAccess(options: TierAccessOptions): Promise<TierAccess> {
+  try {
+    return await decide(options);
+  } catch (cause) {
+    console.warn(`sphanorama spill: could not decide the right to the resident pair (${String(cause)}); `
+      + 'trying the files once');
+    return FALLBACK;
+  }
+}
+
+async function decide(options: TierAccessOptions): Promise<TierAccess> {
   const now = options.now ?? Date.now;
   const departure = consume(options.session);
   const holder = read(options.local, HOLDER_KEY);
   const age = (at: number | undefined) => (at === undefined ? NaN : now() - at);
+  // Never counted from the future: a clock set back would otherwise make a departure fresh for as
+  // long as it takes to catch up, and every newcomer stand aside for as long.
   const recent = (at: number | undefined, window: number) => age(at) >= 0 && age(at) < window;
 
   // `undefined` when the origin's record cannot be read at all: then the tab's own is all there is.
@@ -75,14 +95,14 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
   const mine = (options.token ?? newToken)();
   let ours = false;
   let holding = false;
+  let release = () => {};
   const stamp = () => {
     const left = JSON.stringify({ token: mine, leftAt: now() } satisfies Stamp);
     write(options.session, TAB_KEY, left);
     write(options.local, HOLDER_KEY, left);
   };
-  const claim = () => { holding = true; write(options.local, HOLDER_KEY, JSON.stringify({ token: mine })); };
+  const claim = () => { write(options.local, HOLDER_KEY, JSON.stringify({ token: mine })); };
   const disclaim = () => {
-    holding = false;
     if (read(options.local, HOLDER_KEY)?.token === mine) remove(options.local, HOLDER_KEY);
   };
 
@@ -93,33 +113,35 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
       access: successor ? 'wait' : 'try',
       settle(resident) { ours = resident; },
       depart() { if (ours) stamp(); },
+      resume() { remove(options.session, TAB_KEY); },
     };
   }
   if (handingOver) {
     // Someone left a moment ago and their successor may not have queued yet.
-    return { access: 'skip', settle() {}, depart() {} };
+    return { access: 'skip', settle() {}, depart() {}, resume() {} };
   }
 
-  let release = () => {};
-  const held = new Promise<void>((done) => { release = done; });
   const waitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
-  const granted = await new Promise<boolean>((answer) => {
-    const how = successor ? { signal: timeout(waitMs) } : { ifAvailable: true };
+  // Held until the worker turns out not to have the pair, or the page leaves.
+  const take = (how: { ifAvailable?: boolean; signal?: AbortSignal }) => new Promise<boolean>((answer) => {
     locks.request(LOCK, how, (lock) => {
       if (!lock) {
         answer(false);
         return undefined;
       }
+      holding = true;
       claim();
       answer(true);
-      // Held until the worker turns out not to have the pair, or the page goes.
-      return held;
-    }).catch(() => {
-      console.warn(`sphanorama spill: the resident pair was not handed over within ${waitMs} ms; `
-        + 'taking a tier of its own');
+      return new Promise<void>((done) => { release = () => { holding = false; done(); }; });
+    }).catch((cause: unknown) => {
+      const timedOut = (cause as { name?: unknown } | null)?.name === 'AbortError';
+      console.warn(timedOut
+        ? `sphanorama spill: the resident pair was not handed over within ${waitMs} ms; taking a tier of its own`
+        : `sphanorama spill: the right to the resident pair was refused (${String(cause)}); taking a tier of its own`);
       answer(false);
     });
   });
+  const granted = await take(successor ? { signal: timeout(waitMs) } : { ifAvailable: true });
 
   return {
     access: granted ? (successor ? 'wait' : 'try') : 'skip',
@@ -133,6 +155,16 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
     depart() {
       // Holding the right before the worker has answered counts: its worker may have the files.
       if (holding || ours) stamp();
+      // Let go now rather than when the page dies: a page holding a Web Lock is never put in the
+      // back/forward cache, and the departure just stamped keeps newcomers off until the successor
+      // has queued. A cached page's frozen worker still holds the files, so a newcomer that takes
+      // the right meanwhile fails its one try and gives it back.
+      release();
+    },
+    resume() {
+      // Back from the back/forward cache with the worker, and the files, it left with.
+      remove(options.session, TAB_KEY);
+      if (ours && !holding) void take({});
     },
   };
 }

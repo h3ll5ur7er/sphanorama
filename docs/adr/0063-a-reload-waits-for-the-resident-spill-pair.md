@@ -56,8 +56,14 @@ outcome with `boot` and never touches the pair without it.
 - **Everyone else asks only if the right is free** (`ifAvailable`), so it can never jump the queue,
   and tries the files once if it gets it (`'try'`). If another page holds the right, the worker
   leaves the pair alone entirely and takes a tier of its own (`'skip'`).
-- **A page whose worker did not get the resident pair gives the right up**, so the page it belongs
-  to can be handed it.
+- **A page whose worker did not get the resident pair gives the right up**, and so does one whose
+  worker failed to boot or died, so the page the pair belongs to can be handed it.
+- **A page lets the right go on `pagehide`**, just after stamping its departure, rather than when it
+  dies: Chromium never puts a page holding a Web Lock in the back/forward cache (measured: `main`
+  restored on Back 3 of 3, a page holding the lock for life 0 of 3, reason `WebLocks`). The stamp
+  keeps newcomers off until the successor has queued, and a cached page's frozen worker still holds
+  the files, so a newcomer that takes the right meanwhile fails its one try and gives it back. A
+  page restored from the cache takes the right back on `pageshow`.
 
 **Who is the successor is decided from two records.** On `pagehide`, a page holding the right stamps
 its departure — its token and the time — in its tab's `sessionStorage` and in the origin's
@@ -80,7 +86,9 @@ and by the page when a successor gives up waiting for the right — and the brow
 the race prints those logs when its resume is refused, so the next failure says which tier it got.
 
 **Measured against this design**, in the real app, desktop Chromium, old worker busy for 8 s where
-the case needs one:
+the case needs one. Playwright disables the back/forward cache by default, so the rows below other
+than the cache's own ran without it, which is the path a page takes when the cache does not keep
+it:
 
 | Case | Result |
 | --- | --- |
@@ -90,6 +98,8 @@ the case needs one:
 | A duplicated tab, then its original reloaded | original kept the pair 4 of 4 |
 | A second tab reloaded, then the first | first kept the pair 4 of 4 |
 | A tab back at the app after another took over, then that one reloaded | no wait (about 120 ms); the other kept its pair 5 of 5 |
+| Back to the app with the cache enabled | restored from the cache 3 of 3, holding the right again |
+| Back after more than 2 s away, with a newcomer opened meanwhile | Chromium evicted the cached page and the newcomer got the pair |
 
 **The order in which the worker opens the tier and the documents does not matter**, and nothing
 depends on it. A round of review proposed opening the tier first, so the documents would be read
@@ -121,9 +131,14 @@ a forged departure is no claim, and the first tab's reload is handed the pair.
 - A successor whose old worker takes longer than 2.9 s to let go of the files still falls back —
   including one whose own main thread is busy around the two-second mark. Measured on desktop
   Chromium only: nothing here measures a phone, Safari or Firefox.
-- **A browser without Web Locks** (before Safari 15.4, or an insecure context) falls back to the
-  files alone: a successor polls them and everyone else tries once, which is this ADR's weakest
-  earlier version.
+- **Without Web Locks the files alone decide**: a successor polls them and everyone else tries once,
+  this ADR's weakest earlier version. It is reachable almost nowhere — the SIMD core already needs
+  Safari 16.4, well after Web Locks, and an insecure context has no origin private file system to
+  spill to — but deciding the right never stops the page loading: anything that throws on the way,
+  such as a missing `crypto.randomUUID` or `AbortSignal.timeout`, falls back the same way.
+- **A page away in the back/forward cache for more than two seconds can lose its pair** to a
+  newcomer, which Chromium lets have the files by evicting the cached page. The tab then comes
+  back as a fresh page with a tier of its own.
 - The right assumes one app document per tab. Two same-origin frames of the app in one tab share a
   `sessionStorage`; nothing ships that embeds the app.
 - The intermittent browser test is fixed for the mechanism that was reproduced — a busy old worker

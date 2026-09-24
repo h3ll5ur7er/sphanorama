@@ -302,10 +302,19 @@ test('the resident spill tier is handed to the page that replaces its holder, an
     await second.reload();
     expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
 
-    // The first tab's reload is handed the right and the pair, with the second tab still open.
+    // The first tab's reload is handed the right and the pair, with the second tab still open — as
+    // its successor, which the departure it finds on arrival shows: an idle old worker lets go at
+    // once, so the pair alone could not tell a successor from a page that merely found it free.
+    const holderBefore = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('sphanorama-resident-holder') ?? 'null'));
+    await page.addInitScript(() => {
+      window.__departure = sessionStorage.getItem('sphanorama-resident-tier');
+    });
     await page.reload();
     expect(await first()).toEqual([]);
     expect(await holders(page)).toBe(1);
+    const departure = JSON.parse(await page.evaluate(() => window.__departure) ?? 'null');
+    expect(departure).toEqual({ token: holderBefore.token, leftAt: expect.any(Number) });
   } finally {
     await server.close();
   }

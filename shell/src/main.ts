@@ -1555,6 +1555,7 @@ async function main() {
       locks: (navigator as { locks?: LockManagerLike }).locks,
     });
     window.addEventListener('pagehide', () => tier.depart());
+    window.addEventListener('pageshow', (event) => { if (event.persisted) tier.resume(); });
     const connected = await startCore(tier);
     remote = connected.remote;
     const core = connected.core;
