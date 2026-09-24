@@ -522,6 +522,37 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
   return sync;
 }
 
+/**
+ * How long a reload waits for its previous worker to let the resident pair go.
+ *
+ * A reload starts the new worker before the old one is reliably gone, and the old one holds the
+ * resident pair under exclusive handles until it is. Taking a tier of its own at the first
+ * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
+ * refused as lost. A second tab holds the pair for as long as it lives, and waits this long before
+ * it falls back — a startup cost paid only by the tab that cannot resume anyway.
+ */
+export interface ResidentHandoff {
+  attempts: number;
+  delayMs: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const RELOAD_HANDOFF: ResidentHandoff = { attempts: 20, delayMs: 100 };
+
+async function lockWaiting(directory: SpillDirectory, name: string,
+                           handoff: ResidentHandoff): Promise<SyncAccessHandle> {
+  const sleep = handoff.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  for (let attempt = 1; ; ++attempt) {
+    try {
+      return await lock(directory, name);
+    } catch (cause) {
+      // No amount of waiting helps a platform that cannot lock at all.
+      if (cause instanceof NoSyncAccessHandles || attempt >= handoff.attempts) throw cause;
+      await sleep(handoff.delayMs);
+    }
+  }
+}
+
 function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: string,
                   removeOnClose: boolean): SpillFile {
   return {
@@ -553,19 +584,22 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
  * those identities back on resume (ADR 0029). A tier under a fresh name every run would put those
  * bytes in a file nobody would ever ask for.
  *
- * The handle underneath is exclusive, though, so the resident pair cannot always be had: a second
- * tab open on the app, or a reload whose previous worker has not been torn down yet, gets
- * `NoModificationAllowedError`. Falling back to a name of its own is what keeps that session
+ * The handle underneath is exclusive, though, so the resident pair cannot always be had at once: a
+ * reload whose previous worker has not been torn down yet gets `NoModificationAllowedError` for a
+ * moment, and a second tab open on the app gets it for good. So it waits for the pair
+ * (`ResidentHandoff`) and only then falls back to a name of its own. That keeps a second tab
  * capturing — with a tier that is not resumable, which is correct, because the capture it would
- * resume belongs to whoever is holding the resident one.
+ * resume belongs to whoever is holding the resident one — without handing a reload the same
+ * unresumable tier.
  */
-export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTier> {
+export async function openSpillTier(directory?: SpillDirectory,
+                                    handoff: ResidentHandoff = RELOAD_HANDOFF): Promise<SpillTier> {
   const root = directory ?? (await originPrivateDirectory());
 
   let name = RESIDENT;
   let frames: SyncAccessHandle;
   try {
-    frames = await lock(root, RESIDENT);
+    frames = await lockWaiting(root, RESIDENT, handoff);
   } catch (cause) {
     // No name will help on a platform that cannot lock at all, so this is where it stops.
     if (cause instanceof NoSyncAccessHandles) throw cause;
@@ -576,7 +610,10 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
 
   let index: SyncAccessHandle;
   try {
-    index = await lock(root, name + INDEX_SUFFIX);
+    // The old worker lets go of its two handles separately, so having the frames is no promise
+    // the index is free yet.
+    index = name === RESIDENT ? await lockWaiting(root, name + INDEX_SUFFIX, handoff)
+                              : await lock(root, name + INDEX_SUFFIX);
   } catch (cause) {
     // Half a tier is worse than none: the frame handle would stay locked for the life of the
     // worker, pushing the next session onto a fallback name over a file nobody is using. Best

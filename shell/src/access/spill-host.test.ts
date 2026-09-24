@@ -784,18 +784,22 @@ function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean 
   };
 }
 
+// Retries without delay, so the tests that are about falling back stay fast and still go through
+// the wait they would meet in life.
+const noWait = { attempts: 3, delayMs: 0, sleep: async () => {} };
+
 describe('the spill file', () => {
   it('comes back to the same file, so a reload can still find its frames', async () => {
     // The whole reason this file has a fixed name again. A session's frames are named by the
     // identities its document carries (ADR 0029), and a fresh file per run means those bytes are
     // in a file that was swept before anybody asked for them.
     const opfs = fakeOpfs();
-    const first = await openSpillTier(opfs.directory);
+    const first = await openSpillTier(opfs.directory, noWait);
     const names = opfs.names();
     first.frames.close();
     first.index.close();
 
-    await openSpillTier(opfs.directory);
+    await openSpillTier(opfs.directory, noWait);
     expect(opfs.names().sort()).toEqual(names.sort());
   });
 
@@ -805,8 +809,8 @@ describe('the spill file', () => {
     // sphere for no stated reason. It still gets one — just not the resumable one, which belongs
     // to whoever is holding it.
     const opfs = fakeOpfs();
-    const first = await openSpillTier(opfs.directory);
-    const second = await openSpillTier(opfs.directory);
+    const first = await openSpillTier(opfs.directory, noWait);
+    const second = await openSpillTier(opfs.directory, noWait);
 
     expect(first.frames).not.toBe(second.frames);
     expect(opfs.names().filter((name) => name.startsWith('sphanorama-spill-'))).toHaveLength(4);
@@ -817,10 +821,10 @@ describe('the spill file', () => {
     // and a live sibling's says no. Letting that answer escape would cost the new session the
     // tier it just opened — the second tab's spill lost again, by the code meant to keep it.
     const opfs = fakeOpfs();
-    await openSpillTier(opfs.directory);
+    await openSpillTier(opfs.directory, noWait);
     const held = opfs.names();
 
-    await expect(openSpillTier(opfs.directory)).resolves.toBeDefined();
+    await expect(openSpillTier(opfs.directory, noWait)).resolves.toBeDefined();
     expect(opfs.names()).toEqual(expect.arrayContaining(held));
   });
 
@@ -828,7 +832,7 @@ describe('the spill file', () => {
     // Nobody deletes a fallback file on a crash or a killed tab, and they would otherwise
     // accumulate one per second-tab run until the origin's quota went.
     const opfs = fakeOpfs(['sphanorama-spill-1a2b3c']);
-    await openSpillTier(opfs.directory);
+    await openSpillTier(opfs.directory, noWait);
 
     expect(opfs.names()).not.toContain('sphanorama-spill-1a2b3c');
   });
@@ -845,7 +849,7 @@ describe('the spill file', () => {
       (name) => name.startsWith('sphanorama-spill-resident'),
     );
 
-    const tier = await openSpillTier(opfs.directory);
+    const tier = await openSpillTier(opfs.directory, noWait);
 
     expect(opfs.names()).toContain('sphanorama-spill-resident');
     expect(opfs.names()).toContain('sphanorama-spill-resident.index');
@@ -861,7 +865,7 @@ describe('the spill file', () => {
     // even keep pixels in. A tier of its own beats no tier at all, here as everywhere else.
     const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident.index');
 
-    const tier = await openSpillTier(opfs.directory);
+    const tier = await openSpillTier(opfs.directory, noWait);
 
     expect(tier.frames).toBeDefined();
     expect(tier.index).toBeDefined();
@@ -875,8 +879,8 @@ describe('the spill file', () => {
     // between them leaves the file behind for a sweep that may never come — nobody opens this app
     // twice a day — so the cleanup has to survive the handle it is cleaning up after.
     const opfs = fakeOpfs([], () => false, (name) => !name.startsWith('sphanorama-spill-resident'));
-    await openSpillTier(opfs.directory);
-    const fallback = await openSpillTier(opfs.directory);
+    await openSpillTier(opfs.directory, noWait);
+    const fallback = await openSpillTier(opfs.directory, noWait);
 
     expect(() => {
       fallback.frames.close();
@@ -896,7 +900,7 @@ describe('the spill file', () => {
       (name) => name === 'sphanorama-spill-resident',
     );
 
-    const tier = await openSpillTier(opfs.directory);
+    const tier = await openSpillTier(opfs.directory, noWait);
 
     expect(tier.frames).toBeDefined();
     const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
@@ -910,13 +914,13 @@ describe('the spill file', () => {
     // collects it either, because the sweep only runs once a tier has been locked.
     const opfs = fakeOpfs([], () => false, () => false, true);
 
-    await expect(openSpillTier(opfs.directory)).rejects.toThrow(/synchronous access handles/);
+    await expect(openSpillTier(opfs.directory, noWait)).rejects.toThrow(/synchronous access handles/);
     expect(opfs.names().filter((name) => name !== 'sphanorama-spill-resident')).toHaveLength(0);
   });
 
   it('leaves files that are not spill files alone', async () => {
     const opfs = fakeOpfs(['someone-elses-database']);
-    await openSpillTier(opfs.directory);
+    await openSpillTier(opfs.directory, noWait);
 
     expect(opfs.names()).toContain('someone-elses-database');
   });
@@ -925,13 +929,66 @@ describe('the spill file', () => {
     // A second tab's tier is nobody's to resume — its frames were never written into a session
     // document anyone will read — so it goes when the tab does rather than waiting for a sweep.
     const opfs = fakeOpfs();
-    const resident = await openSpillTier(opfs.directory);
-    const fallback = await openSpillTier(opfs.directory);
+    const resident = await openSpillTier(opfs.directory, noWait);
+    const fallback = await openSpillTier(opfs.directory, noWait);
     expect(opfs.names()).toHaveLength(4);
 
     fallback.frames.close();
     fallback.index.close();
     await vi.waitFor(() => expect(opfs.names()).toHaveLength(2));
     expect(resident.frames).toBeDefined();
+  });
+});
+
+describe('a reload that finds the last worker still holding the tier', () => {
+  // A reload starts the new worker before the old one is always gone, and the old one holds the
+  // resident pair under exclusive handles until it is. Falling back at the first refusal gave the
+  // reloaded page a tier nobody can resume, so the capture it came back for was refused as lost —
+  // which is what the resident pair exists to prevent.
+  function recording(delayMs: number) {
+    const slept: number[] = [];
+    return { slept, wait: { attempts: 5, delayMs, sleep: async (ms: number) => { slept.push(ms); } } };
+  }
+
+  it('waits for it to let go of the frames rather than starting a tier nobody can resume', async () => {
+    let refusals = 2;
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && refusals-- > 0);
+    const { slept, wait } = recording(50);
+
+    await openSpillTier(opfs.directory, wait);
+
+    expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
+    expect(slept).toEqual([50, 50]);
+  });
+
+  it('waits for the index too, which the last worker lets go of separately', async () => {
+    let refusals = 2;
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident.index' && refusals-- > 0);
+    const { slept, wait } = recording(50);
+
+    await openSpillTier(opfs.directory, wait);
+
+    expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
+    expect(slept).toEqual([50, 50]);
+  });
+
+  it('still takes a tier of its own once the wait runs out, as a second tab must', async () => {
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
+    const { slept, wait } = recording(50);
+
+    const tier = await openSpillTier(opfs.directory, wait);
+
+    expect(tier.frames).toBeDefined();
+    expect(slept).toHaveLength(wait.attempts - 1);
+    const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
+    expect(fallbacks).toHaveLength(2);
+  });
+
+  it('does not wait at all on a browser that cannot lock a file', async () => {
+    const opfs = fakeOpfs([], () => false, () => false, true);
+    const { slept, wait } = recording(50);
+
+    await expect(openSpillTier(opfs.directory, wait)).rejects.toThrow(/synchronous access handles/);
+    expect(slept).toEqual([]);
   });
 });

@@ -277,8 +277,9 @@ test in a single browser session cannot reach.
 
 **And on the one axis where they differ the other way, the reload is the harder case.** The resident
 spill pair is taken under an exclusive sync access handle, so a reload can race the outgoing worker,
-fall back to a tier of its own, and then fail `TierGeneration`. A close-and-reopen removes that race
-outright. So the close-and-reopen is the stronger result for process survival and the weaker one for
+fall back to a tier of its own, and then fail `TierGeneration`. A reload now waits about two seconds
+for the pair before falling back (ADR 0063), which narrows that race without closing it. A
+close-and-reopen removes it outright. So the close-and-reopen is the stronger result for process survival and the weaker one for
 the handoff — which is an argument for having both reports rather than for ranking them.
 
 **Neither report reaches the pixels, and that is the part still owed.** `Resume` reads the document,
@@ -289,8 +290,10 @@ bytes, and an earlier version of this entry made it about bytes. So a successful
 generation survived, which is real, and says nothing about whether the frames are readable. ADR 0029
 names the un-pinned version of that state as the worst artefact available: a sphere reporting 28 of
 28 cells captured, pointing at frames nothing can pin. Opening the candidate strip on one restored
-cell after the next close-and-reopen is what turns this from a report into a measurement, and it is
-one tap.
+cell after the next close-and-reopen is what turns this from a report into a measurement, and **it
+has been done**: the maintainer sees the previews of restored frames after a resume, and
+`CandidatePreview` builds a preview by pinning the frame's own bytes and reducing them. So the frames
+a resume brings back are readable, not only accounted for.
 
 A Pixel 9 Pro XL is not the mid-range Android the exit names, and it is the device that exists. The
 iPhone half is untouched.
