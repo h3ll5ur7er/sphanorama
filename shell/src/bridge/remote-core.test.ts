@@ -6,7 +6,7 @@
 // mixed up two replies.
 import { describe, expect, it, vi } from 'vitest';
 
-import { connectCore, type WorkerLike } from './remote-core';
+import { connectCore, wasReloaded, type WorkerLike } from './remote-core';
 import type { FromWorker, ToWorker } from './protocol';
 
 /** A worker that records what it was sent and replies only when the test says so. */
@@ -36,7 +36,7 @@ function fakeWorker() {
   };
   // Boot is answered eagerly, since connectCore cannot return until it is.
   const boot = async (methods: string[] = ['ProjectManager.list']) => {
-    const connecting = connectCore(worker, 'https://example.test/core.js');
+    const connecting = connectCore(worker, 'https://example.test/core.js', false);
     await Promise.resolve();
     reply({ kind: 'booted', seq: seqOf('boot'), methods, spill: true });
     return connecting;
@@ -49,6 +49,25 @@ describe('connecting', () => {
     const w = fakeWorker();
     await w.boot();
     expect(w.sent[0].message).toMatchObject({ kind: 'boot', coreUrl: 'https://example.test/core.js' });
+  });
+
+  it('tells the worker whether this page was reloaded, which only the page can know', async () => {
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', true);
+    await Promise.resolve();
+    w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true });
+    await connecting;
+    expect(w.sent[0].message).toMatchObject({ kind: 'boot', reloaded: true });
+  });
+
+  it('reads a reload from the navigation entry, and anything else as not one', () => {
+    const timing = (...types: string[]) => ({
+      getEntriesByType: () => types.map((type) => ({ type })) as unknown as PerformanceEntryList,
+    });
+    expect(wasReloaded(timing('reload'))).toBe(true);
+    expect(wasReloaded(timing('navigate'))).toBe(false);
+    expect(wasReloaded(timing('back_forward'))).toBe(false);
+    expect(wasReloaded(timing())).toBe(false);
   });
 
   it('reports the methods the worker published rather than a list of its own', async () => {
@@ -192,7 +211,7 @@ describe('a worker that stops answering', () => {
 
   it('fails a boot the worker never answers, once it is known to be dead', async () => {
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', false);
     await Promise.resolve();
 
     w.raise('error', { message: 'the script would not load' });
@@ -234,7 +253,7 @@ describe('a boot that fails', () => {
     // a reference to the worker and nobody can stop it — and a sync access handle is exclusive,
     // so the next attempt to open the same file is blocked by the page's own orphan.
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', false);
     await Promise.resolve();
 
     w.reply({ kind: 'failed', seq: w.seqOf('boot'), detail: 'the module would not import' });
@@ -245,7 +264,7 @@ describe('a boot that fails', () => {
 
   it('terminates on an answer of the wrong kind too', async () => {
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', false);
     await Promise.resolve();
 
     w.reply({ kind: 'flushed', seq: w.seqOf('boot'), persistError: null });

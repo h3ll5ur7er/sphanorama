@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSpillHost, openSpillTier, type SpillFile } from './spill-host';
+import { createSpillHost, handoffFor, openSpillTier, type SpillFile } from './spill-host';
 
 /** A spill file in memory. The allocator is what is under test; the syscalls are the browser's. */
 function fakeFile(options: { shortWrites?: boolean } = {}):
@@ -1011,16 +1011,16 @@ describe('a reload that finds the last worker still holding the tier', () => {
     expect(slept).toHaveLength(wait.attempts - 1);
   });
 
-  it('waits by default, which is what the worker gets', async () => {
-    // The worker calls `openSpillTier()` with no handoff, so the shipped values are the ones that
-    // decide whether a reload resumes. The previous worker lets go after 2.9 s here: Chromium was
-    // measured releasing a busy one at 1.98 s, and the budget promises a second on top of that.
+  it('waits on a reload for as long as the shipped budget promises', async () => {
+    // The shipped values are the ones that decide whether a reload resumes. The previous worker
+    // lets go after 2.9 s here: Chromium was measured releasing a busy one about 2 s after the
+    // reload, and the budget promises a second on top of that.
     vi.useFakeTimers();
     try {
       let heldUntil = 2900;
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && Date.now() < heldUntil);
       heldUntil += Date.now();
-      const opening = openSpillTier(opfs.directory);
+      const opening = openSpillTier(opfs.directory, handoffFor(true));
       await vi.advanceTimersByTimeAsync(3500);
       await opening;
       expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
@@ -1029,20 +1029,40 @@ describe('a reload that finds the last worker still holding the tier', () => {
     }
   });
 
-  it('gives up by default within about three seconds, so a second tab still boots', async () => {
-    // The other half of the shipped budget. A tab whose resident pair is held by a live sibling
+  it('gives up on a reload within about three seconds', async () => {
+    // The other half of the shipped budget. A reloaded tab whose pair is held by a live sibling
     // never gets it, and every millisecond of waiting is a millisecond its button stays disabled.
     vi.useFakeTimers();
     try {
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
       let settled = false;
-      const opening = openSpillTier(opfs.directory).finally(() => { settled = true; });
+      const opening = openSpillTier(opfs.directory, handoffFor(true)).finally(() => { settled = true; });
       await vi.advanceTimersByTimeAsync(3000);
       expect(settled).toBe(true);
       await opening;
       const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
       expect(fallbacks).toHaveLength(2);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not wait at all when the page was not reloaded', async () => {
+    // A second tab that waited would be first in line when a reload of the tab holding the pair
+    // let go, and would take the pair from that reload.
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
+      let settled = false;
+      const opening = openSpillTier(opfs.directory, handoffFor(false)).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      await opening;
+      const fallbacks = opfs.names().filter((name) => !name.startsWith('sphanorama-spill-resident'));
+      expect(fallbacks).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
       vi.useRealTimers();
     }
   });

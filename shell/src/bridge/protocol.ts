@@ -33,8 +33,12 @@ export interface LockReport {
 }
 
 export type ToWorker =
-  /** The core module is fetched at runtime, so the page passes the URL it resolved. */
-  | { kind: 'boot'; seq: number; coreUrl: string }
+  /**
+   * The core module is fetched at runtime, so the page passes the URL it resolved. `reloaded` is
+   * the page's navigation type, which a worker cannot read and the spill tier's wait depends on
+   * (ADR 0063).
+   */
+  | { kind: 'boot'; seq: number; coreUrl: string; reloaded: boolean }
   | { kind: 'call'; seq: number; method: string; args: Uint8Array }
   | {
       kind: 'capabilities';

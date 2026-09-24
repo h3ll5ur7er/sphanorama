@@ -1,12 +1,14 @@
 /**
- * The two stores the worker opens before the module, in the order a reload needs (ADR 0063).
+ * The two stores the worker opens before the module.
  *
  * Apart from `worker.ts` because that file is a composition root with side effects on import, and
- * the order is the one thing in it a test has to be able to hold still.
+ * which wait the spill tier gets is the one decision in it a test has to be able to reach.
  */
 import { createDocumentHost, type DocumentHost } from '../access/document-host';
 import { createIndexedDbStore } from '../access/indexeddb-store';
-import { createSpillHost, openSpillTier, type SpillHost } from '../access/spill-host';
+import {
+  createSpillHost, handoffFor, openSpillTier, type ResidentHandoff, type SpillHost,
+} from '../access/spill-host';
 
 export interface Stores {
   spill: SpillHost | null;
@@ -14,19 +16,23 @@ export interface Stores {
 }
 
 export interface StoreOpeners {
-  spill(): Promise<SpillHost>;
+  spill(handoff: ResidentHandoff): Promise<SpillHost>;
   documents(): Promise<DocumentHost>;
 }
 
 const BROWSER: StoreOpeners = {
-  spill: async () => {
-    const tier = await openSpillTier();
+  spill: async (handoff) => {
+    const tier = await openSpillTier(undefined, handoff);
     return createSpillHost(tier.frames, tier.index);
   },
   documents: () => createDocumentHost(createIndexedDbStore()),
 };
 
-export async function openStores(open: StoreOpeners = BROWSER): Promise<Stores> {
+/**
+ * `reloaded` is the page's own navigation type, because only the page has one: a reload waits for
+ * its previous worker to let the resident pair go, and nothing else does (ADR 0063).
+ */
+export async function openStores(reloaded: boolean, open: StoreOpeners = BROWSER): Promise<Stores> {
   // The tier can fail on its own and the failure is not fatal: a browser with no origin private
   // file system, or one whose handle will not open, gets a core whose frame store has nowhere to
   // spill. The composition root reads whether this is installed and hands the store a sink or not
@@ -34,15 +40,14 @@ export async function openStores(open: StoreOpeners = BROWSER): Promise<Stores> 
   // spilling freed memory.
   let spill: SpillHost | null;
   try {
-    spill = await open.spill();
+    spill = await open.spill(handoffFor(reloaded));
   } catch (cause) {
     spill = null;
     console.warn('sphanorama worker: no spill tier —', String(cause));
   }
 
-  // After the tier, because on a reload the resident pair is released only when the previous
-  // worker is gone, so the snapshot cannot race a write it still had in flight. Not a rescue for
-  // the page's `pagehide` flush, which Chromium drops on a reload however this is ordered
+  // Which of the two opens first does not matter, measured: a debounced write the old worker had
+  // not issued dies with it either way, and one it had issued is ordered by IndexedDB itself
   // (ADR 0063). Hydrated whether or not the tier opened, since a missing tier costs spilling and a
   // missing document store costs every session.
   const documents = await open.documents();

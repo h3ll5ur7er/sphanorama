@@ -75,7 +75,17 @@ export interface RemoteCoreHandle {
   remote: RemoteCore;
 }
 
-export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<RemoteCoreHandle> {
+/**
+ * Whether this page was reached by reloading it, which is the one case whose previous worker is
+ * on its way out rather than staying (ADR 0063). Nothing reported reads as not a reload.
+ */
+export function wasReloaded(timing: Pick<Performance, 'getEntriesByType'>): boolean {
+  const [navigation] = timing.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+  return navigation?.type === 'reload';
+}
+
+export async function connectCore(worker: WorkerLike, coreUrl: string,
+                                  reloaded: boolean): Promise<RemoteCoreHandle> {
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let releaseLocks: () => void = () => {};
@@ -151,7 +161,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
   // `die` is idempotent, so an `error` event that arrives alongside this is not a second death.
   let booted: FromWorker;
   try {
-    booted = await ask({ kind: 'boot', coreUrl });
+    booted = await ask({ kind: 'boot', coreUrl, reloaded });
   } catch (cause) {
     die(`the core worker failed to boot: ${cause instanceof Error ? cause.message : String(cause)}`);
     throw cause;

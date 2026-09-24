@@ -528,14 +528,14 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
  * A reload starts the new worker before the old one is reliably gone, and the old one holds the
  * resident pair under exclusive handles until it is. Taking a tier of its own at the first
  * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
- * refused as lost. A second tab holds the pair for as long as it lives, and waits this long before
- * it falls back — a startup cost paid only by the tab that cannot resume anyway.
+ * refused as lost. Only a reload waits (`handoffFor`).
  *
  * **Sized from a measurement, not chosen.** Chromium lets go of an idle worker's handles before
- * the new worker first asks; a busy one it terminates about 1.98 s after the new worker starts
- * polling, however long that worker was going to be busy for (3, 8 and 20 s all measured the same).
- * Twenty attempts, 1.9 s, gave up about 70 ms before that and refused the resume. Thirty is 2.9 s:
- * the measured release with a second to spare, paid in full only by a second tab.
+ * the new worker first asks. A busy one it terminates about 2 s after the reload tears its page
+ * down, however long that worker was going to be busy for (3, 8 and 20 s all measured the same),
+ * and not before the reloaded page's main thread next yields: a long task spanning that moment
+ * pushed the release to 4.5 s. Twenty attempts, 1.9 s, gave up about 70 ms short and refused the
+ * resume. Thirty is 2.9 s: the measured release with a second to spare.
  *
  * The budget is per file, and the frames and the index are waited for separately. Chromium
  * releases the two together, so the index has never needed a second try; a browser that let them
@@ -549,6 +549,19 @@ export interface ResidentHandoff {
 }
 
 const RELOAD_HANDOFF: ResidentHandoff = { attempts: 30, delayMs: 100 };
+const AT_ONCE: ResidentHandoff = { attempts: 1, delayMs: 0 };
+
+/**
+ * The wait for a page that was reloaded, and none for any other.
+ *
+ * A reload is the only opener whose rival is on its way out. Any other — a second tab, a fresh
+ * launch — finds the pair held by a session that is staying, and if it waited it would be first in
+ * line when a reload of *that* session let go: measured, a second tab opened a second before the
+ * first was reloaded took the pair in 5 of 5 runs, and the reloaded tab could not resume.
+ */
+export function handoffFor(reloaded: boolean): ResidentHandoff {
+  return reloaded ? RELOAD_HANDOFF : AT_ONCE;
+}
 
 function isHeld(cause: unknown): boolean {
   return (cause as { name?: unknown } | null)?.name === 'NoModificationAllowedError';
@@ -616,14 +629,14 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
  *
  * The handle underneath is exclusive, though, so the resident pair cannot always be had at once: a
  * reload whose previous worker has not been torn down yet gets `NoModificationAllowedError` for a
- * moment, and a second tab open on the app gets it for good. So it waits for the pair
- * (`ResidentHandoff`) and only then falls back to a name of its own. That keeps a second tab
- * capturing — with a tier that is not resumable, which is correct, because the capture it would
- * resume belongs to whoever is holding the resident one — without handing a reload the same
- * unresumable tier.
+ * moment, and a second tab open on the app gets it for good. So a reload waits for the pair
+ * (`handoffFor`) and only then falls back to a name of its own, and anything else falls back at
+ * once. That keeps a second tab capturing — with a tier that is not resumable, which is correct,
+ * because the capture it would resume belongs to whoever is holding the resident one — without
+ * handing a reload the same unresumable tier.
  */
-export async function openSpillTier(directory?: SpillDirectory,
-                                    handoff: ResidentHandoff = RELOAD_HANDOFF): Promise<SpillTier> {
+export async function openSpillTier(directory: SpillDirectory | undefined,
+                                    handoff: ResidentHandoff): Promise<SpillTier> {
   const root = directory ?? (await originPrivateDirectory());
 
   let name = RESIDENT;

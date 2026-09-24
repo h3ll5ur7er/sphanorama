@@ -6,7 +6,7 @@
  * behind contracts, and a client that computed them here would have to be unwound later.
  */
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
-import { connectCore, type RemoteCore } from './bridge/remote-core';
+import { connectCore, type RemoteCore, wasReloaded } from './bridge/remote-core';
 import type {
   CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat,
 } from '../../contracts/ts/contracts';
@@ -272,7 +272,8 @@ function reportMotionSource(capability?: string, lostReason = '') {
  */
 async function startCore() {
   const worker = new Worker(new URL('./bridge/worker.ts', import.meta.url), { type: 'module' });
-  return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`);
+  return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`,
+                     wasReloaded(performance));
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {

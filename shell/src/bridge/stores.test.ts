@@ -1,39 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DocumentHost } from '../access/document-host';
-import type { SpillHost } from '../access/spill-host';
+import { handoffFor, type ResidentHandoff, type SpillHost } from '../access/spill-host';
 import { openStores } from './stores';
 
-const spillHost = {} as SpillHost;
-const documentHost = {} as DocumentHost;
+const spillHost = { kind: 'spill' } as unknown as SpillHost;
+const documentHost = { kind: 'documents' } as unknown as DocumentHost;
 
 describe('the stores a worker opens before the core', () => {
-  it('reads no document until the spill tier is settled', async () => {
-    // On a reload the tier is the barrier: the previous worker lets go of it only once it is gone,
-    // and until then it may still be committing a debounced write (ADR 0063).
-    let letGo!: (host: SpillHost) => void;
-    const documents = vi.fn(async () => documentHost);
-    const opening = openStores({
-      spill: () => new Promise<SpillHost>((resolve) => { letGo = resolve; }),
-      documents,
+  it('waits for the resident pair on a reload, and only then', async () => {
+    // Anything else that waited would be first in line when a reload of the session holding the
+    // pair let go, and would take it from that reload (ADR 0063).
+    const asked: ResidentHandoff[] = [];
+    const open = {
+      spill: async (handoff: ResidentHandoff) => { asked.push(handoff); return spillHost; },
+      documents: async () => documentHost,
+    };
+
+    await openStores(true, open);
+    await openStores(false, open);
+
+    expect(asked).toEqual([handoffFor(true), handoffFor(false)]);
+    expect(handoffFor(true).attempts).toBeGreaterThan(1);
+    expect(handoffFor(false).attempts).toBe(1);
+  });
+
+  it('opens both', async () => {
+    const stores = await openStores(false, {
+      spill: async () => spillHost,
+      documents: async () => documentHost,
     });
-
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(documents).not.toHaveBeenCalled();
-
-    letGo(spillHost);
-    await expect(opening).resolves.toEqual({ spill: spillHost, documents: documentHost });
-    expect(documents).toHaveBeenCalledOnce();
+    expect(stores.spill).toBe(spillHost);
+    expect(stores.documents).toBe(documentHost);
   });
 
   it('still opens the documents when there is no tier', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const stores = await openStores({
+      const stores = await openStores(false, {
         spill: async () => { throw new Error('no origin private file system'); },
         documents: async () => documentHost,
       });
-      expect(stores).toEqual({ spill: null, documents: documentHost });
+      expect(stores.spill).toBeNull();
+      expect(stores.documents).toBe(documentHost);
       expect(warn).toHaveBeenCalledWith('sphanorama worker: no spill tier —', expect.stringContaining('no origin private'));
     } finally {
       warn.mockRestore();
