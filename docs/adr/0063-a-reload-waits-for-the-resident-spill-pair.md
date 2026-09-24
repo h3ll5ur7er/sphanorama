@@ -61,9 +61,10 @@ outcome with `boot` and never touches the pair without it.
 - **A page lets the right go on `pagehide`**, just after stamping its departure, rather than when it
   dies: Chromium never puts a page holding a Web Lock in the back/forward cache (measured: `main`
   restored on Back 3 of 3, a page holding the lock for life 0 of 3, reason `WebLocks`). The stamp
-  keeps newcomers off until the successor has queued, and a cached page's frozen worker still holds
-  the files, so a newcomer that takes the right meanwhile fails its one try and gives it back. A
-  page restored from the cache takes the right back on `pageshow`.
+  keeps newcomers off until the successor has queued, and it is all that protects a page sitting in
+  the cache: after `HANDOVER_MS` a newcomer's try on the files makes Chromium evict the cached page
+  (`IgnoreEventAndEvict`) and hands the newcomer the pair. A page restored from the cache takes the
+  right back on `pageshow`.
 
 **Who is the successor is decided from two records.** On `pagehide`, a page holding the right stamps
 its departure — its token and the time — in its tab's `sessionStorage` and in the origin's
@@ -107,10 +108,12 @@ only after the old worker was gone; measured, the two orders read the same snaps
 reloads. A debounced write the old worker had not yet issued dies with it in either order, and one
 it had issued is ordered by IndexedDB itself — a read opened while it is in flight waits for it.
 
-Nor is the page's `pagehide` flush rescued by anything here: on a reload Chromium never delivers
+Nor is the page's `pagehide` flush rescued by anything here on a reload: Chromium never delivers
 that write at all — 0 of about 50 reloads on a minimal page, and the last pick was lost in 3 of 11
 reloads of the real app without the explicit `flush()` the browser test makes. The loss predates
-this ADR and is tracked in issue #83. The departure stamps are synchronous `sessionStorage` and
+this ADR and is tracked in issue #83. (A navigation the back/forward cache keeps does deliver it —
+3 of 3 on a minimal page — which letting the right go on `pagehide` makes possible again.) The
+departure stamps are synchronous `sessionStorage` and
 `localStorage` writes, and those do land: a successor is recognised only when both are there and
 agree, and every successor in the table above was.
 
@@ -124,7 +127,8 @@ a forged departure is no claim, and the first tab's reload is handed the pair.
 
 - A page that replaces the holder in the same tab gets the resident pair and can resume, however
   it came back and however busy the old worker was.
-- A second tab starts as fast as before, and cannot take the pair from anyone.
+- A second tab starts as fast as before, and cannot take the pair from a live page. It can take it
+  from one that has sat in the back/forward cache for more than two seconds (below).
 - **A tab opened within two seconds of the app's last tab closing gets a tier of its own**, because
   it cannot tell a close from a reload whose successor has not queued yet. Its capture is then not
   resumable from there. This was already so within about two seconds on the old worker's account.
@@ -132,10 +136,13 @@ a forged departure is no claim, and the first tab's reload is handed the pair.
   including one whose own main thread is busy around the two-second mark. Measured on desktop
   Chromium only: nothing here measures a phone, Safari or Firefox.
 - **Without Web Locks the files alone decide**: a successor polls them and everyone else tries once,
-  this ADR's weakest earlier version. It is reachable almost nowhere — the SIMD core already needs
-  Safari 16.4, well after Web Locks, and an insecure context has no origin private file system to
-  spill to — but deciding the right never stops the page loading: anything that throws on the way,
-  such as a missing `crypto.randomUUID` or `AbortSignal.timeout`, falls back the same way.
+  this ADR's weakest earlier version. So do pages whose lock manager refuses the request outright
+  rather than timing out — skipping there would leave the pair to nobody, the successor included.
+  It is reachable almost nowhere: the SIMD core already needs Safari 16.4, well after Web Locks,
+  and an insecure context has no origin private file system to spill to. `crypto.randomUUID` and
+  `AbortSignal.timeout`, which such browsers can lack, have fallbacks. And deciding the right never
+  stops the page loading: an unexpected throw leaves the page trying the files once, though without
+  a successor's wait — Chromium's lock manager rejects rather than throws, so none is known.
 - **A page away in the back/forward cache for more than two seconds can lose its pair** to a
   newcomer, which Chromium lets have the files by evicting the cached page. The tab then comes
   back as a fresh page with a tier of its own.

@@ -123,28 +123,32 @@ async function decide(options: TierAccessOptions): Promise<TierAccess> {
 
   const waitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
   // Held until the worker turns out not to have the pair, or the page leaves.
-  const take = (how: { ifAvailable?: boolean; signal?: AbortSignal }) => new Promise<boolean>((answer) => {
+  type Outcome = 'granted' | 'held elsewhere' | 'refused';
+  const take = (how: { ifAvailable?: boolean; signal?: AbortSignal }) => new Promise<Outcome>((answer) => {
     locks.request(LOCK, how, (lock) => {
       if (!lock) {
-        answer(false);
+        answer('held elsewhere');
         return undefined;
       }
       holding = true;
       claim();
-      answer(true);
+      answer('granted');
       return new Promise<void>((done) => { release = () => { holding = false; done(); }; });
     }).catch((cause: unknown) => {
       const timedOut = (cause as { name?: unknown } | null)?.name === 'AbortError';
       console.warn(timedOut
         ? `sphanorama spill: the resident pair was not handed over within ${waitMs} ms; taking a tier of its own`
-        : `sphanorama spill: the right to the resident pair was refused (${String(cause)}); taking a tier of its own`);
-      answer(false);
+        : `sphanorama spill: the right to the resident pair was refused (${String(cause)}); the files alone decide`);
+      answer(timedOut ? 'held elsewhere' : 'refused');
     });
   });
-  const granted = await take(successor ? { signal: timeout(waitMs) } : { ifAvailable: true });
+  const outcome = await take(successor ? { signal: timeout(waitMs) } : { ifAvailable: true });
+  // A lock manager that refuses outright is the same as none: the files decide, as before the right
+  // existed. Skipping instead would leave the pair to nobody, the successor included.
+  const asIfNoLocks = outcome === 'refused';
 
   return {
-    access: granted ? (successor ? 'wait' : 'try') : 'skip',
+    access: outcome === 'held elsewhere' ? 'skip' : successor ? 'wait' : 'try',
     settle(resident) {
       ours = resident;
       if (!resident && holding) {
@@ -156,15 +160,15 @@ async function decide(options: TierAccessOptions): Promise<TierAccess> {
       // Holding the right before the worker has answered counts: its worker may have the files.
       if (holding || ours) stamp();
       // Let go now rather than when the page dies: a page holding a Web Lock is never put in the
-      // back/forward cache, and the departure just stamped keeps newcomers off until the successor
-      // has queued. A cached page's frozen worker still holds the files, so a newcomer that takes
-      // the right meanwhile fails its one try and gives it back.
+      // back/forward cache. The departure just stamped keeps newcomers off until the successor has
+      // queued, and it is all that protects a page sitting in the cache: after HANDOVER_MS a
+      // newcomer that tries the files makes Chromium evict the cached page and gets the pair.
       release();
     },
     resume() {
       // Back from the back/forward cache with the worker, and the files, it left with.
       remove(options.session, TAB_KEY);
-      if (ours && !holding) void take({});
+      if (ours && !holding && !asIfNoLocks) void take({});
     },
   };
 }

@@ -293,7 +293,8 @@ describe("a page's right to the resident spill tier", () => {
   });
 
   it('is handed back to the cached page by a newcomer that took it meanwhile', async () => {
-    // The newcomer's one try fails on the files the frozen worker still holds, and it lets go.
+    // In Chromium the newcomer's try on the files evicts the cached page instead, and it never comes
+    // back; this is the order of events where the newcomer's worker did not get them.
     const o = origin();
     const cached = await o.open(o.tab());
     cached.settle(true);
@@ -318,13 +319,21 @@ describe("a page's right to the resident spill tier", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not decide'));
   });
 
-  it('says a refused request was refused, not that it timed out', async () => {
-    // What Chromium is expected to do with Web Locks where storage is blocked.
+  it('leaves the files to decide when the lock manager refuses outright, rather than the pair to nobody', async () => {
+    // What Chromium is expected to do with Web Locks where storage is blocked. Skipping would leave
+    // every page, the successor included, off a pair nobody holds.
     const refusing: LockManagerLike = {
       request: () => Promise.reject(new DOMException('storage is blocked', 'SecurityError')),
     };
-    const decided = await tierAccess({ session: () => memoryStorage(), local: () => memoryStorage(), locks: refusing });
-    expect(decided.access).toBe('skip');
+    const o = origin();
+    const tab = o.tab();
+    (await o.open(tab)).depart();
+    await o.locks.holderDies();
+    const open = (session: ReturnType<typeof memoryStorage>, at: number) => tierAccess({
+      session: () => session, local: () => o.local, locks: refusing, now: () => at,
+    });
+    expect((await open(tab, 1_000_000)).access).toBe('wait');
+    expect((await open(o.tab(), 1_000_000 + HANDOVER_MS)).access).toBe('try');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('refused (SecurityError'));
   });
 
