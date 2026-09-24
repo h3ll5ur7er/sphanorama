@@ -1052,10 +1052,44 @@ describe('a reload that finds the last worker still holding the tier', () => {
     // fallback that has to happen anyway.
     const opfs = fakeOpfs([], (name) => (name === 'sphanorama-spill-resident' ? 'QuotaExceededError' : false));
     const { slept, wait } = recording(50);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await openSpillTier(opfs.directory, wait);
+    try {
+      await openSpillTier(opfs.directory, wait);
 
-    expect(slept).toEqual([]);
+      expect(slept).toEqual([]);
+      // And says why it fell back, since a fallback that is not a held file is otherwise silent.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('QuotaExceededError'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('says why when the resident index is refused for a reason other than being held', async () => {
+    const opfs = fakeOpfs([], (name) => (name === 'sphanorama-spill-resident.index' ? 'InvalidStateError' : false));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await openSpillTier(opfs.directory, noWait);
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('InvalidStateError'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('says a held file only once, with how long it waited', async () => {
+    const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await openSpillTier(opfs.directory, noWait);
+
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('still held after 3 attempts'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not wait at all on a browser that cannot lock a file', async () => {

@@ -574,6 +574,15 @@ async function lockWaiting(directory: SpillDirectory, name: string,
   }
 }
 
+// Said out loud, because a session that falls back cannot resume its capture and nothing else on
+// the way to the page records why. A held file has already said so, with how long it waited.
+function fallingBack(cause: unknown): void {
+  if (isHeld(cause)) return;
+  const name = (cause as { name?: unknown } | null)?.name;
+  console.warn(`sphanorama spill: ${RESIDENT} refused (${String(name ?? cause)}); `
+    + 'taking a tier of its own');
+}
+
 function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: string,
                   removeOnClose: boolean): SpillFile {
   return {
@@ -624,15 +633,16 @@ export async function openSpillTier(directory?: SpillDirectory,
   } catch (cause) {
     // No name will help on a platform that cannot lock at all, so this is where it stops.
     if (cause instanceof NoSyncAccessHandles) throw cause;
-    // Held by somebody, then. A tier of its own beats no tier at all.
+    // Held by somebody, or refused some other way. A tier of its own beats no tier at all.
+    fallingBack(cause);
     name = SPILL_PREFIX + crypto.randomUUID();
     frames = await lock(root, name);
   }
 
   let index: SyncAccessHandle;
   try {
-    // The old worker lets go of its two handles separately, so having the frames is no promise
-    // the index is free yet.
+    // Having the frames is no promise the index is free: Chromium lets go of the two together,
+    // and nothing says every browser does.
     index = name === RESIDENT ? await lockWaiting(root, name + INDEX_SUFFIX, handoff)
                               : await lock(root, name + INDEX_SUFFIX);
   } catch (cause) {
@@ -642,6 +652,7 @@ export async function openSpillTier(directory?: SpillDirectory,
     // the session the tier the fallback below exists to give it.
     release(frames);
     if (name !== RESIDENT) throw cause;
+    fallingBack(cause);
 
     // Two files and two locks, and only one of them has to be unavailable. Giving up here would
     // cost this session its spill tier entirely — a sphere capped at RAM — over a file that holds

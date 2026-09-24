@@ -53,7 +53,7 @@ delivers that write at all — 0 of about 50 reloads on a minimal page, and the 
 3 of 11 reloads of the real app without the explicit `flush()` the browser test makes. The loss
 predates this ADR and is tracked in issue #83; this decision neither causes it nor closes it.
 
-**A fallback after the wait is logged** by the worker, and the browser test that exposed the race
+**Every fallback from the resident pair is logged** by the worker with its cause — a held file with how long it was waited for, anything else by its error name — and the browser test that exposed the race
 prints those logs when its resume is refused, so the next failure says which tier it got. A browser that cannot lock a file at
 all still fails at once, since waiting cannot help it.
 
