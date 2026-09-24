@@ -530,7 +530,8 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
  * A reload starts the new worker before the old one is reliably gone, and the old one holds the
  * resident pair under exclusive handles until it is. Taking a tier of its own at the first
  * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
- * refused as lost. Only a page whose tab held the pair last time waits (`handoffFor`).
+ * refused as lost. Only the page handed the right to the pair by the page it replaced waits
+ * (`handoffFor`, ADR 0063).
  *
  * **Sized from a measurement, not chosen.** Chromium lets go of an idle worker's handles before
  * the new worker first asks. A busy one it terminates about 2 s after the reload tears its page
@@ -647,11 +648,13 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
  *
  * The handle underneath is exclusive, though, so the resident pair cannot always be had at once: a
  * reload whose previous worker has not been torn down yet gets `NoModificationAllowedError` for a
- * moment, and a second tab open on the app gets it for good. So a page whose tab held the pair
- * waits for it (`handoffFor`) and only then falls back to a name of its own, and anything else
- * falls back at once. That keeps a second tab capturing — with a tier that is not resumable, which is correct,
- * because the capture it would resume belongs to whoever is holding the resident one — without
- * handing a reload the same unresumable tier.
+ * moment, and a second tab open on the app gets it for good. So the page decides first, by a Web
+ * Lock, whether this worker may ask at all (`ResidentAccess`): the page handed the right by the page
+ * it replaced waits for the files, a page that found the right free tries once, and a page that did
+ * not leaves them alone. Any of them then falls back to a name of its own. That keeps a second tab
+ * capturing — with a tier that is not resumable, which is correct, because the capture it would
+ * resume belongs to whoever is holding the resident one — without handing a reload the same
+ * unresumable tier.
  */
 export async function openSpillTier(directory: SpillDirectory | undefined,
                                     handoff: ResidentHandoff): Promise<SpillTier> {

@@ -72,7 +72,7 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
     && (holder === undefined || holder?.token === departure.token);
   const handingOver = !successor && recent(holder?.leftAt, HANDOVER_MS);
 
-  const mine = (options.token ?? (() => crypto.randomUUID()))();
+  const mine = (options.token ?? newToken)();
   let ours = false;
   let holding = false;
   const stamp = () => {
@@ -104,7 +104,7 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
   const held = new Promise<void>((done) => { release = done; });
   const waitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
   const granted = await new Promise<boolean>((answer) => {
-    const how = successor ? { signal: AbortSignal.timeout(waitMs) } : { ifAvailable: true };
+    const how = successor ? { signal: timeout(waitMs) } : { ifAvailable: true };
     locks.request(LOCK, how, (lock) => {
       if (!lock) {
         answer(false);
@@ -137,6 +137,20 @@ export async function tierAccess(options: TierAccessOptions): Promise<TierAccess
   };
 }
 
+// Neither is everywhere Web Locks and storage are: `crypto.randomUUID` is secure-context only, which
+// is exactly where the no-Web-Locks fallback runs, and `AbortSignal.timeout` arrived after Web Locks
+// in both Safari and Chrome. Either missing used to stop the core loading.
+function newToken(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function timeout(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 // Read once and removed at once, so a tab duplicated later copies nothing to succeed with.
 function consume(storageOf: () => ClaimStorage | undefined): Stamp | null {
   const stamp = read(storageOf, TAB_KEY);
@@ -162,7 +176,7 @@ function write(storageOf: () => ClaimStorage | undefined, key: string, value: st
   try {
     storageOf()?.setItem(key, value);
   } catch {
-    // The next page asks as a newcomer, which costs it only the wait.
+    // The next page asks as a newcomer: a successor that cannot be recognised loses the resume.
   }
 }
 

@@ -227,6 +227,34 @@ describe("a page's right to the resident spill tier", () => {
     expect(decided.access).toBe('wait');
   });
 
+  it('does without crypto.randomUUID, which an insecure context lacks', async () => {
+    // Exactly where the no-Web-Locks fallback runs; a missing one used to stop the core loading.
+    vi.stubGlobal('crypto', {});
+    try {
+      const session = memoryStorage();
+      const decided = await tierAccess({ session: () => session, local: () => memoryStorage(), locks: undefined });
+      decided.settle(true);
+      decided.depart();
+      expect(JSON.parse(session.items.get(TAB_KEY)!).token).toEqual(expect.any(String));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does without AbortSignal.timeout, which arrived after Web Locks', async () => {
+    const o = origin();
+    const tab = o.tab();
+    (await o.open(tab)).depart();
+    o.advance(300);
+    const original = AbortSignal.timeout;
+    (AbortSignal as unknown as { timeout?: unknown }).timeout = undefined;
+    try {
+      expect((await o.open(tab, 30)).access).toBe('skip');
+    } finally {
+      AbortSignal.timeout = original;
+    }
+  });
+
   it('treats storage it cannot reach as no departure, as Chromium throws when storage is off', async () => {
     const unreachable = () => { throw new DOMException('denied', 'SecurityError'); };
     const decided = await tierAccess({ session: unreachable, local: unreachable, locks: fakeLocks() });

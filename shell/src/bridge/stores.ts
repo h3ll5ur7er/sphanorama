@@ -12,7 +12,7 @@ import {
 
 export interface Stores {
   spill: SpillHost | null;
-  /** Whether the tier is the resident pair, which the page records as this tab's claim. */
+  /** Whether the tier is the resident pair: a page whose worker did not get it gives up the right. */
   resident: boolean;
   documents: DocumentHost;
 }

@@ -271,6 +271,30 @@ describe('a boot that fails', () => {
     expect(w.wasTerminated()).toBe(true);
   });
 
+  it('gives up the right to the resident tier, since a worker that is gone holds no files', async () => {
+    // A broken tab left open would otherwise keep every other page off a free pair (ADR 0063).
+    const settled: boolean[] = [];
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js',
+                                   { access: 'try', settle: (r: boolean) => { settled.push(r); } });
+    await Promise.resolve();
+    w.reply({ kind: 'failed', seq: w.seqOf('boot'), detail: 'the module would not import' });
+    await expect(connecting).rejects.toThrow();
+    expect(settled).toEqual([false]);
+  });
+
+  it('gives it up too when a worker that booted with the pair dies later', async () => {
+    const settled: boolean[] = [];
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js',
+                                   { access: 'try', settle: (r: boolean) => { settled.push(r); } });
+    await Promise.resolve();
+    w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: true });
+    await connecting;
+    w.raise('error', { message: 'boom' });
+    expect(settled).toEqual([true, false]);
+  });
+
   it('terminates on an answer of the wrong kind too', async () => {
     const w = fakeWorker();
     const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);

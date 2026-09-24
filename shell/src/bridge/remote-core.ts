@@ -103,6 +103,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     // Nothing is coming from it and nothing more will be sent to it. Releasing it here means a
     // page that reports the failure is not also holding a thread that failed to start.
     worker.terminate?.();
+    // And a worker that is gone holds no files, so the page lets go of the right to them: otherwise
+    // a broken tab left open keeps every other page off a free pair (ADR 0063).
+    tier.settle(false);
   };
 
   worker.addEventListener('error', (event: unknown) => {
