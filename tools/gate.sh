@@ -58,6 +58,7 @@ step "no broken tables"           uv run --locked tools/markdown_table_check.py
 step "listing checker tests"      uv run --locked tools/test_tracked.py
 step "reader tests"               uv run --locked tools/test_reading.py
 step "provenance checker tests"   uv run --locked tools/test_asset_provenance.py
+step "fused build checker tests"  uv run --locked tools/test_fused_build_check.py
 step "assets say where they came from" uv run --locked tools/asset_provenance.py
 # The one step that needs a dependency, so it names the group that carries it. Everything
 # above is standard-library only and stays that way (ADR 0048, ADR 0050).
@@ -86,10 +87,10 @@ echo "== contracting =="
 # Mirrors CI's job of the same name: the -O0 trees above cannot see a gate and a divisor disagree
 # about one norm, because at -O0 they are the same compiled copy. The preset is clang for the
 # reason its description measures, and the "build contracts" step is what stops this section
-# passing on a host that fused nothing.
+# passing on a build that lost the flag.
 step "contracting configure" cmake --preset native-contracting
 step "contracting build"     cmake --build build/native-contracting
-step "build contracts"       tools/check_fused_build.sh build/native-contracting
+step "build contracts"       uv run --locked tools/fused_build_check.py build/native-contracting
 step "contracting test"      ctest --test-dir build/native-contracting --output-on-failure
 
 echo "== wasm, size budget and browser tests =="

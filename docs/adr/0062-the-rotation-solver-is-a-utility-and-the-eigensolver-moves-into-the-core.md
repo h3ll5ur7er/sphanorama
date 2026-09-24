@@ -142,8 +142,8 @@ back as the identity or as the zero quaternion, and a frame landed up to 169 deg
 `valid` true. None of it could show on a build CI ran, because at `-O0` every evaluation of an
 expression is compiled the same way. `native-contracting` is clang at `-O3 -ffp-contract=fast` on
 `x86-64-v3` (a fixed target, because the runner's AVX10 CPU made `-march=native` a `-Werror`
-failure), without OpenCV, and its job refuses to pass unless the flag reached the compile and the
-object fused something.
+failure), without OpenCV, and its job refuses to pass unless `-ffp-contract=fast` is the last word
+on every compile in the build's compile database (`tools/fused_build_check.py`).
 
 The cause was vectorisation, not inlining, which the first version of this paragraph said. Read
 from the object code: the gate's copy of the sum of squares compiled to a scalar fused chain and
@@ -152,6 +152,15 @@ from the object code: the gate's copy of the sum of squares compiled to a scalar
 fixes, and every compiled copy now agrees. `UsableNorm` stays because it spares a caller the
 second evaluation, and `Quaternion.EveryQuaternionTheGateAdmitsNormalizesToItsOwnRotation` is the
 test the job exists to run — on the fused build it failed seven times before the fix.
+
+**The fix has a price where there is no hardware fused multiply-add.** Measured by the round-12
+arithmetic reviewer: `Normalize` went from 8.5 to 91 ns in WebAssembly, where `std::fma` is a
+software routine, and from 5.9 to 11.9 ns on baseline x86-64; the core's gzipped wasm grew by 696
+bytes. At today's call counts that is microseconds per tick. It becomes roughly a tenfold cost on
+the solver's inner loop once that runs in the browser, which is where to look first if it shows.
+And a norm spelled out by hand anywhere else now disagrees with the gate on every build rather than
+only on fused ones — `RotationMatrix` in the registration engine did, and was moved onto
+`Normalize` — so a second copy of the sum of squares is a defect wherever it appears.
 
 **Normalising each input changed behaviour, in a case nothing was reaching.** `IsUsableRotation`
 admits any finite norm above 1e-12, and an unnormalised quaternion contributes its *squared* norm to

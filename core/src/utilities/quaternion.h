@@ -61,8 +61,8 @@ bool IsUsableRotation(const Quat& q);
 // -ffp-contract=fast` one compiled copy fused its multiply-adds and another was vectorised and did
 // not, so near either end of the admissible range the gate said yes and the divisor read zero or
 // infinity. `Norm` now fuses by hand with `std::fma`, so every copy rounds the same way and a
-// second evaluation would agree with this one. Whether an input within an ulp of the ceiling is
-// admitted may still differ between builds; what cannot differ is what happens after admission.
+// second evaluation through `Norm` agrees with this one — measured bit for bit on nine builds,
+// native and wasm. A norm spelled out by hand elsewhere does not, and has to come through here.
 std::optional<double> UsableNorm(const Quat& q);
 
 // Whether this vector is a measurement — every component finite. Not whether it is non-zero: a

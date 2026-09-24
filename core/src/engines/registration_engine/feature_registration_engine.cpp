@@ -603,8 +603,12 @@ struct Bearing {
 
 /** A rotation as a matrix, so the prior can be scored by the same code path as a sampled one. */
 cv::Matx33d RotationMatrix(const Quat& q) {
-  const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
-  const double w = q.w / n, x = q.x / n, y = q.y / n, z = q.z / n;
+  // Through `Normalize` rather than a sum of squares written here: the prior was admitted by
+  // `IsUsableRotation`, which reads `Norm`, and a second norm spelled differently disagrees with it
+  // just below the ceiling. A plain sum overflowed there, the seed became exactly the identity, and
+  // a prior far outside the bound was answered instead of refused.
+  const Quat unit = Normalize(q);
+  const double w = unit.w, x = unit.x, y = unit.y, z = unit.z;
   return cv::Matx33d(1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w),
                      2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
                      2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y));

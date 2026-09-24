@@ -334,23 +334,11 @@ TEST(RotationScoring, ThePerFrameErrorsComeBackInTheOrderTheFramesWereGiven) {
   }
 }
 
-// A registration error is in the camera's own frame, not the world's, and that distinction is what
-// makes the frames themselves matter.
-//
-// It was found the hard way. Every other test here perturbs the estimate on the *left*, and a
-// left-multiplied error cancels the frame out entirely: `Residual(g (x) t, t)` is
-// `t (x) conj(t) (x) conj(g)`, which is `conj(g)` whatever `t` was. So M came out rank one, the
-// eigensolver saw the same matrix regardless of the ring. Replace every frame in `ARing` with the
-// identity and all fifteen tests still passed: the fixture was decorative.
-//
-// Right-multiplying puts the frame back in: `Residual(t (x) e, t)` is `t (x) conj(e) (x) conj(t)`,
-// which is the error seen from that frame's orientation and differs for every frame. This is the
-// only test here whose arrangement the eigensolver cannot reduce to a single residual.
 // Scale is not evidence: an estimate equal to the truth up to a scale the gate admits scores zero.
 // The round-11 arithmetic lens scored `{a, b * 1.3407807929942596e154}` against `{a, b}` at 149
 // degrees under `clang -O3 -ffp-contract=fast`, because the scorer's gate and its `Normalize` read
-// the same sum of squares from two differently compiled copies. Walked across the top of the gate
-// for the same reason the quaternion test walks it.
+// the same sum of squares from two differently compiled copies. `Norm` fuses by hand now; this
+// walks across the top of the gate to hold the scorer to it.
 TEST(RotationScoring, AnEstimateOnlyScaledFromTheTruthScoresZero) {
   std::mt19937_64 rng(0x5eed);
   std::normal_distribution<double> gauss(0.0, 1.0);
@@ -376,6 +364,18 @@ TEST(RotationScoring, AnEstimateOnlyScaledFromTheTruthScoresZero) {
   EXPECT_EQ(wrong, 0) << wrong << " estimates equal to the truth up to scale scored as wrong";
 }
 
+// A registration error is in the camera's own frame, not the world's, and that distinction is what
+// makes the frames themselves matter.
+//
+// It was found the hard way. Every other test here perturbs the estimate on the *left*, and a
+// left-multiplied error cancels the frame out entirely: `Residual(g (x) t, t)` is
+// `t (x) conj(t) (x) conj(g)`, which is `conj(g)` whatever `t` was. So M came out rank one, the
+// eigensolver saw the same matrix regardless of the ring. Replace every frame in `ARing` with the
+// identity and all fifteen tests still passed: the fixture was decorative.
+//
+// Right-multiplying puts the frame back in: `Residual(t (x) e, t)` is `t (x) conj(e) (x) conj(t)`,
+// which is the error seen from that frame's orientation and differs for every frame. This is the
+// only test here whose arrangement the eigensolver cannot reduce to a single residual.
 TEST(RotationScoring, AnErrorInEachCamerasOwnFrameMakesTheFramesThemselvesMatter) {
   const std::vector<Quat> truth = ARing(8);
   // Large enough that the signal is unmistakable. Conjugation preserves a rotation's *angle*, so

@@ -49,6 +49,8 @@ jobs:
         run: uv run --locked tools/test_reading.py
       - name: provenance checker tests
         run: uv run --locked tools/test_asset_provenance.py
+      - name: fused build checker tests
+        run: uv run --locked tools/test_fused_build_check.py
       - name: every committed asset says where it came from
         run: uv run --locked tools/asset_provenance.py
       # The only tooling step with a dependency, and it names the group that carries it rather than
@@ -259,6 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
       - name: install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       # The two jobs above compile at -O0, where nothing is inlined and every evaluation of an
@@ -274,14 +277,12 @@ jobs:
         run: cmake --preset native-contracting
       - name: build
         run: cmake --build build/native-contracting
-      # A build that lost the flag, or a host that cannot fuse, passes every test below for the same
-      # reason the -O0 jobs do, and reads as this job having looked. So both are checked, each for
-      # itself: the flag in the compile command, because counting fused instructions cannot tell
-      # `-ffp-contract=fast` from clang's default contraction (a round-11 reviewer built without the
-      # flag and counted 114); and at least one fused instruction in the object, because the flag
-      # does nothing on a host without them. Each failure says which of the two it was.
+      # A build that lost the flag passes every test below for the same reason the -O0 jobs do,
+      # and reads as this job having looked. The checker reads the compile database and requires
+      # the last `-ffp-contract=` on every compile to be `fast`, since that is the one the compiler
+      # obeys (a round-12 reviewer appended `-ffp-contract=off` and the grep this replaced passed).
       - name: the build contracts
-        run: tools/check_fused_build.sh build/native-contracting
+        run: uv run --locked tools/fused_build_check.py build/native-contracting
       - name: test
         run: ctest --test-dir build/native-contracting --output-on-failure
 

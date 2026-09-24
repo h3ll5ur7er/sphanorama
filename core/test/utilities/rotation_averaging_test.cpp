@@ -544,9 +544,8 @@ TEST(AverageRotations, AZeroWeightedEdgeIsNotConsulted) {
  */
 TEST(AverageRotations, AnEdgeAtTheEdgeOfTheGateIsUsedRatherThanOverflowed) {
   // A pool of unit (edge, anchor) pairs from a fixed seed, paired the same way on every run and
-  // every build. Not the same *bits*: `Normalize` inside `randomUnit` contracts differently, so gcc
-  // and clang differ in the last place of a component here and there. Nothing below depends on the
-  // bits — the witness is searched for per build and its premise asserted on what was found.
+  // every build. Nothing below depends on their exact bits: each witness is searched for on the
+  // build running it, and its premise asserted on what was found.
   std::mt19937_64 rng(0x5eed);
   std::normal_distribution<double> gauss(0.0, 1.0);
   const auto randomUnit = [&] { return Normalize(Quat{gauss(rng), gauss(rng), gauss(rng), gauss(rng)}); };
