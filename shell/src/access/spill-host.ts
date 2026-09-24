@@ -530,6 +530,10 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
  * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
  * refused as lost. A second tab holds the pair for as long as it lives, and waits this long before
  * it falls back — a startup cost paid only by the tab that cannot resume anyway.
+ *
+ * The budget is per file, and the frames and the index are waited for separately, so a reload can
+ * wait up to twice this. Only the browser's held-file error is waited out; anything else — a full
+ * disk, a broken handle — will not clear by waiting.
  */
 export interface ResidentHandoff {
   attempts: number;
@@ -539,6 +543,10 @@ export interface ResidentHandoff {
 
 const RELOAD_HANDOFF: ResidentHandoff = { attempts: 20, delayMs: 100 };
 
+function isHeld(cause: unknown): boolean {
+  return (cause as { name?: unknown } | null)?.name === 'NoModificationAllowedError';
+}
+
 async function lockWaiting(directory: SpillDirectory, name: string,
                            handoff: ResidentHandoff): Promise<SyncAccessHandle> {
   const sleep = handoff.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -546,8 +554,14 @@ async function lockWaiting(directory: SpillDirectory, name: string,
     try {
       return await lock(directory, name);
     } catch (cause) {
-      // No amount of waiting helps a platform that cannot lock at all.
-      if (cause instanceof NoSyncAccessHandles || attempt >= handoff.attempts) throw cause;
+      if (!isHeld(cause)) throw cause;
+      if (attempt >= handoff.attempts) {
+        // Said out loud, because a reload that ends up here cannot resume its capture and nothing
+        // else on the way to the page records why.
+        console.warn(`sphanorama spill: ${name} still held after ${attempt} attempts, `
+          + `${handoff.delayMs} ms apart; taking a tier of its own`);
+        throw cause;
+      }
       await sleep(handoff.delayMs);
     }
   }

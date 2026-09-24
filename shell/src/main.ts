@@ -1658,6 +1658,10 @@ async function main() {
         .finally(() => { sessionStarting = false; });
     };
     enableButton.addEventListener('click', () => { startOnce(() => enable(core, null)); });
+    // Disabled in the markup until now, because it is visible from first paint and does nothing
+    // until this handler exists — which on a reload includes the wait for the previous worker to
+    // let the spill tier go (ADR 0063), during which pressing it would do nothing at all.
+    enableButton.disabled = false;
     resumeButton.addEventListener('click', () => {
       if (resume === null) return;
       startOnce(() => {

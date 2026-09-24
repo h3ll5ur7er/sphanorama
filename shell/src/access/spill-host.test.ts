@@ -738,7 +738,15 @@ describe('the spill host', () => {
  * An origin private file system with the one property that matters here: a sync access handle is
  * exclusive, so a second attempt to lock a file someone else holds throws.
  */
-function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean = () => false,
+// What a browser throws for a file whose exclusive handle somebody else holds. The spec names it;
+// the retry keys on it, so a fake throwing a plain error would test nothing.
+function held(name: string): Error {
+  return Object.assign(new Error(`${name} is in use`), { name: 'NoModificationAllowedError' });
+}
+
+// `refuseLock` answers true for "somebody holds this", or an error name for any other failure.
+function fakeOpfs(initial: string[] = [],
+                 refuseLock: (name: string) => boolean | string = () => false,
                  failClose: (name: string) => boolean = () => false,
                  noSyncHandles = false) {
   const files = new Map(initial.map((name) => [name, { locked: false }]));
@@ -755,7 +763,11 @@ function fakeOpfs(initial: string[] = [], refuseLock: (name: string) => boolean 
         if (noSyncHandles) return {};
         return {
           async createSyncAccessHandle() {
-            if (file.locked || refuseLock(name)) throw new Error(`${name} is in use`);
+            const refused = refuseLock(name);
+            if (typeof refused === 'string') {
+              throw Object.assign(new Error(`${name}: ${refused}`), { name: refused });
+            }
+            if (file.locked || refused) throw held(name);
             file.locked = true;
             return {
               write: () => 0,
@@ -1014,6 +1026,17 @@ describe('a reload that finds the last worker still holding the tier', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not wait on a failure that is not somebody holding the file', async () => {
+    // A full disk or a broken handle will not clear itself by waiting, and waiting only delays the
+    // fallback that has to happen anyway.
+    const opfs = fakeOpfs([], (name) => (name === 'sphanorama-spill-resident' ? 'QuotaExceededError' : false));
+    const { slept, wait } = recording(50);
+
+    await openSpillTier(opfs.directory, wait);
+
+    expect(slept).toEqual([]);
   });
 
   it('does not wait at all on a browser that cannot lock a file', async () => {

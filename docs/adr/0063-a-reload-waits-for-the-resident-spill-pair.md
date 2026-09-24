@@ -32,7 +32,17 @@ frames file, and separately on the index file, since the old worker releases its
 independently. Each file gets `RELOAD_HANDOFF`: 20 attempts, 100 ms apart, about two seconds, so
 a reload whose old worker lets go of the frames late and the index later still can wait close to
 four. Only then does it take a name of its own, exactly as before. A name of its own is never
-waited for, since nobody else can be holding a fresh one. A browser that cannot lock a file at
+waited for, since nobody else can be holding a fresh one, and only the browser's held-file error
+(`NoModificationAllowedError`) is waited out: a full disk or a broken handle will not clear by
+waiting.
+
+**The worker opens the tier before it reads the session documents.** The previous worker releases
+the resident pair only when it is torn down, so holding the pair means the documents that worker
+flushed on `pagehide` are all there to read. Reading them first could resume from a document
+missing the last pick, even when the tier is current.
+
+**A fallback after the wait is logged** by the worker, and the browser test that exposed the race
+prints those logs when its resume is refused, so the next failure says which tier it got. A browser that cannot lock a file at
 all still fails at once, since waiting cannot help it.
 
 The wait is a parameter (`ResidentHandoff`), so most tests drive it with a recording sleep rather
@@ -45,6 +55,8 @@ than the clock. One runs the shipped default under fake timers, because the work
   of a tier that makes its own capture unresumable.
 - **A second tab now takes about two seconds longer to start**, because it waits out the whole
   handoff before falling back. That is the tab that cannot resume anyway, and it still gets a tier.
+  `#enable` starts disabled in the markup until its handler is attached, so the wait is a button
+  that cannot be pressed rather than one that does nothing when it is.
 - A reload whose previous worker takes longer than two seconds to release still falls back and
   still loses the resume. The budget is a judgement, not a measurement: nothing here measures how
   long a torn-down worker holds its handles on a phone.

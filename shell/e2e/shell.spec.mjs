@@ -404,6 +404,13 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
 });
 
 test('a pick survives the tab that made it', async ({ page }) => {
+  // The worker says when it falls back from the resident spill tier, and a fallback is what
+  // refuses the resume below, so a failure carries the worker's own account of the tier it got
+  // rather than only the refusal (ADR 0063).
+  const spillNotes = [];
+  page.on('worker', (worker) => worker.on('console', (message) => {
+    if (message.text().includes('spill')) spillNotes.push(message.text());
+  }));
   // The claim, end to end. A selection used to live in the review panel's own memory, so what the
   // strip showed as "in force" was whatever this tab had clicked — and a reload started again
   // from the ranking, silently disagreeing with the build, which reads the document. Everything
@@ -453,7 +460,8 @@ test('a pick survives the tab that made it', async ({ page }) => {
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#resume').click();
-    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+    await expect(page.locator('#stage'), `spill notes: ${spillNotes.join(' | ') || 'none'}`)
+      .toContainText('resumed', { timeout: 15000 });
 
     await openTheStrip();
     expect(await pressedIndex()).toBe(last);
