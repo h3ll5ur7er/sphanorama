@@ -154,9 +154,10 @@ resume.
 **Every session polls the files.** A second tab opened a second before the first was reloaded was
 first in line when the old worker let go: 3 of 5 in the real app, 5 of 5 on a minimal page.
 
-**Every reload polls** (the navigation type). Same-URL navigation and Back leave a worker behind
-just as a reload does, and fell back 3 of 3 each; a reloaded second tab took its sibling's pair,
-5 of 5.
+**Every reload polls** (the navigation type). Same-URL navigation leaves a worker behind just as a
+reload does, and fell back 3 of 3; a reloaded second tab took its sibling's pair, 5 of 5. (Back fell
+back 3 of 3 too, but with Playwright's back/forward cache switched off; with it on, `main` restored
+the page on Back 3 of 3 and never met the race.)
 
 **The tab that held the pair polls** (a `sessionStorage` claim with no Web Lock). A new tab arriving
 as a busy old worker was killed took the pair 13 of 16; a duplicated tab took its original's 6 of 6;
