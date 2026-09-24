@@ -292,9 +292,11 @@ describe("a page's right to the resident spill tier", () => {
     }
   });
 
-  it('is handed back to the cached page by a newcomer that took it meanwhile', async () => {
-    // In Chromium the newcomer's try on the files evicts the cached page instead, and it never comes
-    // back; this is the order of events where the newcomer's worker did not get them.
+  it('is queued for by a restored page whose right a newcomer took but has not used yet', async () => {
+    // Once a newcomer's worker tries the files, Chromium evicts the cached page and it never comes
+    // back. This is the order in which the page is restored first: the newcomer holds the right and
+    // is still booting, and its try then fails on the files the restored page's worker holds. The
+    // restored page must queue behind it rather than give up, and must not claim the record early.
     const o = origin();
     const cached = await o.open(o.tab());
     cached.settle(true);
@@ -305,7 +307,8 @@ describe("a page's right to the resident spill tier", () => {
     expect(newcomer.access).toBe('try');
 
     cached.resume();
-    expect(await pendingAfter(Promise.resolve('queued'))).toBe('queued');
+    await pendingAfter(Promise.resolve());
+    expect(JSON.parse(o.local.items.get(HOLDER_KEY)!)).toEqual({ token: 'page-2' });
     newcomer.settle(false);
     await pendingAfter(Promise.resolve());
     expect(o.locks.held).toBe(true);
@@ -345,6 +348,16 @@ describe("a page's right to the resident spill tier", () => {
     o.advance(-60_000);
     expect((await o.open(o.tab())).access).toBe('try');
     expect((await o.open(tab)).access).toBe('skip');
+  });
+
+  it('does not make a successor of a departure dated in the future', async () => {
+    // The departure names the holder the origin still has, so only the clock can refuse it.
+    const o = origin();
+    const tab = o.tab();
+    (await o.open(tab)).depart();
+    await o.locks.holderDies();
+    o.advance(-60_000);
+    expect((await o.open(tab)).access).toBe('try');
   });
 
   it('is not claimed by a duplicate of a successor, even where only the tab can be read', async () => {
