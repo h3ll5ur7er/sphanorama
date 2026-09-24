@@ -1,4 +1,4 @@
-# 0063 — A reload waits for the resident spill pair before taking a tier of its own
+# 0063 — The resident spill pair is handed to the page that replaces its holder
 
 **Status:** accepted
 
@@ -32,61 +32,64 @@ worker busy across the reload. Measured in desktop Chromium:
 With the old worker busy for 2.4 s or more, the real app refused the resume exactly as the test
 did.
 
+Polling the file cannot decide who should have the pair next: whoever asks first after it comes
+free gets it. Four versions of this decision chose who may poll, each was measured handing the pair
+to the wrong session, and each is recorded under the rejected alternatives with the number that
+retired it.
+
 `shell/src/access/spill-host.ts` never flushes its sync access handles either, which is the other
 way a reload could lose the index; it is not addressed here, because an ordinary reload is not an
 OS crash and the page cache keeps what a killed worker wrote.
 
 ## Decision
 
-**A page whose tab held the resident pair last time waits for it before falling back, and nothing
-else waits.** The page records in `sessionStorage` whether its tab got the resident pair
-(`tabClaim`), reads that claim at startup and sends it with `boot`, because a worker has no tab;
-the worker picks the wait from it (`handoffFor`) and reports whether it got the resident pair, so
-the claim is kept or given up.
+**The right to the resident pair is a Web Lock, held by a page for its whole life, and handed to
+the page that replaces its holder.** The files stay the lock that matters to the worker; the Web
+Lock decides who may ask for them. Page side it is `bridge/tier-claim.ts`; the worker is told the
+outcome with `boot` and never touches the pair without it.
 
-`sessionStorage` is the right scope because the question is whether the worker holding the pair is
-the one this tab is leaving. It survives everything that replaces a page in place — a reload, the
-same URL again, Back — and is empty in a new tab.
+- **The holder's successor queues for the right.** A lock is granted to the first waiter the moment
+  its holder goes, so the successor is next without having to be quick. Its worker then polls the
+  files with `RELOAD_HANDOFF` — 30 attempts, 100 ms apart, about 2.9 s, the measured release with a
+  second to spare — because a busy old worker lets go of them up to about two seconds after its
+  page. Nobody else can take them in that gap. (`access: 'wait'`)
+- **Everyone else asks only if the right is free** (`ifAvailable`), so it can never jump the queue,
+  and tries the files once if it gets it (`'try'`). If another page holds the right, the worker
+  leaves the pair alone entirely and takes a tier of its own (`'skip'`).
+- **A page whose worker did not get the resident pair gives the right up**, so the page it belongs
+  to can be handed it.
 
-- **A claimed page** retries the lock on the frames file, and separately on the index file, each with
-  `RELOAD_HANDOFF`: 30 attempts, 100 ms apart, about 2.9 s — the measured release with a second to
-  spare. Twenty attempts, the first version of this decision, gave up about 70 ms before Chromium
-  let go, and the reload it was written for was refused anyway. Chromium releases the two files
-  together, so the index has never needed a second try; a browser that let them go apart could
-  make a reload wait up to twice the budget.
-- **Anything else** — a second tab, a fresh launch, a reload of a tab that fell back — tries once
-  and falls back, as before this decision.
+**Who is the successor is decided from two records.** On `pagehide`, a page holding the right stamps
+its departure — its token and the time — in its tab's `sessionStorage` and in the origin's
+`localStorage`, which names the page holding the right. A page is the successor if its tab has a
+departure from the last `FRESH_MS` (5 s) and that departure names the holder the origin still has.
+So the successor is the next page in the tab, however it arrived — a reload, the same URL again,
+Back — and not a new tab (no departure), a duplicated one (the departure is read and removed at
+startup, so a live page has none to copy), or a tab back at the app after someone else took over
+(the origin names someone else). Where the origin's record cannot be read, the tab's alone decides.
 
-Two earlier versions of this decision chose the waiter differently, and each was measured losing
-the pair to the wrong session in the real app:
-
-- **Every session waited.** A second tab opened a second before the first was reloaded was first
-  in line when the reload's old worker let go, and took the pair: 3 of 5 runs (5 of 5 on a minimal
-  page), and the reloaded tab could not resume.
-- **Every reload waited** (the navigation type). Same-URL navigation and Back leave a worker behind
-  in the tab just as a reload does, and fell back in 3 of 3 runs each with the old worker busy.
-  And a reloaded second tab waited for a pair its sibling held, and took it when the sibling
-  reloaded: 5 of 5 with a 500 ms gap.
-
-Against the claim, all of those got the pair: reload, same URL and Back 3 of 3 each over a busy old
-worker; two reloads 0 of 5 and 0 of 3 lost; a new tab opened a second before the reload 0 of 5
-lost.
-
-**One race is left, and nothing here closes it.** A new tab that tries once, in the gap between the
-old worker letting go and the claimed page's next poll, gets the pair. Measured losing the reload's
-pair in 3 of 10 runs with the new tab opened at the same instant and 2 of 6 at 20 ms; none at 50 ms
-or later. (A later run of the same experiment lost 0 of 10, which is variance in a race, not a
-fix: a new tab behaves the same with or without the claim.)
+**A newcomer stands aside for `HANDOVER_MS` (2 s) after any departure**, because between the old
+page going and its successor queueing, the right is briefly free and nobody has asked for it yet.
 
 A name of its own is never waited for, since nobody else can be holding a fresh one, and only the
 browser's held-file error (`NoModificationAllowedError`) is waited out: a full disk or a broken
 handle will not clear by waiting.
 
-**Every fallback from the resident pair is logged** by the worker with its cause — a held file with
-how long it was waited for, anything else by the file it was and the error — and the browser test
-that exposed the race prints those logs when its resume is refused, so the next failure says which
-tier it got. A browser that cannot lock a file at all still fails at once, since waiting cannot help
-it.
+**Every fallback from the resident pair is logged** — by the worker, with the file and the error,
+and by the page when a successor gives up waiting for the right — and the browser test that exposed
+the race prints those logs when its resume is refused, so the next failure says which tier it got.
+
+**Measured against this design**, in the real app, desktop Chromium, old worker busy for 8 s where
+the case needs one:
+
+| Case | Result |
+| --- | --- |
+| Reload, same URL, Back — the successor over a busy old worker | got the pair 3 of 3 each, ready in about 2.35 s |
+| A new tab opened 1.925 to 1.975 s after a busy reload, when the old worker is killed | reload kept the pair 7 of 7 |
+| A new tab opened at the instant of an idle reload, or 20 ms after | reload kept the pair 15 of 15 |
+| A duplicated tab, then its original reloaded | original kept the pair 4 of 4 |
+| A second tab reloaded, then the first | first kept the pair 4 of 4 |
+| A tab back at the app after another took over, then that one reloaded | no wait (about 120 ms); the other kept its pair 5 of 5 |
 
 **The order in which the worker opens the tier and the documents does not matter**, and nothing
 depends on it. A round of review proposed opening the tier first, so the documents would be read
@@ -97,53 +100,56 @@ it had issued is ordered by IndexedDB itself — a read opened while it is in fl
 Nor is the page's `pagehide` flush rescued by anything here: on a reload Chromium never delivers
 that write at all — 0 of about 50 reloads on a minimal page, and the last pick was lost in 3 of 11
 reloads of the real app without the explicit `flush()` the browser test makes. The loss predates
-this ADR and is tracked in issue #83.
+this ADR and is tracked in issue #83. The departure stamps are synchronous `sessionStorage` and
+`localStorage` writes, and those do land: a successor is recognised only when both are there and
+agree, and every successor in the table above was.
 
-The wait is a parameter (`ResidentHandoff`), so most tests drive it with a recording sleep rather
-than the clock. Two run the claimed budget under fake timers — a pair held for 2.9 s, the measured
-release plus the promised second, is waited for, and a pair never released is given up on within
-3 s, so the budget is pinned to 30 or 31 attempts at 100 ms — and one shows an unclaimed session
-does not wait at all. A browser test drives the whole chain, page to tier: a second tab does not
-wait, nor does its reload, and once given a claim its reload waits all thirty attempts.
+The tests drive the page's decision against a fake lock manager with the queueing, `ifAvailable`
+and abort behaviour the design leans on, one test per case above; the worker's wait against a
+recording sleep and, for the shipped budget, fake timers pinning it to 30 or 31 attempts at 100 ms;
+and a browser test drives the chain end to end — a second tab and its reload leave the pair alone,
+a forged departure is no claim, and the first tab's reload is handed the pair.
 
 ## Consequences
 
-- A reload whose previous worker is slow to go now gets the resident pair and can resume, instead
-  of a tier that makes its own capture unresumable. A claimed page pays up to 2.9 s of startup when
-  the pair is really held by a live second tab — which happens when a duplicated tab, whose
-  `sessionStorage` is a copy of the original's, starts while the original is still open. `#enable` starts disabled in the markup until its
-  handler is attached, so the wait is a button that cannot be pressed rather than one that does
-  nothing when it is.
-- A second tab starts exactly as fast as before.
-- **A close-and-reopen does not wait.** A new tab has no claim, so a relaunch within about two
-  seconds of closing a tab whose worker was busy still falls back (measured: at 500 and 1500 ms it
-  fell back, from 2000 ms it got the pair). It is the price of not letting a live sibling jump the
-  queue.
-- **A duplicated tab can still take the pair from its original's reload**, since it carries a copy
-  of the claim. Narrower than either earlier version's hole, and not measured.
-- **A new tab opened within a few tens of milliseconds of a reload can still win the pair** (above).
-  Closing that needs the holder to hand over rather than the opener to poll — a tab-keyed Web Lock
-  that only the claimed page's worker may request is the direction, and it is not built here.
-- A tab whose storage is switched off never holds a claim, so it never waits: the behaviour before
-  this decision.
-- A reload whose previous worker takes longer than 2.9 s to release still falls back and still
-  loses the resume — including one whose own main thread is busy around the two-second mark. The
-  budget is measured on desktop Chromium only: nothing here measures how long a torn-down worker
-  holds its handles on a phone, or in Safari or Firefox.
+- A page that replaces the holder in the same tab gets the resident pair and can resume, however
+  it came back and however busy the old worker was.
+- A second tab starts as fast as before, and cannot take the pair from anyone.
+- **A tab opened within two seconds of the app's last tab closing gets a tier of its own**, because
+  it cannot tell a close from a reload whose successor has not queued yet. Its capture is then not
+  resumable from there. This was already so within about two seconds on the old worker's account.
+- A successor whose old worker takes longer than 2.9 s to let go of the files still falls back —
+  including one whose own main thread is busy around the two-second mark. Measured on desktop
+  Chromium only: nothing here measures a phone, Safari or Firefox.
+- **A browser without Web Locks** (before Safari 15.4, or an insecure context) falls back to the
+  files alone: a successor polls them and everyone else tries once, which is this ADR's weakest
+  earlier version.
+- The right assumes one app document per tab. Two same-origin frames of the app in one tab share a
+  `sessionStorage`; nothing ships that embeds the app.
 - The intermittent browser test is fixed for the mechanism that was reproduced — a busy old worker
-  — and not shown fixed for any other. The task tracking it stays open until it stops appearing,
-  and a failure now prints the worker's own account of the tier it got.
+  — and not shown fixed for any other. The task tracking it stays open until it stops appearing.
 
 ## Rejected alternatives
 
-**Waiting in every session**, and **waiting on every reload.** Both were versions of this decision,
-and both let a session with no claim on the pair wait for it — and the one that has waited longest
-is the one that gets it when it comes free. Measured above.
+Each was a version of this decision, and each is here with the measurement that retired it.
 
-**The Web Locks API**, holding a named lock for the worker's lifetime and having the next worker
-request it. It releases exactly when the old context dies, with no polling. Rejected for now
-because it adds a second locking mechanism beside the exclusive handles the files already have,
-and those handles are the lock that actually matters: a Web Lock released a moment before the file
-handle would still hand the new worker a refusal. Its queue is first-come too, so it would not
-settle the second-tab race on its own. Polling the handle asks the question the fallback depends on
-directly.
+**Fall back at the first refusal** (before this ADR). A reload over a busy old worker lost its
+resume.
+
+**Every session polls the files.** A second tab opened a second before the first was reloaded was
+first in line when the old worker let go: 3 of 5 in the real app, 5 of 5 on a minimal page.
+
+**Every reload polls** (the navigation type). Same-URL navigation and Back leave a worker behind
+just as a reload does, and fell back 3 of 3 each; a reloaded second tab took its sibling's pair,
+5 of 5.
+
+**The tab that held the pair polls** (a `sessionStorage` claim with no Web Lock). A new tab arriving
+as a busy old worker was killed took the pair 13 of 16; a duplicated tab took its original's 6 of 6;
+a tab back at the app after another took over waited 3 s and took that tab's pair on its reload,
+5 of 5. The claim could not say *when* the holder left, nor whether anyone had taken over since, and
+polling could not stop a newcomer's single try landing between two polls.
+
+**A Web Lock held by the worker rather than the page.** It would release exactly when the files
+do, which is tidier. Not built, because the successor could only ask for it once its own page and
+worker had started, where the page asks from its first script — a wider window for a newcomer to
+land in. Not measured either way.

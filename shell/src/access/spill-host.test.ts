@@ -1025,11 +1025,11 @@ describe('a reload that finds the last worker still holding the tier', () => {
       let heldUntil = 2900;
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident' && Date.now() < heldUntil);
       heldUntil += Date.now();
-      const opening = openSpillTier(opfs.directory, handoffFor(true));
+      const opening = openSpillTier(opfs.directory, handoffFor('wait'));
       await vi.advanceTimersByTimeAsync(3500);
       // The poll as well as the total: a coarser one notices the release late, and the reload
       // pays the difference in startup.
-      expect(handoffFor(true).delayMs).toBe(100);
+      expect(handoffFor('wait').delayMs).toBe(100);
       await opening;
       expect(opfs.names()).toEqual(['sphanorama-spill-resident', 'sphanorama-spill-resident.index']);
     } finally {
@@ -1044,7 +1044,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     try {
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
       let settled = false;
-      const opening = openSpillTier(opfs.directory, handoffFor(true)).finally(() => { settled = true; });
+      const opening = openSpillTier(opfs.directory, handoffFor('wait')).finally(() => { settled = true; });
       await vi.advanceTimersByTimeAsync(3000);
       expect(settled).toBe(true);
       await opening;
@@ -1052,6 +1052,23 @@ describe('a reload that finds the last worker still holding the tier', () => {
       expect(fallbacks).toHaveLength(2);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('leaves the resident pair alone when another page holds the right to it', async () => {
+    // Even a free pair: a lock taken here, however briefly, is one the page with the right to it
+    // could be refused (ADR 0063).
+    const opfs = fakeOpfs();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const tier = await openSpillTier(opfs.directory, handoffFor('skip'));
+
+      expect(tier.resident).toBe(false);
+      expect(opfs.names().filter((name) => name.startsWith('sphanorama-spill-resident'))).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        'sphanorama-spill-resident refused (ResidentElsewhere: another page holds the right'));
+    } finally {
+      warn.mockRestore();
     }
   });
 
@@ -1063,7 +1080,7 @@ describe('a reload that finds the last worker still holding the tier', () => {
     try {
       const opfs = fakeOpfs([], (name) => name === 'sphanorama-spill-resident');
       let settled = false;
-      const opening = openSpillTier(opfs.directory, handoffFor(false)).finally(() => { settled = true; });
+      const opening = openSpillTier(opfs.directory, handoffFor('try')).finally(() => { settled = true; });
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(true);
       await opening;

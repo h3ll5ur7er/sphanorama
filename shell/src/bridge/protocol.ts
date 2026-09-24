@@ -12,6 +12,7 @@
  * Requests that expect an answer carry a `seq`. Pushes do not, because the core reads them from
  * resident state whenever it next looks and there is nothing to wait for (ADR 0014).
  */
+import type { ResidentAccess } from '../access/spill-host';
 import type { RuntimeCapabilities } from './core';
 
 export interface CameraOpening {
@@ -34,11 +35,11 @@ export interface LockReport {
 
 export type ToWorker =
   /**
-   * The core module is fetched at runtime, so the page passes the URL it resolved. `claimed` is
-   * whether this tab held the resident spill pair last time — tab-scoped, which a worker is not —
-   * and the tier's wait depends on it (ADR 0063).
+   * The core module is fetched at runtime, so the page passes the URL it resolved. `access` is what
+   * the page decided this worker may do with the resident spill pair: the right to it is a Web Lock
+   * the page holds for its whole life (ADR 0063).
    */
-  | { kind: 'boot'; seq: number; coreUrl: string; claimed: boolean }
+  | { kind: 'boot'; seq: number; coreUrl: string; access: ResidentAccess }
   | { kind: 'call'; seq: number; method: string; args: Uint8Array }
   | {
       kind: 'capabilities';
@@ -77,7 +78,7 @@ export type FromWorker =
   // the composition root inside the module decides that from the same fact — but a page that
   // cannot spill will hit a ceiling early, and the client has to be able to say so rather than
   // present it as a mysterious refusal (ADR 0020).
-  /** `resident` says whether the tier is the resident pair, so the page can record its claim. */
+  /** `resident` says whether the tier is the resident pair: a page whose worker did not get it gives up the right. */
   | { kind: 'booted'; seq: number; methods: string[]; spill: boolean; resident: boolean }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }

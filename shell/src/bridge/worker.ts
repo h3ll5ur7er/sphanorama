@@ -12,7 +12,7 @@
  */
 import { createCaptureHost } from '../access/capture-host';
 import type { DocumentHost } from '../access/document-host';
-import type { SpillHost } from '../access/spill-host';
+import type { ResidentAccess, SpillHost } from '../access/spill-host';
 import { loadCoreRuntime, type CoreRuntime } from './core';
 import type { FromWorker, ToWorker } from './protocol';
 import { openStores } from './stores';
@@ -38,10 +38,10 @@ function fail(seq: number, cause: unknown): void {
   scope.postMessage({ kind: 'failed', seq, detail: String(cause) });
 }
 
-async function boot(seq: number, coreUrl: string, claimed: boolean): Promise<void> {
+async function boot(seq: number, coreUrl: string, access: ResidentAccess): Promise<void> {
   // Before the module, because the core reads documents through a synchronous port and a store
   // that is still loading would answer "no such project" to a session it should resume.
-  const stores = await openStores(claimed);
+  const stores = await openStores(access);
   ({ spill, documents } = stores);
 
   // Imported at runtime rather than bundled: the module is an artifact of the C++ build, and the
@@ -62,7 +62,7 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
     try {
       switch (message.kind) {
         case 'boot':
-          await boot(message.seq, message.coreUrl, message.claimed);
+          await boot(message.seq, message.coreUrl, message.access);
           return;
 
         case 'call': {

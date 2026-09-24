@@ -7,7 +7,7 @@
 import { createDocumentHost, type DocumentHost } from '../access/document-host';
 import { createIndexedDbStore } from '../access/indexeddb-store';
 import {
-  createSpillHost, handoffFor, openSpillTier, type ResidentHandoff, type SpillHost,
+  createSpillHost, handoffFor, openSpillTier, type ResidentAccess, type ResidentHandoff, type SpillHost,
 } from '../access/spill-host';
 
 export interface Stores {
@@ -31,11 +31,10 @@ const BROWSER: StoreOpeners = {
 };
 
 /**
- * `claimed` is whether this tab held the resident pair last time, which only the page can say: a
- * page in that tab waits for its previous worker to let the pair go, and nothing else does
- * (ADR 0063).
+ * `access` is what the page decided this worker may do with the resident pair, because the right to
+ * it is a Web Lock the page holds (ADR 0063).
  */
-export async function openStores(claimed: boolean, open: StoreOpeners = BROWSER): Promise<Stores> {
+export async function openStores(access: ResidentAccess, open: StoreOpeners = BROWSER): Promise<Stores> {
   // The tier can fail on its own and the failure is not fatal: a browser with no origin private
   // file system, or one whose handle will not open, gets a core whose frame store has nowhere to
   // spill. The composition root reads whether this is installed and hands the store a sink or not
@@ -44,7 +43,7 @@ export async function openStores(claimed: boolean, open: StoreOpeners = BROWSER)
   let spill: SpillHost | null = null;
   let resident = false;
   try {
-    ({ host: spill, resident } = await open.spill(handoffFor(claimed)));
+    ({ host: spill, resident } = await open.spill(handoffFor(access)));
   } catch (cause) {
     console.warn('sphanorama worker: no spill tier —', String(cause));
   }

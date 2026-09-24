@@ -260,43 +260,52 @@ test('a page whose storage is switched off still loads', async ({ page }) => {
   }
 });
 
-test('only a tab that held the spill tier waits for it', async ({ page, context }) => {
-  // The page records in sessionStorage whether its tab got the resident pair, and the next page
-  // in that tab waits for it; nothing else does (ADR 0063). A second tab that waited — even a
-  // reloaded one — would be first in line when its sibling's reload let go, and take the pair from
-  // it. The attempt count the worker logs on falling back is where the whole chain shows.
+test('the resident spill tier is handed to the page that replaces its holder, and to no other', async ({ page, context }) => {
+  // The right to the resident pair is a Web Lock the page holds for its life; a page that replaced
+  // its holder a moment ago queues for it, and every other page only asks if it is free (ADR 0063).
+  // The console carries both the page's and the worker's account of which tier each one got.
   const server = await serve();
   try {
-    await page.goto(server.appUrl);
-    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
-    const claimOf = (tab) => tab.evaluate(() => sessionStorage.getItem('sphanorama-resident-tier'));
-    expect(await claimOf(page)).toBe('held');
-
-    const second = await context.newPage();
-    const notes = [];
-    second.on('console', (message) => {
-      if (message.text().includes('still held')) notes.push(message.text());
-    });
-    const booted = async () => {
-      await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
-      const seen = [...notes];
-      notes.length = 0;
-      return seen;
+    const notesOf = (tab) => {
+      const notes = [];
+      tab.on('console', (message) => {
+        if (message.text().startsWith('sphanorama spill')) notes.push(message.text());
+      });
+      return async () => {
+        await expect(tab.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+        const seen = [...notes];
+        notes.length = 0;
+        return seen;
+      };
     };
+    // Origin-wide, so it counts holders rather than saying which tab: there must only ever be one.
+    const holders = (tab) => tab.evaluate(async () =>
+      (await navigator.locks.query()).held.filter((lock) => lock.name === 'sphanorama-spill-resident').length);
 
+    const first = notesOf(page);
+    await page.goto(server.appUrl);
+    expect(await first()).toEqual([]);
+    expect(await holders(page)).toBe(1);
+
+    // A second tab leaves the pair alone, and so does its reload.
+    const second = await context.newPage();
+    const secondNotes = notesOf(second);
     await second.goto(server.appUrl);
-    expect(await booted()).toEqual([expect.stringContaining('after 1 attempts')]);
-    expect(await claimOf(second)).toBeNull();
-
-    // Reloaded, it still has no claim, so it still does not wait.
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
     await second.reload();
-    expect(await booted()).toEqual([expect.stringContaining('after 1 attempts')]);
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
+    expect(await holders(second)).toBe(1);
 
-    // Given one, it waits the whole budget for a pair its sibling is not letting go of.
-    await second.evaluate(() => sessionStorage.setItem('sphanorama-resident-tier', 'held'));
+    // A departure that names someone other than the holder is no claim: it does not queue.
+    await second.evaluate(() => sessionStorage.setItem('sphanorama-resident-tier',
+      JSON.stringify({ token: 'not-the-holder', leftAt: Date.now() })));
     await second.reload();
-    expect(await booted()).toEqual([expect.stringContaining('after 30 attempts')]);
-    expect(await claimOf(second)).toBeNull();
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
+
+    // The first tab's reload is handed the right and the pair, with the second tab still open.
+    await page.reload();
+    expect(await first()).toEqual([]);
+    expect(await holders(page)).toBe(1);
   } finally {
     await server.close();
   }

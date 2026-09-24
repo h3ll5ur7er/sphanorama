@@ -7,26 +7,28 @@ const spillHost = { kind: 'spill' } as unknown as SpillHost;
 const documentHost = { kind: 'documents' } as unknown as DocumentHost;
 
 describe('the stores a worker opens before the core', () => {
-  it('waits for the resident pair only when this tab held it', async () => {
-    // Anything else that waited would be first in line when a reload of the session holding the
-    // pair let go, and would take it from that reload (ADR 0063).
+  it('gives the tier the access the page decided', async () => {
+    // The page holds the right to the resident pair, so the page says how this worker may use it
+    // (ADR 0063).
     const asked: ResidentHandoff[] = [];
     const open = {
       spill: async (handoff: ResidentHandoff) => { asked.push(handoff); return { host: spillHost, resident: true }; },
       documents: async () => documentHost,
     };
 
-    await openStores(true, open);
-    await openStores(false, open);
+    await openStores('wait', open);
+    await openStores('try', open);
+    await openStores('skip', open);
 
-    expect(asked).toEqual([handoffFor(true), handoffFor(false)]);
-    expect(handoffFor(true).attempts).toBeGreaterThan(1);
-    expect(handoffFor(false).attempts).toBe(1);
+    expect(asked).toEqual([handoffFor('wait'), handoffFor('try'), handoffFor('skip')]);
+    expect(handoffFor('wait').attempts).toBeGreaterThan(1);
+    expect(handoffFor('try').attempts).toBe(1);
+    expect(handoffFor('skip').attempts).toBe(0);
   });
 
   it('opens both, and says whether the tier is the resident one', async () => {
     for (const resident of [true, false]) {
-      const stores = await openStores(false, {
+      const stores = await openStores('try', {
         spill: async () => ({ host: spillHost, resident }),
         documents: async () => documentHost,
       });
@@ -37,7 +39,7 @@ describe('the stores a worker opens before the core', () => {
   it('still opens the documents when there is no tier', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const stores = await openStores(false, {
+      const stores = await openStores('try', {
         spill: async () => { throw new Error('no origin private file system'); },
         documents: async () => documentHost,
       });

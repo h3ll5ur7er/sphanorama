@@ -552,18 +552,32 @@ export interface ResidentHandoff {
 
 const RELOAD_HANDOFF: ResidentHandoff = { attempts: 30, delayMs: 100 };
 const AT_ONCE: ResidentHandoff = { attempts: 1, delayMs: 0 };
+const NOT_AT_ALL: ResidentHandoff = { attempts: 0, delayMs: 0 };
 
 /**
- * The wait for a page whose tab held the resident pair last time, and none for any other.
+ * What the page decided this worker may do with the resident pair, before the worker asked.
  *
- * That tab's previous worker is the only rival on its way out — whether the page came back by a
- * reload, by the same URL again, or by Back. Any other opener finds the pair held by a session
- * that is staying, and if it waited it would be first in line when a reload of *that* session let
- * go: measured, a second tab that waited took the pair from its sibling's reload in 5 of 5 runs,
- * and so did a reloaded second tab when the only test was whether the page had been reloaded.
+ * The page holds the right to the pair as a Web Lock (`bridge/tier-claim.ts`, ADR 0063), because
+ * polling a held file cannot say who should have it next — every rule for who may poll was
+ * measured handing it to the wrong session.
  */
-export function handoffFor(claimed: boolean): ResidentHandoff {
-  return claimed ? RELOAD_HANDOFF : AT_ONCE;
+export type ResidentAccess =
+  /** The page was handed the right by the page it replaced: poll until the old worker lets go. */
+  | 'wait'
+  /** The right was free: try the files once. */
+  | 'try'
+  /** Another page holds the right: leave the pair alone. */
+  | 'skip';
+
+export function handoffFor(access: ResidentAccess): ResidentHandoff {
+  return access === 'wait' ? RELOAD_HANDOFF : access === 'try' ? AT_ONCE : NOT_AT_ALL;
+}
+
+class ResidentElsewhere extends Error {
+  constructor() {
+    super('another page holds the right to the resident pair');
+    this.name = 'ResidentElsewhere';
+  }
 }
 
 function isHeld(cause: unknown): boolean {
@@ -573,6 +587,8 @@ function isHeld(cause: unknown): boolean {
 async function lockWaiting(directory: SpillDirectory, name: string,
                            handoff: ResidentHandoff): Promise<SyncAccessHandle> {
   const sleep = handoff.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  // Not even one look: a lock taken here, however briefly, is one the rightful page could be refused.
+  if (handoff.attempts < 1) throw new ResidentElsewhere();
   for (let attempt = 1; ; ++attempt) {
     try {
       return await lock(directory, name);

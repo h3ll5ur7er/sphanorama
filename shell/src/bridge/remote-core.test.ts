@@ -7,9 +7,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { connectCore, type WorkerLike } from './remote-core';
-import type { TierClaim } from './tier-claim';
+import type { TierAccess } from './tier-claim';
 
-const unclaimed: TierClaim = { held: false, record: () => {} };
+const unclaimed: Pick<TierAccess, 'access' | 'settle'> = { access: 'try', settle: () => {} };
 import type { FromWorker, ToWorker } from './protocol';
 
 /** A worker that records what it was sent and replies only when the test says so. */
@@ -54,31 +54,28 @@ describe('connecting', () => {
     expect(w.sent[0].message).toMatchObject({ kind: 'boot', coreUrl: 'https://example.test/core.js' });
   });
 
-  it('tells the worker whether this tab held the resident tier, which only the page can know', async () => {
-    const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js', { held: true, record: () => {} });
-    await Promise.resolve();
-    w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: true });
-    await connecting;
-    expect(w.sent[0].message).toMatchObject({ kind: 'boot', claimed: true });
+  it('tells the worker what it may do with the resident tier, which only the page can know', async () => {
+    // The page holds the right to the pair (ADR 0063), so the worker is told rather than left to ask.
+    for (const access of ['wait', 'try', 'skip'] as const) {
+      const w = fakeWorker();
+      const connecting = connectCore(w.worker, 'https://example.test/core.js', { access, settle: () => {} });
+      await Promise.resolve();
+      w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: false });
+      await connecting;
+      expect(w.sent[0].message).toMatchObject({ kind: 'boot', access });
+    }
   });
 
-  it('says so when it did not, since a second tab that waits takes its sibling\'s tier', async () => {
-    const w = fakeWorker();
-    await w.boot();
-    expect(w.sent[0].message).toMatchObject({ kind: 'boot', claimed: false });
-  });
-
-  it('records whether this tab got the resident tier, for the next page in it', async () => {
+  it('settles the right with whether the worker got the resident tier', async () => {
     for (const resident of [true, false]) {
       const w = fakeWorker();
-      const recorded: boolean[] = [];
+      const settled: boolean[] = [];
       const connecting = connectCore(w.worker, 'https://example.test/core.js',
-                                     { held: false, record: (r) => recorded.push(r) });
+                                     { access: 'try', settle: (r: boolean) => { settled.push(r); } });
       await Promise.resolve();
       w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident });
       await connecting;
-      expect(recorded).toEqual([resident]);
+      expect(settled).toEqual([resident]);
     }
   });
 

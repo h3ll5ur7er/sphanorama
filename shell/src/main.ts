@@ -7,7 +7,7 @@
  */
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
-import { tabClaim } from './bridge/tier-claim';
+import { type LockManagerLike, tierAccess, type TierAccess } from './bridge/tier-claim';
 import type {
   CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat,
 } from '../../contracts/ts/contracts';
@@ -271,10 +271,10 @@ function reportMotionSource(capability?: string, lostReason = '') {
  * module is fetched at runtime rather than bundled: it is an artifact of the C++ build, and which
  * of the two builds (ADR 0011) is present is decided by what the deploy copied in.
  */
-async function startCore() {
+async function startCore(tier: TierAccess) {
   const worker = new Worker(new URL('./bridge/worker.ts', import.meta.url), { type: 'module' });
   return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`,
-                     tabClaim(() => globalThis.sessionStorage));
+                     tier);
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
@@ -1547,7 +1547,15 @@ async function reportFacade(core: SphanoramaCore): Promise<ProjectSummary[]> {
 
 async function main() {
   try {
-    const connected = await startCore();
+    // First, because the right to the resident spill pair goes to whoever asks for it first once the
+    // page this one replaced is gone (ADR 0063).
+    const tier = await tierAccess({
+      session: () => globalThis.sessionStorage,
+      local: () => globalThis.localStorage,
+      locks: (navigator as { locks?: LockManagerLike }).locks,
+    });
+    window.addEventListener('pagehide', () => tier.depart());
+    const connected = await startCore(tier);
     remote = connected.remote;
     const core = connected.core;
 
