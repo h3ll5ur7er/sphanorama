@@ -1548,23 +1548,34 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
   pose.Claim(1.0);
 
   // Armed on a rotation, a frame taken on it, then broken mid-burst: abandoned, and nothing it
-  // took is kept — the good frame included, since a burst is kept whole or not at all.
-  TurnTo(*manager, pose, Quat{});
-  const NodeId facing = AimedNode(*manager);
+  // took is kept — the good frame included, since a burst is kept whole or not at all, and neither
+  // in the cell nor in the store. Each kind of defect, since nothing ahead of this door reads the
+  // confidence.
   const BurstSpec burst{};
-  ASSERT_TRUE(manager->ArmBurst(facing, burst).ok());
-  clock.AdvanceMs(burst.settleMs);
-  const Result<CaptureGuidance> first = manager->OnMotion({});
-  ASSERT_TRUE(first.ok()) << first.status.detail;
-  ASSERT_EQ(first.value.action, GuidanceAction::Firing) << "one frame taken, the burst still open";
-  clock.AdvanceMs(burst.intervalMs);
-  // `LookAt` rather than `TurnTo`: the tick that re-integrates the pose is the one that abandons.
-  pose.LookAt(Quat{0, 0, 0, 0});
   const ImuSample sample{};
-  const Result<CaptureGuidance> tick = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
-  EXPECT_EQ(tick.status.code, StatusCode::FailedPrecondition) << tick.status.detail;
-  EXPECT_FALSE(camera->ExposureLocked());
-  EXPECT_TRUE(manager->Candidates(facing).value.empty());
+  for (const auto& [orientation, confidence] : broken) {
+    TurnTo(*manager, pose, Quat{});
+    const NodeId facing = AimedNode(*manager);
+    const int64_t before = store->Budget().value.heapUsedBytes;
+    ASSERT_TRUE(manager->ArmBurst(facing, burst).ok());
+    clock.AdvanceMs(burst.settleMs);
+    const Result<CaptureGuidance> first = manager->OnMotion({});
+    ASSERT_TRUE(first.ok()) << first.status.detail;
+    ASSERT_EQ(first.value.action, GuidanceAction::Firing) << "one frame taken, the burst open";
+    ASSERT_GT(store->Budget().value.heapUsedBytes, before) << "the frame is in the store";
+    clock.AdvanceMs(burst.intervalMs);
+    // `LookAt` rather than `TurnTo`: the tick that re-integrates the pose is the one that abandons.
+    pose.LookAt(orientation);
+    pose.Claim(confidence);
+    const Result<CaptureGuidance> tick =
+        manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+    EXPECT_EQ(tick.status.code, StatusCode::FailedPrecondition)
+        << confidence << ": " << tick.status.detail;
+    EXPECT_FALSE(camera->ExposureLocked());
+    EXPECT_TRUE(manager->Candidates(facing).value.empty());
+    EXPECT_EQ(store->Budget().value.heapUsedBytes, before) << confidence;
+    pose.Claim(1.0);
+  }
 
   // And the cell fires once the engine reports a rotation again.
   TurnTo(*manager, pose, Quat{});

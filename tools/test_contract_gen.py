@@ -145,8 +145,10 @@ class InterfaceTest(unittest.TestCase):
                   "  virtual Status Archive(ProjectId project) = 0;\n};\n")
         self.assertIn("delete(project: ProjectId)", ts)
         self.assertIn("archive(project: ProjectId)", ts)
-        # And the comment is the method's doc, as a field's trailing comment is the field's.
-        self.assertIn("[the caller's]", ts)
+        # And the comment is the method's doc, as a field's trailing comment is the field's —
+        # this method's, not the next one's.
+        self.assertIn("/** [the caller's] */\n  delete(project: ProjectId)", ts)
+        self.assertNotIn("[the caller's] */\n  archive(", ts)
 
     def test_a_comment_inside_a_declaration_is_refused_not_misfiled(self):
         # On a parameter's line it became an unattributed line of the method's doc, and on a line
