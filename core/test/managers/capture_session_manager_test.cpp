@@ -1476,6 +1476,31 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
 }
 
+TEST_F(CaptureSession, AnOfferedPoseTheSolveWouldRefuseIsRefusedAtTheDoor) {
+  // `Refine` refuses such a pose as a prior (ADR 0065). Accepted here, it would be covered, ranked
+  // and persisted, and refuse the whole capture's solve a component and a session later.
+  Begin();
+  const NodeId node = FirstNode();
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+
+  PoseSample outOfRange;
+  outOfRange.confidence = 1.5;
+  PoseSample notARotation;
+  notARotation.orientation = Quat{0, 0, 0, 0};
+  notARotation.confidence = 1.0;
+  for (const PoseSample& pose : {outOfRange, notARotation}) {
+    const Result<FrameVerdict> verdict = manager->OfferFrame(node, frame.value, pose);
+    EXPECT_EQ(verdict.status.code, StatusCode::InvalidArgument);
+    EXPECT_NE(verdict.status.detail.find("pose"), std::string::npos) << verdict.status.detail;
+    EXPECT_TRUE(manager->Candidates(node).value.empty());
+  }
+  // Not forgotten: the caller passed it in and still owns it.
+  EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
+  // An unanchored pose is not a defect, and is accepted as before.
+  EXPECT_TRUE(manager->OfferFrame(node, frame.value, PoseSample{}).ok());
+}
+
 TEST_F(CaptureSession, GuidanceStopsAskingForACellOnceItIsCaptured) {
   // The engine decides what "still needed" means, but only if the manager actually hands it the
   // coverage — and a manager that passed a default-constructed state would look identical from

@@ -108,10 +108,11 @@ class IRegistrationEngine {
   // degrees. Where the accepted pairs join the frames, the pairs decide how they sit relative to
   // each other and the priors decide which way they face, which is the one thing the pairs cannot
   // say. The priors also pull on that shape, each on its own frame, at a weight far below any
-  // pair's: enough to draw back an edge wrong by more than they are (ADR 0064), and thousandths of a
-  // degree against pairs that are right. Where the pairs do not join them, nothing but the priors relates one piece to the
-  // other, and the seam between them is placed to the priors' degrees — `GlobalSolution::pieces`
-  // says how many pieces there were. That is why a ring's closing pair is worth having: a chain
+  // pair's — so they barely correct it: an accepted pair ten degrees wrong on an open chain is drawn
+  // back by thousandths of a degree, and the error figures read clean over it, since nothing else
+  // the pairs say contradicts it. Only a loop does. Where the pairs do not join the frames, nothing
+  // but the priors relates one piece to the other, and the seam between them is placed to the
+  // priors' degrees — `GlobalSolution::pieces` says how many pieces there were. That is why a ring's closing pair is worth having: a chain
   // throws it away, and it is the measurement of how far the chain drifted.
   //
   // **Each prior names its frame**, and the priors are the frame set: a pair naming a frame with no
@@ -136,8 +137,8 @@ class IRegistrationEngine {
   // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's
   // confidence is zero, because then nothing says which way the reconstruction faces.
   // `Unsupported` from `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a
-  // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors
-  // reaches today. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
+  // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors or
+  // accepted pairs reaches today. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
   // frame with no prior is not a refusal: it is placed through its pairs, or named in
   // `droppedFrames`.
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,

@@ -928,7 +928,14 @@ export interface CaptureSessionManager {
    * carries it.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
-  /** For externally sourced frames: file import, replayed datasets, manual shutter. */
+  /**
+   * For externally sourced frames: file import, replayed datasets, manual shutter.
+   * `InvalidArgument` for a pose `Refine` would refuse as a prior — a confidence outside [0, 1], or
+   * an orientation that is not a rotation where the confidence claims one — before anything is
+   * scored or kept, so a broken pose is refused where it came in rather than a capture later
+   * (ADR 0065). An unanchored pose, confidence zero, is accepted: the frame is placed through its
+   * pairs.
+   */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
   /**
    * What the camera this session is using reports it can do, as the manager last read it — which

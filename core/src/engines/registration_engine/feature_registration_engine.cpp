@@ -1300,22 +1300,17 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     // No prior is `confidence` zero and nothing else — a direction relative to wherever the sensor
     // started (ADR 0041), which averaged with anchored priors would turn the whole answer toward
     // that accident, so the frame is placed through its pairs or dropped. `ArmBurst` refuses to fire
-    // on one, so a burst-captured frame always has confidence; `OfferFrame` stores whatever pose its
-    // caller gives, so an imported or replayed frame may not. Any other way of looking absent is
-    // refused: read as no prior, a NaN from upstream arithmetic would leave `priorsUsed` one short
-    // and name no frame, or, on every prior at once, send its caller to the sensor.
-    const double confidence = prior.pose.confidence;
-    if (!(confidence >= 0.0 && confidence <= 1.0)) {
+    // on one, so a burst-captured frame always has confidence; `OfferFrame` accepts an unanchored
+    // pose, so an imported or replayed frame may not. Any other way of looking absent is refused,
+    // here and at `OfferFrame` by the same predicate: read as no prior, a NaN from upstream
+    // arithmetic would leave `priorsUsed` one short and name no frame, or, on every prior at once,
+    // send its caller to the sensor.
+    if (const std::optional<std::string_view> defect = PoseSampleDefect(prior.pose)) {
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "the prior for frame " + std::to_string(prior.frame.value) +
-                                     " has a confidence outside [0, 1]");
+                                     " has " + std::string(*defect));
     }
-    const bool anchoredPrior = confidence > 0.0;
-    if (anchoredPrior && !IsUsableRotation(prior.pose.orientation)) {
-      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
-                                 "the prior for frame " + std::to_string(prior.frame.value) +
-                                     " claims an orientation that is not a rotation");
-    }
+    const bool anchoredPrior = prior.pose.confidence > 0.0;
     anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
     if (anchoredPrior) ++priorsUsed;
   }

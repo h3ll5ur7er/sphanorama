@@ -77,6 +77,12 @@ taken at beside the `FrameRef` of its pixels.
    upstream. Read as no prior, a NaN from a caller's arithmetic left `priorsUsed` one short with no
    frame named, and on every prior at once was sent to the sensor as `FailedPrecondition`, in a
    reviewer's probe. A first version of this decision read an unusable orientation as no prior.
+   **`OfferFrame` refuses the same poses at the door**, with `InvalidArgument`, through the one
+   predicate `Refine` calls (`PoseSampleDefect`, in `utilities/quaternion`). Checked only here, one
+   imported frame with a broken pose was accepted, covered, ranked and persisted, and then refused
+   the whole capture's solve a session later, blaming `Refine`'s caller. An unanchored pose is still
+   accepted, as before. That is a narrow change to a manager contract, refusing only values
+   `PoseSample` already calls defects.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
    repeated `FrameId` among them, a prior whose confidence is outside [0, 1] or whose orientation is

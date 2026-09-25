@@ -1379,6 +1379,12 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   if (!HasNode(node)) {
     return Err<FrameVerdict>(StatusCode::NotFound, kComponent, "no such cell in the plan");
   }
+  // Refused before anything is scored or kept. Accepted, such a pose would be covered, ranked and
+  // persisted, and then refuse the whole capture's `Refine` a session later, blaming its caller.
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose)) {
+    return Err<FrameVerdict>(StatusCode::InvalidArgument, kComponent,
+                             "the pose offered has " + std::string(*defect));
+  }
 
   std::vector<Candidate>& cell = candidates_[node.value];
   Candidate candidate;
