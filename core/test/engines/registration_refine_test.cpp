@@ -286,6 +286,8 @@ TEST_F(Refine, APriorNothingAnchoredIsNotAPrior) {
   priors[4].pose.orientation =
       Normalize(Multiply(FromAxisAngle(Vec3{0, 0, 1}, 45.0 / kDegPerRad), truth[4]));
   priors[4].pose.confidence = 0.0;
+  // Dead reckoning from an absolute reading is worth half and still counts: only zero is no prior.
+  priors[7].pose.confidence = 0.5;
 
   const Result<GlobalSolution> solved = engine_.Refine(RingPairs(truth), priors, Lens());
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -339,6 +341,9 @@ TEST_F(Refine, DroppedAndPriorOnlyFramesAreNamed) {
   ASSERT_EQ(solution.priorOnlyFrames.size(), 1u);
   EXPECT_EQ(solution.priorOnlyFrames[0], Frame(3));
   EXPECT_EQ(solution.edgesUsed, 2) << "the pair between two dropped frames placed nothing";
+  // Frames 0 to 2, and frame 3 on its prior alone — the seam no pixel stands behind is the one
+  // this count exists to show. The dropped frames are no piece at all.
+  EXPECT_EQ(solution.pieces, 2);
   EXPECT_EQ(solution.priorsUsed, 4);
 }
 
@@ -448,6 +453,10 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   // which frames exist, not a measurement to disbelieve.
   stranger[3].accepted = false;
   refused(stranger, priors, Lens(), StatusCode::InvalidArgument, "names a frame with no prior");
+  // And at the other end, which is looked up separately.
+  std::vector<PairwiseResult> strangerFirst = pairs;
+  strangerFirst[3].a = Frame(99);
+  refused(strangerFirst, priors, Lens(), StatusCode::InvalidArgument, "names a frame with no prior");
 
   std::vector<PairwiseResult> self = pairs;
   self[3].b = self[3].a;
