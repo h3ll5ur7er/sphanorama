@@ -40,6 +40,12 @@ class EnumTest(unittest.TestCase):
         ts = emit("enum class StatusCode : uint16_t { Ok = 0, NotFound, Internal };\n")
         self.assertIn("'Ok' | 'NotFound' | 'Internal'", ts)
 
+    def test_a_trailing_comment_on_an_enum_member_keeps_the_next_member(self):
+        # Joined into one line before comments were cut, a trailing comment swallowed the member
+        # after it, and every ordinal past it decoded one place off in the page.
+        ts = emit("enum class E : uint8_t {\n  A,  // the first\n  B,\n  C  // the last\n};\n")
+        self.assertIn("'A' | 'B' | 'C'", ts)
+
     def test_multiline_enum_bodies_parse(self):
         ts = emit("enum class BuildStage : uint8_t {\n  Queued, Features,\n  Complete\n};\n")
         self.assertIn("'Queued' | 'Features' | 'Complete'", ts)
@@ -55,6 +61,32 @@ class StructTest(unittest.TestCase):
         ts = emit("struct Vec3 { double x = 0, y = 0, z = 0; };\n")
         for axis in "xyz":
             self.assertIn(f"{axis}: number;", ts)
+
+    def test_a_braced_initialiser_is_one_field_not_four(self):
+        # A default that is not the type's own default is spelled with braces, and the commas
+        # inside them are not declarator separators: splitting there reads `0 }` as a field name.
+        # And a declarator after one: a depth that never comes back down swallows the rest.
+        # And a nested one, where a depth reset to zero rather than decremented splits inside it.
+        fields = parse("struct S { Quat rotation{0, 0, 0, 0}, spare; double x{1}, y = 0;"
+                       " FramePrior p{{3}, Quat{1, 0, 0, 0}}, after; };\n")
+        [s] = [d for d in fields.declarations if getattr(d, "name", None) == "S"]
+        self.assertEqual([f.name for f in s.fields], ["rotation", "spare", "x", "y", "p", "after"])
+        self.assertEqual(s.fields[0].type, "Quat")
+
+    def test_a_brace_in_a_comment_does_not_end_the_struct(self):
+        # Prose may name a brace. Counted as code, one ended the struct early and every field after
+        # it - and the next declaration - went missing from the mirror and both codecs silently.
+        module = parse("struct S {\n"
+                       "  // a `}` alone, so the comment braces do not balance\n"
+                       "  // a `{` and a `}` in the doc of the first field\n"
+                       "  // and one `{` alone\n"
+                       "  double a = 0;  // and `}` trailing it\n"
+                       "  double b = 0;\n"
+                       "};  // `}`\n"
+                       "struct T { double c = 0; };\n")
+        structs = {d.name: [f.name for f in d.fields]
+                   for d in module.declarations if hasattr(d, "fields")}
+        self.assertEqual(structs, {"S": ["a", "b"], "T": ["c"]})
 
     def test_scalar_kinds_map_to_typescript(self):
         ts = emit("struct S {\n"
@@ -104,6 +136,43 @@ class InterfaceTest(unittest.TestCase):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
                   "  virtual Status Delete(ProjectId project) = 0;\n};\n")
         self.assertIn("export interface ProjectManager {", ts)
+
+    def test_a_trailing_comment_on_a_method_keeps_the_next_method(self):
+        # A declaration is read until its `;`. With the comment left on, the `;` hid inside it,
+        # the next method joined the same buffer, and the match took the first and dropped it.
+        ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project) = 0;  // [the caller's]\n"
+                  "  virtual Status Archive(ProjectId project) = 0;\n};\n")
+        self.assertIn("delete(project: ProjectId)", ts)
+        self.assertIn("archive(project: ProjectId)", ts)
+        # And the comment is the method's doc, as a field's trailing comment is the field's —
+        # this method's, not the next one's.
+        self.assertIn("/** [the caller's] */\n  delete(project: ProjectId)", ts)
+        self.assertNotIn("[the caller's] */\n  archive(", ts)
+
+    def test_a_comment_inside_a_declaration_is_refused_not_misfiled(self):
+        # On a parameter's line it became an unattributed line of the method's doc, and on a line
+        # of its own it vanished. Only the member carries doc across (ADR 0009).
+        for inside in ("  virtual Status Delete(ProjectId project,  // [the caller's]\n"
+                       "                         bool purge) = 0;\n",
+                       "  virtual Status Delete(ProjectId project,\n"
+                       "                        // [the caller's]\n"
+                       "                        bool purge) = 0;\n"):
+            with self.subTest(inside=inside), self.assertRaises(contract_gen.ContractSyntaxError):
+                parse("// @boundary\nclass IProjectManager {\n public:\n" + inside + "};\n")
+        # The line that ends one is the declaration's own, as a one-line declaration's is.
+        ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project,\n"
+                  "                        bool purge) = 0;  // [the caller's]\n};\n")
+        self.assertIn("delete(project: ProjectId, purge: boolean)", ts)
+        self.assertIn("[the caller's]", ts)
+
+    def test_two_declarations_on_one_line_are_refused_not_halved(self):
+        # Matched from the start only, the first declaration was taken and the second dropped.
+        with self.assertRaises(contract_gen.ContractSyntaxError):
+            parse("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project) = 0;"
+                  " virtual Status Archive(ProjectId project) = 0;\n};\n")
 
     def test_methods_become_lower_camel_case_and_async(self):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"

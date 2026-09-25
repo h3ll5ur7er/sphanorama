@@ -599,7 +599,11 @@ struct FeatureSet {
 
 struct PairwiseResult {
   FrameId a, b;
-  Quat relativeRotation;
+  // **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
+  // identity: a pair whose counts were filled in and whose rotation was not would otherwise claim
+  // its two frames share an orientation, and `Refine` would believe it at full weight. The solver's
+  // own edge type defaults the same way for the same reason.
+  Quat relativeRotation{0, 0, 0, 0};
   int32_t inliers = 0;
   // How many correspondences the inliers are counted *out of*, which is the denominator `accepted`
   // is decided by. **Zero only on a result no engine filled in**, which a caller never sees: every
@@ -631,18 +635,68 @@ struct PairwiseResult {
   // which collapses the very distinction this field exists to draw, in the paragraph drawing it.
   //
   // So a caller may read `relativeRotation` on an unaccepted result — it is the best the pixels
-  // offered — but should treat it as a weak constraint, or ask for another frame, rather than
-  // chaining it. An earlier implementation set this from the same condition that decided the
+  // offered — but should not chain it: `Refine` leaves it out (ADR 0065), and a caller wanting it
+  // counted should ask for another frame. An earlier implementation set this from the same condition that decided the
   // refusal, which made it a constant `true` on every returned result and told a caller nothing.
   bool accepted = false;
 };
 
+// One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
+// the motion port produces them long before any frame exists and almost none ever belong to one, so
+// the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
+// its pixels (ADR 0065).
+//
+// **No prior is spelled with `confidence` zero**, which is what a default `PoseSample` holds, so a
+// pose left unset is no prior rather than a claim that the phone was held level. It is the only
+// spelling: `Refine` refuses a confidence outside [0, 1], and an orientation that is not a rotation
+// where the confidence claims one, rather than reading either as absent.
+struct FramePrior {
+  FrameId frame;
+  PoseSample pose;
+};
+
+// One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
+//
+// **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
+// matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
 struct GlobalSolution {
+  // The frames the solve placed, in the order their priors were given. A frame it could not place is
+  // left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
+  // not solved for.
   std::vector<FrameId> frames;
   std::vector<Quat> rotations;      // parallel to frames
-  Intrinsics intrinsics;            // shared across frames, refined here
-  double medianResidualPx = 0;
-  int32_t droppedFrames = 0;
+
+  // The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
+  // compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
+  // which no `PairwiseResult` carries (ADR 0065).
+  Intrinsics intrinsics;
+
+  // How far the answer leaves the pairs it used, and over how many. Read them together: no
+  // disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+  double medianEdgeErrorDeg = 0;
+  double maxEdgeErrorDeg = 0;
+  int32_t edgesUsed = 0;
+  // How many priors were anchored rotations, and so had a say in which way the answer faces. The
+  // edge figures cannot tell a reconstruction twelve priors agreed on from one a single surviving
+  // prior pinned; the second reads better on every other field.
+  int32_t priorsUsed = 0;
+  // How many pieces the accepted pairs join the placed frames into. The pairs place frames within a
+  // piece, the priors pulling on them only at a weight far below a pair's; only the priors place
+  // one piece against another, so above one the answer has seams that rest on the priors' degrees
+  // rather than the pixels' hundredths — and nothing else here says so.
+  // A frame placed on its prior alone is a piece of one.
+  int32_t pieces = 0;
+
+  // Frames whose prior did not count — not an anchored rotation — and that no accepted pair connects
+  // to one that did.
+  std::vector<FrameId> droppedFrames;
+  // Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel.
+  std::vector<FrameId> priorOnlyFrames;
+  // Frames whose place was settled at some point by the solver's scan order rather than the
+  // evidence — pairs, or priors, a half turn apart.
+  std::vector<FrameId> ambiguousFrames;
+  // False when the solve ran out of sweeps; the rotations are the best it reached.
+  bool converged = false;
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

@@ -168,7 +168,9 @@ estimate. Its loop is:
   angular error, stability, "hold still", "fire").
 - `OfferFrame(frame, pose)` → asks `FrameQualityEngine` to score it, decides whether it joins the
   cell's candidate set (and whether the burst continues), asks `CoveragePlannerEngine` whether the
-  cell is now satisfied, persists through `IFrameStoreAccess`/`IProjectStoreAccess`.
+  cell is now satisfied. It refuses a pose `PoseSampleDefect` names (ADR 0065). An offered frame is
+  never written to the session document — only the session's own bursts are, since only those
+  frames the session owns.
 - `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
   frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
   Additively it marks nothing a client can act on in this build; see UC-2 and the contract.
@@ -421,13 +423,17 @@ capability — but **no planner reads it**, so the claim that `CoveragePlannerEn
 looser acceptance tolerance has never been true. The cone is whatever the client asked for.
 
 One rule per question survives this, which is the other half of what it bought. `Locate` names the
-cell the camera is inside; `ArmBurst` refuses a burst on two counts — nothing has measured where
-the camera is pointing, or what was measured is outside that cone; the dwell fires. Zero
+cell the camera is inside; `ArmBurst` refuses a burst on three counts — the pose engine reported a
+pose `Refine` would refuse, nothing has measured where the camera is pointing, or what was measured
+is outside that cone; the dwell fires. Guidance reads such a pose as no aim (ADR 0065), so the
+dwell does not fire into the first count; a `Fire` issued just before the pose broke still meets
+it, once, since the arm crosses the worker after the tick that fired. Zero
 `PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
 and a stream carrying angular rates with no attitude in them never anchors at all — and it means
 "no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.
-The page reads the `aimKnown` the planner publishes to park its reticle and stop correcting for
-roll, which is presentation rather than a second copy of the rule.
+The page reads the `aimKnown` the manager publishes to park its reticle and stop correcting for
+roll, which is presentation rather than a second copy of the rule: the manager derives it through
+the same predicate `ArmBurst` asks.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 

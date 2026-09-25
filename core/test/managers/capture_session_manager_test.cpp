@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <set>
@@ -69,6 +70,8 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
 class AimablePoseEngine final : public IPoseEngine {
  public:
   void LookAt(const Quat& orientation) { looking_ = orientation; }
+  // What the engine says of its own reading, which a broken engine can misstate.
+  void Claim(double confidence) { confidence_ = confidence; }
 
   Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
     auto state = inner_.Initial(mode, capability);
@@ -102,7 +105,7 @@ class AimablePoseEngine final : public IPoseEngine {
   // this stands in for.
   void Aim(PoseState& state) const {
     state.pose.orientation = looking_;
-    state.pose.confidence = 1.0;
+    state.pose.confidence = confidence_;
     state.observed = true;
     // All four, because they are one claim and a fake that sets three of them is describing a
     // state the real engine cannot produce. `anchored` is what confidence is derived from
@@ -114,6 +117,7 @@ class AimablePoseEngine final : public IPoseEngine {
 
   NullPoseEngine inner_;
   Quat looking_{};
+  double confidence_ = 1.0;
 };
 
 // Turns the camera to face a cell, and makes the manager notice.
@@ -1469,11 +1473,159 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
 
   auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
   ASSERT_TRUE(frame.ok());
+  // A pose the solve would refuse is refused at the door, before anything is scored: the pose's
+  // code, not the quality engine's. Scoring first would re-heat a cooled cell on every broken offer.
+  PoseSample broken;
+  broken.confidence = 1.5;
+  EXPECT_EQ(manager.OfferFrame(node, frame.value, broken).status.code,
+            StatusCode::InvalidArgument);
+
   auto verdict = manager.OfferFrame(node, frame.value, PoseSample{});
   EXPECT_EQ(verdict.status.code, StatusCode::ComputeUnavailable);
   EXPECT_TRUE(manager.Candidates(node).value.empty());
   // Not forgotten: the caller passed it in and still owns it.
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
+}
+
+TEST_F(CaptureSession, APoseTheSolveWouldRefuseIsNoAim) {
+  // Guidance and `ArmBurst` read one condition, and a pose `ArmBurst` refuses is no aim here
+  // either. Located as it stands a zero quaternion faces the identity: guidance held still over
+  // the cell there, the dwell matured, fired, was refused, and started again for as long as the
+  // engine stayed broken — the loop the planner contract says two guards must not produce.
+  //
+  // A NaN confidence was no aim before this, since it is not above zero; it is here so that one
+  // stays true.
+  //
+  // Ticked every way a tick arrives: pushed, pulled from the sensor — the page's only way, which
+  // calls with nothing and lets the core drain — and empty, with the broken pose still standing.
+  // A demotion keyed on the samples or the batch passes the first and is dead in the page.
+  Begin();
+  const struct {
+    Quat orientation;
+    double confidence;
+  } broken[] = {{Quat{0, 0, 0, 0}, 1.0},
+                {Quat{}, 1.5},
+                {Quat{}, std::numeric_limits<double>::quiet_NaN()}};
+  const ImuSample sample{};
+  for (const auto& [orientation, confidence] : broken) {
+    pose.LookAt(orientation);
+    pose.Claim(confidence);
+    for (int tick = 0; tick < 50; ++tick) {  // five seconds, two dwells' worth
+      if (tick % 3 == 1) sensor->Enqueue(sample);
+      const Result<CaptureGuidance> guidance =
+          tick % 3 == 0 ? manager->OnMotion(std::span<const ImuSample>(&sample, 1))
+                        : manager->OnMotion({});
+      ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+      EXPECT_FALSE(guidance.value.aimKnown) << confidence << ", tick " << tick;
+      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+          << confidence << ", tick " << tick;
+      EXPECT_NE(guidance.value.action, GuidanceAction::Fire) << confidence << ", tick " << tick;
+      clock.AdvanceMs(100);
+    }
+  }
+}
+
+TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
+  // The burst is a door too, at both ends. The shipped pose engine keeps a rotation a rotation
+  // without making one, and an engine that reports a zero orientation at full confidence is read
+  // as facing the identity: armed on, it took the locks and was abandoned on its first frame, every
+  // dwell, and one that recovered after the arm filed a burst under a cell the phone never faced.
+  // A broken collaborator, like a broken plan, so `FailedPrecondition`.
+  //
+  // Guidance holds no cell on such a pose, so the arm is asked at the one the phone faced a tick
+  // earlier — which is the page's own path when the pose breaks between a `Fire` and its arm. The
+  // NaN is named as the defect it is rather than as a reading not yet taken, which is what the arm
+  // said while it read the confidence before the predicate. Two cases face away from the cell as
+  // well, so the pose is asked before the cone: a broken engine is not a phone to turn.
+  Begin();
+  TurnTo(*manager, pose, Quat{});
+  const NodeId node = AimedNode(*manager);
+  const Quat away = FromAzimuthElevation(90.0, 0.0);
+  const struct {
+    Quat orientation;
+    double confidence;
+  } broken[] = {{Quat{0, 0, 0, 0}, 1.0},
+                {Quat{}, 1.5},
+                {Quat{}, std::numeric_limits<double>::quiet_NaN()},
+                {away, 1.5},
+                {away, std::numeric_limits<double>::quiet_NaN()}};
+  for (const auto& [orientation, confidence] : broken) {
+    pose.Claim(confidence);
+    TurnTo(*manager, pose, orientation);
+    const Status armed = manager->ArmBurst(node, BurstSpec{});
+    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition) << confidence << ": " << armed.detail;
+    EXPECT_NE(armed.detail.find("pose engine"), std::string::npos) << armed.detail;
+    EXPECT_FALSE(camera->ExposureLocked()) << "refused before the locks";
+  }
+  pose.Claim(1.0);
+
+  // Armed on a rotation, a frame taken on it, then broken mid-burst: abandoned, and nothing it
+  // took is kept — the good frame included, since a burst is kept whole or not at all, and neither
+  // in the cell nor in the store. Each kind of defect, since nothing ahead of this door reads the
+  // confidence.
+  const BurstSpec burst{};
+  const ImuSample sample{};
+  for (const auto& [orientation, confidence] : broken) {
+    TurnTo(*manager, pose, Quat{});
+    const NodeId facing = AimedNode(*manager);
+    const int64_t before = store->Budget().value.heapUsedBytes;
+    ASSERT_TRUE(manager->ArmBurst(facing, burst).ok());
+    clock.AdvanceMs(burst.settleMs);
+    const Result<CaptureGuidance> first = manager->OnMotion({});
+    ASSERT_TRUE(first.ok()) << first.status.detail;
+    ASSERT_EQ(first.value.action, GuidanceAction::Firing) << "one frame taken, the burst open";
+    ASSERT_GT(store->Budget().value.heapUsedBytes, before) << "the frame is in the store";
+    clock.AdvanceMs(burst.intervalMs);
+    // `LookAt` rather than `TurnTo`: the tick that re-integrates the pose is the one that abandons.
+    pose.LookAt(orientation);
+    pose.Claim(confidence);
+    const Result<CaptureGuidance> tick =
+        manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+    EXPECT_EQ(tick.status.code, StatusCode::FailedPrecondition)
+        << confidence << ": " << tick.status.detail;
+    EXPECT_FALSE(camera->ExposureLocked());
+    EXPECT_TRUE(manager->Candidates(facing).value.empty());
+    EXPECT_EQ(store->Budget().value.heapUsedBytes, before) << confidence;
+    pose.Claim(1.0);
+  }
+
+  // And the cell fires once the engine reports a rotation again.
+  TurnTo(*manager, pose, Quat{});
+  EXPECT_TRUE(FireBurstOn(*manager, clock, AimedNode(*manager), BurstSpec{}).ok());
+}
+
+TEST_F(CaptureSession, AnOfferedPoseTheSolveWouldRefuseIsRefusedAtTheDoor) {
+  // `Refine` refuses such a pose as a prior (ADR 0065). Accepted here, it would be covered and
+  // ranked, and refuse any solve built from this session's candidates, a component away.
+  Begin();
+  const NodeId node = FirstNode();
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+
+  PoseSample outOfRange;
+  outOfRange.confidence = 1.5;
+  PoseSample notARotation;
+  notARotation.orientation = Quat{0, 0, 0, 0};
+  notARotation.confidence = 1.0;
+  for (const PoseSample& pose : {outOfRange, notARotation}) {
+    const Result<FrameVerdict> verdict = manager->OfferFrame(node, frame.value, pose);
+    EXPECT_EQ(verdict.status.code, StatusCode::InvalidArgument);
+    EXPECT_NE(verdict.status.detail.find("pose"), std::string::npos) << verdict.status.detail;
+    EXPECT_TRUE(manager->Candidates(node).value.empty());
+  }
+  // Not forgotten: the caller passed it in and still owns it.
+  EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
+  // An unanchored pose is not a defect, and is accepted as before — and so is every well-formed
+  // anchored one, down to the least confidence above zero: the door has two sides.
+  EXPECT_TRUE(manager->OfferFrame(node, frame.value, PoseSample{}).ok());
+  for (const double confidence : {std::numeric_limits<double>::denorm_min(), 0.5, 1.0}) {
+    PoseSample anchored;
+    anchored.confidence = confidence;
+    auto another = store->Allocate(4, 4, PixelFormat::RGBA8);
+    ASSERT_TRUE(another.ok());
+    const Result<FrameVerdict> verdict = manager->OfferFrame(node, another.value, anchored);
+    EXPECT_TRUE(verdict.ok()) << confidence << ": " << verdict.status.detail;
+  }
 }
 
 TEST_F(CaptureSession, GuidanceStopsAskingForACellOnceItIsCaptured) {
@@ -4464,6 +4616,79 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
                                   *store_with_sink, *projects, clock);
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
     EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
+  }
+}
+
+TEST_F(ResumedSession, ACandidatePoseOfferFrameWouldRefuseIsRestoredUnanchored) {
+  // The document is a door a pose comes in by, like `OfferFrame`, and a burst's candidate is written
+  // back by every checkpoint, so a pose restored as it stands would refuse every `Refine` built
+  // from the capture. Refusing the document instead cost the whole sphere: the page reads a refused
+  // document as one a later build can open, and the one button it leaves clears the tier. So the
+  // frame is kept and only the claim is dropped — the pose comes back unanchored, which is what a
+  // pose nobody measured already is (ADR 0065).
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  const auto resumed = [&](const std::string& document) {
+    EXPECT_TRUE(projects->WriteDocument(kProject, "session", document).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    EXPECT_TRUE(attempt.Resume(kProject).ok());
+    auto cell = attempt.Candidates(node);
+    EXPECT_TRUE(cell.ok());
+    return cell.value;
+  };
+  const std::vector<Candidate> untouched = resumed(written.value);
+  ASSERT_GE(untouched.size(), 2u) << "a second candidate shows the demotion is only the tampered one";
+  ASSERT_GT(untouched.front().pose.confidence, 0.0) << "a burst's pose is anchored";
+
+  // `candidate <id> <node> <frame> <buffer> <format> <w> <h> <stride> <ts> <hash> <pose ts>
+  // <qw> <qx> <qy> <qz> <wx> <wy> <wz> <confidence> …`, tampered on the first candidate line and,
+  // separately, the last, so a rule that reads only one of them is not enough.
+  constexpr size_t kId = 1;
+  constexpr size_t kConfidence = 19;
+  const size_t firstAt = written.value.find("candidate ");
+  const size_t lastAt = written.value.rfind("\ncandidate ") + 1;
+  ASSERT_NE(firstAt, lastAt) << "the burst writes more than one candidate";
+  // Tampers the candidate line starting at `at`, and names the candidate it tampered.
+  const auto tamper = [&](size_t at, const std::vector<std::pair<size_t, std::string>>& edits) {
+    const size_t end = written.value.find('\n', at);
+    std::string line = written.value.substr(at, end - at);
+    for (const auto& [field, value] : edits) line = SetField(line + "\n", "candidate", field, value);
+    std::istringstream in(line);
+    std::vector<std::string> fields;
+    for (std::string token; fields.size() <= kId && in >> token;) fields.push_back(token);
+    std::string out = written.value;
+    out.replace(at, end - at + 1, line);
+    return std::make_pair(out, std::stoull(fields[kId]));
+  };
+  std::vector<std::vector<std::pair<size_t, std::string>>> defects = {
+      {{kConfidence, "1.5"}}, {{kConfidence, "-0.25"}},
+      {{kConfidence, "1"}, {12, "0"}, {13, "0"}, {14, "0"}, {15, "0"}}};
+
+  for (const size_t at : {firstAt, lastAt}) for (const auto& edits : defects) {
+    const auto [document, tamperedId] = tamper(at, edits);
+    ASSERT_NE(document, written.value);
+    const std::vector<Candidate> cell = resumed(document);
+    ASSERT_EQ(cell.size(), untouched.size()) << "every frame of the cell survives";
+    for (size_t i = 0; i < cell.size(); ++i) {
+      EXPECT_FALSE(PoseSampleDefect(cell[i].pose).has_value());
+      if (cell[i].id.value == tamperedId) {
+        EXPECT_EQ(cell[i].pose.confidence, 0.0) << "the claim is dropped";
+      } else {
+        EXPECT_EQ(cell[i].pose.confidence, untouched[i].pose.confidence) << "and only that one";
+      }
+    }
   }
 }
 

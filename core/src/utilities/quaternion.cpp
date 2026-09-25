@@ -204,4 +204,13 @@ double RollBetween(const Quat& current, const Quat& target) {
   return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
 }
 
+std::optional<std::string_view> PoseSampleDefect(const PoseSample& pose) {
+  // Written so a NaN fails it: every comparison with one is false.
+  if (!(pose.confidence >= 0.0 && pose.confidence <= 1.0)) return "a confidence outside [0, 1]";
+  if (pose.confidence > 0.0 && !IsUsableRotation(pose.orientation)) {
+    return "an orientation that is not a rotation while its confidence claims one";
+  }
+  return std::nullopt;
+}
+
 }  // namespace sphanorama

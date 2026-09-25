@@ -572,6 +572,12 @@ export interface FeatureSet {
 export interface PairwiseResult {
   a: FrameId;
   b: FrameId;
+  /**
+   * **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
+   * identity: a pair whose counts were filled in and whose rotation was not would otherwise claim
+   * its two frames share an orientation, and `Refine` would believe it at full weight. The solver's
+   * own edge type defaults the same way for the same reason.
+   */
   relativeRotation: Quat;
   inliers: number;
   /**
@@ -607,21 +613,83 @@ export interface PairwiseResult {
    * refused. An earlier version of this comment called all three "a rotation that fits its support",
    * which collapses the very distinction this field exists to draw, in the paragraph drawing it.
    * So a caller may read `relativeRotation` on an unaccepted result — it is the best the pixels
-   * offered — but should treat it as a weak constraint, or ask for another frame, rather than
-   * chaining it. An earlier implementation set this from the same condition that decided the
+   * offered — but should not chain it: `Refine` leaves it out (ADR 0065), and a caller wanting it
+   * counted should ask for another frame. An earlier implementation set this from the same condition that decided the
    * refusal, which made it a constant `true` on every returned result and told a caller nothing.
    */
   accepted: boolean;
 }
 
+/**
+ * One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
+ * the motion port produces them long before any frame exists and almost none ever belong to one, so
+ * the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
+ * its pixels (ADR 0065).
+ * **No prior is spelled with `confidence` zero**, which is what a default `PoseSample` holds, so a
+ * pose left unset is no prior rather than a claim that the phone was held level. It is the only
+ * spelling: `Refine` refuses a confidence outside [0, 1], and an orientation that is not a rotation
+ * where the confidence claims one, rather than reading either as absent.
+ */
+export interface FramePrior {
+  frame: FrameId;
+  pose: PoseSample;
+}
+
+/**
+ * One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
+ * **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
+ * matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
+ */
 export interface GlobalSolution {
+  /**
+   * The frames the solve placed, in the order their priors were given. A frame it could not place is
+   * left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
+   * not solved for.
+   */
   frames: FrameId[];
   /** parallel to frames */
   rotations: Quat[];
-  /** shared across frames, refined here */
+  /**
+   * The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
+   * compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
+   * which no `PairwiseResult` carries (ADR 0065).
+   */
   intrinsics: Intrinsics;
-  medianResidualPx: number;
-  droppedFrames: number;
+  /**
+   * How far the answer leaves the pairs it used, and over how many. Read them together: no
+   * disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+   */
+  medianEdgeErrorDeg: number;
+  maxEdgeErrorDeg: number;
+  edgesUsed: number;
+  /**
+   * How many priors were anchored rotations, and so had a say in which way the answer faces. The
+   * edge figures cannot tell a reconstruction twelve priors agreed on from one a single surviving
+   * prior pinned; the second reads better on every other field.
+   */
+  priorsUsed: number;
+  /**
+   * How many pieces the accepted pairs join the placed frames into. The pairs place frames within a
+   * piece, the priors pulling on them only at a weight far below a pair's; only the priors place
+   * one piece against another, so above one the answer has seams that rest on the priors' degrees
+   * rather than the pixels' hundredths — and nothing else here says so.
+   * A frame placed on its prior alone is a piece of one.
+   */
+  pieces: number;
+  /**
+   * Frames whose prior did not count — not an anchored rotation — and that no accepted pair connects
+   * to one that did.
+   */
+  droppedFrames: FrameId[];
+  /** Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel. */
+  priorOnlyFrames: FrameId[];
+  /**
+   * Frames whose place was settled at some point by the solver's scan order rather than the
+   * evidence — pairs, or priors, a half turn apart.
+   */
+  ambiguousFrames: FrameId[];
+  /** False when the solve ran out of sweeps; the rotations are the best it reached. */
+  converged: boolean;
 }
 
 export interface GainMap {
@@ -804,6 +872,9 @@ export interface CaptureSessionManager {
    * sphere is being captured, never what the device it comes back on can sense. So this is
    * refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
    * began the capture if the user declined the permission this time (ADR 0044).
+   * A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
+   * unanchored, confidence zero: refusing the document for one field would cost every frame of the
+   * sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -812,7 +883,11 @@ export interface CaptureSessionManager {
    * It also advances an armed burst by at most one frame, because this is the only call the
    * client makes often enough to pace one: a burst takes time, and time is something a
    * synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
-   * full and `CellDone` on the tick that fills it.
+   * full and `CellDone` on the tick that fills it. A failing tick ends an armed burst, keeps
+   * nothing it took and releases its locks — among them `FailedPrecondition` when, on a tick that
+   * takes a frame, the pose engine reports a pose `Refine` would refuse (ADR 0065). Outside a
+   * burst such a pose is no aim: guidance reads it with the claim dropped, as `Resume` restores
+   * one, so `aimKnown` is false and nothing is held still over.
    */
   onMotion(samples: ImuSample[]): Promise<Result<CaptureGuidance>>;
   /**
@@ -831,6 +906,11 @@ export interface CaptureSessionManager {
    * burst records whatever the camera is looking at and the node is only a name to file it under,
    * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
    * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+   * Refused with `FailedPrecondition` too when the pose engine reports a pose `Refine` would
+   * refuse: read as an aim it faces the identity, so it armed on a cell the phone never faced
+   * (ADR 0065). Guidance holds no cell on such a pose, so the dwell does not fire into it; a
+   * `Fire` issued just before the pose broke still can, since the arm crosses the worker after
+   * the tick that fired. The detail names the pose engine, since the user cannot fix it.
    * Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
    * measurement — not finite, or not greater than zero. The detail says which: "not a usable
    * measurement" is a broken plan and nothing the user can do anything about, where "not aimed at
@@ -860,7 +940,14 @@ export interface CaptureSessionManager {
    * carries it.
    */
   armBurst(node: NodeId, burst: BurstSpec): Promise<Result<void>>;
-  /** For externally sourced frames: file import, replayed datasets, manual shutter. */
+  /**
+   * For externally sourced frames: file import, replayed datasets, manual shutter.
+   * `InvalidArgument` for a pose `Refine` would refuse as a prior — a confidence outside [0, 1], or
+   * an orientation that is not a rotation where the confidence claims one — before anything is
+   * scored or kept, so a broken pose is refused where it came in, rather than by a solve built from
+   * this session's candidates, which would blame its caller (ADR 0065). An unanchored pose, confidence zero, is accepted: the frame is placed through its
+   * pairs.
+   */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;
   /**
    * What the camera this session is using reports it can do, as the manager last read it — which

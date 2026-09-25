@@ -31,21 +31,24 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 // it — in the same paragraph whose own measurements are the doubled figures. So 1e-5 degrees is
 // **5.9 times** the floor rather than the order of magnitude once claimed.
 //
-// **And 5.9 times is close enough to the floor that the next decade down is not available**, which
-// is the measurement that pins this constant from below for the first time. At 1e-6 the largest
-// move can only fall under the threshold by being *exactly* zero, since the smallest non-zero answer
-// is 1.7e-6 — so an arrangement whose moves settle into a quantisation cycle rather than onto zero
-// never converges at all. Measured, with a budget of 200,000 and three-degree anchors:
+// **And 5.9 times is close enough to the floor that the next decade down is not available.** At
+// 1e-6 the largest move can fall under the threshold only by being *exactly* zero, since the
+// smallest non-zero answer is 1.7e-6, so an arrangement whose moves settle into a quantisation cycle
+// never converges at all. Measured, closed rings with exact edges and three-degree anchors, budget
+// 200,000:
 //
 //     frames / anchorWeight      1e-5        1e-6
-//               12 / 0.01     590         768
-//               60 / 1.00      16          34
-//               90 / 10.0       6      never settles
+//               12 / 0.01      46          54
+//               60 / 1.00      15          20
+//               60 / 10.0       6      never settles
+//              200 / 1.00      16      never settles
+//              200 / 10.0       6      never settles
 //
-// The last row is the argument: ninety frames at an anchor weight of ten is the *easy* case, six
-// sweeps at the committed tolerance, and tightening by one decade turns it into a solve that runs
-// forever. So this number is bracketed — 1.7e-6 below it and a regime that stops converging just
-// past that — rather than chosen for roundness.
+// The heavily anchored rows are the argument: the *easy* cases, a handful of sweeps at the committed
+// tolerance, turn into solves that run forever a decade tighter. So this number is bracketed —
+// 1.7e-6 below it and a regime that stops converging just past that. Which rows land in that regime
+// is itself a rounding accident: ninety frames at ten never settled before each piece's gauge was
+// chosen per sweep (ADR 0064) and settle in 11 since.
 //
 // What it costs is that **the answer is where the solver stopped, not the fixed point it was heading
 // for**: run the closing-edge fixture to convergence and its worst frame is 2.4e-6 degrees rather
@@ -56,37 +59,28 @@ constexpr double kSettledDeg = 1e-5;
 
 // How many sweeps the solver is allowed before it reports that it did not settle.
 //
-// **Measured, and what it is measured against is `anchorWeight` rather than the frame count.** Sweeps
-// to settle, over a ring with anchors three degrees out:
+// **Measured, and below an anchor weight of about a hundredth what sets it is the frame count.**
+// Sweeps to settle, over a closed ring with exact edges and anchors three degrees out (* = out of
+// budget):
 //
-//     frames   1e-4     1e-3     0.01     0.03      0.1        1       10
-//          2  27676     5072      744      287      100       16        5
-//          3  27610     5090      741      286      101       16        5
-//         12  12498     3560      590      235       86       16        6
-//         60    650     2184      453      198       79       16        6
-//         90    894     1328      399      184       74       15        6
+//     frames   1e-6     1e-4     1e-3     0.01     0.03      0.1        1       10
+//          2      2        3        3        4        4        5        7        6
+//          3      8        8        8        8        8        8        7        5
+//         12     48       48       47       46       43       36       15        6
+//         60    527      523      486      295      166       73       15        6
+//         90    859      842      725      327      167       71       15        6
+//        200     *        *        *       403      189       77       16        6
 //
-// **Every row is a closed ring, including the first**, which is worth saying because a two-frame
-// ring's closing edge is a second copy of its only edge and behaves quite differently from a single
-// one: measured on one edge that row reads 17283 and 407 rather than 27676 and 744. The 1e-4 column
-// needs a budget of 60,000 to finish at all, so a run under 20,000 shows dashes at three and four
-// frames that are the budget rather than a failure to converge.
+// The gauge is chosen outright each sweep, so what is left to settle is the shape, and the slowest
+// bend of a ring relaxes at a rate that falls as the square of its length. Heavier anchors stiffen
+// every frame against it, which is why the right-hand columns do not care about size. Before the
+// gauge was chosen (ADR 0064) the table ran the other way — tens of thousands of sweeps at 1e-4
+// whatever the size, spent moving one common rotation nothing downstream can see.
 //
-// From 1e-3 rightward it scales as roughly 1/anchorWeight and hardly with size at all, which is not
-// the shape a reader expects and is worth knowing: what is still moving in the slow cases is the
-// **gauge** — one common rotation shared by every frame — and a weak anchor is exactly a weak
-// constraint on the gauge. The relative structure is settled long before.
-//
-// **The 1e-4 column is the exception and is not read that way.** It runs from 650 to 27,676 across
-// frame counts, so at that weight the size matters again. It is left in the table rather than
-// trimmed out of it, because a table that only showed the regime the claim holds in would be
-// evidence for a claim nobody could check.
-
-//
-// 1000 covers every size from 2 to 90 at `anchorWeight` 0.01 and above, where the worst is **744**.
-// It does not cover 1e-3 and below, and deliberately: that regime wants thousands of sweeps to pin a
-// rotation nothing downstream can see, and `converged` is reported rather than promised for exactly
-// this reason.
+// 1000 covers every ring up to ninety frames at every weight, where the worst is **859**; a sphere
+// is not a ring, and more edges per frame shorten the paths the shape has to settle along. It does
+// not cover a two-hundred-frame ring weighed lightly, and `converged` is reported rather than
+// promised for exactly that.
 constexpr int kMaxSweeps = 1000;
 
 // One end of one edge, from the point of view of a frame it touches.
@@ -249,6 +243,30 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     if (placed[static_cast<size_t>(i)] == 0) out.unplaced.push_back(i);
   }
 
+  // The pieces the placed frames fall into: frames a chain of believed edges joins. Each has at
+  // least one anchor, since placement only ever starts from one, and each has a gauge of its own —
+  // nothing relates one piece's orientation to another's, so no anchor in one is evidence about
+  // where the other sits.
+  std::vector<std::vector<int32_t>> pieces;
+  {
+    std::vector<char> grouped(static_cast<size_t>(frames), 0);
+    for (int32_t seed = 0; seed < frames; ++seed) {
+      if (placed[static_cast<size_t>(seed)] == 0 || grouped[static_cast<size_t>(seed)] != 0) continue;
+      std::vector<int32_t> piece{seed};
+      grouped[static_cast<size_t>(seed)] = 1;
+      for (size_t head = 0; head < piece.size(); ++head) {
+        for (const Incidence& touch : incident[static_cast<size_t>(piece[head])]) {
+          const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
+          const int32_t other = touch.asTo ? edge.from : edge.to;
+          if (grouped[static_cast<size_t>(other)] != 0) continue;
+          grouped[static_cast<size_t>(other)] = 1;
+          piece.push_back(other);
+        }
+      }
+      pieces.push_back(std::move(piece));
+    }
+  }
+
   // **Each frame becomes the weighted average of what everything touching it says it should be.**
   // Gauss-Seidel rather than a batch update: a frame moved this sweep is read by its neighbours
   // later in the same sweep, so information crosses the graph in one pass instead of one hop per
@@ -269,6 +287,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // caller is asking; "did the last iteration happen to re-roll it" is not.
   std::vector<Quat> predictions;
   std::vector<double> weights;
+  std::vector<Quat> offsets;
   std::vector<char> everAmbiguous(static_cast<size_t>(frames), 0);
   for (int sweep = 1; sweep <= kMaxSweeps; ++sweep) {
     double largestMoveDeg = 0;
@@ -317,6 +336,42 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
           largestMoveDeg,
           AngleBetween(solved[static_cast<size_t>(i)], average.rotation) * kDegPerRad);
       solved[static_cast<size_t>(i)] = average.rotation;
+    }
+
+    // **Then each piece is turned bodily to where its anchors agree best.** The per-frame averages
+    // move the gauge only by as much as the anchors weigh against the edges, so on their own a
+    // lightly weighed anchor — which is how a caller says the pixels decide the shape — leaves the
+    // gauge crawling: out of sweeps at a ten-thousandth, and at a millionth moving too little per
+    // sweep for the stopping rule to see, so `converged` comes back short of it (ADR 0064).
+    //
+    // Turning a whole piece changes no edge's agreement, since every edge compares two frames of
+    // one piece, so this is the best gauge for the objective the sweep above is already climbing
+    // rather than a second one: the fixed points are the same, and the slow direction is gone. The
+    // anchors weigh the same as each other, so they are averaged unweighted.
+    //
+    // Skipped at an `anchorWeight` of zero, where the anchors are not consulted after placement.
+    if (anchorWeight > 0.0) {
+      for (const std::vector<int32_t>& piece : pieces) {
+        offsets.clear();
+        for (const int32_t i : piece) {
+          if (anchored[static_cast<size_t>(i)] == 0) continue;
+          offsets.push_back(Normalize(Multiply(prior[static_cast<size_t>(i)],
+                                               Conjugate(solved[static_cast<size_t>(i)]))));
+        }
+        // Cannot refuse, for the reasons the per-frame call above cannot: every piece holds an
+        // anchor, and every offset is a `Normalize` of a product of two unit rotations.
+        const QuaternionAverage gauge = AverageQuaternions(offsets, {});
+        // Anchors a half turn apart about where the piece sits: which one it sides with is the
+        // eigensolver's scan order, and that is true of every frame in it.
+        if (!gauge.isUnique) {
+          for (const int32_t i : piece) everAmbiguous[static_cast<size_t>(i)] = 1;
+        }
+        largestMoveDeg = std::max(largestMoveDeg, AngleBetween(Quat{}, gauge.rotation) * kDegPerRad);
+        for (const int32_t i : piece) {
+          solved[static_cast<size_t>(i)] =
+              Normalize(Multiply(gauge.rotation, solved[static_cast<size_t>(i)]));
+        }
+      }
     }
 
     out.sweeps = sweep;
@@ -376,6 +431,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     if (placed[static_cast<size_t>(i)] == 0) continue;
     if (incident[static_cast<size_t>(i)].empty()) out.priorOnly.push_back(i);
   }
+  out.pieces = static_cast<int32_t>(pieces.size());
   out.rotations = std::move(solved);
   out.valid = true;
   return out;

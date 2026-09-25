@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string_view>
 
 #include "sphanorama/types.h"
 
@@ -51,6 +52,18 @@ Quat Normalize(const Quat& q);
 // `Normalize`'s answer afterwards, because the identity is also what a phone genuinely held level
 // reports.
 bool IsUsableRotation(const Quat& q);
+
+// Why a pose sample is not one, or nothing if it is. No pose is spelled with `confidence` zero, and
+// at zero the orientation is not read; any other confidence outside [0, 1], or an orientation that
+// is not a rotation where the confidence claims one, is a defect upstream rather than a way of
+// saying "none". One rule for every door a pose comes into the capture by — `OfferFrame` refuses
+// one, a restored session document keeps the frame and drops the claim, guidance reads the live
+// pose with the claim dropped, and a burst is neither armed nor continued on one — and for
+// `Refine`, so the capture cannot hold a pose the solve will refuse. The live pose needs its doors
+// because the shipped pose engine keeps a rotation a rotation without making one: an engine that
+// reports a zero orientation at full confidence is aimed as though it faced the identity
+// (ADR 0065).
+std::optional<std::string_view> PoseSampleDefect(const PoseSample& pose);
 
 // The norm `IsUsableRotation` tested, returned so the caller divides by the value that was tested
 // and by nothing else. Empty exactly when `IsUsableRotation` is false.

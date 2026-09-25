@@ -42,6 +42,10 @@ class ICaptureSessionManager {
   // sphere is being captured, never what the device it comes back on can sense. So this is
   // refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
   // began the capture if the user declined the permission this time (ADR 0044).
+  //
+  // A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
+  // unanchored, confidence zero: refusing the document for one field would cost every frame of the
+  // sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;
@@ -51,7 +55,11 @@ class ICaptureSessionManager {
   // It also advances an armed burst by at most one frame, because this is the only call the
   // client makes often enough to pace one: a burst takes time, and time is something a
   // synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
-  // full and `CellDone` on the tick that fills it.
+  // full and `CellDone` on the tick that fills it. A failing tick ends an armed burst, keeps
+  // nothing it took and releases its locks — among them `FailedPrecondition` when, on a tick that
+  // takes a frame, the pose engine reports a pose `Refine` would refuse (ADR 0065). Outside a
+  // burst such a pose is no aim: guidance reads it with the claim dropped, as `Resume` restores
+  // one, so `aimKnown` is false and nothing is held still over.
   virtual Result<CaptureGuidance> OnMotion(std::span<const ImuSample> samples) = 0;
 
   // Arms a burst at the given cell. It does not fire one: the frames arrive over the following
@@ -72,6 +80,12 @@ class ICaptureSessionManager {
   // burst records whatever the camera is looking at and the node is only a name to file it under,
   // so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
   // scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+  //
+  // Refused with `FailedPrecondition` too when the pose engine reports a pose `Refine` would
+  // refuse: read as an aim it faces the identity, so it armed on a cell the phone never faced
+  // (ADR 0065). Guidance holds no cell on such a pose, so the dwell does not fire into it; a
+  // `Fire` issued just before the pose broke still can, since the arm crosses the worker after
+  // the tick that fired. The detail names the pose engine, since the user cannot fix it.
   //
   // Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
   // measurement — not finite, or not greater than zero. The detail says which: "not a usable
@@ -105,6 +119,12 @@ class ICaptureSessionManager {
   virtual Status ArmBurst(NodeId node, const BurstSpec& burst) = 0;
 
   // For externally sourced frames: file import, replayed datasets, manual shutter.
+  //
+  // `InvalidArgument` for a pose `Refine` would refuse as a prior — a confidence outside [0, 1], or
+  // an orientation that is not a rotation where the confidence claims one — before anything is
+  // scored or kept, so a broken pose is refused where it came in, rather than by a solve built from
+  // this session's candidates, which would blame its caller (ADR 0065). An unanchored pose, confidence zero, is accepted: the frame is placed through its
+  // pairs.
   virtual Result<FrameVerdict> OfferFrame(NodeId node, const FrameRef& frame,
                                           const PoseSample& pose) = 0;
 

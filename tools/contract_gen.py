@@ -279,32 +279,56 @@ def parse(text: str) -> Module:
     return module
 
 
+def _split_comment(line: str) -> tuple[str, str]:
+    """A line's code, and its `//` comment. The one place that says where code stops: three
+    readers each said it their own way, and the method reader did not say it at all, so a comment
+    on one method hid its `;` and the next method was read into the same declaration and lost."""
+    code, _, comment = line.partition("//")
+    return code, comment
+
+
 def _read_body(lines: list[str], start: int) -> tuple[str, int]:
-    """Return the text between the braces opening on `start`, and the index just past them."""
+    """Return the text between the braces opening on `start`, and the index just past them.
+
+    Braces are counted in code only. Prose may name one, and counted as code a `}` in a comment
+    ended the struct early: every field after it went missing from the mirror and both codecs, and
+    nothing refused. Comments inside the body are kept, since they are the fields' docs.
+    """
     depth = 0
+    opened = False
     body: list[str] = []
     i = start
     while i < len(lines):
         line = lines[i]
-        opened = line.count("{")
-        closed = line.count("}")
-        if depth == 0:
-            body.append(line[line.index("{") + 1:] if "{" in line else "")
-        else:
-            body.append(line)
-        depth += opened - closed
         i += 1
-        if depth <= 0:
+        code_length = len(_split_comment(line)[0])
+        begin = 0 if opened else None
+        end = None
+        for at in range(code_length):
+            if line[at] == "{":
+                if not opened:
+                    opened, begin = True, at + 1
+                depth += 1
+            elif line[at] == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    end = at
+                    break
+        if begin is None:
+            continue
+        body.append(line[begin:end])
+        if end is not None:
             break
-    text = "\n".join(body)
-    tail = text.rfind("}")
-    return (text[:tail] if tail >= 0 else text), i
+    return "\n".join(body), i
 
 
 def _parse_enum_members(body: str, name: str) -> list[str]:
     members = []
-    for raw in body.replace("\n", " ").split(","):
-        item = re.sub(r"//.*", "", raw).strip()
+    # Comments are cut per line before the lines are joined: joined first, a trailing comment on one
+    # member ran to the end of the body and swallowed the members after it.
+    code = " ".join(_split_comment(line)[0] for line in body.splitlines())
+    for raw in code.split(","):
+        item = raw.strip()
         if not item:
             continue
         m = re.fullmatch(r"(\w+)(?:\s*=\s*[^,]+)?", item)
@@ -338,6 +362,21 @@ def _split_type_and_declarators(decl: str) -> tuple[str, str] | None:
     return None
 
 
+def _split_top_level_commas(declarators: str) -> list[str]:
+    """`x = 0, y{1}` is two declarators and `rotation{0, 0, 0, 0}` is one."""
+    pieces, depth, start = [], 0, 0
+    for index, ch in enumerate(declarators):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(declarators[start:index])
+            start = index + 1
+    pieces.append(declarators[start:])
+    return pieces
+
+
 def _parse_fields(body: str, name: str) -> list[Field]:
     fields: list[Field] = []
     pending: list[str] = []
@@ -362,7 +401,7 @@ def _parse_fields(body: str, name: str) -> list[Field]:
 
         # A trailing comment documents the field it sits on; strip it before checking the
         # statement terminator, or a documented field looks unterminated.
-        code, _, trailing = line.partition("//")
+        code, trailing = _split_comment(line)
         code = code.strip()
         if trailing.strip():
             pending = pending + [trailing.strip()]
@@ -384,8 +423,8 @@ def _parse_fields(body: str, name: str) -> list[Field]:
                     f"struct {name}: std::string_view cannot be a data member — decoding one "
                     f"would leave it pointing at a temporary. Use std::string.")
 
-            for declarator in declarators.split(","):
-                piece = declarator.split("=")[0].strip()
+            for declarator in _split_top_level_commas(declarators):
+                piece = re.split(r"[={]", declarator, maxsplit=1)[0].strip()
                 if not re.fullmatch(r"\w+", piece):
                     raise ContractSyntaxError(
                         f"struct {name}: cannot parse declarator {piece!r}")
@@ -401,11 +440,17 @@ def _parse_methods(body: str, name: str) -> list[Method]:
     buffer = ""
 
     for raw in body.splitlines():
-        stripped = raw.strip()
+        code, trailing = _split_comment(raw)
+        stripped = code.strip()
         doc = DOC_RE.match(raw)
         if doc and not buffer:
             pending.append(doc.group(1))
             continue
+        # Inside a declaration a comment has no member of its own to document, and the mirror
+        # carries doc per member (ADR 0009): refused, as it was while comments reached the matcher.
+        if buffer and trailing.strip() and not stripped:
+            raise ContractSyntaxError(
+                f"interface {name}: a comment inside the declaration {buffer!r}")
         if not stripped:
             if not buffer:
                 pending.clear()
@@ -416,9 +461,15 @@ def _parse_methods(body: str, name: str) -> list[Method]:
         # A declaration may span lines; accumulate until the statement terminates.
         buffer = f"{buffer} {stripped}" if buffer else stripped
         if not buffer.endswith(";"):
+            if trailing.strip():
+                raise ContractSyntaxError(
+                    f"interface {name}: a comment inside the declaration {buffer!r}")
             continue
+        # A comment trailing the line that ends a declaration is its doc, as a field's is.
+        if trailing.strip():
+            pending = pending + [trailing.strip()]
 
-        m = METHOD_RE.match(buffer)
+        m = METHOD_RE.fullmatch(buffer)
         if not m:
             raise ContractSyntaxError(f"interface {name}: cannot parse member {buffer!r}")
 

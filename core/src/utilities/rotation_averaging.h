@@ -12,8 +12,11 @@ namespace sphanorama {
 //
 // **This is the maths under `IRegistrationEngine::Refine`, and it is here rather than in that engine
 // because it needs no pixels.** `EstimatePairwise` needs OpenCV; this needs quaternions. Keeping
-// them apart is what lets a build without OpenCV — every browser build today (ADR 0052) — have the
-// half of registration that is arithmetic, the day something wires it up.
+// them apart is what lets it be tested without a frame store or a detector, and is what would let a
+// build without OpenCV — every browser build today (ADR 0052) — have the half of registration that
+// is arithmetic. Only half of that holds today: the one caller is `FeatureRegistrationEngine::
+// Refine`, which exists only where OpenCV does, so a browser build reaches this only once a
+// `Refine` lives outside that engine (ADR 0065).
 //
 // **The problem it solves is that a chain has no memory.** Eleven pairwise rotations chained in
 // order give twelve absolute rotations, and every error in step k is carried by every frame after
@@ -27,7 +30,9 @@ namespace sphanorama {
 // the same reconstruction — so a solver given edges alone cannot say which way is north. The anchors
 // are what fix it, and they are weighted low on purpose: a fused phone orientation is out by degrees
 // where a registered pair is out by hundredths, so the anchors make the answer absolute and the
-// edges make it right.
+// edges make it right. However lightly they are weighed, above zero, the gauge is the one the
+// anchors agree on best: each piece of the reconstruction is turned bodily onto it every sweep,
+// which no edge can object to (ADR 0064).
 
 // A measured relation between two frames, in the convention `IRegistrationEngine` answers in.
 //
@@ -57,9 +62,9 @@ struct RelativeRotation {
 
   // How much this edge is believed, relative to the others and to the anchors. Evidence rather than
   // a distribution: raw inlier counts are a fine thing to pass. Zero removes the edge from the solve
-  // without removing it from the input, which is what a caller holding a parallel array of
-  // `PairwiseResult` wants for an unaccepted one (ADR 0056: an unaccepted result still carries the
-  // best rotation the pixels offered, and a caller may decide to weigh it at nothing).
+  // without removing it from the input — but not from the checks: an edge whose rotation is not one
+  // refuses the whole input at any weight, which is why `Refine` leaves an unaccepted pair out rather
+  // than weighing it at zero (ADR 0065).
   double weight = 1.0;
 };
 
@@ -111,8 +116,14 @@ struct AveragedRotations {
   // for want of an anchor" are the same fact held once rather than twice. **The degraded case reports better than the healthy one on everything else**, which is
   // why it needs its own number: one anchor plus a spanning tree is an exact fixed point, so the
   // solve settles in one sweep with both edge errors at zero, while twelve mutually inconsistent
-  // priors take hundreds of sweeps and leave a residual.
+  // priors take tens — 46 on a twelve-frame ring — and leave a residual.
   int32_t anchorsUsed = 0;
+
+  // How many pieces the placed frames fall into, where a piece is frames a chain of believed edges
+  // joins. Each piece takes its gauge from its own anchors, so where one piece sits relative to
+  // another is the anchors' doing and not the edges': more than one means seams placed to the
+  // priors' accuracy, which no edge figure can show. A frame on its anchor alone is a piece of one.
+  int32_t pieces = 0;
 
   // Frames no believed edge touches, ascending. They are placed — by their own anchor — so they are
   // not in `unplaced`, and they rest on no pixel at all.
@@ -127,7 +138,8 @@ struct AveragedRotations {
   // some point by the eigensolver's scan order rather than by the evidence. Ascending, each frame
   // named once. Reachable when everything speaking for a frame disagrees by a half turn — two
   // neighbours pointing opposite ways, which in a capture means a registration that has gone badly
-  // wrong rather than one that is merely imprecise.
+  // wrong rather than one that is merely imprecise. Or when a piece's anchors disagree by a half
+  // turn about where the whole piece sits, which names every frame in it.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the
@@ -142,7 +154,8 @@ struct AveragedRotations {
   // refused — which `valid` already says, and this does not independently promise.
   int32_t sweeps = 0;
 
-  // False when the sweep budget ran out before the largest per-frame update fell under tolerance.
+  // False when the sweep budget ran out before the largest move — a frame's own update, or its piece
+  // being turned onto its anchors — fell under tolerance.
   // The rotations are still the best the solver reached; what is not promised is that another sweep
   // would leave them alone.
   bool converged = false;
@@ -195,9 +208,13 @@ struct AveragedRotations {
 // **The order of `edges` can change the answer, and only on input that is already contradictory.**
 // The breadth-first placement walks edges in the order it is given them, so on a graph whose edges
 // disagree about where a frame belongs, which one places it first decides which basin the sweep then
-// relaxes into. Measured: three mutually contradictory edges reordered give frames at `0/120/0`
-// versus `180/60/0`, both converged. On well-conditioned input it does not arise — 6,426 trials with
-// consistent edges jittered half a degree and priors three degrees out produced zero divergences.
+// relaxes into. Measured before each piece's gauge was chosen per sweep (ADR 0064): three mutually
+// contradictory edges reordered gave frames at `0/120/0` versus `180/60/0`, both converged. Not
+// re-established since — a reviewer's search of contradictory three-frame rings found no order
+// dependence under either solver, and the original fixture is not in the suite — so this is the
+// hazard the traversal allows rather than a reproduced case. On well-conditioned input it did not
+// arise: 6,426 trials with consistent edges jittered half a degree and priors three degrees out
+// produced zero divergences.
 //
 // Left as it is rather than made order-independent, because the case it affects is one the answer
 // already reports as bad: `maxEdgeErrorDeg` is 180 degrees in both of those orderings, so a caller

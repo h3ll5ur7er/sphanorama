@@ -37,6 +37,11 @@ test('a page restored from the back/forward cache takes the right to its spill t
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     expect(await holders()).toBe(1);
 
+    // The service worker has to have claimed the page before it leaves: one that activates and
+    // claims while the page is in the cache evicts it. Leaving earlier was restored 20 of 30 times,
+    // with Chromium naming `serviceworker-claimed` or `navigation-canceled` for the rest; waiting
+    // for the claim, 40 of 40.
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 });
     await page.goto(new URL('sw.js', server.appUrl).href);
     expect(await holders()).toBe(0);
     await page.goBack({ waitUntil: 'commit' });

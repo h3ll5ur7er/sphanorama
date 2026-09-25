@@ -237,6 +237,12 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
           || !candidate.frame.buffer.valid()) {
         return false;
       }
+      // A pose `OfferFrame` would refuse at the door keeps its frame and loses its claim: it comes
+      // back unanchored, which is what a pose nobody measured already is. Restored as it stands, it
+      // would be written back by every checkpoint and refuse every `Refine` built from the capture;
+      // refusing the document instead cost the whole sphere, since the page reads a refusal here
+      // as one a later build can open and the one button it leaves clears the tier (ADR 0065).
+      if (PoseSampleDefect(candidate.pose)) candidate.pose.confidence = 0.0;
       if (!exhausted(in)) return false;
       candidate.pose.visuallyCorrected = corrected != 0;
       out.candidates.push_back(candidate);
@@ -755,8 +761,9 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   //
   // Note what every failure below goes through. A burst is advanced at the end of this call, so a
   // pose or planner failure returns before it — and SPH_TRY here would leave the burst armed with
-  // the exposure locked. The client stops ticking once a call fails, so nothing would ever reach
-  // the cleanup: the lock would outlive the session.
+  // the exposure locked. A client may stop ticking once calls fail — the page does after three
+  // that never reach the manager — and then nothing would ever reach the cleanup: the lock would
+  // outlive the session.
   if (!batch.empty()) {
     auto advanced = pose_.Integrate(pose_state_, batch);
     if (!advanced.ok()) return Abandon(advanced.status);
@@ -771,7 +778,13 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   auto covered = planner_.Evaluate(plan_, AllCandidates());
   if (!covered.ok()) return Abandon(covered.status);
 
-  auto located = planner_.Locate(pose_state_.pose, plan_, covered.value);
+  // A pose the solve would refuse is no measurement, whatever its confidence claims. Located as it
+  // stands it faces the identity: guidance holds still over a cell `ArmBurst` then refuses, and the
+  // dwell fires into that refusal every cycle, locking and releasing the camera each time
+  // (ADR 0065). So guidance is asked with the claim dropped, the way `Resume` restores one.
+  PoseSample aim = pose_state_.pose;
+  if (PoseSampleDefect(aim)) aim.confidence = 0.0;
+  auto located = planner_.Locate(aim, plan_, covered.value);
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
 
@@ -781,16 +794,17 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   // `Locate` chooses between naming the cell the camera is inside and waiting for a reading,
   // `ArmBurst` refuses what nothing has measured, and the page parks its reticle and stops
   // correcting for roll. There is exactly one source they can agree on — `confidence`, the
-  // contract's own word for whether anything ever anchored the orientation. What this line
-  // removes is a *published* answer disagreeing with the one the refusal uses: a planner leaving
-  // the field at its default would park the page's reticle on a phone whose pose is perfectly
-  // well measured, and every burst the dwell then fired would look to the user like a control
-  // that had stopped working.
+  // contract's own word for whether anything ever anchored the orientation, read through
+  // `PoseSampleDefect` as `ArmBurst` reads it, which is why this reads `aim` rather than the pose.
+  // What this line removes is a *published* answer disagreeing with the one the refusal uses: a
+  // planner leaving the field at its default would park the page's reticle on a phone whose pose
+  // is perfectly well measured, and every burst the dwell then fired would look to the user like a
+  // control that had stopped working.
   //
   // `stability` below and `targetNode` in the burst block are written here for reasons of their
   // own, not this one: the first because only this call holds the batch to estimate it from, the
   // second because a burst in flight is filed under the cell it was armed at.
-  guidance.aimKnown = pose_state_.pose.confidence > 0.0;
+  guidance.aimKnown = aim.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(batch); stability.ok()) {
@@ -962,6 +976,16 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // What is left of zero confidence is transient (a session's opening ticks, and a stream
   // carrying rates with no attitude) and it is still a direction nobody chose. There is nothing
   // to check, so there is nothing to allow — including the cell the accident points at.
+  //
+  // The predicate is asked first. A pose the solve would refuse, from an engine that claims it
+  // measured one, read below as facing the identity and armed on a cell the phone never faced; a
+  // broken collaborator, refused with the broken plan's code before anything is locked (ADR 0065).
+  // Asked second, a NaN or negative confidence was reported as a reading not yet taken, and a
+  // defect is not that.
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the pose engine reported a pose with " + std::string(*defect));
+  }
   if (!(pose_state_.pose.confidence > 0.0)) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "nothing has measured where the camera is pointing yet");
@@ -1009,9 +1033,8 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   }
   // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
   // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
-  // target by the check directly above, and the pose by `OrientationPoseEngine::Integrate`, which
-  // refuses to anchor on an attitude that is not one (`PoseEngine.AnAttitudeThatIsNotARotation-
-  // IsNotAReading`). Two usable rotations give two usable directions and an angle in `[0, π]`, so
+  // target by the check directly above, and the pose by `PoseSampleDefect` further up — not by the
+  // shipped engine, which keeps a rotation a rotation without making one. Two usable rotations give two usable directions and an angle in `[0, π]`, so
   // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
   //
   // An earlier version of this comment credited
@@ -1205,7 +1228,7 @@ Status CaptureSessionManager::Disarm(bool rollBack) {
 Status CaptureSessionManager::Abandon(const Status& cause) {
   // Disarm is a no-op when nothing is armed, so this needs no guard — and its failure is folded
   // in rather than dropped. A pose failure that coincides with an unlock rejection used to return
-  // the pose failure alone, and the client stops ticking on a failed call: the lock would then
+  // the pose failure alone, and a client may stop ticking on failed calls: the lock would then
   // outlive the session with nobody informed it was ever taken.
   return Also(cause, Disarm(true));
 }
@@ -1295,6 +1318,13 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // when the burst was armed, every frame since has set it one interval ahead.
   if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
 
+  // `ArmBurst` checked the pose it armed on; this is the one that breaks mid-burst, which would
+  // file every later frame as a candidate no `Refine` could use. Same code as at the arm (ADR 0065).
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
+    return Abandon(Fail(StatusCode::FailedPrecondition, kComponent,
+                        "the pose engine reported a pose with " + std::string(*defect)));
+  }
+
   auto frame = camera_.PeekPreviewFrame();
   if (!frame.ok()) {
     // Not a dropped tick. Preview is running by the time a burst is armed, so a camera that
@@ -1378,6 +1408,13 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   if (auto status = RequireSession(); !status.ok()) return status;
   if (!HasNode(node)) {
     return Err<FrameVerdict>(StatusCode::NotFound, kComponent, "no such cell in the plan");
+  }
+  // Refused before anything is scored or kept. Accepted, such a pose would be covered and ranked,
+  // and would refuse any `Refine` built from this session's candidates, blaming its caller rather
+  // than the door it came in by.
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose)) {
+    return Err<FrameVerdict>(StatusCode::InvalidArgument, kComponent,
+                             "the pose offered has " + std::string(*defect));
   }
 
   std::vector<Candidate>& cell = candidates_[node.value];

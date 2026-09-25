@@ -640,4 +640,51 @@ TEST(RollBetween, TheCollapseGuardDecidesBetweenZeroAndAHalfTurn) {
 }
 
 }  // namespace
+// No pose is spelled with `confidence` zero, and at zero the orientation is not read: an unset pose
+// and a gyroscope's unanchored one are both well-formed. Everything else outside [0, 1], and an
+// orientation that is not a rotation where the confidence claims one, is a defect with a reason.
+TEST(PoseSampleDefect, ZeroConfidenceIsNoPoseWhateverTheOrientationSays) {
+  EXPECT_FALSE(PoseSampleDefect(PoseSample{}).has_value());
+  PoseSample unread;
+  unread.orientation = Quat{0, 0, 0, 0};
+  EXPECT_FALSE(PoseSampleDefect(unread).has_value());
+}
+
+TEST(PoseSampleDefect, EveryConfidenceThePoseEngineWritesIsWellFormed) {
+  for (const double confidence : {0.5, 1.0}) {
+    PoseSample pose;
+    pose.confidence = confidence;
+    EXPECT_FALSE(PoseSampleDefect(pose).has_value()) << confidence;
+  }
+}
+
+TEST(PoseSampleDefect, AConfidenceOutsideTheUnitIntervalIsADefect) {
+  // The least double outside each end too, so no tolerance around [0, 1] can pass for the rule.
+  for (const double confidence :
+       {-std::numeric_limits<double>::denorm_min(), std::nextafter(1.0, 2.0), -0.25, 1.5,
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    PoseSample pose;
+    pose.confidence = confidence;
+    const std::optional<std::string_view> defect = PoseSampleDefect(pose);
+    ASSERT_TRUE(defect.has_value()) << confidence;
+    EXPECT_NE(defect->find("confidence outside"), std::string_view::npos) << *defect;
+  }
+}
+
+TEST(PoseSampleDefect, AClaimedOrientationThatIsNotARotationIsADefect) {
+  // At every confidence that claims one, down to the least above zero.
+  for (const double confidence : {std::numeric_limits<double>::denorm_min(), 0.5, 1.0}) {
+    for (const Quat& orientation :
+         {Quat{0, 0, 0, 0}, Quat{std::numeric_limits<double>::quiet_NaN(), 0, 0, 0}}) {
+      PoseSample pose;
+      pose.orientation = orientation;
+      pose.confidence = confidence;
+      const std::optional<std::string_view> defect = PoseSampleDefect(pose);
+      ASSERT_TRUE(defect.has_value()) << confidence;
+      EXPECT_NE(defect->find("an orientation that is not a rotation"), std::string_view::npos)
+          << *defect;
+    }
+  }
+}
+
 }  // namespace sphanorama

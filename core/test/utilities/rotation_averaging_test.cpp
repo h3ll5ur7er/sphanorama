@@ -118,6 +118,7 @@ TEST(AverageRotations, ConsistentEdgesAndTruthfulAnchorsReproduceTheTruth) {
   ASSERT_TRUE(solved.unplaced.empty());
   ASSERT_EQ(solved.rotations.size(), truth.size());
   EXPECT_TRUE(solved.converged);
+  EXPECT_EQ(solved.pieces, 1);
 
   for (size_t i = 0; i < truth.size(); ++i) {
     EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
@@ -175,33 +176,10 @@ TEST(AverageRotations, ExactEdgesRecoverTheTruthFromAnchorsThatAreDegreesOut) {
   const AveragedRotations believed = AverageRotations(edges, anchors, 0.01);
   ASSERT_TRUE(believed.valid);
   EXPECT_TRUE(believed.converged);
-  // The `[12 frames, 0.01]` cell of the sweep table in `rotation_averaging.cpp`, so the table is not
-  // "the only copy" ADR 0062 calls it — this is the second, and it is the one with teeth.
-  //
-  // **It pins `kSettledDeg` and not `kMaxSweeps`**, which is narrower than the claim that stood here
-  // ("the only assertion anywhere that fails if `kSettledDeg` or `kMaxSweeps` moves") and wrong in
-  // both directions. Measured. At `kSettledDeg` 1.786e-6 this reads 743 under gcc and 738 under
-  // clang with fast contraction, and fails — but so do
-  // `AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain` and
-  // `TheClosingEdgeIsWhatRemovesAChainsDrift`, so it is not the only one. And a sweep *budget* it
-  // cannot see at all: 590 is under any budget worth setting, so `kMaxSweeps` at 700 leaves this
-  // green and fails exactly one test — `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`, whose
-  // `EXPECT_EQ(solved.sweeps, 1000)` is the only pin on that constant anywhere.
-  //
-  // "Only pin on that constant" and not "pin on only that constant", which this sentence has since
-  // been read as meaning. It is a **joint** pin: loosening `kSettledDeg` to 5.6e-5 makes that same
-  // solve settle in 44 sweeps, so it stops running out of budget and both its assertions fail
-  // without `kMaxSweeps` moving at all. The census beside `score.medianDeg` carries the full table.
-  //
-  // Worth the paragraph because the wrong version was load-bearing: it was the reason ADR 0062 named
-  // this assertion as the executable copy of the table, and a reader who moved `kMaxSweeps` on the
-  // strength of it would have been told the wrong test would catch them.
-  // Within one, not exactly: the sweep count is where a rounding-dependent iteration first fell under
-  // `kSettledDeg`. It read 589 under `clang -O3 -ffp-contract=fast` until `Norm` fused by hand, and
-  // reads 590 on both builds since; `Multiply` still rounds per build, so the one stays. It still
-  // catches the constant moving — tightening it lands at 743 under gcc and 738 under clang with
-  // fast contraction, both a long way outside it.
-  EXPECT_NEAR(believed.sweeps, 590, 1);
+  // The `[12, 0.01]` cell of the sweep table beside `kMaxSweeps`, and the executable copy of it.
+  // Within one rather than exactly: the count is where a rounding-dependent iteration first fell
+  // under `kSettledDeg`, and `Multiply` rounds differently under fast contraction.
+  EXPECT_NEAR(believed.sweeps, 46, 1);
 
   const test::RotationScore after = test::ScoreRotations(believed.rotations, truth);
   ASSERT_TRUE(after.valid);
@@ -347,12 +325,189 @@ TEST(AverageRotations, TurningEveryAnchorTurnsTheWholeAnswer) {
   }
   EXPECT_GT(worstMove, 1.0) << "the solve left the anchors where they were";
 
-  // 1e-4 rather than 1e-9: the two solves take 590 and 591 sweeps, so they stop at slightly
-  // different points on the same trajectory. Measured at 9.8e-6 between them.
   for (size_t i = 0; i < anchors.size(); ++i) {
     const Quat expected = Normalize(Multiply(turn, plain.rotations[i]));
-    EXPECT_NEAR(SeparationDeg(moved.rotations[i], expected), 0.0, 1e-4) << "frame " << i;
+    EXPECT_NEAR(SeparationDeg(moved.rotations[i], expected), 0.0, kSameRotationDeg) << "frame " << i;
   }
+}
+
+// Anchors each `degrees` out about an axis of their own, so the perturbation is not one common
+// rotation the gauge would absorb for free.
+std::vector<Quat> AnchorsOut(const std::vector<Quat>& truth, double degrees) {
+  std::vector<Quat> anchors;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    const double at = static_cast<double>(i);
+    const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
+    anchors.push_back(Normalize(Multiply(truth[i], FromAxisAngle(axis, degrees / kDegPerRad))));
+  }
+  return anchors;
+}
+
+/**
+ * The gauge is the one all the anchors agree on best, however lightly they are weighed.
+ *
+ * The edges say nothing about it, so the anchors are the only evidence there is, and the answer
+ * that fits them best is the common rotation nearest all of them at once — which is what
+ * `BestGaugeAlignment` finds when it is handed the anchors themselves. Weighing them lightly is how
+ * a caller says the edges decide the *shape*; it is not a request to let the gauge fall wherever
+ * the start happened to leave it.
+ *
+ * Which is what it did before each piece's gauge was chosen outright (ADR 0064). A sweep moves the
+ * gauge by about as much as the anchors weigh against the edges, so at a ten-thousandth this ran out
+ * of sweeps with the gauge 0.32 degrees from here, and at a millionth it stopped after 48 with the
+ * gauge 0.35 degrees away and said it had converged.
+ */
+TEST(AverageRotations, TheGaugeIsWhereTheAnchorsAgreeHoweverLightlyTheyAreWeighed) {
+  const std::vector<Quat> truth = Ring(kFrames);
+  const std::vector<RelativeRotation> edges = RingEdges(truth, 0.0);
+  const std::vector<Quat> anchors = AnchorsOut(truth, 3.0);
+
+  const test::GaugeAlignment agreed = test::BestGaugeAlignment(anchors, truth);
+  ASSERT_TRUE(agreed.valid && agreed.isUnique);
+
+  for (const double weight : {1e-2, 1e-4, 1e-6}) {
+    const AveragedRotations solved = AverageRotations(edges, anchors, weight);
+    ASSERT_TRUE(solved.valid);
+    EXPECT_TRUE(solved.converged) << "at anchor weight " << weight;
+    const test::GaugeAlignment gauge = test::BestGaugeAlignment(solved.rotations, truth);
+    ASSERT_TRUE(gauge.valid);
+    std::fprintf(stderr, "[averaging] weight %g: gauge %.7f deg from the anchors' in %d sweeps\n",
+                 weight, SeparationDeg(gauge.rotation, agreed.rotation), solved.sweeps);
+    EXPECT_NEAR(SeparationDeg(gauge.rotation, agreed.rotation), 0.0, kSameRotationDeg)
+        << "at anchor weight " << weight;
+  }
+}
+
+/**
+ * Two pieces of a reconstruction that no edge joins each take their gauge from their own anchors.
+ *
+ * Nothing relates one piece's orientation to the other's, so a gauge chosen from every anchor at
+ * once would turn each piece by the other's anchors — which no evidence supports. The pieces are
+ * turned tens of degrees apart and their anchors are three degrees out, so neither starts where it
+ * ends and a leak between the two shows at full size. One frame of the second piece has no anchor
+ * of its own; it has to turn with its piece, but on this ring the next sweep drags it back onto its
+ * edges before anything reads it, so this test does not see it left behind —
+ * `Refine.APairCountsForItsInliers`, with one anchor of two, does.
+ */
+TEST(AverageRotations, EachPieceNoEdgeJoinsTakesItsGaugeFromItsOwnAnchors) {
+  const std::vector<Quat> first = Ring(6);
+  const std::vector<Quat> second = UnevenRing();
+  const Quat turnFirst = FromAxisAngle(Vec3{1, 0, 0}, 25.0 / kDegPerRad);
+  const Quat turnSecond = FromAxisAngle(Vec3{0, 0, 1}, -40.0 / kDegPerRad);
+
+  std::vector<Quat> truth;
+  for (const Quat& q : first) truth.push_back(Normalize(Multiply(turnFirst, q)));
+  for (const Quat& q : second) truth.push_back(Normalize(Multiply(turnSecond, q)));
+  std::vector<Quat> anchors = AnchorsOut(truth, 3.0);
+  const size_t unanchored = first.size() + 4;
+  anchors[unanchored] = Quat{0, 0, 0, 0};
+
+  std::vector<RelativeRotation> edges = RingEdges(first, 0.0);
+  for (RelativeRotation edge : RingEdges(second, 0.0)) {
+    edge.from += static_cast<int32_t>(first.size());
+    edge.to += static_cast<int32_t>(first.size());
+    edges.push_back(edge);
+  }
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1e-4);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_TRUE(solved.converged);
+  ASSERT_EQ(solved.rotations.size(), truth.size());
+  EXPECT_EQ(solved.pieces, 2) << "the anchors alone relate the two pieces, and the count has to say so";
+
+  const auto slice = [](const std::vector<Quat>& all, size_t from, size_t to, size_t skip) {
+    std::vector<Quat> part;
+    for (size_t i = from; i < to; ++i) {
+      if (i != skip) part.push_back(all[i]);
+    }
+    return part;
+  };
+  const size_t none = truth.size();
+  for (const auto& [from, to] : {std::pair{size_t{0}, first.size()}, std::pair{first.size(), truth.size()}}) {
+    const test::GaugeAlignment agreed =
+        test::BestGaugeAlignment(slice(anchors, from, to, unanchored), slice(truth, from, to, unanchored));
+    const test::GaugeAlignment gauge = test::BestGaugeAlignment(
+        slice(solved.rotations, from, to, unanchored), slice(truth, from, to, unanchored));
+    ASSERT_TRUE(agreed.valid && gauge.valid);
+    // Not exact: anchors weighed at a ten-thousandth still bend the shape a little.
+    EXPECT_NEAR(SeparationDeg(gauge.rotation, agreed.rotation), 0.0, 1e-4)
+        << "the piece starting at frame " << from << " is not where its own anchors agree";
+
+    // And the piece's shape is the edges', its anchorless frame included.
+    const test::RotationScore shape =
+        test::ScoreRotations(slice(solved.rotations, from, to, none), slice(truth, from, to, none));
+    ASSERT_TRUE(shape.valid);
+    EXPECT_LT(shape.maxDeg, 1e-3) << "the piece starting at frame " << from;
+  }
+}
+
+/**
+ * A gauge the anchors barely determine is still settled before the solve says it has.
+ *
+ * Three frames on exact edges whose anchors turn them a third of a turn apart, less a tenth of a
+ * degree, about one axis: nearly every gauge fits them equally badly, so the best one moves a long
+ * way for a small change in the shape. The frames settle long before their gauge does, and a
+ * stopping rule that watched only the frames stopped with it 0.0116 degrees short. The fixed point,
+ * 0.134225 degrees from where the anchors alone agree, is where the full budget of sweeps ends.
+ */
+TEST(AverageRotations, AGaugeTheAnchorsBarelyDetermineIsSettledBeforeTheSolveSaysSo) {
+  const std::vector<Quat> truth{AboutY(0.0), AboutY(30.0), AboutY(60.0)};
+  const std::vector<RelativeRotation> edges{
+      RelativeRotation{0, 1, TrueEdge(truth[0], truth[1]), 1.0},
+      RelativeRotation{1, 2, TrueEdge(truth[1], truth[2]), 1.0}};
+  const double turnsDeg[] = {0.0, 120.1, 240.0};
+  std::vector<Quat> anchors;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    anchors.push_back(
+        Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, turnsDeg[i] / kDegPerRad), truth[i])));
+  }
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1e-3);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_TRUE(solved.converged);
+  EXPECT_TRUE(solved.ambiguous.empty()) << "nearly undetermined is still determined";
+
+  const test::GaugeAlignment agreed = test::BestGaugeAlignment(anchors, truth);
+  const test::GaugeAlignment gauge = test::BestGaugeAlignment(solved.rotations, truth);
+  ASSERT_TRUE(agreed.valid && gauge.valid);
+  EXPECT_NEAR(SeparationDeg(gauge.rotation, agreed.rotation), 0.134225, 1e-4);
+}
+
+/**
+ * Anchors that disagree by a half turn about where a piece sits leave its gauge to chance, and every
+ * frame in the piece is named for it.
+ *
+ * Two frames and an exact edge between them, with the second frame's anchor turned a half turn from
+ * where the edge and the first anchor put it. Weighed lightly, each frame's own average is decided
+ * by the edge and has a single answer, so nothing per frame is unsure — but the piece as a whole
+ * sides with one anchor or the other, and which one is the order the frames are visited in. Before
+ * the gauge was chosen for the piece, that was decided silently: the first frame visited moved onto
+ * the second's anchor and `ambiguous` stayed empty.
+ */
+TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
+  // A third frame hangs off the second with no anchor of its own: it sides with whichever anchor
+  // the piece does, so it is named too.
+  const std::vector<Quat> truth{AboutY(0.0), AboutY(30.0), AboutY(60.0)};
+  const std::vector<RelativeRotation> edges{
+      RelativeRotation{0, 1, TrueEdge(truth[0], truth[1]), 1.0},
+      RelativeRotation{1, 2, TrueEdge(truth[1], truth[2]), 1.0}};
+  const Quat halfTurn = FromAxisAngle(Vec3{1, 0, 0}, std::numbers::pi);
+  const std::vector<Quat> anchors{truth[0], Normalize(Multiply(halfTurn, truth[1])),
+                                  Quat{0, 0, 0, 0}};
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1e-6);
+  ASSERT_TRUE(solved.valid);
+  ASSERT_EQ(solved.ambiguous.size(), 3u);
+  EXPECT_EQ(solved.ambiguous[0], 0);
+  EXPECT_EQ(solved.ambiguous[1], 1);
+  EXPECT_EQ(solved.ambiguous[2], 2) << "the frame with no anchor was not named with its piece";
+
+  // The same anchors agreeing with the edge leave nobody unsure, so it is the half turn being
+  // reported and not the lightness of the anchors.
+  const AveragedRotations agreed =
+      AverageRotations(edges, std::vector<Quat>{truth[0], truth[1], Quat{0, 0, 0, 0}}, 1e-6);
+  ASSERT_TRUE(agreed.valid);
+  EXPECT_TRUE(agreed.ambiguous.empty());
 }
 
 /**
@@ -390,51 +545,29 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // that is where an exactly-solvable problem lands. Written as `1e-6` first, which assumed a solver
   // with no stopping rule — "exact edges" bounds the problem and not the iteration.
   //
-  // **This measures `kSettledDeg` rather than the solver**, and it is one of **seven** on the branch
-  // that do. A threshold is sensitive in both directions and the count depends on which way you
-  // push it, so all three figures are given rather than one:
+  // **This measures `kSettledDeg` rather than the solver**, and so do several others. A threshold
+  // is sensitive in both directions and the count depends on which way it is pushed, so each is
+  // given, named by assertion rather than by line. Measured under gcc:
   //
-  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps == 590` -> 743 (738 under fast contraction),
-  //                              `trusted.medianDeg 0.0000226` -> 8.71e-6 (7.82e-6),
-  //                              `recovered.maxDeg 0.0000278` -> 6.39e-6,
-  //                              `score.medianDeg 0.0000229` (this one) -> 5.79e-6 (5.92e-6)
-  //   loosened to 5.6e-5     ->  six:        those four, plus `EXPECT_FALSE(solved.converged)` and
-  //                              `EXPECT_EQ(solved.sweeps, 1000)` in
-  //                              `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers` — it now settles in 44
-  //   loosened to 1e-4       ->  seven:      plus `after.medianDeg 0.047665` -> 0.0476528
+  //   tightened to 1.786e-6  ->  four move:  `believed.sweeps` 46 -> 52,
+  //                              `trusted.medianDeg 0.0000226` -> 8.62e-6,
+  //                              `recovered.maxDeg 0.0000278` -> 5.92e-6,
+  //                              `score.medianDeg 0.0000229` (this one) -> 5.79e-6
+  //   loosened to 1.5e-5     ->  five:       those four (44, 3.49e-5, 4.42e-5, 3.70e-5), plus
+  //                              `after.maxDeg 0.050549` -> 0.050528
+  //   loosened to 5.6e-5     ->  nine:       plus `after.medianDeg 0.047665` -> 0.047609, both
+  //                              assertions of `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`,
+  //                              which settles in 649, and the `0.134225` of
+  //                              `AGaugeTheAnchorsBarelyDetermineIsSettledBeforeTheSolveSaysSo`,
+  //                              which reads 0.134084
   //
-  // Named by assertion rather than by line, which is a correction: the first version of this table
-  // gave eight line numbers and every one was wrong on the commit that wrote it, because the same
-  // commit inserted a paragraph above them and the table was not renumbered after its own edit. The
-  // engineering skill bans locating by distance for exactly this reason; a line number is a
-  // distance from the top of the file.
-  //
-  // **The count has now been wrong four times: three, five, four, and each for a different reason.**
-  // Three and five came from reading the file. Four came from *measuring* — and measuring in one
-  // direction only, which is the subtler failure and the one worth recording, because the
-  // experiment felt like the fix for the first two.
-  //
-  // Two consequences a reader should carry. `after.medianDeg` was twice declared not a
-  // stopping-rule figure at all, on the strength of the tightening run; it is one, with a dead band
-  // wide enough to survive 5.6x either way. And the run-out-of-sweeps pair were called the only pin
-  // on `kMaxSweeps`; they are a *joint* pin on both constants, since loosening this one stops that
-  // solve running out of budget.
-  //
-  // The count matters because two earlier versions of this comment gave a smaller one, each time
-  // after an audit that reached only the figures published *outside* the file. The failure message
-  // names the cause, since an earlier one said "the residual is no longer the stopping tolerance",
-  // which is the opposite of it.
+  // So the run-out-of-sweeps pair is a joint pin on this constant and `kMaxSweeps`, not a pin on the
+  // budget alone.
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
   // `kSameRotationDeg` rather than a tight band: the figure is where the solver *stopped*, so it
   // is rounding-dependent to about `kSettledDeg` itself. It reads 2.290e-5 under gcc and 2.284e-5
-  // under clang with fast contraction; it read 2.86e-5 until `Norm` fused by hand, which moved it
-  // by more than half this tolerance and is why the pin was re-measured rather than left passing.
-  // Tightening `kSettledDeg` moves it to 5.79e-6, outside this band. Loosening is the direction the
-  // band gives up: at `kSettledDeg` 1.5e-5 this reads 2.02e-5, inside it, and the suite is failed
-  // there by `believed.sweeps` (549) and `recovered.maxDeg` (4.43e-5) instead. Measured, both
-  // builds. So the failure message below over-promises in that direction — this pin catches the
-  // constant moving by a factor of two, not by half — and the two beside it catch less than that.
+  // under clang with fast contraction.
   EXPECT_NEAR(score.medianDeg, 0.0000229, kSameRotationDeg)
       << "this is a kSettledDeg figure; if it moved, either that constant did or something else is "
          "now moving the answer";
@@ -800,24 +933,18 @@ TEST(AverageRotations, TwoEdgesThatDisagreeAreWeighedAgainstEachOther) {
  * A solve that runs out of sweeps says so, and still answers.
  *
  * `converged` is reported rather than promised, and a flag nothing can set to false is not a report.
- * Anchors at a ten-thousandth are what reach it: the sweeps needed scale as roughly one over the
- * anchor weight, because what is still moving at that point is the gauge — one common rotation
- * shared by every frame — and a weak anchor is a weak constraint on exactly that. Measured, a
- * twelve-frame ring at 1e-4 wants about 12,500 sweeps against a budget of 1,000.
+ * A long ring is what reaches it: once the gauge is chosen for each piece, what is left to settle is
+ * the shape, and the slowest bend of a ring relaxes at a rate that falls as the square of its
+ * length. Two hundred frames against lightly weighed anchors want more than the budget; ninety
+ * settle in 842 (the table beside `kMaxSweeps`).
  *
- * The second half is the half that matters to a caller: what comes back is still a good answer. The
- * budget ran out on the gauge, and the gauge is the part `ScoreRotations` removes.
+ * The second half is the half that matters to a caller: what comes back is still a good answer —
+ * two orders of magnitude under the anchors it started from.
  */
 TEST(AverageRotations, ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers) {
-  const std::vector<Quat> truth = Ring(kFrames);
+  const std::vector<Quat> truth = Ring(200);
   const std::vector<RelativeRotation> edges = RingEdges(truth, 0.0);
-
-  std::vector<Quat> anchors;
-  for (int i = 0; i < kFrames; ++i) {
-    const Vec3 axis{std::sin(i * 1.0), std::cos(i * 1.0), std::sin(i * 2.0)};
-    anchors.push_back(
-        Normalize(Multiply(truth[static_cast<size_t>(i)], FromAxisAngle(axis, 3.0 / kDegPerRad))));
-  }
+  const std::vector<Quat> anchors = AnchorsOut(truth, 3.0);
 
   const AveragedRotations solved = AverageRotations(edges, anchors, 1e-4);
   ASSERT_TRUE(solved.valid);
@@ -826,7 +953,7 @@ TEST(AverageRotations, ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers) {
 
   const test::RotationScore score = test::ScoreRotations(solved.rotations, truth);
   ASSERT_TRUE(score.valid);
-  EXPECT_LT(score.medianDeg, 0.001) << "an unconverged answer is still the best the solver reached";
+  EXPECT_LT(score.medianDeg, 0.03) << "an unconverged answer is still the best the solver reached";
 }
 
 /**
@@ -1034,13 +1161,17 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   // maximiser — so a per-sweep `clear()` reported nothing, and the frame whose placement was a coin
   // flip came back looking like one the edges agreed on. Constructed after this file claimed the case was
   // not constructible.
+  //
+  // At an anchor weight of zero, because consulted, these two anchors disagree by a half turn about
+  // where the whole piece sits, and that names all three frames on every sweep — right, and
+  // `AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous`, but not transient.
   const std::vector<Quat> opposedAnchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(180.0)};
   const Quat halfTurn = TrueEdge(AboutY(0.0), AboutY(180.0));
   const std::vector<RelativeRotation> transient{
       RelativeRotation{1, 0, halfTurn, 1.0},
       RelativeRotation{2, 1, halfTurn, 1.0},
   };
-  const AveragedRotations partway = AverageRotations(transient, opposedAnchors, 0.01);
+  const AveragedRotations partway = AverageRotations(transient, opposedAnchors, 0.0);
   ASSERT_TRUE(partway.valid);
   EXPECT_TRUE(partway.converged);
   EXPECT_EQ(partway.sweeps, 3);
@@ -1113,7 +1244,7 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
  * every field there was. Twelve frames, exact edges, and one usable prior instead of twelve: a
  * single anchor plus a spanning tree is an exact fixed point, so the solve settles in one sweep with
  * `medianEdgeErrorDeg` and `maxEdgeErrorDeg` at zero, `edgesUsed` at twelve and `unplaced` empty —
- * against the healthy solve's 590 sweeps and a residual, because there twelve mutually inconsistent
+ * against the healthy solve's 46 sweeps and a residual, because there twelve mutually inconsistent
  * priors have to be compromised. A caller reading those fields would pick the broken one.
  *
  * The second is quieter: frames no believed edge touches at all. They are placed, by their own

@@ -25,6 +25,8 @@ if(SPHANORAMA_WITH_OPENCV)
       # The accuracy measurement, which needs a registration, a dataset reader and a scorer at
       # once. It renders its own dataset and skips without `uv`, per ADR 0055.
       "engines/registration_accuracy_test.cpp"
+      # `Refine` needs no pixels, but it is implemented only by the engine that has pairs to hand it.
+      "engines/registration_refine_test.cpp"
       # The synthetic-dataset loader reads `truth.json` with `cv::FileStorage`, and everything that
       # consumes it is on the registration path, so it lives behind the same flag rather than
       # dragging a second JSON reader into a build that has one.
