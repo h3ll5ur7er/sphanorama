@@ -610,9 +610,11 @@ std::vector<PairwiseResult> MatchedRing(const std::vector<Quat>& truth, const In
  * **And a loop need not wrap.** Three frames turning about one axis were expected to close under any
  * focal length, since scaling three angles that sum to zero leaves them summing to zero — and this
  * test first asserted the triangle was passed through. It came back fitted, to 499.9967 of 500:
- * under a pinhole a turn is a translation only at the centre of the image, so refitted under the
- * wrong focal length each pair tilts a little and the tilts do not cancel. How well a triangle
- * fits it with real matches is a different question, and the accuracy test is where it is asked.
+ * under a pinhole a turn moves a pixel by the tangent of its angle, not by the angle, so refitted
+ * under the wrong focal length a thirty-degree pair and a sixty-degree one are not scaled alike
+ * — 2 x 32.324 against 64.220 in a reviewer's rebuild — and the triangle stops closing. Not by
+ * tilting: the refitted axes stay exactly vertical. How well a triangle fits it with real matches
+ * is a different question, and the accuracy test is where it is asked.
  */
 TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   const std::vector<Quat> truth = Ring();
@@ -631,6 +633,12 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   tall.fy = 540;
   const std::vector<PairwiseResult> pitched = MatchedRing(tumbling, tall);
   for (const PairwiseResult& pair : pitched) ASSERT_GE(pair.inlierMatches.size(), 20u);
+  // And a lens that distorts, so a trial that dropped the distortion, or a fit that returned the
+  // lens without it, is wrong by more than the tolerance.
+  Intrinsics barrel = lens;
+  barrel.k1 = -0.1;
+  const std::vector<PairwiseResult> distorted = MatchedRing(truth, barrel);
+  for (const PairwiseResult& pair : distorted) ASSERT_GE(pair.inlierMatches.size(), 20u);
 
   const struct {
     std::vector<PairwiseResult> pairs;
@@ -639,19 +647,22 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     int placed;
   } shapes[] = {{ring, truth, lens, kFrames},
                 {triangle, truth, lens, 3},
-                {pitched, tumbling, tall, kFrames}};
+                {pitched, tumbling, tall, kFrames},
+                {distorted, truth, barrel, kFrames}};
   for (const auto& [pairs, truth, lens, placed] : shapes)
   for (const double scale : {0.92, 1.08}) {
     Intrinsics initial = Scaled(lens, scale);
-    initial.k1 = 0.0;
     initial.rollingShutterLineTimeNs = 15000;
     const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
     ASSERT_TRUE(solved.ok()) << solved.status.detail;
     const GlobalSolution& solution = solved.value;
     EXPECT_TRUE(solution.lensFitted) << scale;
     EXPECT_TRUE(solution.intrinsics.estimated) << scale;
-    EXPECT_NEAR(solution.intrinsics.fx / lens.fx, 1.0, 1e-4) << scale;
-    EXPECT_NEAR(solution.intrinsics.fy / lens.fy, 1.0, 1e-4) << scale;
+    // Within 9.1e-6 of the truth in every case measured, which is the search's own resolution:
+    // three times that, so a tolerance ten times looser does not pass.
+    EXPECT_NEAR(solution.intrinsics.fx / lens.fx, 1.0, 3e-5) << scale;
+    EXPECT_NEAR(solution.intrinsics.fy / lens.fy, 1.0, 3e-5) << scale;
+    EXPECT_EQ(solution.intrinsics.k1, initial.k1) << scale;
     EXPECT_EQ(solution.intrinsics.cx, initial.cx);
     EXPECT_EQ(solution.intrinsics.cy, initial.cy);
     EXPECT_EQ(solution.intrinsics.width, initial.width);
@@ -687,30 +698,67 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   // A pair measured twice agrees with itself under any focal length, so it is no loop.
   std::vector<PairwiseResult> twice = chain;
   twice.push_back(chain[3]);
+  // And measured the other way round, which is the same two frames.
+  std::vector<PairwiseResult> reversed = chain;
+  reversed.push_back(Matched(4, 3, truth, lens));
   std::vector<PairwiseResult> unmatched = ring;
   unmatched[4].inlierMatches.clear();
   unmatched[4].inliers = 100;
   unmatched[4].correspondences = 180;
 
+  // A loop of turns about the viewing axis: every pixel wheels about the centre by the same angle
+  // under any focal length, so the cost is flat and there is no least to find.
+  std::vector<Quat> rolling;
+  for (int i = 0; i < kFrames; ++i) {
+    rolling.push_back(FromAxisAngle(Vec3{0, 0, 1}, 2.0 * std::numbers::pi * i / kFrames));
+  }
+  const std::vector<PairwiseResult> rolled = MatchedRing(rolling, lens);
+
   const struct {
     std::vector<PairwiseResult> pairs;
+    std::vector<Quat> truth;
     double scale;
     const char* why;
-  } cases[] = {{chain, 1.08, "an open chain"},
-               {twice, 1.08, "an open chain with a pair measured twice"},
-               {unmatched, 1.08, "a pair with no matches"},
-               {ring, 2.5, "a focal length outside the search"}};
-  for (const auto& [pairs, scale, why] : cases) {
-    // Claimed estimated, so passing it through is told apart from resetting the flag.
-    Intrinsics initial = Scaled(lens, scale);
-    initial.estimated = true;
-    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
-    ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
-    EXPECT_FALSE(solved.value.lensFitted) << why;
-    EXPECT_EQ(solved.value.intrinsics.fx, initial.fx) << why;
-    EXPECT_EQ(solved.value.intrinsics.fy, initial.fy) << why;
-    EXPECT_EQ(solved.value.intrinsics.k1, initial.k1) << why;
-    EXPECT_EQ(solved.value.intrinsics.estimated, initial.estimated) << why;
+  } cases[] = {{chain, truth, 1.08, "an open chain"},
+               {twice, truth, 1.08, "an open chain with a pair measured twice"},
+               {reversed, truth, 1.08, "an open chain with a pair measured both ways"},
+               {unmatched, truth, 1.08, "a pair with no matches"},
+               {rolled, rolling, 1.08, "a loop about the viewing axis"},
+               // Each end of the bracket on its own, since either half of the rise test alone
+               // passes a truth just outside the other end at that end.
+               {ring, truth, 1.0 / 1.6, "a focal length past the long end of the search"},
+               {ring, truth, 1.0 / 0.6, "a focal length past the short end of the search"},
+               {ring, truth, 2.5, "a focal length far outside the search"}};
+  for (const auto& [pairs, poses, scale, why] : cases) {
+    for (const bool estimated : {true, false}) {
+      // Every field away from its default, so passing each through is told apart from resetting
+      // it — the distortion small enough that the fit decision is still about the focal length.
+      Intrinsics initial = Scaled(lens, scale);
+      initial.k1 = -1e-3;
+      initial.k2 = 2e-4;
+      initial.k3 = -3e-5;
+      initial.p1 = 4e-5;
+      initial.p2 = -5e-5;
+      initial.rollingShutterLineTimeNs = 15000;
+      initial.estimated = estimated;
+      const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(poses), initial);
+      ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
+      EXPECT_FALSE(solved.value.lensFitted) << why;
+      const Intrinsics& out = solved.value.intrinsics;
+      EXPECT_EQ(out.fx, initial.fx) << why;
+      EXPECT_EQ(out.fy, initial.fy) << why;
+      EXPECT_EQ(out.cx, initial.cx) << why;
+      EXPECT_EQ(out.cy, initial.cy) << why;
+      EXPECT_EQ(out.k1, initial.k1) << why;
+      EXPECT_EQ(out.k2, initial.k2) << why;
+      EXPECT_EQ(out.k3, initial.k3) << why;
+      EXPECT_EQ(out.p1, initial.p1) << why;
+      EXPECT_EQ(out.p2, initial.p2) << why;
+      EXPECT_EQ(out.width, initial.width) << why;
+      EXPECT_EQ(out.height, initial.height) << why;
+      EXPECT_EQ(out.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs) << why;
+      EXPECT_EQ(out.estimated, estimated) << why;
+    }
   }
 }
 
@@ -732,13 +780,18 @@ TEST_F(Refine, MatchesThatAreNotThePairsInliersAreRefused) {
   EXPECT_EQ(counted.status.code, StatusCode::InvalidArgument);
   EXPECT_NE(counted.status.detail.find("matches"), std::string::npos) << counted.status.detail;
 
-  for (const float bad : {std::numeric_limits<float>::quiet_NaN(),
-                          std::numeric_limits<float>::infinity()}) {
-    std::vector<PairwiseResult> notPixels = pairs;
-    notPixels[3].inlierMatches[2].bx = bad;
-    const Result<GlobalSolution> answer = engine_.Refine(notPixels, priors, TrueLens());
-    EXPECT_EQ(answer.status.code, StatusCode::InvalidArgument) << bad;
-    EXPECT_NE(answer.status.detail.find("matches"), std::string::npos) << answer.status.detail;
+  // Each coordinate on its own, since a check that read some of them passes a match wrong in the
+  // others.
+  for (float PixelMatch::*field : {&PixelMatch::ax, &PixelMatch::ay, &PixelMatch::bx,
+                                   &PixelMatch::by}) {
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(),
+                            std::numeric_limits<float>::infinity()}) {
+      std::vector<PairwiseResult> notPixels = pairs;
+      notPixels[3].inlierMatches[2].*field = bad;
+      const Result<GlobalSolution> answer = engine_.Refine(notPixels, priors, TrueLens());
+      EXPECT_EQ(answer.status.code, StatusCode::InvalidArgument) << bad;
+      EXPECT_NE(answer.status.detail.find("matches"), std::string::npos) << answer.status.detail;
+    }
   }
 
   // Nor is a match nobody set: a default `PixelMatch` is not a pixel, rather than the image's
@@ -786,7 +839,7 @@ TEST_F(Refine, AnIslandTheSolveCannotPlaceDoesNotMoveTheFit) {
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_EQ(solved.value.droppedFrames.size(), 2u);
       EXPECT_TRUE(solved.value.lensFitted) << island.inliers << " at " << scale;
-      EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 1e-4) << island.inliers << " at " << scale;
+      EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 3e-5) << island.inliers << " at " << scale;
     }
   }
 }

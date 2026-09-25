@@ -601,7 +601,7 @@ struct FeatureSet {
   int32_t extractor = 0;
 };
 
-// One correspondence a pairwise rotation was fitted on: where it sits in frame `a` and where in
+// One correspondence a pairwise rotation agrees with: where it sits in frame `a` and where in
 // frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
 // through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
 // because the detectors' keypoints are floats and the matches are what bounds a pair's memory.

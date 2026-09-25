@@ -83,8 +83,10 @@ closes. Three things follow.
    **A loop need not wrap the sphere.** The first version of this decision said a triangle turning
    about one axis closes under any focal length, since three angles that sum to zero still do when
    scaled, and its test asserted the triangle was passed through. It came back fitted, to 499.9967
-   of 500, on exact matches: under a pinhole a turn is a translation only at the centre of the image,
-   so a pair refitted under the wrong focal length tilts a little and the tilts do not cancel. How
+   of 500, on exact matches: under a pinhole a turn moves a pixel by the tangent of its angle, not
+   the angle, so under the wrong focal length a thirty-degree pair and a sixty-degree one are not
+   scaled alike and the triangle stops closing. The first version of this paragraph said the pairs
+   tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. How
    well a small loop fits with real matches is a measurement nobody has taken.
 
 4. **`GlobalSolution::lensFitted` says which happened.** Not `Intrinsics::estimated`, which the

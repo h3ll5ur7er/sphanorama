@@ -793,12 +793,24 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_TRUE(solved.value.lensFitted) << scale;
     // Today's run, across the four scales: the focal length within -0.063 to -0.051% (ORB), -0.004
     // to +0.002% (AKAZE) and +0.010 to +0.012% (SIFT); medians 0.047 to 0.052, 0.029 to 0.034 and
-    // 0.010 to 0.019; worst frames at most 0.146, 0.070 and 0.038 (ADR 0066). The same bounds as
-    // the solve handed the right lens, because that is the claim: out by ten percent, the ring
-    // solves as though it had not been. Unfitted, the median at 2% out was already 0.50 (ORB).
-    EXPECT_LT(std::abs(fxOut), 0.002) << scale;
-    EXPECT_LT(score.medianDeg, 0.08) << scale;
-    EXPECT_LT(score.maxDeg, 0.25) << scale;
+    // 0.010 to 0.019; worst frames at most 0.146, 0.070 and 0.038; edge medians at most 0.018,
+    // 0.007 and 0.005 (ADR 0066). Unfitted, the median at 2% out was already 0.50 (ORB).
+    //
+    // **Per detector**, because one bound for all three was ORB's, and a fit biased 0.15% high or a
+    // search stopped at a hundredth passed for the two that fit far better. About one and a half to
+    // two times each measurement, in the manner of the rest of this file.
+    struct Bound {
+      double focal, median, max, edge;
+    };
+    constexpr Bound kBounds[] = {{0.0010, 0.08, 0.25, 0.03},     // ORB
+                                 {0.0001, 0.05, 0.12, 0.012},    // AKAZE
+                                 {0.0002, 0.03, 0.06, 0.008}};   // SIFT
+    static_assert(std::size(kBounds) == static_cast<size_t>(FeatureDetector::Count));
+    const Bound& bound = kBounds[static_cast<size_t>(GetParam())];
+    EXPECT_LT(std::abs(fxOut), bound.focal) << scale;
+    EXPECT_LT(score.medianDeg, bound.median) << scale;
+    EXPECT_LT(score.maxDeg, bound.max) << scale;
+    EXPECT_LT(solved.value.medianEdgeErrorDeg, bound.edge) << scale;
   }
 }
 
