@@ -109,10 +109,13 @@ closes. Three things follow.
    to close there — and that is a chi-square on the few degrees of freedom the loops leave,
    independent of the error that moved the least: it varied 140-fold across ten seeds while the
    least moved a quarter of a percent. Judging by it selects nothing.
-   Otherwise `initial` comes back as given, every field of it. The two conditions are not one: with
-   the loop check removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors
-   — three degrees out, at a hundredth of an inlier each — pull hard enough to give the cost a
-   minimum of their own, and it sits where their error puts it. The bracket is 0.7 to 1.4 times the
+   Where any of these fails — no loop among placed frames, a pair left with fewer than three
+   matches, a trial not scored, no rise on both sides, neither precise nor refuting — `initial`
+   comes back as given, every field of it. The loop check is not implied by the others: with it
+   removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors — three degrees
+   out, at a hundredth of an inlier each — pull hard enough to give the cost a minimum of their own,
+   and it sits where their error puts it; that least rises on both sides and lies ten or more of its
+   own spreads from the lens handed in, so the precision rule takes it. The bracket is 0.7 to 1.4 times the
    focal length handed in, which is chosen rather than measured; what was measured is that every
    pair of the photograph ring is still accepted at 10% out.
 
@@ -207,6 +210,7 @@ through, which is the lens being corrected.
 second rule, and the one this paragraph once rejected the standard error in favour of, because a
 count of independent loops seemed to be what a standard error needed and a ring's shared frames do
 not give one. The count was never needed: the pairs' own residuals give the noise directly, and a
-loop cannot absorb them. The width divided by the cost at the least, which is the loops' leftover
-disagreement — a statistic on two or three degrees of freedom, not the noise — and a reviewer's two
-hundred seeds showed it both taking fits 2.2% out and refusing ones within 0.25% (round 4).
+loop cannot absorb them. The width was judged against the cost at the least, which is the loops'
+leftover disagreement — a statistic on two or three degrees of freedom, not the noise — and a
+reviewer's probes showed it taking the skipping ring 2.2% out in six seeds of two hundred, and
+refusing the photograph ring's ORB fit, within 0.25%, in four seeds of ten (round 4).

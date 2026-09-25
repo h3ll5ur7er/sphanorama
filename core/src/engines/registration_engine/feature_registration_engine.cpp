@@ -1434,9 +1434,11 @@ double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
 // Whether the accepted pairs close a loop, counting two pairs between the same frames once: a pair
 // measured twice agrees with itself under any focal length, which is no loop at all.
 //
-// Not implied by the cost rising, which was checked: without this, the open eleven-pair chain of
-// the refine test's ring was fitted to 502.7 of 500 — the priors, each three degrees out, pull hard
-// enough to give the cost a minimum, and it sits where their error puts it rather than the pixels.
+// Not implied by the cost rising, nor by the least's precision, both of which were checked: without
+// this, the open eleven-pair chain of the refine test's ring was fitted to 502.7 of 500 — the
+// priors, each three degrees out, pull hard enough to give the cost a minimum, and it sits where
+// their error puts it rather than the pixels, ten or more of its own spreads from the lens handed
+// in.
 bool ClosesALoop(const std::vector<RelativeRotation>& edges, size_t frames) {
   std::vector<int32_t> parent(frames);
   for (size_t i = 0; i < frames; ++i) parent[i] = static_cast<int32_t>(i);

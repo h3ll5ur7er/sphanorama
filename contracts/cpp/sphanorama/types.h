@@ -732,9 +732,9 @@ struct GlobalSolution {
   // the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
   // them keeps fewer than three matches with a direction at the shortest focal length searched; any
   // trial of the search could not be scored on those matches; the cost does not rise on both sides
-  // of its least, as at an end of the range or with no least at all; or the least is not precise to
-  // two tenths of a percent by the pairs' own residuals, and the lens handed in is not four times
-  // that far from it either.
+  // of its least, as at an end of the range or with no least at all; or the least's standard
+  // deviation, from the pairs' own residuals, is over two tenths of a percent, and the lens handed
+  // in is not four of those standard deviations from it either.
   bool lensFitted = false;
 };
 

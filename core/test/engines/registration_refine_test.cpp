@@ -778,10 +778,11 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
                {chainAndIsland, islandPriors, 1.08, "an open chain beside an unplaced loop"},
                {chainAndIsland, islandPriors, 0.92, "an open chain beside an unplaced loop, short"},
                {rolled, PriorsOut(rolling), 1.08, "a loop about the viewing axis"},
-               // Each end of the bracket on its own, just past it, since each half of the rise
-               // test looks only one way: at a least on the long end the cost short of it more
-               // than doubles, and past it falls. Further out, as at 1.6, the least's own cost is
-               // so large that half a percent barely moves it, and both halves refuse.
+               // Each end of the bracket on its own, since each half of the rise test looks only
+               // one way: at a least on the long end the cost short of it rises and past it falls.
+               // Nothing else refuses these — the lens handed in is hundreds of the least's
+               // standard deviations from it — and the rows further out are the same refusal from
+               // a truth well past the end.
                {ring, priors, 1.0 / 1.41, "a focal length just past the long end of the search"},
                {ring, priors, 1.0 / 0.695, "a focal length just past the short end of the search"},
                {ring, priors, 1.0 / 1.6, "a focal length past the long end of the search"},
