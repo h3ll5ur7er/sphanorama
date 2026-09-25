@@ -1477,8 +1477,8 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
 }
 
 TEST_F(CaptureSession, AnOfferedPoseTheSolveWouldRefuseIsRefusedAtTheDoor) {
-  // `Refine` refuses such a pose as a prior (ADR 0065). Accepted here, it would be covered, ranked
-  // and persisted, and refuse the whole capture's solve a component and a session later.
+  // `Refine` refuses such a pose as a prior (ADR 0065). Accepted here, it would be covered and
+  // ranked, and refuse any solve built from this session's candidates, a component away.
   Begin();
   const NodeId node = FirstNode();
   auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
@@ -4490,6 +4490,47 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
     EXPECT_FALSE(attempt.Resume(kProject).ok()) << tag << " field " << field;
     EXPECT_FALSE(camera.IsOpen()) << tag << " field " << field;
   }
+}
+
+TEST_F(ResumedSession, RefusesACandidatePoseThatOfferFrameWouldRefuse) {
+  // The document is a door a pose comes in by, like `OfferFrame`, and the one that matters more: a
+  // burst's candidate is written back by every checkpoint, so a pose restored here would outlive
+  // every later session and refuse every `Refine` built from them. Same rule, `PoseSampleDefect`.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, "session");
+  ASSERT_TRUE(written.ok());
+
+  // `candidate <id> <node> <frame> <buffer> <format> <w> <h> <stride> <ts> <hash> <pose ts>
+  // <qw> <qx> <qy> <qz> <wx> <wy> <wz> <confidence> …`.
+  constexpr size_t kConfidence = 19;
+  const auto resumes = [&](const std::string& document) {
+    EXPECT_TRUE(projects->WriteDocument(kProject, "session", document).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    return attempt.Resume(kProject).ok();
+  };
+  for (const std::string confidence : {"1.5", "-0.25"}) {
+    const std::string tampered = SetField(written.value, "candidate", kConfidence, confidence);
+    ASSERT_NE(tampered, written.value);
+    EXPECT_FALSE(resumes(tampered)) << "confidence " << confidence;
+  }
+  std::string zeroOrientation = SetField(written.value, "candidate", kConfidence, "1");
+  for (size_t field = 12; field <= 15; ++field) {
+    zeroOrientation = SetField(zeroOrientation, "candidate", field, "0");
+  }
+  EXPECT_FALSE(resumes(zeroOrientation)) << "an orientation that is not a rotation";
+  // An unanchored pose is no defect, so the refusal above is the rule and not the edit.
+  const std::string unanchored = SetField(written.value, "candidate", kConfidence, "0");
+  ASSERT_NE(unanchored, written.value);
+  EXPECT_TRUE(resumes(unanchored));
 }
 
 TEST_F(ResumedSession, RefusesADocumentThatNamesAnotherTier) {

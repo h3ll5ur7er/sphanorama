@@ -237,6 +237,10 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
           || !candidate.frame.buffer.valid()) {
         return false;
       }
+      // The pose `OfferFrame` would refuse at the door, refused at this one too: a candidate
+      // restored here is written back by every checkpoint, so it would outlive every later session
+      // and refuse every `Refine` built from them (ADR 0065).
+      if (PoseSampleDefect(candidate.pose)) return false;
       if (!exhausted(in)) return false;
       candidate.pose.visuallyCorrected = corrected != 0;
       out.candidates.push_back(candidate);
@@ -1379,8 +1383,9 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   if (!HasNode(node)) {
     return Err<FrameVerdict>(StatusCode::NotFound, kComponent, "no such cell in the plan");
   }
-  // Refused before anything is scored or kept. Accepted, such a pose would be covered, ranked and
-  // persisted, and then refuse the whole capture's `Refine` a session later, blaming its caller.
+  // Refused before anything is scored or kept. Accepted, such a pose would be covered and ranked,
+  // and would refuse any `Refine` built from this session's candidates, blaming its caller rather
+  // than the door it came in by.
   if (const std::optional<std::string_view> defect = PoseSampleDefect(pose)) {
     return Err<FrameVerdict>(StatusCode::InvalidArgument, kComponent,
                              "the pose offered has " + std::string(*defect));

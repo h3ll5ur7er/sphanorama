@@ -70,18 +70,21 @@ taken at beside the `FrameRef` of its pixels.
    started (ADR 0041); averaged with anchored priors it turns the whole answer toward that accident,
    45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a burst-captured frame
    always has confidence; a frame given through `OfferFrame` — import, replay, manual shutter —
-   carries whatever pose its caller supplied, and one with no confidence is placed through its
-   pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
+   may carry an unanchored pose, and one with no confidence is placed through its pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
    was held level. Any other way of looking absent is refused (decision 7): a confidence outside
    [0, 1], or an orientation that is not a rotation where the confidence claims one, is a defect
    upstream. Read as no prior, a NaN from a caller's arithmetic left `priorsUsed` one short with no
    frame named, and on every prior at once was sent to the sensor as `FailedPrecondition`, in a
    reviewer's probe. A first version of this decision read an unusable orientation as no prior.
-   **`OfferFrame` refuses the same poses at the door**, with `InvalidArgument`, through the one
-   predicate `Refine` calls (`PoseSampleDefect`, in `utilities/quaternion`). Checked only here, one
-   imported frame with a broken pose was accepted, covered, ranked and persisted, and then refused
-   the whole capture's solve a session later, blaming `Refine`'s caller. An unanchored pose is still
-   accepted, as before. That is a narrow change to a manager contract, refusing only values
+   **Every door a pose comes into the capture by from outside the core refuses the same poses**,
+   through the one predicate `Refine` calls (`PoseSampleDefect`, in `utilities/quaternion`).
+   `OfferFrame` refuses one with `InvalidArgument`: checked only in `Refine`, an imported frame with
+   a broken pose was accepted, covered and ranked, and would have refused any solve built from the
+   session's candidates, blaming `Refine`'s caller. `Resume` refuses a session document carrying one,
+   as it refuses any other malformed candidate line: a burst's candidates are written back by every
+   checkpoint, so a pose restored from a tampered document outlived every later session. A burst's
+   pose comes from the pose engine, whose contract keeps it well-formed. An unanchored pose is still
+   accepted everywhere. That is a narrow change to a manager contract, refusing only values
    `PoseSample` already calls defects.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or

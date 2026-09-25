@@ -104,16 +104,17 @@ class IRegistrationEngine {
 
   // One consistent set of absolute rotations from the pairwise ones and the sensor priors.
   //
-  // The pairs are relative and independently estimated; the priors are absolute and out by
-  // degrees. Where the accepted pairs join the frames, the pairs decide how they sit relative to
-  // each other and the priors decide which way they face, which is the one thing the pairs cannot
-  // say. The priors also pull on that shape, each on its own frame, at a weight far below any
-  // pair's — so they barely correct it: an accepted pair ten degrees wrong on an open chain is drawn
-  // back by thousandths of a degree, and the error figures read clean over it, since nothing else
-  // the pairs say contradicts it. Only another pair does, such as a ring's closing one. Where the pairs do not join the frames, nothing
-  // but the priors relates one piece to the other, and the seam between them is placed to the
-  // priors' degrees — `GlobalSolution::pieces` says how many pieces there were. That is why a ring's closing pair is worth having: a chain
-  // throws it away, and it is the measurement of how far the chain drifted.
+  // The pairs are relative and independently estimated; the priors are absolute and out by degrees.
+  // Where the accepted pairs join the frames, the pairs decide how they sit relative to each other
+  // and the priors decide which way they face, which is the one thing the pairs cannot say. The
+  // priors also pull on that shape, each on its own frame, at a weight far below any pair's — so they
+  // barely correct it: an accepted pair ten degrees wrong on an open chain is drawn back by a few
+  // thousandths of a degree at a hundred inliers and a few hundredths at fifteen, and the error
+  // figures read clean over it, since nothing else the pairs say contradicts it. Only another pair
+  // does, such as a ring's closing one. Where the pairs do not join the frames, nothing but the
+  // priors relates one piece to the other, and the seam between them is placed to the priors' degrees
+  // — `GlobalSolution::pieces` says how many pieces there were. That is why a ring's closing pair is
+  // worth having: a chain throws it away, and it is the measurement of how far the chain drifted.
   //
   // **Each prior names its frame**, and the priors are the frame set: a pair naming a frame with no
   // prior is refused rather than guessed at. Only accepted pairs are used — `accepted` is exactly

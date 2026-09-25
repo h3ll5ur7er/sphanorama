@@ -168,7 +168,9 @@ estimate. Its loop is:
   angular error, stability, "hold still", "fire").
 - `OfferFrame(frame, pose)` → asks `FrameQualityEngine` to score it, decides whether it joins the
   cell's candidate set (and whether the burst continues), asks `CoveragePlannerEngine` whether the
-  cell is now satisfied, persists through `IFrameStoreAccess`/`IProjectStoreAccess`.
+  cell is now satisfied. It refuses a pose `PoseSampleDefect` names (ADR 0065). An offered frame is
+  never written to the session document — only the session's own bursts are, since only those
+  frames the session owns.
 - `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
   frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
   Additively it marks nothing a client can act on in this build; see UC-2 and the contract.
