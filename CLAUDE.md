@@ -87,7 +87,8 @@ and since each piece's gauge is chosen outright every sweep (ADR 0064) it is set
 rather than by the anchor weight: a twelve-frame ring with exact edges settles in under fifty
 sweeps at any weight, ninety frames in under nine hundred. **And `Refine` is wired to it** (ADR 0065):
 each prior names its frame, accepted pairs are weighed by their inliers, and the priors at a hundredth
-of an inlier each decide only which way the reconstruction faces. Solving the photograph ring with its
+of an inlier each decide which way the reconstruction faces, place one piece against another where
+the pairs leave a seam, and otherwise barely touch its shape. Solving the photograph ring with its
 closing pair, against priors each three degrees out, gives medians of 0.055 (ORB), 0.035 (AKAZE) and
 0.026 (SIFT) against the chain's 0.101, 0.061 and 0.024 — the closing pair halves the two weaker
 detectors and leaves SIFT a little worse, for a reason not yet known. The lens is passed through:

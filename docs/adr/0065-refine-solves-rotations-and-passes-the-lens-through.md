@@ -65,29 +65,38 @@ taken at beside the `FrameRef` of its pixels.
    rotation. `priorOnlyFrames`, `ambiguousFrames` and `converged` carry the solver's other honesty
    fields across, because each says something the error figures cannot.
 
-6. **A prior counts only if it is an anchored rotation**: `confidence` above zero and an
-   orientation that is a rotation. Zero confidence is a direction relative to wherever the sensor
+6. **A prior counts only if its `confidence` is above zero, and zero is the only way to say there
+   is none.** Zero confidence is a direction relative to wherever the sensor
    started (ADR 0041); averaged with anchored priors it turns the whole answer toward that accident,
    45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a burst-captured frame
    always has confidence; a frame given through `OfferFrame` — import, replay, manual shutter —
    carries whatever pose its caller supplied, and one with no confidence is placed through its
    pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
-   was held level.
+   was held level. Any other way of looking absent is refused (decision 7): a confidence outside
+   [0, 1], or an orientation that is not a rotation where the confidence claims one, is a defect
+   upstream. Read as no prior, a NaN from a caller's arithmetic left `priorsUsed` one short with no
+   frame named, and on every prior at once was sent to the sensor as `FailedPrecondition`, in a
+   reviewer's probe. A first version of this decision read an unusable orientation as no prior.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
-   repeated `FrameId` among them, a lens `IsUsableLens` refuses (it is not read by the solve, but
+   repeated `FrameId` among them, a prior whose confidence is outside [0, 1] or whose orientation is
+   not a rotation while its confidence claims one, a lens `IsUsableLens` refuses (it is not read by the solve, but
    it is returned as the lens the answer is expressed under), a pair naming a frame with no prior, a
    pair from a frame to itself, or an accepted pair whose rotation is not one or whose counts no
-   engine fills in — no inliers, or fewer correspondences than inliers. `EstimatePairwise` never
-   produces those, and an accepted pair with no inliers weighed at zero would be left out silently
+   engine fills in — no inliers, or fewer correspondences than inliers. A rotation never written is
+   one of those: `PairwiseResult::relativeRotation` defaults to `Quat{0, 0, 0, 0}` rather than
+   `Quat`'s identity, as the solver's own edge type does, because a pair whose counts were filled
+   in and whose rotation was not otherwise claims at full weight that its frames share an
+   orientation — thirty degrees of shape on an open chain in a reviewer's probe, with every figure
+   of the answer reading clean. `EstimatePairwise` never produces those, and an accepted pair with no inliers weighed at zero would be left out silently
    while its frames were named prior-only or dropped. A pair naming a stranger is refused even
    unaccepted: it is a caller and a capture disagreeing about which frames exist, not a measurement
-   to disbelieve. `FailedPrecondition` when no prior counts — `ArmBurst`'s code for the same
+   to disbelieve. `FailedPrecondition` when every prior's confidence is zero — `ArmBurst`'s code for the same
    condition, since the remedy is the sensor rather than the pixels — because then nothing fixes which way
-   is up, decided after every pair is checked so that a malformed pair is always the caller's
-   defect; `Internal` for a solver refusal these checks did not anticipate, rather than a guess at
-   which of the caller's it was. A frame whose prior does not count is not a refusal: it is placed
-   through its pairs, or dropped.
+   is up, decided after every prior and pair is checked so that a malformed one is always the
+   caller's defect; `Internal` for a solver refusal these checks did not anticipate, rather than a guess at
+   which of the caller's it was. A frame with no prior is not a refusal: it is placed through its
+   pairs, or dropped.
 
 8. **In `FeatureRegistrationEngine` only.** The null engine keeps refusing: its `EstimatePairwise`
    refuses everything, so a `Refine` there would have nothing to solve.
@@ -96,6 +105,8 @@ taken at beside the `FrameRef` of its pixels.
 
 - A contract change in `types.h` and `engines/registration_engine.h`, and a regenerated
   `contracts/ts/contracts.d.ts`. Nothing reads `GlobalSolution` yet, so nothing else moves.
+  `PairwiseResult::relativeRotation`'s braced default is the first in a contract header, so
+  `tools/contract_gen.py` now splits declarators only at commas outside braces.
 - **`rotation_averaging` has its caller in `core/src`**, which is the condition ADR 0062 named for
   its exception ending. Only in the OpenCV build, so the WASM builds still carry none of it.
 - **The measurement the roadmap was waiting for exists.** Solved through `Refine` with all twelve

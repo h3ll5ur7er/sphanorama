@@ -338,6 +338,21 @@ def _split_type_and_declarators(decl: str) -> tuple[str, str] | None:
     return None
 
 
+def _split_top_level_commas(declarators: str) -> list[str]:
+    """`x = 0, y{1}` is two declarators and `rotation{0, 0, 0, 0}` is one."""
+    pieces, depth, start = [], 0, 0
+    for index, ch in enumerate(declarators):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(declarators[start:index])
+            start = index + 1
+    pieces.append(declarators[start:])
+    return pieces
+
+
 def _parse_fields(body: str, name: str) -> list[Field]:
     fields: list[Field] = []
     pending: list[str] = []
@@ -384,8 +399,8 @@ def _parse_fields(body: str, name: str) -> list[Field]:
                     f"struct {name}: std::string_view cannot be a data member — decoding one "
                     f"would leave it pointing at a temporary. Use std::string.")
 
-            for declarator in declarators.split(","):
-                piece = declarator.split("=")[0].strip()
+            for declarator in _split_top_level_commas(declarators):
+                piece = re.split(r"[={]", declarator, maxsplit=1)[0].strip()
                 if not re.fullmatch(r"\w+", piece):
                     raise ContractSyntaxError(
                         f"struct {name}: cannot parse declarator {piece!r}")

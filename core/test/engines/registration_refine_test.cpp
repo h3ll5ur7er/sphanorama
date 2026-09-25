@@ -94,6 +94,13 @@ FramePrior Prior(int i, const Quat& orientation) {
   return prior;
 }
 
+// No prior, spelled the one way the contract spells it: a pose nobody set, whose confidence is zero.
+FramePrior NoPrior(int i) {
+  FramePrior prior;
+  prior.frame = Frame(i);
+  return prior;
+}
+
 // Priors each three degrees out about an axis of their own, which is how far a fused phone
 // orientation is out when it is working.
 std::vector<FramePrior> PriorsOut(const std::vector<Quat>& truth, double degrees = 3.0) {
@@ -223,7 +230,7 @@ TEST_F(Refine, APairCountsForItsInliers) {
   const std::vector<Quat> other{AboutY(0.0), AboutY(38.0)};
   const std::vector<PairwiseResult> pairs{Pair(0, 1, truth, 300, 400), Pair(0, 1, other, 100, 1000)};
   // Frame 1 has no prior, so it is placed through the pairs alone.
-  const std::vector<FramePrior> priors{Prior(0, AboutY(0.0)), Prior(1, Quat{0, 0, 0, 0})};
+  const std::vector<FramePrior> priors{Prior(0, AboutY(0.0)), NoPrior(1)};
 
   const Result<GlobalSolution> solved = engine_.Refine(pairs, priors, Lens());
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -299,7 +306,7 @@ TEST_F(Refine, APriorNothingAnchoredIsNotAPrior) {
  * What the solve could not place, and what rests on no pixel, are named by frame.
  *
  * Frames 0 to 2 are joined by accepted pairs. Frame 3 has a prior and no pair: placed, on its prior
- * alone. Frames 4 and 5 have no usable prior, and the accepted pair between them joins them to
+ * alone. Frames 4 and 5 have no prior, and the accepted pair between them joins them to
  * nothing that has one: both dropped, and absent from both parallel vectors so neither holds a
  * rotation nobody solved for. Their pair is not counted as used — nothing was placed by it.
  *
@@ -313,8 +320,8 @@ TEST_F(Refine, DroppedAndPriorOnlyFramesAreNamed) {
   const std::vector<PairwiseResult> pairs{Pair(0, 1, truth), Pair(1, 2, truth), Pair(4, 5, truth)};
   std::vector<FramePrior> priors;
   for (const int i : {4, 0, 5, 1, 2, 3}) priors.push_back(Prior(i, truth[static_cast<size_t>(i)]));
-  priors[0].pose.orientation = Quat{0, 0, 0, 0};
-  priors[2].pose.orientation = Quat{0, 0, 0, 0};
+  priors[0] = NoPrior(4);
+  priors[2] = NoPrior(5);
 
   const Result<GlobalSolution> solved = engine_.Refine(pairs, priors, Lens());
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -451,6 +458,18 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   std::vector<PairwiseResult> notRotation = pairs;
   notRotation[3].relativeRotation = Quat{0, 0, 0, 0};
   refused(notRotation, priors, Lens(), StatusCode::InvalidArgument, "carries no rotation");
+  // Its counts written and its rotation not. Were the default the identity, an accepted pair nobody
+  // finished would claim at full weight that its frames share an orientation, and on an open chain
+  // every figure of the answer would read clean over a reconstruction thirty degrees out.
+  PairwiseResult unfinished;
+  unfinished.a = pairs[3].a;
+  unfinished.b = pairs[3].b;
+  unfinished.inliers = 100;
+  unfinished.correspondences = 180;
+  unfinished.accepted = true;
+  std::vector<PairwiseResult> unwritten = pairs;
+  unwritten[3] = unfinished;
+  refused(unwritten, priors, Lens(), StatusCode::InvalidArgument, "carries no rotation");
 
   // Counts no engine fills in. Accepted means a share of the correspondences agree (ADR 0056), so
   // an accepted pair with no inliers contradicts itself — and weighed at zero it would be quietly
@@ -472,15 +491,34 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   EXPECT_TRUE(engine_.Refine(counts, priors, Lens()).ok()) << "a pair all of whose matches agree";
   counts[3].correspondences = 0;
 
-  std::vector<FramePrior> unusable = priors;
-  for (FramePrior& prior : unusable) prior.pose.orientation = Quat{0, 0, 0, 0};
+  // No prior is spelled with `confidence` zero and no other way. A confidence outside [0, 1], or
+  // an orientation that is not a rotation where one is claimed, is a defect upstream; read as no
+  // prior it would leave `priorsUsed` one short and name no frame.
+  for (const double confidence : {-1.0, 1.5, std::nan("")}) {
+    std::vector<FramePrior> outOfRange = priors;
+    outOfRange[5].pose.confidence = confidence;
+    refused(pairs, outOfRange, Lens(), StatusCode::InvalidArgument, "confidence outside");
+  }
+  for (const Quat& orientation : {Quat{0, 0, 0, 0}, Quat{std::nan(""), 0, 0, 0}}) {
+    std::vector<FramePrior> broken = priors;
+    broken[5].pose.orientation = orientation;
+    refused(pairs, broken, Lens(), StatusCode::InvalidArgument, "an orientation that is not a rotation");
+  }
+  // At zero confidence the orientation is not read, so one that is not a rotation is no defect.
+  std::vector<FramePrior> unread = priors;
+  unread[5] = NoPrior(5);
+  unread[5].pose.orientation = Quat{0, 0, 0, 0};
+  EXPECT_TRUE(engine_.Refine(pairs, unread, Lens()).ok()) << "an unset pose is no prior";
+
   // Nothing measured which way the camera pointed: the same condition `ArmBurst` refuses, and with
   // the same code, since the remedy is the sensor and not the pixels.
-  refused(pairs, unusable, Lens(), StatusCode::FailedPrecondition, "no prior is");
-
   std::vector<FramePrior> unanchored = priors;
   for (FramePrior& prior : unanchored) prior.pose.confidence = 0.0;
   refused(pairs, unanchored, Lens(), StatusCode::FailedPrecondition, "no prior is");
+  // But a broken prior among them is the caller's arithmetic, not the sensor.
+  std::vector<FramePrior> brokenAmongUnanchored = unanchored;
+  brokenAmongUnanchored[5].pose.confidence = std::nan("");
+  refused(pairs, brokenAmongUnanchored, Lens(), StatusCode::InvalidArgument, "confidence outside");
 
   // A malformed pair is the caller's defect whatever the priors say: with none of them anchored it
   // is still refused as what it is, not as the capture condition.

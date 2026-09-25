@@ -1280,8 +1280,9 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "the lens given is not a usable lens");
   }
-  // Indexed with `int32_t` because the solver is, with no check: a `FramePrior` is 88 bytes on a
-  // 64-bit build, so the first index that would not fit needs 189 GB of priors.
+  // Indexed with `int32_t` because the solver is. Past that the index wraps and the solver refuses
+  // the size, which comes back as `Internal`: a `FramePrior` is 88 bytes on a 64-bit build, so that
+  // needs 189 GB of priors, and wasm32 cannot address it at all.
   std::map<uint64_t, int32_t> indexOf;
   std::vector<Quat> anchors;
   anchors.reserve(priors.size());
@@ -1296,15 +1297,25 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "frame " + std::to_string(prior.frame.value) + " has two priors");
     }
-    // Two ways of being no prior, and neither is a refusal: the frame is placed through its pairs
-    // or dropped. An orientation that is not a rotation, which the solver reads as no prior; and one
-    // nothing anchored — `confidence` zero, a direction relative to wherever the sensor started
-    // (ADR 0041) — which averaged with anchored priors would turn the whole answer toward that
-    // accident. `ArmBurst` refuses to fire on one, so a burst-captured frame always has confidence;
-    // `OfferFrame` stores whatever pose its caller gives, so an imported or replayed frame may not,
-    // and such a frame is placed through its pairs like any other without a prior.
-    const bool anchoredPrior =
-        prior.pose.confidence > 0.0 && IsUsableRotation(prior.pose.orientation);
+    // No prior is `confidence` zero and nothing else — a direction relative to wherever the sensor
+    // started (ADR 0041), which averaged with anchored priors would turn the whole answer toward
+    // that accident, so the frame is placed through its pairs or dropped. `ArmBurst` refuses to fire
+    // on one, so a burst-captured frame always has confidence; `OfferFrame` stores whatever pose its
+    // caller gives, so an imported or replayed frame may not. Any other way of looking absent is
+    // refused: read as no prior, a NaN from upstream arithmetic would leave `priorsUsed` one short
+    // and name no frame, or, on every prior at once, send its caller to the sensor.
+    const double confidence = prior.pose.confidence;
+    if (!(confidence >= 0.0 && confidence <= 1.0)) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "the prior for frame " + std::to_string(prior.frame.value) +
+                                     " has a confidence outside [0, 1]");
+    }
+    const bool anchoredPrior = confidence > 0.0;
+    if (anchoredPrior && !IsUsableRotation(prior.pose.orientation)) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "the prior for frame " + std::to_string(prior.frame.value) +
+                                     " claims an orientation that is not a rotation");
+    }
     anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
     if (anchoredPrior) ++priorsUsed;
   }

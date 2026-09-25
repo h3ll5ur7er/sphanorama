@@ -824,8 +824,9 @@ that has to be ordered.
   its inliers — which is what forced `EstimatePairwise` to take the lens, since a rotation cannot be
   recovered from pixels without one (ADR 0054). *And refinement is in, for
   rotations* (ADR 0065): each prior names its frame, accepted pairs are weighed by their inliers, and
-  the solve is `core/src/utilities/rotation_averaging`, where a build without OpenCV can also have
-  it — relative rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
+  the solve is `core/src/utilities/rotation_averaging`, which a build without OpenCV could also
+  have once a `Refine` lives outside the OpenCV engine; today every browser build gets the null
+  engine's `Unsupported` — relative rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
   ring's closing edge stops being thrown away. Measured on a twelve-frame ring whose every edge
   carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
   edges with the twelfth one included leave it 0.000028 — where the solver stops rather than the

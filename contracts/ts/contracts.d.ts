@@ -572,6 +572,12 @@ export interface FeatureSet {
 export interface PairwiseResult {
   a: FrameId;
   b: FrameId;
+  /**
+   * **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
+   * identity: a pair whose counts were filled in and whose rotation was not would otherwise claim
+   * its two frames share an orientation, and `Refine` would believe it at full weight. The solver's
+   * own edge type defaults the same way for the same reason.
+   */
   relativeRotation: Quat;
   inliers: number;
   /**
@@ -620,7 +626,9 @@ export interface PairwiseResult {
  * the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
  * its pixels (ADR 0065).
  * **No prior is spelled with `confidence` zero**, which is what a default `PoseSample` holds, so a
- * pose left unset is no prior rather than a claim that the phone was held level.
+ * pose left unset is no prior rather than a claim that the phone was held level. It is the only
+ * spelling: `Refine` refuses a confidence outside [0, 1], and an orientation that is not a rotation
+ * where the confidence claims one, rather than reading either as absent.
  */
 export interface FramePrior {
   frame: FrameId;
@@ -662,8 +670,9 @@ export interface GlobalSolution {
   priorsUsed: number;
   /**
    * How many pieces the accepted pairs join the placed frames into. The pairs place frames within a
-   * piece; only the priors place one piece against another, so above one the answer has seams that
-   * rest on the priors' degrees rather than the pixels' hundredths — and nothing else here says so.
+   * piece, the priors pulling on them only at a weight far below a pair's; only the priors place
+   * one piece against another, so above one the answer has seams that rest on the priors' degrees
+   * rather than the pixels' hundredths — and nothing else here says so.
    * A frame placed on its prior alone is a piece of one.
    */
   pieces: number;

@@ -106,8 +106,10 @@ class IRegistrationEngine {
   //
   // The pairs are relative and independently estimated; the priors are absolute and out by
   // degrees. Where the accepted pairs join the frames, the pairs decide how they sit relative to
-  // each other and the priors decide only which way they face, which is the one thing the pairs
-  // cannot say. Where the pairs do not join them, nothing but the priors relates one piece to the
+  // each other and the priors decide which way they face, which is the one thing the pairs cannot
+  // say. The priors also pull on that shape, each on its own frame, at a weight far below any
+  // pair's: enough to draw back an edge wrong by more than they are (ADR 0064), and thousandths of a
+  // degree against pairs that are right. Where the pairs do not join them, nothing but the priors relates one piece to the
   // other, and the seam between them is placed to the priors' degrees — `GlobalSolution::pieces`
   // says how many pieces there were. That is why a ring's closing pair is worth having: a chain
   // throws it away, and it is the measurement of how far the chain drifted.
@@ -117,24 +119,27 @@ class IRegistrationEngine {
   // the question "should a global solve use this edge" (ADR 0056) — so what an unaccepted pair
   // carries, its rotation and its counts, can neither move the answer nor refuse it. The frames it
   // names are checked all the same: a stranger is a caller and a capture disagreeing about which
-  // frames exist. A prior counts only if it is an anchored rotation — `confidence`
-  // above zero, since zero is a direction relative to wherever the sensor started (ADR 0041), and
-  // averaged in with anchored priors would turn the whole answer toward that accident.
+  // frames exist. A prior counts only if its `confidence` is above zero, since zero is a direction
+  // relative to wherever the sensor started (ADR 0041), and averaged in with anchored priors would
+  // turn the whole answer toward that accident. Zero is the only way to say there is no prior.
   //
   // **The lens is not refined.** `initial` comes back as `GlobalSolution::intrinsics`, the lens
   // the rotations are expressed under: refining it needs the matched points, and a
   // `PairwiseResult` carries only how many there were. That is a later step with its own contract
   // change (ADR 0065).
   //
-  // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a lens
-  // `IsUsableLens` would not accept, a pair naming a frame with no prior or the same frame twice, or
-  // an accepted pair whose rotation is not one or whose counts no engine fills in — no inliers, or
-  // fewer correspondences than inliers. `FailedPrecondition` when no prior is an anchored rotation,
-  // because then nothing says which way the reconstruction faces. `Unsupported` from
-  // `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a refusal from the
-  // solver these checks did not anticipate, which no input reaches today. A malformed pair is
-  // `InvalidArgument` whatever the priors say. A frame whose prior does not count
-  // is not a refusal: it is placed through its pairs, or named in `droppedFrames`.
+  // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
+  // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
+  // claims one, a lens `IsUsableLens` would not accept, a pair naming a frame with no prior or the
+  // same frame twice, or an accepted pair whose rotation is not one — including one never written,
+  // which `PairwiseResult` defaults so as to be refused — or whose counts no engine fills in: no
+  // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's
+  // confidence is zero, because then nothing says which way the reconstruction faces.
+  // `Unsupported` from `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a
+  // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors
+  // reaches today. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
+  // frame with no prior is not a refusal: it is placed through its pairs, or named in
+  // `droppedFrames`.
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
                                         std::span<const FramePrior> priors,
                                         const Intrinsics& initial) = 0;

@@ -599,7 +599,11 @@ struct FeatureSet {
 
 struct PairwiseResult {
   FrameId a, b;
-  Quat relativeRotation;
+  // **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
+  // identity: a pair whose counts were filled in and whose rotation was not would otherwise claim
+  // its two frames share an orientation, and `Refine` would believe it at full weight. The solver's
+  // own edge type defaults the same way for the same reason.
+  Quat relativeRotation{0, 0, 0, 0};
   int32_t inliers = 0;
   // How many correspondences the inliers are counted *out of*, which is the denominator `accepted`
   // is decided by. **Zero only on a result no engine filled in**, which a caller never sees: every
@@ -643,7 +647,9 @@ struct PairwiseResult {
 // its pixels (ADR 0065).
 //
 // **No prior is spelled with `confidence` zero**, which is what a default `PoseSample` holds, so a
-// pose left unset is no prior rather than a claim that the phone was held level.
+// pose left unset is no prior rather than a claim that the phone was held level. It is the only
+// spelling: `Refine` refuses a confidence outside [0, 1], and an orientation that is not a rotation
+// where the confidence claims one, rather than reading either as absent.
 struct FramePrior {
   FrameId frame;
   PoseSample pose;
@@ -675,8 +681,9 @@ struct GlobalSolution {
   // prior pinned; the second reads better on every other field.
   int32_t priorsUsed = 0;
   // How many pieces the accepted pairs join the placed frames into. The pairs place frames within a
-  // piece; only the priors place one piece against another, so above one the answer has seams that
-  // rest on the priors' degrees rather than the pixels' hundredths — and nothing else here says so.
+  // piece, the priors pulling on them only at a weight far below a pair's; only the priors place
+  // one piece against another, so above one the answer has seams that rest on the priors' degrees
+  // rather than the pixels' hundredths — and nothing else here says so.
   // A frame placed on its prior alone is a piece of one.
   int32_t pieces = 0;
 
