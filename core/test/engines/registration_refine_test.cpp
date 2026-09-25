@@ -645,6 +645,11 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   barrel.p2 = -3e-4;
   const std::vector<PairwiseResult> distorted = MatchedRing(truth, barrel);
   for (const PairwiseResult& pair : distorted) ASSERT_GE(pair.inlierMatches.size(), 20u);
+  // And a pair with exactly three matches, the fewest a fit is taken on, spread across the overlap.
+  std::vector<PairwiseResult> three = ring;
+  const std::vector<PixelMatch> all = three[4].inlierMatches;
+  three[4].inlierMatches = {all.front(), all[all.size() / 2], all.back()};
+  three[4].inliers = 3;
 
   const struct {
     std::vector<PairwiseResult> pairs;
@@ -654,7 +659,8 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   } shapes[] = {{ring, truth, lens, kFrames},
                 {triangle, truth, lens, 3},
                 {pitched, tumbling, tall, kFrames},
-                {distorted, truth, barrel, kFrames}};
+                {distorted, truth, barrel, kFrames},
+                {three, truth, lens, kFrames}};
   for (const auto& [pairs, truth, lens, placed] : shapes)
   for (const double scale : {0.92, 1.08}) {
     Intrinsics initial = Scaled(lens, scale);
@@ -688,6 +694,15 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_LT(shape.maxDeg, 0.01) << scale;
     EXPECT_LT(solution.maxEdgeErrorDeg, 0.01) << scale;
   }
+
+  // Just inside each end of the bracket, so a search narrower than 0.7 to 1.4 is caught here, as a
+  // wider one is by the rows just past it in `ALensNothingCanSeeIsPassedThrough`.
+  for (const double scale : {1.0 / 0.705, 1.0 / 1.39}) {
+    const Result<GlobalSolution> solved = engine_.Refine(ring, PriorsOut(truth), Scaled(lens, scale));
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    EXPECT_TRUE(solved.value.lensFitted) << scale;
+    EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 3e-5) << scale;
+  }
 }
 
 /**
@@ -720,6 +735,12 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   std::vector<PairwiseResult> twoMatches = ring;
   twoMatches[4].inlierMatches.resize(2);
   twoMatches[4].inliers = 2;
+  // And beside a ring that closes without it, so a thin pair that was dropped rather than refused
+  // would leave a loop to fit on.
+  std::vector<PairwiseResult> twoMatchChord = ring;
+  twoMatchChord.push_back(Matched(0, 2, truth, lens));
+  twoMatchChord.back().inlierMatches.resize(2);
+  twoMatchChord.back().inliers = 2;
 
   // An open chain beside a closed triangle of frames nothing anchors. The solve leaves the triangle
   // unplaced, so the loop is not one the fit may score: counted, it let the chain's priors fit the
@@ -753,6 +774,7 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
                {unmatched, priors, 1.08, "a pair with no matches"},
                {twoMatches, priors, 1.08, "a pair with two matches"},
                {twoMatches, priors, 0.92, "a pair with two matches, short"},
+               {twoMatchChord, priors, 1.08, "a ring with a two-match chord"},
                {chainAndIsland, islandPriors, 1.08, "an open chain beside an unplaced loop"},
                {chainAndIsland, islandPriors, 0.92, "an open chain beside an unplaced loop, short"},
                {rolled, PriorsOut(rolling), 1.08, "a loop about the viewing axis"},
@@ -794,6 +816,21 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
       EXPECT_EQ(out.height, initial.height) << why;
       EXPECT_EQ(out.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs) << why;
       EXPECT_EQ(out.estimated, estimated) << why;
+
+      // And the rotations are the solve of the pairs' own rotations, not a trial's: the same pairs
+      // with no matches to refit from, which cannot reach the search at all, give them exactly.
+      std::vector<PairwiseResult> unrefittable = pairs;
+      for (PairwiseResult& pair : unrefittable) pair.inlierMatches.clear();
+      const Result<GlobalSolution> own = engine_.Refine(unrefittable, poses, initial);
+      ASSERT_TRUE(own.ok()) << why << ": " << own.status.detail;
+      ASSERT_EQ(solved.value.rotations.size(), own.value.rotations.size()) << why;
+      for (size_t i = 0; i < own.value.rotations.size(); ++i) {
+        const Quat& got = solved.value.rotations[i];
+        const Quat& want = own.value.rotations[i];
+        EXPECT_TRUE(got.w == want.w && got.x == want.x && got.y == want.y && got.z == want.z)
+            << why << ", frame " << i;
+      }
+      EXPECT_EQ(solved.value.medianEdgeErrorDeg, own.value.medianEdgeErrorDeg) << why;
     }
   }
 }
@@ -890,11 +927,14 @@ TEST_F(Refine, MatchesThatAreNotThePairsInliersAreRefused) {
   const std::vector<FramePrior> priors = PriorsOut(truth);
   ASSERT_TRUE(engine_.Refine(pairs, priors, TrueLens()).ok()) << "the base case must be valid";
 
-  std::vector<PairwiseResult> miscounted = pairs;
-  miscounted[3].inliers -= 1;
-  const Result<GlobalSolution> counted = engine_.Refine(miscounted, priors, TrueLens());
-  EXPECT_EQ(counted.status.code, StatusCode::InvalidArgument);
-  EXPECT_NE(counted.status.detail.find("matches"), std::string::npos) << counted.status.detail;
+  // Both ways, since a check that refused only more matches than inliers passes the other.
+  for (const int32_t off : {-1, 1}) {
+    std::vector<PairwiseResult> miscounted = pairs;
+    miscounted[3].inliers += off;
+    const Result<GlobalSolution> counted = engine_.Refine(miscounted, priors, TrueLens());
+    EXPECT_EQ(counted.status.code, StatusCode::InvalidArgument) << off;
+    EXPECT_NE(counted.status.detail.find("matches"), std::string::npos) << counted.status.detail;
+  }
 
   // Each coordinate on its own, since a check that read some of them passes a match wrong in the
   // others.
@@ -1012,6 +1052,51 @@ TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
     // Not the rotations: passed through, they are the solve of the pairs' own `relativeRotation`s,
     // which `Matched` leaves half a degree out on purpose.
   }
+}
+
+/**
+ * The two trials the rise test adds are trials like any other: one that cannot be scored means no
+ * fit, rather than an infinite cost that passes for one that rose.
+ *
+ * A radial lens that folds, with the truth just past the short end of the bracket. The least is at
+ * 0.7, and the rise test's shorter trial lies half a percent below it — below where the matches were
+ * filtered. One match sits just inside the fold at 0.7, so it has a direction at every scale the
+ * search tries and none at that one trial. Scored as infinity and not as a failure, that trial would
+ * pass for a rise, and the longer one rises anyway, so the bracket's own end came back as the focal
+ * length (round 3, where the ends of the bracket were the trials in question).
+ */
+TEST_F(Refine, ATrialTheRiseTestAddsIsScoredLikeTheRest) {
+  const std::vector<Quat> truth = Ring();
+  Intrinsics handed = Scaled(TrueLens(), 1.0 / 0.695);
+  handed.k3 = -1.0;
+  std::vector<PairwiseResult> pairs = MatchedRing(truth, Scaled(handed, 0.695));
+
+  // The fold along the image's horizontal through the centre, at the short end of the bracket.
+  const Intrinsics shortest = Scaled(handed, 0.7);
+  double inside = 0.0;
+  double outside = shortest.cx;
+  for (int step = 0; step < 60; ++step) {
+    const double middle = (inside + outside) / 2.0;
+    (Unproject(shortest, Pixel{shortest.cx - middle, shortest.cy}).valid ? inside : outside) = middle;
+  }
+  const Pixel stray{shortest.cx - inside * 0.999, shortest.cy};
+  // The premise: a direction at the short end and none half a percent below it.
+  ASSERT_TRUE(Unproject(shortest, stray).valid);
+  ASSERT_FALSE(Unproject(Scaled(handed, 0.7 * std::exp(-0.005)), stray).valid);
+  const UnprojectedDirection from = Unproject(shortest, stray);
+  const Quat exact = Normalize(Multiply(Conjugate(truth[4]), truth[3]));
+  const ProjectedPixel to = Project(shortest, Rotate(exact, from.direction));
+  ASSERT_TRUE(to.valid);
+  ASSERT_TRUE(Unproject(shortest, to.pixel).valid);
+  pairs[3].inlierMatches.push_back(
+      PixelMatch{static_cast<float>(stray.x), static_cast<float>(stray.y),
+                 static_cast<float>(to.pixel.x), static_cast<float>(to.pixel.y)});
+  pairs[3].inliers += 1;
+
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), handed);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+  EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
 }
 
 /**
