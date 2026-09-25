@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <span>
 #include <string>
@@ -120,6 +121,9 @@ struct Intrinsics {
   double k1 = 0, k2 = 0, k3 = 0, p1 = 0, p2 = 0;   // Brown-Conrady
   int32_t width = 0, height = 0;
   double rollingShutterLineTimeNs = 0;             // 0 == global shutter / unknown
+  // Whether any field was estimated from frames rather than assumed — today only the focal length
+  // can be (ADR 0066). It travels with the lens, so a lens a device kept from an earlier capture is
+  // still an estimate; whether *this* call fitted it is `GlobalSolution::lensFitted`.
   bool estimated = false;
 };
 
@@ -601,9 +605,15 @@ struct FeatureSet {
 // frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
 // through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
 // because the detectors' keypoints are floats and the matches are what bounds a pair's memory.
+//
+// **Not a pixel until something writes one**, as `PairwiseResult::relativeRotation` is not a
+// rotation: zero would be the image's corner matched to itself — finite, counted, and in a
+// reviewer's probe enough to pull a fit 3% out. `Refine` refuses a match that is not finite.
 struct PixelMatch {
-  float ax = 0, ay = 0;
-  float bx = 0, by = 0;
+  float ax = std::numeric_limits<float>::quiet_NaN();
+  float ay = std::numeric_limits<float>::quiet_NaN();
+  float bx = std::numeric_limits<float>::quiet_NaN();
+  float by = std::numeric_limits<float>::quiet_NaN();
 };
 
 struct PairwiseResult {
@@ -689,6 +699,8 @@ struct GlobalSolution {
 
   // How far the answer leaves the pairs it used, and over how many. Read them together: no
   // disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+  // Where `lensFitted`, "the pairs" are each pair refitted from its matches under the fitted lens,
+  // not the `relativeRotation` it was handed: those were measured under the lens the fit replaced.
   double medianEdgeErrorDeg = 0;
   double maxEdgeErrorDeg = 0;
   int32_t edgesUsed = 0;
@@ -716,8 +728,10 @@ struct GlobalSolution {
   // Whether this call fitted the focal length, rather than `intrinsics.estimated`, which says
   // whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
   // lens a device kept from an earlier capture is an estimate this call did not make. False where
-  // nothing could see the focal length: no loop among the accepted pairs, a pair with no matches to
-  // refit, or a best focal length at the edge of the range searched (ADR 0066).
+  // the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
+  // them keeps fewer than three matches with a direction at the shortest focal length searched; or
+  // the cost does not rise to four times its least at both ends of the range, which is how a least
+  // at an end, and a cost with no least at all, both look.
   bool lensFitted = false;
 };
 

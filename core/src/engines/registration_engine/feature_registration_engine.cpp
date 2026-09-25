@@ -1300,36 +1300,54 @@ struct FocalTrial {
   AveragedRotations averaged;
 };
 
-// Every accepted pair refitted from its matches under the scaled lens, then solved as `Refine`
-// solves. Scored by the inlier-weighted mean square of the edge errors, not their median: a median
-// steps as one edge overtakes another and a search over it stalls on the steps.
-FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
-                         std::vector<RelativeRotation> edges,
-                         const std::vector<const PairwiseResult*>& sources,
-                         const std::vector<Quat>& anchors) {
+Intrinsics ScaledLens(const Intrinsics& initial, double scale) {
   Intrinsics lens = initial;
   lens.fx *= scale;
   lens.fy *= scale;
+  return lens;
+}
+
+// An edge the focal search scores, with the matches it scores it on.
+struct ScoredEdge {
+  size_t edge = 0;
+  std::vector<PixelMatch> matches;
+};
+
+// Every scored pair refitted from its matches under the scaled lens, then solved as `Refine`
+// solves. Scored by the inlier-weighted mean square of the edge errors, not their median: a median
+// steps as one edge overtakes another and a search over it stalls on the steps.
+//
+// **Over the scored edges only, and on the same matches at every scale.** An edge between frames
+// the solve leaves unplaced was scored against the identity it gives them, and its whole angle —
+// which shrinks as the focal length grows — pulled the fit toward a longer lens. And a scale that
+// lost a pair's matches through a fold was scored on fewer of them, or not at all, so an end of the
+// bracket could cost infinity and pass for a cost that rose.
+FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
+                         std::vector<RelativeRotation> edges,
+                         const std::vector<ScoredEdge>& scored,
+                         const std::vector<Quat>& anchors) {
+  const Intrinsics lens = ScaledLens(initial, scale);
   FocalTrial trial;
-  for (size_t e = 0; e < edges.size(); ++e) {
+  for (const ScoredEdge& at : scored) {
     std::vector<Vec3> from;
     std::vector<Vec3> to;
-    for (const PixelMatch& match : sources[e]->inlierMatches) {
+    for (const PixelMatch& match : at.matches) {
       const UnprojectedDirection a = Unproject(lens, Pixel{match.ax, match.ay});
       const UnprojectedDirection b = Unproject(lens, Pixel{match.bx, match.by});
-      if (!a.valid || !b.valid) continue;
+      if (!a.valid || !b.valid) return trial;
       from.push_back(a.direction);
       to.push_back(b.direction);
     }
     cv::Matx33d fitted;
-    if (from.size() < 3 || !KabschRotation(from, to, &fitted)) return trial;
-    edges[e].rotation = FromMatrix(fitted);
+    if (!KabschRotation(from, to, &fitted)) return trial;
+    edges[at.edge].rotation = FromMatrix(fitted);
   }
   trial.averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
   if (!trial.averaged.valid) return trial;
   double sum = 0.0;
   double weights = 0.0;
-  for (const RelativeRotation& edge : edges) {
+  for (const ScoredEdge& at : scored) {
+    const RelativeRotation& edge = edges[at.edge];
     const Quat solved =
         Normalize(Multiply(Conjugate(trial.averaged.rotations[static_cast<size_t>(edge.to)]),
                            trial.averaged.rotations[static_cast<size_t>(edge.from)]));
@@ -1375,8 +1393,8 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "no priors, so no frames to solve for");
   }
-  // Not read by the solve, and still refused: it comes back as the lens the answer is expressed
-  // under, and an answer expressed under no lens is one nothing downstream can project.
+  // Refused up front: the focal search scales it, and it comes back as the lens the answer is
+  // expressed under, fitted or not — an answer under no lens is one nothing downstream can project.
   if (!IsUsableLens(initial)) {
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "the lens given is not a usable lens");
@@ -1491,12 +1509,37 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
   // residual is flat within a few percent of the truth, while a ring fails to close by about three
   // degrees a percent. So the search is over the solve, not over any pair.
   //
-  // A pair with fewer than three matches cannot be refitted, so every trial it takes part in fails
-  // and the best cost is not finite: the lens is passed through, which is the answer for a pair
-  // built without matches and needs no check of its own.
-  if (!edges.empty() && ClosesALoop(edges, anchors.size())) {
+  // Scored only where the solve placed both frames — an edge inside a component nothing anchors is
+  // left out of the solve, and so out of the fit — and only on the matches that have a direction at
+  // both ends of the bracket, so every scale is scored on the same evidence. A pair left with fewer
+  // than three cannot be refitted, and then the lens is passed through: that is the answer for a pair
+  // built without matches, and for one whose matches a folding lens loses within the range searched.
+  std::vector<bool> unplaced(anchors.size(), false);
+  for (const int32_t i : averaged.unplaced) unplaced[static_cast<size_t>(i)] = true;
+  // The low end only: a longer focal length brings every pixel nearer the centre, so a match with a
+  // direction at the shortest focal length searched has one at every other.
+  const Intrinsics lowest = ScaledLens(initial, kFocalScaleLow);
+  const auto directed = [&](float x, float y) { return Unproject(lowest, Pixel{x, y}).valid; };
+  std::vector<ScoredEdge> scored;
+  std::vector<RelativeRotation> scoredEdges;
+  bool refittable = true;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    if (unplaced[static_cast<size_t>(edges[e].from)] || unplaced[static_cast<size_t>(edges[e].to)]) {
+      continue;
+    }
+    ScoredEdge at{e, {}};
+    for (const PixelMatch& match : sources[e]->inlierMatches) {
+      if (directed(match.ax, match.ay) && directed(match.bx, match.by)) {
+        at.matches.push_back(match);
+      }
+    }
+    if (at.matches.size() < 3) refittable = false;
+    scoredEdges.push_back(edges[e]);
+    scored.push_back(std::move(at));
+  }
+  if (refittable && ClosesALoop(scoredEdges, anchors.size())) {
     const auto trial = [&](double logScale) {
-      return TryFocalScale(std::exp(logScale), initial, edges, sources, anchors);
+      return TryFocalScale(std::exp(logScale), initial, edges, scored, anchors);
     };
     const double golden = (std::sqrt(5.0) - 1.0) / 2.0;
     double lo = std::log(kFocalScaleLow);

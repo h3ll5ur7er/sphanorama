@@ -54,8 +54,8 @@ ratio** and an **assumed 66° angle across the frame's long edge** (`deriveField
 `shell/src/access/capture-host.ts`). Across the *long* edge rather than the horizontal one,
 because the assumption is about a lens and a lens does not change when the phone is turned — the
 browser reports the track in the device's current orientation, so a phone held upright answers
-960×1280 and the wide angle belongs to its height. Phase 2's bundle adjustment estimates focal length from the
-captured frames, which is the only way to actually know; until then a wrong assumption shows up as
+960×1280 and the wide angle belongs to its height. Phase 2's `Refine` now fits the focal length from the
+captured frames (ADR 0066), which is the only way to actually know; where it cannot, a wrong assumption shows up as
 cells that overlap more or less than intended rather than as a failure.
 
 That first half was itself overstated until recently, and the correction is worth recording
@@ -232,8 +232,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   time and the focal length in pixels, and the engine is handed neither. It reports zero and the
   header says so, because a number invented from what it does have would rank frames by a
   fiction. Both inputs exist elsewhere — the camera port could report exposure time, and Phase 2's
-  bundle adjustment produces a real focal length — so this waits on one of them rather than on
-  an idea.
+  `Refine` now fits a real focal length (ADR 0066), though only after the capture — so this waits
+  on one of them rather than on an idea.
 - `IFrameStoreAccess` with the tiered residency and OPFS spill; memory-budget probe.
 - Review Client v1: the sphere coverage map and per-cell candidate strip are **done**, a pick is
   recorded through `ProjectManager.SetSelection` (UC-3), and **the strip shows the frames**. That
@@ -501,8 +501,8 @@ What is left, and what has landed since:
 
   The honest fix is on the contract rather than in the test — a way for the struct to say
   "assumed", so the client can label it — and that is a contract change with an ADR behind it.
-  Phase 2's bundle adjustment estimates focal length from the frames, which is the only way to
-  actually know, and would give the field its first real answer.
+  Phase 2's `Refine` now fits the focal length from the frames (ADR 0066), which is the only way to
+  actually know, and gives `estimated` its first real answer.
 
 - **The white-balance lock has no capability field — open, and pre-existing.**
   `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`

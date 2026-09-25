@@ -1,6 +1,7 @@
 # 0065 — `Refine` solves rotations, ties each prior to its frame, and passes the lens through
 
-**Status:** accepted
+**Status:** accepted; its lens pass-through and its solved figures superseded by
+[0066](0066-refine-fits-the-focal-length-from-the-ring.md)
 
 ## Context
 

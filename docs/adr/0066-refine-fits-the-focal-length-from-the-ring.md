@@ -44,11 +44,13 @@ closes. Three things follow.
 ## Decision
 
 1. **`PairwiseResult` carries its inlier matches** as `std::vector<PixelMatch>`, each the pixel in
-   frame `a` and the pixel in frame `b` of one correspondence the returned rotation was refitted
-   on. Pixels, not bearings: a bearing is a pixel already pushed through a lens, so bearings would
+   frame `a` and the pixel in frame `b` of one correspondence the returned rotation agrees with to
+   within the engine's inlier gate — the rows `inliers` counts. Not the rows it was fitted on,
+   which are the inliers before the last re-gate (see Consequences). Pixels, not bearings: a bearing is a pixel already pushed through a lens, so bearings would
    freeze the very guess this ADR exists to correct. Filled on every `Ok` result, accepted or not,
-   and bounded by the feature cap (`kMaxFeaturesPerFrame`, 500) since each row of a frame's feature
-   set matches at most once.
+   and bounded by the feature cap (`kMaxFeaturesPerFrame`, 500) since each row of frame `a`'s
+   feature set matches at most once. A default `PixelMatch` is NaN rather than zero, so a match
+   nobody wrote is refused rather than read as the image's corner.
 
 2. **`Refine` fits one focal scale shared by `fx` and `fy`**, by a bracketed one-dimensional search
    over the scale that minimises the solved edge error. At each candidate scale every accepted
@@ -62,9 +64,14 @@ closes. Three things follow.
 
 3. **The fit is only taken where it is an answer.** A tree of accepted pairs agrees with itself
    under any focal length, so the error is flat and the minimum is wherever the search stopped.
-   `Refine` searches only where the accepted pairs close a loop — two pairs between the same frames
-   counted once — and every one of them carries matches, and it takes the result only where the
-   cost at both ends of the bracket is at least four times the best: a minimum at an end is the
+   `Refine` searches only over the frames the solve places — an edge in a component nothing anchors
+   is left out of the solve, and was once scored against the identity it gives those frames, which
+   pulled the fit by nearly 1% — and only where their accepted pairs close a loop, two pairs between
+   the same frames counted once. Every scale is scored on the same matches, the ones with a direction
+   at the bracket's shortest focal length: a scale that lost a pair's matches to a folding lens
+   once scored as infinite, and infinity passed for a cost that rose. A pair left with fewer than
+   three is not refitted and the lens is passed through. It takes the result only where the cost at
+   both ends of the bracket is at least four times the best: a minimum at an end is the
    search reporting its own range, and a cost that does not rise is it reporting where it stopped.
    Otherwise `initial` comes back as given, every field of it. The two conditions are not one: with
    the loop check removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors
@@ -102,8 +109,13 @@ closes. Three things follow.
   inliers, re-gates, and reports the inliers after the re-gate beside the rotation fitted before it,
   so an engine's pair is not the least-squares rotation of the matches it reports. Refitting each
   pair on those matches — which the search does at every scale — gives 0.0375 / 0.0291 / 0.0147 at the
-  rendered focal length with no search at all. Making `FitRotation` return the rotation of the
-  inliers it reports is its own change, since it moves the chained table as well.
+  rendered focal length with no search at all. **Not uniformly better, though**: on the open
+  eleven-pair chain the refit reads 0.1353 / 0.0344 / 0.0229 against the pairs' own 0.1005 /
+  0.0601 / 0.0229, so ORB's chain is worse refitted. Which is why `Refine` uses the refit only when
+  it fits the lens, where it has to — the refitted pairs are what the fitted lens was scored on —
+  and the pair's own rotation otherwise, rather than preferring one copy everywhere on a measurement
+  that points both ways. Making `FitRotation` return the rotation of the inliers it reports removes
+  the disagreement at its source; that is its own change, since it moves the chained table.
 - A contract change in `types.h` (`PixelMatch`, `PairwiseResult::inlierMatches`,
   `GlobalSolution::lensFitted`) and in `engines/registration_engine.h` (`Refine`'s paragraph on the
   lens, and a refusal for matches that disagree with the inlier count). The TypeScript mirror moves with them: the generator
@@ -112,8 +124,9 @@ closes. Three things follow.
   sixty frames registered against four neighbours each is about 2 MB of matches held until `Refine`
   returns. Small against the frames, but a new allocation per pair and now part of what a build
   holds.
-- **Time.** `Refine` becomes about twenty-two solves instead of one — the golden-section search to
-  a tolerance of 1e-4 in log scale, and the two ends of the bracket. Each is cheap next to feature
+- **Time.** `Refine` becomes twenty-four solves instead of one — the solve at the lens handed in,
+  two to open the golden-section search, nineteen to narrow it to 1e-4 in log scale, and the two
+  ends of the bracket. Each is cheap next to feature
   extraction, and how cheap on a phone is a measurement the WASM build will have to take once
   registration compiles there (ADR 0047).
 - **An open capture keeps its guess.** A strip of frames that never closes a loop cannot estimate
@@ -122,6 +135,9 @@ closes. Three things follow.
 - **Only the focal length.** A phone's image is expected to arrive with most of its distortion
   corrected by the ISP — expected, not measured here — which would leave the focal length as the
   error that matters; a lens whose residual distortion matters needs the bundle adjustment below.
+- **`Refine` now needs a Kabsch**, which in this engine is OpenCV's SVD. The rotation solve under
+  it still needs none, but a `Refine` built outside this engine — the browser route ADR 0062 named
+  for `rotation_averaging` — has to bring its own, from the core's Jacobi eigensolver or otherwise.
 - **The lens a device keeps between captures** is the next decision and is left to its own ADR: it
   is a new volatility axis — what this device's camera is known to be — with no owner in the
   volatility map, and the natural `initial` for this search.

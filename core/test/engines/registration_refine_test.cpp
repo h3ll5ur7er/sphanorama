@@ -173,7 +173,8 @@ TEST_F(Refine, ExactPairsGiveTheTruthFacingWhereThePriorsAgree) {
   ASSERT_TRUE(agreed.valid);
   EXPECT_NEAR(SeparationDeg(shape.alignment, agreed.rotation), 0.0, 1e-3);
 
-  // Passed through, every field of it: nothing refines a lens yet.
+  // Passed through, every field of it: these pairs carry no matches, so nothing can fit the focal
+  // length (ADR 0066).
   EXPECT_EQ(solution.intrinsics.fx, lens.fx);
   EXPECT_EQ(solution.intrinsics.fy, lens.fy);
   EXPECT_EQ(solution.intrinsics.cx, lens.cx);
@@ -740,11 +741,88 @@ TEST_F(Refine, MatchesThatAreNotThePairsInliersAreRefused) {
     EXPECT_NE(answer.status.detail.find("matches"), std::string::npos) << answer.status.detail;
   }
 
+  // Nor is a match nobody set: a default `PixelMatch` is not a pixel, rather than the image's
+  // corner matched to itself, which is finite, counted, and pulled a fit 3% out in a reviewer's
+  // probe.
+  std::vector<PairwiseResult> unset = pairs;
+  unset[3].inlierMatches[2] = PixelMatch{};
+  const Result<GlobalSolution> unsetAnswer = engine_.Refine(unset, priors, TrueLens());
+  EXPECT_EQ(unsetAnswer.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(unsetAnswer.status.detail.find("matches"), std::string::npos) << unsetAnswer.status.detail;
+
   // An unaccepted pair's matches are not read, as nothing else it carries is.
   std::vector<PairwiseResult> unread = pairs;
   unread[3].accepted = false;
   unread[3].inliers -= 1;
   EXPECT_TRUE(engine_.Refine(unread, priors, TrueLens()).ok());
+}
+
+/**
+ * Frames the solve cannot place take no part in the fit.
+ *
+ * Two frames with no prior, joined only to each other, are an island the solver leaves unplaced at
+ * the identity and out of its edge figures. Their pair was once scored against that identity, and
+ * its whole angle — which shrinks as the focal length grows — pulled the fit: a 20-match island
+ * moved it to 504.6 of 500, and a full one stopped it (a reviewer's reproduction, round 1).
+ */
+TEST_F(Refine, AnIslandTheSolveCannotPlaceDoesNotMoveTheFit) {
+  std::vector<Quat> truth = Ring();
+  truth.push_back(AboutY(5));
+  truth.push_back(AboutY(25));
+  const Intrinsics lens = TrueLens();
+  std::vector<FramePrior> priors = PriorsOut(Ring());
+  priors.push_back(NoPrior(kFrames));
+  priors.push_back(NoPrior(kFrames + 1));
+
+  PairwiseResult full = Matched(kFrames, kFrames + 1, truth, lens);
+  PairwiseResult small = full;
+  small.inlierMatches.resize(20);
+  small.inliers = 20;
+  for (const PairwiseResult& island : {small, full}) {
+    std::vector<PairwiseResult> pairs = MatchedRing(Ring(), lens);
+    pairs.push_back(island);
+    for (const double scale : {0.92, 1.08}) {
+      const Result<GlobalSolution> solved = engine_.Refine(pairs, priors, Scaled(lens, scale));
+      ASSERT_TRUE(solved.ok()) << solved.status.detail;
+      EXPECT_EQ(solved.value.droppedFrames.size(), 2u);
+      EXPECT_TRUE(solved.value.lensFitted) << island.inliers << " at " << scale;
+      EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 1e-4) << island.inliers << " at " << scale;
+    }
+  }
+}
+
+/**
+ * A focal length the search cannot score at an end of its range is not an answer.
+ *
+ * Under a lens that folds, a pixel near the edge of the frame has no direction once the focal length
+ * is scaled down far enough. A pair whose matches are all out there lost them at the low end of the
+ * bracket, the end's cost went infinite, and infinity passed for a cost that rose: the fit was taken
+ * at the scale where that pair's matches ran out, with rotations tens of degrees out (a reviewer's
+ * reproduction, round 1). Here the truth is outside the bracket, so the answer is the lens as given.
+ */
+TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics lens = TrueLens();
+  std::vector<PairwiseResult> pairs = MatchedRing(truth, lens);
+  PairwiseResult& edgeOnly = pairs[5];
+  std::vector<PixelMatch> far;
+  for (const PixelMatch& match : edgeOnly.inlierMatches) {
+    if (std::hypot(match.ax - lens.cx, match.ay - lens.cy) > 300.0) far.push_back(match);
+  }
+  ASSERT_GE(far.size(), 3u);
+  edgeOnly.inlierMatches = far;
+  edgeOnly.inliers = static_cast<int32_t>(far.size());
+
+  for (const double k3 : {-1.5, -2.0, -3.0}) {
+    Intrinsics initial = Scaled(lens, 1.0 / 0.66);
+    initial.k3 = k3;
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
+    ASSERT_TRUE(solved.ok()) << k3 << ": " << solved.status.detail;
+    EXPECT_FALSE(solved.value.lensFitted) << k3;
+    EXPECT_EQ(solved.value.intrinsics.fx, initial.fx) << k3;
+    // Not the rotations: passed through, they are the pairs refitted under the lens as given, and
+    // that is not the lens these matches were drawn through — a real engine's would have been.
+  }
 }
 
 }  // namespace

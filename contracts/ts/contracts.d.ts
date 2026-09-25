@@ -79,6 +79,11 @@ export interface Intrinsics {
   height: number;
   /** 0 == global shutter / unknown */
   rollingShutterLineTimeNs: number;
+  /**
+   * Whether any field was estimated from frames rather than assumed — today only the focal length
+   * can be (ADR 0066). It travels with the lens, so a lens a device kept from an earlier capture is
+   * still an estimate; whether *this* call fitted it is `GlobalSolution::lensFitted`.
+   */
   estimated: boolean;
 }
 
@@ -574,6 +579,9 @@ export interface FeatureSet {
  * frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
  * through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
  * because the detectors' keypoints are floats and the matches are what bounds a pair's memory.
+ * **Not a pixel until something writes one**, as `PairwiseResult::relativeRotation` is not a
+ * rotation: zero would be the image's corner matched to itself — finite, counted, and in a
+ * reviewer's probe enough to pull a fit 3% out. `Refine` refuses a match that is not finite.
  */
 export interface PixelMatch {
   ax: number;
@@ -680,6 +688,8 @@ export interface GlobalSolution {
   /**
    * How far the answer leaves the pairs it used, and over how many. Read them together: no
    * disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+   * Where `lensFitted`, "the pairs" are each pair refitted from its matches under the fitted lens,
+   * not the `relativeRotation` it was handed: those were measured under the lens the fit replaced.
    */
   medianEdgeErrorDeg: number;
   maxEdgeErrorDeg: number;
@@ -716,8 +726,10 @@ export interface GlobalSolution {
    * Whether this call fitted the focal length, rather than `intrinsics.estimated`, which says
    * whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
    * lens a device kept from an earlier capture is an estimate this call did not make. False where
-   * nothing could see the focal length: no loop among the accepted pairs, a pair with no matches to
-   * refit, or a best focal length at the edge of the range searched (ADR 0066).
+   * the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
+   * them keeps fewer than three matches with a direction at the shortest focal length searched; or
+   * the cost does not rise to four times its least at both ends of the range, which is how a least
+   * at an end, and a cost with no least at all, both look.
    */
   lensFitted: boolean;
 }

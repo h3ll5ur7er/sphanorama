@@ -130,11 +130,13 @@ class IRegistrationEngine {
   // pixels fit as well as under the right one — but a loop can: the pairs agree around it only under
   // the true focal length. So `Refine` searches the scale of `fx` and `fy` together for the one under
   // which the pairs, each refitted from its `inlierMatches`, leave the solve least, and returns
-  // `initial` so scaled in `GlobalSolution::intrinsics` with `lensFitted` set. Where the accepted
-  // pairs close no loop, where one has no matches to refit from, or where the best scale lies at the
-  // edge of the range searched, `initial` comes back as given, every field of it, and `lensFitted`
-  // is false. Where the lens is fitted the rotations are the refitted pairs' solve, not the one
-  // their own `relativeRotation`s give.
+  // `initial` so scaled in `GlobalSolution::intrinsics` with `lensFitted` set. Only frames the solve
+  // places take part, and every scale is scored on the same matches — those with a direction at the
+  // shortest focal length searched. Where the accepted pairs among placed frames close no loop,
+  // where one of them keeps fewer than three such matches, or where the cost does not rise away
+  // from its least on both sides, `initial` comes back as given, every field of it, and
+  // `lensFitted` is false. Where the lens is fitted the rotations are the refitted pairs' solve,
+  // not the one their own `relativeRotation`s give.
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
