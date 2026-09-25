@@ -4,7 +4,7 @@
 [ADR 0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md); extended by
 [ADR 0065](0065-refine-solves-rotations-and-passes-the-lens-through.md), which gives the solver its caller
 
-> **The sweep table and the `590` below are withdrawn by [ADR 0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md).**
+> **The sweep table this file cites in `rotation_averaging.cpp`, and the `590` below, are withdrawn by [ADR 0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md).**
 > They were right for the solver they measured. Since 0064 each piece's gauge is chosen outright
 > every sweep, so the budget is set by the frame count rather than the anchor weight, and the
 > twelve-frame cell this file calls the executable copy of the table is asserted as 46.

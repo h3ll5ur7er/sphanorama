@@ -964,9 +964,9 @@ a prior for every frame, each three degrees out about an axis of its own (ADR 00
 | SIFT | 0.024 | 0.026 | 0.067 |
 
 The closing pair roughly halves the two weaker detectors' error and leaves SIFT's a little worse —
-not through the priors, since the solved shape is flat in their weight from 1e-4 to 0.1
+not through the priors, since the solved shape is flat in their weight from 1e-6 to 0.1
 (ADR 0064), and why is not yet known. The solve faces within 0.0002 degrees of where the priors
-agree. `TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` asserts it.
+agree. `TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` asserts it within 0.001.
 
 **And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
 hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by

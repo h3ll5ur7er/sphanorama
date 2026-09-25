@@ -1,6 +1,8 @@
 # 0056 — `accepted` says a minority backs the answer, and a refusal says there is no answer
 
-**Status:** accepted
+**Status:** accepted; its expectation that a global solve would use an unaccepted pair as a weak
+constraint narrowed by [ADR 0065](0065-refine-solves-rotations-and-passes-the-lens-through.md),
+whose `Refine` leaves one out
 
 > **The Decision's "Concretely" line no longer spells what the code spells, though it still says
 > what `accepted` means.** It gives the expression as

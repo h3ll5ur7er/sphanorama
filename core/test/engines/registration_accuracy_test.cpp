@@ -668,7 +668,7 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
     prior.frame = dataset.value.frames[i].frame.id;
     prior.pose.orientation =
         Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
-    prior.pose.confidence = 1.0;   // anchored, as every captured frame's is (ADR 0044)
+    prior.pose.confidence = 1.0;   // anchored, as every burst-captured frame's is (ADR 0044)
     priors.push_back(prior);
   }
 
@@ -697,7 +697,7 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   // Today's run: ORB 0.0552/0.0638/0.1164, AKAZE 0.0348/0.0351/0.0624, SIFT 0.0264/0.0309/0.0674
   // (median, mean, max), against the chain's 0.1009, 0.0612 and 0.0239 medians. The closing pair
   // roughly halves ORB's and AKAZE's error and leaves SIFT's a little worse; not through the priors'
-  // pull, since the solved shape is flat in their weight from 1e-4 to 0.1 (ADR 0064), and why is
+  // pull, since the solved shape is flat in their weight from 1e-6 to 0.1 (ADR 0064), and why is
   // not yet known. Written also in `docs/06-roadmap.md`, `CLAUDE.md` and ADR 0065, which move with
   // these; the chain's list above does not cover them.
   //
@@ -812,8 +812,9 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
         ++accepted;
       } else {
         ++answeredButNotAccepted;
-        // Not a refusal: the rotation is there to be read, and a global solve may use it as a weak
-        // constraint. That is the whole distinction the field exists to carry. `inliers > 0` is not
+        // Not a refusal: the rotation is there to be read. `Refine` leaves such a pair out
+        // (ADR 0065), but it is still an answer where a refusal is none — the whole distinction
+        // the field exists to carry. `inliers > 0` is not
         // asserted — an answer cannot come back with fewer than `kMinimumCorrespondences`, so it
         // could not fail, and a reviewer was right that it reads as a check while being a
         // restatement of the refusal floor.

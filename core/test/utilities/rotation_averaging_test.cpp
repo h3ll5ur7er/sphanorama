@@ -118,6 +118,7 @@ TEST(AverageRotations, ConsistentEdgesAndTruthfulAnchorsReproduceTheTruth) {
   ASSERT_TRUE(solved.unplaced.empty());
   ASSERT_EQ(solved.rotations.size(), truth.size());
   EXPECT_TRUE(solved.converged);
+  EXPECT_EQ(solved.pieces, 1);
 
   for (size_t i = 0; i < truth.size(); ++i) {
     EXPECT_NEAR(SeparationDeg(solved.rotations[i], truth[i]), 0.0, kSameRotationDeg) << "frame " << i;
@@ -410,6 +411,7 @@ TEST(AverageRotations, EachPieceNoEdgeJoinsTakesItsGaugeFromItsOwnAnchors) {
   ASSERT_TRUE(solved.valid);
   EXPECT_TRUE(solved.converged);
   ASSERT_EQ(solved.rotations.size(), truth.size());
+  EXPECT_EQ(solved.pieces, 2) << "the anchors alone relate the two pieces, and the count has to say so";
 
   const auto slice = [](const std::vector<Quat>& all, size_t from, size_t to, size_t skip) {
     std::vector<Quat> part;
@@ -551,9 +553,11 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   //                              `score.medianDeg 0.0000229` (this one) -> 5.79e-6
   //   loosened to 1.5e-5     ->  five:       those four (44, 3.49e-5, 4.42e-5, 3.70e-5), plus
   //                              `after.maxDeg 0.050549` -> 0.050528
-  //   loosened to 5.6e-5     ->  eight:      plus `after.medianDeg 0.047665` -> 0.047609, and both
+  //   loosened to 5.6e-5     ->  nine:       plus `after.medianDeg 0.047665` -> 0.047609, both
   //                              assertions of `ASolveThatRunsOutOfSweepsSaysSoAndStillAnswers`,
-  //                              which settles in 649
+  //                              which settles in 649, and the `0.134225` of
+  //                              `AGaugeTheAnchorsBarelyDetermineIsSettledBeforeTheSolveSaysSo`,
+  //                              which reads 0.134084
   //
   // So the run-out-of-sweeps pair is a joint pin on this constant and `kMaxSweeps`, not a pin on the
   // budget alone.

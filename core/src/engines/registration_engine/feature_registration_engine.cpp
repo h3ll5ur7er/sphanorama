@@ -1300,18 +1300,14 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     // or dropped. An orientation that is not a rotation, which the solver reads as no prior; and one
     // nothing anchored — `confidence` zero, a direction relative to wherever the sensor started
     // (ADR 0041) — which averaged with anchored priors would turn the whole answer toward that
-    // accident. `ArmBurst` refuses to fire on one, so a captured frame always has confidence.
+    // accident. `ArmBurst` refuses to fire on one, so a burst-captured frame always has confidence;
+    // `OfferFrame` stores whatever pose its caller gives, so an imported or replayed frame may not,
+    // and such a frame is placed through its pairs like any other without a prior.
     const bool anchoredPrior =
         prior.pose.confidence > 0.0 && IsUsableRotation(prior.pose.orientation);
     anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
     if (anchoredPrior) ++priorsUsed;
   }
-  if (priorsUsed == 0) {
-    return Err<GlobalSolution>(StatusCode::RegistrationFailed, kComponent,
-                               "no prior is an anchored rotation, so nothing fixes which way the "
-                               "reconstruction faces");
-  }
-
   std::vector<RelativeRotation> edges;
   for (const PairwiseResult& pair : pairs) {
     const auto from = indexOf.find(pair.a.value);
@@ -1344,6 +1340,16 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
                                      static_cast<double>(pair.inliers)});
   }
 
+  // After the pairs are checked, so a malformed pair is refused as the caller's defect whatever
+  // the priors say; before the solve, so the solver's refusal never has to be guessed at. The code
+  // is `ArmBurst`'s for the same condition — nothing measured where the camera pointed — because
+  // the remedy is the sensor, where `RegistrationFailed` would send a caller back to the pixels.
+  if (priorsUsed == 0) {
+    return Err<GlobalSolution>(StatusCode::FailedPrecondition, kComponent,
+                               "no prior is an anchored rotation, so nothing fixes which way the "
+                               "reconstruction faces");
+  }
+
   const AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
   // Everything the solver refuses is refused above with its reason, so this is a refusal that list
   // did not anticipate — reported as ours rather than guessed at as one of the caller's.
@@ -1357,7 +1363,9 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
   solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;
   solution.maxEdgeErrorDeg = averaged.maxEdgeErrorDeg;
   solution.edgesUsed = averaged.edgesUsed;
-  solution.priorsUsed = priorsUsed;
+  // The solver's count rather than ours: the one the answer was actually made from.
+  solution.priorsUsed = averaged.anchorsUsed;
+  solution.pieces = averaged.pieces;
   solution.converged = averaged.converged;
   const auto frameOf = [&](int32_t i) { return priors[static_cast<size_t>(i)].frame; };
   for (const int32_t i : averaged.unplaced) solution.droppedFrames.push_back(frameOf(i));

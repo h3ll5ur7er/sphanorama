@@ -65,7 +65,7 @@ by it, anchored or not.
   was decided silently: the first frame visited moved onto the other's anchor and nothing was named.
 
 Measured on the same ring, the same runs: both weightings at every anchor weight from 1e-6 to 10
-converged, in 6 to 114 sweeps, with the gauge within 0.0002 degrees of the anchors' 0.261, and every
+converged, in 6 to 114 sweeps, with the gauge within 0.0003 degrees of where the anchors agree (0.261 from the truth), and every
 shape figure the old solver reached a converged answer for within 0.0001 degrees of it.
 
 ## Consequences

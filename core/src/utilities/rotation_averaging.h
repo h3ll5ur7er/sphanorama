@@ -12,8 +12,11 @@ namespace sphanorama {
 //
 // **This is the maths under `IRegistrationEngine::Refine`, and it is here rather than in that engine
 // because it needs no pixels.** `EstimatePairwise` needs OpenCV; this needs quaternions. Keeping
-// them apart is what lets a build without OpenCV — every browser build today (ADR 0052) — have the
-// half of registration that is arithmetic, the day something wires it up.
+// them apart is what lets it be tested without a frame store or a detector, and is what would let a
+// build without OpenCV — every browser build today (ADR 0052) — have the half of registration that
+// is arithmetic. Only half of that holds today: the one caller is `FeatureRegistrationEngine::
+// Refine`, which exists only where OpenCV does, so a browser build reaches this only once a
+// `Refine` lives outside that engine (ADR 0065).
 //
 // **The problem it solves is that a chain has no memory.** Eleven pairwise rotations chained in
 // order give twelve absolute rotations, and every error in step k is carried by every frame after
@@ -116,6 +119,12 @@ struct AveragedRotations {
   // priors take tens — 46 on a twelve-frame ring — and leave a residual.
   int32_t anchorsUsed = 0;
 
+  // How many pieces the placed frames fall into, where a piece is frames a chain of believed edges
+  // joins. Each piece takes its gauge from its own anchors, so where one piece sits relative to
+  // another is the anchors' doing and not the edges': more than one means seams placed to the
+  // priors' accuracy, which no edge figure can show. A frame on its anchor alone is a piece of one.
+  int32_t pieces = 0;
+
   // Frames no believed edge touches, ascending. They are placed — by their own anchor — so they are
   // not in `unplaced`, and they rest on no pixel at all.
   //
@@ -199,9 +208,13 @@ struct AveragedRotations {
 // **The order of `edges` can change the answer, and only on input that is already contradictory.**
 // The breadth-first placement walks edges in the order it is given them, so on a graph whose edges
 // disagree about where a frame belongs, which one places it first decides which basin the sweep then
-// relaxes into. Measured: three mutually contradictory edges reordered give frames at `0/120/0`
-// versus `180/60/0`, both converged. On well-conditioned input it does not arise — 6,426 trials with
-// consistent edges jittered half a degree and priors three degrees out produced zero divergences.
+// relaxes into. Measured before each piece's gauge was chosen per sweep (ADR 0064): three mutually
+// contradictory edges reordered gave frames at `0/120/0` versus `180/60/0`, both converged. Not
+// re-established since — a reviewer's search of contradictory three-frame rings found no order
+// dependence under either solver, and the original fixture is not in the suite — so this is the
+// hazard the traversal allows rather than a reproduced case. On well-conditioned input it did not
+// arise: 6,426 trials with consistent edges jittered half a degree and priors three degrees out
+// produced zero divergences.
 //
 // Left as it is rather than made order-independent, because the case it affects is one the answer
 // already reports as bad: `maxEdgeErrorDeg` is 180 degrees in both of those orderings, so a caller

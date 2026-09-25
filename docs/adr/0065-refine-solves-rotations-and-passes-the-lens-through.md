@@ -40,7 +40,8 @@ taken at beside the `FrameRef` of its pixels.
 2. **Each accepted pair is an edge, weighed by its inlier count**, in the convention
    `rotation_averaging.h` states for `EstimatePairwise(a, b)`. An unaccepted pair is left out rather
    than weighed at zero — ADR 0056 made `accepted` exactly the question "should a global solve use
-   this edge" — and left out so that whatever it carries cannot refuse the solve.
+   this edge" — and left out so that whatever it carries cannot refuse the solve. That narrows ADR
+   0056, which expected a global solve to use one as a weak constraint.
 
 3. **The anchor weight is the engine's constant, and it is measured**: 0.01 against inlier counts.
    On the photograph ring (ADR 0064's table) inlier-weighted edges give the same shape from 1e-6 to
@@ -57,7 +58,8 @@ taken at beside the `FrameRef` of its pixels.
 
 5. **The fit is reported in the unit the solve has.** `medianResidualPx` is replaced by
    `medianEdgeErrorDeg`, `maxEdgeErrorDeg` and `edgesUsed` — how far the answer leaves the pairs it
-   used, and over how many — and `priorsUsed`, how many priors had a say in which way it faces,
+   used, and over how many — `pieces`, how many separately placed pieces the pairs left, and
+   `priorsUsed`, how many priors had a say in which way it faces,
    without which a reconstruction one surviving prior pinned reads better than one twelve agreed on. `droppedFrames` becomes the list of frames the solve could not place, which
    are left out of `frames` and `rotations` so that neither ever holds a value that is not a solved
    rotation. `priorOnlyFrames`, `ambiguousFrames` and `converged` carry the solver's other honesty
@@ -66,9 +68,11 @@ taken at beside the `FrameRef` of its pixels.
 6. **A prior counts only if it is an anchored rotation**: `confidence` above zero and an
    orientation that is a rotation. Zero confidence is a direction relative to wherever the sensor
    started (ADR 0041); averaged with anchored priors it turns the whole answer toward that accident,
-   45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a captured frame always
-   has confidence, and a default `PoseSample` — confidence zero — is then no prior rather than a
-   claim the phone was held level.
+   45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a burst-captured frame
+   always has confidence; a frame given through `OfferFrame` — import, replay, manual shutter —
+   carries whatever pose its caller supplied, and one with no confidence is placed through its
+   pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
+   was held level.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
    repeated `FrameId` among them, a lens `IsUsableLens` refuses (it is not read by the solve, but
@@ -78,8 +82,10 @@ taken at beside the `FrameRef` of its pixels.
    produces those, and an accepted pair with no inliers weighed at zero would be left out silently
    while its frames were named prior-only or dropped. A pair naming a stranger is refused even
    unaccepted: it is a caller and a capture disagreeing about which frames exist, not a measurement
-   to disbelieve. `RegistrationFailed` when no prior counts, because then nothing fixes which way
-   is up; `Internal` for a solver refusal these checks did not anticipate, rather than a guess at
+   to disbelieve. `FailedPrecondition` when no prior counts — `ArmBurst`'s code for the same
+   condition, since the remedy is the sensor rather than the pixels — because then nothing fixes which way
+   is up, decided after every pair is checked so that a malformed pair is always the caller's
+   defect; `Internal` for a solver refusal these checks did not anticipate, rather than a guess at
    which of the caller's it was. A frame whose prior does not count is not a refusal: it is placed
    through its pairs, or dropped.
 
@@ -101,10 +107,15 @@ taken at beside the `FrameRef` of its pixels.
   the priors agree, which is 0.26 degrees from the truth. Bounded in `registration_accuracy_test.cpp`
   at a median of 0.08, which is what fails a solve handed eleven pairs instead of twelve (ORB then
   reads 0.1005).
-- **A capture whose priors are all unanchored is refused**, with `RegistrationFailed`. A gyroscope
+- **A capture whose priors are all unanchored is refused**, with `FailedPrecondition`. A gyroscope
   alone reports zero confidence for its whole life, and its priors agree with each other well
-  enough to solve with — but `ArmBurst` already refuses to capture on them, so no capture reaches
-  here that way. If that ever changes, this is the line to revisit.
+  enough to solve with — but `ArmBurst` already refuses to capture on them. A capture built through
+  `OfferFrame` with unset poses does reach here, and is refused; one that mixes offered and burst
+  frames loses the offered frames' priors, which are placed through their pairs. If an import path
+  ever needs its own priors counted, this is the line to revisit.
+- **`pieces` says how much of the answer the pairs actually placed.** A ring two declined pairs cut
+  in two is two pieces whose seams sit where the priors put them — 1.84 degrees out in a
+  reviewer's probe, with every other field reading clean.
 - **The lens is whatever the caller had.** On a real phone that is the page's reported field of view
   until refinement exists.
 - **Step 2 is lens refinement,** and needs the inlier correspondences carried out of
@@ -133,4 +144,5 @@ cannot be read without. Kept, and described as what it is.
 **Read every prior whatever its confidence**, which this ADR's first version decided, so that a
 gyroscope-only phone's captures could be solved. It would solve them, and it would average a prior
 nobody anchored in with the ones somebody did: one such prior forty-five degrees out turned a
-reviewer's whole reconstruction toward it. The phone it was for cannot capture at all.
+reviewer's whole reconstruction toward it. The phone it was for cannot capture by burst at all, and
+a capture offered frame by frame with unset poses is the case the refusal above names.

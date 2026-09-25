@@ -631,8 +631,8 @@ struct PairwiseResult {
   // which collapses the very distinction this field exists to draw, in the paragraph drawing it.
   //
   // So a caller may read `relativeRotation` on an unaccepted result — it is the best the pixels
-  // offered — but should treat it as a weak constraint, or ask for another frame, rather than
-  // chaining it. An earlier implementation set this from the same condition that decided the
+  // offered — but should not chain it: `Refine` leaves it out (ADR 0065), and a caller wanting it
+  // counted should ask for another frame. An earlier implementation set this from the same condition that decided the
   // refusal, which made it a constant `true` on every returned result and told a caller nothing.
   bool accepted = false;
 };
@@ -674,6 +674,11 @@ struct GlobalSolution {
   // edge figures cannot tell a reconstruction twelve priors agreed on from one a single surviving
   // prior pinned; the second reads better on every other field.
   int32_t priorsUsed = 0;
+  // How many pieces the accepted pairs join the placed frames into. The pairs place frames within a
+  // piece; only the priors place one piece against another, so above one the answer has seams that
+  // rest on the priors' degrees rather than the pixels' hundredths — and nothing else here says so.
+  // A frame placed on its prior alone is a piece of one.
+  int32_t pieces = 0;
 
   // Frames whose prior did not count — not an anchored rotation — and that no accepted pair connects
   // to one that did.

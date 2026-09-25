@@ -329,6 +329,32 @@ TEST_F(Refine, DroppedAndPriorOnlyFramesAreNamed) {
 }
 
 /**
+ * A ring the accepted pairs cut in two is two pieces, and the answer says so.
+ *
+ * Nothing but the priors relates one piece to the other, so where they meet is placed to the
+ * priors' accuracy rather than the pixels': with two declined pairs, the two seams of this ring
+ * come out near two degrees while every accepted pair is exact. No other field shows it — no frame
+ * is dropped, none rests on its prior alone, the edge errors are tiny — so the count of pieces is
+ * how a caller knows which kind of reconstruction it holds.
+ */
+TEST_F(Refine, APairlessSeamIsReportedAsASecondPiece) {
+  const std::vector<Quat> truth = Ring();
+  std::vector<PairwiseResult> pairs = RingPairs(truth);
+  pairs[5].accepted = false;
+  pairs[11].accepted = false;
+
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), Lens());
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_EQ(solved.value.pieces, 2);
+  EXPECT_TRUE(solved.value.droppedFrames.empty());
+  EXPECT_TRUE(solved.value.priorOnlyFrames.empty());
+
+  const Result<GlobalSolution> whole = engine_.Refine(RingPairs(truth), PriorsOut(truth), Lens());
+  ASSERT_TRUE(whole.ok());
+  EXPECT_EQ(whole.value.pieces, 1);
+}
+
+/**
  * Priors a half turn apart about where a piece sits name its frames as ambiguous, by frame.
  */
 TEST_F(Refine, AmbiguousFramesAreNamed) {
@@ -416,11 +442,18 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
 
   std::vector<FramePrior> unusable = priors;
   for (FramePrior& prior : unusable) prior.pose.orientation = Quat{0, 0, 0, 0};
-  refused(pairs, unusable, Lens(), StatusCode::RegistrationFailed, "no prior is");
+  // Nothing measured which way the camera pointed: the same condition `ArmBurst` refuses, and with
+  // the same code, since the remedy is the sensor and not the pixels.
+  refused(pairs, unusable, Lens(), StatusCode::FailedPrecondition, "no prior is");
 
   std::vector<FramePrior> unanchored = priors;
   for (FramePrior& prior : unanchored) prior.pose.confidence = 0.0;
-  refused(pairs, unanchored, Lens(), StatusCode::RegistrationFailed, "no prior is");
+  refused(pairs, unanchored, Lens(), StatusCode::FailedPrecondition, "no prior is");
+
+  // A malformed pair is the caller's defect whatever the priors say: with none of them anchored it
+  // is still refused as what it is, not as the capture condition.
+  refused(stranger, unanchored, Lens(), StatusCode::InvalidArgument, "names a frame with no prior");
+  refused(counts, unanchored, Lens(), StatusCode::InvalidArgument, "counts no engine fills in");
 }
 
 }  // namespace

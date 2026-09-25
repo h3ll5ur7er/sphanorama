@@ -431,6 +431,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     if (placed[static_cast<size_t>(i)] == 0) continue;
     if (incident[static_cast<size_t>(i)].empty()) out.priorOnly.push_back(i);
   }
+  out.pieces = static_cast<int32_t>(pieces.size());
   out.rotations = std::move(solved);
   out.valid = true;
   return out;

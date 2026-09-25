@@ -105,10 +105,12 @@ class IRegistrationEngine {
   // One consistent set of absolute rotations from the pairwise ones and the sensor priors.
   //
   // The pairs are relative and independently estimated; the priors are absolute and out by
-  // degrees. The pairs decide how the frames sit relative to each other and the priors decide only
-  // which way the whole reconstruction faces, which is the one thing the pairs cannot say. That is
-  // why a ring's closing pair is worth having: a chain throws it away, and it is the measurement of
-  // how far the chain drifted.
+  // degrees. Where the accepted pairs join the frames, the pairs decide how they sit relative to
+  // each other and the priors decide only which way they face, which is the one thing the pairs
+  // cannot say. Where the pairs do not join them, nothing but the priors relates one piece to the
+  // other, and the seam between them is placed to the priors' degrees — `GlobalSolution::pieces`
+  // says how many pieces there were. That is why a ring's closing pair is worth having: a chain
+  // throws it away, and it is the measurement of how far the chain drifted.
   //
   // **Each prior names its frame**, and the priors are the frame set: a pair naming a frame with no
   // prior is refused rather than guessed at. Only accepted pairs are used — `accepted` is exactly
@@ -127,9 +129,11 @@ class IRegistrationEngine {
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a lens
   // `IsUsableLens` would not accept, a pair naming a frame with no prior or the same frame twice, or
   // an accepted pair whose rotation is not one or whose counts no engine fills in — no inliers, or
-  // fewer correspondences than inliers. `RegistrationFailed` when no prior is an anchored rotation,
+  // fewer correspondences than inliers. `FailedPrecondition` when no prior is an anchored rotation,
   // because then nothing says which way the reconstruction faces. `Unsupported` from
-  // `NullRegistrationEngine`, which has no pairs to solve with. A frame whose prior does not count
+  // `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a refusal from the
+  // solver these checks did not anticipate, which no input reaches today. A malformed pair is
+  // `InvalidArgument` whatever the priors say. A frame whose prior does not count
   // is not a refusal: it is placed through its pairs, or named in `droppedFrames`.
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
                                         std::span<const FramePrior> priors,
