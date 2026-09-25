@@ -883,7 +883,9 @@ export interface CaptureSessionManager {
    * It also advances an armed burst by at most one frame, because this is the only call the
    * client makes often enough to pace one: a burst takes time, and time is something a
    * synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
-   * full and `CellDone` on the tick that fills it.
+   * full and `CellDone` on the tick that fills it. A failing tick ends an armed burst, keeps
+   * nothing it took and releases its locks — among them `FailedPrecondition` when the pose engine
+   * reports mid-burst a pose `Refine` would refuse (ADR 0065).
    */
   onMotion(samples: ImuSample[]): Promise<Result<CaptureGuidance>>;
   /**
@@ -902,6 +904,9 @@ export interface CaptureSessionManager {
    * burst records whatever the camera is looking at and the node is only a name to file it under,
    * so arming against a cell somewhere else stores a good picture in the wrong place: sharp, well
    * scored, and undetectable afterwards (ADR 0041). The caller fixes it by turning the phone.
+   * Refused with `FailedPrecondition` too when the pose engine reports a pose `Refine` would
+   * refuse: read as an aim it faces the identity, so it armed on a cell the phone never faced
+   * (ADR 0065). Like the broken cone below, nothing the user can do anything about.
    * Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
    * measurement — not finite, or not greater than zero. The detail says which: "not a usable
    * measurement" is a broken plan and nothing the user can do anything about, where "not aimed at

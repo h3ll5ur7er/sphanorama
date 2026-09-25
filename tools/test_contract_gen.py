@@ -144,6 +144,8 @@ class InterfaceTest(unittest.TestCase):
                   "  virtual Status Archive(ProjectId project) = 0;\n};\n")
         self.assertIn("delete(project: ProjectId)", ts)
         self.assertIn("archive(project: ProjectId)", ts)
+        # And the comment is the method's doc, as a field's trailing comment is the field's.
+        self.assertIn("[the caller's]", ts)
 
     def test_methods_become_lower_camel_case_and_async(self):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"

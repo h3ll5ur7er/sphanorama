@@ -440,7 +440,8 @@ def _parse_methods(body: str, name: str) -> list[Method]:
     buffer = ""
 
     for raw in body.splitlines():
-        stripped = _split_comment(raw)[0].strip()
+        code, trailing = _split_comment(raw)
+        stripped = code.strip()
         doc = DOC_RE.match(raw)
         if doc and not buffer:
             pending.append(doc.group(1))
@@ -452,6 +453,9 @@ def _parse_methods(body: str, name: str) -> list[Method]:
         if not buffer and SKIPPABLE.match(stripped):
             continue
 
+        # A comment trailing a declaration's line is its doc, as a field's is.
+        if trailing.strip():
+            pending = pending + [trailing.strip()]
         # A declaration may span lines; accumulate until the statement terminates.
         buffer = f"{buffer} {stripped}" if buffer else stripped
         if not buffer.endswith(";"):

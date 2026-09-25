@@ -1300,8 +1300,8 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     // No prior is `confidence` zero and nothing else — a direction relative to wherever the sensor
     // started (ADR 0041), which averaged with anchored priors would turn the whole answer toward
     // that accident, so the frame is placed through its pairs or dropped. `ArmBurst` refuses to fire
-    // on one, so a burst-captured frame always has confidence; `OfferFrame` accepts an unanchored
-    // pose, so an imported or replayed frame may not. Any other way of looking absent is refused,
+    // on one, so a burst-captured frame has confidence when it is taken; an offered frame may not,
+    // and nor may a restored one whose pose `Resume` demoted. Any other way of looking absent is refused,
     // here and at `OfferFrame` by the same predicate: read as no prior, a NaN from upstream
     // arithmetic would leave `priorsUsed` one short and name no frame, or, on every prior at once,
     // send its caller to the sensor.

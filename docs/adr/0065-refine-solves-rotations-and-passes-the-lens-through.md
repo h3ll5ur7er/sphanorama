@@ -69,15 +69,16 @@ taken at beside the `FrameRef` of its pixels.
    is none.** Zero confidence is a direction relative to wherever the sensor
    started (ADR 0041); averaged with anchored priors it turns the whole answer toward that accident,
    45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a burst-captured frame
-   always has confidence; a frame given through `OfferFrame` — import, replay, manual shutter —
-   may carry an unanchored pose, and one with no confidence is placed through its pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
+   has confidence when it is taken; a frame given through `OfferFrame` — import, replay, manual
+   shutter — may carry an unanchored pose, and so may a restored burst frame whose pose `Resume`
+   demoted, and one with no confidence is placed through its pairs. A default `PoseSample` — confidence zero — is then no prior rather than a claim the phone
    was held level. Any other way of looking absent is refused (decision 7): a confidence outside
    [0, 1], or an orientation that is not a rotation where the confidence claims one, is a defect
    upstream. Read as no prior, a NaN from a caller's arithmetic left `priorsUsed` one short with no
    frame named, and on every prior at once was sent to the sensor as `FailedPrecondition`, in a
    reviewer's probe. A first version of this decision read an unusable orientation as no prior.
-   **Every door a pose comes into the capture by from outside the core refuses the same poses**,
-   through the one predicate `Refine` calls (`PoseSampleDefect`, in `utilities/quaternion`).
+   **Every door a pose comes into the capture by applies the predicate `Refine` does**
+   (`PoseSampleDefect`, in `utilities/quaternion`), with the outcome that door can afford.
    `OfferFrame` refuses one with `InvalidArgument`: checked only in `Refine`, an imported frame with
    a broken pose was accepted, covered and ranked, and would have refused any solve built from the
    session's candidates, blaming `Refine`'s caller. `Resume` keeps a restored candidate carrying one
@@ -85,10 +86,12 @@ taken at beside the `FrameRef` of its pixels.
    later session, since a burst's candidates are written back by every checkpoint. Refused, as a
    first version of this decision had it, it cost the whole sphere — the refusal was `Unsupported`,
    which the page reads as a document a later build can open, and the one button it leaves starts a
-   capture that clears the tier. A burst is abandoned with `Internal` when the pose engine reports
-   one: the shipped engine keeps a rotation a rotation without making one, and a test engine
-   reporting a zero orientation at full confidence was aimed as though it faced the identity and
-   fired a whole burst of candidates no solve could use. An unanchored pose is still accepted
+   capture that clears the tier. `ArmBurst` refuses to arm on one, and a burst the pose breaks
+   mid-way is abandoned, both with `FailedPrecondition` — the code `ArmBurst` already gives a broken
+   plan, for a broken collaborator. The shipped engine keeps a rotation a rotation without making
+   one, and a test engine reporting a zero orientation at full confidence was aimed as though it
+   faced the identity: checked only at the first frame, it locked and was abandoned every dwell,
+   and one that recovered after the arm filed a burst under a cell the phone never faced. An unanchored pose is still accepted
    everywhere. That is a narrow change to three manager doors, refusing or dropping only values
    `PoseSample` already calls defects.
 
@@ -135,14 +138,16 @@ taken at beside the `FrameRef` of its pixels.
 - **A capture whose priors are all unanchored is refused**, with `FailedPrecondition`. A gyroscope
   alone reports zero confidence for its whole life, and its priors agree with each other well
   enough to solve with — but `ArmBurst` already refuses to capture on them. A capture built through
-  `OfferFrame` with unset poses does reach here, and is refused; one that mixes offered and burst
+  `OfferFrame` with unset poses does reach here, and is refused, and so does a resumed one whose
+  every restored pose `Resume` demoted — with the sensor's code, though the document was the
+  problem; one that mixes offered and burst
   frames loses the offered frames' priors, which are placed through their pairs. If an import path
   ever needs its own priors counted, this is the line to revisit.
 - **No document an earlier build wrote is changed by the restore rule.** The shipped pose engines
   write confidence only as 0, 0.5 or 1 and an orientation only through `Normalize`, and an offered
   frame was never checkpointed, so only a tampered document or one written through another
   `IPoseEngine` carries a pose the rule drops. What dropping costs is that frame's prior, and
-  nothing names the frame: `priorsUsed` is one short. Named would need a field on `Candidate`,
+  nothing names the frame: `priorsUsed` is one short for each, down to the refusal above. Named would need a field on `Candidate`,
   which is a contract change for a case no shipped writer produces.
 - **`pieces` says how much of the answer the pairs actually placed.** A ring two declined pairs cut
   in two is two pieces whose seams sit where the priors put them — 1.84 degrees out in a

@@ -57,8 +57,8 @@ bool IsUsableRotation(const Quat& q);
 // at zero the orientation is not read; any other confidence outside [0, 1], or an orientation that
 // is not a rotation where the confidence claims one, is a defect upstream rather than a way of
 // saying "none". One rule for every door a pose comes into the capture by — `OfferFrame` refuses
-// one, a restored session document keeps the frame and drops the claim, and a burst is abandoned
-// on one — and for `Refine`, so the capture cannot hold a pose the solve will refuse. The burst
+// one, a restored session document keeps the frame and drops the claim, and a burst is neither
+// armed nor continued on one — and for `Refine`, so the capture cannot hold a pose the solve will refuse. The burst
 // needs its door because the shipped pose engine keeps a rotation a rotation without making one:
 // an engine that reports a zero orientation at full confidence is aimed as though it faced the
 // identity (ADR 0065).

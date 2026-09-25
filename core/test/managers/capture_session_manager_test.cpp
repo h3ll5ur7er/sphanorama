@@ -1484,21 +1484,35 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
 }
 
-TEST_F(CaptureSession, ABurstFrameWhosePoseTheSolveWouldRefuseAbandonsTheBurst) {
-  // The burst is a door too. Its pose comes from the pose engine, and the shipped one keeps a
-  // rotation a rotation only because the manager seeds it from `Initial`; an engine that reports a
-  // zero orientation at full confidence is aimed as though it faced the identity, and without this
-  // it fired a whole burst of candidates every `Refine` would refuse. A broken engine rather than
-  // a missing reading, so `Internal`, and nothing it took is kept.
+TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
+  // The burst is a door too, at both ends. The shipped pose engine keeps a rotation a rotation
+  // without making one, and an engine that reports a zero orientation at full confidence is read
+  // as facing the identity: armed on, it took the locks and was abandoned on its first frame, every
+  // dwell, and one that recovered after the arm filed a burst under a cell the phone never faced.
+  // A broken collaborator, like a broken plan, so `FailedPrecondition`.
   Begin();
   TurnTo(*manager, pose, Quat{0, 0, 0, 0});
   const NodeId node = AimedNode(*manager);
-  const Status fired = FireBurstOn(*manager, clock, node, BurstSpec{});
-  EXPECT_EQ(fired.code, StatusCode::Internal) << fired.detail;
-  EXPECT_NE(fired.detail.find("pose"), std::string::npos) << fired.detail;
-  EXPECT_TRUE(manager->Candidates(node).value.empty());
+  const Status armed = manager->ArmBurst(node, BurstSpec{});
+  EXPECT_EQ(armed.code, StatusCode::FailedPrecondition) << armed.detail;
+  EXPECT_NE(armed.detail.find("pose engine"), std::string::npos) << armed.detail;
+  EXPECT_FALSE(camera->ExposureLocked()) << "refused before the locks";
 
-  // And the same cell fires once the engine reports a rotation again.
+  // Armed on a rotation, broken mid-burst: abandoned, and nothing it took is kept.
+  TurnTo(*manager, pose, Quat{});
+  const NodeId facing = AimedNode(*manager);
+  const BurstSpec burst{};
+  ASSERT_TRUE(manager->ArmBurst(facing, burst).ok());
+  clock.AdvanceMs(burst.settleMs);
+  // `LookAt` rather than `TurnTo`: the tick that re-integrates the pose is the one that abandons.
+  pose.LookAt(Quat{0, 0, 0, 0});
+  const ImuSample sample{};
+  const Result<CaptureGuidance> tick = manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+  EXPECT_EQ(tick.status.code, StatusCode::FailedPrecondition) << tick.status.detail;
+  EXPECT_FALSE(camera->ExposureLocked());
+  EXPECT_TRUE(manager->Candidates(facing).value.empty());
+
+  // And the cell fires once the engine reports a rotation again.
   TurnTo(*manager, pose, Quat{});
   EXPECT_TRUE(FireBurstOn(*manager, clock, AimedNode(*manager), BurstSpec{}).ok());
 }

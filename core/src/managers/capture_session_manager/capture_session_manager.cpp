@@ -972,6 +972,13 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "nothing has measured where the camera is pointing yet");
   }
+  // A pose the solve would refuse, from an engine that claims it measured one: read below as
+  // facing the identity, it armed on a cell the phone never faced. A broken collaborator, refused
+  // with the broken plan's code, before anything is locked (ADR 0065).
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the pose engine reported a pose with " + std::string(*defect));
+  }
 
   const double offBy =
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
@@ -1015,9 +1022,8 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   }
   // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
   // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
-  // target by the check directly above, and the pose by `OrientationPoseEngine::Integrate`, which
-  // refuses to anchor on an attitude that is not one (`PoseEngine.AnAttitudeThatIsNotARotation-
-  // IsNotAReading`). Two usable rotations give two usable directions and an angle in `[0, π]`, so
+  // target by the check directly above, and the pose by `PoseSampleDefect` further up — not by the
+  // shipped engine, which keeps a rotation a rotation without making one. Two usable rotations give two usable directions and an angle in `[0, π]`, so
   // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
   //
   // An earlier version of this comment credited
@@ -1301,12 +1307,10 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // when the burst was armed, every frame since has set it one interval ahead.
   if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
 
-  // The door a burst's pose comes in by. The shipped engine keeps a rotation a rotation without
-  // making one, so this holds only while nothing seeds the pose but `Initial`; an engine that
-  // reports a pose the solve would refuse is broken rather than unsure, and every frame it filed
-  // would be a candidate no `Refine` could use (ADR 0065).
+  // `ArmBurst` checked the pose it armed on; this is the one that breaks mid-burst, which would
+  // file every later frame as a candidate no `Refine` could use. Same code as at the arm (ADR 0065).
   if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
-    return Abandon(Fail(StatusCode::Internal, kComponent,
+    return Abandon(Fail(StatusCode::FailedPrecondition, kComponent,
                         "the pose engine reported a pose with " + std::string(*defect)));
   }
 
