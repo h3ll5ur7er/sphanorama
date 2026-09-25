@@ -659,8 +659,10 @@ TEST(PoseSampleDefect, EveryConfidenceThePoseEngineWritesIsWellFormed) {
 }
 
 TEST(PoseSampleDefect, AConfidenceOutsideTheUnitIntervalIsADefect) {
-  for (const double confidence : {-0.25, 1.5, std::numeric_limits<double>::quiet_NaN(),
-                                  std::numeric_limits<double>::infinity()}) {
+  // The least double outside each end too, so no tolerance around [0, 1] can pass for the rule.
+  for (const double confidence :
+       {-std::numeric_limits<double>::denorm_min(), std::nextafter(1.0, 2.0), -0.25, 1.5,
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
     PoseSample pose;
     pose.confidence = confidence;
     const std::optional<std::string_view> defect = PoseSampleDefect(pose);

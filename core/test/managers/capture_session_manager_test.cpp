@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <set>
@@ -1469,6 +1470,13 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
 
   auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
   ASSERT_TRUE(frame.ok());
+  // A pose the solve would refuse is refused at the door, before anything is scored: the pose's
+  // code, not the quality engine's. Scoring first would re-heat a cooled cell on every broken offer.
+  PoseSample broken;
+  broken.confidence = 1.5;
+  EXPECT_EQ(manager.OfferFrame(node, frame.value, broken).status.code,
+            StatusCode::InvalidArgument);
+
   auto verdict = manager.OfferFrame(node, frame.value, PoseSample{});
   EXPECT_EQ(verdict.status.code, StatusCode::ComputeUnavailable);
   EXPECT_TRUE(manager.Candidates(node).value.empty());
@@ -1497,8 +1505,17 @@ TEST_F(CaptureSession, AnOfferedPoseTheSolveWouldRefuseIsRefusedAtTheDoor) {
   }
   // Not forgotten: the caller passed it in and still owns it.
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
-  // An unanchored pose is not a defect, and is accepted as before.
+  // An unanchored pose is not a defect, and is accepted as before — and so is every well-formed
+  // anchored one, down to the least confidence above zero: the door has two sides.
   EXPECT_TRUE(manager->OfferFrame(node, frame.value, PoseSample{}).ok());
+  for (const double confidence : {std::numeric_limits<double>::denorm_min(), 0.5, 1.0}) {
+    PoseSample anchored;
+    anchored.confidence = confidence;
+    auto another = store->Allocate(4, 4, PixelFormat::RGBA8);
+    ASSERT_TRUE(another.ok());
+    const Result<FrameVerdict> verdict = manager->OfferFrame(node, another.value, anchored);
+    EXPECT_TRUE(verdict.ok()) << confidence << ": " << verdict.status.detail;
+  }
 }
 
 TEST_F(CaptureSession, GuidanceStopsAskingForACellOnceItIsCaptured) {

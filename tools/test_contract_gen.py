@@ -66,9 +66,11 @@ class StructTest(unittest.TestCase):
         # A default that is not the type's own default is spelled with braces, and the commas
         # inside them are not declarator separators: splitting there reads `0 }` as a field name.
         # And a declarator after one: a depth that never comes back down swallows the rest.
-        fields = parse("struct S { Quat rotation{0, 0, 0, 0}, spare; double x{1}, y = 0; };\n")
+        # And a nested one, where a depth reset to zero rather than decremented splits inside it.
+        fields = parse("struct S { Quat rotation{0, 0, 0, 0}, spare; double x{1}, y = 0;"
+                       " FramePrior p{{3}, Quat{1, 0, 0, 0}}, after; };\n")
         [s] = [d for d in fields.declarations if getattr(d, "name", None) == "S"]
-        self.assertEqual([f.name for f in s.fields], ["rotation", "spare", "x", "y"])
+        self.assertEqual([f.name for f in s.fields], ["rotation", "spare", "x", "y", "p", "after"])
         self.assertEqual(s.fields[0].type, "Quat")
 
     def test_a_brace_in_a_comment_does_not_end_the_struct(self):
