@@ -1525,8 +1525,8 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
   // dwell, and one that recovered after the arm filed a burst under a cell the phone never faced.
   // A broken collaborator, like a broken plan, so `FailedPrecondition`.
   //
-  // Guidance names no cell on such a pose, so the arm is asked at the one the phone faced a tick
-  // earlier. The NaN is named as the defect it is rather than as a reading not yet taken, which
+  // Guidance holds no cell on such a pose, so the arm is asked at the one the phone faced a tick
+  // earlier — which is the page's own path when the pose breaks between a `Fire` and its arm. The NaN is named as the defect it is rather than as a reading not yet taken, which
   // is what the arm said while it read the confidence before the predicate.
   Begin();
   TurnTo(*manager, pose, Quat{});

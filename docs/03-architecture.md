@@ -426,7 +426,8 @@ One rule per question survives this, which is the other half of what it bought. 
 cell the camera is inside; `ArmBurst` refuses a burst on three counts — the pose engine reported a
 pose `Refine` would refuse, nothing has measured where the camera is pointing, or what was measured
 is outside that cone; the dwell fires. Guidance reads such a pose as no aim (ADR 0065), so the
-first count is a backstop the dwell never reaches. Zero
+dwell does not fire into the first count; a `Fire` issued just before the pose broke still meets
+it, once, since the arm crosses the worker after the tick that fired. Zero
 `PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
 and a stream carrying angular rates with no attitude in them never anchors at all — and it means
 "no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.

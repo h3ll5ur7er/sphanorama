@@ -97,7 +97,8 @@ taken at beside the `FrameRef` of its pixels.
    the phone never faced. Refused at the arm alone, as a first version of this decision had it,
    guidance still held still over the identity's cell and the dwell fired into the refusal every
    two seconds, the page locking and releasing the camera around each one. Guidance is what stops
-   the dwell; the arm's refusal is the backstop for a caller that arms without it. An unanchored
+   the dwell; the arm's refusal is the backstop, met once by a `Fire` issued just before the pose
+   broke, since the arm crosses the worker after the tick that fired. An unanchored
    pose is still accepted everywhere. That is a narrow change to three manager doors, refusing or
    dropping only values `PoseSample` already calls defects.
 

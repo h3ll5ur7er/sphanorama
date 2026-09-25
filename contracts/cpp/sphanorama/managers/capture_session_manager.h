@@ -83,8 +83,9 @@ class ICaptureSessionManager {
   //
   // Refused with `FailedPrecondition` too when the pose engine reports a pose `Refine` would
   // refuse: read as an aim it faces the identity, so it armed on a cell the phone never faced
-  // (ADR 0065). Guidance names no cell on such a pose, so this is reached only by a caller that
-  // arms without it; the detail names the pose engine, since the user cannot fix it.
+  // (ADR 0065). Guidance holds no cell on such a pose, so the dwell does not fire into it; a
+  // `Fire` issued just before the pose broke still can, since the arm crosses the worker after
+  // the tick that fired. The detail names the pose engine, since the user cannot fix it.
   //
   // Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
   // measurement — not finite, or not greater than zero. The detail says which: "not a usable
