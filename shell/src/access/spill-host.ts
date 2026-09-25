@@ -448,6 +448,8 @@ const INDEX_SUFFIX = '.index';
 export interface SpillTier {
   frames: SpillFile;
   index: SpillFile;
+  /** Whether this is the resident pair, which is the one a later page in this tab may wait for. */
+  resident: boolean;
 }
 
 /**
@@ -522,6 +524,97 @@ async function lock(directory: SpillDirectory, name: string): Promise<SyncAccess
   return sync;
 }
 
+/**
+ * How long a reload waits for its previous worker to let the resident pair go.
+ *
+ * A reload starts the new worker before the old one is reliably gone, and the old one holds the
+ * resident pair under exclusive handles until it is. Taking a tier of its own at the first
+ * refusal gave the reloaded page a tier nobody can resume, so the capture it came back for was
+ * refused as lost. Only the page handed the right to the pair by the page it replaced waits
+ * (`handoffFor`, ADR 0063).
+ *
+ * **Sized from a measurement, not chosen.** Chromium lets go of an idle worker's handles before
+ * the new worker first asks. A busy one it terminates about 2 s after the reload tears its page
+ * down, however long that worker was going to be busy for (3, 8 and 20 s all measured the same),
+ * and not before the reloaded page's main thread next yields: a long task spanning that moment
+ * pushed the release to 4.5 s. Twenty attempts, 1.9 s, gave up about 70 ms short and refused the
+ * resume. Thirty is 2.9 s: the measured release with a second to spare.
+ *
+ * The budget is per file, and the frames and the index are waited for separately. Chromium
+ * releases the two together, so the index has never needed a second try; a browser that let them
+ * go apart could make a reload wait up to twice this. Only the browser's held-file error is waited
+ * out; anything else — a full disk, a broken handle — will not clear by waiting.
+ */
+export interface ResidentHandoff {
+  attempts: number;
+  delayMs: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const RELOAD_HANDOFF: ResidentHandoff = { attempts: 30, delayMs: 100 };
+const AT_ONCE: ResidentHandoff = { attempts: 1, delayMs: 0 };
+const NOT_AT_ALL: ResidentHandoff = { attempts: 0, delayMs: 0 };
+
+/**
+ * What the page decided this worker may do with the resident pair, before the worker asked.
+ *
+ * The page holds the right to the pair as a Web Lock (`bridge/tier-claim.ts`, ADR 0063), because
+ * polling a held file cannot say who should have it next — every rule for who may poll was
+ * measured handing it to the wrong session.
+ */
+export type ResidentAccess =
+  /** The page was handed the right by the page it replaced: poll until the old worker lets go. */
+  | 'wait'
+  /** The right was free: try the files once. */
+  | 'try'
+  /** Another page holds the right: leave the pair alone. */
+  | 'skip';
+
+export function handoffFor(access: ResidentAccess): ResidentHandoff {
+  return access === 'wait' ? RELOAD_HANDOFF : access === 'try' ? AT_ONCE : NOT_AT_ALL;
+}
+
+class ResidentElsewhere extends Error {
+  constructor() {
+    super('another page holds the right to the resident pair');
+    this.name = 'ResidentElsewhere';
+  }
+}
+
+function isHeld(cause: unknown): boolean {
+  return (cause as { name?: unknown } | null)?.name === 'NoModificationAllowedError';
+}
+
+async function lockWaiting(directory: SpillDirectory, name: string,
+                           handoff: ResidentHandoff): Promise<SyncAccessHandle> {
+  const sleep = handoff.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  // Not even one look: a lock taken here, however briefly, is one the rightful page could be refused.
+  if (handoff.attempts < 1) throw new ResidentElsewhere();
+  for (let attempt = 1; ; ++attempt) {
+    try {
+      return await lock(directory, name);
+    } catch (cause) {
+      if (!isHeld(cause)) throw cause;
+      if (attempt >= handoff.attempts) {
+        // Said out loud, because a reload that ends up here cannot resume its capture and nothing
+        // else on the way to the page records why.
+        console.warn(`sphanorama spill: ${name} still held after ${attempt} attempts, `
+          + `${handoff.delayMs} ms apart; taking a tier of its own`);
+        throw cause;
+      }
+      await sleep(handoff.delayMs);
+    }
+  }
+}
+
+// Said out loud, because a session that falls back cannot resume its capture and nothing else on
+// the way to the page records why. A held file has already said so, with how long it waited.
+function fallingBack(file: string, cause: unknown): void {
+  if (isHeld(cause)) return;
+  // `String` of an `Error` or a `DOMException` is its name and its message, which is both halves.
+  console.warn(`sphanorama spill: ${file} refused (${String(cause)}); taking a tier of its own`);
+}
+
 function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: string,
                   removeOnClose: boolean): SpillFile {
   return {
@@ -553,30 +646,39 @@ function fileOver(sync: SyncAccessHandle, directory: SpillDirectory, name: strin
  * those identities back on resume (ADR 0029). A tier under a fresh name every run would put those
  * bytes in a file nobody would ever ask for.
  *
- * The handle underneath is exclusive, though, so the resident pair cannot always be had: a second
- * tab open on the app, or a reload whose previous worker has not been torn down yet, gets
- * `NoModificationAllowedError`. Falling back to a name of its own is what keeps that session
+ * The handle underneath is exclusive, though, so the resident pair cannot always be had at once: a
+ * reload whose previous worker has not been torn down yet gets `NoModificationAllowedError` for a
+ * moment, and a second tab open on the app gets it for good. So the page decides first, by a Web
+ * Lock, whether this worker may ask at all (`ResidentAccess`): the page handed the right by the page
+ * it replaced waits for the files, a page that found the right free tries once, and a page that did
+ * not leaves them alone. Any of them then falls back to a name of its own. That keeps a second tab
  * capturing — with a tier that is not resumable, which is correct, because the capture it would
- * resume belongs to whoever is holding the resident one.
+ * resume belongs to whoever is holding the resident one — without handing a reload the same
+ * unresumable tier.
  */
-export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTier> {
+export async function openSpillTier(directory: SpillDirectory | undefined,
+                                    handoff: ResidentHandoff): Promise<SpillTier> {
   const root = directory ?? (await originPrivateDirectory());
 
   let name = RESIDENT;
   let frames: SyncAccessHandle;
   try {
-    frames = await lock(root, RESIDENT);
+    frames = await lockWaiting(root, RESIDENT, handoff);
   } catch (cause) {
     // No name will help on a platform that cannot lock at all, so this is where it stops.
     if (cause instanceof NoSyncAccessHandles) throw cause;
-    // Held by somebody, then. A tier of its own beats no tier at all.
+    // Held by somebody, or refused some other way. A tier of its own beats no tier at all.
+    fallingBack(RESIDENT, cause);
     name = SPILL_PREFIX + crypto.randomUUID();
     frames = await lock(root, name);
   }
 
   let index: SyncAccessHandle;
   try {
-    index = await lock(root, name + INDEX_SUFFIX);
+    // Having the frames is no promise the index is free: Chromium lets go of the two together,
+    // and nothing says every browser does.
+    index = name === RESIDENT ? await lockWaiting(root, name + INDEX_SUFFIX, handoff)
+                              : await lock(root, name + INDEX_SUFFIX);
   } catch (cause) {
     // Half a tier is worse than none: the frame handle would stay locked for the life of the
     // worker, pushing the next session onto a fallback name over a file nobody is using. Best
@@ -584,6 +686,7 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
     // the session the tier the fallback below exists to give it.
     release(frames);
     if (name !== RESIDENT) throw cause;
+    fallingBack(RESIDENT + INDEX_SUFFIX, cause);
 
     // Two files and two locks, and only one of them has to be unavailable. Giving up here would
     // cost this session its spill tier entirely — a sphere capped at RAM — over a file that holds
@@ -612,5 +715,6 @@ export async function openSpillTier(directory?: SpillDirectory): Promise<SpillTi
   return {
     frames: fileOver(frames, root, name, disposable),
     index: fileOver(index, root, name + INDEX_SUFFIX, disposable),
+    resident: !disposable,
   };
 }

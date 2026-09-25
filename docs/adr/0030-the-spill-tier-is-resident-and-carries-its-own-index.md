@@ -1,5 +1,7 @@
 # ADR 0030 — The spill tier has a resident name and carries its own index
 
+**Status:** accepted; its reload fallback narrowed by [0063](0063-a-reload-waits-for-the-resident-spill-pair.md)
+
 ## Context
 
 ADR 0029 gave the core a resume: a session document names the frames a capture took, and

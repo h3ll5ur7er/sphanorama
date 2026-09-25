@@ -241,6 +241,85 @@ test('a second tab open on the app gets a spill tier of its own', async ({ page,
   }
 });
 
+test('a page whose storage is switched off still loads', async ({ page }) => {
+  // Chromium refuses switched-off storage by throwing from the `sessionStorage` property itself,
+  // before any method is called. The tab claim reads it, and a read outside its guard stopped the
+  // core loading altogether — worse than the wait it exists for (ADR 0063).
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', {
+      get() { throw new DOMException("Failed to read the 'sessionStorage' property", 'SecurityError'); },
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#enable')).toBeEnabled();
+  } finally {
+    await server.close();
+  }
+});
+
+test('the resident spill tier is handed to the page that replaces its holder, and to no other', async ({ page, context }) => {
+  // The right to the resident pair is a Web Lock the page holds for its life; a page that replaced
+  // its holder a moment ago queues for it, and every other page only asks if it is free (ADR 0063).
+  // The console carries both the page's and the worker's account of which tier each one got.
+  const server = await serve();
+  try {
+    const notesOf = (tab) => {
+      const notes = [];
+      tab.on('console', (message) => {
+        if (message.text().startsWith('sphanorama spill')) notes.push(message.text());
+      });
+      return async () => {
+        await expect(tab.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+        const seen = [...notes];
+        notes.length = 0;
+        return seen;
+      };
+    };
+    // Origin-wide, so it counts holders rather than saying which tab: there must only ever be one.
+    const holders = (tab) => tab.evaluate(async () =>
+      (await navigator.locks.query()).held.filter((lock) => lock.name === 'sphanorama-spill-resident').length);
+
+    const first = notesOf(page);
+    await page.goto(server.appUrl);
+    expect(await first()).toEqual([]);
+    expect(await holders(page)).toBe(1);
+
+    // A second tab leaves the pair alone, and so does its reload.
+    const second = await context.newPage();
+    const secondNotes = notesOf(second);
+    await second.goto(server.appUrl);
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
+    await second.reload();
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
+    expect(await holders(second)).toBe(1);
+
+    // A departure that names someone other than the holder is no claim: it does not queue.
+    await second.evaluate(() => sessionStorage.setItem('sphanorama-resident-tier',
+      JSON.stringify({ token: 'not-the-holder', leftAt: Date.now() })));
+    await second.reload();
+    expect(await secondNotes()).toEqual([expect.stringContaining('refused (ResidentElsewhere')]);
+
+    // The first tab's reload is handed the right and the pair, with the second tab still open — as
+    // its successor, which the departure it finds on arrival shows: an idle old worker lets go at
+    // once, so the pair alone could not tell a successor from a page that merely found it free.
+    const holderBefore = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('sphanorama-resident-holder') ?? 'null'));
+    await page.addInitScript(() => {
+      window.__departure = sessionStorage.getItem('sphanorama-resident-tier');
+    });
+    await page.reload();
+    expect(await first()).toEqual([]);
+    expect(await holders(page)).toBe(1);
+    const departure = JSON.parse(await page.evaluate(() => window.__departure) ?? 'null');
+    expect(departure).toEqual({ token: holderBefore.token, leftAt: expect.any(Number) });
+  } finally {
+    await server.close();
+  }
+});
+
 test('the page says which build it is', async ({ page }) => {
   // A screenshot from a phone is the only evidence some of this project has — the OPFS spill
   // tier, the lens the camera chose, the cell count — and every one of those readings is worth
@@ -404,6 +483,15 @@ test('a burst captures real pixels from the viewfinder', async ({ page }) => {
 });
 
 test('a pick survives the tab that made it', async ({ page }) => {
+  // The worker says when it falls back from the resident spill tier, and a fallback is what
+  // refuses the resume below, so a failure carries the worker's own account of the tier it got
+  // rather than only the refusal (ADR 0063).
+  // On the page rather than the worker: Playwright's `Worker` emits nothing but `close`, and a
+  // dedicated worker's console arrives as the page's.
+  const spillNotes = [];
+  page.on('console', (message) => {
+    if (message.text().includes('spill')) spillNotes.push(message.text());
+  });
   // The claim, end to end. A selection used to live in the review panel's own memory, so what the
   // strip showed as "in force" was whatever this tab had clicked — and a reload started again
   // from the ranking, silently disagreeing with the build, which reads the document. Everything
@@ -453,7 +541,8 @@ test('a pick survives the tab that made it', async ({ page }) => {
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await page.locator('#resume').click();
-    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+    await expect(page.locator('#stage'), `spill notes: ${spillNotes.join(' | ') || 'none'}`)
+      .toContainText('resumed', { timeout: 15000 });
 
     await openTheStrip();
     expect(await pressedIndex()).toBe(last);

@@ -7,6 +7,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { connectCore, type WorkerLike } from './remote-core';
+import type { TierAccess } from './tier-claim';
+
+const unclaimed: Pick<TierAccess, 'access' | 'settle'> = { access: 'try', settle: () => {} };
 import type { FromWorker, ToWorker } from './protocol';
 
 /** A worker that records what it was sent and replies only when the test says so. */
@@ -36,9 +39,9 @@ function fakeWorker() {
   };
   // Boot is answered eagerly, since connectCore cannot return until it is.
   const boot = async (methods: string[] = ['ProjectManager.list']) => {
-    const connecting = connectCore(worker, 'https://example.test/core.js');
+    const connecting = connectCore(worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
-    reply({ kind: 'booted', seq: seqOf('boot'), methods, spill: true });
+    reply({ kind: 'booted', seq: seqOf('boot'), methods, spill: true, resident: true });
     return connecting;
   };
   return { worker, sent, reply, raise, seqOf, boot, wasTerminated: () => terminated };
@@ -49,6 +52,31 @@ describe('connecting', () => {
     const w = fakeWorker();
     await w.boot();
     expect(w.sent[0].message).toMatchObject({ kind: 'boot', coreUrl: 'https://example.test/core.js' });
+  });
+
+  it('tells the worker what it may do with the resident tier, which only the page can know', async () => {
+    // The page holds the right to the pair (ADR 0063), so the worker is told rather than left to ask.
+    for (const access of ['wait', 'try', 'skip'] as const) {
+      const w = fakeWorker();
+      const connecting = connectCore(w.worker, 'https://example.test/core.js', { access, settle: () => {} });
+      await Promise.resolve();
+      w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: false });
+      await connecting;
+      expect(w.sent[0].message).toMatchObject({ kind: 'boot', access });
+    }
+  });
+
+  it('settles the right with whether the worker got the resident tier', async () => {
+    for (const resident of [true, false]) {
+      const w = fakeWorker();
+      const settled: boolean[] = [];
+      const connecting = connectCore(w.worker, 'https://example.test/core.js',
+                                     { access: 'try', settle: (r: boolean) => { settled.push(r); } });
+      await Promise.resolve();
+      w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident });
+      await connecting;
+      expect(settled).toEqual([resident]);
+    }
   });
 
   it('reports the methods the worker published rather than a list of its own', async () => {
@@ -192,7 +220,7 @@ describe('a worker that stops answering', () => {
 
   it('fails a boot the worker never answers, once it is known to be dead', async () => {
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
 
     w.raise('error', { message: 'the script would not load' });
@@ -234,7 +262,7 @@ describe('a boot that fails', () => {
     // a reference to the worker and nobody can stop it — and a sync access handle is exclusive,
     // so the next attempt to open the same file is blocked by the page's own orphan.
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
 
     w.reply({ kind: 'failed', seq: w.seqOf('boot'), detail: 'the module would not import' });
@@ -243,9 +271,33 @@ describe('a boot that fails', () => {
     expect(w.wasTerminated()).toBe(true);
   });
 
+  it('gives up the right to the resident tier, since a worker that is gone holds no files', async () => {
+    // A broken tab left open would otherwise keep every other page off a free pair (ADR 0063).
+    const settled: boolean[] = [];
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js',
+                                   { access: 'try', settle: (r: boolean) => { settled.push(r); } });
+    await Promise.resolve();
+    w.reply({ kind: 'failed', seq: w.seqOf('boot'), detail: 'the module would not import' });
+    await expect(connecting).rejects.toThrow();
+    expect(settled).toEqual([false]);
+  });
+
+  it('gives it up too when a worker that booted with the pair dies later', async () => {
+    const settled: boolean[] = [];
+    const w = fakeWorker();
+    const connecting = connectCore(w.worker, 'https://example.test/core.js',
+                                   { access: 'try', settle: (r: boolean) => { settled.push(r); } });
+    await Promise.resolve();
+    w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: true });
+    await connecting;
+    w.raise('error', { message: 'boom' });
+    expect(settled).toEqual([true, false]);
+  });
+
   it('terminates on an answer of the wrong kind too', async () => {
     const w = fakeWorker();
-    const connecting = connectCore(w.worker, 'https://example.test/core.js');
+    const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
 
     w.reply({ kind: 'flushed', seq: w.seqOf('boot'), persistError: null });

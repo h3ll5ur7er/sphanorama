@@ -13,6 +13,7 @@ import { coreFrom, type CoreRuntime, type HostState, type RuntimeCapabilities, t
   from './core';
 import type { GrabbedFrame } from '../access/preview-frame';
 import type { CameraOpening, FromWorker, LockReport, ToWorker } from './protocol';
+import type { TierAccess } from './tier-claim';
 
 /**
  * A request minus the number that pairs it with its answer, so callers describe what they want
@@ -75,7 +76,8 @@ export interface RemoteCoreHandle {
   remote: RemoteCore;
 }
 
-export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<RemoteCoreHandle> {
+export async function connectCore(worker: WorkerLike, coreUrl: string,
+                                  tier: Pick<TierAccess, 'access' | 'settle'>): Promise<RemoteCoreHandle> {
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let releaseLocks: () => void = () => {};
@@ -101,6 +103,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     // Nothing is coming from it and nothing more will be sent to it. Releasing it here means a
     // page that reports the failure is not also holding a thread that failed to start.
     worker.terminate?.();
+    // And a worker that is gone holds no files, so the page lets go of the right to them: otherwise
+    // a broken tab left open keeps every other page off a free pair (ADR 0063).
+    tier.settle(false);
   };
 
   worker.addEventListener('error', (event: unknown) => {
@@ -151,7 +156,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
   // `die` is idempotent, so an `error` event that arrives alongside this is not a second death.
   let booted: FromWorker;
   try {
-    booted = await ask({ kind: 'boot', coreUrl });
+    booted = await ask({ kind: 'boot', coreUrl, access: tier.access });
   } catch (cause) {
     die(`the core worker failed to boot: ${cause instanceof Error ? cause.message : String(cause)}`);
     throw cause;
@@ -160,6 +165,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string): Promise<
     die('the worker answered boot with something else');
     throw new Error('the worker answered boot with something else');
   }
+  // Settled as soon as it is known: a page whose worker did not get the resident pair lets go of the
+  // right to it, so the page it belongs to can be handed it.
+  tier.settle(booted.resident);
   const methodNames = booted.methods;
 
   const runtime: CoreRuntime = {

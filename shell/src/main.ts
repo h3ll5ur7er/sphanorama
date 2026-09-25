@@ -7,6 +7,7 @@
  */
 import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
+import { type LockManagerLike, tierAccess, type TierAccess } from './bridge/tier-claim';
 import type {
   CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat,
 } from '../../contracts/ts/contracts';
@@ -270,9 +271,10 @@ function reportMotionSource(capability?: string, lostReason = '') {
  * module is fetched at runtime rather than bundled: it is an artifact of the C++ build, and which
  * of the two builds (ADR 0011) is present is decided by what the deploy copied in.
  */
-async function startCore() {
+async function startCore(tier: TierAccess) {
   const worker = new Worker(new URL('./bridge/worker.ts', import.meta.url), { type: 'module' });
-  return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`);
+  return connectCore(worker, `${new URL(import.meta.env.BASE_URL, location.href).href}core/sphanorama-core.js`,
+                     tier);
 }
 
 function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
@@ -1545,7 +1547,16 @@ async function reportFacade(core: SphanoramaCore): Promise<ProjectSummary[]> {
 
 async function main() {
   try {
-    const connected = await startCore();
+    // First, because the right to the resident spill pair goes to whoever asks for it first once the
+    // page this one replaced is gone (ADR 0063).
+    const tier = await tierAccess({
+      session: () => globalThis.sessionStorage,
+      local: () => globalThis.localStorage,
+      locks: (navigator as { locks?: LockManagerLike }).locks,
+    });
+    window.addEventListener('pagehide', () => tier.depart());
+    window.addEventListener('pageshow', (event) => { if (event.persisted) tier.resume(); });
+    const connected = await startCore(tier);
     remote = connected.remote;
     const core = connected.core;
 
@@ -1658,6 +1669,10 @@ async function main() {
         .finally(() => { sessionStarting = false; });
     };
     enableButton.addEventListener('click', () => { startOnce(() => enable(core, null)); });
+    // Disabled in the markup until now, because it is visible from first paint and does nothing
+    // until this handler exists — which on a reload includes the wait for the previous worker to
+    // let the spill tier go (ADR 0063), during which pressing it would do nothing at all.
+    enableButton.disabled = false;
     resumeButton.addEventListener('click', () => {
       if (resume === null) return;
       startOnce(() => {
