@@ -101,11 +101,12 @@ at twelve frames does.
 0.0000278 degrees (and 0.0000024 at the fixed point), and the shape figures of every existing
 fixture. They are the same fixed points, reached sooner.
 
-**One sabotage survives, and why is worth a sentence.** Turning only a piece's anchored frames
-converges to the same answer in the same number of sweeps on every fixture here, because the next
-sweep drags an unanchored frame back onto its edges before anything reads it. Turning every frame is
-kept because it is the shorter statement and the one the "changes no edge's agreement" argument is
-made about.
+**Turning every frame of a piece, anchored or not, is load-bearing.** Turning only the anchored
+frames breaks the edges between them and the rest every sweep, and where the anchors are few the
+fixed point moves: two frames, one anchored, joined by pairs claiming 30 and 38 degrees on 300 and
+100 inliers, settle at 30.05 rather than 32. `Refine.APairCountsForItsInliers` is what catches it.
+A first version of this paragraph said the sabotage survived every fixture, which was true of the
+solver's own suite and not of the engine's.
 
 ## Rejected alternatives
 

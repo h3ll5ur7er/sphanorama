@@ -385,7 +385,9 @@ TEST(AverageRotations, TheGaugeIsWhereTheAnchorsAgreeHoweverLightlyTheyAreWeighe
  * once would turn each piece by the other's anchors — which no evidence supports. The pieces are
  * turned tens of degrees apart and their anchors are three degrees out, so neither starts where it
  * ends and a leak between the two shows at full size. One frame of the second piece has no anchor
- * of its own, and it has to turn with the piece it belongs to all the same.
+ * of its own; it has to turn with its piece, but on this ring the next sweep drags it back onto its
+ * edges before anything reads it, so this test does not see it left behind —
+ * `Refine.APairCountsForItsInliers`, with one anchor of two, does.
  */
 TEST(AverageRotations, EachPieceNoEdgeJoinsTakesItsGaugeFromItsOwnAnchors) {
   const std::vector<Quat> first = Ring(6);

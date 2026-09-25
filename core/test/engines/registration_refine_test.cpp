@@ -33,9 +33,9 @@ double SeparationDeg(const Quat& a, const Quat& b) { return AngleBetween(a, b) *
 FrameId Frame(int i) { return FrameId{static_cast<uint64_t>(100 + i)}; }
 
 // A ring turning about `y`, frame `i` at `30 i` degrees, the size the accuracy dataset renders.
-std::vector<Quat> Ring() {
+std::vector<Quat> Ring(int frames = kFrames) {
   std::vector<Quat> truth;
-  for (int i = 0; i < kFrames; ++i) truth.push_back(AboutY(360.0 * i / kFrames));
+  for (int i = 0; i < frames; ++i) truth.push_back(AboutY(360.0 * i / frames));
   return truth;
 }
 
@@ -299,16 +299,22 @@ TEST_F(Refine, APriorNothingAnchoredIsNotAPrior) {
  * What the solve could not place, and what rests on no pixel, are named by frame.
  *
  * Frames 0 to 2 are joined by accepted pairs. Frame 3 has a prior and no pair: placed, on its prior
- * alone. Frame 4 has neither a usable prior nor an accepted pair: dropped, and absent from both
- * parallel vectors so neither holds a rotation nobody solved for.
+ * alone. Frames 4 and 5 have no usable prior, and the accepted pair between them joins them to
+ * nothing that has one: both dropped, and absent from both parallel vectors so neither holds a
+ * rotation nobody solved for. Their pair is not counted as used — nothing was placed by it.
+ *
+ * The priors are given as 4, 0, 5, 1, 2, 3, so the dropped frames are first and in the middle
+ * rather than only at the end, which is the one place a walk that stops skipping after its first
+ * dropped frame would get right.
  */
 TEST_F(Refine, DroppedAndPriorOnlyFramesAreNamed) {
-  const std::vector<Quat> truth{AboutY(0.0), AboutY(30.0), AboutY(60.0), AboutY(90.0),
-                                AboutY(120.0)};
-  const std::vector<PairwiseResult> pairs{Pair(0, 1, truth), Pair(1, 2, truth)};
+  const std::vector<Quat> truth{AboutY(0.0),  AboutY(30.0),  AboutY(60.0),
+                                AboutY(90.0), AboutY(120.0), AboutY(150.0)};
+  const std::vector<PairwiseResult> pairs{Pair(0, 1, truth), Pair(1, 2, truth), Pair(4, 5, truth)};
   std::vector<FramePrior> priors;
-  for (int i = 0; i < 5; ++i) priors.push_back(Prior(i, truth[static_cast<size_t>(i)]));
-  priors[4].pose.orientation = Quat{0, 0, 0, 0};
+  for (const int i : {4, 0, 5, 1, 2, 3}) priors.push_back(Prior(i, truth[static_cast<size_t>(i)]));
+  priors[0].pose.orientation = Quat{0, 0, 0, 0};
+  priors[2].pose.orientation = Quat{0, 0, 0, 0};
 
   const Result<GlobalSolution> solved = engine_.Refine(pairs, priors, Lens());
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -320,12 +326,27 @@ TEST_F(Refine, DroppedAndPriorOnlyFramesAreNamed) {
     EXPECT_NEAR(SeparationDeg(solution.rotations[static_cast<size_t>(i)], truth[static_cast<size_t>(i)]),
                 0.0, kSameRotationDeg);
   }
-  ASSERT_EQ(solution.droppedFrames.size(), 1u);
+  ASSERT_EQ(solution.droppedFrames.size(), 2u);
   EXPECT_EQ(solution.droppedFrames[0], Frame(4));
+  EXPECT_EQ(solution.droppedFrames[1], Frame(5));
   ASSERT_EQ(solution.priorOnlyFrames.size(), 1u);
   EXPECT_EQ(solution.priorOnlyFrames[0], Frame(3));
-  EXPECT_EQ(solution.edgesUsed, 2);
+  EXPECT_EQ(solution.edgesUsed, 2) << "the pair between two dropped frames placed nothing";
   EXPECT_EQ(solution.priorsUsed, 4);
+}
+
+/**
+ * A solve that runs out of sweeps says so.
+ *
+ * Two hundred frames on exact pairs, each prior at a hundredth of an inlier against pairs of a
+ * hundred: the slowest bend of a ring that long outlasts the budget (the table beside `kMaxSweeps`).
+ * Every other fixture here converges, so without this one `converged` could be a constant.
+ */
+TEST_F(Refine, ASolveThatRunsOutOfSweepsSaysSo) {
+  const std::vector<Quat> truth = Ring(200);
+  const Result<GlobalSolution> solved = engine_.Refine(RingPairs(truth), PriorsOut(truth), Lens());
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.converged);
 }
 
 /**
@@ -407,6 +428,10 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   refused(firstFour, unnamed, Lens(), StatusCode::InvalidArgument, "a prior names no frame");
 
   refused(pairs, priors, Intrinsics{}, StatusCode::InvalidArgument, "not a usable lens");
+  // Wrong in one field only, so a check that reads only some of them is not enough.
+  Intrinsics oneFieldOut = Lens();
+  oneFieldOut.cy = oneFieldOut.height + 1.0;
+  refused(pairs, priors, oneFieldOut, StatusCode::InvalidArgument, "not a usable lens");
 
   std::vector<PairwiseResult> stranger = pairs;
   stranger[3].b = Frame(99);
@@ -419,6 +444,8 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
 
   std::vector<PairwiseResult> self = pairs;
   self[3].b = self[3].a;
+  refused(self, priors, Lens(), StatusCode::InvalidArgument, "to itself");
+  self[3].accepted = false;
   refused(self, priors, Lens(), StatusCode::InvalidArgument, "to itself");
 
   std::vector<PairwiseResult> notRotation = pairs;
@@ -439,6 +466,11 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   refused(counts, priors, Lens(), StatusCode::InvalidArgument, "counts no engine fills in");
   counts[3].correspondences = 99;
   refused(counts, priors, Lens(), StatusCode::InvalidArgument, "counts no engine fills in");
+  // And the boundary is not refused: every correspondence agreeing is what a frame registered
+  // against itself answers with, and it is the best pair there is.
+  counts[3].correspondences = 100;
+  EXPECT_TRUE(engine_.Refine(counts, priors, Lens()).ok()) << "a pair all of whose matches agree";
+  counts[3].correspondences = 0;
 
   std::vector<FramePrior> unusable = priors;
   for (FramePrior& prior : unusable) prior.pose.orientation = Quat{0, 0, 0, 0};
