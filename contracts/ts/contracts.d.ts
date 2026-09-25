@@ -729,9 +729,9 @@ export interface GlobalSolution {
    * lens a device kept from an earlier capture is an estimate this call did not make. False where
    * the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
    * them keeps fewer than three matches with a direction at the shortest focal length searched; any
-   * trial of the search could not be scored on those matches; or
-   * the cost does not rise to four times its least at both ends of the range, which is how a least
-   * at an end, and a cost with no least at all, both look.
+   * trial of the search could not be scored on those matches; or the cost does not at least double
+   * within half a percent of its least on both sides, which is how a least at an end of the range,
+   * a cost with no least at all, and a least the pairs' noise put there all look.
    */
   lensFitted: boolean;
 }

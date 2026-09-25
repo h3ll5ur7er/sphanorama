@@ -10,7 +10,9 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
@@ -754,8 +756,12 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
                {chainAndIsland, islandPriors, 1.08, "an open chain beside an unplaced loop"},
                {chainAndIsland, islandPriors, 0.92, "an open chain beside an unplaced loop, short"},
                {rolled, PriorsOut(rolling), 1.08, "a loop about the viewing axis"},
-               // Each end of the bracket on its own, since either half of the rise test alone
-               // passes a truth just outside the other end at that end.
+               // Each end of the bracket on its own, just past it, since each half of the rise
+               // test looks only one way: at a least on the long end the cost short of it more
+               // than doubles, and past it falls. Further out, as at 1.6, the least's own cost is
+               // so large that half a percent barely moves it, and both halves refuse.
+               {ring, priors, 1.0 / 1.41, "a focal length just past the long end of the search"},
+               {ring, priors, 1.0 / 0.695, "a focal length just past the short end of the search"},
                {ring, priors, 1.0 / 1.6, "a focal length past the long end of the search"},
                {ring, priors, 1.0 / 0.6, "a focal length past the short end of the search"},
                {ring, priors, 2.5, "a focal length far outside the search"}};
@@ -788,6 +794,86 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
       EXPECT_EQ(out.height, initial.height) << why;
       EXPECT_EQ(out.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs) << why;
       EXPECT_EQ(out.estimated, estimated) << why;
+    }
+  }
+}
+
+// Every coordinate of every match moved by Gaussian noise of `sigma` pixels. By Box-Muller over the
+// engine's raw draws rather than `std::normal_distribution`, whose output the standard leaves to
+// each library, so the same seed is the same noise on every toolchain.
+std::vector<PairwiseResult> WithNoise(std::vector<PairwiseResult> pairs, double sigma,
+                                      uint32_t seed) {
+  std::mt19937 draws(seed);
+  const auto uniform = [&] { return (static_cast<double>(draws()) + 0.5) / 4294967296.0; };
+  const auto gauss = [&] {
+    const double radius = std::sqrt(-2.0 * std::log(uniform()));
+    return static_cast<float>(sigma * radius * std::cos(2.0 * std::numbers::pi * uniform()));
+  };
+  for (PairwiseResult& pair : pairs) {
+    for (PixelMatch& match : pair.inlierMatches) {
+      match.ax += gauss();
+      match.ay += gauss();
+      match.bx += gauss();
+      match.by += gauss();
+    }
+  }
+  return pairs;
+}
+
+/**
+ * A loop too small to see the focal length through the pairs' noise is not a fit, and a ring or a
+ * grid carrying the same noise is.
+ *
+ * With 0.8 px of noise on every match, which is ORB's pair residual on the photograph ring, a ring
+ * whose only loop is one skipping pair — thirty and thirty degrees against sixty — was fitted every
+ * time and up to 1.5% out, handed the right lens, with the rotations ten times worse than that lens
+ * gave them and an edge error that read clean (a reviewer's probe, round 3). Its cost has a least,
+ * and rose from it nineteen to 2,800 times at the ends of the bracket; it barely moves within half a
+ * percent of it, which is what says the least is the noise's. The ring and the grid are the other half: a
+ * rule that refused every noisy fit would pass the first half alone.
+ */
+TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics lens = TrueLens();
+  const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
+  std::vector<PairwiseResult> skipping = ring;
+  skipping.pop_back();
+  skipping.push_back(Matched(0, 2, truth, lens));
+  const std::vector<PairwiseResult> triangle{Matched(0, 1, truth, lens), Matched(1, 2, truth, lens),
+                                             Matched(2, 0, truth, lens)};
+  // Two rows of four, thirty degrees apart each way: four loops, none of them wrapping.
+  std::vector<Quat> grid;
+  for (int row = 0; row < 2; ++row) {
+    for (int column = 0; column < 4; ++column) {
+      grid.push_back(Normalize(Multiply(AboutY(30.0 * column), AboutX(-30.0 * row))));
+    }
+  }
+  std::vector<PairwiseResult> gridPairs;
+  for (int row = 0; row < 2; ++row) {
+    for (int column = 0; column < 3; ++column) {
+      gridPairs.push_back(Matched(row * 4 + column, row * 4 + column + 1, grid, lens));
+    }
+  }
+  for (int column = 0; column < 4; ++column) {
+    gridPairs.push_back(Matched(column, 4 + column, grid, lens));
+  }
+
+  for (uint32_t seed = 1; seed <= 6; ++seed) {
+    for (const auto& [pairs, poses, fits, why] :
+         {std::tuple{skipping, truth, false, "a ring whose one loop skips a frame"},
+          std::tuple{triangle, truth, false, "a triangle"},
+          std::tuple{gridPairs, grid, true, "a grid"},
+          std::tuple{ring, truth, true, "a ring"}}) {
+      const Result<GlobalSolution> solved =
+          engine_.Refine(WithNoise(pairs, 0.8, seed), PriorsOut(poses), lens);
+      ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
+      EXPECT_EQ(solved.value.lensFitted, fits) << why << ", seed " << seed;
+      if (fits) {
+        // 0.25% in the worst of the grid's seeds, 0.01% in the ring's.
+        EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 0.004) << why << ", seed " << seed;
+      } else {
+        EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << why << ", seed " << seed;
+      }
     }
   }
 }

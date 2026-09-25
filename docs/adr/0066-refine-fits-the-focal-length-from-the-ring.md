@@ -75,9 +75,21 @@ closes. Three things follow.
    brings a pixel nearer the centre, which is true of a radial lens and not of a tangential one —
    `Unproject`'s accepted pixels are not a star about the centre, and one match of ninety that lost
    its direction partway along put a fit 3.2% out, the golden section settling at the edge of the
-   window it could not score (a reviewer's reproduction, round 2). It takes the result only where the cost at
-   both ends of the bracket is at least four times the best: a minimum at an end is the
-   search reporting its own range, and a cost that does not rise is it reporting where it stopped.
+   window it could not score (a reviewer's reproduction, round 2). It takes the result only where the
+   cost at least doubles within half a percent of the best focal length, on both sides. That one
+   rule refuses three things: a cost that does not rise, which is the search reporting where it
+   stopped; a least at an end of the bracket, where the cost past it falls; and a least the pairs'
+   noise put there, which is the one it exists for. The first version asked instead for four times
+   the best at both ends of the bracket, and a reviewer found a ring whose one loop skips a frame
+   passing it with 0.8 px of noise on every match — ORB's pair residual — at nineteen to 2,800
+   times, fitted in forty seeds out of forty, up to 1.5% out, with rotations ten times worse than
+   the right lens gave and an edge error that read clean (round 3). A cost can rise steeply at the
+   ends and be nearly flat where the answer is. Half a percent at double is measured against 0.8 px
+   of noise: a triangle or that skipping ring rises 1.01 to 1.22 times, a two-by-four grid 3.3 to
+   10.6, a twelve-frame ring 66 to 414, and the photograph ring's ORB pairs 4.6 times in a quarter
+   of a percent — and half a percent is about an eighth of a degree of ORB's median, which is the
+   scale of what the fit is for. It is a width, not a standard error: it says how sharply the loops
+   see the focal length against the noise, and nothing about how many of them there are.
    Otherwise `initial` comes back as given, every field of it. The two conditions are not one: with
    the loop check removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors
    — three degrees out, at a hundredth of an inlier each — pull hard enough to give the cost a
@@ -91,8 +103,10 @@ closes. Three things follow.
    of 500, on exact matches: under a pinhole a turn moves a pixel by the tangent of its angle, not
    the angle, so under the wrong focal length a thirty-degree pair and a sixty-degree one are not
    scaled alike and the triangle stops closing. The first version of this paragraph said the pairs
-   tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. How
-   well a small loop fits with real matches is a measurement nobody has taken.
+   tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. With exact
+   matches a triangle is fitted; with 0.8 px of noise it is not, since its cost barely rises within
+   half a percent — seeing the focal length and seeing it through the noise are different questions,
+   and the second is the one a capture asks.
 
 4. **`GlobalSolution::lensFitted` says which happened.** Not `Intrinsics::estimated`, which the
    first version of this decision used: that field says whether a lens was ever estimated, and a lens
@@ -133,8 +147,8 @@ closes. Three things follow.
   returns. Small against the frames, but a new allocation per pair and now part of what a build
   holds.
 - **Time.** `Refine` becomes twenty-four solves instead of one — the solve at the lens handed in,
-  two to open the golden-section search, nineteen to narrow it to 1e-4 in log scale, and the two
-  ends of the bracket. Each is cheap next to feature
+  two to open the golden-section search, nineteen to narrow it to 1e-4 in log scale, and one half
+  a percent either side of the best. Each is cheap next to feature
   extraction, and how cheap on a phone is a measurement the WASM build will have to take once
   registration compiles there (ADR 0047).
 - **An open capture keeps its guess.** A strip of frames that never closes a loop cannot estimate
@@ -169,3 +183,10 @@ cross-ring pairs. The solved edge error is the same quantity generalised to any 
 
 **Carry bearings instead of pixels.** Cheaper to consume, and fixed to the lens they were unprojected
 through, which is the lens being corrected.
+
+**A standard error of the focal scale from the curvature at the least.** The statistically proper
+version of the width test: the curvature against the residual, divided by how many independent
+measurements there are. Rejected for now because "how many" is the hard part — a ring's edges share
+frames, so its matches are not independent, and a count of them would call a single noisy loop
+certain. The width answers the question that decides the fit, whether the loops see the focal length
+over the noise, without claiming a number it cannot back.

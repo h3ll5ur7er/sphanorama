@@ -137,8 +137,9 @@ class IRegistrationEngine {
   // in a window between two of them goes unseen, and the fit is taken on matches that all have a
   // direction under the lens it returns. Where the accepted pairs among placed frames close no loop,
   // where one of them keeps fewer than three such matches, where any trial could not be scored on
-  // them, or where the cost does not rise away from its least on both sides, `initial` comes back as
-  // given, every field of it, and `lensFitted` is false. Where the lens is fitted the rotations are the refitted pairs' solve,
+  // them, or where the cost does not at least double within half a percent of its least on both
+  // sides — a loop too small to see the focal length through the pairs' noise does not — `initial`
+  // comes back as given, every field of it, and `lensFitted` is false. Where the lens is fitted the rotations are the refitted pairs' solve,
   // not the one their own `relativeRotation`s give.
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior

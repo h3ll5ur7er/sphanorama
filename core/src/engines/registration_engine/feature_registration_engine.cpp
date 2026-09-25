@@ -1289,10 +1289,19 @@ constexpr double kFocalScaleHigh = 1.4;
 // The search stops when the bracket is this narrow in log scale. A hundredth of a percent of focal
 // length moves a ring's closure by about 0.03 degrees, under every median the accuracy table holds.
 constexpr double kFocalScaleTolerance = 1e-4;
-// How much more both ends of the bracket must cost than the best focal length for it to be an
-// answer. A cost that does not rise away from its minimum is the search reporting where it stopped:
-// flat, as a tree of pairs is under any focal length, or least at an end of the bracket.
-constexpr double kObservableRise = 4.0;
+// An answer only where the cost at least doubles within half a percent of it, on both sides. The
+// least of a cost is not an answer by being least: a small loop's is too, and with the pixel noise
+// of ORB's pairs one was fitted up to 1.5% out, leaving the rotations ten times worse than the
+// right lens would have (a reviewer's probe, round 3). How far the cost must move to double is how
+// sharply the loops see the focal length against the noise the pairs carry. Measured on 0.8 px of
+// noise: a triangle or a ring with one skipping pair rises 1.01 to 1.22 times at half a percent, a
+// two-by-four grid 3.3 to 10.6, a twelve-frame ring 66 to 414, and the photograph ring's ORB pairs 4.6
+// times in a quarter of a percent. Half a percent of focal length is about an eighth of a degree of
+// ORB's median, which is the scale of what the fit is for (ADR 0066). The same test refuses a cost
+// that is flat, as a tree of pairs is under any focal length, and a least at an end of the bracket,
+// where the cost past it is lower still.
+constexpr double kObservableWidth = 0.005;
+constexpr double kObservableRise = 2.0;
 
 // The solve under one focal scale, and how far it leaves the pairs refitted under it.
 struct FocalTrial {
@@ -1591,13 +1600,12 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     }
     const bool firstIsBest = f1.costDeg2 <= f2.costDeg2;
     FocalTrial& best = firstIsBest ? f1 : f2;
-    const double bestScale = std::exp(firstIsBest ? x1 : x2);
-    const double lowEnd = trial(std::log(kFocalScaleLow)).costDeg2;
-    const double highEnd = trial(std::log(kFocalScaleHigh)).costDeg2;
-    // An answer only where the cost rises away from it on both sides: at an end of the bracket the
-    // search is reporting its own range, and on a flat cost it is reporting where it stopped.
-    if (everyTrialScored && lowEnd > kObservableRise * best.costDeg2 &&
-        highEnd > kObservableRise * best.costDeg2) {
+    const double bestLog = firstIsBest ? x1 : x2;
+    const double bestScale = std::exp(bestLog);
+    const double shorter = trial(bestLog - kObservableWidth).costDeg2;
+    const double longer = trial(bestLog + kObservableWidth).costDeg2;
+    if (everyTrialScored && shorter > kObservableRise * best.costDeg2 &&
+        longer > kObservableRise * best.costDeg2) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;
       solution.intrinsics.fy *= bestScale;
