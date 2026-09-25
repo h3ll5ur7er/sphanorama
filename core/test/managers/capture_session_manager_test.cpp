@@ -1498,12 +1498,17 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
   EXPECT_NE(armed.detail.find("pose engine"), std::string::npos) << armed.detail;
   EXPECT_FALSE(camera->ExposureLocked()) << "refused before the locks";
 
-  // Armed on a rotation, broken mid-burst: abandoned, and nothing it took is kept.
+  // Armed on a rotation, a frame taken on it, then broken mid-burst: abandoned, and nothing it
+  // took is kept — the good frame included, since a burst is kept whole or not at all.
   TurnTo(*manager, pose, Quat{});
   const NodeId facing = AimedNode(*manager);
   const BurstSpec burst{};
   ASSERT_TRUE(manager->ArmBurst(facing, burst).ok());
   clock.AdvanceMs(burst.settleMs);
+  const Result<CaptureGuidance> first = manager->OnMotion({});
+  ASSERT_TRUE(first.ok()) << first.status.detail;
+  ASSERT_EQ(first.value.action, GuidanceAction::Firing) << "one frame taken, the burst still open";
+  clock.AdvanceMs(burst.intervalMs);
   // `LookAt` rather than `TurnTo`: the tick that re-integrates the pose is the one that abandons.
   pose.LookAt(Quat{0, 0, 0, 0});
   const ImuSample sample{};

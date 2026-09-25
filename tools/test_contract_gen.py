@@ -77,6 +77,7 @@ class StructTest(unittest.TestCase):
         # Prose may name a brace. Counted as code, one ended the struct early and every field after
         # it - and the next declaration - went missing from the mirror and both codecs silently.
         module = parse("struct S {\n"
+                       "  // a `}` alone, so the comment braces do not balance\n"
                        "  // a `{` and a `}` in the doc of the first field\n"
                        "  // and one `{` alone\n"
                        "  double a = 0;  // and `}` trailing it\n"
@@ -146,6 +147,13 @@ class InterfaceTest(unittest.TestCase):
         self.assertIn("archive(project: ProjectId)", ts)
         # And the comment is the method's doc, as a field's trailing comment is the field's.
         self.assertIn("[the caller's]", ts)
+
+    def test_two_declarations_on_one_line_are_refused_not_halved(self):
+        # Matched from the start only, the first declaration was taken and the second dropped.
+        with self.assertRaises(contract_gen.ContractSyntaxError):
+            parse("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project) = 0;"
+                  " virtual Status Archive(ProjectId project) = 0;\n};\n")
 
     def test_methods_become_lower_camel_case_and_async(self):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
