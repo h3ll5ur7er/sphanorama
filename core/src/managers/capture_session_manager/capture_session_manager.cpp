@@ -237,10 +237,12 @@ bool DecodeSession(const std::string& text, StoredSession& out) {
           || !candidate.frame.buffer.valid()) {
         return false;
       }
-      // The pose `OfferFrame` would refuse at the door, refused at this one too: a candidate
-      // restored here is written back by every checkpoint, so it would outlive every later session
-      // and refuse every `Refine` built from them (ADR 0065).
-      if (PoseSampleDefect(candidate.pose)) return false;
+      // A pose `OfferFrame` would refuse at the door keeps its frame and loses its claim: it comes
+      // back unanchored, which is what a pose nobody measured already is. Restored as it stands, it
+      // would be written back by every checkpoint and refuse every `Refine` built from the capture;
+      // refusing the document instead cost the whole sphere, since the page reads a refusal here
+      // as one a later build can open and the one button it leaves clears the tier (ADR 0065).
+      if (PoseSampleDefect(candidate.pose)) candidate.pose.confidence = 0.0;
       if (!exhausted(in)) return false;
       candidate.pose.visuallyCorrected = corrected != 0;
       out.candidates.push_back(candidate);

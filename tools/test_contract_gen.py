@@ -77,7 +77,8 @@ class StructTest(unittest.TestCase):
         # Prose may name a brace. Counted as code, one ended the struct early and every field after
         # it - and the next declaration - went missing from the mirror and both codecs silently.
         module = parse("struct S {\n"
-                       "  // a `}` in the doc of the first field\n"
+                       "  // a `{` and a `}` in the doc of the first field\n"
+                       "  // and one `{` alone\n"
                        "  double a = 0;  // and `}` trailing it\n"
                        "  double b = 0;\n"
                        "};  // `}`\n"
@@ -134,6 +135,15 @@ class InterfaceTest(unittest.TestCase):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
                   "  virtual Status Delete(ProjectId project) = 0;\n};\n")
         self.assertIn("export interface ProjectManager {", ts)
+
+    def test_a_trailing_comment_on_a_method_keeps_the_next_method(self):
+        # A declaration is read until its `;`. With the comment left on, the `;` hid inside it,
+        # the next method joined the same buffer, and the match took the first and dropped it.
+        ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project) = 0;  // [the caller's]\n"
+                  "  virtual Status Archive(ProjectId project) = 0;\n};\n")
+        self.assertIn("delete(project: ProjectId)", ts)
+        self.assertIn("archive(project: ProjectId)", ts)
 
     def test_methods_become_lower_camel_case_and_async(self):
         ts = emit("// @boundary\nclass IProjectManager {\n public:\n"

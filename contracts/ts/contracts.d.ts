@@ -872,6 +872,9 @@ export interface CaptureSessionManager {
    * sphere is being captured, never what the device it comes back on can sense. So this is
    * refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
    * began the capture if the user declined the permission this time (ADR 0044).
+   * A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
+   * unanchored, confidence zero: refusing the document for one field would cost every frame of the
+   * sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -932,8 +935,8 @@ export interface CaptureSessionManager {
    * For externally sourced frames: file import, replayed datasets, manual shutter.
    * `InvalidArgument` for a pose `Refine` would refuse as a prior — a confidence outside [0, 1], or
    * an orientation that is not a rotation where the confidence claims one — before anything is
-   * scored or kept, so a broken pose is refused where it came in rather than a capture later
-   * (ADR 0065). An unanchored pose, confidence zero, is accepted: the frame is placed through its
+   * scored or kept, so a broken pose is refused where it came in, rather than by a solve built from
+   * this session's candidates, which would blame its caller (ADR 0065). An unanchored pose, confidence zero, is accepted: the frame is placed through its
    * pairs.
    */
   offerFrame(node: NodeId, frame: FrameRef, pose: PoseSample): Promise<Result<FrameVerdict>>;

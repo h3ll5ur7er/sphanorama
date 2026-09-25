@@ -279,6 +279,14 @@ def parse(text: str) -> Module:
     return module
 
 
+def _split_comment(line: str) -> tuple[str, str]:
+    """A line's code, and its `//` comment. The one place that says where code stops: three
+    readers each said it their own way, and the method reader did not say it at all, so a comment
+    on one method hid its `;` and the next method was read into the same declaration and lost."""
+    code, _, comment = line.partition("//")
+    return code, comment
+
+
 def _read_body(lines: list[str], start: int) -> tuple[str, int]:
     """Return the text between the braces opening on `start`, and the index just past them.
 
@@ -293,8 +301,7 @@ def _read_body(lines: list[str], start: int) -> tuple[str, int]:
     while i < len(lines):
         line = lines[i]
         i += 1
-        comment = line.find("//")
-        code_length = len(line) if comment < 0 else comment
+        code_length = len(_split_comment(line)[0])
         begin = 0 if opened else None
         end = None
         for at in range(code_length):
@@ -319,7 +326,7 @@ def _parse_enum_members(body: str, name: str) -> list[str]:
     members = []
     # Comments are cut per line before the lines are joined: joined first, a trailing comment on one
     # member ran to the end of the body and swallowed the members after it.
-    code = " ".join(re.sub(r"//.*", "", line) for line in body.splitlines())
+    code = " ".join(_split_comment(line)[0] for line in body.splitlines())
     for raw in code.split(","):
         item = raw.strip()
         if not item:
@@ -394,7 +401,7 @@ def _parse_fields(body: str, name: str) -> list[Field]:
 
         # A trailing comment documents the field it sits on; strip it before checking the
         # statement terminator, or a documented field looks unterminated.
-        code, _, trailing = line.partition("//")
+        code, trailing = _split_comment(line)
         code = code.strip()
         if trailing.strip():
             pending = pending + [trailing.strip()]
@@ -433,7 +440,7 @@ def _parse_methods(body: str, name: str) -> list[Method]:
     buffer = ""
 
     for raw in body.splitlines():
-        stripped = raw.strip()
+        stripped = _split_comment(raw)[0].strip()
         doc = DOC_RE.match(raw)
         if doc and not buffer:
             pending.append(doc.group(1))
@@ -450,7 +457,7 @@ def _parse_methods(body: str, name: str) -> list[Method]:
         if not buffer.endswith(";"):
             continue
 
-        m = METHOD_RE.match(buffer)
+        m = METHOD_RE.fullmatch(buffer)
         if not m:
             raise ContractSyntaxError(f"interface {name}: cannot parse member {buffer!r}")
 

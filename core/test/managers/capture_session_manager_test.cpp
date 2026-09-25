@@ -4509,45 +4509,77 @@ TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
   }
 }
 
-TEST_F(ResumedSession, RefusesACandidatePoseThatOfferFrameWouldRefuse) {
-  // The document is a door a pose comes in by, like `OfferFrame`, and the one that matters more: a
-  // burst's candidate is written back by every checkpoint, so a pose restored here would outlive
-  // every later session and refuse every `Refine` built from them. Same rule, `PoseSampleDefect`.
+TEST_F(ResumedSession, ACandidatePoseOfferFrameWouldRefuseIsRestoredUnanchored) {
+  // The document is a door a pose comes in by, like `OfferFrame`, and a burst's candidate is written
+  // back by every checkpoint, so a pose restored as it stands would refuse every `Refine` built
+  // from the capture. Refusing the document instead cost the whole sphere: the page reads a refused
+  // document as one a later build can open, and the one button it leaves clears the tier. So the
+  // frame is kept and only the claim is dropped — the pose comes back unanchored, which is what a
+  // pose nobody measured already is (ADR 0065).
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
-  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
   ASSERT_TRUE(first.End().ok());
   auto written = projects->ReadDocument(kProject, "session");
   ASSERT_TRUE(written.ok());
 
-  // `candidate <id> <node> <frame> <buffer> <format> <w> <h> <stride> <ts> <hash> <pose ts>
-  // <qw> <qx> <qy> <qz> <wx> <wy> <wz> <confidence> …`.
-  constexpr size_t kConfidence = 19;
-  const auto resumes = [&](const std::string& document) {
+  const auto resumed = [&](const std::string& document) {
     EXPECT_TRUE(projects->WriteDocument(kProject, "session", document).ok());
     auto store_with_sink = NewStore();
     FakeCameraAccess camera(store_with_sink);
     CaptureSessionManager attempt(planner, pose, quality, preview, camera, *sensor,
                                   *store_with_sink, *projects, clock);
-    return attempt.Resume(kProject).ok();
+    EXPECT_TRUE(attempt.Resume(kProject).ok());
+    auto cell = attempt.Candidates(node);
+    EXPECT_TRUE(cell.ok());
+    return cell.value;
   };
-  for (const std::string confidence : {"1.5", "-0.25"}) {
-    const std::string tampered = SetField(written.value, "candidate", kConfidence, confidence);
-    ASSERT_NE(tampered, written.value);
-    EXPECT_FALSE(resumes(tampered)) << "confidence " << confidence;
+  const std::vector<Candidate> untouched = resumed(written.value);
+  ASSERT_GE(untouched.size(), 2u) << "a second candidate shows the demotion is only the tampered one";
+  ASSERT_GT(untouched.front().pose.confidence, 0.0) << "a burst's pose is anchored";
+
+  // `candidate <id> <node> <frame> <buffer> <format> <w> <h> <stride> <ts> <hash> <pose ts>
+  // <qw> <qx> <qy> <qz> <wx> <wy> <wz> <confidence> …`, tampered on the first candidate line and,
+  // separately, the last, so a rule that reads only one of them is not enough.
+  constexpr size_t kId = 1;
+  constexpr size_t kConfidence = 19;
+  const size_t firstAt = written.value.find("candidate ");
+  const size_t lastAt = written.value.rfind("\ncandidate ") + 1;
+  ASSERT_NE(firstAt, lastAt) << "the burst writes more than one candidate";
+  // Tampers the candidate line starting at `at`, and names the candidate it tampered.
+  const auto tamper = [&](size_t at, const std::vector<std::pair<size_t, std::string>>& edits) {
+    const size_t end = written.value.find('\n', at);
+    std::string line = written.value.substr(at, end - at);
+    for (const auto& [field, value] : edits) line = SetField(line + "\n", "candidate", field, value);
+    std::istringstream in(line);
+    std::vector<std::string> fields;
+    for (std::string token; fields.size() <= kId && in >> token;) fields.push_back(token);
+    std::string out = written.value;
+    out.replace(at, end - at + 1, line);
+    return std::make_pair(out, std::stoull(fields[kId]));
+  };
+  std::vector<std::vector<std::pair<size_t, std::string>>> defects = {
+      {{kConfidence, "1.5"}}, {{kConfidence, "-0.25"}},
+      {{kConfidence, "1"}, {12, "0"}, {13, "0"}, {14, "0"}, {15, "0"}}};
+
+  for (const size_t at : {firstAt, lastAt}) for (const auto& edits : defects) {
+    const auto [document, tamperedId] = tamper(at, edits);
+    ASSERT_NE(document, written.value);
+    const std::vector<Candidate> cell = resumed(document);
+    ASSERT_EQ(cell.size(), untouched.size()) << "every frame of the cell survives";
+    for (size_t i = 0; i < cell.size(); ++i) {
+      EXPECT_FALSE(PoseSampleDefect(cell[i].pose).has_value());
+      if (cell[i].id.value == tamperedId) {
+        EXPECT_EQ(cell[i].pose.confidence, 0.0) << "the claim is dropped";
+      } else {
+        EXPECT_EQ(cell[i].pose.confidence, untouched[i].pose.confidence) << "and only that one";
+      }
+    }
   }
-  std::string zeroOrientation = SetField(written.value, "candidate", kConfidence, "1");
-  for (size_t field = 12; field <= 15; ++field) {
-    zeroOrientation = SetField(zeroOrientation, "candidate", field, "0");
-  }
-  EXPECT_FALSE(resumes(zeroOrientation)) << "an orientation that is not a rotation";
-  // An unanchored pose is no defect, so the refusal above is the rule and not the edit.
-  const std::string unanchored = SetField(written.value, "candidate", kConfidence, "0");
-  ASSERT_NE(unanchored, written.value);
-  EXPECT_TRUE(resumes(unanchored));
 }
 
 TEST_F(ResumedSession, RefusesADocumentThatNamesAnotherTier) {

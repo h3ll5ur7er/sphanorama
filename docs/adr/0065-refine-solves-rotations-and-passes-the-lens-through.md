@@ -80,12 +80,18 @@ taken at beside the `FrameRef` of its pixels.
    through the one predicate `Refine` calls (`PoseSampleDefect`, in `utilities/quaternion`).
    `OfferFrame` refuses one with `InvalidArgument`: checked only in `Refine`, an imported frame with
    a broken pose was accepted, covered and ranked, and would have refused any solve built from the
-   session's candidates, blaming `Refine`'s caller. `Resume` refuses a session document carrying one,
-   as it refuses any other malformed candidate line: a burst's candidates are written back by every
-   checkpoint, so a pose restored from a tampered document outlived every later session. A burst's
-   pose comes from the pose engine, whose contract keeps it well-formed. An unanchored pose is still
-   accepted everywhere. That is a narrow change to a manager contract, refusing only values
-   `PoseSample` already calls defects.
+   session's candidates, blaming `Refine`'s caller. `Resume` keeps a restored candidate carrying one
+   and drops its claim: the pose comes back unanchored. Restored as it stood, it outlived every
+   later session, since a burst's candidates are written back by every checkpoint. Refused, as a
+   first version of this decision had it, it cost the whole sphere — the refusal was `Unsupported`,
+   which the page reads as a document a later build can open, and the one button it leaves starts a
+   capture that clears the tier. A burst's pose comes from the pose engine; `PoseSample` states the
+   confidence range, and the orientation is kept a rotation only by the shipped engine: the manager
+   starts from its `Initial` and advances only by its `Integrate`, which keeps a rotation a rotation
+   without making one. Checking the pose at the burst too would be a guard only a pose engine that
+   broke that could reach. An unanchored pose is still accepted everywhere. That is a narrow
+   change to two manager doors, refusing or dropping only values `PoseSample` already calls
+   defects.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
    repeated `FrameId` among them, a prior whose confidence is outside [0, 1] or whose orientation is
@@ -133,6 +139,12 @@ taken at beside the `FrameRef` of its pixels.
   `OfferFrame` with unset poses does reach here, and is refused; one that mixes offered and burst
   frames loses the offered frames' priors, which are placed through their pairs. If an import path
   ever needs its own priors counted, this is the line to revisit.
+- **No document an earlier build wrote is changed by the restore rule.** The shipped pose engines
+  write confidence only as 0, 0.5 or 1 and an orientation only through `Normalize`, and an offered
+  frame was never checkpointed, so only a tampered document or one written through another
+  `IPoseEngine` carries a pose the rule drops. What dropping costs is that frame's prior, and
+  nothing names the frame: `priorsUsed` is one short. Named would need a field on `Candidate`,
+  which is a contract change for a case no shipped writer produces.
 - **`pieces` says how much of the answer the pairs actually placed.** A ring two declined pairs cut
   in two is two pieces whose seams sit where the priors put them — 1.84 degrees out in a
   reviewer's probe, with every other field reading clean.
