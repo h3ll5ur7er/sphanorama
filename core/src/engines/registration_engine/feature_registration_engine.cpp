@@ -1281,7 +1281,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
                                "the lens given is not a usable lens");
   }
   // Indexed with `int32_t` because the solver is. Past that the index wraps and the solver refuses
-  // the size, which comes back as `Internal`: a `FramePrior` is 88 bytes on a 64-bit build, so that
+  // the size — as it does 2^31 accepted pairs — which comes back as `Internal`: a `FramePrior` is 88 bytes on a 64-bit build, so that
   // needs 189 GB of priors, and wasm32 cannot address it at all.
   std::map<uint64_t, int32_t> indexOf;
   std::vector<Quat> anchors;

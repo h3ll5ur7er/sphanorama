@@ -670,15 +670,18 @@ TEST(PoseSampleDefect, AConfidenceOutsideTheUnitIntervalIsADefect) {
 }
 
 TEST(PoseSampleDefect, AClaimedOrientationThatIsNotARotationIsADefect) {
-  for (const Quat& orientation :
-       {Quat{0, 0, 0, 0}, Quat{std::numeric_limits<double>::quiet_NaN(), 0, 0, 0}}) {
-    PoseSample pose;
-    pose.orientation = orientation;
-    pose.confidence = 0.5;
-    const std::optional<std::string_view> defect = PoseSampleDefect(pose);
-    ASSERT_TRUE(defect.has_value());
-    EXPECT_NE(defect->find("an orientation that is not a rotation"), std::string_view::npos)
-        << *defect;
+  // At every confidence that claims one, not only the absolute reading's.
+  for (const double confidence : {0.25, 0.5, 1.0}) {
+    for (const Quat& orientation :
+         {Quat{0, 0, 0, 0}, Quat{std::numeric_limits<double>::quiet_NaN(), 0, 0, 0}}) {
+      PoseSample pose;
+      pose.orientation = orientation;
+      pose.confidence = confidence;
+      const std::optional<std::string_view> defect = PoseSampleDefect(pose);
+      ASSERT_TRUE(defect.has_value()) << confidence;
+      EXPECT_NE(defect->find("an orientation that is not a rotation"), std::string_view::npos)
+          << *defect;
+    }
   }
 }
 

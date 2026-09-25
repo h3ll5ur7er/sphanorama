@@ -110,7 +110,7 @@ class IRegistrationEngine {
   // say. The priors also pull on that shape, each on its own frame, at a weight far below any
   // pair's — so they barely correct it: an accepted pair ten degrees wrong on an open chain is drawn
   // back by thousandths of a degree, and the error figures read clean over it, since nothing else
-  // the pairs say contradicts it. Only a loop does. Where the pairs do not join the frames, nothing
+  // the pairs say contradicts it. Only another pair does, such as a ring's closing one. Where the pairs do not join the frames, nothing
   // but the priors relates one piece to the other, and the seam between them is placed to the
   // priors' degrees — `GlobalSolution::pieces` says how many pieces there were. That is why a ring's closing pair is worth having: a chain
   // throws it away, and it is the measurement of how far the chain drifted.

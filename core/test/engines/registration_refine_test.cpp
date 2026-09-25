@@ -286,8 +286,10 @@ TEST_F(Refine, APriorNothingAnchoredIsNotAPrior) {
   priors[4].pose.orientation =
       Normalize(Multiply(FromAxisAngle(Vec3{0, 0, 1}, 45.0 / kDegPerRad), truth[4]));
   priors[4].pose.confidence = 0.0;
-  // Dead reckoning from an absolute reading is worth half and still counts: only zero is no prior.
+  // Dead reckoning from an absolute reading is worth half and still counts, and so does anything
+  // else above zero: only zero is no prior.
   priors[7].pose.confidence = 0.5;
+  priors[8].pose.confidence = 0.25;
 
   const Result<GlobalSolution> solved = engine_.Refine(RingPairs(truth), priors, Lens());
   ASSERT_TRUE(solved.ok()) << solved.status.detail;

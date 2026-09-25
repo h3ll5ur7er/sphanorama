@@ -59,9 +59,10 @@ class StructTest(unittest.TestCase):
     def test_a_braced_initialiser_is_one_field_not_four(self):
         # A default that is not the type's own default is spelled with braces, and the commas
         # inside them are not declarator separators: splitting there reads `0 }` as a field name.
-        fields = parse("struct S { Quat rotation{0, 0, 0, 0}; double x = 0, y{1}; };\n")
+        # And a declarator after one: a depth that never comes back down swallows the rest.
+        fields = parse("struct S { Quat rotation{0, 0, 0, 0}, spare; double x{1}, y = 0; };\n")
         [s] = [d for d in fields.declarations if getattr(d, "name", None) == "S"]
-        self.assertEqual([f.name for f in s.fields], ["rotation", "x", "y"])
+        self.assertEqual([f.name for f in s.fields], ["rotation", "spare", "x", "y"])
         self.assertEqual(s.fields[0].type, "Quat")
 
     def test_scalar_kinds_map_to_typescript(self):
