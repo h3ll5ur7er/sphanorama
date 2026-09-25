@@ -40,6 +40,12 @@ class EnumTest(unittest.TestCase):
         ts = emit("enum class StatusCode : uint16_t { Ok = 0, NotFound, Internal };\n")
         self.assertIn("'Ok' | 'NotFound' | 'Internal'", ts)
 
+    def test_a_trailing_comment_on_an_enum_member_keeps_the_next_member(self):
+        # Joined into one line before comments were cut, a trailing comment swallowed the member
+        # after it, and every ordinal past it decoded one place off in the page.
+        ts = emit("enum class E : uint8_t {\n  A,  // the first\n  B,\n  C  // the last\n};\n")
+        self.assertIn("'A' | 'B' | 'C'", ts)
+
     def test_multiline_enum_bodies_parse(self):
         ts = emit("enum class BuildStage : uint8_t {\n  Queued, Features,\n  Complete\n};\n")
         self.assertIn("'Queued' | 'Features' | 'Complete'", ts)
@@ -64,6 +70,19 @@ class StructTest(unittest.TestCase):
         [s] = [d for d in fields.declarations if getattr(d, "name", None) == "S"]
         self.assertEqual([f.name for f in s.fields], ["rotation", "spare", "x", "y"])
         self.assertEqual(s.fields[0].type, "Quat")
+
+    def test_a_brace_in_a_comment_does_not_end_the_struct(self):
+        # Prose may name a brace. Counted as code, one ended the struct early and every field after
+        # it - and the next declaration - went missing from the mirror and both codecs silently.
+        module = parse("struct S {\n"
+                       "  // a `}` in the doc of the first field\n"
+                       "  double a = 0;  // and `}` trailing it\n"
+                       "  double b = 0;\n"
+                       "};  // `}`\n"
+                       "struct T { double c = 0; };\n")
+        structs = {d.name: [f.name for f in d.fields]
+                   for d in module.declarations if hasattr(d, "fields")}
+        self.assertEqual(structs, {"S": ["a", "b"], "T": ["c"]})
 
     def test_scalar_kinds_map_to_typescript(self):
         ts = emit("struct S {\n"

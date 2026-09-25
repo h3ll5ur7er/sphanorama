@@ -280,31 +280,48 @@ def parse(text: str) -> Module:
 
 
 def _read_body(lines: list[str], start: int) -> tuple[str, int]:
-    """Return the text between the braces opening on `start`, and the index just past them."""
+    """Return the text between the braces opening on `start`, and the index just past them.
+
+    Braces are counted in code only. Prose may name one, and counted as code a `}` in a comment
+    ended the struct early: every field after it went missing from the mirror and both codecs, and
+    nothing refused. Comments inside the body are kept, since they are the fields' docs.
+    """
     depth = 0
+    opened = False
     body: list[str] = []
     i = start
     while i < len(lines):
         line = lines[i]
-        opened = line.count("{")
-        closed = line.count("}")
-        if depth == 0:
-            body.append(line[line.index("{") + 1:] if "{" in line else "")
-        else:
-            body.append(line)
-        depth += opened - closed
         i += 1
-        if depth <= 0:
+        comment = line.find("//")
+        code_length = len(line) if comment < 0 else comment
+        begin = 0 if opened else None
+        end = None
+        for at in range(code_length):
+            if line[at] == "{":
+                if not opened:
+                    opened, begin = True, at + 1
+                depth += 1
+            elif line[at] == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    end = at
+                    break
+        if begin is None:
+            continue
+        body.append(line[begin:end])
+        if end is not None:
             break
-    text = "\n".join(body)
-    tail = text.rfind("}")
-    return (text[:tail] if tail >= 0 else text), i
+    return "\n".join(body), i
 
 
 def _parse_enum_members(body: str, name: str) -> list[str]:
     members = []
-    for raw in body.replace("\n", " ").split(","):
-        item = re.sub(r"//.*", "", raw).strip()
+    # Comments are cut per line before the lines are joined: joined first, a trailing comment on one
+    # member ran to the end of the body and swallowed the members after it.
+    code = " ".join(re.sub(r"//.*", "", line) for line in body.splitlines())
+    for raw in code.split(","):
+        item = raw.strip()
         if not item:
             continue
         m = re.fullmatch(r"(\w+)(?:\s*=\s*[^,]+)?", item)
