@@ -33,6 +33,7 @@
 
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/match_noise.h"
 #include "support/rotation_scoring.h"
 #include "support/synthetic_dataset.h"
 #include "utilities/camera_model.h"
@@ -689,6 +690,9 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   ASSERT_EQ(solved.value.rotations.size(), truth.size());
   EXPECT_TRUE(solved.value.converged);
+  // Fitted even handed the rendered lens: the figures below are the refitted pairs' solve, and a
+  // pass-through would print the unrefitted ones and still sit inside these bounds (round 4).
+  EXPECT_TRUE(solved.value.lensFitted);
   EXPECT_EQ(solved.value.edgesUsed, kFrames) << "not every pair was accepted";
 
   const test::RotationScore score = test::ScoreRotations(solved.value.rotations, truth);
@@ -714,8 +718,9 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   // reason. The reason was the pairs, not the solve: `FitRotation` returns the rotation fitted on its
   // inlier set *before* the re-gate and reports the set after it, and `Refine` now refits every pair
   // on its reported inliers — which alone, at the rendered focal length with no search, gives
-  // 0.0375, 0.0291 and 0.0147 (ADR 0066). Written also in `docs/06-roadmap.md` and `CLAUDE.md`,
-  // which move with these; the chain's list above does not cover them.
+  // 0.0375, 0.0291 and 0.0147 (ADR 0066). Written also in `docs/06-roadmap.md`, `CLAUDE.md` and
+  // `docs/05-toolchain-and-testing.md`, which move with these; the chain's list above does not
+  // cover them.
   //
   // The median's bound is what fails a solve that has lost the closing pair: handed eleven, ORB
   // reads 0.1005, AKAZE 0.0601 and SIFT 0.0229, and only ORB's is past 0.08 — which is why the
@@ -811,6 +816,25 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_LT(score.medianDeg, bound.median) << scale;
     EXPECT_LT(score.maxDeg, bound.max) << scale;
     EXPECT_LT(solved.value.medianEdgeErrorDeg, bound.edge) << scale;
+
+    // **And with the pairs noisier than the render**, 1.5 px added to every match, which is a sharp
+    // frame by a phone's standard. A rule that judged a fit by how little the loops failed to close
+    // at it refused four seeds of ten for ORB here — six in a reviewer's own draws — sending back
+    // the lens 5% long and a median past a degree, with the least itself within 0.25% (round 4).
+    // Measured on these seeds: every one fitted, the focal length within 0.21% (ORB), 0.06% (AKAZE)
+    // and 0.05% (SIFT), on a precision of 0.12 to 0.13%, 0.05% and 0.02%.
+    if (scale != 1.05) continue;
+    constexpr double kNoisyFocal[] = {0.004, 0.001, 0.001};
+    static_assert(std::size(kNoisyFocal) == static_cast<size_t>(FeatureDetector::Count));
+    for (uint32_t seed = 1; seed <= 10; ++seed) {
+      const Result<GlobalSolution> noisy =
+          engine.Refine(test::WithNoise(pairs, 1.5, seed), priors, guess);
+      ASSERT_TRUE(noisy.ok()) << "seed " << seed << ": " << noisy.status.detail;
+      EXPECT_TRUE(noisy.value.lensFitted) << "seed " << seed;
+      EXPECT_LT(std::abs(noisy.value.intrinsics.fx / dataset.value.lens.fx - 1.0),
+                kNoisyFocal[static_cast<size_t>(GetParam())])
+          << "seed " << seed;
+    }
   }
 }
 

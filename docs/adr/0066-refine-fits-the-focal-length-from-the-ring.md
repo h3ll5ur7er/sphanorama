@@ -75,21 +75,40 @@ closes. Three things follow.
    brings a pixel nearer the centre, which is true of a radial lens and not of a tangential one —
    `Unproject`'s accepted pixels are not a star about the centre, and one match of ninety that lost
    its direction partway along put a fit 3.2% out, the golden section settling at the edge of the
-   window it could not score (a reviewer's reproduction, round 2). It takes the result only where the
-   cost at least doubles within half a percent of the best focal length, on both sides. That one
-   rule refuses three things: a cost that does not rise, which is the search reporting where it
-   stopped; a least at an end of the bracket, where the cost past it falls; and a least the pairs'
-   noise put there, which is the one it exists for. The first version asked instead for four times
-   the best at both ends of the bracket, and a reviewer found a ring whose one loop skips a frame
-   passing it with 0.8 px of noise on every match — ORB's pair residual — at nineteen to 2,800
-   times, fitted in forty seeds out of forty, up to 1.5% out, with rotations ten times worse than
-   the right lens gave and an edge error that read clean (round 3). A cost can rise steeply at the
-   ends and be nearly flat where the answer is. Half a percent at double is measured against 0.8 px
-   of noise: a triangle or that skipping ring rises 1.01 to 1.22 times, a two-by-four grid 3.3 to
-   10.6, a twelve-frame ring 66 to 414, and the photograph ring's ORB pairs 4.6 times in a quarter
-   of a percent — and half a percent is about an eighth of a degree of ORB's median, which is the
-   scale of what the fit is for. It is a width, not a standard error: it says how sharply the loops
-   see the focal length against the noise, and nothing about how many of them there are.
+   window it could not score (a reviewer's reproduction, round 2).
+
+   **And it takes the result only where the least is precise, or refutes the lens handed in.** The
+   precision is estimated from what the least cannot move: each pair's own residual after its
+   Kabsch fit, pooled over the pairs (two coordinates a match, three spent on the rotation), carried
+   through each pair's information about its own rotation — a pair measures rotation about its
+   viewing axis far less well than across it — and weighed against how each edge's error moves with
+   the scale, read from two trials half a percent either side of the least. That gives the least's
+   standard deviation in log focal scale. The fit is taken when it is within two tenths of a
+   percent, about a twentieth of a degree of ORB's median; or when the lens handed in lies four of
+   them or more from the least, since then the data refute the lens a refusal would fall back to,
+   and a fit a percent out is nearer than it. The cost must also rise on both sides of the least,
+   which refuses a least at an end of the bracket, where the cost past it falls.
+
+   Measured over two hundred seeds of noise at 0.4, 0.8 and 2 px on four shapes, the least's error
+   in these standard deviations spreads 0.77 to 0.97 and never passed 3. The spread barely moves
+   between seeds, which is what lets a threshold decide: a twelve-frame ring 0.006 to 0.036%, a
+   two-by-four grid 0.07 to 0.37%, a triangle or a ring whose one loop skips a frame 0.39 to 2.6%,
+   and the photograph ring's pairs — every detector, up to 1.5 px of noise added to them — 0.004 to
+   0.13%. Handed the right lens, 800 noisy runs of the skipping ring and the triangle were all
+   passed through and 200 of the grid at 0.8 px all fitted, the worst 0.39% out; handed a lens 8%
+   out, 400 of the skipping ring were all fitted, the worst 2.5% out.
+
+   Two rules came before this one, and each was found wanting by a reviewer's Monte Carlo. The
+   first asked the cost at both ends of the bracket to be four times the least, and a skipping ring
+   at 0.8 px of noise — ORB's pair residual — passed it in forty seeds of forty, up to 1.5% out,
+   with rotations ten times worse than the right lens gave and an edge error that read clean
+   (round 3). The second asked the cost to double within half a percent of the least, and still
+   took that ring in six seeds of two hundred, 2.2% out, while refusing the photograph ring's ORB
+   fit in four seeds of ten once 1.5 px of noise was added, sending back a lens 5% long with the
+   least within 0.25% (round 4). Both judged the least by the cost at it — how far the loops fail
+   to close there — and that is a chi-square on the few degrees of freedom the loops leave,
+   independent of the error that moved the least: it varied 140-fold across ten seeds while the
+   least moved a quarter of a percent. Judging by it selects nothing.
    Otherwise `initial` comes back as given, every field of it. The two conditions are not one: with
    the loop check removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors
    — three degrees out, at a hundredth of an inlier each — pull hard enough to give the cost a
@@ -104,9 +123,9 @@ closes. Three things follow.
    the angle, so under the wrong focal length a thirty-degree pair and a sixty-degree one are not
    scaled alike and the triangle stops closing. The first version of this paragraph said the pairs
    tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. With exact
-   matches a triangle is fitted; with 0.8 px of noise it is not, since its cost barely rises within
-   half a percent — seeing the focal length and seeing it through the noise are different questions,
-   and the second is the one a capture asks.
+   matches a triangle is fitted; with 0.4 px of noise it is not, being precise only to 0.39% or
+   worse — seeing the focal length and seeing it through the noise are different questions, and the
+   second is the one a capture asks.
 
 4. **`GlobalSolution::lensFitted` says which happened.** Not `Intrinsics::estimated`, which the
    first version of this decision used: that field says whether a lens was ever estimated, and a lens
@@ -148,7 +167,7 @@ closes. Three things follow.
   holds.
 - **Time.** `Refine` becomes twenty-four solves instead of one — the solve at the lens handed in,
   two to open the golden-section search, nineteen to narrow it to 1e-4 in log scale, and one half
-  a percent either side of the best. Each is cheap next to feature
+  a percent either side of the best, which is where the precision is read. Each is cheap next to feature
   extraction, and how cheap on a phone is a measurement the WASM build will have to take once
   registration compiles there (ADR 0047).
 - **An open capture keeps its guess.** A strip of frames that never closes a loop cannot estimate
@@ -184,9 +203,10 @@ cross-ring pairs. The solved edge error is the same quantity generalised to any 
 **Carry bearings instead of pixels.** Cheaper to consume, and fixed to the lens they were unprojected
 through, which is the lens being corrected.
 
-**A standard error of the focal scale from the curvature at the least.** The statistically proper
-version of the width test: the curvature against the residual, divided by how many independent
-measurements there are. Rejected for now because "how many" is the hard part — a ring's edges share
-frames, so its matches are not independent, and a count of them would call a single noisy loop
-certain. The width answers the question that decides the fit, whether the loops see the focal length
-over the noise, without claiming a number it cannot back.
+**A width at the least: the cost must double within half a percent of it.** This decision's
+second rule, and the one this paragraph once rejected the standard error in favour of, because a
+count of independent loops seemed to be what a standard error needed and a ring's shared frames do
+not give one. The count was never needed: the pairs' own residuals give the noise directly, and a
+loop cannot absorb them. The width divided by the cost at the least, which is the loops' leftover
+disagreement — a statistic on two or three degrees of freedom, not the noise — and a reviewer's two
+hundred seeds showed it both taking fits 2.2% out and refusing ones within 0.25% (round 4).

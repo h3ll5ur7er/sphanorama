@@ -10,13 +10,13 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
-#include <random>
 #include <string>
 #include <tuple>
 #include <vector>
 
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/match_noise.h"
 #include "support/rotation_scoring.h"
 #include "support/same_rotation.h"
 #include "utilities/camera_model.h"
@@ -835,82 +835,98 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   }
 }
 
-// Every coordinate of every match moved by Gaussian noise of `sigma` pixels. By Box-Muller over the
-// engine's raw draws rather than `std::normal_distribution`, whose output the standard leaves to
-// each library, so the same seed is the same noise on every toolchain.
-std::vector<PairwiseResult> WithNoise(std::vector<PairwiseResult> pairs, double sigma,
-                                      uint32_t seed) {
-  std::mt19937 draws(seed);
-  const auto uniform = [&] { return (static_cast<double>(draws()) + 0.5) / 4294967296.0; };
-  const auto gauss = [&] {
-    const double radius = std::sqrt(-2.0 * std::log(uniform()));
-    return static_cast<float>(sigma * radius * std::cos(2.0 * std::numbers::pi * uniform()));
-  };
-  for (PairwiseResult& pair : pairs) {
-    for (PixelMatch& match : pair.inlierMatches) {
-      match.ax += gauss();
-      match.ay += gauss();
-      match.bx += gauss();
-      match.by += gauss();
+// The shapes the noisy tests share: the ring, the ring with its closing pair swapped for one that
+// skips a frame — its one loop thirty and thirty degrees against sixty — a triangle, and two rows of
+// four thirty degrees apart each way, four loops none of which wraps.
+struct NoisyShapes {
+  std::vector<Quat> truth = Ring();
+  std::vector<Quat> grid;
+  std::vector<PairwiseResult> ring, skipping, triangle, gridPairs;
+  NoisyShapes() {
+    const Intrinsics lens = TrueLens();
+    ring = MatchedRing(truth, lens);
+    skipping = ring;
+    skipping.pop_back();
+    skipping.push_back(Matched(0, 2, truth, lens));
+    triangle = {Matched(0, 1, truth, lens), Matched(1, 2, truth, lens), Matched(2, 0, truth, lens)};
+    for (int row = 0; row < 2; ++row) {
+      for (int column = 0; column < 4; ++column) {
+        grid.push_back(Normalize(Multiply(AboutY(30.0 * column), AboutX(-30.0 * row))));
+      }
+    }
+    for (int row = 0; row < 2; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        gridPairs.push_back(Matched(row * 4 + column, row * 4 + column + 1, grid, lens));
+      }
+    }
+    for (int column = 0; column < 4; ++column) {
+      gridPairs.push_back(Matched(column, 4 + column, grid, lens));
     }
   }
-  return pairs;
-}
+};
 
 /**
  * A loop too small to see the focal length through the pairs' noise is not a fit, and a ring or a
  * grid carrying the same noise is.
  *
- * With 0.8 px of noise on every match, which is ORB's pair residual on the photograph ring, a ring
- * whose only loop is one skipping pair — thirty and thirty degrees against sixty — was fitted every
- * time and up to 1.5% out, handed the right lens, with the rotations ten times worse than that lens
- * gave them and an edge error that read clean (a reviewer's probe, round 3). Its cost has a least,
- * and rose from it nineteen to 2,800 times at the ends of the bracket; it barely moves within half a
- * percent of it, which is what says the least is the noise's. The ring and the grid are the other half: a
- * rule that refused every noisy fit would pass the first half alone.
+ * Handed the right lens, with 0.8 px of noise on every match — ORB's pair residual on the photograph
+ * ring — the skipping ring was fitted every time and up to 1.5% out, the rotations ten times worse
+ * than the right lens gave them and the edge error reading clean (round 3). A rule that asked the
+ * cost to double within half a percent of its least then took it in six seeds of two hundred, seed
+ * 101 among them at 2.2% out (round 4): the cost at the least is the loops' residual, which is
+ * independent of how far the noise moved the least, so judging by it selects nothing. Judged by the
+ * precision the pairs' own residuals give, the skipping ring and the triangle sit at 0.39% or worse
+ * at 0.4 px and the grid at 0.15% or better at 0.8, in every seed — so a handful of seeds decides it,
+ * and seed 101 is here for the record. The ring and the grid are the other half: a rule that refused
+ * every noisy fit would pass the first half alone.
  */
 TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
-  const std::vector<Quat> truth = Ring();
+  const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
-  const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
-  std::vector<PairwiseResult> skipping = ring;
-  skipping.pop_back();
-  skipping.push_back(Matched(0, 2, truth, lens));
-  const std::vector<PairwiseResult> triangle{Matched(0, 1, truth, lens), Matched(1, 2, truth, lens),
-                                             Matched(2, 0, truth, lens)};
-  // Two rows of four, thirty degrees apart each way: four loops, none of them wrapping.
-  std::vector<Quat> grid;
-  for (int row = 0; row < 2; ++row) {
-    for (int column = 0; column < 4; ++column) {
-      grid.push_back(Normalize(Multiply(AboutY(30.0 * column), AboutX(-30.0 * row))));
-    }
-  }
-  std::vector<PairwiseResult> gridPairs;
-  for (int row = 0; row < 2; ++row) {
-    for (int column = 0; column < 3; ++column) {
-      gridPairs.push_back(Matched(row * 4 + column, row * 4 + column + 1, grid, lens));
-    }
-  }
-  for (int column = 0; column < 4; ++column) {
-    gridPairs.push_back(Matched(column, 4 + column, grid, lens));
-  }
-
-  for (uint32_t seed = 1; seed <= 6; ++seed) {
-    for (const auto& [pairs, poses, fits, why] :
-         {std::tuple{skipping, truth, false, "a ring whose one loop skips a frame"},
-          std::tuple{triangle, truth, false, "a triangle"},
-          std::tuple{gridPairs, grid, true, "a grid"},
-          std::tuple{ring, truth, true, "a ring"}}) {
+  for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u, 101u}) {
+    for (const auto& [pairs, poses, sigma, fits, why] :
+         {std::tuple{shapes.skipping, shapes.truth, 0.8, false, "a ring whose one loop skips a frame"},
+          std::tuple{shapes.skipping, shapes.truth, 0.4, false, "the same, at 0.4 px"},
+          std::tuple{shapes.triangle, shapes.truth, 0.8, false, "a triangle"},
+          std::tuple{shapes.triangle, shapes.truth, 0.4, false, "a triangle, at 0.4 px"},
+          std::tuple{shapes.gridPairs, shapes.grid, 0.8, true, "a grid"},
+          // Precise to 0.33% at the best: a spread that counted every axis of a pair's rotation as
+          // well measured as the two across its view read it three times tighter, and took it.
+          std::tuple{shapes.gridPairs, shapes.grid, 2.0, false, "a grid, at 2 px"},
+          std::tuple{shapes.ring, shapes.truth, 0.8, true, "a ring"}}) {
       const Result<GlobalSolution> solved =
-          engine_.Refine(WithNoise(pairs, 0.8, seed), PriorsOut(poses), lens);
+          engine_.Refine(test::WithNoise(pairs, sigma, seed), PriorsOut(poses), lens);
       ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
       EXPECT_EQ(solved.value.lensFitted, fits) << why << ", seed " << seed;
       if (fits) {
-        // 0.25% in the worst of the grid's seeds, 0.01% in the ring's.
-        EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 0.004) << why << ", seed " << seed;
+        // 0.39% in the worst of two hundred of the grid's seeds, 0.03% in the ring's.
+        EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 0.006) << why << ", seed " << seed;
       } else {
         EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << why << ", seed " << seed;
       }
+    }
+  }
+}
+
+/**
+ * A loop that sees the focal length only roughly still corrects a lens it shows to be wrong.
+ *
+ * Refusing is not free: the answer then falls back to the lens handed in, and on a phone that is a
+ * guess nobody has measured. The skipping ring's fit is good to about a percent, which is too loose
+ * to take over the right lens and far better than a lens 8% out — which it puts eight or nine of its
+ * own spreads from the least. So it is taken, both ways, and lands within a few percent.
+ */
+TEST_F(Refine, ALensTheLoopsRefuteIsFittedEvenRoughly) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
+    for (const double scale : {0.92, 1.08}) {
+      const Result<GlobalSolution> solved = engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed),
+                                                           PriorsOut(shapes.truth), Scaled(lens, scale));
+      ASSERT_TRUE(solved.ok()) << solved.status.detail;
+      EXPECT_TRUE(solved.value.lensFitted) << scale << ", seed " << seed;
+      // 2.5% in the worst of four hundred, every one of them fitted.
+      EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 0.04) << scale << ", seed " << seed;
     }
   }
 }
@@ -987,7 +1003,12 @@ TEST_F(Refine, AnIslandTheSolveCannotPlaceDoesNotMoveTheFit) {
   PairwiseResult small = full;
   small.inlierMatches.resize(20);
   small.inliers = 20;
-  for (const PairwiseResult& island : {small, full}) {
+  // And one too thin to refit, which is no reason to pass through: the fewest-matches rule is about
+  // the pairs the fit is scored on, and this one is not.
+  PairwiseResult thin = full;
+  thin.inlierMatches.resize(2);
+  thin.inliers = 2;
+  for (const PairwiseResult& island : {small, full, thin}) {
     std::vector<PairwiseResult> pairs = MatchedRing(Ring(), lens);
     pairs.push_back(island);
     for (const double scale : {0.92, 1.08}) {
@@ -1142,6 +1163,94 @@ TEST_F(Refine, AMatchThatLosesItsDirectionMidRangeIsNotAFit) {
       PixelMatch{static_cast<float>(stray.x), static_cast<float>(stray.y),
                  static_cast<float>(to.pixel.x), static_cast<float>(to.pixel.y)});
   pairs[3].inliers += 1;
+
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), handed);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+  EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+}
+
+// The lens `AMatchThatLosesItsDirectionMidRangeIsNotAFit` is handed, whose tangential terms make
+// the pixels `Unproject` accepts something other than a star about the centre.
+Intrinsics Tangential() {
+  Intrinsics handed = Scaled(TrueLens(), 0.6132);
+  handed.k1 = -0.1696;
+  handed.k2 = -0.1004;
+  handed.k3 = 0.0833;
+  handed.p1 = -0.0632;
+  handed.p2 = 0.0737;
+  return handed;
+}
+
+// A match from `stray` in frame 3 to where its direction lands in frame 4, built under `handed`,
+// appended to the ring's pair between them.
+void AddStray(std::vector<PairwiseResult>& pairs, const std::vector<Quat>& truth,
+              const Intrinsics& handed, const Pixel& stray) {
+  const UnprojectedDirection from = Unproject(handed, stray);
+  ASSERT_TRUE(from.valid);
+  const Quat exact = Normalize(Multiply(Conjugate(truth[4]), truth[3]));
+  const ProjectedPixel to = Project(handed, Rotate(exact, from.direction));
+  ASSERT_TRUE(to.valid);
+  pairs[3].inlierMatches.push_back(
+      PixelMatch{static_cast<float>(stray.x), static_cast<float>(stray.y),
+                 static_cast<float>(to.pixel.x), static_cast<float>(to.pixel.y)});
+  pairs[3].inliers += 1;
+}
+
+/**
+ * The search's own trials count, not only the two the rise test adds: a match that loses its
+ * direction at one scale the golden section tries, far from the least, means no fit.
+ *
+ * Its third trial is fixed by the bracket whatever the cost, since the first two are and the truth
+ * lies between them. This match has no direction in a window around that scale and one everywhere
+ * else — at the least and half a percent either side of it among them — so the search's trials are
+ * the only thing that sees it (round 4, where the rise test's shorter trial had been refusing the
+ * mid-range test's match too, and no test told the two apart).
+ */
+TEST_F(Refine, ATrialTheSearchMakesFarFromTheLeastCounts) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics handed = Tangential();
+  std::vector<PairwiseResult> pairs = MatchedRing(truth, Scaled(handed, 1.05));
+  ASSERT_TRUE(engine_.Refine(pairs, PriorsOut(truth), handed).value.lensFitted);
+
+  const double golden = (std::sqrt(5.0) - 1.0) / 2.0;
+  const double lo = std::log(0.7);
+  const double hi = std::log(1.4);
+  const double first = hi - golden * (hi - lo);
+  const double third = std::exp(first + golden * (hi - first));
+  const Pixel stray{196.0, 426.0};
+  const auto directed = [&](double scale) { return Unproject(Scaled(handed, scale), stray).valid; };
+  ASSERT_FALSE(directed(third)) << third;
+  for (const double scale : {0.7, 1.0, 1.05 * std::exp(-0.005), 1.05, 1.05 * std::exp(0.005), 1.4}) {
+    ASSERT_TRUE(directed(scale)) << scale;
+  }
+  AddStray(pairs, truth, handed, stray);
+
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), handed);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+  EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+}
+
+/**
+ * And the rise test's longer trial counts as its shorter one does: a match that loses its direction
+ * just past the least's upper step, with the truth just inside the long end of the bracket, means no
+ * fit. A radial lens cannot build this — a longer focal length only brings a pixel nearer the centre
+ * — and the tangential one can (round 4).
+ */
+TEST_F(Refine, TheRiseTestsLongerTrialCountsToo) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics handed = Tangential();
+  std::vector<PairwiseResult> pairs = MatchedRing(truth, Scaled(handed, 1.398));
+  ASSERT_TRUE(engine_.Refine(pairs, PriorsOut(truth), handed).value.lensFitted);
+
+  const Pixel stray{173.5, 460.0};
+  const auto directed = [&](double scale) { return Unproject(Scaled(handed, scale), stray).valid; };
+  for (const double scale : {0.7, 1.0, 1.398 * std::exp(-0.005), 1.398, 1.4}) {
+    ASSERT_TRUE(directed(scale)) << scale;
+  }
+  ASSERT_FALSE(directed(1.398 * std::exp(0.005)));
+  AddStray(pairs, truth, handed, stray);
 
   const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), handed);
   ASSERT_TRUE(solved.ok()) << solved.status.detail;

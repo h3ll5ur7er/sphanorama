@@ -731,9 +731,10 @@ struct GlobalSolution {
   // lens a device kept from an earlier capture is an estimate this call did not make. False where
   // the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
   // them keeps fewer than three matches with a direction at the shortest focal length searched; any
-  // trial of the search could not be scored on those matches; or the cost does not at least double
-  // within half a percent of its least on both sides, which is how a least at an end of the range,
-  // a cost with no least at all, and a least the pairs' noise put there all look.
+  // trial of the search could not be scored on those matches; the cost does not rise on both sides
+  // of its least, as at an end of the range or with no least at all; or the least is not precise to
+  // two tenths of a percent by the pairs' own residuals, and the lens handed in is not four times
+  // that far from it either.
   bool lensFitted = false;
 };
 

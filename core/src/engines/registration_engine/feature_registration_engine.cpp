@@ -1289,23 +1289,43 @@ constexpr double kFocalScaleHigh = 1.4;
 // The search stops when the bracket is this narrow in log scale. A hundredth of a percent of focal
 // length moves a ring's closure by about 0.03 degrees, under every median the accuracy table holds.
 constexpr double kFocalScaleTolerance = 1e-4;
-// An answer only where the cost at least doubles within half a percent of it, on both sides. The
-// least of a cost is not an answer by being least: a small loop's is too, and with the pixel noise
-// of ORB's pairs one was fitted up to 1.5% out, leaving the rotations ten times worse than the
-// right lens would have (a reviewer's probe, round 3). How far the cost must move to double is how
-// sharply the loops see the focal length against the noise the pairs carry. Measured on 0.8 px of
-// noise: a triangle or a ring with one skipping pair rises 1.01 to 1.22 times at half a percent, a
-// two-by-four grid 3.3 to 10.6, a twelve-frame ring 66 to 414, and the photograph ring's ORB pairs 4.6
-// times in a quarter of a percent. Half a percent of focal length is about an eighth of a degree of
-// ORB's median, which is the scale of what the fit is for (ADR 0066). The same test refuses a cost
-// that is flat, as a tree of pairs is under any focal length, and a least at an end of the bracket,
-// where the cost past it is lower still.
-constexpr double kObservableWidth = 0.005;
-constexpr double kObservableRise = 2.0;
+// A least is an answer only where it is precise, and how precise is a property of the pairs' noise
+// and of how sharply the loops see the focal length — not of how much the loops fail to close at
+// the least, which is what the cost there is. That residual is a chi-square on the handful of
+// degrees of freedom the loops leave, independent of the error that moves the least: judged by it,
+// a ring with one skipping pair was fitted 2.2% out, and the photograph ring refused a fit within
+// 0.25% (a reviewer's probes, rounds 3 and 4). So the precision is estimated from what cannot move
+// with the least: each pair's own residual after its Kabsch fit, which no loop absorbs, through
+// each pair's information about its rotation, and the change in each edge's error across a step
+// either side of the least (ADR 0066).
+//
+// Measured over 200 seeds of noise, the estimate's error in standard deviations spreads 0.77 to
+// 0.97 on every shape and noise level tried, and never passed 3. The spread itself barely moves
+// between seeds, which is what makes it a threshold at all: 0.006 to 0.036% for a twelve-frame ring
+// at 0.4 to 2 px, 0.07 to 0.37% for a two-by-four grid, 0.39 to 2.6% for a triangle or a ring whose
+// one loop skips a frame, and 0.004 to 0.13% for the photograph ring's pairs, whichever detector,
+// with up to 1.5 px of noise added to them.
+//
+// Taken when that spread is within `kFocalPrecision` — two tenths of a percent, about a twentieth of
+// a degree of ORB's median — or when the lens handed in is at least `kHandedIsRefuted` spreads from
+// the least, since then the data refute the lens the answer would otherwise fall back to, and a fit
+// a percent out is still nearer than it.
+constexpr double kFocalPrecision = 0.002;
+constexpr double kHandedIsRefuted = 4.0;
+// The step either side of the least that the precision is measured across: wide enough that the
+// solver's stopping rule is small beside the change it makes, narrow enough that the cost is still
+// the parabola it is near the least.
+constexpr double kPrecisionStep = 0.005;
 
 // The solve under one focal scale, and how far it leaves the pairs refitted under it.
 struct FocalTrial {
   double costDeg2 = std::numeric_limits<double>::infinity();
+  // Each scored edge's error as a rotation vector in degrees, and the inverse of its pair's
+  // information about its own rotation: what the precision of a least is read from.
+  std::vector<cv::Vec3d> errorsDeg;
+  std::vector<cv::Matx33d> spreads;
+  // The pairs' own residual per match and axis, in square degrees, after each Kabsch fit.
+  double residualDeg2 = std::numeric_limits<double>::infinity();
   AveragedRotations averaged;
 };
 
@@ -1337,6 +1357,8 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
                          const std::vector<Quat>& anchors) {
   const Intrinsics lens = ScaledLens(initial, scale);
   FocalTrial trial;
+  double squares = 0.0;
+  double freedoms = 0.0;
   for (const ScoredEdge& at : scored) {
     std::vector<Vec3> from;
     std::vector<Vec3> to;
@@ -1350,7 +1372,19 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
     cv::Matx33d fitted;
     if (!KabschRotation(from, to, &fitted)) return trial;
     edges[at.edge].rotation = FromMatrix(fitted);
+    // Two coordinates a match, three spent on the rotation.
+    cv::Matx33d information = cv::Matx33d::zeros();
+    for (size_t i = 0; i < from.size(); ++i) {
+      const cv::Vec3d seen(to[i].x, to[i].y, to[i].z);
+      const cv::Vec3d moved = fitted * cv::Vec3d(from[i].x, from[i].y, from[i].z);
+      const double deg = std::acos(std::clamp(moved.dot(seen), -1.0, 1.0)) * 180.0 / std::numbers::pi;
+      squares += deg * deg;
+      information += cv::Matx33d::eye() - seen * seen.t();
+    }
+    freedoms += 2.0 * static_cast<double>(from.size()) - 3.0;
+    trial.spreads.push_back(information.inv());
   }
+  trial.residualDeg2 = squares / freedoms;
   trial.averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
   if (!trial.averaged.valid) return trial;
   double sum = 0.0;
@@ -1363,9 +1397,38 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
     const double deg = AngleBetween(solved, edge.rotation) * 180.0 / std::numbers::pi;
     sum += edge.weight * deg * deg;
     weights += edge.weight;
+    // In the pair's second frame, where its information was gathered.
+    Quat off = Normalize(Multiply(edge.rotation, Conjugate(solved)));
+    if (off.w < 0.0) off = Quat{-off.w, -off.x, -off.y, -off.z};
+    const double half = std::sqrt(off.x * off.x + off.y * off.y + off.z * off.z);
+    const double perUnit = half > 0.0 ? 2.0 * std::atan2(half, off.w) / half : 2.0;
+    trial.errorsDeg.push_back(cv::Vec3d(off.x, off.y, off.z) * (perUnit * 180.0 / std::numbers::pi));
   }
   trial.costDeg2 = sum / weights;
   return trial;
+}
+
+// How far, in log focal scale, the least could be from where it is, as a standard deviation. Each
+// edge's error moves with the scale by the change across the two trials either side; the least is
+// where the weighted errors stop moving, and the pairs' own noise, through each pair's information
+// about its rotation, is how far that point wanders. Infinite where the errors do not move at all,
+// which is a cost with no least.
+double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
+                        const FocalTrial& longer, const std::vector<RelativeRotation>& edges,
+                        const std::vector<ScoredEdge>& scored) {
+  double noise = 0.0;
+  double signal = 0.0;
+  for (size_t e = 0; e < scored.size(); ++e) {
+    const double weight = edges[scored[e].edge].weight;
+    // Checked access: a trial that was not scored stopped before it had an error for every edge,
+    // and is refused before this is reached; reaching it anyway is `Internal`, not a stray read.
+    const cv::Vec3d moves =
+        (longer.errorsDeg.at(e) - shorter.errorsDeg.at(e)) * (1.0 / (2.0 * kPrecisionStep));
+    noise += weight * weight * moves.dot(best.spreads.at(e) * moves);
+    signal += weight * moves.dot(moves);
+  }
+  if (!(signal > 0.0)) return std::numeric_limits<double>::infinity();
+  return std::sqrt(best.residualDeg2 * noise) / signal;
 }
 
 // Whether the accepted pairs close a loop, counting two pairs between the same frames once: a pair
@@ -1602,10 +1665,16 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     FocalTrial& best = firstIsBest ? f1 : f2;
     const double bestLog = firstIsBest ? x1 : x2;
     const double bestScale = std::exp(bestLog);
-    const double shorter = trial(bestLog - kObservableWidth).costDeg2;
-    const double longer = trial(bestLog + kObservableWidth).costDeg2;
-    if (everyTrialScored && shorter > kObservableRise * best.costDeg2 &&
-        longer > kObservableRise * best.costDeg2) {
+    const FocalTrial shorter = trial(bestLog - kPrecisionStep);
+    const FocalTrial longer = trial(bestLog + kPrecisionStep);
+    // A least with the cost rising on both sides, not one at an end of the bracket with the cost
+    // past it lower still; and precise, or far enough from the lens handed in to refute it.
+    const bool least = shorter.costDeg2 > best.costDeg2 && longer.costDeg2 > best.costDeg2;
+    const double spread =
+        everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored)
+                         : std::numeric_limits<double>::infinity();
+    if (everyTrialScored && least &&
+        (spread <= kFocalPrecision || std::abs(bestLog) >= kHandedIsRefuted * spread)) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;
       solution.intrinsics.fy *= bestScale;

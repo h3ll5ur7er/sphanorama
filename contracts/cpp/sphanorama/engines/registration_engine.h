@@ -137,10 +137,13 @@ class IRegistrationEngine {
   // in a window between two of them goes unseen, and the fit is taken on matches that all have a
   // direction under the lens it returns. Where the accepted pairs among placed frames close no loop,
   // where one of them keeps fewer than three such matches, where any trial could not be scored on
-  // them, or where the cost does not at least double within half a percent of its least on both
-  // sides — a loop too small to see the focal length through the pairs' noise does not — `initial`
-  // comes back as given, every field of it, and `lensFitted` is false. Where the lens is fitted the rotations are the refitted pairs' solve,
-  // not the one their own `relativeRotation`s give.
+  // them, where the cost does not rise on both sides of its least, or where the least is not
+  // precise — to within two tenths of a percent, by the scatter the pairs' own residuals put on it —
+  // and the lens handed in is not four times that far from it either, `initial` comes back as
+  // given, every field of it, and `lensFitted` is false. A loop too small to see the focal length
+  // through the pairs' noise is refused that way, unless what it does see refutes the lens handed
+  // in. Where the lens is fitted the rotations are the refitted pairs' solve, not the one their own
+  // `relativeRotation`s give.
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
@@ -153,7 +156,9 @@ class IRegistrationEngine {
   // are not all finite pixels, is `InvalidArgument` too.
   // `Unsupported` from `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a
   // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors or
-  // accepted pairs reaches today. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
+  // accepted pairs reaches today, and for anything the implementation's own machinery throws — the
+  // OpenCV-backed one converts OpenCV's exceptions and the standard library's, allocation failure
+  // among them, as its other methods do. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
   // frame with no prior is not a refusal: it is placed through its pairs, or named in
   // `droppedFrames`.
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
