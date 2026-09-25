@@ -10,19 +10,20 @@ forward, one is *added* in one of three places, and the body below it is left al
   It is a pointer rather than a claim, so extending it in place is not editing the record —
   ADR 0006's says "narrowed by [0052]", and this branch extended that to "…, extended by [0053]".
 - **A banner** at the top of the file — under the title, and under the Status line where the file
-  has one; six of the fifteen bannered ADRs do not have a Status line at all. For a claim in the
-  body that a reader would otherwise meet and believe. This is the common shape: fifteen ADRs carry
+  has one; six of the sixteen bannered ADRs do not have a Status line at all. For a claim in the
+  body that a reader would otherwise meet and believe. This is the common shape: sixteen ADRs carry
   a banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0049, 0050, 0052, 0053, 0055, 0056,
-  0060); nine of those carry a Status line (0006, 0047, 0049, 0050, 0052, 0053, 0055, 0056, 0060),
-  and five of *those* carry a Status **chain** — a "narrowed by", "superseded by", "extended by",
-  "moved by" or "retracted by" pointer (0006, 0047, 0049, 0052, 0060). The membership list has been
+  0060, 0062); ten of those carry a Status line (0006, 0047, 0049, 0050, 0052, 0053, 0055, 0056,
+  0060, 0062), and six of *those* carry a Status **chain** — a "narrowed by", "superseded by",
+  "extended by", "moved by", "retracted by" or "withdrawn by" pointer (0006, 0047, 0049, 0052, 0060,
+  0062). The membership list has been
   right through two extensions of this vocabulary and the vocabulary has been one short of it both
   times: 0060's line reads "one figure retracted by", and the word was missing from this sentence
   while 0060 was listed in it.
 
   **One leading blockquote is not a banner** — 0022's is a quotation — which is why it is absent
   from all three lists and why counting `^> ` in the first twenty lines of every file returns one
-  candidate more than the set has members: sixteen against fifteen today. Said here because two
+  candidate more than the set has members: seventeen against sixteen today. Said here because two
   separate
   recounts have had to rediscover it, and phrased as an offset rather than a total because the first
   version of this note said "twelve candidates" and was made stale by the same commit that wrote it:
@@ -149,5 +150,6 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0059](0059-the-measurement-is-made-in-a-photograph.md) | Registration accuracy is measured in a licensed photograph rather than a checkerboard, the bytes are committed as received with a record beside them, and a checker fails the build for a binary that cannot say where it came from |
 | [0060](0060-a-reachability-claim-in-prose-is-retracted-and-pinned.md) | *(one figure retracted by [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md): the half-pixel offset is 0.0805° across two axes, not the 0.0581° of one.)* A lens refusing 38.8% of its frame was published in a source comment and is wrong — it is 66.8%; both figures the engine cites are asserted by a test now, and the refused-row path they argue for is not reached by any dataset this repository renders |
 | [0061](0061-the-half-pixel-convention-gap-is-measured-and-kept.md) | Keypoints reach `camera_model` half a pixel out, worth 0.0105° per fitted pair against 0.0805° per bearing — and correcting it makes five of the six published figures *worse* (AKAZE's median is the one that improves) and fails both of ORB's bounds, because the table is green partly by cancellation against the detectors' own localisation bias. Kept, measured, and the blast radius left where it already lives |
-| [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md) | The rotation solve under `Refine` is a utility rather than an engine — it needs quaternions where `EstimatePairwise` needs OpenCV — and the Jacobi eigensolver [0049] measured moves out of test support into `core/src` so there is one copy. One component in `core/src` that nothing in `core/src` calls yet, which is the cost it takes knowingly and names the caller for |
+| [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md) | *(its sweep table and `590` withdrawn by [0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md): the budget is set by the frame count now.)* The rotation solve under `Refine` is a utility rather than an engine — it needs quaternions where `EstimatePairwise` needs OpenCV — and the Jacobi eigensolver [0049] measured moves out of test support into `core/src` so there is one copy. One component in `core/src` that nothing in `core/src` calls yet, which is the cost it takes knowingly and names the caller for |
 | [0063](0063-a-reload-waits-for-the-resident-spill-pair.md) | The resident spill pair is handed to the page that replaces its holder: the right to it is a Web Lock the page holds for life, the successor queues for it, and everyone else only asks if it is free |
+| [0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md) | *(withdraws [0062](0062-the-rotation-solver-is-a-utility-and-the-eigensolver-moves-into-the-core.md)'s sweep table and its `590`.)* The rotation solver turns each piece of the reconstruction onto the gauge its anchors agree on best after every sweep, so lightly weighed anchors — which the registered ring says a caller should use — still decide the gauge, and the solve converges in tens of sweeps rather than running out of budget or stopping where it started |

@@ -83,8 +83,9 @@ the closing edge a chain throws away: on a twelve-frame ring whose every edge is
 included leave it 0.000028, which is where the solver stops rather than the 0.0000024 it is heading
 for. A *uniform* drift, too, which is the one kind a loop closure removes exactly,
 so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
-and above an anchor weight of about a hundredth it is set by that weight rather than by the frame
-count; below it both matter and the budget runs out. `Refine` itself still refuses —
+and since each piece's gauge is chosen outright every sweep (ADR 0064) it is set by the frame count
+rather than by the anchor weight: a twelve-frame ring settles in under fifty sweeps at any weight,
+ninety frames in under nine hundred. `Refine` itself still refuses —
 `GlobalSolution::intrinsics` promises a refined lens and `PairwiseResult` carries a count of
 correspondences but not the matched points, so there is nothing to refine one from: a contract gap
 rather than a missing afternoon (ADR 0062).

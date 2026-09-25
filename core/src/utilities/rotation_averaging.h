@@ -27,7 +27,8 @@ namespace sphanorama {
 // the same reconstruction — so a solver given edges alone cannot say which way is north. The anchors
 // are what fix it, and they are weighted low on purpose: a fused phone orientation is out by degrees
 // where a registered pair is out by hundredths, so the anchors make the answer absolute and the
-// edges make it right.
+// edges make it right. However low, the gauge is the one the anchors agree on best: each piece of
+// the reconstruction is turned bodily onto it every sweep, which no edge can object to (ADR 0064).
 
 // A measured relation between two frames, in the convention `IRegistrationEngine` answers in.
 //
@@ -127,7 +128,8 @@ struct AveragedRotations {
   // some point by the eigensolver's scan order rather than by the evidence. Ascending, each frame
   // named once. Reachable when everything speaking for a frame disagrees by a half turn — two
   // neighbours pointing opposite ways, which in a capture means a registration that has gone badly
-  // wrong rather than one that is merely imprecise.
+  // wrong rather than one that is merely imprecise. Or when a piece's anchors disagree by a half
+  // turn about where the whole piece sits, which names every frame in it.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the
@@ -142,7 +144,8 @@ struct AveragedRotations {
   // refused — which `valid` already says, and this does not independently promise.
   int32_t sweeps = 0;
 
-  // False when the sweep budget ran out before the largest per-frame update fell under tolerance.
+  // False when the sweep budget ran out before the largest move — a frame's own update, or its piece
+  // being turned onto its anchors — fell under tolerance.
   // The rotations are still the best the solver reached; what is not promised is that another sweep
   // would leave them alone.
   bool converged = false;

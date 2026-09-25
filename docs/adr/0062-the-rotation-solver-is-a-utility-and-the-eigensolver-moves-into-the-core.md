@@ -1,6 +1,12 @@
 # 0062 — The rotation solver is a utility, and the eigensolver moves into the core
 
-**Status:** accepted
+**Status:** accepted; its sweep figures withdrawn by
+[ADR 0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md)
+
+> **The sweep table and the `590` below are withdrawn by [ADR 0064](0064-the-solver-chooses-each-pieces-gauge-every-sweep.md).**
+> They were right for the solver they measured. Since 0064 each piece's gauge is chosen outright
+> every sweep, so the budget is set by the frame count rather than the anchor weight, and the
+> twelve-frame cell this file calls the executable copy of the table is asserted as 46.
 
 ## Context
 
