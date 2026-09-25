@@ -35,6 +35,7 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/rotation_scoring.h"
 #include "support/synthetic_dataset.h"
+#include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -434,6 +435,18 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
       truth.push_back(dataset.value.frames[at].trueRotation);
       continue;
     }
+    // The matches carried are the inliers counted, each within the engine's 3-pixel inlier gate of
+    // where the returned rotation puts it — so a `Refine` refitting from them refits this pair and
+    // not some other set (ADR 0066). The thousandth covers the matches being floats.
+    EXPECT_EQ(pair.value.inlierMatches.size(), static_cast<size_t>(pair.value.inliers)) << at;
+    for (const PixelMatch& match : pair.value.inlierMatches) {
+      const UnprojectedDirection from = Unproject(dataset.value.lens, Pixel{match.ax, match.ay});
+      ASSERT_TRUE(from.valid) << at;
+      const ProjectedPixel landed =
+          Project(dataset.value.lens, Rotate(pair.value.relativeRotation, from.direction));
+      ASSERT_TRUE(landed.valid) << at;
+      EXPECT_LE(std::hypot(landed.pixel.x - match.bx, landed.pixel.y - match.by), 3.001) << at;
+    }
     estimated.push_back(Chain(estimated.back(), pair.value.relativeRotation));
     truth.push_back(dataset.value.frames[at].trueRotation);
   }
@@ -694,18 +707,99 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   ASSERT_TRUE(agreed.valid);
   EXPECT_LT(AngleBetween(agreed.rotation, score.alignment) * 180.0 / std::numbers::pi, 0.001);
 
-  // Today's run: ORB 0.0552/0.0638/0.1164, AKAZE 0.0348/0.0351/0.0624, SIFT 0.0264/0.0309/0.0674
-  // (median, mean, max), against the chain's 0.1009, 0.0612 and 0.0239 medians. The closing pair
-  // roughly halves ORB's and AKAZE's error and leaves SIFT's a little worse; not through the priors'
-  // pull, since the solved shape is flat in their weight from 1e-6 to 0.1 (ADR 0064), and why is
-  // not yet known. Written also in `docs/06-roadmap.md`, `CLAUDE.md` and ADR 0065, which move with
-  // these; the chain's list above does not cover them.
+  // Today's run: ORB 0.0464/0.0510/0.1408, AKAZE 0.0293/0.0332/0.0660, SIFT 0.0142/0.0144/0.0331
+  // (median, mean, max), against the chain's 0.1009, 0.0612 and 0.0239 medians, with the focal
+  // length fitted to -0.058%, +0.002% and +0.012% of the rendered one. Before the fit (ADR 0065)
+  // these read 0.0552, 0.0348 and 0.0264, and SIFT's was a little worse than its chain for no known
+  // reason. The reason was the pairs, not the solve: `FitRotation` returns the rotation fitted on its
+  // inlier set *before* the re-gate and reports the set after it, and `Refine` now refits every pair
+  // on its reported inliers — which alone, at the rendered focal length with no search, gives
+  // 0.0375, 0.0291 and 0.0147 (ADR 0066). Written also in `docs/06-roadmap.md` and `CLAUDE.md`,
+  // which move with these; the chain's list above does not cover them.
   //
   // The median's bound is what fails a solve that has lost the closing pair: handed eleven, ORB
   // reads 0.1005, AKAZE 0.0601 and SIFT 0.0229, and only ORB's is past 0.08 — which is why the
   // bound is tighter than twice the measurement, and why `edgesUsed` is asserted above as well.
   EXPECT_LT(score.medianDeg, 0.08);
   EXPECT_LT(score.maxDeg, 0.25);
+}
+
+/**
+ * A focal length out by the margin a phone's reported field of view can be is fitted from the ring,
+ * and the ring then solves as though it had been right (ADR 0066).
+ *
+ * The same guess goes to `EstimatePairwise` and to `Refine`, as it would on a phone: nothing else
+ * knows the lens. Measured first, bounded after, as the rest of this file is.
+ */
+TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
+  constexpr int kFrames = 12;
+  Rendered rendered(kFrames, 640, 480, World::Photograph);
+  ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
+  if (!rendered.ok()) {
+    GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. " << rendered.why();
+  }
+
+  MemoryFrameStoreAccess store{1 << 28};
+  Owned owned{store};
+  const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
+  ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+  for (const SyntheticFrame& frame : dataset.value.frames) owned.frames.push_back(frame.frame);
+
+  FeatureRegistrationEngine engine{store, GetParam()};
+  std::vector<FeatureSet>& sets = owned.sets;
+  std::vector<Quat> truth;
+  for (const SyntheticFrame& frame : dataset.value.frames) {
+    const Result<FeatureSet> features = engine.ExtractFeatures(frame.frame);
+    ASSERT_TRUE(features.ok()) << features.status.detail;
+    sets.push_back(features.value);
+    truth.push_back(frame.trueRotation);
+  }
+  std::vector<FramePrior> priors;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    const double at = static_cast<double>(i);
+    const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
+    FramePrior prior;
+    prior.frame = dataset.value.frames[i].frame.id;
+    prior.pose.orientation =
+        Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
+    prior.pose.confidence = 1.0;
+    priors.push_back(prior);
+  }
+
+  for (const double scale : {0.90, 0.95, 1.05, 1.10}) {
+    Intrinsics guess = dataset.value.lens;
+    guess.fx *= scale;
+    guess.fy *= scale;
+    std::vector<PairwiseResult> pairs;
+    for (int at = 0; at < kFrames; ++at) {
+      const size_t a = static_cast<size_t>(at);
+      const size_t b = static_cast<size_t>((at + 1) % kFrames);
+      const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
+      const Quat prior = Normalize(Multiply(Multiply(Conjugate(truth[b]), truth[a]), nudge));
+      const Result<PairwiseResult> pair = engine.EstimatePairwise(sets[a], sets[b], prior, guess);
+      ASSERT_TRUE(pair.ok()) << scale << " pair " << a << "-" << b << ": " << pair.status.detail;
+      pairs.push_back(pair.value);
+    }
+    const Result<GlobalSolution> solved = engine.Refine(pairs, priors, guess);
+    ASSERT_TRUE(solved.ok()) << scale << ": " << solved.status.detail;
+    const test::RotationScore score = test::ScoreRotations(solved.value.rotations, truth);
+    ASSERT_TRUE(score.valid);
+    const double fxOut = solved.value.intrinsics.fx / dataset.value.lens.fx - 1.0;
+    std::fprintf(stderr,
+                 "[focal] detector=%d scale=%.2f fitted=%d fx=%+.4f%% median=%.4f max=%.4f "
+                 "edge=%.4f\n",
+                 static_cast<int>(GetParam()), scale, solved.value.lensFitted ? 1 : 0,
+                 100.0 * fxOut, score.medianDeg, score.maxDeg, solved.value.medianEdgeErrorDeg);
+    EXPECT_TRUE(solved.value.lensFitted) << scale;
+    // Today's run, across the four scales: the focal length within -0.063 to -0.051% (ORB), -0.004
+    // to +0.002% (AKAZE) and +0.010 to +0.012% (SIFT); medians 0.047 to 0.052, 0.029 to 0.034 and
+    // 0.010 to 0.019; worst frames at most 0.146, 0.070 and 0.038 (ADR 0066). The same bounds as
+    // the solve handed the right lens, because that is the claim: out by ten percent, the ring
+    // solves as though it had not been. Unfitted, the median at 2% out was already 0.50 (ORB).
+    EXPECT_LT(std::abs(fxOut), 0.002) << scale;
+    EXPECT_LT(score.medianDeg, 0.08) << scale;
+    EXPECT_LT(score.maxDeg, 0.25) << scale;
+  }
 }
 
 /**

@@ -597,6 +597,15 @@ struct FeatureSet {
   int32_t extractor = 0;
 };
 
+// One correspondence a pairwise rotation was fitted on: where it sits in frame `a` and where in
+// frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
+// through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
+// because the detectors' keypoints are floats and the matches are what bounds a pair's memory.
+struct PixelMatch {
+  float ax = 0, ay = 0;
+  float bx = 0, by = 0;
+};
+
 struct PairwiseResult {
   FrameId a, b;
   // **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
@@ -639,6 +648,13 @@ struct PairwiseResult {
   // counted should ask for another frame. An earlier implementation set this from the same condition that decided the
   // refusal, which made it a constant `true` on every returned result and told a caller nothing.
   bool accepted = false;
+  // The correspondences the returned rotation agrees with, which `inliers` counts — so on an engine's
+  // answer the two are the same number, and `Refine` refuses an accepted pair where they are not.
+  // Carried because the focal length is invisible to a pair and visible to a loop of them: `Refine`
+  // refits every accepted pair from these under each lens it tries (ADR 0066). At most one a
+  // feature, so bounded by the detector's cap. Empty on a pair built without them, whose rotation
+  // cannot be refitted, and then `Refine` passes the lens through.
+  std::vector<PixelMatch> inlierMatches;
 };
 
 // One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
@@ -657,8 +673,8 @@ struct FramePrior {
 
 // One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
 //
-// **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
-// matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
+// **Every figure is in degrees because the solve is over rotations**, including when the lens was
+// fitted: the fit is scored by how well the pairs agree as rotations (ADR 0066).
 struct GlobalSolution {
   // The frames the solve placed, in the order their priors were given. A frame it could not place is
   // left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
@@ -666,9 +682,9 @@ struct GlobalSolution {
   std::vector<FrameId> frames;
   std::vector<Quat> rotations;      // parallel to frames
 
-  // The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
-  // compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
-  // which no `PairwiseResult` carries (ADR 0065).
+  // The lens the rotations are expressed under, which a compositor needs beside them: `Refine`'s
+  // `initial` with the focal length fitted where `lensFitted` says so, and every field as given
+  // where it does not (ADR 0066).
   Intrinsics intrinsics;
 
   // How far the answer leaves the pairs it used, and over how many. Read them together: no
@@ -697,6 +713,12 @@ struct GlobalSolution {
   std::vector<FrameId> ambiguousFrames;
   // False when the solve ran out of sweeps; the rotations are the best it reached.
   bool converged = false;
+  // Whether this call fitted the focal length, rather than `intrinsics.estimated`, which says
+  // whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
+  // lens a device kept from an earlier capture is an estimate this call did not make. False where
+  // nothing could see the focal length: no loop among the accepted pairs, a pair with no matches to
+  // refit, or a best focal length at the edge of the range searched (ADR 0066).
+  bool lensFitted = false;
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

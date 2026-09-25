@@ -569,6 +569,19 @@ export interface FeatureSet {
   extractor: number;
 }
 
+/**
+ * One correspondence a pairwise rotation was fitted on: where it sits in frame `a` and where in
+ * frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
+ * through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
+ * because the detectors' keypoints are floats and the matches are what bounds a pair's memory.
+ */
+export interface PixelMatch {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+}
+
 export interface PairwiseResult {
   a: FrameId;
   b: FrameId;
@@ -618,6 +631,15 @@ export interface PairwiseResult {
    * refusal, which made it a constant `true` on every returned result and told a caller nothing.
    */
   accepted: boolean;
+  /**
+   * The correspondences the returned rotation agrees with, which `inliers` counts — so on an engine's
+   * answer the two are the same number, and `Refine` refuses an accepted pair where they are not.
+   * Carried because the focal length is invisible to a pair and visible to a loop of them: `Refine`
+   * refits every accepted pair from these under each lens it tries (ADR 0066). At most one a
+   * feature, so bounded by the detector's cap. Empty on a pair built without them, whose rotation
+   * cannot be refitted, and then `Refine` passes the lens through.
+   */
+  inlierMatches: PixelMatch[];
 }
 
 /**
@@ -637,8 +659,8 @@ export interface FramePrior {
 
 /**
  * One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
- * **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
- * matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
+ * **Every figure is in degrees because the solve is over rotations**, including when the lens was
+ * fitted: the fit is scored by how well the pairs agree as rotations (ADR 0066).
  */
 export interface GlobalSolution {
   /**
@@ -650,9 +672,9 @@ export interface GlobalSolution {
   /** parallel to frames */
   rotations: Quat[];
   /**
-   * The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
-   * compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
-   * which no `PairwiseResult` carries (ADR 0065).
+   * The lens the rotations are expressed under, which a compositor needs beside them: `Refine`'s
+   * `initial` with the focal length fitted where `lensFitted` says so, and every field as given
+   * where it does not (ADR 0066).
    */
   intrinsics: Intrinsics;
   /**
@@ -690,6 +712,14 @@ export interface GlobalSolution {
   ambiguousFrames: FrameId[];
   /** False when the solve ran out of sweeps; the rotations are the best it reached. */
   converged: boolean;
+  /**
+   * Whether this call fitted the focal length, rather than `intrinsics.estimated`, which says
+   * whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
+   * lens a device kept from an earlier capture is an estimate this call did not make. False where
+   * nothing could see the focal length: no loop among the accepted pairs, a pair with no matches to
+   * refit, or a best focal length at the edge of the range searched (ADR 0066).
+   */
+  lensFitted: boolean;
 }
 
 export interface GainMap {

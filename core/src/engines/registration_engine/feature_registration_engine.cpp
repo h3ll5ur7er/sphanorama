@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <set>
 #include <numbers>
 #include <string>
 #include <utility>
@@ -904,6 +905,7 @@ Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows, 
  * disagree with the sensor.
  */
 Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vector<Vec3>& to,
+                                   const std::vector<Pixel>& source,
                                    const std::vector<Pixel>& observed, const Quat& prior,
                                    const Intrinsics& lens) {
   const auto residualPx = [&](const cv::Matx33d& r, size_t at) -> double {
@@ -1052,6 +1054,13 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   // conjunct in the very line that exists because the previous gate was two unfalsifiable
   // conjuncts — which is what a reviewer pointed out when the first fix carried it across.
   answer.accepted = agreeing >= kInlierFraction;
+  // The same rows `inliers` counts, so the two cannot disagree on an engine's answer (ADR 0066).
+  answer.inlierMatches.reserve(bestInliers.size());
+  for (size_t at : bestInliers) {
+    answer.inlierMatches.push_back(
+        PixelMatch{static_cast<float>(source[at].x), static_cast<float>(source[at].y),
+                   static_cast<float>(observed[at].x), static_cast<float>(observed[at].y)});
+  }
   return Ok(answer);
 }
 
@@ -1201,6 +1210,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
 
     std::vector<Vec3> fromAll;
     std::vector<Vec3> toAll;
+    std::vector<Pixel> source;
     std::vector<Pixel> observed;
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
@@ -1232,6 +1242,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;
       fromAll.push_back(bearingsA.value[ia].direction);
       toAll.push_back(bearingsB.value[ib].direction);
+      source.push_back(bearingsA.value[ia].pixel);
       observed.push_back(bearingsB.value[ib].pixel);
     }
 
@@ -1245,7 +1256,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     }
 
     const Result<PairwiseResult> fitted =
-        FitRotation(fromAll, toAll, observed, prior, lens);
+        FitRotation(fromAll, toAll, source, observed, prior, lens);
     if (!fitted.ok()) return fitted;
 
     PairwiseResult answer = fitted.value;
@@ -1266,6 +1277,96 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
 // for every detector from 1e-6 to 0.1 and starts to pay at 1, so this sits a decade inside that
 // plateau from above and four from below (ADR 0064, ADR 0065).
 constexpr double kPriorWeightPerInlier = 0.01;
+
+namespace {
+
+// The focal lengths searched, as a scale of the one `Refine` was handed. Chosen rather than
+// measured: a field of view a page reports is a guess about the preview, and a guess out by more
+// than this leaves the inlier sets — chosen under it — too far from the truth to refit. What was
+// measured is that every pair of the photograph ring is still accepted at 10% out (ADR 0066).
+constexpr double kFocalScaleLow = 0.7;
+constexpr double kFocalScaleHigh = 1.4;
+// The search stops when the bracket is this narrow in log scale. A hundredth of a percent of focal
+// length moves a ring's closure by about 0.03 degrees, under every median the accuracy table holds.
+constexpr double kFocalScaleTolerance = 1e-4;
+// How much more both ends of the bracket must cost than the best focal length for it to be an
+// answer. A cost that does not rise away from its minimum is the search reporting where it stopped:
+// flat, as a tree of pairs is under any focal length, or least at an end of the bracket.
+constexpr double kObservableRise = 4.0;
+
+// The solve under one focal scale, and how far it leaves the pairs refitted under it.
+struct FocalTrial {
+  double costDeg2 = std::numeric_limits<double>::infinity();
+  AveragedRotations averaged;
+};
+
+// Every accepted pair refitted from its matches under the scaled lens, then solved as `Refine`
+// solves. Scored by the inlier-weighted mean square of the edge errors, not their median: a median
+// steps as one edge overtakes another and a search over it stalls on the steps.
+FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
+                         std::vector<RelativeRotation> edges,
+                         const std::vector<const PairwiseResult*>& sources,
+                         const std::vector<Quat>& anchors) {
+  Intrinsics lens = initial;
+  lens.fx *= scale;
+  lens.fy *= scale;
+  FocalTrial trial;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    std::vector<Vec3> from;
+    std::vector<Vec3> to;
+    for (const PixelMatch& match : sources[e]->inlierMatches) {
+      const UnprojectedDirection a = Unproject(lens, Pixel{match.ax, match.ay});
+      const UnprojectedDirection b = Unproject(lens, Pixel{match.bx, match.by});
+      if (!a.valid || !b.valid) continue;
+      from.push_back(a.direction);
+      to.push_back(b.direction);
+    }
+    cv::Matx33d fitted;
+    if (from.size() < 3 || !KabschRotation(from, to, &fitted)) return trial;
+    edges[e].rotation = FromMatrix(fitted);
+  }
+  trial.averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
+  if (!trial.averaged.valid) return trial;
+  double sum = 0.0;
+  double weights = 0.0;
+  for (const RelativeRotation& edge : edges) {
+    const Quat solved =
+        Normalize(Multiply(Conjugate(trial.averaged.rotations[static_cast<size_t>(edge.to)]),
+                           trial.averaged.rotations[static_cast<size_t>(edge.from)]));
+    const double deg = AngleBetween(solved, edge.rotation) * 180.0 / std::numbers::pi;
+    sum += edge.weight * deg * deg;
+    weights += edge.weight;
+  }
+  trial.costDeg2 = sum / weights;
+  return trial;
+}
+
+// Whether the accepted pairs close a loop, counting two pairs between the same frames once: a pair
+// measured twice agrees with itself under any focal length, which is no loop at all.
+//
+// Not implied by the cost rising, which was checked: without this, the open eleven-pair chain of
+// the refine test's ring was fitted to 502.7 of 500 — the priors, each three degrees out, pull hard
+// enough to give the cost a minimum, and it sits where their error puts it rather than the pixels.
+bool ClosesALoop(const std::vector<RelativeRotation>& edges, size_t frames) {
+  std::vector<int32_t> parent(frames);
+  for (size_t i = 0; i < frames; ++i) parent[i] = static_cast<int32_t>(i);
+  const auto root = [&](int32_t i) {
+    while (parent[static_cast<size_t>(i)] != i) i = parent[static_cast<size_t>(i)];
+    return i;
+  };
+  std::set<std::pair<int32_t, int32_t>> seen;
+  for (const RelativeRotation& edge : edges) {
+    const auto key = std::minmax(edge.from, edge.to);
+    if (!seen.insert(key).second) continue;
+    const int32_t a = root(edge.from);
+    const int32_t b = root(edge.to);
+    if (a == b) return true;
+    parent[static_cast<size_t>(a)] = b;
+  }
+  return false;
+}
+
+}  // namespace
 
 Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult> pairs,
                                                         std::span<const FramePrior> priors,
@@ -1315,6 +1416,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     if (anchoredPrior) ++priorsUsed;
   }
   std::vector<RelativeRotation> edges;
+  std::vector<const PairwiseResult*> sources;  // parallel to `edges`
   for (const PairwiseResult& pair : pairs) {
     const auto from = indexOf.find(pair.a.value);
     const auto to = indexOf.find(pair.b.value);
@@ -1342,6 +1444,24 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "an accepted pair has counts no engine fills in");
     }
+    // The matches are the inliers `inliers` counts, so a pair carrying both says one thing twice,
+    // and where the two differ nothing here can tell which is wrong (ADR 0066). None at all is a
+    // pair built without them, which is allowed and leaves the lens unfitted.
+    if (!pair.inlierMatches.empty()) {
+      if (pair.inlierMatches.size() != static_cast<size_t>(pair.inliers)) {
+        return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                   "an accepted pair carries matches its inlier count disagrees "
+                                   "with");
+      }
+      for (const PixelMatch& match : pair.inlierMatches) {
+        if (!std::isfinite(match.ax) || !std::isfinite(match.ay) || !std::isfinite(match.bx) ||
+            !std::isfinite(match.by)) {
+          return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                     "an accepted pair carries matches that are not pixels");
+        }
+      }
+    }
+    sources.push_back(&pair);
     edges.push_back(RelativeRotation{from->second, to->second, pair.relativeRotation,
                                      static_cast<double>(pair.inliers)});
   }
@@ -1356,7 +1476,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
                                "reconstruction faces");
   }
 
-  const AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
+  AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
   // Everything the solver refuses is refused above with its reason, so this is a refusal that list
   // did not anticipate — reported as ours rather than guessed at as one of the caller's.
   if (!averaged.valid) {
@@ -1366,6 +1486,56 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
 
   GlobalSolution solution;
   solution.intrinsics = initial;
+
+  // The focal length, where a loop of pairs can see it (ADR 0066). A pair alone cannot: its pixel
+  // residual is flat within a few percent of the truth, while a ring fails to close by about three
+  // degrees a percent. So the search is over the solve, not over any pair.
+  //
+  // A pair with fewer than three matches cannot be refitted, so every trial it takes part in fails
+  // and the best cost is not finite: the lens is passed through, which is the answer for a pair
+  // built without matches and needs no check of its own.
+  if (!edges.empty() && ClosesALoop(edges, anchors.size())) {
+    const auto trial = [&](double logScale) {
+      return TryFocalScale(std::exp(logScale), initial, edges, sources, anchors);
+    };
+    const double golden = (std::sqrt(5.0) - 1.0) / 2.0;
+    double lo = std::log(kFocalScaleLow);
+    double hi = std::log(kFocalScaleHigh);
+    double x1 = hi - golden * (hi - lo);
+    double x2 = lo + golden * (hi - lo);
+    FocalTrial f1 = trial(x1);
+    FocalTrial f2 = trial(x2);
+    while (hi - lo > kFocalScaleTolerance) {
+      if (f1.costDeg2 <= f2.costDeg2) {
+        hi = x2;
+        x2 = x1;
+        f2 = std::move(f1);
+        x1 = hi - golden * (hi - lo);
+        f1 = trial(x1);
+      } else {
+        lo = x1;
+        x1 = x2;
+        f1 = std::move(f2);
+        x2 = lo + golden * (hi - lo);
+        f2 = trial(x2);
+      }
+    }
+    const bool firstIsBest = f1.costDeg2 <= f2.costDeg2;
+    FocalTrial& best = firstIsBest ? f1 : f2;
+    const double bestScale = std::exp(firstIsBest ? x1 : x2);
+    const double lowEnd = trial(std::log(kFocalScaleLow)).costDeg2;
+    const double highEnd = trial(std::log(kFocalScaleHigh)).costDeg2;
+    // An answer only where the cost rises away from it on both sides: at an end of the bracket the
+    // search is reporting its own range, and on a flat cost it is reporting where it stopped.
+    if (std::isfinite(best.costDeg2) && lowEnd > kObservableRise * best.costDeg2 &&
+        highEnd > kObservableRise * best.costDeg2) {
+      averaged = std::move(best.averaged);
+      solution.intrinsics.fx *= bestScale;
+      solution.intrinsics.fy *= bestScale;
+      solution.intrinsics.estimated = true;
+      solution.lensFitted = true;
+    }
+  }
   solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;
   solution.maxEdgeErrorDeg = averaged.maxEdgeErrorDeg;
   solution.edgesUsed = averaged.edgesUsed;

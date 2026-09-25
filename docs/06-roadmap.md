@@ -831,10 +831,14 @@ that has to be ordered.
   carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
   edges with the twelfth one included leave it 0.000028 — where the solver stops rather than the
   0.0000024 it is heading for, which matters for reading the second figure and not at all for the
-  five orders between them. What `Refine` does not do yet is refine
-  the lens: `PairwiseResult` carries a *count* of correspondences but not the matched points, so
-  there is nothing in its input to fit a lens to. The lens is passed through and the contract says
-  so; refining it is the next step, with its own contract change and ADR. The accuracy number this phase exits on **is
+  five orders between them. **And it fits the focal length** (ADR 0066), which turned out to be
+  the whole of the exit criterion on a phone: handed a focal length 2% out, ORB's solved median is
+  0.50 degrees, at the threshold, and every detector is past it at 5%, while each pair's own pixel
+  residual cannot tell — only a loop can. So each pair now carries its inlier matches as pixels,
+  and `Refine` searches the focal scale under which the pairs, refitted from them, agree best.
+  From 10% out either way it recovers the focal length to within 0.063% and solves the ring as
+  though it had been right. Distortion is not fitted; that is a bundle adjustment's job, and the
+  carried matches are its input. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
@@ -958,16 +962,20 @@ every edge *the same* 0.2-degree bias, and a uniform drift is the one case a loo
 exactly. Here the per-pair errors are independent. Solved through `Refine` with all twelve pairs and
 a prior for every frame, each three degrees out about an axis of its own (ADR 0065):
 
-| Detector | Chained median | Solved median | Solved max |
-| --- | --- | --- | --- |
-| ORB | 0.101 | 0.055 | 0.116 |
-| AKAZE | 0.061 | 0.035 | 0.062 |
-| SIFT | 0.024 | 0.026 | 0.067 |
+| Detector | Chained median | Solved median | Solved max | Solved, focal 10% out |
+| --- | --- | --- | --- | --- |
+| ORB | 0.101 | 0.046 | 0.141 | 0.047 to 0.052 |
+| AKAZE | 0.061 | 0.029 | 0.066 | 0.029 to 0.034 |
+| SIFT | 0.024 | 0.014 | 0.033 | 0.010 to 0.019 |
 
-The closing pair roughly halves the two weaker detectors' error and leaves SIFT's a little worse —
-not through the priors, since the solved shape is flat in their weight from 1e-6 to 0.1
-(ADR 0064), and why is not yet known. The solve faces within 0.0002 degrees of where the priors
-agree. `TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` asserts it within 0.001.
+The solve now fits the focal length (ADR 0066), and the last column is the reason for it: handed
+a lens 10% out either way, the ring solves as well as it does handed the right one. The solved
+column was 0.055, 0.035 and 0.026 before that, and SIFT's sat a little above its chain for a
+reason nobody knew. The reason was in the pairs: `FitRotation` reports the inliers after its
+re-gate and the rotation fitted before it, and refitting each pair on the inliers it reports —
+which the focal search does at every scale — gives 0.038, 0.029 and 0.015 at the rendered focal
+length with no search at all. The solve faces within 0.0002 degrees of where the priors agree.
+`TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` asserts it within 0.001.
 
 **And the bearings these medians were computed from are all half a pixel out.** `ReadBearings`
 hands OpenCV keypoint coordinates to `camera_model` unchanged, and the two conventions differ by

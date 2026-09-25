@@ -17,6 +17,7 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/rotation_scoring.h"
 #include "support/same_rotation.h"
+#include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -28,6 +29,7 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 constexpr int kFrames = 12;
 
 Quat AboutY(double degrees) { return FromAxisAngle(Vec3{0, 1, 0}, degrees / kDegPerRad); }
+Quat AboutX(double degrees) { return FromAxisAngle(Vec3{1, 0, 0}, degrees / kDegPerRad); }
 
 double SeparationDeg(const Quat& a, const Quat& b) { return AngleBetween(a, b) * kDegPerRad; }
 
@@ -536,6 +538,213 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   // is still refused as what it is, not as the capture condition.
   refused(stranger, unanchored, Lens(), StatusCode::InvalidArgument, "names a frame with no prior");
   refused(counts, unanchored, Lens(), StatusCode::InvalidArgument, "counts no engine fills in");
+}
+
+// A lens with nothing to correct but its focal length, which is the only field `Refine` fits.
+Intrinsics TrueLens() {
+  Intrinsics lens;
+  lens.fx = 500;
+  lens.fy = 500;
+  lens.cx = 320;
+  lens.cy = 240;
+  lens.width = 640;
+  lens.height = 480;
+  return lens;
+}
+
+Intrinsics Scaled(Intrinsics lens, double scale) {
+  lens.fx *= scale;
+  lens.fy *= scale;
+  return lens;
+}
+
+// The matches an exact `EstimatePairwise` would carry: a grid of pixels in `a`, through the true
+// lens to a direction, into `b`'s camera by the true relative rotation, and back out through the
+// same lens. Only the ones that land inside `b` are kept, as a real overlap would.
+//
+// The pair's own rotation is left half a degree out, as one fitted under another lens would be,
+// so an answer that kept it rather than refitting from the matches cannot pass for one that did.
+PairwiseResult Matched(int a, int b, const std::vector<Quat>& truth, const Intrinsics& lens) {
+  PairwiseResult pair = Pair(a, b, truth);
+  const Quat exact = pair.relativeRotation;
+  for (int row = 1; row < 12; ++row) {
+    for (int column = 1; column < 16; ++column) {
+      const Pixel from{lens.width * column / 16.0, lens.height * row / 12.0};
+      const UnprojectedDirection direction = Unproject(lens, from);
+      if (!direction.valid) continue;
+      const ProjectedPixel to = Project(lens, Rotate(exact, direction.direction));
+      if (!to.valid || to.pixel.x < 0 || to.pixel.y < 0 || to.pixel.x >= lens.width ||
+          to.pixel.y >= lens.height) {
+        continue;
+      }
+      pair.inlierMatches.push_back(
+          PixelMatch{static_cast<float>(from.x), static_cast<float>(from.y),
+                     static_cast<float>(to.pixel.x), static_cast<float>(to.pixel.y)});
+    }
+  }
+  pair.inliers = static_cast<int32_t>(pair.inlierMatches.size());
+  pair.correspondences = pair.inliers + 20;
+  pair.relativeRotation = Normalize(Multiply(exact, FromAxisAngle(Vec3{1, 0, 0}, 0.5 / kDegPerRad)));
+  return pair;
+}
+
+std::vector<PairwiseResult> MatchedRing(const std::vector<Quat>& truth, const Intrinsics& lens) {
+  std::vector<PairwiseResult> pairs;
+  const int n = static_cast<int>(truth.size());
+  for (int i = 0; i < n; ++i) pairs.push_back(Matched(i, (i + 1) % n, truth, lens));
+  return pairs;
+}
+
+/**
+ * A focal length eight percent out is fitted from a ring of exact matches, and only the focal
+ * length moves (ADR 0066).
+ *
+ * Eight percent both ways, because a search that only ever looks one way from its start passes one
+ * of them. And a ring turning about the horizontal axis as well as one turning about the vertical:
+ * a turn about the vertical moves the image sideways and sees only `fx`, so a search that scaled
+ * `fx` alone passed on that ring by itself. The matches are exact, so what is left is the search's own tolerance; the rotations
+ * come back to the truth because they are refitted under the fitted lens, which a solve that fitted
+ * the lens and kept the pairs' own rotations would not do.
+ *
+ * **And a loop need not wrap.** Three frames turning about one axis were expected to close under any
+ * focal length, since scaling three angles that sum to zero leaves them summing to zero — and this
+ * test first asserted the triangle was passed through. It came back fitted, to 499.9967 of 500:
+ * under a pinhole a turn is a translation only at the centre of the image, so refitted under the
+ * wrong focal length each pair tilts a little and the tilts do not cancel. How well a triangle
+ * fits it with real matches is a different question, and the accuracy test is where it is asked.
+ */
+TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics lens = TrueLens();
+  const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
+  for (const PairwiseResult& pair : ring) ASSERT_GE(pair.inlierMatches.size(), 20u);
+  // The triangle's closing pair spans sixty degrees and overlaps least; Kabsch needs three.
+  const std::vector<PairwiseResult> triangle{Matched(0, 1, truth, lens), Matched(1, 2, truth, lens),
+                                             Matched(2, 0, truth, lens)};
+  for (const PairwiseResult& pair : triangle) ASSERT_GE(pair.inlierMatches.size(), 8u);
+
+  std::vector<Quat> tumbling;
+  for (int i = 0; i < kFrames; ++i) tumbling.push_back(AboutX(360.0 * i / kFrames));
+  // A lens whose two focal lengths differ, so fitting one of them and copying it is not enough.
+  Intrinsics tall = lens;
+  tall.fy = 540;
+  const std::vector<PairwiseResult> pitched = MatchedRing(tumbling, tall);
+  for (const PairwiseResult& pair : pitched) ASSERT_GE(pair.inlierMatches.size(), 20u);
+
+  const struct {
+    std::vector<PairwiseResult> pairs;
+    std::vector<Quat> truth;
+    Intrinsics lens;
+    int placed;
+  } shapes[] = {{ring, truth, lens, kFrames},
+                {triangle, truth, lens, 3},
+                {pitched, tumbling, tall, kFrames}};
+  for (const auto& [pairs, truth, lens, placed] : shapes)
+  for (const double scale : {0.92, 1.08}) {
+    Intrinsics initial = Scaled(lens, scale);
+    initial.k1 = 0.0;
+    initial.rollingShutterLineTimeNs = 15000;
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    const GlobalSolution& solution = solved.value;
+    EXPECT_TRUE(solution.lensFitted) << scale;
+    EXPECT_TRUE(solution.intrinsics.estimated) << scale;
+    EXPECT_NEAR(solution.intrinsics.fx / lens.fx, 1.0, 1e-4) << scale;
+    EXPECT_NEAR(solution.intrinsics.fy / lens.fy, 1.0, 1e-4) << scale;
+    EXPECT_EQ(solution.intrinsics.cx, initial.cx);
+    EXPECT_EQ(solution.intrinsics.cy, initial.cy);
+    EXPECT_EQ(solution.intrinsics.width, initial.width);
+    EXPECT_EQ(solution.intrinsics.height, initial.height);
+    EXPECT_EQ(solution.intrinsics.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs);
+
+    // Scored over the frames the pairs place; the rest of a triangle's ring rests on its priors.
+    const std::vector<Quat> placedTruth(truth.begin(), truth.begin() + placed);
+    const std::vector<Quat> placedSolved(solution.rotations.begin(),
+                                         solution.rotations.begin() + placed);
+    const test::RotationScore shape = test::ScoreRotations(placedSolved, placedTruth);
+    ASSERT_TRUE(shape.valid);
+    EXPECT_LT(shape.maxDeg, 0.01) << scale;
+    EXPECT_LT(solution.maxEdgeErrorDeg, 0.01) << scale;
+  }
+}
+
+/**
+ * Where nothing can see the focal length, the lens comes back as it was given, every field of it,
+ * and says it was not fitted.
+ *
+ * An open chain agrees with itself under any focal length. A pair with no matches cannot be
+ * refitted under another lens at all. And an answer outside the range the search may look in is the
+ * search reporting its own bracket, not the lens.
+ */
+TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
+  const std::vector<Quat> truth = Ring();
+  const Intrinsics lens = TrueLens();
+  const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
+
+  std::vector<PairwiseResult> chain = ring;
+  chain.pop_back();
+  // A pair measured twice agrees with itself under any focal length, so it is no loop.
+  std::vector<PairwiseResult> twice = chain;
+  twice.push_back(chain[3]);
+  std::vector<PairwiseResult> unmatched = ring;
+  unmatched[4].inlierMatches.clear();
+  unmatched[4].inliers = 100;
+  unmatched[4].correspondences = 180;
+
+  const struct {
+    std::vector<PairwiseResult> pairs;
+    double scale;
+    const char* why;
+  } cases[] = {{chain, 1.08, "an open chain"},
+               {twice, 1.08, "an open chain with a pair measured twice"},
+               {unmatched, 1.08, "a pair with no matches"},
+               {ring, 2.5, "a focal length outside the search"}};
+  for (const auto& [pairs, scale, why] : cases) {
+    // Claimed estimated, so passing it through is told apart from resetting the flag.
+    Intrinsics initial = Scaled(lens, scale);
+    initial.estimated = true;
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
+    ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
+    EXPECT_FALSE(solved.value.lensFitted) << why;
+    EXPECT_EQ(solved.value.intrinsics.fx, initial.fx) << why;
+    EXPECT_EQ(solved.value.intrinsics.fy, initial.fy) << why;
+    EXPECT_EQ(solved.value.intrinsics.k1, initial.k1) << why;
+    EXPECT_EQ(solved.value.intrinsics.estimated, initial.estimated) << why;
+  }
+}
+
+/**
+ * Matches that disagree with the pair's own inlier count, or that are not pixels, are refused.
+ *
+ * The count is the weight and the matches are what it counts, so a pair carrying both says the
+ * same thing twice; where they differ one of them is wrong and nothing here can say which.
+ */
+TEST_F(Refine, MatchesThatAreNotThePairsInliersAreRefused) {
+  const std::vector<Quat> truth = Ring();
+  const std::vector<PairwiseResult> pairs = MatchedRing(truth, TrueLens());
+  const std::vector<FramePrior> priors = PriorsOut(truth);
+  ASSERT_TRUE(engine_.Refine(pairs, priors, TrueLens()).ok()) << "the base case must be valid";
+
+  std::vector<PairwiseResult> miscounted = pairs;
+  miscounted[3].inliers -= 1;
+  const Result<GlobalSolution> counted = engine_.Refine(miscounted, priors, TrueLens());
+  EXPECT_EQ(counted.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(counted.status.detail.find("matches"), std::string::npos) << counted.status.detail;
+
+  for (const float bad : {std::numeric_limits<float>::quiet_NaN(),
+                          std::numeric_limits<float>::infinity()}) {
+    std::vector<PairwiseResult> notPixels = pairs;
+    notPixels[3].inlierMatches[2].bx = bad;
+    const Result<GlobalSolution> answer = engine_.Refine(notPixels, priors, TrueLens());
+    EXPECT_EQ(answer.status.code, StatusCode::InvalidArgument) << bad;
+    EXPECT_NE(answer.status.detail.find("matches"), std::string::npos) << answer.status.detail;
+  }
+
+  // An unaccepted pair's matches are not read, as nothing else it carries is.
+  std::vector<PairwiseResult> unread = pairs;
+  unread[3].accepted = false;
+  unread[3].inliers -= 1;
+  EXPECT_TRUE(engine_.Refine(unread, priors, TrueLens()).ok());
 }
 
 }  // namespace

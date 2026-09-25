@@ -51,9 +51,9 @@ class IRegistrationEngine {
   //
   // Passed rather than held, because engines are stateless per session and everything that is not
   // compute placement or pixel residency arrives as an argument. `Refine` takes an `Intrinsics` for
-  // the same reason and puts it to a different use — the lens its answer is expressed under, and
-  // where a lens refinement will start once one exists (ADR 0065) — which is why that one is named
-  // `initial` and this one is not.
+  // the same reason and puts it to a different use — where its fit of the focal length starts, and
+  // the lens its answer is expressed under when there is no fit (ADR 0066) — which is why that one
+  // is named `initial` and this one is not.
   // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
   // `StatusCode` can only do so against what the contract promises, and this method is the first in
   // the repository to return `RegistrationFailed` at all.
@@ -125,10 +125,16 @@ class IRegistrationEngine {
   // relative to wherever the sensor started (ADR 0041), and averaged in with anchored priors would
   // turn the whole answer toward that accident. Zero is the only way to say there is no prior.
   //
-  // **The lens is not refined.** `initial` comes back as `GlobalSolution::intrinsics`, the lens
-  // the rotations are expressed under: refining it needs the matched points, and a
-  // `PairwiseResult` carries only how many there were. That is a later step with its own contract
-  // change (ADR 0065).
+  // **The focal length is fitted where a loop of pairs can see it**, and nothing else of the lens
+  // is (ADR 0066). A pair cannot see it — rotated under a focal length a few percent out, its
+  // pixels fit as well as under the right one — but a loop can: the pairs agree around it only under
+  // the true focal length. So `Refine` searches the scale of `fx` and `fy` together for the one under
+  // which the pairs, each refitted from its `inlierMatches`, leave the solve least, and returns
+  // `initial` so scaled in `GlobalSolution::intrinsics` with `lensFitted` set. Where the accepted
+  // pairs close no loop, where one has no matches to refit from, or where the best scale lies at the
+  // edge of the range searched, `initial` comes back as given, every field of it, and `lensFitted`
+  // is false. Where the lens is fitted the rotations are the refitted pairs' solve, not the one
+  // their own `relativeRotation`s give.
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
@@ -137,6 +143,8 @@ class IRegistrationEngine {
   // which `PairwiseResult` defaults so as to be refused — or whose counts no engine fills in: no
   // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's
   // confidence is zero, because then nothing says which way the reconstruction faces.
+  // An accepted pair whose `inlierMatches` are not empty and are not as many as its `inliers`, or
+  // are not all finite pixels, is `InvalidArgument` too.
   // `Unsupported` from `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a
   // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors or
   // accepted pairs reaches today. A malformed prior or pair is `InvalidArgument` whatever the other priors say. A
