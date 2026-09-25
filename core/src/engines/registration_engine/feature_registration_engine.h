@@ -83,9 +83,8 @@ int RansacSampleBudget(double agreeing);
 // gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
 // one of the two resource accesses an engine may touch.
 //
-// `ExtractFeatures` and `EstimatePairwise` are implemented; `Refine` still refuses, for the reason
-// the null engine gives: there is no honest minimal version of a global solve, and a stub returning
-// an empty solution would produce a panorama that looks stitched and is not.
+// `Refine` solves for rotations through `utilities/rotation_averaging` and needs none of OpenCV; it
+// lives here because this is the engine that has pairs to hand it (ADR 0065).
 //
 // `EstimatePairwise` matches by Lowe's ratio test, lifts both keypoint sets to bearings through
 // `camera_model` — which is why it needs the lens, ADR 0054 — and fits the rotation most of the
@@ -101,7 +100,7 @@ class FeatureRegistrationEngine final : public IRegistrationEngine {
   Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
                                           const Quat& prior, const Intrinsics& lens) override;
   Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
-                                std::span<const PoseSample> priors,
+                                std::span<const FramePrior> priors,
                                 const Intrinsics& initial) override;
 
  private:

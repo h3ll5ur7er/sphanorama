@@ -10,13 +10,16 @@
 #include <exception>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "utilities/camera_model.h"
 #include "utilities/pixel_format.h"
 #include "utilities/quaternion.h"
+#include "utilities/rotation_averaging.h"
 
 namespace sphanorama {
 namespace {
@@ -1258,11 +1261,97 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
   }
 }
 
-Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult>,
-                                                        std::span<const PoseSample>,
-                                                        const Intrinsics&) {
-  return Err<GlobalSolution>(StatusCode::Unsupported, kComponent,
-                             "the global refinement is a later increment");
+// What each registered frame's prior counts for against a pair's inlier count. Measured on the
+// photograph ring with priors three degrees out: the solved shape is the same within 0.006 degrees
+// for every detector from 1e-4 to 0.1 and starts to pay at 1, so this sits two decades inside that
+// plateau from below and one from above (ADR 0064, ADR 0065).
+constexpr double kPriorWeightPerInlier = 0.01;
+
+Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult> pairs,
+                                                        std::span<const FramePrior> priors,
+                                                        const Intrinsics& initial) {
+  if (priors.empty()) {
+    return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                               "no priors, so no frames to solve for");
+  }
+  // Indexed with `int32_t` because the solver is, with no check: a `FramePrior` is 88 bytes on a
+  // 64-bit build, so the first index that would not fit needs 189 GB of priors.
+  std::map<uint64_t, int32_t> indexOf;
+  std::vector<Quat> anchors;
+  anchors.reserve(priors.size());
+  for (const FramePrior& prior : priors) {
+    if (!prior.frame.valid()) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent, "a prior names no frame");
+    }
+    const auto [at, added] =
+        indexOf.emplace(prior.frame.value, static_cast<int32_t>(anchors.size()));
+    if (!added) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "frame " + std::to_string(prior.frame.value) + " has two priors");
+    }
+    // An orientation that is not a rotation is passed on as it is: the solver reads it as no prior
+    // for that frame, which is the answer rather than a refusal.
+    anchors.push_back(prior.pose.orientation);
+  }
+
+  std::vector<RelativeRotation> edges;
+  for (const PairwiseResult& pair : pairs) {
+    const auto from = indexOf.find(pair.a.value);
+    const auto to = indexOf.find(pair.b.value);
+    // Checked on every pair, accepted or not: a frame nobody gave a prior is not a measurement to
+    // disbelieve, it is a caller and a capture disagreeing about which frames exist.
+    if (from == indexOf.end() || to == indexOf.end()) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "a pair names a frame with no prior");
+    }
+    if (from->second == to->second) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "a pair joins frame " + std::to_string(pair.a.value) + " to itself");
+    }
+    if (!pair.accepted) continue;
+    if (!IsUsableRotation(pair.relativeRotation)) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "an accepted pair carries no rotation");
+    }
+    if (pair.inliers < 0) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "an accepted pair has a negative inlier count");
+    }
+    edges.push_back(RelativeRotation{from->second, to->second, pair.relativeRotation,
+                                     static_cast<double>(pair.inliers)});
+  }
+
+  const AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
+  // Everything else the solver refuses is refused above, with its reason; what is left is no prior
+  // being a rotation, and then the pairs alone cannot say which way the reconstruction faces.
+  if (!averaged.valid) {
+    return Err<GlobalSolution>(StatusCode::RegistrationFailed, kComponent,
+                               "no prior is a usable rotation, so nothing fixes which way the "
+                               "reconstruction faces");
+  }
+
+  GlobalSolution solution;
+  solution.intrinsics = initial;
+  solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;
+  solution.maxEdgeErrorDeg = averaged.maxEdgeErrorDeg;
+  solution.edgesUsed = averaged.edgesUsed;
+  solution.converged = averaged.converged;
+  const auto frameOf = [&](int32_t i) { return priors[static_cast<size_t>(i)].frame; };
+  for (const int32_t i : averaged.unplaced) solution.droppedFrames.push_back(frameOf(i));
+  for (const int32_t i : averaged.priorOnly) solution.priorOnlyFrames.push_back(frameOf(i));
+  for (const int32_t i : averaged.ambiguous) solution.ambiguousFrames.push_back(frameOf(i));
+
+  // `unplaced` is ascending, so one pass leaves each dropped frame out.
+  size_t next = 0;
+  for (int32_t i = 0; i < static_cast<int32_t>(priors.size()); ++i) {
+    if (next < averaged.unplaced.size() && averaged.unplaced[next] == i) {
+      ++next;
+      continue;
+    }
+    solution.frames.push_back(frameOf(i));
+    solution.rotations.push_back(averaged.rotations[static_cast<size_t>(i)]);
+  }
+  return Ok(std::move(solution));
 }
 
 }  // namespace sphanorama

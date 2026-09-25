@@ -969,27 +969,6 @@ TEST_P(Extraction, AnswersADegenerateFrameRatherThanLettingOpenCvThrowThroughIt)
       << "the pin was not released on the way out of a throwing call";
 }
 
-TEST_P(Extraction, RefinementRefusesRatherThanAnswering) {
-  // The method this increment still does not implement. A reviewer made it return `Ok` — the empty
-  // solution the header calls dangerous — and the whole file stayed green, so "refuses rather than
-  // pretending" was a sentence with nothing behind it.
-  //
-  // **`EstimatePairwise` used to be asserted here too, and now is not**, because it answers. Its
-  // refusals have their own tests below; what this one holds is the `Refine` half, and the pairing
-  // was an accident of both being unimplemented at once rather than a property they share.
-  FeatureRegistrationEngine engine = Engine();
-  const Result<FeatureSet> a = engine.ExtractFeatures(Textured());
-  const Result<FeatureSet> b = engine.ExtractFeatures(Textured());
-  ASSERT_TRUE(a.ok() && b.ok());
-
-  const Result<GlobalSolution> refined = engine.Refine({}, {}, Intrinsics{});
-  EXPECT_FALSE(refined.ok());
-  EXPECT_EQ(refined.status.code, StatusCode::Unsupported);
-
-  ForgetOutputs(a.value);
-  ForgetOutputs(b.value);
-}
-
 /**
  * A store that counts what was forgotten and what was pinned, so "this call forgets none of the
  * four" and "it refused *after* reading them" are both measurable rather than inferred from prose.
@@ -2103,13 +2082,8 @@ TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
   // Kept beside the real one so the pair is visible: the null engine is what a WASM build gets
   // (ADR 0052), and it refuses rather than returning an identity that would look like a stitch.
   //
-  // **"Everything" used to mean one of the three methods.** A reviewer made `EstimatePairwise` and
-  // `Refine` return `Ok` — the identity registration this class's own header calls worse than a
-  // refusal — and all 707 tests passed. The two *are* covered by
-  // `RefinementRefusesRatherThanAnswering`, but that is a `TEST_P` over
-  // `FeatureRegistrationEngine`, which exists only where OpenCV does and which no composition root
-  // selects; `bridge/runtime.h` holds this one. So the engine every browser actually gets had its
-  // two most dangerous methods asserted nowhere.
+  // All three, because this is the engine `bridge/runtime.h` holds and every browser gets: an `Ok`
+  // from any of them would be an identity registration or an empty solution that looks like a stitch.
   NullRegistrationEngine engine;
   // The code, not just the refusal. A reviewer changed this one to `InvalidArgument` and all 714
   // tests stayed green: the two methods added when this gap was first closed assert their codes and

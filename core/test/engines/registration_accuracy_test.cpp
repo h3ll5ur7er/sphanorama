@@ -609,6 +609,101 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
 }
 
 /**
+ * The same ring solved through `Refine`, closing pair included, against priors that are wrong.
+ *
+ * The test above chains eleven pairs and throws the twelfth away; this one hands all twelve to
+ * `Refine` with a prior for every frame, each three degrees out about an axis of its own — the
+ * order a working phone is out by, and independent per frame, so the priors cannot agree on a
+ * wrong shape. The pairs are estimated exactly as above.
+ *
+ * **What the closing pair is worth here is the number**, because unlike the solver's own fixture
+ * the per-pair errors are independent rather than one drift a closure removes exactly.
+ */
+TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
+  constexpr int kFrames = 12;
+  Rendered rendered(kFrames, 640, 480, World::Photograph);
+  ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
+  if (!rendered.ok()) {
+    GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. " << rendered.why();
+  }
+
+  MemoryFrameStoreAccess store{1 << 28};
+  Owned owned{store};
+  const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
+  ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+  for (const SyntheticFrame& frame : dataset.value.frames) owned.frames.push_back(frame.frame);
+  ASSERT_EQ(dataset.value.frames.size(), static_cast<size_t>(kFrames));
+
+  FeatureRegistrationEngine engine{store, GetParam()};
+  std::vector<FeatureSet>& sets = owned.sets;
+  std::vector<Quat> truth;
+  for (const SyntheticFrame& frame : dataset.value.frames) {
+    const Result<FeatureSet> features = engine.ExtractFeatures(frame.frame);
+    ASSERT_TRUE(features.ok()) << features.status.detail;
+    sets.push_back(features.value);
+    truth.push_back(frame.trueRotation);
+  }
+
+  std::vector<PairwiseResult> pairs;
+  for (int at = 0; at < kFrames; ++at) {
+    const size_t a = static_cast<size_t>(at);
+    const size_t b = static_cast<size_t>((at + 1) % kFrames);
+    const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
+    const Quat prior = Normalize(Multiply(Multiply(Conjugate(truth[b]), truth[a]), nudge));
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(sets[a], sets[b], prior, dataset.value.lens);
+    ASSERT_TRUE(pair.ok()) << "pair " << a << "-" << b << ": " << pair.status.detail;
+    pairs.push_back(pair.value);
+  }
+
+  std::vector<FramePrior> priors;
+  for (size_t i = 0; i < truth.size(); ++i) {
+    const double at = static_cast<double>(i);
+    const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
+    FramePrior prior;
+    prior.frame = dataset.value.frames[i].frame.id;
+    prior.pose.orientation =
+        Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
+    priors.push_back(prior);
+  }
+
+  const Result<GlobalSolution> solved = engine.Refine(pairs, priors, dataset.value.lens);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  ASSERT_EQ(solved.value.rotations.size(), truth.size());
+  EXPECT_TRUE(solved.value.converged);
+  EXPECT_EQ(solved.value.edgesUsed, kFrames) << "not every pair was accepted";
+
+  const test::RotationScore score = test::ScoreRotations(solved.value.rotations, truth);
+  ASSERT_TRUE(score.valid && score.alignmentIsUnique);
+  // `[solved]` rather than `[accuracy]`: the gate counts `[accuracy]` lines against the chained
+  // test's instantiations to prove the measurement ran.
+  std::fprintf(stderr, "[solved] detector=%d edges=%d median=%.4f deg mean=%.4f max=%.4f\n",
+               static_cast<int>(GetParam()), solved.value.edgesUsed, score.medianDeg,
+               score.meanDeg, score.maxDeg);
+
+  // **Facing where the priors agree**, since that is the one thing they are there to decide. The
+  // priors' own agreed gauge is 0.26 degrees from the truth; the solve lands within 0.0002 of it.
+  std::vector<Quat> orientations;
+  for (const FramePrior& prior : priors) orientations.push_back(prior.pose.orientation);
+  const test::GaugeAlignment agreed = test::BestGaugeAlignment(orientations, truth);
+  ASSERT_TRUE(agreed.valid);
+  EXPECT_LT(AngleBetween(agreed.rotation, score.alignment) * 180.0 / std::numbers::pi, 0.001);
+
+  // Today's run: ORB 0.0552/0.0638/0.1164, AKAZE 0.0348/0.0351/0.0624, SIFT 0.0264/0.0309/0.0674
+  // (median, mean, max), against the chain's 0.1009, 0.0612 and 0.0239 medians. The closing pair
+  // roughly halves ORB's and AKAZE's error and leaves SIFT's a little worse; not through the priors'
+  // pull, since the solved shape is flat in their weight from 1e-4 to 0.1 (ADR 0064), and why is
+  // not yet known. Written also in `docs/06-roadmap.md`, `CLAUDE.md` and ADR 0065, which move with
+  // these; the chain's list above does not cover them.
+  //
+  // The median's bound is what fails a solve that has lost the closing pair: handed eleven, ORB
+  // reads 0.1005, AKAZE 0.0601 and SIFT 0.0229, and only ORB's is past 0.08 — which is why the
+  // bound is tighter than twice the measurement, and why `edgesUsed` is asserted above as well.
+  EXPECT_LT(score.medianDeg, 0.08);
+  EXPECT_LT(score.maxDeg, 0.25);
+}
+
+/**
  * A refusal and an unaccepted answer are different outcomes, and both happen here.
  *
  * **ADR 0056's central claim, asserted.** `accepted` earns its place in `PairwiseResult` only if it

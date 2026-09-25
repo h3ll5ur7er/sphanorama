@@ -42,10 +42,10 @@ coverage and acceptance are all decided in the core.
 
 **What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
-`Registration`, in part. `Registration` needs the care of a qualified sentence: **two** of its three
-methods are implemented (`ExtractFeatures` and now `EstimatePairwise`), it exists only where OpenCV
-does so a browser build still gets the null one, and no composition root selects it yet — it is
-reached from tests. `Refine` still refuses. **The pair estimator is now scored against a dataset**,
+`Registration`, in part. `Registration` needs the care of a qualified sentence: all three of its methods are
+implemented — `Refine` solving for rotations only, with the lens passed through (ADR 0065) — but it
+exists only where OpenCV does so a browser build still gets the null one, and no composition root
+selects it yet: it is reached from tests. **The pair estimator is now scored against a dataset**,
 which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
 panorama, against a sensor prior perturbed three degrees, all three detectors register all eleven
 consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101 (ORB) — the
@@ -85,10 +85,14 @@ for. A *uniform* drift, too, which is the one kind a loop closure removes exactl
 so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
 and since each piece's gauge is chosen outright every sweep (ADR 0064) it is set by the frame count
 rather than by the anchor weight: a twelve-frame ring settles in under fifty sweeps at any weight,
-ninety frames in under nine hundred. `Refine` itself still refuses —
-`GlobalSolution::intrinsics` promises a refined lens and `PairwiseResult` carries a count of
-correspondences but not the matched points, so there is nothing to refine one from: a contract gap
-rather than a missing afternoon (ADR 0062).
+ninety frames in under nine hundred. **And `Refine` is wired to it** (ADR 0065):
+each prior names its frame, accepted pairs are weighed by their inliers, and the priors at a hundredth
+of an inlier each decide only which way the reconstruction faces. Solving the photograph ring with its
+closing pair, against priors each three degrees out, gives medians of 0.055 (ORB), 0.035 (AKAZE) and
+0.026 (SIFT) against the chain's 0.101, 0.061 and 0.024 — the closing pair halves the two weaker
+detectors and leaves SIFT a little worse, for a reason not yet known. The lens is passed through:
+refining it needs the matched points, and `PairwiseResult` carries only how many there were, so that
+is a later step with its own contract change.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its

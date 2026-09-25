@@ -637,12 +637,46 @@ struct PairwiseResult {
   bool accepted = false;
 };
 
+// One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
+// the motion port produces them long before any frame exists and almost none ever belong to one, so
+// the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
+// its pixels (ADR 0065).
+struct FramePrior {
+  FrameId frame;
+  PoseSample pose;
+};
+
+// One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
+//
+// **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
+// matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
 struct GlobalSolution {
+  // The frames the solve placed, in the order their priors were given. A frame it could not place is
+  // left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
+  // not solved for.
   std::vector<FrameId> frames;
   std::vector<Quat> rotations;      // parallel to frames
-  Intrinsics intrinsics;            // shared across frames, refined here
-  double medianResidualPx = 0;
-  int32_t droppedFrames = 0;
+
+  // The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
+  // compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
+  // which no `PairwiseResult` carries (ADR 0065).
+  Intrinsics intrinsics;
+
+  // How far the answer leaves the pairs it used, and over how many. Read them together: no
+  // disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+  double medianEdgeErrorDeg = 0;
+  double maxEdgeErrorDeg = 0;
+  int32_t edgesUsed = 0;
+
+  // Frames whose prior was not a rotation and that no accepted pair connects to one that was.
+  std::vector<FrameId> droppedFrames;
+  // Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel.
+  std::vector<FrameId> priorOnlyFrames;
+  // Frames whose place was settled at some point by the solver's scan order rather than the
+  // evidence — pairs, or priors, a half turn apart.
+  std::vector<FrameId> ambiguousFrames;
+  // False when the solve ran out of sweeps; the rotations are the best it reached.
+  bool converged = false;
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

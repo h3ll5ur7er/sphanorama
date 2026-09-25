@@ -1,0 +1,117 @@
+# 0065 — `Refine` solves rotations, ties each prior to its frame, and passes the lens through
+
+**Status:** accepted
+
+## Context
+
+`IRegistrationEngine::Refine` has refused since it was declared. ADR 0062 put the maths under it in
+`utilities/rotation_averaging` and named what stopped it being wired up; ADR 0064 made that solver
+able to take the anchor weight a registered ring asks for. What is left is in the contract:
+
+- **The priors are not tied to frames.** `Refine` takes `std::span<const PoseSample>`, and a
+  `PoseSample` carries a timestamp, an orientation and rates but no `FrameId`. The pairs name their
+  frames; nothing says which prior belongs to which, and matching by timestamp would be a guess.
+- **Nothing can refine the lens.** `GlobalSolution::intrinsics` says "refined here", but a
+  `PairwiseResult` carries a *count* of correspondences, not the correspondences. A focal length
+  cannot be fitted to counts.
+- **`GlobalSolution::medianResidualPx` cannot be computed** for the same reason — a pixel residual
+  needs pixels — and a zero there reads as a perfect fit.
+
+The capture already records what the first gap needs: every `Candidate` holds the `PoseSample` it was
+taken at beside the `FrameRef` of its pixels.
+
+## Decision
+
+**`Refine` solves for rotations now, and the lens is a later step with its own ADR.**
+
+1. **Priors are tied to frames**, by a contract type that carries each frame's prior with its
+   identity:
+
+   ```cpp
+   struct FramePrior {
+     FrameId frame;
+     PoseSample pose;
+   };
+   ```
+
+   `Refine` takes `std::span<const FramePrior>`. The priors are the frame set, and their order is the
+   order of `GlobalSolution::frames`.
+
+2. **Each accepted pair is an edge, weighed by its inlier count**, in the convention
+   `rotation_averaging.h` states for `EstimatePairwise(a, b)`. An unaccepted pair is left out rather
+   than weighed at zero — ADR 0056 made `accepted` exactly the question "should a global solve use
+   this edge" — and left out so that whatever it carries cannot refuse the solve.
+
+3. **The anchor weight is the engine's constant, and it is measured**: 0.01 against inlier counts.
+   On the photograph ring (ADR 0064's table) inlier-weighted edges give the same shape from 1e-4 to
+   0.1 within 0.006 degrees for every detector, and start to pay at 1. 0.01 sits two decades inside
+   that plateau from below and one from above. Inlier weighting is chosen over one per edge because it is what makes
+   the plateau four decades wide rather than one: per edge, 0.01 already costs SIFT nearly a factor
+   of two. Not a `Refine` parameter: no caller has a policy to pass, and a knob only a test turns is
+   a second copy of the constant.
+
+4. **The lens is passed through, and the contract says so.** `GlobalSolution::intrinsics` is
+   `initial`: the lens the rotations are expressed under, which a compositor needs beside them. Its
+   comment changes from "refined here" to say exactly that, and that refinement is a later step.
+
+5. **The fit is reported in the unit the solve has.** `medianResidualPx` is replaced by
+   `medianEdgeErrorDeg`, `maxEdgeErrorDeg` and `edgesUsed` — how far the answer leaves the pairs it
+   used, and over how many. `droppedFrames` becomes the list of frames the solve could not place, which
+   are left out of `frames` and `rotations` so that neither ever holds a value that is not a solved
+   rotation. `priorOnlyFrames`, `ambiguousFrames` and `converged` carry the solver's other honesty
+   fields across, because each says something the error figures cannot.
+
+6. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
+   repeated `FrameId` among them, a pair naming a frame with no prior, a pair from a frame to itself,
+   or an accepted pair whose rotation is not one or whose inlier count is negative. A pair naming a
+   stranger is refused even unaccepted: it is a caller and a capture disagreeing about which frames
+   exist, not a measurement to disbelieve.
+   `RegistrationFailed` when no prior is a usable rotation, because then nothing fixes which way is
+   up. A frame whose prior is unusable is not a refusal: it is placed through its pairs, or dropped.
+
+7. **In `FeatureRegistrationEngine` only.** The null engine keeps refusing: its `EstimatePairwise`
+   refuses everything, so a `Refine` there would have nothing to solve.
+
+## Consequences
+
+- A contract change in `types.h` and `engines/registration_engine.h`, and a regenerated
+  `contracts/ts/contracts.d.ts`. Nothing reads `GlobalSolution` yet, so nothing else moves.
+- **`rotation_averaging` has its caller in `core/src`**, which is the condition ADR 0062 named for
+  its exception ending. Only in the OpenCV build, so the WASM builds still carry none of it.
+- **The measurement the roadmap was waiting for exists.** Solved through `Refine` with all twelve
+  pairs and each prior three degrees out about an axis of its own, the photograph ring's median error
+  is 0.0552 / 0.0348 / 0.0264 degrees (ORB / AKAZE / SIFT), worst frame 0.1164 / 0.0624 / 0.0674,
+  against the chain's medians 0.1009 / 0.0612 / 0.0239. The closing pair roughly halves ORB's and
+  AKAZE's error and leaves SIFT's a little worse. Not through the priors — the shape is flat in their
+  weight from 1e-4 to 0.1 — and why is not yet known. The solve faces within 0.0002 degrees of where
+  the priors agree, which is 0.26 degrees from the truth. Bounded in `registration_accuracy_test.cpp`
+  at a median of 0.08, which is what fails a solve handed eleven pairs instead of twelve (ORB then
+  reads 0.1005).
+- **A prior's `confidence` is not read.** A gyroscope-only phone reports zero for its whole life
+  (ADR 0041) and its priors still agree with each other, which is all the solve needs from them; the
+  gauge they fix is then one nobody chose, and the panorama's up is wrong by however far the phone
+  was from level when the capture began. Refusing them would refuse every capture on such a phone.
+- **The lens is whatever the caller had.** On a real phone that is the page's reported field of view
+  until refinement exists.
+- **Step 2 is lens refinement,** and needs the inlier correspondences carried out of
+  `EstimatePairwise` — a contract change with a memory cost, hundreds of points per pair. A lens
+  persisted per device is the natural `initial` for it, and `Refine` already takes one; where that
+  lens lives is a new volatility axis (what this device's camera is known to be) with no owner in
+  the volatility map, and it is decided with step 2.
+
+## Rejected alternatives
+
+**Add a `FrameId` to `PoseSample`.** A pose sample is produced by the motion port long before any
+frame exists, and almost none ever belong to one; the field would be meaningless on nearly every
+value of the type.
+
+**Pass a `std::span<const FrameId>` parallel to the priors.** Two spans that must stay the same length
+and in step are the second copy this codebase keeps paying for. One span of pairs cannot drift.
+
+**Weigh unaccepted pairs at zero.** The solver refuses the whole input over one edge whose rotation
+is not a rotation, whatever its weight, so an edge the caller has already disbelieved could refuse a
+solve it contributes nothing to.
+
+**Drop `intrinsics` from `GlobalSolution` until it can be refined.** Honest, and it would make every
+compositor signature take a lens beside the solution — a second copy of the one fact the rotations
+cannot be read without. Kept, and described as what it is.

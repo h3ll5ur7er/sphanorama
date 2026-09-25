@@ -219,10 +219,9 @@ is contradicted by the bullet immediately under it:
   and `core/test/support/synthetic_dataset`, ADR 0053, which reads what the second writes into a
   frame store the first can be run over). What is missing is no longer plumbing:
   `FeatureRegistrationEngine` extracts features **and estimates pairwise rotations**, and those
-  rotations are scored: see the measured table in `docs/06-roadmap.md`. `Refine` still refuses, so
-  what is scored is a chain of pairwise estimates rather than a global solution — and the chain is
-  now measurably the weaker of the two, since `core/src/utilities/rotation_averaging` exists to use
-  the closing edge the chain throws away (ADR 0062). The datasets are still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
+  rotations are scored: see the measured table in `docs/06-roadmap.md`. Both a chain of pairwise
+  estimates and the same ring solved through `Refine` with its closing pair are scored, and the
+  solve is the better of the two for ORB and AKAZE (ADR 0065). The datasets are still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
   overcorrected a stale sentence, and the correction outlived the code that made it true, surviving a
   whole branch that added the measurement because the branch never opened this file;
 - ghost detection scored against a known mask (needs the movers);

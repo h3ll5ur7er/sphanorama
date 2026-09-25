@@ -51,10 +51,8 @@ class IRegistrationEngine {
   //
   // Passed rather than held, because engines are stateless per session and everything that is not
   // compute placement or pixel residency arrives as an argument. `Refine` takes an `Intrinsics` for
-  // the same reason and puts it to a different use — it is where a solve starts and a refined lens
-  // comes back in the result, which is why that one is named `initial` and this one is not. Both
-  // are `const`: an earlier version of this sentence contrasted them on constness, which was never
-  // the difference.
+  // the same reason and puts it to a different use — it is where a solve starts, and the lens its
+  // answer is expressed under — which is why that one is named `initial` and this one is not.
   // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
   // `StatusCode` can only do so against what the contract promises, and this method is the first in
   // the repository to return `RegistrationFailed` at all.
@@ -103,32 +101,34 @@ class IRegistrationEngine {
   virtual Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
                                                   const Quat& prior, const Intrinsics& lens) = 0;
 
-  // **Nothing implements this yet, and the contract has to say so.** Both engines refuse with
-  // `Unsupported` — `FeatureRegistrationEngine` with "the global refinement is a later increment",
-  // `NullRegistrationEngine` with "bundle adjustment is Phase 2" — so a caller branching on
-  // `StatusCode` gets exactly one code from this method in every build that exists today.
+  // One consistent set of absolute rotations from the pairwise ones and the sensor priors.
   //
-  // Stated here because the `Unsupported` bullet above is scoped to `EstimatePairwise` *and*
-  // attributed to "`NullRegistrationEngine`, which is what a build without OpenCV gets". A reader
-  // generalising it across the interface concludes that the OpenCV engine implements this one. It
-  // does not, and the header was silent on the only method where that inference is wrong: every
-  // other method on this interface has a paragraph, and this had a bare declaration.
+  // The pairs are relative and independently estimated; the priors are absolute and out by
+  // degrees. The pairs decide how the frames sit relative to each other and the priors decide only
+  // which way the whole reconstruction faces, which is the one thing the pairs cannot say. That is
+  // why a ring's closing pair is worth having: a chain throws it away, and it is the measurement of
+  // how far the chain drifted.
   //
-  // **What it will do when it exists.** Take the pairwise rotations, which are relative and
-  // independently estimated, and the sensor priors, which are absolute and drift; solve for one
-  // consistent set of absolute rotations plus a refined lens. `initial` is named for its role in
-  // that: it is where the solve *starts*, and a `GlobalSolution` carries the lens it *ends* with.
-  // The parameter is `const` because this engine is stateless per session and improves a value by
-  // returning a new one, not by writing through its argument — which is the distinction the
-  // paragraph on `EstimatePairwise`'s lens draws, and draws badly by contrasting `const` against
-  // `initial` as though those were alternatives. Both parameters are `const Intrinsics&`. The
-  // difference is what the caller does with the answer.
+  // **Each prior names its frame**, and the priors are the frame set: a pair naming a frame with no
+  // prior is refused rather than guessed at. Only accepted pairs are used — `accepted` is exactly
+  // the question "should a global solve use this edge" (ADR 0056) — so an unaccepted pair can
+  // neither move the answer nor refuse it. A prior's `confidence` is not read: a phone with only a
+  // gyroscope reports zero for its whole life, and its priors still agree with each other, which is
+  // all the solve needs from them (ADR 0065).
   //
-  // The first `PairwiseResult` span is unnamed because a refusal reads none of it. Name it when
-  // something reads it (ADR 0054: a signature that cannot honour its own return type is a gap a
-  // stub hides, and this one is declared honestly and refuses honestly until it can).
-  virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult>,
-                                        std::span<const PoseSample> priors,
+  // **The lens is not refined.** `initial` comes back as `GlobalSolution::intrinsics`, the lens
+  // the rotations are expressed under: refining it needs the matched points, and a
+  // `PairwiseResult` carries only how many there were. That is a later step with its own contract
+  // change (ADR 0065).
+  //
+  // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a pair
+  // naming a frame with no prior or the same frame twice, or an accepted pair whose rotation is not
+  // one or whose inlier count is negative. `RegistrationFailed` when no prior is a usable rotation,
+  // because then nothing says which way the reconstruction faces. `Unsupported` from
+  // `NullRegistrationEngine`, which has no pairs to solve with. A frame whose prior is unusable is
+  // not a refusal: it is placed through its pairs, or named in `droppedFrames`.
+  virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
+                                        std::span<const FramePrior> priors,
                                         const Intrinsics& initial) = 0;
 };
 

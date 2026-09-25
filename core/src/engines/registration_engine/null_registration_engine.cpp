@@ -24,10 +24,10 @@ Result<PairwiseResult> NullRegistrationEngine::EstimatePairwise(const FeatureSet
 }
 
 Result<GlobalSolution> NullRegistrationEngine::Refine(std::span<const PairwiseResult>,
-                                                      std::span<const PoseSample>,
+                                                      std::span<const FramePrior>,
                                                       const Intrinsics&) {
   return Err<GlobalSolution>(StatusCode::Unsupported, kComponent,
-                             "bundle adjustment is Phase 2");
+                             "a global solve needs registered pairs, and this build has no OpenCV to register them");
 }
 
 }  // namespace sphanorama

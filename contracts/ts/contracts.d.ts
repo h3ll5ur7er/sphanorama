@@ -614,14 +614,55 @@ export interface PairwiseResult {
   accepted: boolean;
 }
 
+/**
+ * One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
+ * the motion port produces them long before any frame exists and almost none ever belong to one, so
+ * the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
+ * its pixels (ADR 0065).
+ */
+export interface FramePrior {
+  frame: FrameId;
+  pose: PoseSample;
+}
+
+/**
+ * One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
+ * **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
+ * matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
+ */
 export interface GlobalSolution {
+  /**
+   * The frames the solve placed, in the order their priors were given. A frame it could not place is
+   * left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
+   * not solved for.
+   */
   frames: FrameId[];
   /** parallel to frames */
   rotations: Quat[];
-  /** shared across frames, refined here */
+  /**
+   * The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
+   * compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
+   * which no `PairwiseResult` carries (ADR 0065).
+   */
   intrinsics: Intrinsics;
-  medianResidualPx: number;
-  droppedFrames: number;
+  /**
+   * How far the answer leaves the pairs it used, and over how many. Read them together: no
+   * disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+   */
+  medianEdgeErrorDeg: number;
+  maxEdgeErrorDeg: number;
+  edgesUsed: number;
+  /** Frames whose prior was not a rotation and that no accepted pair connects to one that was. */
+  droppedFrames: FrameId[];
+  /** Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel. */
+  priorOnlyFrames: FrameId[];
+  /**
+   * Frames whose place was settled at some point by the solver's scan order rather than the
+   * evidence — pairs, or priors, a half turn apart.
+   */
+  ambiguousFrames: FrameId[];
+  /** False when the solve ran out of sweeps; the rotations are the best it reached. */
+  converged: boolean;
 }
 
 export interface GainMap {
