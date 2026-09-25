@@ -43,11 +43,12 @@ taken at beside the `FrameRef` of its pixels.
    this edge" — and left out so that whatever it carries cannot refuse the solve.
 
 3. **The anchor weight is the engine's constant, and it is measured**: 0.01 against inlier counts.
-   On the photograph ring (ADR 0064's table) inlier-weighted edges give the same shape from 1e-4 to
-   0.1 within 0.006 degrees for every detector, and start to pay at 1. 0.01 sits two decades inside
-   that plateau from below and one from above. Inlier weighting is chosen over one per edge because it is what makes
-   the plateau four decades wide rather than one: per edge, 0.01 already costs SIFT nearly a factor
-   of two. Not a `Refine` parameter: no caller has a policy to pass, and a knob only a test turns is
+   On the photograph ring (ADR 0064's table) inlier-weighted edges give the same shape from 1e-6 to
+   0.1 within 0.003 degrees for every detector, and start to pay at 1. 0.01 sits four decades inside
+   that plateau from below and one from above. Inlier weighting is chosen over one per edge because
+   it moves the plateau's upper edge up by about two decades, from near 1e-3 to near 0.1 — the
+   inlier counts are about a hundred — which is what gives 0.01 room on both sides: per edge, 0.01
+   already costs SIFT a factor of 1.7. Not a `Refine` parameter: no caller has a policy to pass, and a knob only a test turns is
    a second copy of the constant.
 
 4. **The lens is passed through, and the contract says so.** `GlobalSolution::intrinsics` is
@@ -56,20 +57,33 @@ taken at beside the `FrameRef` of its pixels.
 
 5. **The fit is reported in the unit the solve has.** `medianResidualPx` is replaced by
    `medianEdgeErrorDeg`, `maxEdgeErrorDeg` and `edgesUsed` — how far the answer leaves the pairs it
-   used, and over how many. `droppedFrames` becomes the list of frames the solve could not place, which
+   used, and over how many — and `priorsUsed`, how many priors had a say in which way it faces,
+   without which a reconstruction one surviving prior pinned reads better than one twelve agreed on. `droppedFrames` becomes the list of frames the solve could not place, which
    are left out of `frames` and `rotations` so that neither ever holds a value that is not a solved
    rotation. `priorOnlyFrames`, `ambiguousFrames` and `converged` carry the solver's other honesty
    fields across, because each says something the error figures cannot.
 
-6. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
-   repeated `FrameId` among them, a pair naming a frame with no prior, a pair from a frame to itself,
-   or an accepted pair whose rotation is not one or whose inlier count is negative. A pair naming a
-   stranger is refused even unaccepted: it is a caller and a capture disagreeing about which frames
-   exist, not a measurement to disbelieve.
-   `RegistrationFailed` when no prior is a usable rotation, because then nothing fixes which way is
-   up. A frame whose prior is unusable is not a refusal: it is placed through its pairs, or dropped.
+6. **A prior counts only if it is an anchored rotation**: `confidence` above zero and an
+   orientation that is a rotation. Zero confidence is a direction relative to wherever the sensor
+   started (ADR 0041); averaged with anchored priors it turns the whole answer toward that accident,
+   45 degrees in a reviewer's probe. `ArmBurst` refuses to fire on one, so a captured frame always
+   has confidence, and a default `PoseSample` — confidence zero — is then no prior rather than a
+   claim the phone was held level.
 
-7. **In `FeatureRegistrationEngine` only.** The null engine keeps refusing: its `EstimatePairwise`
+7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
+   repeated `FrameId` among them, a lens `IsUsableLens` refuses (it is not read by the solve, but
+   it is returned as the lens the answer is expressed under), a pair naming a frame with no prior, a
+   pair from a frame to itself, or an accepted pair whose rotation is not one or whose counts no
+   engine fills in — no inliers, or fewer correspondences than inliers. `EstimatePairwise` never
+   produces those, and an accepted pair with no inliers weighed at zero would be left out silently
+   while its frames were named prior-only or dropped. A pair naming a stranger is refused even
+   unaccepted: it is a caller and a capture disagreeing about which frames exist, not a measurement
+   to disbelieve. `RegistrationFailed` when no prior counts, because then nothing fixes which way
+   is up; `Internal` for a solver refusal these checks did not anticipate, rather than a guess at
+   which of the caller's it was. A frame whose prior does not count is not a refusal: it is placed
+   through its pairs, or dropped.
+
+8. **In `FeatureRegistrationEngine` only.** The null engine keeps refusing: its `EstimatePairwise`
    refuses everything, so a `Refine` there would have nothing to solve.
 
 ## Consequences
@@ -83,14 +97,14 @@ taken at beside the `FrameRef` of its pixels.
   is 0.0552 / 0.0348 / 0.0264 degrees (ORB / AKAZE / SIFT), worst frame 0.1164 / 0.0624 / 0.0674,
   against the chain's medians 0.1009 / 0.0612 / 0.0239. The closing pair roughly halves ORB's and
   AKAZE's error and leaves SIFT's a little worse. Not through the priors — the shape is flat in their
-  weight from 1e-4 to 0.1 — and why is not yet known. The solve faces within 0.0002 degrees of where
+  weight from 1e-6 to 0.1 — and why is not yet known. The solve faces within 0.0002 degrees of where
   the priors agree, which is 0.26 degrees from the truth. Bounded in `registration_accuracy_test.cpp`
   at a median of 0.08, which is what fails a solve handed eleven pairs instead of twelve (ORB then
   reads 0.1005).
-- **A prior's `confidence` is not read.** A gyroscope-only phone reports zero for its whole life
-  (ADR 0041) and its priors still agree with each other, which is all the solve needs from them; the
-  gauge they fix is then one nobody chose, and the panorama's up is wrong by however far the phone
-  was from level when the capture began. Refusing them would refuse every capture on such a phone.
+- **A capture whose priors are all unanchored is refused**, with `RegistrationFailed`. A gyroscope
+  alone reports zero confidence for its whole life, and its priors agree with each other well
+  enough to solve with — but `ArmBurst` already refuses to capture on them, so no capture reaches
+  here that way. If that ever changes, this is the line to revisit.
 - **The lens is whatever the caller had.** On a real phone that is the page's reported field of view
   until refinement exists.
 - **Step 2 is lens refinement,** and needs the inlier correspondences carried out of
@@ -115,3 +129,8 @@ solve it contributes nothing to.
 **Drop `intrinsics` from `GlobalSolution` until it can be refined.** Honest, and it would make every
 compositor signature take a lens beside the solution — a second copy of the one fact the rotations
 cannot be read without. Kept, and described as what it is.
+
+**Read every prior whatever its confidence**, which this ADR's first version decided, so that a
+gyroscope-only phone's captures could be solved. It would solve them, and it would average a prior
+nobody anchored in with the ones somebody did: one such prior forty-five degrees out turned a
+reviewer's whole reconstruction toward it. The phone it was for cannot capture at all.

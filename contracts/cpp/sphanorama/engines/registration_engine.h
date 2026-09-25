@@ -51,8 +51,9 @@ class IRegistrationEngine {
   //
   // Passed rather than held, because engines are stateless per session and everything that is not
   // compute placement or pixel residency arrives as an argument. `Refine` takes an `Intrinsics` for
-  // the same reason and puts it to a different use — it is where a solve starts, and the lens its
-  // answer is expressed under — which is why that one is named `initial` and this one is not.
+  // the same reason and puts it to a different use — the lens its answer is expressed under, and
+  // where a lens refinement will start once one exists (ADR 0065) — which is why that one is named
+  // `initial` and this one is not.
   // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
   // `StatusCode` can only do so against what the contract promises, and this method is the first in
   // the repository to return `RegistrationFailed` at all.
@@ -111,22 +112,25 @@ class IRegistrationEngine {
   //
   // **Each prior names its frame**, and the priors are the frame set: a pair naming a frame with no
   // prior is refused rather than guessed at. Only accepted pairs are used — `accepted` is exactly
-  // the question "should a global solve use this edge" (ADR 0056) — so an unaccepted pair can
-  // neither move the answer nor refuse it. A prior's `confidence` is not read: a phone with only a
-  // gyroscope reports zero for its whole life, and its priors still agree with each other, which is
-  // all the solve needs from them (ADR 0065).
+  // the question "should a global solve use this edge" (ADR 0056) — so what an unaccepted pair
+  // carries, its rotation and its counts, can neither move the answer nor refuse it. The frames it
+  // names are checked all the same: a stranger is a caller and a capture disagreeing about which
+  // frames exist. A prior counts only if it is an anchored rotation — `confidence`
+  // above zero, since zero is a direction relative to wherever the sensor started (ADR 0041), and
+  // averaged in with anchored priors would turn the whole answer toward that accident.
   //
   // **The lens is not refined.** `initial` comes back as `GlobalSolution::intrinsics`, the lens
   // the rotations are expressed under: refining it needs the matched points, and a
   // `PairwiseResult` carries only how many there were. That is a later step with its own contract
   // change (ADR 0065).
   //
-  // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a pair
-  // naming a frame with no prior or the same frame twice, or an accepted pair whose rotation is not
-  // one or whose inlier count is negative. `RegistrationFailed` when no prior is a usable rotation,
+  // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a lens
+  // `IsUsableLens` would not accept, a pair naming a frame with no prior or the same frame twice, or
+  // an accepted pair whose rotation is not one or whose counts no engine fills in — no inliers, or
+  // fewer correspondences than inliers. `RegistrationFailed` when no prior is an anchored rotation,
   // because then nothing says which way the reconstruction faces. `Unsupported` from
-  // `NullRegistrationEngine`, which has no pairs to solve with. A frame whose prior is unusable is
-  // not a refusal: it is placed through its pairs, or named in `droppedFrames`.
+  // `NullRegistrationEngine`, which has no pairs to solve with. A frame whose prior does not count
+  // is not a refusal: it is placed through its pairs, or named in `droppedFrames`.
   virtual Result<GlobalSolution> Refine(std::span<const PairwiseResult> pairs,
                                         std::span<const FramePrior> priors,
                                         const Intrinsics& initial) = 0;

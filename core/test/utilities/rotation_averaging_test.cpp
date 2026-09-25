@@ -481,21 +481,27 @@ TEST(AverageRotations, AGaugeTheAnchorsBarelyDetermineIsSettledBeforeTheSolveSay
  * the second's anchor and `ambiguous` stayed empty.
  */
 TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
-  const std::vector<Quat> truth{AboutY(0.0), AboutY(30.0)};
+  // A third frame hangs off the second with no anchor of its own: it sides with whichever anchor
+  // the piece does, so it is named too.
+  const std::vector<Quat> truth{AboutY(0.0), AboutY(30.0), AboutY(60.0)};
   const std::vector<RelativeRotation> edges{
-      RelativeRotation{0, 1, TrueEdge(truth[0], truth[1]), 1.0}};
+      RelativeRotation{0, 1, TrueEdge(truth[0], truth[1]), 1.0},
+      RelativeRotation{1, 2, TrueEdge(truth[1], truth[2]), 1.0}};
   const Quat halfTurn = FromAxisAngle(Vec3{1, 0, 0}, std::numbers::pi);
-  const std::vector<Quat> anchors{truth[0], Normalize(Multiply(halfTurn, truth[1]))};
+  const std::vector<Quat> anchors{truth[0], Normalize(Multiply(halfTurn, truth[1])),
+                                  Quat{0, 0, 0, 0}};
 
   const AveragedRotations solved = AverageRotations(edges, anchors, 1e-6);
   ASSERT_TRUE(solved.valid);
-  ASSERT_EQ(solved.ambiguous.size(), 2u);
+  ASSERT_EQ(solved.ambiguous.size(), 3u);
   EXPECT_EQ(solved.ambiguous[0], 0);
   EXPECT_EQ(solved.ambiguous[1], 1);
+  EXPECT_EQ(solved.ambiguous[2], 2) << "the frame with no anchor was not named with its piece";
 
   // The same anchors agreeing with the edge leave nobody unsure, so it is the half turn being
   // reported and not the lightness of the anchors.
-  const AveragedRotations agreed = AverageRotations(edges, truth, 1e-6);
+  const AveragedRotations agreed =
+      AverageRotations(edges, std::vector<Quat>{truth[0], truth[1], Quat{0, 0, 0, 0}}, 1e-6);
   ASSERT_TRUE(agreed.valid);
   EXPECT_TRUE(agreed.ambiguous.empty());
 }

@@ -84,8 +84,8 @@ included leave it 0.000028, which is where the solver stops rather than the 0.00
 for. A *uniform* drift, too, which is the one kind a loop closure removes exactly,
 so it is a demonstration rather than the accuracy table's number. Its sweep budget is measured too,
 and since each piece's gauge is chosen outright every sweep (ADR 0064) it is set by the frame count
-rather than by the anchor weight: a twelve-frame ring settles in under fifty sweeps at any weight,
-ninety frames in under nine hundred. **And `Refine` is wired to it** (ADR 0065):
+rather than by the anchor weight: a twelve-frame ring with exact edges settles in under fifty
+sweeps at any weight, ninety frames in under nine hundred. **And `Refine` is wired to it** (ADR 0065):
 each prior names its frame, accepted pairs are weighed by their inliers, and the priors at a hundredth
 of an inlier each decide only which way the reconstruction faces. Solving the photograph ring with its
 closing pair, against priors each three degrees out, gives medians of 0.055 (ORB), 0.035 (AKAZE) and

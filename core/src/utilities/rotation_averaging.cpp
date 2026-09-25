@@ -31,19 +31,24 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 // it — in the same paragraph whose own measurements are the doubled figures. So 1e-5 degrees is
 // **5.9 times** the floor rather than the order of magnitude once claimed.
 //
-// **Above the floor, it is chosen for cost rather than bracketed.** At 1e-6 the largest move can
-// fall under the threshold only by being *exactly* zero, since the smallest non-zero answer is
-// 1.7e-6, so an arrangement whose moves settle into a quantisation cycle would never converge. No
-// fixture here does that any more: before each piece's gauge was chosen per sweep (ADR 0064),
-// ninety frames at an anchor weight of ten never settled at 1e-6, and now they settle in 11. What a
-// decade tighter measurably costs is sweeps, for a precision below anything a caller can see —
-// three-degree anchors, budget 1000:
+// **And 5.9 times is close enough to the floor that the next decade down is not available.** At
+// 1e-6 the largest move can fall under the threshold only by being *exactly* zero, since the
+// smallest non-zero answer is 1.7e-6, so an arrangement whose moves settle into a quantisation cycle
+// never converges at all. Measured, closed rings with exact edges and three-degree anchors, budget
+// 200,000:
 //
 //     frames / anchorWeight      1e-5        1e-6
 //               12 / 0.01      46          54
 //               60 / 1.00      15          20
-//               90 / 10.0       6          11
-//               90 / 1e-4     842     out of budget
+//               60 / 10.0       6      never settles
+//              200 / 1.00      16      never settles
+//              200 / 10.0       6      never settles
+//
+// The heavily anchored rows are the argument: the *easy* cases, a handful of sweeps at the committed
+// tolerance, turn into solves that run forever a decade tighter. So this number is bracketed —
+// 1.7e-6 below it and a regime that stops converging just past that. Which rows land in that regime
+// is itself a rounding accident: ninety frames at ten never settled before each piece's gauge was
+// chosen per sweep (ADR 0064) and settle in 11 since.
 //
 // What it costs is that **the answer is where the solver stopped, not the fixed point it was heading
 // for**: run the closing-edge fixture to convergence and its worst frame is 2.4e-6 degrees rather

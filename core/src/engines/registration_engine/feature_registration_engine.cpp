@@ -1262,9 +1262,9 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
 }
 
 // What each registered frame's prior counts for against a pair's inlier count. Measured on the
-// photograph ring with priors three degrees out: the solved shape is the same within 0.006 degrees
-// for every detector from 1e-4 to 0.1 and starts to pay at 1, so this sits two decades inside that
-// plateau from below and one from above (ADR 0064, ADR 0065).
+// photograph ring with priors three degrees out: the solved shape is the same within 0.003 degrees
+// for every detector from 1e-6 to 0.1 and starts to pay at 1, so this sits a decade inside that
+// plateau from above and four from below (ADR 0064, ADR 0065).
 constexpr double kPriorWeightPerInlier = 0.01;
 
 Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult> pairs,
@@ -1274,11 +1274,18 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "no priors, so no frames to solve for");
   }
+  // Not read by the solve, and still refused: it comes back as the lens the answer is expressed
+  // under, and an answer expressed under no lens is one nothing downstream can project.
+  if (!IsUsableLens(initial)) {
+    return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                               "the lens given is not a usable lens");
+  }
   // Indexed with `int32_t` because the solver is, with no check: a `FramePrior` is 88 bytes on a
   // 64-bit build, so the first index that would not fit needs 189 GB of priors.
   std::map<uint64_t, int32_t> indexOf;
   std::vector<Quat> anchors;
   anchors.reserve(priors.size());
+  int32_t priorsUsed = 0;
   for (const FramePrior& prior : priors) {
     if (!prior.frame.valid()) {
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent, "a prior names no frame");
@@ -1289,9 +1296,20 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "frame " + std::to_string(prior.frame.value) + " has two priors");
     }
-    // An orientation that is not a rotation is passed on as it is: the solver reads it as no prior
-    // for that frame, which is the answer rather than a refusal.
-    anchors.push_back(prior.pose.orientation);
+    // Two ways of being no prior, and neither is a refusal: the frame is placed through its pairs
+    // or dropped. An orientation that is not a rotation, which the solver reads as no prior; and one
+    // nothing anchored — `confidence` zero, a direction relative to wherever the sensor started
+    // (ADR 0041) — which averaged with anchored priors would turn the whole answer toward that
+    // accident. `ArmBurst` refuses to fire on one, so a captured frame always has confidence.
+    const bool anchoredPrior =
+        prior.pose.confidence > 0.0 && IsUsableRotation(prior.pose.orientation);
+    anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
+    if (anchoredPrior) ++priorsUsed;
+  }
+  if (priorsUsed == 0) {
+    return Err<GlobalSolution>(StatusCode::RegistrationFailed, kComponent,
+                               "no prior is an anchored rotation, so nothing fixes which way the "
+                               "reconstruction faces");
   }
 
   std::vector<RelativeRotation> edges;
@@ -1313,21 +1331,25 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "an accepted pair carries no rotation");
     }
-    if (pair.inliers < 0) {
+    // Counts `EstimatePairwise` never answers with. An accepted pair has a share of its
+    // correspondences behind it (ADR 0056), so with no inliers it contradicts itself — and weighed
+    // at nothing it would be left out silently, its frames named prior-only or dropped although an
+    // accepted pair touches them. Zero correspondences is `PairwiseResult`'s own word for a result
+    // no engine filled in, and fewer correspondences than inliers is not a count at all.
+    if (pair.inliers < 1 || pair.correspondences < pair.inliers) {
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
-                                 "an accepted pair has a negative inlier count");
+                                 "an accepted pair has counts no engine fills in");
     }
     edges.push_back(RelativeRotation{from->second, to->second, pair.relativeRotation,
                                      static_cast<double>(pair.inliers)});
   }
 
   const AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
-  // Everything else the solver refuses is refused above, with its reason; what is left is no prior
-  // being a rotation, and then the pairs alone cannot say which way the reconstruction faces.
+  // Everything the solver refuses is refused above with its reason, so this is a refusal that list
+  // did not anticipate — reported as ours rather than guessed at as one of the caller's.
   if (!averaged.valid) {
-    return Err<GlobalSolution>(StatusCode::RegistrationFailed, kComponent,
-                               "no prior is a usable rotation, so nothing fixes which way the "
-                               "reconstruction faces");
+    return Err<GlobalSolution>(StatusCode::Internal, kComponent,
+                               "the rotation solver refused input this engine had checked");
   }
 
   GlobalSolution solution;
@@ -1335,6 +1357,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
   solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;
   solution.maxEdgeErrorDeg = averaged.maxEdgeErrorDeg;
   solution.edgesUsed = averaged.edgesUsed;
+  solution.priorsUsed = priorsUsed;
   solution.converged = averaged.converged;
   const auto frameOf = [&](int32_t i) { return priors[static_cast<size_t>(i)].frame; };
   for (const int32_t i : averaged.unplaced) solution.droppedFrames.push_back(frameOf(i));

@@ -553,7 +553,11 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
   //      `the hangar's lowest inlier fraction is 0.6522`, `SIFT's median is 4.2 times
   //      better than ORB's` and `now reads eleven of eleven for all three`. Editing the table
   //      alone leaves all three standing, and a reader who trusts the entry stops at the table;
-  //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101`.
+  //   8. `CLAUDE.md`'s `0.024 … 0.061 … 0.101` — **twice**, once in the paragraph on the pair
+  //      estimator and again in the one on `Refine`, as "the chain's 0.101, 0.061 and 0.024";
+  //   9. the solved-ring test below, whose docblock quotes the chain's medians beside its own;
+  //  10. `docs/06-roadmap.md`'s solved-ring table, whose "Chained median" column is this table's
+  //      median column again, and ADR 0065, which quotes it (an ADR, so superseded, not edited).
   //
   // The table rounds to three places and the bounds above claim four, which is how `0.155` and
   // `0.1551` came to name one quantity — keep the rounding where it is and the claims exact.
@@ -664,6 +668,7 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
     prior.frame = dataset.value.frames[i].frame.id;
     prior.pose.orientation =
         Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
+    prior.pose.confidence = 1.0;   // anchored, as every captured frame's is (ADR 0044)
     priors.push_back(prior);
   }
 

@@ -619,6 +619,8 @@ export interface PairwiseResult {
  * the motion port produces them long before any frame exists and almost none ever belong to one, so
  * the pairing is made here, by whoever holds both — the capture records each candidate's pose beside
  * its pixels (ADR 0065).
+ * **No prior is spelled with `confidence` zero**, which is what a default `PoseSample` holds, so a
+ * pose left unset is no prior rather than a claim that the phone was held level.
  */
 export interface FramePrior {
   frame: FrameId;
@@ -652,7 +654,16 @@ export interface GlobalSolution {
   medianEdgeErrorDeg: number;
   maxEdgeErrorDeg: number;
   edgesUsed: number;
-  /** Frames whose prior was not a rotation and that no accepted pair connects to one that was. */
+  /**
+   * How many priors were anchored rotations, and so had a say in which way the answer faces. The
+   * edge figures cannot tell a reconstruction twelve priors agreed on from one a single surviving
+   * prior pinned; the second reads better on every other field.
+   */
+  priorsUsed: number;
+  /**
+   * Frames whose prior did not count — not an anchored rotation — and that no accepted pair connects
+   * to one that did.
+   */
   droppedFrames: FrameId[];
   /** Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel. */
   priorOnlyFrames: FrameId[];

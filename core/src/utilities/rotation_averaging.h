@@ -27,8 +27,9 @@ namespace sphanorama {
 // the same reconstruction — so a solver given edges alone cannot say which way is north. The anchors
 // are what fix it, and they are weighted low on purpose: a fused phone orientation is out by degrees
 // where a registered pair is out by hundredths, so the anchors make the answer absolute and the
-// edges make it right. However low, the gauge is the one the anchors agree on best: each piece of
-// the reconstruction is turned bodily onto it every sweep, which no edge can object to (ADR 0064).
+// edges make it right. However lightly they are weighed, above zero, the gauge is the one the
+// anchors agree on best: each piece of the reconstruction is turned bodily onto it every sweep,
+// which no edge can object to (ADR 0064).
 
 // A measured relation between two frames, in the convention `IRegistrationEngine` answers in.
 //
@@ -58,9 +59,9 @@ struct RelativeRotation {
 
   // How much this edge is believed, relative to the others and to the anchors. Evidence rather than
   // a distribution: raw inlier counts are a fine thing to pass. Zero removes the edge from the solve
-  // without removing it from the input, which is what a caller holding a parallel array of
-  // `PairwiseResult` wants for an unaccepted one (ADR 0056: an unaccepted result still carries the
-  // best rotation the pixels offered, and a caller may decide to weigh it at nothing).
+  // without removing it from the input — but not from the checks: an edge whose rotation is not one
+  // refuses the whole input at any weight, which is why `Refine` leaves an unaccepted pair out rather
+  // than weighing it at zero (ADR 0065).
   double weight = 1.0;
 };
 
@@ -112,7 +113,7 @@ struct AveragedRotations {
   // for want of an anchor" are the same fact held once rather than twice. **The degraded case reports better than the healthy one on everything else**, which is
   // why it needs its own number: one anchor plus a spanning tree is an exact fixed point, so the
   // solve settles in one sweep with both edge errors at zero, while twelve mutually inconsistent
-  // priors take hundreds of sweeps and leave a residual.
+  // priors take tens — 46 on a twelve-frame ring — and leave a residual.
   int32_t anchorsUsed = 0;
 
   // Frames no believed edge touches, ascending. They are placed — by their own anchor — so they are
