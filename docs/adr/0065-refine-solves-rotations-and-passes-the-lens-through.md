@@ -159,7 +159,12 @@ taken at beside the `FrameRef` of its pixels.
 - **An engine that reports a defect for good is a capture that seeks for good**, with no error
   shown: guidance cannot tell the page why it has no aim, only that it has none, and the page
   parks its reticle as it does before a first reading. Failing the tick instead would name the
-  defect and end the session on a transient one. No shipped engine produces one.
+  defect, and the page would go on ticking, since a failure the manager answers does not stop it;
+  a first draft of this entry said it would end the session, from a manager comment that had gone
+  stale. What failing costs is everything else the tick says: the page clears every marker drawn
+  relative to a pose on a failed tick, so one bad reading would blank the map where demotion
+  withdraws only the aim, the one part the defect invalidates. Mid-burst the tick does fail,
+  because the burst has to be abandoned with a status. No shipped engine produces such a pose.
 - **`pieces` says how much of the answer the pairs actually placed.** A ring two declined pairs cut
   in two is two pieces whose seams sit where the priors put them — 1.84 degrees out in a
   reviewer's probe, with every other field reading clean.

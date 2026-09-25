@@ -761,8 +761,9 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   //
   // Note what every failure below goes through. A burst is advanced at the end of this call, so a
   // pose or planner failure returns before it — and SPH_TRY here would leave the burst armed with
-  // the exposure locked. The client stops ticking once a call fails, so nothing would ever reach
-  // the cleanup: the lock would outlive the session.
+  // the exposure locked. A client may stop ticking once calls fail — the page does after three
+  // that never reach the manager — and then nothing would ever reach the cleanup: the lock would
+  // outlive the session.
   if (!batch.empty()) {
     auto advanced = pose_.Integrate(pose_state_, batch);
     if (!advanced.ok()) return Abandon(advanced.status);
@@ -1227,7 +1228,7 @@ Status CaptureSessionManager::Disarm(bool rollBack) {
 Status CaptureSessionManager::Abandon(const Status& cause) {
   // Disarm is a no-op when nothing is armed, so this needs no guard — and its failure is folded
   // in rather than dropped. A pose failure that coincides with an unlock rejection used to return
-  // the pose failure alone, and the client stops ticking on a failed call: the lock would then
+  // the pose failure alone, and a client may stop ticking on failed calls: the lock would then
   // outlive the session with nobody informed it was ever taken.
   return Also(cause, Disarm(true));
 }

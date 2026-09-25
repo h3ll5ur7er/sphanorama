@@ -1495,6 +1495,10 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseIsNoAim) {
   //
   // A NaN confidence was no aim before this, since it is not above zero; it is here so that one
   // stays true.
+  //
+  // Ticked every way a tick arrives: pushed, pulled from the sensor — the page's only way, which
+  // calls with nothing and lets the core drain — and empty, with the broken pose still standing.
+  // A demotion keyed on the samples or the batch passes the first and is dead in the page.
   Begin();
   const struct {
     Quat orientation;
@@ -1507,11 +1511,14 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseIsNoAim) {
     pose.LookAt(orientation);
     pose.Claim(confidence);
     for (int tick = 0; tick < 50; ++tick) {  // five seconds, two dwells' worth
+      if (tick % 3 == 1) sensor->Enqueue(sample);
       const Result<CaptureGuidance> guidance =
-          manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+          tick % 3 == 0 ? manager->OnMotion(std::span<const ImuSample>(&sample, 1))
+                        : manager->OnMotion({});
       ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
       EXPECT_FALSE(guidance.value.aimKnown) << confidence << ", tick " << tick;
-      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill) << confidence << ", tick " << tick;
+      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill)
+          << confidence << ", tick " << tick;
       EXPECT_NE(guidance.value.action, GuidanceAction::Fire) << confidence << ", tick " << tick;
       clock.AdvanceMs(100);
     }
@@ -1526,17 +1533,22 @@ TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
   // A broken collaborator, like a broken plan, so `FailedPrecondition`.
   //
   // Guidance holds no cell on such a pose, so the arm is asked at the one the phone faced a tick
-  // earlier — which is the page's own path when the pose breaks between a `Fire` and its arm. The NaN is named as the defect it is rather than as a reading not yet taken, which
-  // is what the arm said while it read the confidence before the predicate.
+  // earlier — which is the page's own path when the pose breaks between a `Fire` and its arm. The
+  // NaN is named as the defect it is rather than as a reading not yet taken, which is what the arm
+  // said while it read the confidence before the predicate. Two cases face away from the cell as
+  // well, so the pose is asked before the cone: a broken engine is not a phone to turn.
   Begin();
   TurnTo(*manager, pose, Quat{});
   const NodeId node = AimedNode(*manager);
+  const Quat away = FromAzimuthElevation(90.0, 0.0);
   const struct {
     Quat orientation;
     double confidence;
   } broken[] = {{Quat{0, 0, 0, 0}, 1.0},
                 {Quat{}, 1.5},
-                {Quat{}, std::numeric_limits<double>::quiet_NaN()}};
+                {Quat{}, std::numeric_limits<double>::quiet_NaN()},
+                {away, 1.5},
+                {away, std::numeric_limits<double>::quiet_NaN()}};
   for (const auto& [orientation, confidence] : broken) {
     pose.Claim(confidence);
     TurnTo(*manager, pose, orientation);
