@@ -670,8 +670,8 @@ TEST(PoseSampleDefect, AConfidenceOutsideTheUnitIntervalIsADefect) {
 }
 
 TEST(PoseSampleDefect, AClaimedOrientationThatIsNotARotationIsADefect) {
-  // At every confidence that claims one, not only the absolute reading's.
-  for (const double confidence : {0.25, 0.5, 1.0}) {
+  // At every confidence that claims one, down to the least above zero.
+  for (const double confidence : {std::numeric_limits<double>::denorm_min(), 0.5, 1.0}) {
     for (const Quat& orientation :
          {Quat{0, 0, 0, 0}, Quat{std::numeric_limits<double>::quiet_NaN(), 0, 0, 0}}) {
       PoseSample pose;
