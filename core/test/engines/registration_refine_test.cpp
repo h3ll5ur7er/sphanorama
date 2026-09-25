@@ -910,6 +910,72 @@ TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
 }
 
 /**
+ * A precision read from each pair's own noise, not the pairs' pooled.
+ *
+ * One of the skipping ring's loop pairs thinned to fifteen matches at five times the others' noise:
+ * the solve puts the loop's misfit on its lightest edge, which here is also its noisiest, and a
+ * pooled residual diluted that noise with the rest's. Handed the right lens, four seeds in two
+ * hundred were then fitted through refutation, up to 12.8% out (round 5). These are those four.
+ */
+TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  for (const uint32_t seed : {103u, 138u, 154u, 175u}) {
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.skipping, 0.8, seed);
+    PairwiseResult thin = shapes.skipping[0];
+    thin.inlierMatches.resize(15);
+    thin.inliers = 15;
+    pairs[0] = test::WithNoise({thin}, 4.0, seed + 1000)[0];
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    EXPECT_FALSE(solved.value.lensFitted) << "seed " << seed;
+    EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << "seed " << seed;
+  }
+
+  // But never quieter than the pool: four matches leave a pair five degrees of freedom, and in this
+  // seed its own residual read so low that, taken alone, the ring was fitted 7.1% out.
+  std::vector<PairwiseResult> pairs = test::WithNoise(shapes.skipping, 0.8, 35);
+  pairs[0].inlierMatches.resize(4);
+  pairs[0].inliers = 4;
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+}
+
+/**
+ * A pair measured both ways is one measurement, so it does not make the least look more precise.
+ *
+ * The grid at 1.5 px is precise to about a quarter of a percent, too loose to be taken over the
+ * right lens. With every pair also carried the other way round — the same matches, swapped — its
+ * noise was summed as two independent noises and read √2 tighter, under the threshold (round 5).
+ */
+TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 1.5, seed);
+    const Result<GlobalSolution> once = engine_.Refine(pairs, PriorsOut(shapes.grid), lens);
+    ASSERT_TRUE(once.ok()) << once.status.detail;
+    ASSERT_FALSE(once.value.lensFitted) << "the premise: once is too loose, seed " << seed;
+
+    const size_t count = pairs.size();
+    for (size_t i = 0; i < count; ++i) {
+      PairwiseResult back = pairs[i];
+      std::swap(back.a, back.b);
+      back.relativeRotation = Conjugate(back.relativeRotation);
+      for (PixelMatch& match : back.inlierMatches) {
+        std::swap(match.ax, match.bx);
+        std::swap(match.ay, match.by);
+      }
+      pairs.push_back(back);
+    }
+    const Result<GlobalSolution> twice = engine_.Refine(pairs, PriorsOut(shapes.grid), lens);
+    ASSERT_TRUE(twice.ok()) << twice.status.detail;
+    EXPECT_FALSE(twice.value.lensFitted) << "seed " << seed;
+  }
+}
+
+/**
  * A loop that sees the focal length only roughly still corrects a lens it shows to be wrong.
  *
  * Refusing is not free: the answer then falls back to the lens handed in, and on a phone that is a

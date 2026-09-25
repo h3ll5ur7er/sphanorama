@@ -1299,12 +1299,13 @@ constexpr double kFocalScaleTolerance = 1e-4;
 // each pair's information about its rotation, and the change in each edge's error across a step
 // either side of the least (ADR 0066).
 //
-// Measured over 200 seeds of noise, the estimate's error in standard deviations spreads 0.77 to
-// 0.97 on every shape and noise level tried, and never passed 3. The spread itself barely moves
-// between seeds, which is what makes it a threshold at all: 0.006 to 0.036% for a twelve-frame ring
-// at 0.4 to 2 px, 0.07 to 0.37% for a two-by-four grid, 0.39 to 2.6% for a triangle or a ring whose
-// one loop skips a frame, and 0.004 to 0.13% for the photograph ring's pairs, whichever detector,
-// with up to 1.5 px of noise added to them.
+// Measured over 200 seeds of noise, the estimate's error in standard deviations spreads 0.73 to
+// 1.01 on every shape and noise level tried, one thin pair five times noisier than the rest among
+// them, and reached 3.1 at the most. The spread itself barely moves between seeds, which is what
+// makes it a threshold at all: 0.007 to 0.036% for a twelve-frame ring at 0.4 to 2 px, 0.07 to
+// 0.38% for a two-by-four grid, 0.39 to 2.8% for a triangle or a ring whose one loop skips a frame,
+// and 0.005 to 0.14% for the photograph ring's pairs, whichever detector, with up to 1.5 px of noise
+// added to them.
 //
 // Taken when that spread is within `kFocalPrecision` — two tenths of a percent, about a twentieth of
 // a degree of ORB's median — or when the lens handed in is at least `kHandedIsRefuted` spreads from
@@ -1324,7 +1325,9 @@ struct FocalTrial {
   // information about its own rotation: what the precision of a least is read from.
   std::vector<cv::Vec3d> errorsDeg;
   std::vector<cv::Matx33d> spreads;
-  // The pairs' own residual per match and axis, in square degrees, after each Kabsch fit.
+  // The pairs' own residual per match and axis, in square degrees, after each Kabsch fit: each
+  // scored pair's, and all of them pooled.
+  std::vector<double> residualsDeg2;
   double residualDeg2 = std::numeric_limits<double>::infinity();
   AveragedRotations averaged;
 };
@@ -1374,14 +1377,17 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
     edges[at.edge].rotation = FromMatrix(fitted);
     // Two coordinates a match, three spent on the rotation.
     cv::Matx33d information = cv::Matx33d::zeros();
+    double own = 0.0;
     for (size_t i = 0; i < from.size(); ++i) {
       const cv::Vec3d seen(to[i].x, to[i].y, to[i].z);
       const cv::Vec3d moved = fitted * cv::Vec3d(from[i].x, from[i].y, from[i].z);
       const double deg = std::acos(std::clamp(moved.dot(seen), -1.0, 1.0)) * 180.0 / std::numbers::pi;
-      squares += deg * deg;
+      own += deg * deg;
       information += cv::Matx33d::eye() - seen * seen.t();
     }
+    squares += own;
     freedoms += 2.0 * static_cast<double>(from.size()) - 3.0;
+    trial.residualsDeg2.push_back(own / (2.0 * static_cast<double>(from.size()) - 3.0));
     trial.spreads.push_back(information.inv());
   }
   trial.residualDeg2 = squares / freedoms;
@@ -1413,22 +1419,40 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
 // where the weighted errors stop moving, and the pairs' own noise, through each pair's information
 // about its rotation, is how far that point wanders. Infinite where the errors do not move at all,
 // which is a cost with no least.
+//
+// **Each pair's own noise**, not the pairs' pooled: the solve pushes a loop's misfit onto its
+// lightest edge, so a thin pair's noise counts for most exactly where a pool of the rest would
+// dilute it — one pair of fifteen matches at five times the others' noise put the skipping ring 12.8%
+// out, fitted through refutation (round 5). Never below the pool, though: three matches leave a
+// pair three degrees of freedom, and its own figure can read far quieter than it is.
+//
+// **And a pair measured twice counts once**: the two share their correspondences, so their noise is
+// one noise, and summing it as two independent ones read the spread √2 tight (round 5). Each edge's
+// term is scaled by how many scored edges join its two frames, which is exact where they are copies.
 double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
                         const FocalTrial& longer, const std::vector<RelativeRotation>& edges,
                         const std::vector<ScoredEdge>& scored) {
+  std::map<std::pair<int32_t, int32_t>, int> measured;
+  for (const ScoredEdge& at : scored) {
+    ++measured[std::minmax(edges[at.edge].from, edges[at.edge].to)];
+  }
   double noise = 0.0;
   double signal = 0.0;
   for (size_t e = 0; e < scored.size(); ++e) {
-    const double weight = edges[scored[e].edge].weight;
+    const RelativeRotation& edge = edges[scored[e].edge];
+    const double weight = edge.weight;
+    const double variance =
+        std::max(best.residualsDeg2.at(e), best.residualDeg2) *
+        static_cast<double>(measured[std::minmax(edge.from, edge.to)]);
     // Checked access: a trial that was not scored stopped before it had an error for every edge,
     // and is refused before this is reached; reaching it anyway is `Internal`, not a stray read.
     const cv::Vec3d moves =
         (longer.errorsDeg.at(e) - shorter.errorsDeg.at(e)) * (1.0 / (2.0 * kPrecisionStep));
-    noise += weight * weight * moves.dot(best.spreads.at(e) * moves);
+    noise += weight * weight * variance * moves.dot(best.spreads.at(e) * moves);
     signal += weight * moves.dot(moves);
   }
   if (!(signal > 0.0)) return std::numeric_limits<double>::infinity();
-  return std::sqrt(best.residualDeg2 * noise) / signal;
+  return std::sqrt(noise) / signal;
 }
 
 // Whether the accepted pairs close a loop, counting two pairs between the same frames once: a pair

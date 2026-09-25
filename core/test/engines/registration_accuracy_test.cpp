@@ -822,7 +822,7 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     // at it refused four seeds of ten for ORB here — six in a reviewer's own draws — sending back
     // the lens 5% long and a median past a degree, with the least itself within 0.25% (round 4).
     // Measured on these seeds: every one fitted, the focal length within 0.21% (ORB), 0.06% (AKAZE)
-    // and 0.05% (SIFT), on a precision of 0.12 to 0.13%, 0.05% and 0.02%.
+    // and 0.05% (SIFT), on a precision of 0.12 to 0.14%, 0.05% and 0.02%.
     if (scale != 1.05) continue;
     constexpr double kNoisyFocal[] = {0.004, 0.001, 0.001};
     static_assert(std::size(kNoisyFocal) == static_cast<size_t>(FeatureDetector::Count));

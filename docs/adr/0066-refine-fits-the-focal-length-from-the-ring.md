@@ -79,24 +79,31 @@ closes. Three things follow.
 
    **And it takes the result only where the least is precise, or refutes the lens handed in.** The
    precision is estimated from what the least cannot move: each pair's own residual after its
-   Kabsch fit, pooled over the pairs (two coordinates a match, three spent on the rotation), carried
-   through each pair's information about its own rotation — a pair measures rotation about its
-   viewing axis far less well than across it — and weighed against how each edge's error moves with
-   the scale, read from two trials half a percent either side of the least. That gives the least's
+   Kabsch fit (two coordinates a match, three spent on the rotation), never taken below the pairs'
+   pooled one, carried through each pair's information about its own rotation — a pair measures
+   rotation about its viewing axis far less well than across it — and weighed against how each
+   edge's error moves with the scale, read from two trials half a percent either side of the least.
+   A pair measured twice counts once, its two copies sharing one noise. That gives the least's
    standard deviation in log focal scale. The fit is taken when it is within two tenths of a
    percent, about a twentieth of a degree of ORB's median; or when the lens handed in lies four of
    them or more from the least, since then the data refute the lens a refusal would fall back to,
    and a fit a percent out is nearer than it. The cost must also rise on both sides of the least,
    which refuses a least at an end of the bracket, where the cost past it falls.
 
-   Measured over two hundred seeds of noise at 0.4, 0.8 and 2 px on four shapes, the least's error
-   in these standard deviations spreads 0.77 to 0.97 and never passed 3. The spread barely moves
-   between seeds, which is what lets a threshold decide: a twelve-frame ring 0.006 to 0.036%, a
-   two-by-four grid 0.07 to 0.37%, a triangle or a ring whose one loop skips a frame 0.39 to 2.6%,
-   and the photograph ring's pairs — every detector, up to 1.5 px of noise added to them — 0.004 to
-   0.13%. Handed the right lens, 800 noisy runs of the skipping ring and the triangle were all
+   Measured over two hundred seeds of noise at 0.4, 0.8 and 2 px on four shapes, and on the
+   skipping ring with one pair thinned to fifteen matches at five times the noise, the least's error
+   in these standard deviations spreads 0.73 to 1.01 and reached 3.1 at the most. The spread barely
+   moves between seeds, which is what lets a threshold decide: a twelve-frame ring 0.007 to 0.036%,
+   a two-by-four grid 0.07 to 0.38%, a triangle or a ring whose one loop skips a frame 0.39 to 2.8%,
+   and the photograph ring's pairs — every detector, up to 1.5 px of noise added to them — 0.005 to
+   0.14%. Handed the right lens, 800 noisy runs of the skipping ring and the triangle were all
    passed through and 200 of the grid at 0.8 px all fitted, the worst 0.39% out; handed a lens 8%
-   out, 400 of the skipping ring were all fitted, the worst 2.5% out.
+   out, 400 of the skipping ring were all fitted, the worst 2.5% out. The first version pooled the
+   pairs' residuals outright, which is exact only where every edge's error moves alike with the
+   scale; the solve puts a loop's misfit on its lightest edge, so a thin pair's noise counts for most
+   where a pool dilutes it, and one such pair put the skipping ring 12.8% out through refutation in
+   four seeds of two hundred. It also counted a pair measured both ways twice, reading the spread
+   √2 tight (round 5).
 
    Two rules came before this one, and each was found wanting by a reviewer's Monte Carlo. The
    first asked the cost at both ends of the bracket to be four times the least, and a skipping ring
