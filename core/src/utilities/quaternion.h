@@ -56,12 +56,12 @@ bool IsUsableRotation(const Quat& q);
 // Why a pose sample is not one, or nothing if it is. No pose is spelled with `confidence` zero, and
 // at zero the orientation is not read; any other confidence outside [0, 1], or an orientation that
 // is not a rotation where the confidence claims one, is a defect upstream rather than a way of
-// saying "none". One rule for every door a pose comes into the capture by from outside the core —
-// `OfferFrame` refuses one, and a restored session document keeps the frame and drops the claim —
-// and for `Refine`, so the capture cannot hold a pose the solve will refuse. A burst's pose comes
-// from the pose engine: its confidence range is `PoseSample`'s contract, and its orientation is a
-// rotation only because the manager starts from the shipped engine's `Initial` and advances only
-// by its `Integrate`, which keeps a rotation a rotation without making one (ADR 0065).
+// saying "none". One rule for every door a pose comes into the capture by — `OfferFrame` refuses
+// one, a restored session document keeps the frame and drops the claim, and a burst is abandoned
+// on one — and for `Refine`, so the capture cannot hold a pose the solve will refuse. The burst
+// needs its door because the shipped pose engine keeps a rotation a rotation without making one:
+// an engine that reports a zero orientation at full confidence is aimed as though it faced the
+// identity (ADR 0065).
 std::optional<std::string_view> PoseSampleDefect(const PoseSample& pose);
 
 // The norm `IsUsableRotation` tested, returned so the caller divides by the value that was tested

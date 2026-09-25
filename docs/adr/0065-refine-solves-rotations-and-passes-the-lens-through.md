@@ -85,13 +85,12 @@ taken at beside the `FrameRef` of its pixels.
    later session, since a burst's candidates are written back by every checkpoint. Refused, as a
    first version of this decision had it, it cost the whole sphere — the refusal was `Unsupported`,
    which the page reads as a document a later build can open, and the one button it leaves starts a
-   capture that clears the tier. A burst's pose comes from the pose engine; `PoseSample` states the
-   confidence range, and the orientation is kept a rotation only by the shipped engine: the manager
-   starts from its `Initial` and advances only by its `Integrate`, which keeps a rotation a rotation
-   without making one. Checking the pose at the burst too would be a guard only a pose engine that
-   broke that could reach. An unanchored pose is still accepted everywhere. That is a narrow
-   change to two manager doors, refusing or dropping only values `PoseSample` already calls
-   defects.
+   capture that clears the tier. A burst is abandoned with `Internal` when the pose engine reports
+   one: the shipped engine keeps a rotation a rotation without making one, and a test engine
+   reporting a zero orientation at full confidence was aimed as though it faced the identity and
+   fired a whole burst of candidates no solve could use. An unanchored pose is still accepted
+   everywhere. That is a narrow change to three manager doors, refusing or dropping only values
+   `PoseSample` already calls defects.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
    repeated `FrameId` among them, a prior whose confidence is outside [0, 1] or whose orientation is

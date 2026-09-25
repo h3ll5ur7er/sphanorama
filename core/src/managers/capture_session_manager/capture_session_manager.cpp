@@ -1301,6 +1301,15 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // when the burst was armed, every frame since has set it one interval ahead.
   if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
 
+  // The door a burst's pose comes in by. The shipped engine keeps a rotation a rotation without
+  // making one, so this holds only while nothing seeds the pose but `Initial`; an engine that
+  // reports a pose the solve would refuse is broken rather than unsure, and every frame it filed
+  // would be a candidate no `Refine` could use (ADR 0065).
+  if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
+    return Abandon(Fail(StatusCode::Internal, kComponent,
+                        "the pose engine reported a pose with " + std::string(*defect)));
+  }
+
   auto frame = camera_.PeekPreviewFrame();
   if (!frame.ok()) {
     // Not a dropped tick. Preview is running by the time a burst is armed, so a camera that

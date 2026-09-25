@@ -1484,6 +1484,25 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
 }
 
+TEST_F(CaptureSession, ABurstFrameWhosePoseTheSolveWouldRefuseAbandonsTheBurst) {
+  // The burst is a door too. Its pose comes from the pose engine, and the shipped one keeps a
+  // rotation a rotation only because the manager seeds it from `Initial`; an engine that reports a
+  // zero orientation at full confidence is aimed as though it faced the identity, and without this
+  // it fired a whole burst of candidates every `Refine` would refuse. A broken engine rather than
+  // a missing reading, so `Internal`, and nothing it took is kept.
+  Begin();
+  TurnTo(*manager, pose, Quat{0, 0, 0, 0});
+  const NodeId node = AimedNode(*manager);
+  const Status fired = FireBurstOn(*manager, clock, node, BurstSpec{});
+  EXPECT_EQ(fired.code, StatusCode::Internal) << fired.detail;
+  EXPECT_NE(fired.detail.find("pose"), std::string::npos) << fired.detail;
+  EXPECT_TRUE(manager->Candidates(node).value.empty());
+
+  // And the same cell fires once the engine reports a rotation again.
+  TurnTo(*manager, pose, Quat{});
+  EXPECT_TRUE(FireBurstOn(*manager, clock, AimedNode(*manager), BurstSpec{}).ok());
+}
+
 TEST_F(CaptureSession, AnOfferedPoseTheSolveWouldRefuseIsRefusedAtTheDoor) {
   // `Refine` refuses such a pose as a prior (ADR 0065). Accepted here, it would be covered and
   // ranked, and refuse any solve built from this session's candidates, a component away.
