@@ -1516,8 +1516,10 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
   // built without matches, and for one whose matches a folding lens loses within the range searched.
   std::vector<bool> unplaced(anchors.size(), false);
   for (const int32_t i : averaged.unplaced) unplaced[static_cast<size_t>(i)] = true;
-  // The low end only: a longer focal length brings every pixel nearer the centre, so a match with a
-  // direction at the shortest focal length searched has one at every other.
+  // Filtered at the low end, where a folding lens loses the most: a longer focal length brings
+  // every pixel nearer the centre. Not everywhere, though — under tangential distortion the pixels
+  // `Unproject` takes are not a star about the centre, and a match can lose its direction partway
+  // along — so the search below also refuses to answer if any trial could not be scored.
   const Intrinsics lowest = ScaledLens(initial, kFocalScaleLow);
   const auto directed = [&](float x, float y) { return Unproject(lowest, Pixel{x, y}).valid; };
   std::vector<ScoredEdge> scored;
@@ -1538,8 +1540,14 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     scored.push_back(std::move(at));
   }
   if (refittable && ClosesALoop(scoredEdges, anchors.size())) {
+    // Every trial scored, or no answer: a scale whose trial fails is a window the golden section
+    // steps around and then settles at the edge of, and an end that fails costs infinity, which
+    // passes for a cost that rose. One such match of ninety put a fit 3.2% out (ADR 0066).
+    bool everyTrialScored = true;
     const auto trial = [&](double logScale) {
-      return TryFocalScale(std::exp(logScale), initial, edges, scored, anchors);
+      FocalTrial scoredTrial = TryFocalScale(std::exp(logScale), initial, edges, scored, anchors);
+      if (!std::isfinite(scoredTrial.costDeg2)) everyTrialScored = false;
+      return scoredTrial;
     };
     const double golden = (std::sqrt(5.0) - 1.0) / 2.0;
     double lo = std::log(kFocalScaleLow);
@@ -1570,7 +1578,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     const double highEnd = trial(std::log(kFocalScaleHigh)).costDeg2;
     // An answer only where the cost rises away from it on both sides: at an end of the bracket the
     // search is reporting its own range, and on a flat cost it is reporting where it stopped.
-    if (std::isfinite(best.costDeg2) && lowEnd > kObservableRise * best.costDeg2 &&
+    if (everyTrialScored && lowEnd > kObservableRise * best.costDeg2 &&
         highEnd > kObservableRise * best.costDeg2) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;

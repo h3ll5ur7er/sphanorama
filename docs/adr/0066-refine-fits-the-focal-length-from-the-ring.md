@@ -70,7 +70,12 @@ closes. Three things follow.
    the same frames counted once. Every scale is scored on the same matches, the ones with a direction
    at the bracket's shortest focal length: a scale that lost a pair's matches to a folding lens
    once scored as infinite, and infinity passed for a cost that rose. A pair left with fewer than
-   three is not refitted and the lens is passed through. It takes the result only where the cost at
+   three is not refitted and the lens is passed through. And if any trial of the search still could
+   not be scored, there is no fit: the first version of this rule assumed a longer focal length only
+   brings a pixel nearer the centre, which is true of a radial lens and not of a tangential one —
+   `Unproject`'s accepted pixels are not a star about the centre, and one match of ninety that lost
+   its direction partway along put a fit 3.2% out, the golden section settling at the edge of the
+   window it could not score (a reviewer's reproduction, round 2). It takes the result only where the cost at
    both ends of the bracket is at least four times the best: a minimum at an end is the
    search reporting its own range, and a cost that does not rise is it reporting where it stopped.
    Otherwise `initial` comes back as given, every field of it. The two conditions are not one: with
@@ -103,8 +108,9 @@ closes. Three things follow.
 - **Measured, on the photograph ring** with the focal length handed in 10% and 5% out either way:
   recovered to within -0.063 to -0.051% (ORB), -0.004 to +0.002% (AKAZE) and +0.010 to +0.012%
   (SIFT), and the ring solved to medians of 0.047–0.052, 0.029–0.034 and 0.010–0.019 degrees — as
-  well as it solves handed the right lens. `AFocalLengthOutIsFittedFromTheRing` bounds it with the
-  solved ring's own bounds and 0.2% on the focal length.
+  well as it solves handed the right lens. `AFocalLengthOutIsFittedFromTheRing` bounds it per
+  detector at about one and a half to two times each measurement — the focal length within 0.1%,
+  0.01% and 0.02%, and the median, worst frame and edge median likewise.
 - **The solved-ring figures move**, lens right or not, from 0.0552 / 0.0348 / 0.0264 to 0.0464 /
   0.0293 / 0.0142 degrees, and that answers ADR 0065's open question of why SIFT's solve sat a little
   above its chain. The answer is in the pairs. `FitRotation` refits its rotation on the RANSAC

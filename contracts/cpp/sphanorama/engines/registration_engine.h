@@ -132,9 +132,10 @@ class IRegistrationEngine {
   // which the pairs, each refitted from its `inlierMatches`, leave the solve least, and returns
   // `initial` so scaled in `GlobalSolution::intrinsics` with `lensFitted` set. Only frames the solve
   // places take part, and every scale is scored on the same matches — those with a direction at the
-  // shortest focal length searched. Where the accepted pairs among placed frames close no loop,
-  // where one of them keeps fewer than three such matches, or where the cost does not rise away
-  // from its least on both sides, `initial` comes back as given, every field of it, and
+  // shortest focal length searched, and where one loses its direction at some other scale, which
+  // tangential distortion allows, there is no fit. Where the accepted pairs among placed frames
+  // close no loop, where one of them keeps fewer than three such matches, where any trial could not
+  // be scored on them, or where the cost does not rise away from its least on both sides, `initial` comes back as given, every field of it, and
   // `lensFitted` is false. Where the lens is fitted the rotations are the refitted pairs' solve,
   // not the one their own `relativeRotation`s give.
   //

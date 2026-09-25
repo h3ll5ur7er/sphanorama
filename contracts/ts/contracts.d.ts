@@ -643,9 +643,10 @@ export interface PairwiseResult {
    * The correspondences the returned rotation agrees with, which `inliers` counts — so on an engine's
    * answer the two are the same number, and `Refine` refuses an accepted pair where they are not.
    * Carried because the focal length is invisible to a pair and visible to a loop of them: `Refine`
-   * refits every accepted pair from these under each lens it tries (ADR 0066). At most one a
-   * feature, so bounded by the detector's cap. Empty on a pair built without them, whose rotation
-   * cannot be refitted, and then `Refine` passes the lens through.
+   * refits every accepted pair between frames the solve places from these, under each lens it tries
+   * (ADR 0066). At most one per feature of frame `a`, so bounded by the detector's cap. Empty on a
+   * pair built without them, whose rotation cannot be refitted, and then — if the solve places both
+   * its frames — `Refine` passes the lens through.
    */
   inlierMatches: PixelMatch[];
 }
@@ -727,7 +728,8 @@ export interface GlobalSolution {
    * whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
    * lens a device kept from an earlier capture is an estimate this call did not make. False where
    * the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
-   * them keeps fewer than three matches with a direction at the shortest focal length searched; or
+   * them keeps fewer than three matches with a direction at the shortest focal length searched; any
+   * trial of the search could not be scored on those matches; or
    * the cost does not rise to four times its least at both ends of the range, which is how a least
    * at an end, and a cost with no least at all, both look.
    */

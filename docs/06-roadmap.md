@@ -54,9 +54,11 @@ ratio** and an **assumed 66° angle across the frame's long edge** (`deriveField
 `shell/src/access/capture-host.ts`). Across the *long* edge rather than the horizontal one,
 because the assumption is about a lens and a lens does not change when the phone is turned — the
 browser reports the track in the device's current orientation, so a phone held upright answers
-960×1280 and the wide angle belongs to its height. Phase 2's `Refine` now fits the focal length from the
-captured frames (ADR 0066), which is the only way to actually know; where it cannot, a wrong assumption shows up as
-cells that overlap more or less than intended rather than as a failure.
+960×1280 and the wide angle belongs to its height. Phase 2's `Refine` can now fit the focal length from the
+captured frames (ADR 0066), which is the only way to actually know — but only after the capture, and nothing
+outside the tests calls it yet. The plan is built at `Begin` from the assumption either way, so a wrong one still
+shows up as cells that overlap more or less than intended rather than as a failure; feeding a fitted lens back
+into the next plan is the kept-lens decision ADR 0066 leaves open.
 
 That first half was itself overstated until recently, and the correction is worth recording
 because it is the shape of mistake this project is most likely to repeat: the page opened the
@@ -501,8 +503,9 @@ What is left, and what has landed since:
 
   The honest fix is on the contract rather than in the test — a way for the struct to say
   "assumed", so the client can label it — and that is a contract change with an ADR behind it.
-  Phase 2's `Refine` now fits the focal length from the frames (ADR 0066), which is the only way to
-  actually know, and gives `estimated` its first real answer.
+  Phase 2's `Refine` can now fit the focal length from the frames (ADR 0066), which is the only way
+  to actually know; it sets `Intrinsics::estimated` on a lens it fitted, but that is a different
+  struct, and nothing yet carries it back to label this one.
 
 - **The white-balance lock has no capability field — open, and pre-existing.**
   `ICameraAccess::SetLocks` takes `lockWhiteBalance`, the page reports `supportsWhiteBalanceLock`
@@ -962,7 +965,7 @@ every edge *the same* 0.2-degree bias, and a uniform drift is the one case a loo
 exactly. Here the per-pair errors are independent. Solved through `Refine` with all twelve pairs and
 a prior for every frame, each three degrees out about an axis of its own (ADR 0065):
 
-| Detector | Chained median | Solved median | Solved max | Solved, focal 10% out |
+| Detector | Chained median | Solved median | Solved max | Solved, focal 5–10% out |
 | --- | --- | --- | --- | --- |
 | ORB | 0.101 | 0.046 | 0.141 | 0.047 to 0.052 |
 | AKAZE | 0.061 | 0.029 | 0.066 | 0.029 to 0.034 |

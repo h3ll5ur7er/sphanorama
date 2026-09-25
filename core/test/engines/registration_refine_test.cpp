@@ -873,9 +873,58 @@ TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
     ASSERT_TRUE(solved.ok()) << k3 << ": " << solved.status.detail;
     EXPECT_FALSE(solved.value.lensFitted) << k3;
     EXPECT_EQ(solved.value.intrinsics.fx, initial.fx) << k3;
-    // Not the rotations: passed through, they are the pairs refitted under the lens as given, and
-    // that is not the lens these matches were drawn through — a real engine's would have been.
+    // Not the rotations: passed through, they are the solve of the pairs' own `relativeRotation`s,
+    // which `Matched` leaves half a degree out on purpose.
   }
+}
+
+/**
+ * A match that loses its direction anywhere in the range searched means the fit is not taken, not
+ * only one that loses it at the shortest focal length.
+ *
+ * Under tangential distortion the pixels `Unproject` accepts are not a star about the centre, so a
+ * match with a direction at the short end can lose it partway along and regain it: one pixel of
+ * ninety did, and the golden section settled at the edge of the window where it had none — a lens
+ * 3.2% out and a median of 0.31 degrees, reported as fitted (a reviewer's reproduction, round 2).
+ * The same ring without that one match is fitted, so it is the match that is refused.
+ */
+TEST_F(Refine, AMatchThatLosesItsDirectionMidRangeIsNotAFit) {
+  const std::vector<Quat> truth = Ring();
+  Intrinsics handed = Scaled(TrueLens(), 0.6132);
+  handed.k1 = -0.1696;
+  handed.k2 = -0.1004;
+  handed.k3 = 0.0833;
+  handed.p1 = -0.0632;
+  handed.p2 = 0.0737;
+  const Intrinsics lens = Scaled(handed, 1.05);
+  std::vector<PairwiseResult> pairs = MatchedRing(truth, lens);
+
+  const Result<GlobalSolution> clean = engine_.Refine(pairs, PriorsOut(truth), handed);
+  ASSERT_TRUE(clean.ok()) << clean.status.detail;
+  ASSERT_TRUE(clean.value.lensFitted) << "the ring without the stray match must fit";
+  EXPECT_NEAR(clean.value.intrinsics.fx / lens.fx, 1.0, 3e-5);
+
+  // A pixel the lens as handed takes, and so one an engine working under it could keep; its
+  // partner is built under the same lens.
+  const Pixel stray{165.966, 467.627};
+  const UnprojectedDirection from = Unproject(handed, stray);
+  ASSERT_TRUE(from.valid);
+  const Quat exact = Normalize(Multiply(Conjugate(truth[4]), truth[3]));
+  const ProjectedPixel to = Project(handed, Rotate(exact, from.direction));
+  ASSERT_TRUE(to.valid);
+  // The premise the test rests on: a direction at the short end and none somewhere longer.
+  ASSERT_TRUE(Unproject(Scaled(handed, 0.7), stray).valid);
+  ASSERT_FALSE(Unproject(Scaled(handed, 1.05), stray).valid);
+  ASSERT_FALSE(Unproject(Scaled(handed, 1.3), stray).valid);
+  pairs[3].inlierMatches.push_back(
+      PixelMatch{static_cast<float>(stray.x), static_cast<float>(stray.y),
+                 static_cast<float>(to.pixel.x), static_cast<float>(to.pixel.y)});
+  pairs[3].inliers += 1;
+
+  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), handed);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+  EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
 }
 
 }  // namespace

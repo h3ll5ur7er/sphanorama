@@ -221,7 +221,8 @@ is contradicted by the bullet immediately under it:
   `FeatureRegistrationEngine` extracts features **and estimates pairwise rotations**, and those
   rotations are scored: see the measured table in `docs/06-roadmap.md`. Both a chain of pairwise
   estimates and the same ring solved through `Refine` with its closing pair are scored, and the
-  solve is the better of the two for ORB and AKAZE (ADR 0065). The datasets are still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
+  solve is the better of the two for all three detectors since it fits the focal length and refits
+  the pairs (ADR 0066); before that SIFT's solve sat a little above its chain (ADR 0065). The datasets are still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
   overcorrected a stale sentence, and the correction outlived the code that made it true, surviving a
   whole branch that added the measurement because the branch never opened this file;
 - ghost detection scored against a known mask (needs the movers);
