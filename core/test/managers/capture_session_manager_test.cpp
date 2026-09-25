@@ -70,6 +70,8 @@ Status FireBurstOn(ICaptureSessionManager& manager, ManualClock& clock, NodeId n
 class AimablePoseEngine final : public IPoseEngine {
  public:
   void LookAt(const Quat& orientation) { looking_ = orientation; }
+  // What the engine says of its own reading, which a broken engine can misstate.
+  void Claim(double confidence) { confidence_ = confidence; }
 
   Result<PoseState> Initial(PoseMode mode, MotionCapability capability) override {
     auto state = inner_.Initial(mode, capability);
@@ -103,7 +105,7 @@ class AimablePoseEngine final : public IPoseEngine {
   // this stands in for.
   void Aim(PoseState& state) const {
     state.pose.orientation = looking_;
-    state.pose.confidence = 1.0;
+    state.pose.confidence = confidence_;
     state.observed = true;
     // All four, because they are one claim and a fake that sets three of them is describing a
     // state the real engine cannot produce. `anchored` is what confidence is derived from
@@ -115,6 +117,7 @@ class AimablePoseEngine final : public IPoseEngine {
 
   NullPoseEngine inner_;
   Quat looking_{};
+  double confidence_ = 1.0;
 };
 
 // Turns the camera to face a cell, and makes the manager notice.
@@ -1484,19 +1487,65 @@ TEST_F(CaptureSession, AnOfferedFrameThatCannotBeScoredIsRefusedRatherThanAccept
   EXPECT_TRUE(store->ResidencyOf(frame.value).ok());
 }
 
+TEST_F(CaptureSession, APoseTheSolveWouldRefuseIsNoAim) {
+  // Guidance and `ArmBurst` read one condition, and a pose `ArmBurst` refuses is no aim here
+  // either. Located as it stands a zero quaternion faces the identity: guidance held still over
+  // the cell there, the dwell matured, fired, was refused, and started again for as long as the
+  // engine stayed broken — the loop the planner contract says two guards must not produce.
+  //
+  // A NaN confidence was no aim before this, since it is not above zero; it is here so that one
+  // stays true.
+  Begin();
+  const struct {
+    Quat orientation;
+    double confidence;
+  } broken[] = {{Quat{0, 0, 0, 0}, 1.0},
+                {Quat{}, 1.5},
+                {Quat{}, std::numeric_limits<double>::quiet_NaN()}};
+  const ImuSample sample{};
+  for (const auto& [orientation, confidence] : broken) {
+    pose.LookAt(orientation);
+    pose.Claim(confidence);
+    for (int tick = 0; tick < 50; ++tick) {  // five seconds, two dwells' worth
+      const Result<CaptureGuidance> guidance =
+          manager->OnMotion(std::span<const ImuSample>(&sample, 1));
+      ASSERT_TRUE(guidance.ok()) << guidance.status.detail;
+      EXPECT_FALSE(guidance.value.aimKnown) << confidence << ", tick " << tick;
+      EXPECT_NE(guidance.value.action, GuidanceAction::HoldStill) << confidence << ", tick " << tick;
+      EXPECT_NE(guidance.value.action, GuidanceAction::Fire) << confidence << ", tick " << tick;
+      clock.AdvanceMs(100);
+    }
+  }
+}
+
 TEST_F(CaptureSession, APoseTheSolveWouldRefuseNeitherArmsNorKeepsABurst) {
   // The burst is a door too, at both ends. The shipped pose engine keeps a rotation a rotation
   // without making one, and an engine that reports a zero orientation at full confidence is read
   // as facing the identity: armed on, it took the locks and was abandoned on its first frame, every
   // dwell, and one that recovered after the arm filed a burst under a cell the phone never faced.
   // A broken collaborator, like a broken plan, so `FailedPrecondition`.
+  //
+  // Guidance names no cell on such a pose, so the arm is asked at the one the phone faced a tick
+  // earlier. The NaN is named as the defect it is rather than as a reading not yet taken, which
+  // is what the arm said while it read the confidence before the predicate.
   Begin();
-  TurnTo(*manager, pose, Quat{0, 0, 0, 0});
+  TurnTo(*manager, pose, Quat{});
   const NodeId node = AimedNode(*manager);
-  const Status armed = manager->ArmBurst(node, BurstSpec{});
-  EXPECT_EQ(armed.code, StatusCode::FailedPrecondition) << armed.detail;
-  EXPECT_NE(armed.detail.find("pose engine"), std::string::npos) << armed.detail;
-  EXPECT_FALSE(camera->ExposureLocked()) << "refused before the locks";
+  const struct {
+    Quat orientation;
+    double confidence;
+  } broken[] = {{Quat{0, 0, 0, 0}, 1.0},
+                {Quat{}, 1.5},
+                {Quat{}, std::numeric_limits<double>::quiet_NaN()}};
+  for (const auto& [orientation, confidence] : broken) {
+    pose.Claim(confidence);
+    TurnTo(*manager, pose, orientation);
+    const Status armed = manager->ArmBurst(node, BurstSpec{});
+    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition) << confidence << ": " << armed.detail;
+    EXPECT_NE(armed.detail.find("pose engine"), std::string::npos) << armed.detail;
+    EXPECT_FALSE(camera->ExposureLocked()) << "refused before the locks";
+  }
+  pose.Claim(1.0);
 
   // Armed on a rotation, a frame taken on it, then broken mid-burst: abandoned, and nothing it
   // took is kept — the good frame included, since a burst is kept whole or not at all.

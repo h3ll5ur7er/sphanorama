@@ -423,13 +423,16 @@ capability — but **no planner reads it**, so the claim that `CoveragePlannerEn
 looser acceptance tolerance has never been true. The cone is whatever the client asked for.
 
 One rule per question survives this, which is the other half of what it bought. `Locate` names the
-cell the camera is inside; `ArmBurst` refuses a burst on two counts — nothing has measured where
-the camera is pointing, or what was measured is outside that cone; the dwell fires. Zero
+cell the camera is inside; `ArmBurst` refuses a burst on three counts — the pose engine reported a
+pose `Refine` would refuse, nothing has measured where the camera is pointing, or what was measured
+is outside that cone; the dwell fires. Guidance reads such a pose as no aim (ADR 0065), so the
+first count is a backstop the dwell never reaches. Zero
 `PoseSample.confidence` still happens — a session's opening ticks arrive before its first reading,
 and a stream carrying angular rates with no attitude in them never anchors at all — and it means
 "no aim yet" rather than "no aim ever": guidance seeks, no cell is held, and nothing can be armed.
-The page reads the `aimKnown` the planner publishes to park its reticle and stop correcting for
-roll, which is presentation rather than a second copy of the rule.
+The page reads the `aimKnown` the manager publishes to park its reticle and stop correcting for
+roll, which is presentation rather than a second copy of the rule: the manager derives it through
+the same predicate `ArmBurst` asks.
 
 ### UC-5 · Coming back to a capture a phone call interrupted
 

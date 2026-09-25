@@ -56,8 +56,10 @@ class ICaptureSessionManager {
   // client makes often enough to pace one: a burst takes time, and time is something a
   // synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
   // full and `CellDone` on the tick that fills it. A failing tick ends an armed burst, keeps
-  // nothing it took and releases its locks — among them `FailedPrecondition` when the pose engine
-  // reports mid-burst a pose `Refine` would refuse (ADR 0065).
+  // nothing it took and releases its locks — among them `FailedPrecondition` when, on a tick that
+  // takes a frame, the pose engine reports a pose `Refine` would refuse (ADR 0065). Outside a
+  // burst such a pose is no aim: guidance reads it with the claim dropped, as `Resume` restores
+  // one, so `aimKnown` is false and nothing is held still over.
   virtual Result<CaptureGuidance> OnMotion(std::span<const ImuSample> samples) = 0;
 
   // Arms a burst at the given cell. It does not fire one: the frames arrive over the following
@@ -81,7 +83,8 @@ class ICaptureSessionManager {
   //
   // Refused with `FailedPrecondition` too when the pose engine reports a pose `Refine` would
   // refuse: read as an aim it faces the identity, so it armed on a cell the phone never faced
-  // (ADR 0065). Like the broken cone below, nothing the user can do anything about.
+  // (ADR 0065). Guidance names no cell on such a pose, so this is reached only by a caller that
+  // arms without it; the detail names the pose engine, since the user cannot fix it.
   //
   // Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
   // measurement — not finite, or not greater than zero. The detail says which: "not a usable

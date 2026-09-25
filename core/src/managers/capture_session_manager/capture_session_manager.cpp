@@ -777,7 +777,13 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   auto covered = planner_.Evaluate(plan_, AllCandidates());
   if (!covered.ok()) return Abandon(covered.status);
 
-  auto located = planner_.Locate(pose_state_.pose, plan_, covered.value);
+  // A pose the solve would refuse is no measurement, whatever its confidence claims. Located as it
+  // stands it faces the identity: guidance holds still over a cell `ArmBurst` then refuses, and the
+  // dwell fires into that refusal every cycle, locking and releasing the camera each time
+  // (ADR 0065). So guidance is asked with the claim dropped, the way `Resume` restores one.
+  PoseSample aim = pose_state_.pose;
+  if (PoseSampleDefect(aim)) aim.confidence = 0.0;
+  auto located = planner_.Locate(aim, plan_, covered.value);
   if (!located.ok()) return Abandon(located.status);
   CaptureGuidance guidance = located.value;
 
@@ -787,16 +793,17 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
   // `Locate` chooses between naming the cell the camera is inside and waiting for a reading,
   // `ArmBurst` refuses what nothing has measured, and the page parks its reticle and stops
   // correcting for roll. There is exactly one source they can agree on — `confidence`, the
-  // contract's own word for whether anything ever anchored the orientation. What this line
-  // removes is a *published* answer disagreeing with the one the refusal uses: a planner leaving
-  // the field at its default would park the page's reticle on a phone whose pose is perfectly
-  // well measured, and every burst the dwell then fired would look to the user like a control
-  // that had stopped working.
+  // contract's own word for whether anything ever anchored the orientation, read through
+  // `PoseSampleDefect` as `ArmBurst` reads it, which is why this reads `aim` rather than the pose.
+  // What this line removes is a *published* answer disagreeing with the one the refusal uses: a
+  // planner leaving the field at its default would park the page's reticle on a phone whose pose
+  // is perfectly well measured, and every burst the dwell then fired would look to the user like a
+  // control that had stopped working.
   //
   // `stability` below and `targetNode` in the burst block are written here for reasons of their
   // own, not this one: the first because only this call holds the batch to estimate it from, the
   // second because a burst in flight is filed under the cell it was armed at.
-  guidance.aimKnown = pose_state_.pose.confidence > 0.0;
+  guidance.aimKnown = aim.confidence > 0.0;
 
   // Stability is advisory: an engine that cannot estimate it yet must not fail the whole call.
   if (auto stability = pose_.Stability(batch); stability.ok()) {
@@ -968,16 +975,19 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
   // What is left of zero confidence is transient (a session's opening ticks, and a stream
   // carrying rates with no attitude) and it is still a direction nobody chose. There is nothing
   // to check, so there is nothing to allow — including the cell the accident points at.
-  if (!(pose_state_.pose.confidence > 0.0)) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "nothing has measured where the camera is pointing yet");
-  }
-  // A pose the solve would refuse, from an engine that claims it measured one: read below as
-  // facing the identity, it armed on a cell the phone never faced. A broken collaborator, refused
-  // with the broken plan's code, before anything is locked (ADR 0065).
+  //
+  // The predicate is asked first. A pose the solve would refuse, from an engine that claims it
+  // measured one, read below as facing the identity and armed on a cell the phone never faced; a
+  // broken collaborator, refused with the broken plan's code before anything is locked (ADR 0065).
+  // Asked second, a NaN or negative confidence was reported as a reading not yet taken, and a
+  // defect is not that.
   if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the pose engine reported a pose with " + std::string(*defect));
+  }
+  if (!(pose_state_.pose.confidence > 0.0)) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "nothing has measured where the camera is pointing yet");
   }
 
   const double offBy =

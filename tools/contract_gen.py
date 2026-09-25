@@ -446,6 +446,11 @@ def _parse_methods(body: str, name: str) -> list[Method]:
         if doc and not buffer:
             pending.append(doc.group(1))
             continue
+        # Inside a declaration a comment has no member of its own to document, and the mirror
+        # carries doc per member (ADR 0009): refused, as it was while comments reached the matcher.
+        if buffer and trailing.strip() and not stripped:
+            raise ContractSyntaxError(
+                f"interface {name}: a comment inside the declaration {buffer!r}")
         if not stripped:
             if not buffer:
                 pending.clear()
@@ -453,13 +458,16 @@ def _parse_methods(body: str, name: str) -> list[Method]:
         if not buffer and SKIPPABLE.match(stripped):
             continue
 
-        # A comment trailing a declaration's line is its doc, as a field's is.
-        if trailing.strip():
-            pending = pending + [trailing.strip()]
         # A declaration may span lines; accumulate until the statement terminates.
         buffer = f"{buffer} {stripped}" if buffer else stripped
         if not buffer.endswith(";"):
+            if trailing.strip():
+                raise ContractSyntaxError(
+                    f"interface {name}: a comment inside the declaration {buffer!r}")
             continue
+        # A comment trailing the line that ends a declaration is its doc, as a field's is.
+        if trailing.strip():
+            pending = pending + [trailing.strip()]
 
         m = METHOD_RE.fullmatch(buffer)
         if not m:

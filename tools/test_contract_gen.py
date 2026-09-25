@@ -148,6 +148,23 @@ class InterfaceTest(unittest.TestCase):
         # And the comment is the method's doc, as a field's trailing comment is the field's.
         self.assertIn("[the caller's]", ts)
 
+    def test_a_comment_inside_a_declaration_is_refused_not_misfiled(self):
+        # On a parameter's line it became an unattributed line of the method's doc, and on a line
+        # of its own it vanished. Only the member carries doc across (ADR 0009).
+        for inside in ("  virtual Status Delete(ProjectId project,  // [the caller's]\n"
+                       "                         bool purge) = 0;\n",
+                       "  virtual Status Delete(ProjectId project,\n"
+                       "                        // [the caller's]\n"
+                       "                        bool purge) = 0;\n"):
+            with self.subTest(inside=inside), self.assertRaises(contract_gen.ContractSyntaxError):
+                parse("// @boundary\nclass IProjectManager {\n public:\n" + inside + "};\n")
+        # The line that ends one is the declaration's own, as a one-line declaration's is.
+        ts = emit("// @boundary\nclass IProjectManager {\n public:\n"
+                  "  virtual Status Delete(ProjectId project,\n"
+                  "                        bool purge) = 0;  // [the caller's]\n};\n")
+        self.assertIn("delete(project: ProjectId, purge: boolean)", ts)
+        self.assertIn("[the caller's]", ts)
+
     def test_two_declarations_on_one_line_are_refused_not_halved(self):
         # Matched from the start only, the first declaration was taken and the second dropped.
         with self.assertRaises(contract_gen.ContractSyntaxError):

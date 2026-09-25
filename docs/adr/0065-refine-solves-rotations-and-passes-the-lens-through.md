@@ -86,14 +86,20 @@ taken at beside the `FrameRef` of its pixels.
    later session, since a burst's candidates are written back by every checkpoint. Refused, as a
    first version of this decision had it, it cost the whole sphere — the refusal was `Unsupported`,
    which the page reads as a document a later build can open, and the one button it leaves starts a
-   capture that clears the tier. `ArmBurst` refuses to arm on one, and a burst the pose breaks
-   mid-way is abandoned, both with `FailedPrecondition` — the code `ArmBurst` already gives a broken
-   plan, for a broken collaborator. The shipped engine keeps a rotation a rotation without making
-   one, and a test engine reporting a zero orientation at full confidence was aimed as though it
-   faced the identity: checked only at the first frame, it locked and was abandoned every dwell,
-   and one that recovered after the arm filed a burst under a cell the phone never faced. An unanchored pose is still accepted
-   everywhere. That is a narrow change to three manager doors, refusing or dropping only values
-   `PoseSample` already calls defects.
+   capture that clears the tier. The live pose is the third door, and it has two outcomes. Guidance
+   reads it with the claim dropped, as `Resume` restores one, so `aimKnown` is false, guidance
+   seeks and the dwell never fires. `ArmBurst` refuses to arm on one, and a burst the pose breaks
+   mid-way is abandoned on the next tick that takes a frame, both with `FailedPrecondition` — the
+   code `ArmBurst` already gives a broken plan, for a broken collaborator. The shipped engine keeps
+   a rotation a rotation without making one, and a test engine reporting a zero orientation at full
+   confidence was aimed as though it faced the identity: checked only at the first frame, it locked
+   and was abandoned every dwell, and one that recovered after the arm filed a burst under a cell
+   the phone never faced. Refused at the arm alone, as a first version of this decision had it,
+   guidance still held still over the identity's cell and the dwell fired into the refusal every
+   two seconds, the page locking and releasing the camera around each one. Guidance is what stops
+   the dwell; the arm's refusal is the backstop for a caller that arms without it. An unanchored
+   pose is still accepted everywhere. That is a narrow change to three manager doors, refusing or
+   dropping only values `PoseSample` already calls defects.
 
 7. **Refusals**, each with the reason in the detail: `InvalidArgument` for no priors, an invalid or
    repeated `FrameId` among them, a prior whose confidence is outside [0, 1] or whose orientation is
@@ -149,6 +155,10 @@ taken at beside the `FrameRef` of its pixels.
   `IPoseEngine` carries a pose the rule drops. What dropping costs is that frame's prior, and
   nothing names the frame: `priorsUsed` is one short for each, down to the refusal above. Named would need a field on `Candidate`,
   which is a contract change for a case no shipped writer produces.
+- **An engine that reports a defect for good is a capture that seeks for good**, with no error
+  shown: guidance cannot tell the page why it has no aim, only that it has none, and the page
+  parks its reticle as it does before a first reading. Failing the tick instead would name the
+  defect and end the session on a transient one. No shipped engine produces one.
 - **`pieces` says how much of the answer the pairs actually placed.** A ring two declined pairs cut
   in two is two pieces whose seams sit where the priors put them — 1.84 degrees out in a
   reviewer's probe, with every other field reading clean.
