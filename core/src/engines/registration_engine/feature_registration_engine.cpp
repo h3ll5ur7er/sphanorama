@@ -1510,10 +1510,11 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
   // degrees a percent. So the search is over the solve, not over any pair.
   //
   // Scored only where the solve placed both frames — an edge inside a component nothing anchors is
-  // left out of the solve, and so out of the fit — and only on the matches that have a direction at
-  // both ends of the bracket, so every scale is scored on the same evidence. A pair left with fewer
-  // than three cannot be refitted, and then the lens is passed through: that is the answer for a pair
-  // built without matches, and for one whose matches a folding lens loses within the range searched.
+  // left out of the solve, and so out of the fit — and only on the matches that have a direction, in
+  // both frames, at the short end of the bracket, so every scale is scored on the same evidence. A
+  // pair left with fewer than three is not refitted — Kabsch takes two, with nothing to check them
+  // against — and then the lens is passed through: that is the answer for a pair built without
+  // matches, and for one whose matches a folding lens loses within the range searched.
   std::vector<bool> unplaced(anchors.size(), false);
   for (const int32_t i : averaged.unplaced) unplaced[static_cast<size_t>(i)] = true;
   // Filtered at the low end, where a folding lens loses the most: a longer focal length brings

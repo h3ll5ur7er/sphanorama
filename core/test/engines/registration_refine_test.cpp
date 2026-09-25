@@ -621,7 +621,7 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   const Intrinsics lens = TrueLens();
   const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
   for (const PairwiseResult& pair : ring) ASSERT_GE(pair.inlierMatches.size(), 20u);
-  // The triangle's closing pair spans sixty degrees and overlaps least; Kabsch needs three.
+  // The triangle's closing pair spans sixty degrees and overlaps least; `Refine` refits from three.
   const std::vector<PairwiseResult> triangle{Matched(0, 1, truth, lens), Matched(1, 2, truth, lens),
                                              Matched(2, 0, truth, lens)};
   for (const PairwiseResult& pair : triangle) ASSERT_GE(pair.inlierMatches.size(), 8u);
@@ -633,10 +633,14 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   tall.fy = 540;
   const std::vector<PairwiseResult> pitched = MatchedRing(tumbling, tall);
   for (const PairwiseResult& pair : pitched) ASSERT_GE(pair.inlierMatches.size(), 20u);
-  // And a lens that distorts, so a trial that dropped the distortion, or a fit that returned the
-  // lens without it, is wrong by more than the tolerance.
+  // And a lens that distorts in every term, so a trial that dropped the distortion, or a fit that
+  // returned the lens without any one of them, is wrong by more than the tolerance.
   Intrinsics barrel = lens;
   barrel.k1 = -0.1;
+  barrel.k2 = 0.02;
+  barrel.k3 = -0.003;
+  barrel.p1 = 4e-4;
+  barrel.p2 = -3e-4;
   const std::vector<PairwiseResult> distorted = MatchedRing(truth, barrel);
   for (const PairwiseResult& pair : distorted) ASSERT_GE(pair.inlierMatches.size(), 20u);
 
@@ -663,6 +667,10 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_NEAR(solution.intrinsics.fx / lens.fx, 1.0, 3e-5) << scale;
     EXPECT_NEAR(solution.intrinsics.fy / lens.fy, 1.0, 3e-5) << scale;
     EXPECT_EQ(solution.intrinsics.k1, initial.k1) << scale;
+    EXPECT_EQ(solution.intrinsics.k2, initial.k2) << scale;
+    EXPECT_EQ(solution.intrinsics.k3, initial.k3) << scale;
+    EXPECT_EQ(solution.intrinsics.p1, initial.p1) << scale;
+    EXPECT_EQ(solution.intrinsics.p2, initial.p2) << scale;
     EXPECT_EQ(solution.intrinsics.cx, initial.cx);
     EXPECT_EQ(solution.intrinsics.cy, initial.cy);
     EXPECT_EQ(solution.intrinsics.width, initial.width);
@@ -685,8 +693,9 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
  * and says it was not fitted.
  *
  * An open chain agrees with itself under any focal length. A pair with no matches cannot be
- * refitted under another lens at all. And an answer outside the range the search may look in is the
- * search reporting its own bracket, not the lens.
+ * refitted under another lens at all, and one with two is refused as surely: Kabsch fits a rotation
+ * from two, but with nothing to check them against. And an answer outside the range the search may
+ * look in is the search reporting its own bracket, not the lens.
  */
 TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   const std::vector<Quat> truth = Ring();
@@ -705,6 +714,22 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   unmatched[4].inlierMatches.clear();
   unmatched[4].inliers = 100;
   unmatched[4].correspondences = 180;
+  // Two matches, which `KabschRotation` would take, so only `Refine`'s own floor refuses them.
+  std::vector<PairwiseResult> twoMatches = ring;
+  twoMatches[4].inlierMatches.resize(2);
+  twoMatches[4].inliers = 2;
+
+  // An open chain beside a closed triangle of frames nothing anchors. The solve leaves the triangle
+  // unplaced, so the loop is not one the fit may score: counted, it let the chain's priors fit the
+  // lens to 502.7 of 500, which is what the loop check exists to refuse (a reviewer's probe).
+  std::vector<Quat> islandTruth = truth;
+  islandTruth.insert(islandTruth.end(), truth.begin(), truth.begin() + 3);
+  std::vector<PairwiseResult> chainAndIsland = chain;
+  chainAndIsland.push_back(Matched(kFrames, kFrames + 1, islandTruth, lens));
+  chainAndIsland.push_back(Matched(kFrames + 1, kFrames + 2, islandTruth, lens));
+  chainAndIsland.push_back(Matched(kFrames + 2, kFrames, islandTruth, lens));
+  std::vector<FramePrior> islandPriors = PriorsOut(truth);
+  for (int i = kFrames; i < kFrames + 3; ++i) islandPriors.push_back(NoPrior(i));
 
   // A loop of turns about the viewing axis: every pixel wheels about the centre by the same angle
   // under any focal length, so the cost is flat and there is no least to find.
@@ -714,21 +739,26 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
   }
   const std::vector<PairwiseResult> rolled = MatchedRing(rolling, lens);
 
+  const std::vector<FramePrior> priors = PriorsOut(truth);
   const struct {
     std::vector<PairwiseResult> pairs;
-    std::vector<Quat> truth;
+    std::vector<FramePrior> priors;
     double scale;
     const char* why;
-  } cases[] = {{chain, truth, 1.08, "an open chain"},
-               {twice, truth, 1.08, "an open chain with a pair measured twice"},
-               {reversed, truth, 1.08, "an open chain with a pair measured both ways"},
-               {unmatched, truth, 1.08, "a pair with no matches"},
-               {rolled, rolling, 1.08, "a loop about the viewing axis"},
+  } cases[] = {{chain, priors, 1.08, "an open chain"},
+               {twice, priors, 1.08, "an open chain with a pair measured twice"},
+               {reversed, priors, 1.08, "an open chain with a pair measured both ways"},
+               {unmatched, priors, 1.08, "a pair with no matches"},
+               {twoMatches, priors, 1.08, "a pair with two matches"},
+               {twoMatches, priors, 0.92, "a pair with two matches, short"},
+               {chainAndIsland, islandPriors, 1.08, "an open chain beside an unplaced loop"},
+               {chainAndIsland, islandPriors, 0.92, "an open chain beside an unplaced loop, short"},
+               {rolled, PriorsOut(rolling), 1.08, "a loop about the viewing axis"},
                // Each end of the bracket on its own, since either half of the rise test alone
                // passes a truth just outside the other end at that end.
-               {ring, truth, 1.0 / 1.6, "a focal length past the long end of the search"},
-               {ring, truth, 1.0 / 0.6, "a focal length past the short end of the search"},
-               {ring, truth, 2.5, "a focal length far outside the search"}};
+               {ring, priors, 1.0 / 1.6, "a focal length past the long end of the search"},
+               {ring, priors, 1.0 / 0.6, "a focal length past the short end of the search"},
+               {ring, priors, 2.5, "a focal length far outside the search"}};
   for (const auto& [pairs, poses, scale, why] : cases) {
     for (const bool estimated : {true, false}) {
       // Every field away from its default, so passing each through is told apart from resetting
@@ -741,7 +771,7 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
       initial.p2 = -5e-5;
       initial.rollingShutterLineTimeNs = 15000;
       initial.estimated = estimated;
-      const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(poses), initial);
+      const Result<GlobalSolution> solved = engine_.Refine(pairs, poses, initial);
       ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << why;
       const Intrinsics& out = solved.value.intrinsics;
@@ -852,6 +882,12 @@ TEST_F(Refine, AnIslandTheSolveCannotPlaceDoesNotMoveTheFit) {
  * bracket, the end's cost went infinite, and infinity passed for a cost that rose: the fit was taken
  * at the scale where that pair's matches ran out, with rotations tens of degrees out (a reviewer's
  * reproduction, round 1). Here the truth is outside the bracket, so the answer is the lens as given.
+ *
+ * The rows reach that answer two ways, and both are wanted. From -1.5 down, the edge pair keeps
+ * fewer than three matches with a direction at the short end, so there is no search at all. At
+ * -0.8 and -1.0 it keeps six: the search runs on those six at every scale, and it is the rise test
+ * that refuses a truth past its end — which is the path the round-1 defect was on, and which the
+ * first three rows never reached (a reviewer's instrumentation, round 2).
  */
 TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
   const std::vector<Quat> truth = Ring();
@@ -866,9 +902,23 @@ TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
   edgeOnly.inlierMatches = far;
   edgeOnly.inliers = static_cast<int32_t>(far.size());
 
-  for (const double k3 : {-1.5, -2.0, -3.0}) {
+  for (const double k3 : {-0.8, -1.0, -1.5, -2.0, -3.0}) {
     Intrinsics initial = Scaled(lens, 1.0 / 0.66);
     initial.k3 = k3;
+    // Which of the two ways the row takes, so a row that stopped reaching the search would say so.
+    const Intrinsics shortest = Scaled(initial, 0.7);
+    size_t kept = 0;
+    for (const PixelMatch& match : edgeOnly.inlierMatches) {
+      if (Unproject(shortest, Pixel{match.ax, match.ay}).valid &&
+          Unproject(shortest, Pixel{match.bx, match.by}).valid) {
+        ++kept;
+      }
+    }
+    if (k3 > -1.5) {
+      ASSERT_GE(kept, 3u) << k3;
+    } else {
+      ASSERT_LT(kept, 3u) << k3;
+    }
     const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(truth), initial);
     ASSERT_TRUE(solved.ok()) << k3 << ": " << solved.status.detail;
     EXPECT_FALSE(solved.value.lensFitted) << k3;
