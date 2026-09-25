@@ -105,10 +105,13 @@ class FeatureRegistrationEngine final : public IRegistrationEngine {
                                 const Intrinsics& initial) override;
 
  private:
-  // The whole of extraction, written as if exceptions did not exist — every failure it knows about
-  // is a `Result`. `ExtractFeatures` wraps it in the one `try` this component has, because OpenCV
-  // reports failures we do not know about by throwing (ADR 0047, ADR 0052).
+  // The whole of extraction, and of refinement, written as if exceptions did not exist — every
+  // failure they know about is a `Result`. `ExtractFeatures` and `Refine` wrap them in a `try`, as
+  // `EstimatePairwise` wraps its own body, because OpenCV reports failures we do not know about by
+  // throwing (ADR 0047, ADR 0052).
   Result<FeatureSet> Extract(const FrameRef& frame);
+  Result<GlobalSolution> Solve(std::span<const PairwiseResult> pairs,
+                               std::span<const FramePrior> priors, const Intrinsics& initial);
 
   IFrameStoreAccess& frames_;
   FeatureDetector detector_;

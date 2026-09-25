@@ -1389,6 +1389,23 @@ bool ClosesALoop(const std::vector<RelativeRotation>& edges, size_t frames) {
 Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult> pairs,
                                                         std::span<const FramePrior> priors,
                                                         const Intrinsics& initial) {
+  // The same boundary as `ExtractFeatures`', for the same reason: the focal search's Kabsch is
+  // `cv::SVD`. Nothing here is known to make it throw — a 3x3 of finite doubles meets everything it
+  // asserts — which is exactly the case the catch-all exists for.
+  try {
+    return Solve(pairs, priors, initial);
+  } catch (const cv::Exception& thrown) {
+    return Err<GlobalSolution>(StatusCode::Internal, kComponent,
+                               std::string("OpenCV refused during the focal fit: ") + thrown.what());
+  } catch (const std::exception& thrown) {
+    return Err<GlobalSolution>(StatusCode::Internal, kComponent,
+                               std::string("refinement failed: ") + thrown.what());
+  }
+}
+
+Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const PairwiseResult> pairs,
+                                                       std::span<const FramePrior> priors,
+                                                       const Intrinsics& initial) {
   if (priors.empty()) {
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "no priors, so no frames to solve for");

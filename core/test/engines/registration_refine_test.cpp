@@ -929,8 +929,9 @@ TEST_F(Refine, AScaleThatLosesMatchesIsNotAFit) {
 }
 
 /**
- * A match that loses its direction anywhere in the range searched means the fit is not taken, not
- * only one that loses it at the shortest focal length.
+ * A match that loses its direction at a scale the search tries means the fit is not taken, not only
+ * one that loses it at the shortest focal length. Not anywhere in the range: a window narrower than
+ * the search's steps, 0.7127 to 0.7155 in a reviewer's probe, goes unseen (round 3).
  *
  * Under tangential distortion the pixels `Unproject` accepts are not a star about the centre, so a
  * match with a direction at the short end can lose it partway along and regain it: one pixel of
