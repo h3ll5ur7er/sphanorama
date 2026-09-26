@@ -99,20 +99,25 @@ composite should look like.
 - **A refusal can hand something back.** When the store will not take the preview back, the
   refusal's value is the preview — released if `ResidencyOf` says it is still pinned, then forgotten
   — because nothing else can name it to the store again. And a frame handed in whose release the
-  store declines is left pinned and out of its tier, and the refusal names both: the frame by its
-  place in the solution and its id, since the caller may hold pins of its own on the others and
-  `ResidencyOf` cannot say whose a pin is, and the tier for the caller to put it back in. This is
-  the first `Result` in the core whose failure carries something to clean up, so the usual
-  `if (!r.ok()) return r.status;` leaks the preview on those paths, and `PanoramaBuildManager`,
-  when it calls this, has to look at the value. The alternative was to retry a declined release
-  inside the engine until it took, which makes the refusal rarer and never removes it — and the
-  first version's retry, run from a destructor, left frames half given back with a report that no
-  longer described them.
-- **A handle the store had not issued is refused, and it has to be asked after the answer is
-  allocated.** Ids are never reissued within a store, but a new store counts from 1 again, so a
-  handle from a session the store never adopted can name the id `Allocate` is about to give the
-  preview — and it would then be read as the preview itself, painted from its own bytes, and
-  answered `Ok`. Any other unissued id is the store's `NotFound` when its tier is asked.
+  store declines is left pinned, and out of its tier unless it was found pinned. The refusal's
+  detail names the frame by its place in the solution and its id, and the tier to put it back in,
+  but a detail is for a person and never parsed, so a program has to find the frame another way: it
+  asks each frame's tier before the call and holds no pins of its own on them during it, and the
+  frame left pinned is then the one `ResidencyOf` reports `HeapPinned` — a pin of the caller's own
+  would read the same, since `ResidencyOf` cannot say whose a pin is. Carrying the frame in the
+  value instead was not done because the value is the preview's on the paths that hand it back, and
+  one refusal can need both. This is the first `Result` in the core whose failure carries something
+  to clean up, so the usual `if (!r.ok()) return r.status;` leaks the preview on those paths, and
+  `PanoramaBuildManager`, when it calls this, has to look at the value. The alternative was to retry
+  a declined release inside the engine until it took, which makes the refusal rarer and never
+  removes it — and the first version's retry, run from a destructor, left frames half given back
+  with a report that no longer described them.
+- **A handle naming the id the preview is about to be given is refused, and it has to be asked
+  after the answer is allocated.** Ids are never reissued within a store, but a new store counts
+  from 1 again, so a handle from a session the store never adopted can name the id `Allocate` is
+  about to give the preview — and it would then be read as the preview itself, painted from its own
+  bytes, and answered `Ok`. Any other id the store does not hold is its `NotFound` when that
+  frame's tier is asked, and is not asked at all of a frame that colours nothing.
 - **No composition root selects it yet**, as with `Registration`: it is reached from tests, and
   `PanoramaBuildManager` still answers `Unsupported`.
 - The dataset renderer (`Rendered`) moved from `registration_accuracy_test.cpp` into

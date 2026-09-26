@@ -86,6 +86,12 @@ drift in `convention.pixel_encoding` reddens the Python side alone, and will go 
 computes on those pixels as signed components and checks the entry it relies on. A reviewer had to
 point that out; the paragraph above it had claimed the pair covered the format.
 
+`reference.ppm` is the one part of the format whose C++ reader has no detector among the loader
+tests. `LoadSyntheticReference` (ADR 0068) reads it, but its tests read a reference they wrote by
+hand, and the committed fixture has none. Its detector is the composition round trip, which renders
+through the generator at test time and reads the generator's own reference — and the gate and CI
+fail if that test skips or does not run.
+
 One kind of test is **not** a detector, and this paragraph has named two, in consecutive revisions,
 and was wrong about one of them.
 

@@ -491,6 +491,7 @@ TEST_F(NearestCentreComposition, AnAnswerOfAnotherShapeThanAskedIsRefusedAndForg
       {"a stride shorter than a row", [](FrameRef& f) { f.stride -= 4; }},
       {"another width", [](FrameRef& f) { f.width -= 2; }},
       {"another height", [](FrameRef& f) { f.height += 1; }},
+      {"another format", [](FrameRef& f) { f.format = PixelFormat::Gray8; }},
   };
   for (const auto& [lie, describe] : lies) {
     store.describeAllocated = describe;
@@ -855,6 +856,21 @@ TEST_F(NearestCentreComposition, AHandleNamingThePreviewIsRefused) {
   const int64_t before = real.Budget().value.heapUsedBytes;
   EXPECT_TRUE(RefusedSaying("the preview itself"));
   EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "the preview is forgotten";
+}
+
+// A frame its caller already held pinned was never out of its tier, so a declined release asks only
+// for this call's pin to be released: there is nothing to put back, and a demotion to `HeapPinned`
+// is one the store refuses.
+TEST_F(NearestCentreComposition, AFrameFoundPinnedWhoseReleaseIsDeclinedIsNotToBePutBack) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  ASSERT_TRUE(real.Pin(frames[0]).ok());
+  store.refuseRelease = PinCountingStore::Whose::HandedIn;
+  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
+  EXPECT_NE(refused.detail.find("declined to release"), std::string::npos) << refused.detail;
+  EXPECT_EQ(refused.detail.find("put back"), std::string::npos) << refused.detail;
+  EXPECT_TRUE(real.Release(frames[0]).ok()) << "this call's pin";
+  EXPECT_EQ(real.ResidencyOf(frames[0]).value, Residency::HeapPinned) << "the caller's, still";
+  EXPECT_TRUE(real.Release(frames[0]).ok()) << "and the caller's own";
 }
 
 // A declined release is not followed by a demotion nobody hears about: the frame is left exactly as

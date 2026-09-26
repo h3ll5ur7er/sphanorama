@@ -58,10 +58,16 @@ class Borrowed {
   Result<std::span<uint8_t>> Pin() { return store_.Pin(frame_); }
   Status GiveBack() {
     if (Status released = store_.Release(frame_); !released.ok()) {
+      // A frame found pinned was never out of its tier, and a demotion to `HeapPinned` is one the
+      // store refuses, so only the pin is the caller's to undo.
+      const std::string undo = before_.value == Residency::HeapPinned
+                                   ? "release, beside the pin it already held"
+                                   : std::string("release and put back in ") +
+                                         TierName(before_.value);
       return Fail(released.code, kComponent,
                   "the store declined to release " + name_ +
-                      ", which is still pinned by this call for its caller to release and put "
-                      "back in " + TierName(before_.value) + ": " + released.detail);
+                      ", which is still pinned by this call for its caller to " + undo + ": " +
+                      released.detail);
     }
     if (before_.value == Residency::HeapPinned) return Status::Ok();
     if (Status demoted = store_.Demote(frame_, before_.value); !demoted.ok()) {
@@ -218,9 +224,10 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   Result<std::span<uint8_t>> out = frames_.Pin(answer.value);
   if (!out.ok()) return abandon(out.status.code, out.status.detail, false);
   // The rows are written through the handle, and `Allocate` promises nothing about stride, so the
-  // handle is held to the bytes before anything is written through it.
+  // handle is held to the bytes — and to the format its caller will read them as — before anything
+  // is written through it.
   const FrameRef& drawn = answer.value;
-  if (drawn.width != width || drawn.height != height ||
+  if (drawn.format != PixelFormat::RGBA8 || drawn.width != width || drawn.height != height ||
       drawn.stride < static_cast<int64_t>(width) * kChannels ||
       drawn.stride > static_cast<int64_t>(out.value.size()) / height) {
     return abandon(StatusCode::Internal,

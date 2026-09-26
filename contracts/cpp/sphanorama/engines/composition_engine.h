@@ -51,22 +51,26 @@ class ICompositionEngine {
   // learnt by reading — its tier, its pin, its bytes — is asked of it.
   //
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size
-  // than the solution's lens, a handle naming an id the store had not issued when the call began —
-  // the id the answer is then given, which would otherwise be read as the answer — a handle whose
+  // than the solution's lens, a handle naming the id the answer is then given — one the store had
+  // not issued when the call began, which would otherwise be read as the answer — a handle whose
   // stride is shorter than its row or whose rows run past what the store holds for it, a lens that
   // cannot project when there is a frame to project, a rotation that is not one, gains that do not
   // name the frames or are not figures, 65,536 frames or more, and a `maxWidth` under 2;
   // `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes as
-  // another shape than was asked; the store's own status when it cannot say a frame's tier, pin it,
-  // release it or put it back, or allocate the answer.
+  // another format or shape than was asked; the store's own status when it cannot say a frame's
+  // tier, pin it, release it or put it back, or allocate the answer — which for any other id the
+  // store does not hold is its `NotFound`, where that frame is read.
   //
   // A refusal gives the answer back, and its value names no frame. When the store will not take
   // the answer back, the refusal says so and its value is the answer, for the caller to release if
   // `ResidencyOf` says it is still `HeapPinned`, and then to forget — nothing else can name it to
   // the store. So a caller that returns a refusal's status without looking at its value leaks it.
-  // A frame handed in that the store would not release is left pinned by this call, as the refusal
-  // says, and out of its tier: the refusal names the frame, by its place in the solution and its
-  // id, and the tier it was found in, for the caller to release it and put it back.
+  // A frame handed in that the store would not release is left pinned by this call, and out of its
+  // tier unless it was found pinned. The refusal's detail names the frame, by its place in the
+  // solution and its id, and the tier to put it back in — for a person reading it, since a detail
+  // is never parsed. A caller that means to recover by program asks each frame's tier before the
+  // call and holds no pins of its own on them during it: the frame left pinned is then the one
+  // `ResidencyOf` reports `HeapPinned`, to be released and put back in the tier it had.
   virtual Result<FrameRef> RenderPreview(const GlobalSolution&, std::span<const FrameRef> frames,
                                          const GainMap&, int32_t maxWidth) = 0;
 };
