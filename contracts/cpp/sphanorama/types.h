@@ -733,12 +733,16 @@ struct GlobalSolution {
   // them keeps fewer than three matches with a direction at the shortest focal length searched; any
   // trial of the search could not be scored on those matches; the cost does not rise on both sides
   // of its least, as at an end of the range or with no least at all; or the least's standard
-  // deviation, from the pairs' own residuals, is over two tenths of a percent, and the lens handed
-  // in is not four of those standard deviations from it either.
+  // deviation, from the pairs' own residuals read no finer than half a pixel, is over two tenths of
+  // a percent — however far the
+  // least lies from the lens handed in, since that deviation is the pairs' noise and not a wrong
+  // lens model, which moves a weak loop's least by more.
   bool lensFitted = false;
   // That standard deviation: how far the focal length's least could be from where it is, in its
   // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
-  // on it (ADR 0066). Reported wherever the search reached a least — the cost rising on both sides
+  // on it, read no finer than half a pixel (ADR 0066). The pairs' noise alone: a lens model a little wrong — an unreported
+  // distortion — moves the least by more, and a fit absorbs it into a focal length a little off.
+  // Reported wherever the search reached a least — the cost rising on both sides
   // of it — taken or not, so a caller can weigh a fitted lens against others and see how near a
   // refused one came; infinite where it did not: no loop, too few matches, a trial not scored, or a
   // least at an end of the range. Loops that cannot see the focal length leave a cost flat but for

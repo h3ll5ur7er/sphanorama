@@ -615,18 +615,32 @@ std::vector<PairwiseResult> MatchedRing(const std::vector<Quat>& truth, const In
  * under a pinhole a turn moves a pixel by the tangent of its angle, not by the angle, so refitted
  * under the wrong focal length a thirty-degree pair and a sixty-degree one are not scaled alike
  * — 2 x 32.324 against 64.220 in a reviewer's rebuild — and the triangle stops closing. Not by
- * tilting: the refitted axes stay exactly vertical. How well a triangle fits it with real matches
- * is a different question, and the accuracy test is where it is asked.
+ * tilting: the refitted axes stay exactly vertical. A lone triangle sees the focal length only that
+ * faintly, though, and read through a lens model good to half a pixel it is not precise enough to
+ * take (`ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn`); a grid of such loops, none wrapping,
+ * is.
  */
 TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
   const std::vector<Quat> truth = Ring();
   const Intrinsics lens = TrueLens();
   const std::vector<PairwiseResult> ring = MatchedRing(truth, lens);
   for (const PairwiseResult& pair : ring) ASSERT_GE(pair.inlierMatches.size(), 20u);
-  // The triangle's closing pair spans sixty degrees and overlaps least; `Refine` refits from three.
-  const std::vector<PairwiseResult> triangle{Matched(0, 1, truth, lens), Matched(1, 2, truth, lens),
-                                             Matched(2, 0, truth, lens)};
-  for (const PairwiseResult& pair : triangle) ASSERT_GE(pair.inlierMatches.size(), 8u);
+  // Two rows of four, thirty degrees apart each way: four loops, and none of them wraps.
+  std::vector<Quat> grid;
+  for (int row = 0; row < 2; ++row) {
+    for (int column = 0; column < 4; ++column) {
+      grid.push_back(Normalize(Multiply(AboutY(30.0 * column), AboutX(-30.0 * row))));
+    }
+  }
+  std::vector<PairwiseResult> gridPairs;
+  for (int row = 0; row < 2; ++row) {
+    for (int column = 0; column < 3; ++column) {
+      gridPairs.push_back(Matched(row * 4 + column, row * 4 + column + 1, grid, lens));
+    }
+  }
+  for (int column = 0; column < 4; ++column) {
+    gridPairs.push_back(Matched(column, 4 + column, grid, lens));
+  }
 
   std::vector<Quat> tumbling;
   for (int i = 0; i < kFrames; ++i) tumbling.push_back(AboutX(360.0 * i / kFrames));
@@ -657,7 +671,7 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     Intrinsics lens;
     int placed;
   } shapes[] = {{ring, truth, lens, kFrames},
-                {triangle, truth, lens, 3},
+                {gridPairs, grid, lens, 8},
                 {pitched, tumbling, tall, kFrames},
                 {distorted, truth, barrel, kFrames},
                 {three, truth, lens, kFrames}};
@@ -685,7 +699,7 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_EQ(solution.intrinsics.height, initial.height);
     EXPECT_EQ(solution.intrinsics.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs);
 
-    // Scored over the frames the pairs place; the rest of a triangle's ring rests on its priors.
+    // Scored over the frames the pairs place.
     const std::vector<Quat> placedTruth(truth.begin(), truth.begin() + placed);
     const std::vector<Quat> placedSolved(solution.rotations.begin(),
                                          solution.rotations.begin() + placed);
@@ -981,6 +995,9 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
     const Result<GlobalSolution> twice = engine_.Refine(pairs, PriorsOut(shapes.grid), lens);
     ASSERT_TRUE(twice.ok()) << twice.status.detail;
     EXPECT_FALSE(twice.value.lensFitted) << "seed " << seed;
+    // And no looser either: the same noise, measured twice, is exactly as precise as measured once
+    // — within 0.03% in every seed.
+    EXPECT_NEAR(twice.value.focalSpread / once.value.focalSpread, 1.0, 0.01) << "seed " << seed;
   }
 }
 
@@ -988,9 +1005,10 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
  * The spread `Refine` reports is the scatter the least actually has, and a measured figure.
  *
  * Two halves, because each catches what the other cannot. Over twenty seeds of each fitted shape,
- * the least's error in reported spreads has a root mean square near one — 0.86 over these eighty
- * fits, the grid's at 1.07 and the rest's 0.73 to 0.80, and 0.83 to 0.95 each over two hundred
- * seeds — so a spread wrong by half or double is caught. But a band that wide passes a spread 10 or 20% off, and the parts it is built from each
+ * the least's error in reported spreads has a root mean square near one — 0.88 over these sixty
+ * fits, the grid's at 1.07, the ring's 0.80 and the uneven ring's 0.73, and 0.83 to 0.95 each over
+ * two hundred seeds — so a spread wrong by half or double is caught. The skipping ring is refused,
+ * too rough to take, and its spread is held all the same. But a band that wide passes a spread 10 or 20% off, and the parts it is built from each
  * move it by that much: three coordinates a match rather than two moved the grid's 19%, a pair's
  * information gathered in its first frame rather than its second 11%, its error vector in the
  * other frame 11%, and the pairs' weights dropped moved the skipping ring's 9% (round 5). So one
@@ -1019,8 +1037,8 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
     const char* why;
   } rows[] = {{shapes.ring, shapes.truth, 0.8, 1.0, true, 0.00013976, "a ring"},
               {shapes.gridPairs, shapes.grid, 0.8, 1.0, true, 0.00146026, "a grid"},
-              {shapes.skipping, shapes.truth, 0.8, 1.08, true, 0.00896840,
-               "a skipping ring, refuting a lens 8% out"},
+              {shapes.skipping, shapes.truth, 0.8, 1.08, false, 0.00896840,
+               "a skipping ring handed a lens 8% out, too rough to take"},
               {uneven, shapes.truth, 0.8, 1.0, true, 0.00081659, "a ring of uneven pairs"},
               {shapes.gridPairs, shapes.grid, 1.25, 1.0, false, 0.00228224,
                "a grid too noisy to take"}};
@@ -1046,7 +1064,7 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
       }
     }
   }
-  ASSERT_EQ(fitted, 80);
+  ASSERT_EQ(fitted, 60);
   const double rms = std::sqrt(squares / fitted);
   EXPECT_GT(rms, 0.6);
   EXPECT_LT(rms, 1.15);
@@ -1059,24 +1077,65 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
 }
 
 /**
- * A loop that sees the focal length only roughly still corrects a lens it shows to be wrong.
+ * A loop that sees the focal length only roughly does not override the lens it is handed, however
+ * far from it its least lies — not the right one, and not one 8% out.
  *
- * Refusing is not free: the answer then falls back to the lens handed in, and on a phone that is a
- * guess nobody has measured. The skipping ring's fit is good to about a percent, which is too loose
- * to take over the right lens and far better than a lens 8% out — which it puts seven to eleven of
- * its own spreads from the least. So it is taken, both ways, and lands within a few percent.
+ * The least's spread is the pairs' noise and nothing else, and a lens model a little wrong moves a
+ * weak loop's least by more: such a loop reads the focal length through the curve of the tangent,
+ * and reads distortion through the same curve. Handed the right focal length with an unreported k1
+ * of -0.01 — 2.6 px at the corner, less than a phone's ISP leaves — the skipping ring and the
+ * triangle put their least ten of their own spreads from it, 1.6 to 2.5% out, and a rule that took
+ * a least that far from the lens handed in as refuting it fitted there, the rotations seven times
+ * worse (round 6). So the lens handed in stands, right or 8% out; correcting a lens a weak loop
+ * cannot see precisely is for a capture with the loops to do it, or for the lens a device keeps.
  */
-TEST_F(Refine, ALensTheLoopsRefuteIsFittedEvenRoughly) {
+TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
+  // Distorted as a phone's residual might be, and handed in without it.
+  for (const double k1 : {-0.01, -0.03}) {
+    Intrinsics distorted = lens;
+    distorted.k1 = k1;
+    const std::vector<PairwiseResult> skipping = [&] {
+      std::vector<PairwiseResult> ring = MatchedRing(shapes.truth, distorted);
+      ring.pop_back();
+      ring.push_back(Matched(0, 2, shapes.truth, distorted));
+      return ring;
+    }();
+    const std::vector<PairwiseResult> triangle{Matched(0, 1, shapes.truth, distorted),
+                                               Matched(1, 2, shapes.truth, distorted),
+                                               Matched(2, 0, shapes.truth, distorted)};
+    for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
+      for (const auto& pairs : {skipping, triangle}) {
+        const std::vector<PairwiseResult> noisy = seed == 0 ? pairs : test::WithNoise(pairs, 0.8, seed);
+        const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
+        ASSERT_TRUE(solved.ok()) << solved.status.detail;
+        EXPECT_FALSE(solved.value.lensFitted) << k1 << ", seed " << seed;
+        EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << k1 << ", seed " << seed;
+      }
+    }
+  }
+  // A ring has the loops to absorb the same distortion into a focal length a little off and keep its
+  // rotations right, and is fitted: 0.24% short, the rotations within a hundredth of a degree.
+  Intrinsics distorted = lens;
+  distorted.k1 = -0.01;
+  const Result<GlobalSolution> ring =
+      engine_.Refine(MatchedRing(shapes.truth, distorted), PriorsOut(shapes.truth), lens);
+  ASSERT_TRUE(ring.ok()) << ring.status.detail;
+  EXPECT_TRUE(ring.value.lensFitted);
+  EXPECT_NEAR(ring.value.intrinsics.fx / lens.fx, 1.0, 0.005);
+  const test::RotationScore absorbed = test::ScoreRotations(ring.value.rotations, shapes.truth);
+  ASSERT_TRUE(absorbed.valid);
+  EXPECT_LT(absorbed.maxDeg, 0.01);
+
+  // And a lens 8% out stands too: 400 seeds of the skipping ring passed it through.
   for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
     for (const double scale : {0.92, 1.08}) {
       const Result<GlobalSolution> solved = engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed),
                                                            PriorsOut(shapes.truth), Scaled(lens, scale));
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
-      EXPECT_TRUE(solved.value.lensFitted) << scale << ", seed " << seed;
-      // 2.5% in the worst of four hundred, every one of them fitted.
-      EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 0.04) << scale << ", seed " << seed;
+      EXPECT_FALSE(solved.value.lensFitted) << scale << ", seed " << seed;
+      EXPECT_EQ(solved.value.intrinsics.fx, Scaled(lens, scale).fx) << scale << ", seed " << seed;
     }
   }
 }
@@ -1268,6 +1327,8 @@ TEST_F(Refine, ATrialTheRiseTestAddsIsScoredLikeTheRest) {
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   EXPECT_FALSE(solved.value.lensFitted);
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+  // A trial not scored reaches no least to report a spread for.
+  EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
 }
 
 /**
@@ -1318,6 +1379,8 @@ TEST_F(Refine, AMatchThatLosesItsDirectionMidRangeIsNotAFit) {
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   EXPECT_FALSE(solved.value.lensFitted);
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+  // A trial not scored reaches no least to report a spread for.
+  EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
 }
 
 // The lens `AMatchThatLosesItsDirectionMidRangeIsNotAFit` is handed, whose tangential terms make
@@ -1380,6 +1443,8 @@ TEST_F(Refine, ATrialTheSearchMakesFarFromTheLeastCounts) {
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   EXPECT_FALSE(solved.value.lensFitted);
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+  // A trial not scored reaches no least to report a spread for.
+  EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
 }
 
 /**
@@ -1406,6 +1471,8 @@ TEST_F(Refine, TheRiseTestsLongerTrialCountsToo) {
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   EXPECT_FALSE(solved.value.lensFitted);
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
+  // A trial not scored reaches no least to report a spread for.
+  EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
 }
 
 }  // namespace

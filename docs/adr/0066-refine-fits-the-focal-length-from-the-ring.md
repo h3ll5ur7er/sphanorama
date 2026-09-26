@@ -77,18 +77,34 @@ closes. Three things follow.
    its direction partway along put a fit 3.2% out, the golden section settling at the edge of the
    window it could not score (a reviewer's reproduction, round 2).
 
-   **And it takes the result only where the least is precise, or refutes the lens handed in.** The
+   **And it takes the result only where the least is precise.** The
    precision is estimated from what the least cannot move: each pair's own residual after its
    Kabsch fit (two coordinates a match, three spent on the rotation), never taken below the pairs'
    pooled one, carried through each pair's information about its own rotation — a pair measures
    rotation about its viewing axis far less well than across it — and weighed against how each
    edge's error moves with the scale, read from two trials half a percent either side of the least.
-   A pair measured twice counts once, its two copies sharing one noise. That gives the least's
-   standard deviation in log focal scale. The fit is taken when it is within two tenths of a
-   percent, about a twentieth of a degree of ORB's median; or when the lens handed in lies four of
-   them or more from the least, since then the data refute the lens a refusal would fall back to,
-   and a fit a percent out is nearer than it. The cost must also rise on both sides of the least,
-   which refuses a least at an end of the bracket, where the cost past it falls.
+   A pair measured twice counts once, its two copies sharing one noise, and no match is read as
+   agreeing to better than half a pixel, since the lens model it is read through is not good to
+   better. That gives the least's standard deviation in log focal scale. The fit is taken when it
+   is within two tenths of a percent, about a twentieth of a degree of ORB's median, and not
+   otherwise. The cost must also rise on both sides of the least, which refuses a least at an end of
+   the bracket, where the cost past it falls.
+
+   **Not however far the least lies from the lens handed in.** This rule once also took an
+   imprecise least that lay four of its spreads or more from the lens handed in, as refuting the lens
+   a refusal would fall back to. But the spread is the pairs' noise and nothing else, and a lens model
+   a little wrong moves a weak loop's least by more: such a loop reads the focal length through the
+   curve of the tangent and reads distortion through the same curve. Handed the right focal length
+   with an unreported k1 of -0.01, 2.6 px at the corner, the skipping ring and the triangle put their
+   least ten of their own spreads away, 1.6 to 2.5% out, and were fitted there, the rotations seven
+   times worse; at -0.03, 5.8 to 7.1% out (a reviewer's probe, round 6). The same distortion with
+   exact matches read the skipping ring's own residuals as precise to 0.16% and fitted it 1.6% out,
+   which is why the half-pixel floor exists: with it the ring reads 0.45%. A precise shape moves
+   too — the twelve-frame ring absorbs k1 of -0.01 into a focal length 0.24% short, -0.03 into 0.72%
+   — but keeps its rotations within a hundredth of a degree, because its loops make the lens it fits
+   consistent. So a weak loop leaves the lens handed in alone, right or 8% out, and correcting a
+   lens it cannot see precisely is for a capture with the loops to do it, or for a lens a device
+   keeps.
 
    Measured over two hundred seeds of noise at 0.4, 0.8 and 2 px on four shapes, and on the
    skipping ring with one pair thinned to fifteen matches at five times the noise, the least's error
@@ -97,11 +113,11 @@ closes. Three things follow.
    a two-by-four grid 0.07 to 0.38%, a triangle or a ring whose one loop skips a frame 0.39 to 2.8%,
    and the photograph ring's pairs — every detector, up to 1.5 px of noise added to them — 0.005 to
    0.14%. Handed the right lens, 800 noisy runs of the skipping ring and the triangle were all
-   passed through and 200 of the grid at 0.8 px all fitted, the worst 0.39% out; handed a lens 8%
-   out, 400 of the skipping ring were all fitted, the worst 2.5% out. The first version pooled the
+   passed through and 200 of the grid at 0.8 px all fitted, the worst 0.39% out. The first version pooled the
    pairs' residuals outright, which is exact only where every edge's error moves alike with the
    scale; the solve puts a loop's misfit on its lightest edge, so a thin pair's noise counts for most
-   where a pool dilutes it, and one such pair put the skipping ring 12.8% out through refutation in
+   where a pool dilutes it, and one such pair put the skipping ring 12.8% out, through the
+   refutation since retired, in
    four seeds of two hundred. It also counted a pair measured both ways twice, reading the spread
    √2 tight (round 5).
 
@@ -117,12 +133,12 @@ closes. Three things follow.
    independent of the error that moved the least: it varied 140-fold across ten seeds while the
    least moved a quarter of a percent. Judging by it selects nothing.
    Where any of these fails — no loop among placed frames, a pair left with fewer than three
-   matches, a trial not scored, no rise on both sides, neither precise nor refuting — `initial`
+   matches, a trial not scored, no rise on both sides, not precise — `initial`
    comes back as given, every field of it. The loop check is not implied by the others: with it
    removed, an open eleven-pair chain was fitted to 502.7 of 500, because the priors — three degrees
    out, at a hundredth of an inlier each — pull hard enough to give the cost a minimum of their own,
-   and it sits where their error puts it; that least rises on both sides and lies ten or more of its
-   own spreads from the lens handed in, so the precision rule takes it. The bracket is 0.7 to 1.4 times the
+   and it sits where their error puts it; that least rises on both sides and the precision rule
+   does not refuse it either. The bracket is 0.7 to 1.4 times the
    focal length handed in, which is chosen rather than measured; what was measured is that every
    pair of the photograph ring is still accepted at 10% out.
 
@@ -132,10 +148,11 @@ closes. Three things follow.
    of 500, on exact matches: under a pinhole a turn moves a pixel by the tangent of its angle, not
    the angle, so under the wrong focal length a thirty-degree pair and a sixty-degree one are not
    scaled alike and the triangle stops closing. The first version of this paragraph said the pairs
-   tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. With exact
-   matches a triangle is fitted; with 0.4 px of noise it is not, being precise only to 0.39% or
-   worse — seeing the focal length and seeing it through the noise are different questions, and the
-   second is the one a capture asks.
+   tilted; a reviewer's independent rebuild showed their axes stay exactly vertical. Its least is
+   right, but a lone triangle is precise only to 0.39% or worse at 0.4 px of noise, and to 0.44%
+   read at the half-pixel floor, so it is not taken — seeing the focal length and seeing it
+   precisely are different questions, and the second is the one a capture asks. A grid of such
+   loops, none wrapping, reads 0.07% and is.
 
 4. **`GlobalSolution::lensFitted` says which happened.** Not `Intrinsics::estimated`, which the
    first version of this decision used: that field says whether a lens was ever estimated, and a lens

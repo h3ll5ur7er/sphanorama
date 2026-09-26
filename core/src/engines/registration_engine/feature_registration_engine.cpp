@@ -1308,11 +1308,22 @@ constexpr double kFocalScaleTolerance = 1e-4;
 // added to them.
 //
 // Taken when that spread is within `kFocalPrecision` — two tenths of a percent, about a twentieth of
-// a degree of ORB's median — or when the lens handed in is at least `kHandedIsRefuted` spreads from
-// the least, since then the data refute the lens the answer would otherwise fall back to, and a fit
-// a percent out is still nearer than it.
+// a degree of ORB's median — and not otherwise, however far the least lies from the lens handed in.
+// The spread is the pairs' noise and nothing else: a lens model a little wrong moves the least by
+// more than it, and moves a weak loop's furthest, since a loop that reads the focal length through
+// the tangent's curve reads distortion through the same curve. Handed the right focal length with
+// an unreported k1 of -0.01, a ring whose one loop skips a frame put its least ten of its own
+// spreads away, 1.6 to 2.5% out, and a rule that took a least far enough from the lens handed in as
+// a refutation of it fitted there, the rotations seven times worse (round 6). A precise least moves
+// too — the twelve-frame ring's absorbs the distortion into a focal length a little off — but its
+// rotations stay right, because it has the loops to make the lens it fits consistent.
 constexpr double kFocalPrecision = 0.002;
-constexpr double kHandedIsRefuted = 4.0;
+// And the noise is never read as less than a match agreeing to half a pixel, since the lens model it
+// is read through is not good to better. With exact matches and that k1 of -0.01, the skipping ring's
+// own residuals put its least at 0.16%, under the threshold, 1.6% out; with this floor it reads 0.45%
+// and is refused, while the grid reads 0.07% and a ring 0.007%, and noise above the floor — ORB's
+// 0.8 px, the calibration's 0.4 — reads as it did.
+constexpr double kLensModelPx = 0.5;
 // The step either side of the least that the precision is measured across: wide enough that the
 // solver's stopping rule is small beside the change it makes, narrow enough that the cost is still
 // the parabola it is near the least.
@@ -1420,7 +1431,7 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
 // about its rotation, is how far that point wanders. Infinite where the errors do not move at all,
 // which is a cost with no least.
 //
-// **Each pair's own noise**, not the pairs' pooled: the solve pushes a loop's misfit onto its
+// **Each pair's own noise**, not the pairs' pooled, and not below `floorDeg2`: the solve pushes a loop's misfit onto its
 // lightest edge, so a thin pair's noise counts for most exactly where a pool of the rest would
 // dilute it — one pair of fifteen matches at five times the others' noise put the skipping ring 12.8%
 // out, fitted through refutation (round 5). Never below the pool, though: three matches leave a
@@ -1428,10 +1439,11 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
 //
 // **And a pair measured twice counts once**: the two share their correspondences, so their noise is
 // one noise, and summing it as two independent ones read the spread √2 tight (round 5). Each edge's
-// term is scaled by how many scored edges join its two frames, which is exact where they are copies.
+// term is scaled by how many scored edges join its two frames, which is exact where they are copies
+// and reads √2 wide where two measurements of one pair happen to be independent — the safe side.
 double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
                         const FocalTrial& longer, const std::vector<RelativeRotation>& edges,
-                        const std::vector<ScoredEdge>& scored) {
+                        const std::vector<ScoredEdge>& scored, double floorDeg2) {
   std::map<std::pair<int32_t, int32_t>, int> measured;
   for (const ScoredEdge& at : scored) {
     ++measured[std::minmax(edges[at.edge].from, edges[at.edge].to)];
@@ -1442,7 +1454,7 @@ double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
     const RelativeRotation& edge = edges[scored[e].edge];
     const double weight = edge.weight;
     const double variance =
-        std::max(best.residualsDeg2.at(e), best.residualDeg2) *
+        std::max({best.residualsDeg2.at(e), best.residualDeg2, floorDeg2}) *
         static_cast<double>(measured[std::minmax(edge.from, edge.to)]);
     // Checked access: a trial that was not scored stopped before it had an error for every edge,
     // and is refused before this is reached; reaching it anyway is `Internal`, not a stray read.
@@ -1694,15 +1706,16 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const FocalTrial shorter = trial(bestLog - kPrecisionStep);
     const FocalTrial longer = trial(bestLog + kPrecisionStep);
     // A least with the cost rising on both sides, not one at an end of the bracket with the cost
-    // past it lower still; and precise, or far enough from the lens handed in to refute it.
+    // past it lower still; and precise.
     const bool least = shorter.costDeg2 > best.costDeg2 && longer.costDeg2 > best.costDeg2;
+    const double floorDeg = kLensModelPx / (initial.fx * bestScale) * 180.0 / std::numbers::pi;
     const double spread =
-        everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored)
+        everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored, floorDeg * floorDeg)
                          : std::numeric_limits<double>::infinity();
     // A least at an end of the bracket is no least, however sharply the cost falls toward it.
     solution.focalSpread = least ? spread : std::numeric_limits<double>::infinity();
     if (everyTrialScored && least &&
-        (spread <= kFocalPrecision || std::abs(bestLog) >= kHandedIsRefuted * spread)) {
+        spread <= kFocalPrecision) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;
       solution.intrinsics.fy *= bestScale;
