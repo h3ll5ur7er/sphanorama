@@ -234,7 +234,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   time and the focal length in pixels, and the engine is handed neither. It reports zero and the
   header says so, because a number invented from what it does have would rank frames by a
   fiction. Both inputs exist elsewhere — the camera port could report exposure time, and Phase 2's
-  `Refine` now fits a real focal length (ADR 0066), though only after the capture — so this waits
+  `Refine` now fits a real focal length where the capture's loops see it (ADR 0066), though only
+  after the capture — so this waits
   on one of them rather than on an idea.
 - `IFrameStoreAccess` with the tiered residency and OPFS spill; memory-budget probe.
 - Review Client v1: the sphere coverage map and per-cell candidate strip are **done**, a pick is

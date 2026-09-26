@@ -1311,20 +1311,31 @@ constexpr double kFocalScaleTolerance = 1e-4;
 // tenths of a percent, about a twentieth of a degree of ORB's median — and not otherwise, however far
 // the least lies from the lens handed in.
 constexpr double kFocalPrecision = 0.002;
-// **And no lens model is trusted to better than half a pixel at the frame's corner.** The spread is
-// the pairs' noise, and a lens model a little wrong moves the least as well — by the same on every
-// match and every loop, so no number of either averages it away. So the lens is misread on purpose:
-// its k1 moved until the furthest corner lands this far out, every pair refitted under that at the
-// least, and the change in the edges' errors projected on how they move with the scale. A ring and a
-// grid read 0.046 and 0.044%, and a real distortion that size moves their least by that within 2%.
-// A weak loop reads the focal length through the tangent's curve and distortion through the same
-// curve, and reads 0.27 to 0.33%: a triangle, a ring whose loop skips a frame, and a ring open at one
-// pair with a chord across every other frame — whose noise alone reads 0.15% at 0.4 px, and which a
-// floor on each match's noise, this constant's first use, fitted 1.8% out under a k1 of -0.01, its
-// rotations six times worse, because a floor per match shrinks as the matches and loops grow
-// (round 7). A ring's least moves too, a k1 of -0.01 taking it 0.24% short, but its rotations stay
-// within a hundredth of a degree: it has the loops to make the lens it fits consistent.
-constexpr double kLensModelPx = 0.5;
+// **And no lens model is trusted to better than a thousandth of the focal length at the frame's
+// corner** — half a pixel on the 640 x 480 frames the tests use, a pixel at the 1280 the page grabs.
+// Chosen, not measured: what a phone's ISP leaves is not measured here. A fraction of the focal
+// length rather than a count of pixels, because a lens's distortion does not change with the size of
+// the frame it is read into; counted in pixels it halved at 1280, and the chords below were fitted
+// 1.6% out again (round 8). The spread is the pairs' noise, and a lens model a little wrong moves the
+// least as well — by the same on every match and every loop, so no number of either averages it
+// away. So the lens is misread on purpose: its k1 moved until the furthest corner lands this far out,
+// every pair refitted under that at the least, and the change in the edges' errors projected on how
+// they move with the scale. A ring and a grid read 0.046 and 0.044%, and a real distortion that size
+// moves their least by that within 4%. A weak loop reads the focal length through the tangent's curve
+// and distortion through the same curve, and reads 0.27 to 0.33%: a triangle, a ring whose loop
+// skips a frame, and a ring open at one pair with a chord across every other frame — whose noise
+// alone reads 0.15% at 0.4 px, and which a floor on each match's noise, this constant's first use,
+// fitted 1.8% out under a k1 of -0.01, its rotations six times worse, because a floor per match
+// shrinks as the matches and loops grow (round 7). A ring's least moves too, a k1 of -0.01 taking it
+// 0.24% short, but its rotations stay within a hundredth of a degree: it has the loops to make the
+// lens it fits consistent.
+//
+// A k1 is one shape of radial error. Others of the same size move the least by other amounts: a k2
+// or a k3 that moves the corner as far, a half to a quarter as much; a mustache that peaks at this
+// size inside the frame and is zero at the corner, two and a half to three times as much, on shapes
+// that read 0.05% and fit their rotations regardless (a reviewer's probe, round 8). So the figure is
+// a scale that separates weak loops from strong ones — six to one — not a bound on every lens error.
+constexpr double kLensModel = 1e-3;
 // The step either side of the least that the precision is measured across: wide enough that the
 // solver's stopping rule is small beside the change it makes, narrow enough that the cost is still
 // the parabola it is near the least.
@@ -1729,22 +1740,28 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const double bestScale = std::exp(bestLog);
     const FocalTrial shorter = trial(bestLog - kPrecisionStep, initial);
     const FocalTrial longer = trial(bestLog + kPrecisionStep, initial);
-    // The lens misread by half a pixel at the frame's furthest corner, as a radial distortion it
-    // does not carry: outward, which moves a barrel lens's fold further out rather than in.
-    const double focal = initial.fx * bestScale;
-    const double cornerX = std::max(initial.cx, initial.width - initial.cx) / focal;
-    const double cornerY = std::max(initial.cy, initial.height - initial.cy) / (initial.fy * bestScale);
-    const double corner = std::hypot(cornerX, cornerY);
-    Intrinsics misreadLens = initial;
-    misreadLens.k1 += kLensModelPx / (focal * corner * corner * corner);
-    const FocalTrial misread = trial(bestLog, misreadLens);
+    // The lens misread at the frame's furthest corner, as a radial distortion it does not carry:
+    // outward, which moves a barrel lens's fold further out rather than in. At the corner's
+    // undistorted radius, which is the one the added k1 acts on. A lens that gives its own corner no
+    // direction is not one this can misread, and is not fitted.
+    const Intrinsics found = ScaledLens(initial, bestScale);
+    const UnprojectedDirection far = Unproject(
+        found, Pixel{found.cx < found.width - found.cx ? static_cast<double>(found.width) : 0.0,
+                     found.cy < found.height - found.cy ? static_cast<double>(found.height) : 0.0});
+    FocalTrial misread;
+    if (far.valid) {
+      const double corner = std::hypot(far.direction.x, far.direction.y) / far.direction.z;
+      Intrinsics misreadLens = initial;
+      misreadLens.k1 += kLensModel / (corner * corner * corner);
+      misread = trial(bestLog, misreadLens);
+    }
     // A least with the cost rising on both sides, not one at an end of the bracket with the cost
     // past it lower still; and precise.
     const bool least = shorter.costDeg2 > best.costDeg2 && longer.costDeg2 > best.costDeg2;
     const double none = std::numeric_limits<double>::infinity();
     const double spread =
         everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored) : none;
-    const double shift = everyTrialScored
+    const double shift = everyTrialScored && far.valid
                              ? FocalScaleShift(best, misread, shorter, longer, edges, scored)
                              : none;
     // A least at an end of the bracket is no least, however sharply the cost falls toward it.

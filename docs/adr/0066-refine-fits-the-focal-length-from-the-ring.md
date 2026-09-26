@@ -87,7 +87,10 @@ closes. Three things follow.
 
    Precise means two errors, combined as independent ones, within two tenths of a percent of focal
    length — about a twentieth of a degree of ORB's median: how far the pairs' noise could have moved
-   the least, and how far a lens model half a pixel wrong does.
+   the least, and how far a lens model a thousandth of the focal length wrong at the frame's corner
+   does. Independent, because the second is a scale for a lens error of unknown size and sign, not a
+   bias of known size, and is read as one standard deviation of it. Summing them instead would also
+   refuse the uneven ring at 1.5 px, 0.17% and 0.09% (round 8).
 
    The first is estimated from what the least cannot move: each pair's own residual after its
    Kabsch fit (two coordinates a match, three spent on the rotation), never taken below the pairs'
@@ -105,16 +108,29 @@ closes. Three things follow.
    photograph ring's pairs — every detector, up to 1.5 px of noise added — 0.005 to 0.14%.
 
    The second is measured by misreading the lens: its k1 moved until the frame's furthest corner
-   lands half a pixel out, every pair refitted under that at the least — one solve more — and the
+   lands a thousandth of the focal length out, every pair refitted under that at the least — one
+   solve more — and the
    change in each edge's error projected on how the errors move with the scale. It is not noise. An
    unreported distortion is the same on every match and every loop, so no number of either averages
    it away, and a weak loop reads it through the same curve of the tangent it reads the focal length
    through. The ring and the grid read 0.046% and 0.044%, and a real distortion that size moves
-   their least by that within 2%; the photograph ring 0.034 to 0.047%; a triangle, a ring whose loop
+   their least by that within 4%, at 640 x 480 or twice that, and on a lens handed in with barrel
+   distortion; the photograph ring 0.034 to 0.047%; a triangle, a ring whose loop
    skips a frame, and a ring open at one pair with a chord across every other frame 0.27 to 0.33%.
    The ring's least moves and its rotations do not: it absorbs a k1 of -0.01 — 2.6 px at the corner
    — into a focal length 0.24% short, and -0.03 into 0.72%, with its rotations within a hundredth of
-   a degree, because its loops make the lens it fits consistent. Radial only; see Consequences.
+   a degree, because its loops make the lens it fits consistent. Radial only, and a k1 only; see
+   Consequences.
+
+   **A fraction of the focal length, not a count of pixels.** A thousandth of it is half a pixel on
+   the 640 x 480 frames every test uses, and that is how it was first written: half a pixel. But a
+   lens's distortion does not change with the size of the frame it is read into, and a misreading
+   counted in pixels halves at the 1280 x 960 the page grabs at. There the chords shape read 0.15%
+   and was fitted 1.6% out under a k1 of -0.01, round 7's failure back (round 8). The thousandth is
+   chosen, not measured: what a phone's ISP leaves is not measured here. It is read at the corner's
+   undistorted radius, the one the added k1 acts on; read at the pixel's, it was a quarter too small
+   on a barrel lens and a quarter too large on a pincushion one (round 8). A lens that gives its own
+   corner no direction cannot be misread there, and is not fitted.
 
    **Not however far the least lies from the lens handed in.** A least many of its own spreads from
    the lens handed in looks like evidence that lens is wrong, and a weak loop under a lens model a
@@ -157,6 +173,9 @@ closes. Three things follow.
      grew, and a lens model's error does not. The ring open at one pair with ten chords read 0.15 to
      0.17% through it at 0.4 px and was fitted 1.8% out under the same k1, its rotations six times
      worse. The floor went, and the misreading replaced it.
+   - *Round 8.* The misreading was half a pixel, which halved at the resolution the page grabs at,
+     and read the corner at its distorted radius. It is a thousandth of the focal length now, at the
+     undistorted radius.
 
    **A loop need not wrap the sphere.** The first version of this decision said a triangle turning
    about one axis closes under any focal length, since three angles that sum to zero still do when
@@ -230,13 +249,19 @@ closes. Three things follow.
 - **A capture without strong loops keeps its guess**, and says so through `lensFitted` — even a
   guess 8% out, four times what the Context's table says the exit criterion allows. An open strip
   closes no loop. A triangle, a ring whose loop skips a frame, or a ring open at one pair with a
-  chord across every other frame closes loops too weak to see the focal length past a lens model
-  half a pixel out. A ring open at one pair with two chords, handed a lens 5% out with 0.2 px of
+  chord across every other frame closes loops too weak to see the focal length past a lens model a
+  thousandth of the focal length out. A ring open at one pair with two chords, handed a lens 5% out with 0.2 px of
   noise, keeps it at a median of about 4 degrees where a fit would have reached 0.08 (a reviewer's
   probe, round 7). And a two-by-four grid, fitted at 0.8 px of noise, is refused at 1.25 px and
   above. Only twelve-frame rings and a two-by-four grid have been shown to fit; that a sphere's loops
   are strong enough is expected, not measured. The rest is what the lens a device keeps is for.
-- **Radial only.** The misreading is a radial distortion, and a lens model can be wrong otherwise.
+- **A k1, and radial only.** The misreading is one shape of radial distortion. Others of the same
+  size move the least by other amounts: a k2 or a k3 that moves the corner as far, a half to a
+  quarter as much; a mustache that peaks at that size inside the frame and is zero at the corner,
+  2.5 to 2.9 times as much — 0.131% on the ring against 0.046% reported, its rotations unmoved (a
+  reviewer's probe, round 8). So `focalModelError` is a scale that separates weak loops from strong
+  ones, six to one, and not a bound on every lens error; a lens kept across captures has to read it
+  that way. And a lens model can be wrong otherwise than radially.
   Under a rolling shutter with 3 to 10 degrees a second of hand shake, or an unreported tangential
   distortion, a reviewer's grids handed the right lens were fitted 0.25 to 0.5% off, their rotations
   1.5 to 1.7 times worse and the spread understating the error two- to five-fold — though that is at

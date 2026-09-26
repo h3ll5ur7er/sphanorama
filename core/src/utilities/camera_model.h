@@ -58,8 +58,8 @@ bool IsUsableLens(const Intrinsics& lens);
 // This is the only place intrinsics are *invented* rather than measured, and it is deliberately
 // narrow: it exists to seed an estimate and to render synthetic datasets whose ground truth is
 // known because the lens was chosen. A real lens is estimated by `IRegistrationEngine::Refine`,
-// its focal length fitted from a loop of pairs, and arrives with `estimated` set (ADR 0066); this
-// does not set it.
+// its focal length fitted from a loop of pairs where the loops see it precisely, and arrives with
+// `estimated` set (ADR 0066); this does not set it.
 //
 // Returns an unusable lens rather than a plausible one for a field of view that is not a lens —
 // zero, negative, 180 degrees or wider, or not a number. `IsUsableLens` is how a caller asks.

@@ -137,9 +137,10 @@ class IRegistrationEngine {
   // in a window between two of them goes unseen, and the fit is taken on matches that all have a
   // direction under the lens it returns. Where the accepted pairs among placed frames close no loop,
   // where one of them keeps fewer than three such matches, where any trial could not be scored on
-  // them, where the cost does not rise on both sides of its least, or where the least is not
-  // precise — how far the pairs' noise could move it and how far a lens misread by half a pixel at
-  // the frame's corner does, within two tenths of a percent together — `initial` comes back as
+  // them, where the cost does not rise on both sides of its least, where the lens gives the frame's
+  // corner no direction, or where the least is not precise — how far the pairs' noise could move it
+  // and how far a lens misread by a thousandth of the focal length at the frame's corner does,
+  // within two tenths of a percent together — `initial` comes back as
   // given, every field of it, and `lensFitted` is false. Loops too weak to see the focal length
   // past the pairs' noise or past that misreading are refused this way, however many of them there
   // are and however far their least lies from the lens handed in. Where the lens is fitted the

@@ -616,8 +616,8 @@ std::vector<PairwiseResult> MatchedRing(const std::vector<Quat>& truth, const In
  * under the wrong focal length a thirty-degree pair and a sixty-degree one are not scaled alike
  * — 2 x 32.324 against 64.220 in a reviewer's rebuild — and the triangle stops closing. Not by
  * tilting: the refitted axes stay exactly vertical. A lone triangle sees the focal length only that
- * faintly, though, and read through a lens model good to half a pixel it is not precise enough to
- * take (`ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn`); a grid of such loops, none wrapping,
+ * faintly, though, and read through a lens model good to a thousandth of the focal length it is not
+ * precise enough to take (`ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn`); a grid of such loops, none wrapping,
  * is.
  */
 TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
@@ -1156,6 +1156,30 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
       EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << "chords, " << k1 << ", seed " << seed;
     }
   }
+  // And at the size the page grabs at, twice this lens: the misreading is a fraction of the focal
+  // length, not a count of pixels, since a lens's distortion does not change with the size of the
+  // frame it is read into. Measured in pixels, it halved here, and the chords were fitted 1.6% out,
+  // the rotations six times worse (round 8).
+  Intrinsics doubled = lens;
+  doubled.fx *= 2.0;
+  doubled.fy *= 2.0;
+  doubled.cx *= 2.0;
+  doubled.cy *= 2.0;
+  doubled.width *= 2;
+  doubled.height *= 2;
+  for (const double k1 : {-0.005, -0.01}) {
+    Intrinsics distorted = doubled;
+    distorted.k1 = k1;
+    std::vector<PairwiseResult> chords = MatchedRing(shapes.truth, distorted);
+    chords.pop_back();
+    for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
+    for (const uint32_t seed : {0u, 1u, 2u}) {
+      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
+      const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), doubled);
+      ASSERT_TRUE(solved.ok()) << solved.status.detail;
+      EXPECT_FALSE(solved.value.lensFitted) << "chords at 1280, " << k1 << ", seed " << seed;
+    }
+  }
   // A ring has the loops to absorb the same distortion into a focal length a little off and keep its
   // rotations right, and is fitted: 0.24% short, the rotations within a hundredth of a degree.
   Intrinsics distorted = lens;
@@ -1182,46 +1206,84 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
 }
 
 /**
- * The model error `Refine` reports is how far a lens misread by half a pixel at the frame's corner
- * moves the least — measured by misreading it.
+ * The model error `Refine` reports is how far a lens whose frame corner is misread by a thousandth of
+ * the focal length moves the least — measured by misreading it.
  *
- * Rendered through a radial distortion that moves the corner half a pixel either way and handed the
- * lens without it, a ring and a grid put their least where the error they report under that lens
- * says, within 2% of it: 0.046% and 0.044%. Handed the focal length 8% out as well, the same,
- * because the misreading is half a pixel under the lens the least was found at, not the one handed
- * in.
+ * Rendered through a radial distortion that moves the corner that far either way and handed the lens
+ * without it, a ring and a grid put their least where the error they report under that lens says,
+ * within 4% of it — 0.046% and 0.044% — the search stopping within a tenth of that. Handed the focal length 8% out as well, the same, because the
+ * misreading is under the lens the least was found at, not the one handed in. At twice the
+ * resolution, the same: the misreading was half a pixel at first, which halved at 1280 x 960 — the
+ * size the page grabs at — and let the chords shape round 7 refused be fitted again (round 8). And
+ * on a lens handed in with barrel distortion, the same: the corner's radius is the undistorted one
+ * the added k1 acts on, not the pixel's, which read the misreading a quarter too small (round 8).
  */
-TEST_F(Refine, TheModelErrorIsHowFarAHalfPixelMovesTheLeast) {
+TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   const NoisyShapes shapes;
-  const Intrinsics lens = TrueLens();
-  const double corner = std::hypot(lens.cx, lens.cy) / lens.fx;
-  const double halfPixel = 0.5 / (lens.fx * corner * corner * corner);
-  for (const double k1 : {-halfPixel, halfPixel}) {
-    Intrinsics distorted = lens;
-    distorted.k1 = k1;
-    std::vector<PairwiseResult> grid;
-    for (int row = 0; row < 2; ++row) {
-      for (int column = 0; column < 3; ++column) {
-        grid.push_back(Matched(row * 4 + column, row * 4 + column + 1, shapes.grid, distorted));
+  Intrinsics doubled = TrueLens();
+  doubled.fx *= 2.0;
+  doubled.fy *= 2.0;
+  doubled.cx *= 2.0;
+  doubled.cy *= 2.0;
+  doubled.width *= 2;
+  doubled.height *= 2;
+  Intrinsics barrel = TrueLens();
+  barrel.k1 = -0.1;
+  for (const auto& [lens, which] : {std::pair{TrueLens(), "640 x 480"}, std::pair{doubled, "1280 x 960"},
+                                    std::pair{barrel, "barrel"}}) {
+    const UnprojectedDirection far =
+        Unproject(lens, Pixel{static_cast<double>(lens.width), static_cast<double>(lens.height)});
+    ASSERT_TRUE(far.valid) << which;
+    const double corner = std::hypot(far.direction.x, far.direction.y) / far.direction.z;
+    const double misread = 0.001 / (corner * corner * corner);
+    for (const double k1 : {lens.k1 - misread, lens.k1 + misread}) {
+      Intrinsics distorted = lens;
+      distorted.k1 = k1;
+      std::vector<PairwiseResult> grid;
+      for (int row = 0; row < 2; ++row) {
+        for (int column = 0; column < 3; ++column) {
+          grid.push_back(Matched(row * 4 + column, row * 4 + column + 1, shapes.grid, distorted));
+        }
       }
-    }
-    for (int column = 0; column < 4; ++column) {
-      grid.push_back(Matched(column, 4 + column, shapes.grid, distorted));
-    }
-    for (const double scale : {1.0, 1.08}) {
-      for (const auto& [pairs, poses, why] :
-           {std::tuple{MatchedRing(shapes.truth, distorted), shapes.truth, "a ring"},
-            std::tuple{grid, shapes.grid, "a grid"}}) {
-        const Result<GlobalSolution> solved =
-            engine_.Refine(pairs, PriorsOut(poses), Scaled(lens, scale));
-        ASSERT_TRUE(solved.ok()) << solved.status.detail;
-        ASSERT_TRUE(solved.value.lensFitted) << why << ", k1 " << k1 << ", scale " << scale;
-        const double moved = std::abs(std::log(solved.value.intrinsics.fx / lens.fx));
-        EXPECT_NEAR(moved / solved.value.focalModelError, 1.0, 0.03)
-            << why << ", k1 " << k1 << ", scale " << scale;
+      for (int column = 0; column < 4; ++column) {
+        grid.push_back(Matched(column, 4 + column, shapes.grid, distorted));
+      }
+      for (const double scale : {1.0, 1.08}) {
+        for (const auto& [pairs, poses, why] :
+             {std::tuple{MatchedRing(shapes.truth, distorted), shapes.truth, "a ring"},
+              std::tuple{grid, shapes.grid, "a grid"}}) {
+          const Result<GlobalSolution> solved =
+              engine_.Refine(pairs, PriorsOut(poses), Scaled(lens, scale));
+          ASSERT_TRUE(solved.ok()) << solved.status.detail;
+          ASSERT_TRUE(solved.value.lensFitted) << which << ", " << why << ", k1 " << k1 << ", scale " << scale;
+          const double moved = std::abs(std::log(solved.value.intrinsics.fx / lens.fx));
+          EXPECT_NEAR(moved / solved.value.focalModelError, 1.0, 0.05)
+              << which << ", " << why << ", k1 " << k1 << ", scale " << scale;
+        }
       }
     }
   }
+}
+
+/**
+ * A lens that gives its own frame's corner no direction cannot be misread there, and is not fitted.
+ *
+ * Its k1 of -0.3 folds the lens inside the frame: matches nearer the centre still have directions,
+ * and their loops a least and a spread, but there is no corner radius to misread the lens at. Not
+ * left to the misread lens to fail — which it would, for a corner of no direction reads as no
+ * number, and then every trial would count as unscored and the spread go unreported with it.
+ */
+TEST_F(Refine, ALensThatFoldsInsideItsFrameIsNotMisreadOrFitted) {
+  Intrinsics folded = TrueLens();
+  folded.k1 = -0.3;
+  ASSERT_FALSE(Unproject(folded, Pixel{640.0, 480.0}).valid) << "the premise: the corner folds";
+  const std::vector<Quat> truth = Ring();
+  const Result<GlobalSolution> solved =
+      engine_.Refine(MatchedRing(truth, folded), PriorsOut(truth), folded);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_FALSE(solved.value.lensFitted);
+  EXPECT_TRUE(std::isfinite(solved.value.focalSpread)) << solved.value.focalSpread;
+  EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << solved.value.focalModelError;
 }
 
 /**
