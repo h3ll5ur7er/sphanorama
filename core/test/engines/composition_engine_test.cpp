@@ -35,6 +35,10 @@ class PinCountingStore final : public IFrameStoreAccess {
  public:
   enum class Whose { Nobody, Allocated, HandedIn };
   bool refusePinOfAllocated = false;
+  bool refusePinOfHandedIn = false;
+  // Allocates this many pixels more a row than asked and says so only through the stride: a real
+  // padded allocation, where `describeAllocated` can only relabel one.
+  int32_t padAllocatedPixels = 0;
   bool refuseForgetOfAllocated = false;
   bool refuseResidency = false;
   // Refused once each, so the refusal is the call under test's to report rather than permanent.
@@ -50,8 +54,9 @@ class PinCountingStore final : public IFrameStoreAccess {
   }
   Result<FrameStoreBudget> Budget() override { return real_.Budget(); }
   Result<FrameRef> Allocate(int32_t w, int32_t h, PixelFormat f) override {
-    Result<FrameRef> allocated = real_.Allocate(w, h, f);
+    Result<FrameRef> allocated = real_.Allocate(w + padAllocatedPixels, h, f);
     if (!allocated.ok()) return allocated;
+    allocated.value.width = w;
     allocated_.push_back(allocated.value.buffer.value);
     // The contract does not promise zeroed bytes, and the memory store happens to give them, so
     // an engine relying on that would pass here and paint garbage on a store that does not.
@@ -67,12 +72,19 @@ class PinCountingStore final : public IFrameStoreAccess {
     return std::find(allocated_.begin(), allocated_.end(), frame.buffer.value) != allocated_.end();
   }
   Result<std::span<uint8_t>> Pin(const FrameRef& frame) override {
-    if (refusePinOfAllocated && Allocated(frame)) {
+    if ((refusePinOfAllocated && Allocated(frame)) || (refusePinOfHandedIn && !Allocated(frame))) {
       return Err<std::span<uint8_t>>(StatusCode::Internal, "PinCountingStore", "refused");
     }
     Result<std::span<uint8_t>> pinned = real_.Pin(frame);
-    if (pinned.ok()) ++pins_[frame.buffer.value];
+    if (pinned.ok()) {
+      ++pins_[frame.buffer.value];
+      ++pinnedEver_[frame.buffer.value];
+    }
     return pinned;
+  }
+  int32_t PinnedEver(const FrameRef& frame) const {
+    const auto found = pinnedEver_.find(frame.buffer.value);
+    return found == pinnedEver_.end() ? 0 : found->second;
   }
   Status Release(const FrameRef& frame) override {
     const Whose whose = Allocated(frame) ? Whose::Allocated : Whose::HandedIn;
@@ -103,6 +115,7 @@ class PinCountingStore final : public IFrameStoreAccess {
  private:
   IFrameStoreAccess& real_;
   std::map<uint64_t, int32_t> pins_;
+  std::map<uint64_t, int32_t> pinnedEver_;
   std::vector<uint64_t> allocated_;
 };
 
@@ -396,14 +409,14 @@ TEST_F(NearestCentreComposition, InputThatIsNotAPreviewIsRefused) {
 // can count is refused before anything is pinned or allocated.
 TEST_F(NearestCentreComposition, MoreFramesThanAPreviewCanTellApartIsRefused) {
   const FrameRef frame = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; });
-  frames.assign(65535, frame);
-  solution.frames.assign(65535, frame.id);
-  solution.rotations.assign(65535, Quat{});
-  EXPECT_EQ(Refused(), StatusCode::InvalidArgument);
-  frames.resize(65534);
-  solution.frames.resize(65534);
-  solution.rotations.resize(65534);
-  EXPECT_EQ(Refused(2), StatusCode::Ok) << "one fewer is a preview";
+  frames.assign(65536, frame);
+  solution.frames.assign(65536, frame.id);
+  solution.rotations.assign(65536, Quat{});
+  EXPECT_TRUE(RefusedSaying("more frames than a preview can tell apart"));
+  frames.resize(65535);
+  solution.frames.resize(65535);
+  solution.rotations.resize(65535);
+  EXPECT_EQ(Refused(2), StatusCode::Ok) << "one fewer is a preview: the last index is 65,534";
 }
 
 // A frame is a value the caller passes in, and the store's allocation is the truth: a handle whose
@@ -535,6 +548,84 @@ TEST(NearestCentrePreview, IsMadeOfASphereLargerThanTheHeapAndLeavesItWhereItWas
   EXPECT_TRUE(store.Forget(preview.value).ok());
 }
 
+// The preview is written through the stride the store gives it, which may be wider than a row.
+// Pixel for pixel the preview a tightly packed store gives, from a frame whose every row differs,
+// so a row written at the wrong offset cannot land on one of the same colour.
+TEST_F(NearestCentreComposition, TheAnswerIsWrittenThroughItsOwnStride) {
+  Look(Quat{}, [](int32_t x, int32_t y) {
+    return Rgb{static_cast<uint8_t>(x * 3), static_cast<uint8_t>(y * 4), 7};
+  });
+  const Preview packed = Render(256);
+  store.padAllocatedPixels = 16;
+  const Preview padded = Render(256);
+  ASSERT_EQ(padded.width, packed.width);
+  EXPECT_TRUE(padded.bytes == packed.bytes);
+}
+
+// And a frame is read through its own stride: a handle naming the left half of a wider allocation
+// is read as that half, never as rows run together.
+TEST_F(NearestCentreComposition, AFrameIsReadThroughItsOwnStride) {
+  FrameRef wide = Paint(PixelFormat::RGBA8, [](int32_t x, int32_t y) {
+    return x < kWidth ? Rgb{static_cast<uint8_t>(x * 3), static_cast<uint8_t>(y * 4), 7}
+                      : Rgb{250, 250, 250};
+  }, kWidth * 2);
+  wide.width = kWidth;
+  frames.push_back(wide);
+  solution.frames.push_back(wide.id);
+  solution.rotations.push_back(Quat{});
+  const Preview preview = Render(512);
+  int32_t checked = 0;
+  for (int32_t y = 0; y < preview.height; ++y) {
+    for (int32_t x = 0; x < preview.width; ++x) {
+      const std::optional<Vec3> world = EquirectDirection(Pixel{x + 0.5, y + 0.5}, 512, 256);
+      const ProjectedPixel at = Project(lens, *world);
+      if (!at.valid || at.pixel.x < 1.0 || at.pixel.x > kWidth - 1.0 || at.pixel.y < 1.0 ||
+          at.pixel.y > kHeight - 1.0) {
+        continue;
+      }
+      const std::array<uint8_t, 4> got = preview.At(x, y);
+      EXPECT_NEAR(got[0], (at.pixel.x - 0.5) * 3.0, 0.51) << x << " " << y;
+      EXPECT_NEAR(got[1], (at.pixel.y - 0.5) * 4.0, 0.51) << x << " " << y;
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 100);
+}
+
+// A frame that colours none of the preview is never read: here a second frame looking exactly as
+// the first does, which loses every tie.
+TEST_F(NearestCentreComposition, AFrameThatColoursNothingIsNeverRead) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  Look(Quat{}, Rgb{4, 5, 6});
+  EXPECT_EQ(Render(64).At(32, 16), (std::array<uint8_t, 4>{1, 2, 3, 255}));
+  EXPECT_EQ(store.PinnedEver(frames[0]), 1);
+  EXPECT_EQ(store.PinnedEver(frames[1]), 0);
+}
+
+// A refusal whose preview the store will then not release says that too.
+TEST_F(NearestCentreComposition, AnAnswerRefusedWhoseReleaseIsDeclinedSaysItIsStillCharged) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  store.describeAllocated = [](FrameRef& f) { f.height += 1; };
+  store.refuseRelease = PinCountingStore::Whose::Allocated;
+  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
+  EXPECT_EQ(refused.code, StatusCode::Internal);
+  EXPECT_NE(refused.detail.find("would not release the preview"), std::string::npos)
+      << refused.detail;
+  EXPECT_EQ(refused.detail.find("would not forget"), std::string::npos)
+      << "a preview still pinned is not asked to be forgotten: " << refused.detail;
+  EXPECT_EQ(store.outstanding(), 1) << "the preview's own pin, which is what it says";
+}
+
+// A pin the store refuses takes nothing from a caller who already held one.
+TEST_F(NearestCentreComposition, ARefusedPinLeavesTheCallersPinAlone) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  ASSERT_TRUE(real.Pin(frames[0]).ok());
+  store.refusePinOfHandedIn = true;
+  EXPECT_EQ(Refused(), StatusCode::Internal) << "the store's own refusal";
+  EXPECT_TRUE(real.Release(frames[0]).ok()) << "the caller's pin is still there";
+  EXPECT_FALSE(real.Release(frames[0]).ok()) << "and only that one";
+}
+
 // A frame its caller already holds pinned is read and left pinned, once: the preview's own pin
 // comes and goes, and it does not try to demote a frame somebody else is holding.
 TEST_F(NearestCentreComposition, AFrameItsCallerHoldsPinnedIsReadAndLeftPinned) {
@@ -575,11 +666,13 @@ struct SpilledForward {
   NearestCentreCompositionEngine engine{store};
   GlobalSolution solution;
   std::vector<FrameRef> frames;
-  SpilledForward() {
+  explicit SpilledForward(bool spill = true) {
     solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
     Result<FrameRef> frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
     EXPECT_TRUE(frame.ok());
-    EXPECT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+    if (spill) {
+      EXPECT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+    }
     frames.push_back(frame.value);
     solution.frames.push_back(frame.value.id);
     solution.rotations.push_back(Quat{});
@@ -609,6 +702,15 @@ TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
       << answer.status.detail;
   EXPECT_EQ(spilled.HeapUsed(), kWidth * kHeight * 4) << "the answer is given back; the frame "
                                                            "is where the store left it";
+}
+
+// And one found in the heap is left there, in a store that could have spilled it.
+TEST(NearestCentrePreview, AFrameFoundInTheHeapIsLeftInTheHeap) {
+  SpilledForward resident(false);
+  Result<FrameRef> answer = resident.engine.RenderPreview(resident.solution, resident.frames, {}, 64);
+  ASSERT_TRUE(answer.ok()) << answer.status.detail;
+  EXPECT_EQ(resident.store.ResidencyOf(resident.frames[0]).value, Residency::HeapEncoded);
+  EXPECT_TRUE(resident.store.Forget(answer.value).ok());
 }
 
 // A handle refused after its pin, whose release the store then declines, says so: the frame is

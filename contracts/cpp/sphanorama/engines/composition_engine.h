@@ -51,7 +51,7 @@ class ICompositionEngine {
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size than
   // the solution's lens, a handle claiming more bytes than the store holds for it, a lens that
   // cannot project when there is a frame to project, a rotation that is not one, gains that do not
-  // name the frames or are not figures, 65,535 frames or more, and a `maxWidth` under 2;
+  // name the frames or are not figures, 65,536 frames or more, and a `maxWidth` under 2;
   // `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes as
   // another shape than was asked; the store's own status when it cannot say a frame's tier, pin
   // it, release it or put it back, or allocate the answer. A refusal gives the answer back, and

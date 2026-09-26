@@ -94,7 +94,7 @@ composite should look like.
   for everything the call holds. Then each frame that colours anything is pinned, painted from,
   released, and demoted back to the tier it was found in, as `CandidatePreview` does. A frame the
   store cannot put back, or cannot say the tier of, is a refusal rather than a preview that
-  quietly left it in the heap. The two-byte index is why a solution naming 65,535 frames or more
+  quietly left it in the heap. The two-byte index is why a solution naming 65,536 frames or more
   is refused.
 - **No composition root selects it yet**, as with `Registration`: it is reached from tests, and
   `PanoramaBuildManager` still answers `Unsupported`.

@@ -18,8 +18,8 @@ namespace {
 
 constexpr const char* kComponent = "NearestCentreCompositionEngine";
 constexpr int32_t kChannels = 4;
-// Each preview pixel records the frame that colours it in two of its own bytes, so a solution may
-// name one frame fewer than this.
+// Each preview pixel records the frame that colours it in two of its own bytes, and this value
+// means none, so the last frame a solution may name is the one before it.
 constexpr uint16_t kNoFrame = std::numeric_limits<uint16_t>::max();
 
 // One frame of the caller's, pinned while its pixels are painted and then given back: released, and
@@ -127,7 +127,7 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
                          "a panorama narrower than two pixels has no half to be high");
   }
   const size_t count = solution.frames.size();
-  if (count >= kNoFrame) {
+  if (count > kNoFrame) {
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
                          "more frames than a preview can tell apart");
   }
