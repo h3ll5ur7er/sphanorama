@@ -549,8 +549,9 @@ struct NodeContext {
 //
 // `ICameraAccess::PeekPreviewFrame` is the precedent for the ownership rule rather than this being
 // the first of its kind — it hands back a frame the caller never asked the store for by name, says
-// so in nearly these words, and has a contract-suite assertion behind it. It is the *only* one that
-// says it. Several other calls hand a frame back without saying who owns it —
+// so in nearly these words, and has a contract-suite assertion behind it. It was the only one that
+// said it until `ICompositionEngine::RenderPreview` (ADR 0068). Several other calls hand a frame
+// back without saying who owns it —
 // `IFrameStoreAccess::Allocate` itself, `IImageCodecAccess::Decode`,
 // `ICompositionEngine::BlendTile`, `IPanoramaBuildManager::Panorama` and
 // `ICaptureSessionManager::Candidates`; `ICompositionEngine::RenderPreview` was among them until

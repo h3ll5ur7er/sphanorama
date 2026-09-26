@@ -91,11 +91,28 @@ composite should look like.
   first version, which pinned every frame at once, refused the preview of a real capture at any
   size. The preview is decided first, from geometry alone, as one frame index a pixel, kept in the
   preview's own red and green bytes with alpha 0 until the pixel is painted — so nothing that
-  grows with the preview is held outside the store, only a few bytes a frame of bookkeeping. Then each frame that colours anything is pinned, painted from,
-  released, and demoted back to the tier it was found in, as `CandidatePreview` does. A frame the
-  store cannot put back, or cannot say the tier of, is a refusal rather than a preview that
-  quietly left it in the heap. The two-byte index is why a solution naming 65,536 frames or more
-  is refused.
+  grows with the preview is held outside the store, only some sixty bytes a frame of bookkeeping.
+  Then each frame that colours anything is pinned, painted from, released, and demoted back to the
+  tier it was found in, as `CandidatePreview` does. A frame the store cannot put back, or cannot
+  say the tier of, is a refusal rather than a preview that quietly left it in the heap. The
+  two-byte index is why a solution naming 65,536 frames or more is refused.
+- **A refusal can hand something back.** When the store will not take the preview back, the
+  refusal's value is the preview — released if `ResidencyOf` says it is still pinned, then forgotten
+  — because nothing else can name it to the store again. And a frame handed in whose release the
+  store declines is left pinned and out of its tier, and the refusal names both: the frame by its
+  place in the solution and its id, since the caller may hold pins of its own on the others and
+  `ResidencyOf` cannot say whose a pin is, and the tier for the caller to put it back in. This is
+  the first `Result` in the core whose failure carries something to clean up, so the usual
+  `if (!r.ok()) return r.status;` leaks the preview on those paths, and `PanoramaBuildManager`,
+  when it calls this, has to look at the value. The alternative was to retry a declined release
+  inside the engine until it took, which makes the refusal rarer and never removes it — and the
+  first version's retry, run from a destructor, left frames half given back with a report that no
+  longer described them.
+- **A handle the store had not issued is refused, and it has to be asked after the answer is
+  allocated.** Ids are never reissued within a store, but a new store counts from 1 again, so a
+  handle from a session the store never adopted can name the id `Allocate` is about to give the
+  preview — and it would then be read as the preview itself, painted from its own bytes, and
+  answered `Ok`. Any other unissued id is the store's `NotFound` when its tier is asked.
 - **No composition root selects it yet**, as with `Registration`: it is reached from tests, and
   `PanoramaBuildManager` still answers `Unsupported`.
 - The dataset renderer (`Rendered`) moved from `registration_accuracy_test.cpp` into

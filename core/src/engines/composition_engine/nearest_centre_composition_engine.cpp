@@ -22,6 +22,17 @@ constexpr int32_t kChannels = 4;
 // means none, so the last frame a solution may name is the one before it.
 constexpr uint16_t kNoFrame = std::numeric_limits<uint16_t>::max();
 
+// The tier a caller is told to put a frame back in, in the words `Residency` spells.
+const char* TierName(Residency tier) {
+  switch (tier) {
+    case Residency::HeapPinned: return "HeapPinned";
+    case Residency::HeapEncoded: return "HeapEncoded";
+    case Residency::GpuTexture: return "GpuTexture";
+    case Residency::Spilled: return "Spilled";
+  }
+  return "an unnamed tier";
+}
+
 // One frame of the caller's, pinned while its pixels are painted and then given back: released, and
 // demoted to the tier it was found in. Frames are borrowed one at a time so that the preview of a
 // sphere larger than the heap can still be made, and the demotion is what keeps it true — a pin
@@ -35,8 +46,12 @@ constexpr uint16_t kNoFrame = std::numeric_limits<uint16_t>::max();
 // hears about.
 class Borrowed {
  public:
-  Borrowed(IFrameStoreAccess& store, const FrameRef& frame)
-      : store_(store), frame_(frame), before_(store.ResidencyOf(frame)) {}
+  Borrowed(IFrameStoreAccess& store, const FrameRef& frame, size_t index)
+      : store_(store),
+        frame_(frame),
+        before_(store.ResidencyOf(frame)),
+        name_("frame " + std::to_string(index) + " of the solution (id " +
+              std::to_string(frame.id.value) + ")") {}
   Borrowed(const Borrowed&) = delete;
   Borrowed& operator=(const Borrowed&) = delete;
   const Result<Residency>& before() const { return before_; }
@@ -44,14 +59,15 @@ class Borrowed {
   Status GiveBack() {
     if (Status released = store_.Release(frame_); !released.ok()) {
       return Fail(released.code, kComponent,
-                  "the store declined to release a frame handed in, which is still pinned by "
-                  "this call for its caller to release: " + released.detail);
+                  "the store declined to release " + name_ +
+                      ", which is still pinned by this call for its caller to release and put "
+                      "back in " + TierName(before_.value) + ": " + released.detail);
     }
     if (before_.value == Residency::HeapPinned) return Status::Ok();
     if (Status demoted = store_.Demote(frame_, before_.value); !demoted.ok()) {
       return Fail(demoted.code, kComponent,
-                  "a frame handed in could not be put back in the tier it was found in: " +
-                      demoted.detail);
+                  name_ + " could not be put back in the tier it was found in, " +
+                      TierName(before_.value) + ": " + demoted.detail);
     }
     return Status::Ok();
   }
@@ -60,6 +76,7 @@ class Borrowed {
   IFrameStoreAccess& store_;
   FrameRef frame_;
   Result<Residency> before_;
+  std::string name_;
 };
 
 // Bilinear, between pixel centres, clamped at the frame's edge: a direction the lens puts between
@@ -174,8 +191,6 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   Result<FrameRef> answer = frames_.Allocate(width, height, PixelFormat::RGBA8);
   if (!answer.ok()) return answer.status;
 
-  // Gives the answer back on a refusal, and says so when the store will not take it, since its
-  // bytes then stay charged with nothing else reporting them.
   // Gives the answer back on a refusal. When the store will not take it, the refusal hands it to
   // the caller instead, since nothing else can name it to the store again.
   auto abandon = [&](StatusCode code, std::string detail, bool pinned) -> Result<FrameRef> {
@@ -191,6 +206,15 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     return Result<FrameRef>{Fail(code, kComponent, std::move(detail)), answer.value};
   };
 
+  // A handle naming an id the store had not issued is not a frame, and would otherwise be read as
+  // the preview, which has just been issued it.
+  for (const FrameRef& frame : frames) {
+    if (frame.id == answer.value.id) {
+      return abandon(StatusCode::InvalidArgument,
+                     "a frame handed in names the preview itself, so it is not one the store held",
+                     false);
+    }
+  }
   Result<std::span<uint8_t>> out = frames_.Pin(answer.value);
   if (!out.ok()) return abandon(out.status.code, out.status.detail, false);
   // The rows are written through the handle, and `Allocate` promises nothing about stride, so the
@@ -257,7 +281,7 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   for (size_t i = 0; i < count; ++i) {
     if (!chosenAnywhere[i]) continue;
     const FrameRef& frame = frames[i];
-    Borrowed borrowed(frames_, frame);
+    Borrowed borrowed(frames_, frame, i);
     if (!borrowed.before().ok()) {
       return abandon(borrowed.before().status.code,
                      "the store could not say which tier a frame handed in is in, so it cannot be "
@@ -267,9 +291,10 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     if (!pinned.ok()) return abandon(pinned.status.code, pinned.status.detail, true);
     // A frame is a value the caller hands in; the pinned span is what the store really holds.
     const int64_t rowBytes = static_cast<int64_t>(frame.width) * kChannels;
-    if (frame.stride < rowBytes ||
-        static_cast<int64_t>(frame.stride) * frame.height > static_cast<int64_t>(pinned.value.size())) {
-      std::string detail = "a frame's stride is shorter than its row, or its rows run past what the store holds";
+    if (frame.stride < rowBytes || static_cast<int64_t>(frame.stride) * frame.height >
+                                       static_cast<int64_t>(pinned.value.size())) {
+      std::string detail =
+          "a frame's stride is shorter than its row, or its rows run past what the store holds";
       if (Status given = borrowed.GiveBack(); !given.ok()) detail += "; and " + given.detail;
       return abandon(StatusCode::InvalidArgument, std::move(detail), true);
     }
