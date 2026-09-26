@@ -90,8 +90,8 @@ composite should look like.
   128 MB ceiling on a mid-range phone (ADR 0023), so a sixty-frame sphere does not fit, and the
   first version, which pinned every frame at once, refused the preview of a real capture at any
   size. The preview is decided first, from geometry alone, as one frame index a pixel, kept in the
-  preview's own red and green bytes with alpha 0 until the pixel is painted — so the store charges
-  for everything the call holds. Then each frame that colours anything is pinned, painted from,
+  preview's own red and green bytes with alpha 0 until the pixel is painted — so nothing that
+  grows with the preview is held outside the store, only a few bytes a frame of bookkeeping. Then each frame that colours anything is pinned, painted from,
   released, and demoted back to the tier it was found in, as `CandidatePreview` does. A frame the
   store cannot put back, or cannot say the tier of, is a refusal rather than a preview that
   quietly left it in the heap. The two-byte index is why a solution naming 65,536 frames or more

@@ -429,7 +429,8 @@ TEST_F(NearestCentreComposition, AHandleClaimingMoreThanTheStoreHoldsIsRefused) 
   EXPECT_EQ(Refused(), StatusCode::InvalidArgument) << "a stride shorter than a row";
 }
 
-// The store's own status, whole, when a frame cannot be pinned.
+// The store's own code for a frame it does not hold: it cannot say the frame's tier, so the frame is
+// refused before it is pinned.
 TEST_F(NearestCentreComposition, AFrameTheStoreDoesNotHoldIsTheStoresRefusal) {
   Look(Quat{}, Rgb{1, 2, 3});
   Look(FromAzimuthElevation(30.0, 0.0), Rgb{4, 5, 6});
@@ -470,6 +471,8 @@ TEST_F(NearestCentreComposition, AnAnswerOfAnotherShapeThanAskedIsRefusedAndForg
   };
   for (const auto& [lie, describe] : lies) {
     store.describeAllocated = describe;
+    EXPECT_FALSE(engine.RenderPreview(solution, frames, {}, 64).value.id.valid())
+        << lie << ": a preview given back is not named";
     EXPECT_EQ(Refused(64), StatusCode::Internal) << lie;
     EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << lie << ": the answer is forgotten";
   }
@@ -483,6 +486,11 @@ TEST_F(NearestCentreComposition, AnAnswerTheStoreWillNotReleaseIsARefusalThatSay
   ASSERT_FALSE(answer.ok());
   EXPECT_EQ(answer.status.code, StatusCode::Internal) << "the store's own code";
   EXPECT_NE(answer.status.detail.find("still pinned"), std::string::npos) << answer.status.detail;
+  // And hands it back, since nothing else can name it to the store.
+  ASSERT_TRUE(answer.value.id.valid()) << "the preview it could not give back";
+  EXPECT_TRUE(store.Release(answer.value).ok());
+  EXPECT_TRUE(store.Forget(answer.value).ok());
+  EXPECT_TRUE(real.Clear().ok()) << "nothing is left pinned";
 }
 
 // Nor is one produced while a frame the caller handed in stays pinned: the preview is forgotten and
@@ -491,8 +499,15 @@ TEST_F(NearestCentreComposition, AFrameHandedInThatWillNotBeReleasedIsARefusal) 
   Look(Quat{}, Rgb{1, 2, 3});
   const int64_t before = real.Budget().value.heapUsedBytes;
   store.refuseRelease = PinCountingStore::Whose::HandedIn;
-  EXPECT_EQ(Refused(64), StatusCode::Internal);
+  Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
+  EXPECT_EQ(answer.status.code, StatusCode::Internal);
+  EXPECT_NE(answer.status.detail.find("still pinned"), std::string::npos) << answer.status.detail;
+  EXPECT_FALSE(answer.value.id.valid()) << "the preview was given back, so none is named";
   EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "the preview is forgotten";
+  // The state the refusal reports, exactly: the frame holds this call's pin, for its caller.
+  EXPECT_EQ(store.outstanding(), 1);
+  EXPECT_TRUE(store.Release(frames[0]).ok());
+  EXPECT_FALSE(real.Release(frames[0]).ok()) << "that was the only pin";
 }
 
 // Where giving the answer back fails too, the refusal says the bytes are still charged.
@@ -503,6 +518,9 @@ TEST_F(NearestCentreComposition, AnAnswerThatCanBeNeitherPinnedNorForgottenSaysI
   Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
   ASSERT_FALSE(answer.ok());
   EXPECT_NE(answer.status.detail.find("still charged"), std::string::npos) << answer.status.detail;
+  ASSERT_TRUE(answer.value.id.valid()) << "the preview it could not forget";
+  store.refuseForgetOfAllocated = false;
+  EXPECT_TRUE(store.Forget(answer.value).ok());
 }
 
 // A sphere is larger than the heap on a phone (ADR 0023), so its preview borrows one frame at a time
@@ -597,6 +615,9 @@ TEST_F(NearestCentreComposition, AFrameIsReadThroughItsOwnStride) {
 TEST_F(NearestCentreComposition, AFrameThatColoursNothingIsNeverRead) {
   Look(Quat{}, Rgb{1, 2, 3});
   Look(Quat{}, Rgb{4, 5, 6});
+  // Not even asked its tier: a frame the store no longer holds, where it colours nothing, is no
+  // refusal.
+  ASSERT_TRUE(real.Forget(frames[1]).ok());
   EXPECT_EQ(Render(64).At(32, 16), (std::array<uint8_t, 4>{1, 2, 3, 255}));
   EXPECT_EQ(store.PinnedEver(frames[0]), 1);
   EXPECT_EQ(store.PinnedEver(frames[1]), 0);
@@ -607,13 +628,17 @@ TEST_F(NearestCentreComposition, AnAnswerRefusedWhoseReleaseIsDeclinedSaysItIsSt
   Look(Quat{}, Rgb{1, 2, 3});
   store.describeAllocated = [](FrameRef& f) { f.height += 1; };
   store.refuseRelease = PinCountingStore::Whose::Allocated;
-  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
+  const Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
+  const Status& refused = answer.status;
   EXPECT_EQ(refused.code, StatusCode::Internal);
   EXPECT_NE(refused.detail.find("would not release the preview"), std::string::npos)
       << refused.detail;
   EXPECT_EQ(refused.detail.find("would not forget"), std::string::npos)
       << "a preview still pinned is not asked to be forgotten: " << refused.detail;
   EXPECT_EQ(store.outstanding(), 1) << "the preview's own pin, which is what it says";
+  ASSERT_TRUE(answer.value.id.valid()) << "and it is handed back to be released";
+  EXPECT_TRUE(store.Release(answer.value).ok());
+  EXPECT_TRUE(store.Forget(answer.value).ok());
 }
 
 // A pin the store refuses takes nothing from a caller who already held one.
@@ -719,9 +744,34 @@ TEST_F(NearestCentreComposition, AFrameRefusedAfterItWasPinnedWhoseReleaseIsDecl
   Look(Quat{}, Rgb{1, 2, 3});
   frames[0].stride = kWidth * 4 * 2;
   store.refuseRelease = PinCountingStore::Whose::HandedIn;
-  const Status refused = Refusal();
+  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
   EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << "the refusal is still the handle's";
   EXPECT_NE(refused.detail.find("declined to release"), std::string::npos) << refused.detail;
+  EXPECT_EQ(store.outstanding(), 1) << "still pinned, as it says";
+  EXPECT_TRUE(real.Release(frames[0]).ok());
+}
+
+// A declined release is not followed by a demotion nobody hears about: the frame is left exactly as
+// reported — pinned, in the heap — and not half put back.
+TEST(NearestCentrePreview, AFrameWhoseReleaseIsDeclinedIsLeftAsReported) {
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess real{int64_t{1} << 24, &sink};
+  PinCountingStore store{real};
+  NearestCentreCompositionEngine engine{store};
+  GlobalSolution solution;
+  solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
+  Result<FrameRef> frame = real.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  ASSERT_TRUE(real.Demote(frame.value, Residency::Spilled).ok());
+  const std::vector<FrameRef> frames = {frame.value};
+  solution.frames.push_back(frame.value.id);
+  solution.rotations.push_back(Quat{});
+  store.refuseRelease = PinCountingStore::Whose::HandedIn;
+  sink.FailWrites(true);
+  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
+  EXPECT_NE(refused.detail.find("still pinned"), std::string::npos) << refused.detail;
+  EXPECT_EQ(real.ResidencyOf(frame.value).value, Residency::HeapPinned);
+  EXPECT_TRUE(real.Release(frame.value).ok()) << "the pin the refusal names is there to release";
 }
 
 // The other methods are later increments, and say so.

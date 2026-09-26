@@ -29,29 +29,24 @@ constexpr uint16_t kNoFrame = std::numeric_limits<uint16_t>::max();
 // found pinned was pinned by somebody whose pin outlives this call, so it is where it was once the
 // release is done, and demoting it would be refused.
 //
-// Every path that pinned calls `GiveBack` and reports what it answers; the destructor only retries
-// a release the store declined, on a path already reporting that it did.
+// Every path that pinned calls `GiveBack` and reports what it answers, and nothing retries it: a
+// release the store declines leaves the frame exactly as the refusal says — pinned by this call,
+// for the caller that holds its handle to release — rather than half given back by a retry nobody
+// hears about.
 class Borrowed {
  public:
   Borrowed(IFrameStoreAccess& store, const FrameRef& frame)
       : store_(store), frame_(frame), before_(store.ResidencyOf(frame)) {}
   Borrowed(const Borrowed&) = delete;
   Borrowed& operator=(const Borrowed&) = delete;
-  ~Borrowed() {
-    if (pinned_) (void)GiveBack();
-  }
   const Result<Residency>& before() const { return before_; }
-  Result<std::span<uint8_t>> Pin() {
-    Result<std::span<uint8_t>> pinned = store_.Pin(frame_);
-    pinned_ = pinned.ok();
-    return pinned;
-  }
+  Result<std::span<uint8_t>> Pin() { return store_.Pin(frame_); }
   Status GiveBack() {
     if (Status released = store_.Release(frame_); !released.ok()) {
       return Fail(released.code, kComponent,
-                  "the store declined to release a frame handed in: " + released.detail);
+                  "the store declined to release a frame handed in, which is still pinned by "
+                  "this call for its caller to release: " + released.detail);
     }
-    pinned_ = false;
     if (before_.value == Residency::HeapPinned) return Status::Ok();
     if (Status demoted = store_.Demote(frame_, before_.value); !demoted.ok()) {
       return Fail(demoted.code, kComponent,
@@ -65,7 +60,6 @@ class Borrowed {
   IFrameStoreAccess& store_;
   FrameRef frame_;
   Result<Residency> before_;
-  bool pinned_ = false;
 };
 
 // Bilinear, between pixel centres, clamped at the frame's edge: a direction the lens puts between
@@ -182,13 +176,19 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
 
   // Gives the answer back on a refusal, and says so when the store will not take it, since its
   // bytes then stay charged with nothing else reporting them.
-  auto abandon = [&](StatusCode code, std::string detail, bool pinned) {
+  // Gives the answer back on a refusal. When the store will not take it, the refusal hands it to
+  // the caller instead, since nothing else can name it to the store again.
+  auto abandon = [&](StatusCode code, std::string detail, bool pinned) -> Result<FrameRef> {
     if (pinned && !frames_.Release(answer.value).ok()) {
-      detail += "; and the store would not release the preview, so its bytes are still charged";
+      detail += "; and the store would not release the preview, so its bytes are still charged "
+                "and it is handed back to be released and forgotten";
     } else if (!frames_.Forget(answer.value).ok()) {
-      detail += "; and the store would not forget the preview, so its bytes are still charged";
+      detail += "; and the store would not forget the preview, so its bytes are still charged "
+                "and it is handed back to be forgotten";
+    } else {
+      return Err<FrameRef>(code, kComponent, std::move(detail));
     }
-    return Err<FrameRef>(code, kComponent, std::move(detail));
+    return Result<FrameRef>{Fail(code, kComponent, std::move(detail)), answer.value};
   };
 
   Result<std::span<uint8_t>> out = frames_.Pin(answer.value);
@@ -225,8 +225,8 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     return projected.pixel;
   };
   // The index is kept in the answer's own bytes until the pixel is painted — red and green hold
-  // the frame, alpha 0 says not yet painted — so the preview costs one frame and the answer and
-  // nothing the store does not charge for.
+  // the frame, alpha 0 says not yet painted — so nothing that grows with the preview is held
+  // outside the store.
   auto pixelAt = [&](int32_t x, int32_t y) {
     return out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(drawn.stride) +
            static_cast<size_t>(x) * kChannels;
@@ -269,7 +269,7 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     const int64_t rowBytes = static_cast<int64_t>(frame.width) * kChannels;
     if (frame.stride < rowBytes ||
         static_cast<int64_t>(frame.stride) * frame.height > static_cast<int64_t>(pinned.value.size())) {
-      std::string detail = "a frame claims more rows or a longer row than the store holds";
+      std::string detail = "a frame's stride is shorter than its row, or its rows run past what the store holds";
       if (Status given = borrowed.GiveBack(); !given.ok()) detail += "; and " + given.detail;
       return abandon(StatusCode::InvalidArgument, std::move(detail), true);
     }
@@ -299,10 +299,12 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   }
 
   if (Status released = frames_.Release(answer.value); !released.ok()) {
-    return Err<FrameRef>(released.code, kComponent,
-                         "the preview could not be released: " + released.detail +
-                             "; it is still pinned, so it cannot be forgotten and its bytes are "
-                             "still charged");
+    return Result<FrameRef>{
+        Fail(released.code, kComponent,
+             "the preview could not be released: " + released.detail +
+                 "; it is still pinned and its bytes are still charged, so it is handed back to "
+                 "be released and forgotten"),
+        answer.value};
   }
   return answer;
 }

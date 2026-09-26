@@ -49,13 +49,17 @@ class ICompositionEngine {
   // learnt by reading — its tier, its pin, its bytes — is asked of it.
   //
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size than
-  // the solution's lens, a handle claiming more bytes than the store holds for it, a lens that
-  // cannot project when there is a frame to project, a rotation that is not one, gains that do not
-  // name the frames or are not figures, 65,536 frames or more, and a `maxWidth` under 2;
-  // `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes as
-  // another shape than was asked; the store's own status when it cannot say a frame's tier, pin
-  // it, release it or put it back, or allocate the answer. A refusal gives the answer back, and
-  // says so when the store will not take it.
+  // the solution's lens, a handle whose stride is shorter than its row or whose rows run past what
+  // the store holds for it, a lens that cannot project when there is a frame to project, a
+  // rotation that is not one, gains that do not name the frames or are not figures, 65,536 frames
+  // or more, and a `maxWidth` under 2; `Unsupported` for a frame that is not `RGBA8`; `Internal`
+  // for an answer the store describes as another shape than was asked; the store's own status when
+  // it cannot say a frame's tier, pin it, release it or put it back, or allocate the answer.
+  //
+  // A refusal gives the answer back, and its value names no frame. When the store will not take
+  // the answer back, the refusal says so and its value is the answer, for the caller to release
+  // and forget — nothing else can name it to the store. A frame handed in that the store would not
+  // release is left pinned by this call, as the refusal says, for the caller to release.
   virtual Result<FrameRef> RenderPreview(const GlobalSolution&, std::span<const FrameRef> frames,
                                          const GainMap&, int32_t maxWidth) = 0;
 };
