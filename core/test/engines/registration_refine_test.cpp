@@ -976,12 +976,85 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
 }
 
 /**
+ * The spread `Refine` reports is the scatter the least actually has, and a measured figure.
+ *
+ * Two halves, because each catches what the other cannot. Over twenty seeds of each fitted shape,
+ * the least's error in reported spreads has a root mean square near one — 0.79 when measured,
+ * conservative on the uneven ring and the skipping ring — so a spread wrong by half or double is
+ * caught. But a band that wide passes a spread 10 or 20% off, and the parts it is built from each
+ * move it by that much: three coordinates a match rather than two moved the grid's 19%, a pair's
+ * information gathered in its first frame rather than its second 11%, its error vector in the
+ * other frame 11%, and the pairs' weights dropped moved the skipping ring's 9% (round 5). So one
+ * seed of each is also held to within 3% of what it measured.
+ *
+ * And the spread is reported where the fit is refused, since a caller weighing lenses wants to see
+ * how near a refused one came, and is infinite where no least was reached at all.
+ */
+TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  // Every other pair of the ring thinned to nine matches, so the pairs' weights differ tenfold.
+  std::vector<PairwiseResult> uneven = shapes.ring;
+  for (size_t i = 0; i < uneven.size(); i += 2) {
+    uneven[i].inlierMatches.resize(9);
+    uneven[i].inliers = 9;
+  }
+  const struct {
+    std::vector<PairwiseResult> pairs;
+    std::vector<Quat> poses;
+    double sigma;
+    double scale;
+    bool fits;
+    double firstSeedSpread;
+    const char* why;
+  } rows[] = {{shapes.ring, shapes.truth, 0.8, 1.0, true, 0.00013976, "a ring"},
+              {shapes.gridPairs, shapes.grid, 0.8, 1.0, true, 0.00146026, "a grid"},
+              {shapes.skipping, shapes.truth, 0.8, 1.08, true, 0.00896840,
+               "a skipping ring, refuting a lens 8% out"},
+              {uneven, shapes.truth, 0.8, 1.0, true, 0.00081659, "a ring of uneven pairs"},
+              {shapes.gridPairs, shapes.grid, 1.25, 1.0, false, 0.00228224,
+               "a grid too noisy to take"}};
+
+  double squares = 0.0;
+  int fitted = 0;
+  for (const auto& row : rows) {
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+      const Result<GlobalSolution> solved = engine_.Refine(
+          test::WithNoise(row.pairs, row.sigma, seed), PriorsOut(row.poses), Scaled(lens, row.scale));
+      ASSERT_TRUE(solved.ok()) << row.why << ": " << solved.status.detail;
+      const GlobalSolution& solution = solved.value;
+      ASSERT_TRUE(std::isfinite(solution.focalSpread)) << row.why << ", seed " << seed;
+      EXPECT_EQ(solution.lensFitted, row.fits) << row.why << ", seed " << seed;
+      if (seed == 1) {
+        EXPECT_NEAR(solution.focalSpread / row.firstSeedSpread, 1.0, 0.03) << row.why;
+      }
+      if (solution.lensFitted) {
+        const double z = std::log(solution.intrinsics.fx / lens.fx) / solution.focalSpread;
+        EXPECT_LT(std::abs(z), 4.0) << row.why << ", seed " << seed;
+        squares += z * z;
+        ++fitted;
+      }
+    }
+  }
+  ASSERT_EQ(fitted, 80);
+  const double rms = std::sqrt(squares / fitted);
+  EXPECT_GT(rms, 0.6);
+  EXPECT_LT(rms, 1.15);
+
+  std::vector<PairwiseResult> chain = shapes.ring;
+  chain.pop_back();
+  const Result<GlobalSolution> open = engine_.Refine(chain, PriorsOut(shapes.truth), lens);
+  ASSERT_TRUE(open.ok()) << open.status.detail;
+  EXPECT_TRUE(std::isinf(open.value.focalSpread));
+}
+
+/**
  * A loop that sees the focal length only roughly still corrects a lens it shows to be wrong.
  *
  * Refusing is not free: the answer then falls back to the lens handed in, and on a phone that is a
  * guess nobody has measured. The skipping ring's fit is good to about a percent, which is too loose
- * to take over the right lens and far better than a lens 8% out — which it puts eight or nine of its
- * own spreads from the least. So it is taken, both ways, and lands within a few percent.
+ * to take over the right lens and far better than a lens 8% out — which it puts seven to eleven of
+ * its own spreads from the least. So it is taken, both ways, and lands within a few percent.
  */
 TEST_F(Refine, ALensTheLoopsRefuteIsFittedEvenRoughly) {
   const NoisyShapes shapes;

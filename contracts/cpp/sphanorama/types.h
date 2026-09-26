@@ -736,6 +736,12 @@ struct GlobalSolution {
   // deviation, from the pairs' own residuals, is over two tenths of a percent, and the lens handed
   // in is not four of those standard deviations from it either.
   bool lensFitted = false;
+  // That standard deviation: how far the focal length's least could be from where it is, in its
+  // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
+  // on it (ADR 0066). Reported wherever the search reached a least, taken or not, so a caller can
+  // weigh a fitted lens against others and see how near a refused one came; infinite where it did
+  // not: no loop, too few matches, a trial not scored, or loops that do not see the focal length.
+  double focalSpread = std::numeric_limits<double>::infinity();
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

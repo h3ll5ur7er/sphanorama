@@ -142,6 +142,14 @@ closes. Three things follow.
    a device kept from an earlier capture is an estimate this call did not make. So a lens passed
    through keeps `estimated` as it was given, and a fitted one has it set.
 
+   **And `GlobalSolution::focalSpread` says how sure.** The least's standard deviation in log focal
+   scale, reported wherever the search reached a least, taken or not, and infinite where it did not.
+   A lens kept across captures will need it to weigh one capture's fit against another's, and it is
+   what a test can hold the estimate to: until it was reported, the calibration above was prose, and
+   a reviewer found every part of the estimate — the degrees of freedom, the frame a pair's
+   information is gathered in, the frame of its error, the weights — could move it 10 to 20% with
+   the whole suite green, since every decision the tests asserted sat far from a threshold (round 5).
+
 5. **Measured before it is bounded.** The accuracy harness gains the solved ring handed a lens 5%
    and 10% out on both sides, and asserts the recovered focal length and the median rotation error
    against numbers taken from the first implementation, in the manner of ADR 0057.
@@ -168,7 +176,7 @@ closes. Three things follow.
   that points both ways. Making `FitRotation` return the rotation of the inliers it reports removes
   the disagreement at its source; that is its own change, since it moves the chained table.
 - A contract change in `types.h` (`PixelMatch`, `PairwiseResult::inlierMatches`,
-  `GlobalSolution::lensFitted`) and in `engines/registration_engine.h` (`Refine`'s paragraph on the
+  `GlobalSolution::lensFitted`, `GlobalSolution::focalSpread`) and in `engines/registration_engine.h` (`Refine`'s paragraph on the
   lens, and a refusal for matches that disagree with the inlier count). The TypeScript mirror moves with them: the generator
   mirrors every type in `types.h`, though no registration type crosses at runtime.
 - **Memory.** Sixteen bytes a match as four floats, at most 500 a pair: 8 KB a pair, and a sphere of

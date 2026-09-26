@@ -735,6 +735,14 @@ export interface GlobalSolution {
    * in is not four of those standard deviations from it either.
    */
   lensFitted: boolean;
+  /**
+   * That standard deviation: how far the focal length's least could be from where it is, in its
+   * natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
+   * on it (ADR 0066). Reported wherever the search reached a least, taken or not, so a caller can
+   * weigh a fitted lens against others and see how near a refused one came; infinite where it did
+   * not: no loop, too few matches, a trial not scored, or loops that do not see the focal length.
+   */
+  focalSpread: number;
 }
 
 export interface GainMap {

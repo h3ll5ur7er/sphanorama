@@ -1699,6 +1699,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const double spread =
         everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored)
                          : std::numeric_limits<double>::infinity();
+    solution.focalSpread = spread;
     if (everyTrialScored && least &&
         (spread <= kFocalPrecision || std::abs(bestLog) >= kHandedIsRefuted * spread)) {
       averaged = std::move(best.averaged);
