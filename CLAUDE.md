@@ -94,8 +94,10 @@ closing pair, against priors each three degrees out, gives medians of 0.046 (ORB
 0066), because it turned out to be the whole of the exit criterion on a phone: 2% out puts ORB's
 median at 0.50 degrees, and a pair cannot see the error — only a loop can. Each pair carries its
 inlier matches as pixels, and `Refine` searches for the focal scale under which the pairs, refitted
-from them, agree best; from 10% out either way it recovers the focal length to within 0.063% and
-solves as though it had been right. Distortion is not fitted, and the lens a device keeps between
+from them, agree best; from 10% out either way it recovers the photograph ring's focal length to
+within 0.063% and solves as though it had been right. Only where the loops see it precisely, though:
+a lone small loop, or a strip of them, keeps the lens it was handed however far out, and
+`lensFitted` says which happened. Distortion is not fitted, and the lens a device keeps between
 captures is the next decision.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,

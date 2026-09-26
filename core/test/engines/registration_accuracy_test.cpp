@@ -792,9 +792,10 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     const double fxOut = solved.value.intrinsics.fx / dataset.value.lens.fx - 1.0;
     std::fprintf(stderr,
                  "[focal] detector=%d scale=%.2f fitted=%d fx=%+.4f%% median=%.4f max=%.4f "
-                 "edge=%.4f\n",
+                 "edge=%.4f spread=%.4f%% model=%.4f%%\n",
                  static_cast<int>(GetParam()), scale, solved.value.lensFitted ? 1 : 0,
-                 100.0 * fxOut, score.medianDeg, score.maxDeg, solved.value.medianEdgeErrorDeg);
+                 100.0 * fxOut, score.medianDeg, score.maxDeg, solved.value.medianEdgeErrorDeg,
+                 100.0 * solved.value.focalSpread, 100.0 * solved.value.focalModelError);
     EXPECT_TRUE(solved.value.lensFitted) << scale;
     // Today's run, across the four scales: the focal length within -0.063 to -0.051% (ORB), -0.004
     // to +0.002% (AKAZE) and +0.010 to +0.012% (SIFT); medians 0.047 to 0.052, 0.029 to 0.034 and

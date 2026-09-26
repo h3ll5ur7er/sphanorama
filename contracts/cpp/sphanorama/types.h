@@ -732,23 +732,30 @@ struct GlobalSolution {
   // the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
   // them keeps fewer than three matches with a direction at the shortest focal length searched; any
   // trial of the search could not be scored on those matches; the cost does not rise on both sides
-  // of its least, as at an end of the range or with no least at all; or the least's standard
-  // deviation, from the pairs' own residuals read no finer than half a pixel, is over two tenths of
-  // a percent — however far the
-  // least lies from the lens handed in, since that deviation is the pairs' noise and not a wrong
-  // lens model, which moves a weak loop's least by more.
+  // of its least, as at an end of the range or with no least at all; or the least is not precise —
+  // `focalSpread` and `focalModelError`, combined as independent errors, over two tenths of a
+  // percent — however far it lies from the lens handed in.
   bool lensFitted = false;
-  // That standard deviation: how far the focal length's least could be from where it is, in its
+  // How far the focal length's least could be from where it is, as a standard deviation in its
   // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
-  // on it, read no finer than half a pixel (ADR 0066). The pairs' noise alone: a lens model a little wrong — an unreported
-  // distortion — moves the least by more, and a fit absorbs it into a focal length a little off.
-  // Reported wherever the search reached a least — the cost rising on both sides
-  // of it — taken or not, so a caller can weigh a fitted lens against others and see how near a
-  // refused one came; infinite where it did not: no loop, too few matches, a trial not scored, or a
-  // least at an end of the range. Loops that cannot see the focal length leave a cost flat but for
-  // rounding, which may still rise either side of some scale: they report infinity or a spread of
-  // tens of percent and more, never one a fit could be taken on.
+  // on it (ADR 0066). The pairs' noise alone, which more matches or another capture of the same lens
+  // average down; what a lens model a little wrong does is `focalModelError`, which they do not.
+  // Reported wherever the search reached a least — the cost rising on both sides of it — taken or
+  // not, so a caller can weigh a fitted lens against others and see how near a refused one came;
+  // infinite where it did not: no loop, too few matches, a trial not scored, or a least at an end of
+  // the range. Loops that cannot see the focal length leave a cost flat but for rounding, which may
+  // still rise either side of some scale: they report infinity or a spread of tens of percent and
+  // more, never one a fit could be taken on.
   double focalSpread = std::numeric_limits<double>::infinity();
+  // How far the least moves, in the same units, under a lens misread by half a pixel at the frame's
+  // furthest corner — a radial distortion the lens does not carry. Not noise: the same on every match
+  // and every loop, so neither more matches nor more captures shrink it, which is why it is reported
+  // apart from `focalSpread`. 0.04 to 0.09% where loops see the focal length well, as a ring or a
+  // grid does, and 0.27 to 0.33% on a lone small loop or a chain of them, which read distortion through
+  // the same curve of the tangent they read the focal length through. Radial only: tangential
+  // distortion or a rolling shutter moves a least by more than it says. Infinite where `focalSpread`
+  // is.
+  double focalModelError = std::numeric_limits<double>::infinity();
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

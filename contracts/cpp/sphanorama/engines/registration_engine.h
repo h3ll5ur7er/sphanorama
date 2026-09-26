@@ -138,11 +138,12 @@ class IRegistrationEngine {
   // direction under the lens it returns. Where the accepted pairs among placed frames close no loop,
   // where one of them keeps fewer than three such matches, where any trial could not be scored on
   // them, where the cost does not rise on both sides of its least, or where the least is not
-  // precise — its standard deviation, from the scatter the pairs' own residuals put on it read no
-  // finer than half a pixel, within two tenths of a percent — `initial` comes back as given, every field of it, and `lensFitted` is
-  // false. A loop too small to see the focal length through the pairs' noise is refused that way,
-  // however far its least lies from the lens handed in. Where the lens is fitted the rotations are the refitted pairs' solve, not the one their own
-  // `relativeRotation`s give.
+  // precise — how far the pairs' noise could move it and how far a lens misread by half a pixel at
+  // the frame's corner does, within two tenths of a percent together — `initial` comes back as
+  // given, every field of it, and `lensFitted` is false. Loops too weak to see the focal length
+  // past the pairs' noise or past that misreading are refused this way, however many of them there
+  // are and however far their least lies from the lens handed in. Where the lens is fitted the
+  // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give.
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence

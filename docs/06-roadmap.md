@@ -840,7 +840,9 @@ that has to be ordered.
   residual cannot tell — only a loop can. So each pair now carries its inlier matches as pixels,
   and `Refine` searches the focal scale under which the pairs, refitted from them, agree best.
   From 10% out either way it recovers the focal length to within 0.063% and solves the ring as
-  though it had been right. Distortion is not fitted; that is a bundle adjustment's job, and the
+  though it had been right — where the loops see the focal length precisely, which a ring does and
+  a lone small loop or a strip of them does not: those keep the lens they were handed however far
+  out, and `lensFitted` says which. Distortion is not fitted; that is a bundle adjustment's job, and the
   carried matches are its input. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore

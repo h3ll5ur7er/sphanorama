@@ -758,7 +758,8 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
 
   // An open chain beside a closed triangle of frames nothing anchors. The solve leaves the triangle
   // unplaced, so the loop is not one the fit may score: counted, it let the chain's priors fit the
-  // lens to 502.7 of 500, which is what the loop check exists to refuse (a reviewer's probe).
+  // lens to 502.7 of 500 under an earlier rule (a reviewer's probe) — a least that is the priors'
+  // rather than the pixels', which is what the loop check exists to refuse.
   std::vector<Quat> islandTruth = truth;
   islandTruth.insert(islandTruth.end(), truth.begin(), truth.begin() + 3);
   std::vector<PairwiseResult> chainAndIsland = chain;
@@ -839,6 +840,7 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
             << why << ": " << solved.value.focalSpread;
       } else {
         EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << why << ": " << solved.value.focalSpread;
+        EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << why << ": " << solved.value.focalModelError;
       }
 
       // And the rotations are the solve of the pairs' own rotations, not a trial's: the same pairs
@@ -935,34 +937,54 @@ TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
 /**
  * A precision read from each pair's own noise, not the pairs' pooled.
  *
- * One of the skipping ring's loop pairs thinned to fifteen matches at five times the others' noise:
- * the solve puts the loop's misfit on its lightest edge, which here is also its noisiest, and a
- * pooled residual diluted that noise with the rest's. Handed the right lens, four seeds in two
- * hundred were then fitted through refutation, up to 12.8% out (round 5). These are those four.
+ * One pair of the ring thinned to fifteen matches at five times the others' noise: the solve puts
+ * the loop's misfit where the pairs say least, and a pooled residual diluted that pair's noise with
+ * the rest's, so the least wandered three times further than the spread it reported — and at twenty
+ * times the noise, a spread read from the pool fitted every seed, up to 0.8% out, where the pair's
+ * own refuses every one (round 7).
  */
 TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
-  for (const uint32_t seed : {103u, 138u, 154u, 175u}) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.skipping, 0.8, seed);
-    PairwiseResult thin = shapes.skipping[0];
-    thin.inlierMatches.resize(15);
-    thin.inliers = 15;
-    pairs[0] = test::WithNoise({thin}, 4.0, seed + 1000)[0];
-    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
+  const auto withThin = [&](size_t count, double sigma, uint32_t seed) {
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    PairwiseResult thin = shapes.ring[0];
+    thin.inlierMatches.resize(count);
+    thin.inliers = static_cast<int32_t>(count);
+    pairs[0] = test::WithNoise({thin}, sigma, seed + 1000)[0];
+    return pairs;
+  };
+  double squares = 0.0;
+  for (uint32_t seed = 1; seed <= 20; ++seed) {
+    const Result<GlobalSolution> solved =
+        engine_.Refine(withThin(15, 4.0, seed), PriorsOut(shapes.truth), lens);
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    ASSERT_TRUE(solved.value.lensFitted) << "seed " << seed;
+    const double z = std::log(solved.value.intrinsics.fx / lens.fx) / solved.value.focalSpread;
+    squares += z * z;
+  }
+  // 0.99 over these twenty, and 3.3 read from the pool.
+  EXPECT_LT(std::sqrt(squares / 20.0), 1.5);
+  for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
+    const Result<GlobalSolution> solved =
+        engine_.Refine(withThin(15, 16.0, seed), PriorsOut(shapes.truth), lens);
     ASSERT_TRUE(solved.ok()) << solved.status.detail;
     EXPECT_FALSE(solved.value.lensFitted) << "seed " << seed;
-    EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << "seed " << seed;
   }
 
-  // But never quieter than the pool: four matches leave a pair five degrees of freedom, and in this
-  // seed its own residual read so low that, taken alone, the ring was fitted 7.1% out.
-  std::vector<PairwiseResult> pairs = test::WithNoise(shapes.skipping, 0.8, 35);
-  pairs[0].inlierMatches.resize(4);
-  pairs[0].inliers = 4;
-  const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
-  ASSERT_TRUE(solved.ok()) << solved.status.detail;
-  EXPECT_FALSE(solved.value.lensFitted);
+  // But never quieter than the pool: three matches leave a pair three degrees of freedom, and in
+  // these seeds its own residual read so low that, taken alone, it put the least eight of its
+  // spreads out.
+  for (const uint32_t seed : {18u, 100u}) {
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    pairs[0].inlierMatches.resize(3);
+    pairs[0].inliers = 3;
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    ASSERT_TRUE(solved.value.lensFitted) << "seed " << seed;
+    EXPECT_LT(std::abs(std::log(solved.value.intrinsics.fx / lens.fx) / solved.value.focalSpread), 4.0)
+        << "seed " << seed;
+  }
 }
 
 /**
@@ -1074,20 +1096,21 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
   const Result<GlobalSolution> open = engine_.Refine(chain, PriorsOut(shapes.truth), lens);
   ASSERT_TRUE(open.ok()) << open.status.detail;
   EXPECT_TRUE(std::isinf(open.value.focalSpread));
+  EXPECT_TRUE(std::isinf(open.value.focalModelError));
 }
 
 /**
  * A loop that sees the focal length only roughly does not override the lens it is handed, however
- * far from it its least lies — not the right one, and not one 8% out.
+ * far from it its least lies — not the right one, and not one 8% out — and nor do many of them.
  *
- * The least's spread is the pairs' noise and nothing else, and a lens model a little wrong moves a
- * weak loop's least by more: such a loop reads the focal length through the curve of the tangent,
- * and reads distortion through the same curve. Handed the right focal length with an unreported k1
- * of -0.01 — 2.6 px at the corner, less than a phone's ISP leaves — the skipping ring and the
- * triangle put their least ten of their own spreads from it, 1.6 to 2.5% out, and a rule that took
- * a least that far from the lens handed in as refuting it fitted there, the rotations seven times
- * worse (round 6). So the lens handed in stands, right or 8% out; correcting a lens a weak loop
- * cannot see precisely is for a capture with the loops to do it, or for the lens a device keeps.
+ * A lens model a little wrong moves a weak loop's least by more than its noise does: such a loop
+ * reads the focal length through the curve of the tangent, and reads distortion through the same
+ * curve. Handed the right focal length with an unreported k1 of -0.01 — 2.6 px at the corner — the
+ * skipping ring and the triangle put their least 1.6% out on exact matches, 5.0 to 5.1% at -0.03,
+ * and a rule that took a least far enough from the lens handed in as refuting it fitted there, the
+ * rotations seven times worse (round 6). So the lens handed in stands, right or 8% out; correcting a
+ * lens a weak loop cannot see precisely is for a capture with the loops to do it, or for the lens a
+ * device keeps.
  */
 TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
   const NoisyShapes shapes;
@@ -1115,6 +1138,24 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
       }
     }
   }
+  // Many weak loops are no stronger than one against a lens model a little wrong: a ring open at one
+  // pair with a chord across every other frame has matches enough for its noise to read under 0.17%
+  // at 0.4 px, and under that same k1 of -0.01 its least lies 1.8% out, the rotations six times
+  // worse. A half-pixel misreading moves it 0.30%, as it does one loop (round 7).
+  for (const double k1 : {-0.005, -0.01}) {
+    Intrinsics distorted = lens;
+    distorted.k1 = k1;
+    std::vector<PairwiseResult> chords = MatchedRing(shapes.truth, distorted);
+    chords.pop_back();
+    for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
+    for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
+      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
+      const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
+      ASSERT_TRUE(solved.ok()) << solved.status.detail;
+      EXPECT_FALSE(solved.value.lensFitted) << "chords, " << k1 << ", seed " << seed;
+      EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << "chords, " << k1 << ", seed " << seed;
+    }
+  }
   // A ring has the loops to absorb the same distortion into a focal length a little off and keep its
   // rotations right, and is fitted: 0.24% short, the rotations within a hundredth of a degree.
   Intrinsics distorted = lens;
@@ -1136,6 +1177,49 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << scale << ", seed " << seed;
       EXPECT_EQ(solved.value.intrinsics.fx, Scaled(lens, scale).fx) << scale << ", seed " << seed;
+    }
+  }
+}
+
+/**
+ * The model error `Refine` reports is how far a lens misread by half a pixel at the frame's corner
+ * moves the least — measured by misreading it.
+ *
+ * Rendered through a radial distortion that moves the corner half a pixel either way and handed the
+ * lens without it, a ring and a grid put their least where the error they report under that lens
+ * says, within 2% of it: 0.046% and 0.044%. Handed the focal length 8% out as well, the same,
+ * because the misreading is half a pixel under the lens the least was found at, not the one handed
+ * in.
+ */
+TEST_F(Refine, TheModelErrorIsHowFarAHalfPixelMovesTheLeast) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  const double corner = std::hypot(lens.cx, lens.cy) / lens.fx;
+  const double halfPixel = 0.5 / (lens.fx * corner * corner * corner);
+  for (const double k1 : {-halfPixel, halfPixel}) {
+    Intrinsics distorted = lens;
+    distorted.k1 = k1;
+    std::vector<PairwiseResult> grid;
+    for (int row = 0; row < 2; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        grid.push_back(Matched(row * 4 + column, row * 4 + column + 1, shapes.grid, distorted));
+      }
+    }
+    for (int column = 0; column < 4; ++column) {
+      grid.push_back(Matched(column, 4 + column, shapes.grid, distorted));
+    }
+    for (const double scale : {1.0, 1.08}) {
+      for (const auto& [pairs, poses, why] :
+           {std::tuple{MatchedRing(shapes.truth, distorted), shapes.truth, "a ring"},
+            std::tuple{grid, shapes.grid, "a grid"}}) {
+        const Result<GlobalSolution> solved =
+            engine_.Refine(pairs, PriorsOut(poses), Scaled(lens, scale));
+        ASSERT_TRUE(solved.ok()) << solved.status.detail;
+        ASSERT_TRUE(solved.value.lensFitted) << why << ", k1 " << k1 << ", scale " << scale;
+        const double moved = std::abs(std::log(solved.value.intrinsics.fx / lens.fx));
+        EXPECT_NEAR(moved / solved.value.focalModelError, 1.0, 0.03)
+            << why << ", k1 " << k1 << ", scale " << scale;
+      }
     }
   }
 }
@@ -1329,6 +1413,7 @@ TEST_F(Refine, ATrialTheRiseTestAddsIsScoredLikeTheRest) {
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
   // A trial not scored reaches no least to report a spread for.
   EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
+  EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << solved.value.focalModelError;
 }
 
 /**
@@ -1381,6 +1466,7 @@ TEST_F(Refine, AMatchThatLosesItsDirectionMidRangeIsNotAFit) {
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
   // A trial not scored reaches no least to report a spread for.
   EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
+  EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << solved.value.focalModelError;
 }
 
 // The lens `AMatchThatLosesItsDirectionMidRangeIsNotAFit` is handed, whose tangential terms make
@@ -1445,6 +1531,7 @@ TEST_F(Refine, ATrialTheSearchMakesFarFromTheLeastCounts) {
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
   // A trial not scored reaches no least to report a spread for.
   EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
+  EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << solved.value.focalModelError;
 }
 
 /**
@@ -1473,6 +1560,7 @@ TEST_F(Refine, TheRiseTestsLongerTrialCountsToo) {
   EXPECT_EQ(solved.value.intrinsics.fx, handed.fx);
   // A trial not scored reaches no least to report a spread for.
   EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << solved.value.focalSpread;
+  EXPECT_TRUE(std::isinf(solved.value.focalModelError)) << solved.value.focalModelError;
 }
 
 }  // namespace
