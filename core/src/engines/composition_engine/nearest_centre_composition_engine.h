@@ -6,7 +6,7 @@
 namespace sphanorama {
 
 // V8's first real answer: the preview, with each direction of the sphere coloured by the frame
-// whose optical axis is nearest it (ADR 0068).
+// whose optical axis is nearest it among the frames that see it (ADR 0068).
 //
 // Nearest centre rather than a blend, because a preview's job is to show the registration, and a
 // blend hides it: a rotation a degree out shows here as a step at the boundary between two frames,

@@ -866,7 +866,7 @@ that has to be ordered.
   blending, equirectangular projection with tiled output. **The preview is in** (ADR 0068):
   `RenderPreview` colours each direction from the frame looking at it most squarely, and a round
   trip against the photograph a ring was rendered from measures it at a mean error of 1.19 bytes
-  with the true rotations. A tenth of a degree of misregistration reads 2.85, so the harness can see
+  with the true rotations. A tenth of a degree of misregistration reads 2.84, so the harness can see
   errors well inside registration's 0.5-degree threshold. It is not gauge-free, so composing an
   *estimated* ring means aligning it to the truth first, which is next. Everything else in this
   bullet answers `Unsupported`, and no composition root selects the engine yet.

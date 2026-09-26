@@ -55,8 +55,9 @@ composite should look like.
    | | mean error, bytes | 99th percentile |
    | --- | --- | --- |
    | the true rotations | 1.193 | 11 |
-   | alternate frames turned 0.1° either way | 2.85 | 29 |
-   | the true rotations, frame sampled half a pixel off | 1.889 | 18 |
+   | alternate frames turned 0.1° either way | 2.84 | 29 |
+   | the true rotations, frames sampled half a pixel off along their rows | 1.889 | 18 |
+   | the true rotations, frames sampled half a pixel off in both axes | 2.448 | 23 |
 
    The bounds are 2.0 and 16. A tenth of a degree is under a third of a preview pixel and a fifth
    of the 0.5-degree threshold registration exits on, so a registration error the exit criterion
@@ -81,13 +82,22 @@ composite should look like.
   scaling the value it encodes. Interpolation is affine, so it is indifferent to the encoding. The
   harness passes no gains and nothing here claims to measure them.
 - **The cost is every frame for every preview pixel**, pruned only by the nearest-so-far test:
-  a render and its comparison take 1.2 seconds for 12 frames at 1024 wide in a debug build. A full sphere plans around sixty frames,
-  and an index from direction to candidate frames is the fix when a measurement on a phone asks for
-  it.
+  a render and its comparison take 1.2 seconds for 12 frames at 1024 wide in a debug build. A full
+  sphere plans around sixty frames, and an index from direction to candidate frames is the fix when
+  a measurement on a phone asks for it.
+- **The memory is one frame and the answer**, not the sphere. A kept frame is about 4.9 MB against a
+  128 MB ceiling on a mid-range phone (ADR 0023), so a sixty-frame sphere does not fit, and the
+  first version, which pinned every frame at once, refused the preview of a real capture at any
+  size. The preview is decided first, from geometry alone, as one frame index a pixel. That takes
+  two bytes a preview pixel, half the preview's own size, in the core's heap rather than the store.
+  Then each frame that colours anything is pinned, painted from, released, and demoted back to the
+  tier it was found in, as `CandidatePreview` does. The two-byte index is why a solution naming
+  65,535 frames or more is refused.
 - **No composition root selects it yet**, as with `Registration`: it is reached from tests, and
   `PanoramaBuildManager` still answers `Unsupported`.
 - The dataset renderer (`Rendered`) moved from `registration_accuracy_test.cpp` into
-  `core/test/support/rendered_dataset.h` so that both harnesses use it, unchanged. `ReadFrame`
+  `core/test/support/rendered_dataset.h` so that both harnesses use it — unchanged in the commit
+  that moved it, and then given the `referenceWidth` this harness asks for. `ReadFrame`
   takes the shape it expects and the sentence naming whose shape it is, so the reference is refused
   in its own words.
 

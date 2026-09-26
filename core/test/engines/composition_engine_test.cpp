@@ -12,10 +12,13 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "engines/composition_engine/nearest_centre_composition_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/fake_spill_sink.h"
 #include "utilities/camera_model.h"
 #include "utilities/equirect.h"
 #include "utilities/quaternion.h"
@@ -184,11 +187,26 @@ class NearestCentreComposition : public ::testing::Test {
     return preview;
   }
 
-  StatusCode Refused(int32_t maxWidth = 64, const GainMap& gains = {}) {
+  Status Refusal(int32_t maxWidth = 64, const GainMap& gains = {}) {
     Result<FrameRef> answer = engine.RenderPreview(solution, frames, gains, maxWidth);
     EXPECT_EQ(store.outstanding(), 0) << "every pin is released on a refusal too";
     if (answer.ok()) (void)real.Forget(answer.value);
-    return answer.status.code;
+    return answer.status;
+  }
+  StatusCode Refused(int32_t maxWidth = 64, const GainMap& gains = {}) {
+    return Refusal(maxWidth, gains).code;
+  }
+  // The engine's own refusal, by the phrase only its guard writes: a store refusing the same input
+  // later with the same code would otherwise pass for it.
+  ::testing::AssertionResult RefusedSaying(const std::string& phrase, int32_t maxWidth = 64,
+                                           const GainMap& gains = {}) {
+    const Status status = Refusal(maxWidth, gains);
+    if (status.code == StatusCode::InvalidArgument &&
+        status.detail.find(phrase) != std::string::npos) {
+      return ::testing::AssertionSuccess();
+    }
+    return ::testing::AssertionFailure() << "refused with " << static_cast<int>(status.code)
+                                         << ": " << status.detail;
   }
 };
 
@@ -215,10 +233,14 @@ TEST_F(NearestCentreComposition, AFrameLookingForwardCoversTheCentreAndNothingBe
   EXPECT_EQ(preview.At(0, 64), (std::array<uint8_t, 4>{0, 0, 0, 0}));
   EXPECT_EQ(preview.At(128, 0), (std::array<uint8_t, 4>{0, 0, 0, 0}));
 
-  // Sixty degrees of a 256-wide panorama is 42.7 columns along the equator.
+  // Sixty degrees of a 256-wide panorama is 42.7 columns along the equator, and 46.8 degrees of
+  // its 128 rows is 33.3 down the middle: each counts both of that axis's edges.
   int32_t covered = 0;
   for (int32_t x = 0; x < preview.width; ++x) covered += preview.At(x, 64)[3] == 255 ? 1 : 0;
   EXPECT_NEAR(covered, 256.0 * 60.0 / 360.0, 1.5);
+  int32_t tall = 0;
+  for (int32_t y = 0; y < preview.height; ++y) tall += preview.At(128, y)[3] == 255 ? 1 : 0;
+  EXPECT_NEAR(tall, 128.0 * 46.8 / 180.0, 1.5);
 }
 
 // Turned a quarter to the left, the frame lands a quarter of the way across: `FromAzimuthElevation`
@@ -233,7 +255,8 @@ TEST_F(NearestCentreComposition, ARotationMovesWhereTheFrameLands) {
 
 // The colour at a direction is the frame's colour where that direction lands through the lens,
 // interpolated between pixel centres: a frame whose red is its column shows, at each covered
-// direction, the column the lens puts it at less the half pixel to that column's centre.
+// direction, the column the lens puts it at less the half pixel to that column's centre — and in
+// the half pixel between the outermost centres and the frame's edge, the outermost pixel.
 TEST_F(NearestCentreComposition, TheColourIsTheFramesWhereTheDirectionLands) {
   const Quat turned = FromAzimuthElevation(10.0, 5.0);
   Look(turned, [](int32_t x, int32_t y) {
@@ -241,23 +264,28 @@ TEST_F(NearestCentreComposition, TheColourIsTheFramesWhereTheDirectionLands) {
   });
   const Preview preview = Render(512);
   int32_t checked = 0;
-  for (int32_t y = 0; y < preview.height; y += 7) {
-    for (int32_t x = 0; x < preview.width; x += 5) {
+  int32_t atTheEdge = 0;
+  for (int32_t y = 0; y < preview.height; ++y) {
+    for (int32_t x = 0; x < preview.width; ++x) {
       const std::optional<Vec3> world = EquirectDirection(Pixel{x + 0.5, y + 0.5}, 512, 256);
       ASSERT_TRUE(world.has_value());
       const ProjectedPixel at = Project(lens, Rotate(Conjugate(turned), *world));
-      const bool inside = at.valid && at.pixel.x >= 0.5 && at.pixel.x <= kWidth - 0.5 &&
-                          at.pixel.y >= 0.5 && at.pixel.y <= kHeight - 0.5;
+      const bool inside = at.valid && at.pixel.x >= 0.0 && at.pixel.x <= kWidth &&
+                          at.pixel.y >= 0.0 && at.pixel.y <= kHeight;
       if (!inside) continue;
+      const double column = std::clamp(at.pixel.x - 0.5, 0.0, kWidth - 1.0);
+      const double row = std::clamp(at.pixel.y - 0.5, 0.0, kHeight - 1.0);
+      if (column != at.pixel.x - 0.5 || row != at.pixel.y - 0.5) ++atTheEdge;
       const std::array<uint8_t, 4> got = preview.At(x, y);
       ASSERT_EQ(got[3], 255) << x << " " << y;
-      EXPECT_NEAR(got[0], (at.pixel.x - 0.5) * 3.0, 0.51) << x << " " << y;
-      EXPECT_NEAR(got[1], (at.pixel.y - 0.5) * 4.0, 0.51) << x << " " << y;
+      EXPECT_NEAR(got[0], column * 3.0, 0.51) << x << " " << y;
+      EXPECT_NEAR(got[1], row * 4.0, 0.51) << x << " " << y;
       EXPECT_EQ(got[2], 7);
       ++checked;
     }
   }
   EXPECT_GT(checked, 100) << "the premise: the frame covers some of the sampled directions";
+  EXPECT_GT(atTheEdge, 10) << "the premise: some of them land in the half pixel at the edge";
 }
 
 // Where two frames see a direction, the one looking at it most squarely colours it: two frames
@@ -284,7 +312,10 @@ TEST_F(NearestCentreComposition, AGainScalesItsFramesColourAndSaturates) {
 }
 
 // A solution that placed nothing is a sphere nothing sees, not a refusal.
+// Whatever its lens, since a default solution has none and there is nothing to project through it.
 TEST_F(NearestCentreComposition, NothingPlacedIsNothingCovered) {
+  solution.intrinsics = Intrinsics{};
+  ASSERT_FALSE(IsUsableLens(solution.intrinsics)) << "the premise";
   const Preview preview = Render(64);
   ASSERT_EQ(preview.width, 64);
   for (size_t i = 3; i < preview.bytes.size(); i += 4) ASSERT_EQ(preview.bytes[i], 0) << i;
@@ -293,9 +324,9 @@ TEST_F(NearestCentreComposition, NothingPlacedIsNothingCovered) {
 TEST_F(NearestCentreComposition, InputThatIsNotAPreviewIsRefused) {
   Look(Quat{}, Rgb{1, 2, 3});
   Look(FromAzimuthElevation(30.0, 0.0), Rgb{4, 5, 6});
-  EXPECT_EQ(Refused(1), StatusCode::InvalidArgument);
-  EXPECT_EQ(Refused(0), StatusCode::InvalidArgument);
-  EXPECT_EQ(Refused(-4), StatusCode::InvalidArgument);
+  EXPECT_TRUE(RefusedSaying("no half to be high", 1));
+  EXPECT_TRUE(RefusedSaying("no half to be high", 0));
+  EXPECT_TRUE(RefusedSaying("no half to be high", -4));
 
   const std::vector<FrameRef> all = frames;
   frames.pop_back();
@@ -316,9 +347,20 @@ TEST_F(NearestCentreComposition, InputThatIsNotAPreviewIsRefused) {
   solution = good;
 
   GainMap gains;
+  const std::string unnamed = "do not name the solution's frames";
   gains.frames = solution.frames;
   gains.perFrameGain = {1.0};
-  EXPECT_EQ(Refused(64, gains), StatusCode::InvalidArgument) << "a gain short";
+  EXPECT_TRUE(RefusedSaying(unnamed, 64, gains)) << "a gain short";
+  gains.perFrameGain = {1.0, 1.0, 1.0};
+  EXPECT_TRUE(RefusedSaying(unnamed, 64, gains)) << "a gain too many";
+  gains.perFrameGain = {};
+  EXPECT_TRUE(RefusedSaying(unnamed, 64, gains)) << "frames named and no gains";
+  gains.perFrameGain = {1.0, 1.0};
+  gains.frames = {};
+  EXPECT_TRUE(RefusedSaying(unnamed, 64, gains)) << "gains and no frames named";
+  gains.frames = {solution.frames[0], solution.frames[1], solution.frames[1]};
+  EXPECT_TRUE(RefusedSaying(unnamed, 64, gains)) << "a frame named too many";
+  gains.frames = solution.frames;
   gains.perFrameGain = {1.0, std::numeric_limits<double>::quiet_NaN()};
   EXPECT_EQ(Refused(64, gains), StatusCode::InvalidArgument) << "a gain not a figure";
   gains.perFrameGain = {1.0, 0.0};
@@ -333,13 +375,31 @@ TEST_F(NearestCentreComposition, InputThatIsNotAPreviewIsRefused) {
   gains.frames = solution.frames;
   ASSERT_EQ(Refused(64, gains), StatusCode::Ok) << "the premise: those gains are otherwise fine";
 
-  frames[1] = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; }, kWidth * 2,
+  // Each dimension on its own, so neither half of the check stands in for the other.
+  frames[1] = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; }, kWidth * 2);
+  solution.frames[1] = frames[1].id;
+  EXPECT_TRUE(RefusedSaying("another size than the lens")) << "a frame another width";
+  frames[1] = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; }, kWidth,
                     kHeight * 2);
   solution.frames[1] = frames[1].id;
-  EXPECT_EQ(Refused(), StatusCode::InvalidArgument) << "a frame another size than the lens";
+  EXPECT_TRUE(RefusedSaying("another size than the lens")) << "a frame another height";
   frames[1] = Paint(PixelFormat::Gray8, [](int32_t, int32_t) { return Rgb{}; });
   solution.frames[1] = frames[1].id;
   EXPECT_EQ(Refused(), StatusCode::Unsupported) << "a frame that is not RGBA8";
+}
+
+// Each preview pixel names its frame in two bytes, so a solution that names more frames than that
+// can count is refused before anything is pinned or allocated.
+TEST_F(NearestCentreComposition, MoreFramesThanAPreviewCanTellApartIsRefused) {
+  const FrameRef frame = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; });
+  frames.assign(65535, frame);
+  solution.frames.assign(65535, frame.id);
+  solution.rotations.assign(65535, Quat{});
+  EXPECT_EQ(Refused(), StatusCode::InvalidArgument);
+  frames.resize(65534);
+  solution.frames.resize(65534);
+  solution.rotations.resize(65534);
+  EXPECT_EQ(Refused(2), StatusCode::Ok) << "one fewer is a preview";
 }
 
 // A frame is a value the caller passes in, and the store's allocation is the truth: a handle whose
@@ -426,6 +486,49 @@ TEST_F(NearestCentreComposition, AnAnswerThatCanBeNeitherPinnedNorForgottenSaysI
   Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
   ASSERT_FALSE(answer.ok());
   EXPECT_NE(answer.status.detail.find("still charged"), std::string::npos) << answer.status.detail;
+}
+
+// A sphere is larger than the heap on a phone (ADR 0023), so its preview borrows one frame at a time
+// and puts each back where it found it: eight spilled frames in a store with room for four of them
+// beside the answer.
+TEST(NearestCentrePreview, IsMadeOfASphereLargerThanTheHeapAndLeavesItWhereItWas) {
+  constexpr int64_t kFrameBytes = int64_t{kWidth} * kHeight * 4;
+  constexpr int64_t kPreviewBytes = 64 * 32 * 4;
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{4 * kFrameBytes + kPreviewBytes, &sink};
+  NearestCentreCompositionEngine engine{store};
+  GlobalSolution solution;
+  solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
+  std::vector<FrameRef> frames;
+  for (int k = 0; k < 8; ++k) {
+    Result<FrameRef> frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+    ASSERT_TRUE(frame.ok()) << frame.status.detail;
+    Result<std::span<uint8_t>> bytes = store.Pin(frame.value);
+    ASSERT_TRUE(bytes.ok());
+    std::fill(bytes.value.begin(), bytes.value.end(), static_cast<uint8_t>(10 + k));
+    ASSERT_TRUE(store.Release(frame.value).ok());
+    ASSERT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+    frames.push_back(frame.value);
+    solution.frames.push_back(frame.value.id);
+    solution.rotations.push_back(FromAzimuthElevation(45.0 * k, 0.0));
+  }
+
+  Result<FrameRef> preview = engine.RenderPreview(solution, frames, {}, 64);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+  for (const FrameRef& frame : frames) {
+    EXPECT_EQ(store.ResidencyOf(frame).value, Residency::Spilled) << "put back where it was found";
+  }
+  Result<std::span<uint8_t>> drawn = store.Pin(preview.value);
+  ASSERT_TRUE(drawn.ok());
+  std::set<uint8_t> colours;
+  for (int32_t x = 0; x < 64; ++x) {
+    const uint8_t* pixel = drawn.value.data() + 16 * preview.value.stride + x * 4;
+    EXPECT_EQ(pixel[3], 255) << "the whole equator is seen, column " << x;
+    colours.insert(pixel[0]);
+  }
+  EXPECT_EQ(colours.size(), 8U) << "every frame coloured some of it";
+  EXPECT_TRUE(store.Release(preview.value).ok());
+  EXPECT_TRUE(store.Forget(preview.value).ok());
 }
 
 // The other methods are later increments, and say so.

@@ -43,10 +43,14 @@ class ICompositionEngine {
   // `gains` may be empty, meaning none; otherwise it names the solution's frames in the solution's
   // order, each gain finite and above zero, and multiplies that frame's colour.
   //
+  // Each frame is read on its own and put back in the tier it was found in, so the preview of a
+  // sphere larger than the heap can still be made: what it holds at once is one frame and the
+  // answer.
+  //
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size than
-  // the solution's lens, a lens that cannot project when there is a frame to project, a rotation
-  // that is not one, gains that do not name the frames or are not figures, and a `maxWidth` under
-  // 2; `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes
+  // the solution's lens, a handle claiming more bytes than the store holds for it, a lens that
+  // cannot project when there is a frame to project, a rotation that is not one, gains that do not
+  // name the frames or are not figures, 65,535 frames or more, and a `maxWidth` under 2; `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes
   // as another shape than was asked; the store's own status when a frame cannot be pinned or
   // released, or the answer allocated. A refusal gives the answer back, and says so when the store
   // will not take it.

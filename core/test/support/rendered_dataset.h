@@ -96,12 +96,11 @@ class Rendered {
    * produced the skip, so the guarantee lives there. This is the cheap tripwire for the one cause a
    * contributor actually creates, so that a partial local `ctest` says something useful.
    *
-   * **The two `ASSERT_FALSE(rendered.inputMissing())` sites are kept in step by hand, and a third
-   * world is when to stop doing that.** A helper would have to be a macro — `ASSERT_` expands to a
-   * bare `return` — and a macro that hides a return behind a name is a worse trade than one
-   * duplicated line. At three sites it stops being a pair and becomes a copy, and the `--panorama`
-   * ternary in the command below becomes a second one at the same moment, since today both those
-   * lines say `Photograph` only because the enum has two values.
+   * **Every site that renders repeats `ASSERT_FALSE(rendered.inputMissing())` by hand** — five,
+   * across two harnesses. A helper would have to be a macro — `ASSERT_` expands to a bare
+   * `return` — and a macro that hides a return behind a name is a worse trade than one duplicated
+   * line. A third world is when this stops being the right trade: the `--panorama` ternary in the
+   * command below says `Photograph` only because the enum has two values.
    */
   bool inputMissing() const { return missingInput_; }
 

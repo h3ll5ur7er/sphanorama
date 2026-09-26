@@ -72,10 +72,11 @@ TEST(Equirect, NoDirectionIsInventedWhereThereIsNone) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
   EXPECT_FALSE(EquirectDirection(Pixel{1.0, 1.0}, 0, 4).has_value());
-  EXPECT_FALSE(EquirectDirection(Pixel{1.0, 1.0}, 8, 0).has_value());
+  EXPECT_FALSE(EquirectDirection(Pixel{1.0, 0.0}, 8, 0).has_value()) << "a row inside [0, 0]";
   EXPECT_FALSE(EquirectDirection(Pixel{1.0, 1.0}, -8, 4).has_value());
   EXPECT_FALSE(EquirectDirection(Pixel{nan, 1.0}, 8, 4).has_value());
   EXPECT_FALSE(EquirectDirection(Pixel{1.0, inf}, 8, 4).has_value());
+  EXPECT_FALSE(EquirectDirection(Pixel{1.0, nan}, 8, 4).has_value()) << "NaN passes both bounds";
   EXPECT_FALSE(EquirectDirection(Pixel{1.0, -0.5}, 8, 4).has_value());
   EXPECT_FALSE(EquirectDirection(Pixel{1.0, 4.5}, 8, 4).has_value());
 }

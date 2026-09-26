@@ -40,7 +40,7 @@ constexpr int32_t kPreviewWidth = 1024;
 
 // Mean absolute error over every covered colour component, in bytes of the signed encoding.
 // Measured at 1.193 with the true rotations: the floor is two bilinear samples, photograph to frame
-// and frame to preview, against one. Measured at 2.85 with alternate frames turned a tenth of a
+// and frame to preview, against none. Measured at 2.84 with alternate frames turned a tenth of a
 // degree either way, which is under a third of a preview pixel and a fifth of the 0.5-degree
 // threshold registration exits on — so the bound sits between the two, and a registration error
 // the exit criterion allows is one this can see.

@@ -2433,9 +2433,10 @@ class AReferenceIsThePanoramaAtThePreviewsPixelCentres(unittest.TestCase):
     def test_a_width_that_is_not_a_previews_is_refused(self):
         # A preview is twice as wide as it is high, so an odd width has no preview to be the
         # reference of, and nothing narrower than two has a half to be high.
+        # By the guard's own sentence: numpy refuses a negative shape with a ValueError of its own.
         panorama = direction_encoded_panorama(16, 8)
         for width in (0, 1, 7, -2):
-            with self.subTest(width=width), self.assertRaises(ValueError):
+            with self.subTest(width=width), self.assertRaisesRegex(ValueError, "no preview"):
                 self._written(panorama, width)
 
     def test_the_command_line_writes_one_and_refuses_an_odd_width(self):
@@ -2448,11 +2449,13 @@ class AReferenceIsThePanoramaAtThePreviewsPixelCentres(unittest.TestCase):
                 sys.argv = argv + ["--reference-width", "16"]
                 self.assertEqual(synth_dataset.main(), 0)
                 self.assertTrue((out / "reference.ppm").read_bytes().startswith(b"P6\n16 8\n"))
-                sys.argv = argv + ["--reference-width", "15"]
-                with contextlib.redirect_stderr(io.StringIO()) as complaint, \
-                        self.assertRaises(SystemExit):
-                    synth_dataset.main()
-                self.assertIn("--reference-width", complaint.getvalue())
+                for refused in ("15", "0", "-2"):
+                    sys.argv = argv + ["--reference-width", refused]
+                    with self.subTest(width=refused), \
+                            contextlib.redirect_stderr(io.StringIO()) as complaint, \
+                            self.assertRaises(SystemExit):
+                        synth_dataset.main()
+                    self.assertIn("--reference-width must be even", complaint.getvalue())
             finally:
                 sys.argv = old
 
