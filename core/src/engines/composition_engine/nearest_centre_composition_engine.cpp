@@ -290,11 +290,12 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
       return abandon(given.code, given.detail, true);
     }
   }
-  // What no frame sees is transparent black, not the index it was left holding.
+  // What no frame sees is transparent black, not the index it was left holding; blue was never
+  // written after the memset.
   for (int32_t y = 0; y < height; ++y) {
     for (int32_t x = 0; x < width; ++x) {
       uint8_t* pixel = pixelAt(x, y);
-      if (pixel[3] == 0) pixel[0] = pixel[1] = pixel[2] = 0;
+      if (pixel[3] == 0) pixel[0] = pixel[1] = 0;
     }
   }
 

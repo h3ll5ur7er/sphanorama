@@ -641,6 +641,34 @@ TEST_F(NearestCentreComposition, AnAnswerRefusedWhoseReleaseIsDeclinedSaysItIsSt
   EXPECT_TRUE(store.Forget(answer.value).ok());
 }
 
+// A preview released but not forgotten is handed back to be forgotten, and says which it was.
+TEST_F(NearestCentreComposition, AnAnswerRefusedWhoseForgetIsDeclinedIsHandedBack) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  store.describeAllocated = [](FrameRef& f) { f.width -= 2; };
+  store.refuseForgetOfAllocated = true;
+  const Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
+  EXPECT_EQ(answer.status.code, StatusCode::Internal);
+  EXPECT_NE(answer.status.detail.find("would not forget the preview"), std::string::npos)
+      << answer.status.detail;
+  EXPECT_EQ(store.outstanding(), 0) << "it was released";
+  ASSERT_TRUE(answer.value.id.valid());
+  store.refuseForgetOfAllocated = false;
+  EXPECT_TRUE(store.Forget(answer.value).ok());
+}
+
+// A frame index past 255 needs both of its bytes: frame 256 of 257, the only one looking forward,
+// colours the centre, where a lost high byte would name frame 0, which faces away.
+TEST_F(NearestCentreComposition, AFrameIndexPastOneByteIsReadWhole) {
+  const FrameRef away = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{1, 1, 1}; });
+  for (int k = 0; k < 256; ++k) {
+    frames.push_back(away);
+    solution.frames.push_back(away.id);
+    solution.rotations.push_back(FromAzimuthElevation(180.0, 0.0));
+  }
+  Look(Quat{}, Rgb{90, 80, 70});
+  EXPECT_EQ(Render(64).At(32, 16), (std::array<uint8_t, 4>{90, 80, 70, 255}));
+}
+
 // A pin the store refuses takes nothing from a caller who already held one.
 TEST_F(NearestCentreComposition, ARefusedPinLeavesTheCallersPinAlone) {
   Look(Quat{}, Rgb{1, 2, 3});
@@ -670,6 +698,7 @@ TEST_F(NearestCentreComposition, AFrameWhoseTierTheStoreCannotSayIsNotRead) {
   store.refuseResidency = true;
   EXPECT_EQ(Refused(), StatusCode::Internal) << "the store's own code";
   EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "the preview is given back";
+  EXPECT_EQ(store.PinnedEver(frames[0]), 0) << "and the frame was never read";
 }
 
 // While a pixel waits for its frame, its colour bytes hold that frame's index; once painted they
@@ -687,11 +716,12 @@ TEST_F(NearestCentreComposition, APaintedColourIsNotTakenForAFrameIndex) {
 // frame is left afterwards.
 struct SpilledForward {
   FakeSpillSink sink;
-  MemoryFrameStoreAccess store{int64_t{1} << 24, &sink};
+  MemoryFrameStoreAccess store;
   NearestCentreCompositionEngine engine{store};
   GlobalSolution solution;
   std::vector<FrameRef> frames;
-  explicit SpilledForward(bool spill = true) {
+  explicit SpilledForward(bool spill = true, int64_t ceiling = int64_t{1} << 24)
+      : store(ceiling, &sink) {
     solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
     Result<FrameRef> frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
     EXPECT_TRUE(frame.ok());
@@ -727,6 +757,16 @@ TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
       << answer.status.detail;
   EXPECT_EQ(spilled.HeapUsed(), kWidth * kHeight * 4) << "the answer is given back; the frame "
                                                            "is where the store left it";
+}
+
+// A frame that cannot be pinned is refused with the store's own code: here a spilled one with no room
+// left to fault it into beside the preview.
+TEST(NearestCentrePreview, AFrameThatCannotBePinnedIsTheStoresOwnRefusal) {
+  SpilledForward full(true, int64_t{kWidth} * kHeight * 4 + 64 * 32 * 4 - 1);
+  Result<FrameRef> answer = full.engine.RenderPreview(full.solution, full.frames, {}, 64);
+  EXPECT_EQ(answer.status.code, StatusCode::FrameStoreExhausted) << answer.status.detail;
+  EXPECT_EQ(full.store.ResidencyOf(full.frames[0]).value, Residency::Spilled);
+  EXPECT_EQ(full.HeapUsed(), 0) << "the preview is given back";
 }
 
 // And one found in the heap is left there, in a store that could have spilled it.
