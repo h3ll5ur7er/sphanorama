@@ -7,6 +7,7 @@ add_library(sphanorama_core
   src/managers/panorama_build_manager/panorama_build_manager.cpp
   src/managers/project_manager/project_manager.cpp
   src/managers/capture_session_manager/capture_session_manager.cpp
+  src/engines/composition_engine/nearest_centre_composition_engine.cpp
   src/engines/composition_engine/null_composition_engine.cpp
   src/engines/coverage_planner_engine/null_coverage_planner_engine.cpp
   src/engines/coverage_planner_engine/rings_coverage_planner_engine.cpp
@@ -21,6 +22,7 @@ add_library(sphanorama_core
   src/utilities/clock.cpp
   src/utilities/config_store.cpp
   src/utilities/diagnostics.cpp
+  src/utilities/equirect.cpp
   src/utilities/event_bus.cpp
   src/utilities/logger.cpp
   src/utilities/pixel_format.cpp

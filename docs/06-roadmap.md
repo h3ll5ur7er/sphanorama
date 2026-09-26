@@ -24,7 +24,7 @@ differences are decisions, each with an ADR:
   planned: `CoveragePlannerEngine` tessellates for real, and `OrientationPoseEngine` folds the
   browser's fused attitude (ADR 0015) — a null planner cannot place a reticle, which is the exit
   criterion. `FrameQuality` followed once a burst had real frames to judge; `Registration` and
-  `Composition` were still null at the end of Phase 1, and `Registration` is partly real now — see
+  `Composition` were still null at the end of Phase 1, and both are partly real now — see
   Phase 2 below.
 - Real `ICameraAccess` and `IMotionSensorAccess` adapters, plus the port mechanism behind them
   (ADR 0014). *`CaptureBurst` refused: it was the one call that could not be made resident in
@@ -863,7 +863,13 @@ that has to be ordered.
   detector as a parameter from the start, and the ADR that picks one gets written from what it
   measures, with the speed/quality tiers V7 already anticipates.
 - `CompositionEngine`: gain/vignette exposure compensation, graph-cut seam finding, multi-band
-  blending, equirectangular projection with tiled output.
+  blending, equirectangular projection with tiled output. **The preview is in** (ADR 0068):
+  `RenderPreview` colours each direction from the frame looking at it most squarely, and a round
+  trip against the photograph a ring was rendered from measures it at a mean error of 1.19 bytes
+  with the true rotations. A tenth of a degree of misregistration reads 2.85, so the harness can see
+  errors well inside registration's 0.5-degree threshold. It is not gauge-free, so composing an
+  *estimated* ring means aligning it to the truth first, which is next. Everything else in this
+  bullet answers `Unsupported`, and no composition root selects the engine yet.
 - `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
 

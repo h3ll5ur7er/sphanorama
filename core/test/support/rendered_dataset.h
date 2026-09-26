@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -104,7 +105,10 @@ class Rendered {
    */
   bool inputMissing() const { return missingInput_; }
 
-  Rendered(int frames, int edgeWidth, int edgeHeight, World world) {
+  /** `referenceWidth`, when given, also writes the panorama as a preview that wide should draw
+   * it, for `LoadSyntheticReference` (ADR 0068). */
+  Rendered(int frames, int edgeWidth, int edgeHeight, World world,
+           std::optional<int> referenceWidth = std::nullopt) {
     // **Checked here so a missing panorama fails rather than skips.** Everything else that stops
     // this rendering — no `uv`, no `datasets` group, no network for a first resolve — is a
     // contributor's bare checkout and is rightly a skip. A photograph that is not in the tree is
@@ -148,7 +152,8 @@ class Rendered {
         " && uv run --locked --group datasets tools/synth_dataset.py --out " +
         Quoted(path_.string()) + " --frames " + std::to_string(frames) + " --width " +
         std::to_string(edgeWidth) + " --height " + std::to_string(edgeHeight) +
-        (world == World::Photograph ? " --panorama " + Quoted(kPhotograph) : "") + " >" +
+        (world == World::Photograph ? " --panorama " + Quoted(kPhotograph) : "") +
+        (referenceWidth ? " --reference-width " + std::to_string(*referenceWidth) : "") + " >" +
         Quoted(log.string()) + " 2>&1";
     const int status = std::system(command.c_str());
     ok_ = status == 0 && fs::exists(path_ / "truth.json");

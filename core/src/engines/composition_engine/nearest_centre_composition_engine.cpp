@@ -1,0 +1,211 @@
+#include "engines/composition_engine/nearest_centre_composition_engine.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <optional>
+#include <vector>
+
+#include "utilities/camera_model.h"
+#include "utilities/equirect.h"
+#include "utilities/quaternion.h"
+
+namespace sphanorama {
+namespace {
+
+constexpr const char* kComponent = "NearestCentreCompositionEngine";
+constexpr int32_t kChannels = 4;
+
+// Releases every pin taken so far on every path out, so a refusal part-way through cannot leave a
+// frame pinned for the rest of the session.
+class Pins {
+ public:
+  explicit Pins(IFrameStoreAccess& store) : store_(store) {}
+  Pins(const Pins&) = delete;
+  Pins& operator=(const Pins&) = delete;
+  ~Pins() {
+    for (const FrameRef& frame : held_) (void)store_.Release(frame);
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef& frame) {
+    Result<std::span<uint8_t>> pinned = store_.Pin(frame);
+    if (pinned.ok()) held_.push_back(frame);
+    return pinned;
+  }
+
+ private:
+  IFrameStoreAccess& store_;
+  std::vector<FrameRef> held_;
+};
+
+// Bilinear, between pixel centres, clamped at the frame's edge: a direction the lens puts between
+// the edge and the outermost centre takes the outermost pixel rather than a blend with nothing.
+std::array<double, 3> Sample(std::span<const uint8_t> bytes, const FrameRef& frame, const Pixel& at) {
+  const double x = std::clamp(at.x - 0.5, 0.0, static_cast<double>(frame.width - 1));
+  const double y = std::clamp(at.y - 0.5, 0.0, static_cast<double>(frame.height - 1));
+  const int32_t x0 = static_cast<int32_t>(x);
+  const int32_t y0 = static_cast<int32_t>(y);
+  const int32_t x1 = std::min(x0 + 1, frame.width - 1);
+  const int32_t y1 = std::min(y0 + 1, frame.height - 1);
+  const double fx = x - x0;
+  const double fy = y - y0;
+  const auto channel = [&](int32_t px, int32_t py, int32_t c) {
+    return static_cast<double>(bytes[static_cast<size_t>(py) * static_cast<size_t>(frame.stride) +
+                                     static_cast<size_t>(px) * kChannels + static_cast<size_t>(c)]);
+  };
+  std::array<double, 3> rgb{};
+  for (int32_t c = 0; c < 3; ++c) {
+    const double top = channel(x0, y0, c) * (1.0 - fx) + channel(x1, y0, c) * fx;
+    const double bottom = channel(x0, y1, c) * (1.0 - fx) + channel(x1, y1, c) * fx;
+    rgb[static_cast<size_t>(c)] = top * (1.0 - fy) + bottom * fy;
+  }
+  return rgb;
+}
+
+}  // namespace
+
+Result<GainMap> NearestCentreCompositionEngine::CompensateExposure(const GlobalSolution&,
+                                                                   std::span<const FrameRef>) {
+  return Err<GainMap>(StatusCode::Unsupported, kComponent, "exposure compensation is not built");
+}
+
+Result<GhostReport> NearestCentreCompositionEngine::DetectGhosts(const GlobalSolution&,
+                                                                 std::span<const Candidate>) {
+  return Err<GhostReport>(StatusCode::Unsupported, kComponent, "ghost detection is not built");
+}
+
+Result<SeamMap> NearestCentreCompositionEngine::FindSeams(const GlobalSolution&,
+                                                          std::span<const FrameRef>,
+                                                          const GainMap&, const GhostReport&,
+                                                          const BuildSpec&) {
+  return Err<SeamMap>(StatusCode::Unsupported, kComponent, "seam finding is not built");
+}
+
+Result<FrameRef> NearestCentreCompositionEngine::BlendTile(const GlobalSolution&,
+                                                           std::span<const FrameRef>,
+                                                           const GainMap&, const SeamMap&,
+                                                           const BuildSpec&, int32_t, int32_t) {
+  return Err<FrameRef>(StatusCode::Unsupported, kComponent, "blending is not built");
+}
+
+Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolution& solution,
+                                                               std::span<const FrameRef> frames,
+                                                               const GainMap& gains,
+                                                               int32_t maxWidth) {
+  if (maxWidth < 2) {
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                         "a panorama narrower than two pixels has no half to be high");
+  }
+  const size_t count = solution.frames.size();
+  if (solution.rotations.size() != count || frames.size() != count) {
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                         "the frames and rotations are not the solution's, one each");
+  }
+  const Intrinsics& lens = solution.intrinsics;
+  if (count > 0 && !IsUsableLens(lens)) {
+    return Err<FrameRef>(StatusCode::InvalidArgument, kComponent, "the lens cannot project");
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (!(frames[i].id == solution.frames[i])) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                           "the frames are not the solution's, in its order");
+    }
+    if (!IsUsableRotation(solution.rotations[i])) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent, "a rotation is not one");
+    }
+    if (frames[i].format != PixelFormat::RGBA8) {
+      return Err<FrameRef>(StatusCode::Unsupported, kComponent, "a frame is not RGBA8");
+    }
+    if (frames[i].width != lens.width || frames[i].height != lens.height) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                           "a frame is another size than the lens");
+    }
+  }
+  std::vector<double> gain(count, 1.0);
+  if (!gains.perFrameGain.empty() || !gains.frames.empty()) {
+    if (gains.perFrameGain.size() != count || gains.frames.size() != count) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                           "the gains do not name the solution's frames");
+    }
+    for (size_t i = 0; i < count; ++i) {
+      if (!(gains.frames[i] == solution.frames[i])) {
+        return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                             "the gains do not name the solution's frames in its order");
+      }
+      const double g = gains.perFrameGain[i];
+      if (!std::isfinite(g) || g <= 0.0) {
+        return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                             "a gain is not a figure above zero");
+      }
+      gain[i] = g;
+    }
+  }
+
+  Pins pins(frames_);
+  std::vector<std::span<const uint8_t>> pixels;
+  pixels.reserve(count);
+  for (const FrameRef& frame : frames) {
+    Result<std::span<uint8_t>> pinned = pins.Pin(frame);
+    if (!pinned.ok()) return pinned.status;
+    // A frame is a value the caller hands in; the pinned span is what the store really holds.
+    const int64_t row = static_cast<int64_t>(frame.width) * kChannels;
+    if (frame.stride < row ||
+        static_cast<int64_t>(frame.stride) * frame.height > static_cast<int64_t>(pinned.value.size())) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                           "a frame claims more rows or a longer row than the store holds");
+    }
+    pixels.push_back(pinned.value);
+  }
+
+  const int32_t width = maxWidth & ~1;
+  const int32_t height = width / 2;
+  Result<FrameRef> answer = frames_.Allocate(width, height, PixelFormat::RGBA8);
+  if (!answer.ok()) return answer.status;
+  Result<std::span<uint8_t>> out = frames_.Pin(answer.value);
+  if (!out.ok()) {
+    (void)frames_.Forget(answer.value);
+    return out.status;
+  }
+  std::memset(out.value.data(), 0, out.value.size());
+
+  std::vector<Vec3> axes(count);
+  std::vector<Quat> toCamera(count);
+  for (size_t i = 0; i < count; ++i) {
+    axes[i] = Rotate(solution.rotations[i], Vec3{0.0, 0.0, -1.0});
+    toCamera[i] = Conjugate(solution.rotations[i]);
+  }
+
+  for (int32_t y = 0; y < height; ++y) {
+    uint8_t* row = out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(answer.value.stride);
+    for (int32_t x = 0; x < width; ++x) {
+      const std::optional<Vec3> direction = EquirectDirection(Pixel{x + 0.5, y + 0.5}, width, height);
+      if (!direction.has_value()) continue;
+      double squarest = -std::numeric_limits<double>::infinity();
+      std::optional<size_t> chosen;
+      Pixel at;
+      for (size_t i = 0; i < count; ++i) {
+        const double facing = Dot(axes[i], *direction);
+        if (facing <= squarest) continue;
+        const ProjectedPixel projected = Project(lens, Rotate(toCamera[i], *direction));
+        if (!projected.valid || projected.pixel.x < 0.0 || projected.pixel.y < 0.0 ||
+            projected.pixel.x > lens.width || projected.pixel.y > lens.height) {
+          continue;
+        }
+        squarest = facing;
+        chosen = i;
+        at = projected.pixel;
+      }
+      if (!chosen.has_value()) continue;
+      const std::array<double, 3> rgb = Sample(pixels[*chosen], frames[*chosen], at);
+      uint8_t* pixel = row + static_cast<size_t>(x) * kChannels;
+      for (size_t c = 0; c < 3; ++c) {
+        pixel[c] = static_cast<uint8_t>(std::min(255.0, std::round(rgb[c] * gain[*chosen])));
+      }
+      pixel[3] = 255;
+    }
+  }
+  (void)frames_.Release(answer.value);
+  return answer;
+}
+
+}  // namespace sphanorama

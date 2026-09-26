@@ -40,9 +40,9 @@ deploy are in and green. A phone opens the app, the core plans a real tessellati
 page reports, and the reticle follows guidance that came back from `CaptureSessionManager` — pose,
 coverage and acceptance are all decided in the core.
 
-**What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
-(rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
-`Registration`, in part. `Registration` needs the care of a qualified sentence: all three of its methods are
+**What is real.** All six engine contracts have a real implementation — `CoveragePlanner`
+(rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness), and
+`Registration` and `Composition`, each in part. `Registration` needs the care of a qualified sentence: all three of its methods are
 implemented — `Refine` solving for rotations and fitting the focal length (ADR 0065, ADR 0066) — but it
 exists only where OpenCV does so a browser build still gets the null one, and no composition root
 selects it yet: it is reached from tests. **The pair estimator is now scored against a dataset**,
@@ -57,8 +57,11 @@ declined three of eleven pairs among hundreds of indistinguishable corners — t
 `accepted = false` and the third refused outright, which ADR 0056 counts separately because they are
 different outcomes —
 not a defect, and ADR 0056 is the record of it. A periodic world is the one place a feature matcher
-must not be scored. `Composition` is
-untouched, which is the rest of what Phase 2 is for. This line said Phase 1 until Phase 2
+must not be scored. `Composition` has one method of five: `RenderPreview` colours each direction
+from the frame looking at it most squarely, which shows a misregistration as a step rather than
+blurring it away. A round trip against the photograph the frames were rendered from measures it at
+a mean of 1.19 bytes, and sees a tenth of a degree (ADR 0068). Seams, exposure and blending are the
+rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device — a Pixel 9 Pro XL, which captured a full sphere and survived both a reload
 and a browser close-and-reopen. The third is peak memory per device class, and nothing in the tree
