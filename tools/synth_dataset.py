@@ -693,8 +693,25 @@ def _to_bytes(frame: np.ndarray) -> np.ndarray:
     return np.round(np.clip((frame + 1.0) * 0.5, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
+def reference_panorama(panorama: np.ndarray, width: int) -> np.ndarray:
+    """The panorama as a `width`-wide preview of the dataset should draw it: sampled at each of that
+    preview's pixel centres.
+
+    Only an even width has a preview: a preview is twice as wide as it is high.
+    """
+    if width < 2 or width % 2:
+        raise ValueError(f"a reference {width} wide has no preview to be the reference of: a "
+                         "preview is an even width, twice its height")
+    height = width // 2
+    v, u = np.meshgrid(np.arange(height) + 0.5, np.arange(width) + 0.5, indexing="ij")
+    scale_u = panorama.shape[1] / width
+    scale_v = panorama.shape[0] / height
+    colours = sample_equirect(panorama, u.ravel() * scale_u, v.ravel() * scale_v)
+    return colours.reshape(height, width, panorama.shape[2])
+
+
 def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
-                  poses: list[Pose]) -> list[Path]:
+                  poses: list[Pose], reference_width: int | None = None) -> list[Path]:
     """Render every pose and write the frames beside the truth that describes them.
 
     Binary Netpbm rather than PNG, deliberately: a P6 file is a header and the pixels, which any
@@ -712,11 +729,17 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
     author's idea of the format (ADR 0053).
     The stronger claim, that this catches bugs a hand-written fixture would miss, was
     written here and then disproved by a reviewer; the ADR records what survives of it.
+
+    `reference_width` also writes `reference.ppm`, `reference_panorama` at that width, which is the
+    compositor's round trip's answer key (ADR 0068). `truth.json` does not name it: the header says
+    its size, and the one consumer passes the width it asked for.
     """
     if panorama.ndim != 3 or panorama.shape[2] != 3:
         raise ValueError(
             f"a P6 file is three bytes a pixel and this panorama has shape {panorama.shape}; the "
             "header would describe a frame the payload is not")
+    # Before anything is staged, so a width with no preview costs nothing.
+    reference = None if reference_width is None else reference_panorama(panorama, reference_width)
 
     # Normalised here, not only in `rotate`. Round 1 put it in the renderer and left the record
     # alone, so the frames were made with a unit quaternion and the file wrote down whatever it was
@@ -776,6 +799,10 @@ def write_dataset(out: Path, panorama: np.ndarray, lens: Intrinsics,
             "frames": frames,
         }
         (staging / "truth.json").write_text(json.dumps(truth, indent=2) + "\n")
+        if reference is not None:
+            with (staging / "reference.ppm").open("wb") as handle:
+                handle.write(b"P6\n%d %d\n255\n" % (reference.shape[1], reference.shape[0]))
+                handle.write(_to_bytes(reference).tobytes())
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -896,6 +923,9 @@ def main() -> int:
                             help=f"Brown-Conrady {coefficient} (default 0, a pinhole)")
     parser.add_argument("--panorama", type=Path,
                         help="an equirectangular image to render from; without it, a checkerboard")
+    parser.add_argument("--reference-width", type=int,
+                        help="also write reference.ppm: the panorama as a preview this wide "
+                             "should draw it (even, at least 2)")
     args = parser.parse_args()
 
     # Checked before anything is rendered, because rendering is the expensive part and these are
@@ -911,6 +941,9 @@ def main() -> int:
     for name, value in (("--hfov", args.hfov), ("--vfov", args.vfov)):
         if not 0.0 < value < 180.0:
             parser.error(f"{name} must be between 0 and 180 degrees, not {value}")
+    if args.reference_width is not None and (args.reference_width < 2 or args.reference_width % 2):
+        parser.error(f"--reference-width must be even and at least 2, not {args.reference_width}: "
+                     "a preview is twice as wide as it is high")
 
     # Every shape of unusable `--out`, not just the one the first version thought of. A reviewer
     # found three more, each of which spent the whole render and then raised the very error this
@@ -988,7 +1021,8 @@ def main() -> int:
             f"them: k1={args.k1} k2={args.k2} k3={args.k3} p1={args.p1} p2={args.p2} stops being "
             f"invertible inside a {args.width}x{args.height} frame at {args.hfov} by {args.vfov} "
             f"degrees")
-    written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames))
+    written = write_dataset(args.out, panorama, lens, _ring_of_poses(args.frames),
+                            reference_width=args.reference_width)
     print(f"wrote {len(written)} frames and truth.json to {args.out}")
     return 0
 

@@ -15,18 +15,20 @@ Result<GhostReport> NullCompositionEngine::DetectGhosts(const GlobalSolution&,
   return Err<GhostReport>(StatusCode::Unsupported, kComponent, "ghost detection is Phase 3");
 }
 
-Result<SeamMap> NullCompositionEngine::FindSeams(const GlobalSolution&, const GainMap&,
-                                                 const GhostReport&, const BuildSpec&) {
+Result<SeamMap> NullCompositionEngine::FindSeams(const GlobalSolution&, std::span<const FrameRef>,
+                                                 const GainMap&, const GhostReport&,
+                                                 const BuildSpec&) {
   return Err<SeamMap>(StatusCode::Unsupported, kComponent, "seam finding is Phase 2");
 }
 
-Result<FrameRef> NullCompositionEngine::BlendTile(const GlobalSolution&, const GainMap&,
-                                                  const SeamMap&, const BuildSpec&, int32_t,
-                                                  int32_t) {
+Result<FrameRef> NullCompositionEngine::BlendTile(const GlobalSolution&, std::span<const FrameRef>,
+                                                  const GainMap&, const SeamMap&, const BuildSpec&,
+                                                  int32_t, int32_t) {
   return Err<FrameRef>(StatusCode::Unsupported, kComponent, "blending is Phase 2");
 }
 
-Result<FrameRef> NullCompositionEngine::RenderPreview(const GlobalSolution&, const GainMap&,
+Result<FrameRef> NullCompositionEngine::RenderPreview(const GlobalSolution&,
+                                                      std::span<const FrameRef>, const GainMap&,
                                                       int32_t) {
   return Err<FrameRef>(StatusCode::Unsupported, kComponent, "preview rendering is Phase 2");
 }

@@ -120,7 +120,7 @@ jobs:
           # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
           # make visible. It covers the `expected=` line too, which CI was relying on to abort.
           set +e
-          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
           # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
@@ -146,6 +146,13 @@ jobs:
             --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
           if [ "$acceptance" -lt 1 ]; then
             echo "the binary contains no acceptance test to run" >&2
+            status=1
+          fi
+          # The preview's round trip prints one `[composition]` line, which neither count above
+          # sees; without this a rename would leave it out of the filter and the skip check alike.
+          composed=$(grep -c '^\[composition\]' "$log" || true)
+          if [ "$composed" -ne 1 ]; then
+            echo "the preview round trip printed $composed measurements rather than one" >&2
             status=1
           fi
           if [ "$measured" -ne "$expected" ]; then
@@ -217,7 +224,7 @@ jobs:
           # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
           # make visible. It covers the `expected=` line too, which CI was relying on to abort.
           set +e
-          filter='EveryDetector/Accuracy.*:Acceptance.*'
+          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
           # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
@@ -243,6 +250,13 @@ jobs:
             --gtest_filter='Acceptance.*' | grep -c 'AnAnswerWithAMinority')
           if [ "$acceptance" -lt 1 ]; then
             echo "the binary contains no acceptance test to run" >&2
+            status=1
+          fi
+          # The preview's round trip prints one `[composition]` line, which neither count above
+          # sees; without this a rename would leave it out of the filter and the skip check alike.
+          composed=$(grep -c '^\[composition\]' "$log" || true)
+          if [ "$composed" -ne 1 ]; then
+            echo "the preview round trip printed $composed measurements rather than one" >&2
             status=1
           fi
           if [ "$measured" -ne "$expected" ]; then
