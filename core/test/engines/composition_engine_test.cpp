@@ -45,6 +45,10 @@ class PinCountingStore final : public IFrameStoreAccess {
   // Allocates this many pixels more a row than asked and says so only through the stride: a real
   // padded allocation, where `describeAllocated` can only relabel one.
   int32_t padAllocatedPixels = 0;
+  // Pins a span this many bytes short of the store's allocation: a padded layout whose span ends
+  // where the last row ends, before that row's padding.
+  int64_t trimTailOfAllocated = 0;
+  int64_t trimTailOfHandedIn = 0;
   bool refuseForgetOfAllocated = false;
   bool refuseResidency = false;
   // Refused once each, so the refusal is the call under test's to report rather than permanent.
@@ -87,6 +91,8 @@ class PinCountingStore final : public IFrameStoreAccess {
     if (pinned.ok()) {
       ++pins_[frame.buffer.value];
       ++pinnedEver_[frame.buffer.value];
+      const int64_t trim = Allocated(frame) ? trimTailOfAllocated : trimTailOfHandedIn;
+      pinned.value = pinned.value.first(pinned.value.size() - static_cast<size_t>(trim));
     }
     return pinned;
   }
@@ -636,6 +642,11 @@ TEST_F(NearestCentreComposition, TheAnswerIsWrittenThroughItsOwnStride) {
   const Preview padded = Render(256);
   ASSERT_EQ(padded.width, packed.width);
   EXPECT_TRUE(padded.bytes == packed.bytes);
+  // Every row it writes is held even where the span stops before the last row's padding.
+  store.trimTailOfAllocated = 16 * 4;
+  const Preview trimmed = Render(256);
+  ASSERT_EQ(trimmed.width, packed.width);
+  EXPECT_TRUE(trimmed.bytes == packed.bytes);
 }
 
 // And a frame is read through its own stride: a handle naming the left half of a wider allocation
@@ -649,6 +660,8 @@ TEST_F(NearestCentreComposition, AFrameIsReadThroughItsOwnStride) {
   frames.push_back(wide);
   solution.frames.push_back(wide.id);
   solution.rotations.push_back(Quat{});
+  // And the span ends where the last row ends: its padding is never read, so it need not be held.
+  store.trimTailOfHandedIn = kWidth * 4;
   const Preview preview = Render(512);
   int32_t checked = 0;
   for (int32_t y = 0; y < preview.height; ++y) {
@@ -666,6 +679,15 @@ TEST_F(NearestCentreComposition, AFrameIsReadThroughItsOwnStride) {
     }
   }
   EXPECT_GT(checked, 100);
+}
+
+// A stride shorter than a row is knowable from the handle, so it is refused before the frame is
+// pinned: a spilled frame is not faulted in only to be turned away.
+TEST_F(NearestCentreComposition, AStrideShorterThanARowIsRefusedUnread) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  frames[0].stride = kWidth * 4 - 4;
+  EXPECT_TRUE(RefusedSaying("shorter than its row"));
+  EXPECT_EQ(store.PinnedEver(frames[0]), 0);
 }
 
 // A frame that colours none of the preview is never read: here a second frame looking exactly as

@@ -33,6 +33,15 @@ const char* TierName(Residency tier) {
   return "an unnamed tier";
 }
 
+// Whether `rows` rows of `rowBytes`, `stride` apart, lie inside `held` bytes. By subtraction, as the
+// dataset loader asks it, and without the last row's padding: nothing reads it, and a store may end
+// a padded frame's span where its last row ends.
+bool RowsFit(int64_t stride, int64_t rowBytes, int32_t rows, size_t held) {
+  const int64_t bytes = static_cast<int64_t>(held);
+  if (stride < rowBytes || bytes < rowBytes) return false;
+  return rows <= 1 || stride <= (bytes - rowBytes) / (rows - 1);
+}
+
 // One frame of the caller's, pinned while its pixels are painted and then given back: released, and
 // demoted to the tier it was found in. Frames are borrowed one at a time so that the preview of a
 // sphere larger than the heap can still be made, and the demotion is what keeps it true — a pin
@@ -171,6 +180,11 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
       return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
                            "a frame is another size than the lens");
     }
+    // Knowable from the handle, so asked before a spilled frame is faulted in to be turned away.
+    if (frames[i].stride < static_cast<int64_t>(frames[i].width) * kChannels) {
+      return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
+                           "a frame's stride is shorter than its row");
+    }
   }
   std::vector<double> gain(count, 1.0);
   if (!gains.perFrameGain.empty() || !gains.frames.empty()) {
@@ -228,8 +242,7 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   // is written through it.
   const FrameRef& drawn = answer.value;
   if (drawn.format != PixelFormat::RGBA8 || drawn.width != width || drawn.height != height ||
-      drawn.stride < static_cast<int64_t>(width) * kChannels ||
-      drawn.stride > static_cast<int64_t>(out.value.size()) / height) {
+      !RowsFit(drawn.stride, static_cast<int64_t>(width) * kChannels, height, out.value.size())) {
     return abandon(StatusCode::Internal,
                    "the store described the preview's frame as another shape than was asked for",
                    true);
@@ -297,11 +310,9 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     Result<std::span<uint8_t>> pinned = borrowed.Pin();
     if (!pinned.ok()) return abandon(pinned.status.code, pinned.status.detail, true);
     // A frame is a value the caller hands in; the pinned span is what the store really holds.
-    const int64_t rowBytes = static_cast<int64_t>(frame.width) * kChannels;
-    if (frame.stride < rowBytes || static_cast<int64_t>(frame.stride) * frame.height >
-                                       static_cast<int64_t>(pinned.value.size())) {
-      std::string detail =
-          "a frame's stride is shorter than its row, or its rows run past what the store holds";
+    if (!RowsFit(frame.stride, static_cast<int64_t>(frame.width) * kChannels, frame.height,
+                 pinned.value.size())) {
+      std::string detail = "a frame's rows run past what the store holds";
       if (Status given = borrowed.GiveBack(); !given.ok()) detail += "; and " + given.detail;
       return abandon(StatusCode::InvalidArgument, std::move(detail), true);
     }
