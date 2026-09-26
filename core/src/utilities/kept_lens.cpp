@@ -55,6 +55,20 @@ double KeptWeight(double keptNoise, double keptModel, double noise, double model
   return std::clamp((noise * noise - model * apart) / denominator, 0.0, 1.0);
 }
 
+// Every kept lens this answers with: the copies the figures imply written from them, whatever the
+// kept lens came in with, and a lens that cannot project refused rather than kept, since no later
+// call could read it to replace it.
+Result<KeptLens> Settled(KeptLens kept) {
+  if (kept.captures == 0) return Ok(kept);
+  if (!IsUsableLens(kept.lens)) {
+    return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
+                         "the lens the capture would leave kept cannot project");
+  }
+  kept.lens.focalUncertainty = std::hypot(kept.noise, kept.modelError);
+  kept.lens.estimated = true;
+  return Ok(kept);
+}
+
 }  // namespace
 
 Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& capture) {
@@ -62,7 +76,7 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
   if (!IsFigure(capture.focalScale)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent, "the capture's scale is not a figure");
   }
-  if (capture.focalScale == 0.0) return Ok(kept);
+  if (capture.focalScale == 0.0) return Settled(kept);
   if (!IsUsableLens(capture.intrinsics) || !AreFigures(capture.focalSpread, capture.focalModelError)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
                          "the capture's lens cannot project, or its spread and model error are not figures");
@@ -76,10 +90,8 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
     first.lens = measured;
     first.noise = capture.focalSpread;
     first.modelError = capture.focalModelError;
-    first.lens.focalUncertainty = std::hypot(first.noise, first.modelError);
-    first.lens.estimated = true;
     first.captures = 1;
-    return Ok(first);
+    return Settled(first);
   }
   if (!SameShape(measured.width, measured.height, kept.lens)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
@@ -99,18 +111,19 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
   amended.lens.fy = kept.lens.fy * amended.lens.fx / kept.lens.fx;
   amended.noise = std::hypot(w * kept.noise, (1.0 - w) * capture.focalSpread);
   amended.modelError = w * kept.modelError + (1.0 - w) * capture.focalModelError;
-  amended.lens.focalUncertainty = std::hypot(amended.noise, amended.modelError);
-  amended.lens.estimated = true;
   if (amended.captures < std::numeric_limits<int32_t>::max()) ++amended.captures;
-  return Ok(amended);
+  return Settled(amended);
 }
 
 Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t height) {
+  if (width <= 0 || height <= 0) {
+    return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent, "the frame has no size");
+  }
   if (Status checked = CheckKept(kept); !checked.ok()) return checked;
   if (kept.captures == 0) {
     return Err<Intrinsics>(StatusCode::NotFound, kComponent, "no lens is kept");
   }
-  if (width <= 0 || height <= 0 || !SameShape(width, height, kept.lens)) {
+  if (!SameShape(width, height, kept.lens)) {
     return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent,
                            "the frame is another shape than the kept lens's");
   }
@@ -125,6 +138,12 @@ Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t heig
   lens.height = height;
   lens.focalUncertainty = std::hypot(kept.noise, kept.modelError);
   lens.estimated = true;
+  // Scaling can carry a usable lens out of use: a focal length past the doubles, or a principal
+  // point that rounds onto the edge of the larger frame.
+  if (!IsUsableLens(lens)) {
+    return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent,
+                           "the kept lens cannot project at this size");
+  }
   return Ok(lens);
 }
 

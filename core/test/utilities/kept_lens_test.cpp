@@ -93,6 +93,15 @@ TEST(KeptLens, ACaptureThatMeasuredNothingLeavesItAlone) {
   EXPECT_EQ(after.modelError, before.modelError);
   EXPECT_EQ(after.lens.focalUncertainty, before.lens.focalUncertainty);
 
+  // And the lens it answers with carries the figures kept, whatever the document read back left in
+  // the copy: a capture measuring nothing is the commonest amend there is (round 3).
+  KeptLens read = before;
+  read.lens.focalUncertainty = std::numeric_limits<double>::infinity();
+  read.lens.estimated = false;
+  const KeptLens settled = Amend(read, imprecise);
+  EXPECT_EQ(settled.lens.focalUncertainty, std::hypot(0.001, 0.0005));
+  EXPECT_TRUE(settled.lens.estimated);
+
   // Nor does it start one: the first build on a device can measure nothing.
   const KeptLens still = Amend(Nothing(), imprecise);
   EXPECT_EQ(still.captures, 0);
@@ -241,6 +250,13 @@ TEST(KeptLens, ACaptureOfAnotherShapeIsRefused) {
   const Result<KeptLens> wide = AmendKeptLens(kept, Fitted(500.0, 0.001, 0.0002, 640, 360));
   EXPECT_EQ(wide.status.code, StatusCode::InvalidArgument);
   EXPECT_NE(wide.status.detail.find("shape"), std::string::npos) << wide.status.detail;
+  // Turned on its side, too.
+  EXPECT_EQ(AmendKeptLens(kept, Fitted(500.0, 0.001, 0.0002, 480, 640)).status.code,
+            StatusCode::InvalidArgument);
+  // And a shape whose cross products agree only modulo 2^32: 44739884 x 480 and 481 x 640 are both
+  // 307840 there, and a stored width is a figure the document can carry wrong.
+  EXPECT_EQ(AmendKeptLens(kept, Fitted(500.0, 0.001, 0.0002, 44739884, 481)).status.code,
+            StatusCode::InvalidArgument);
 }
 
 // Only the focal length is fitted, so it is all a capture amends: the distortion and the principal
@@ -418,6 +434,11 @@ TEST(KeptLens, TheLensHandedToRefineIsAtTheCapturesSize) {
   first.intrinsics.fy = 505.0;
   first.intrinsics.cx = 322.0;
   first.intrinsics.cy = 236.0;
+  first.intrinsics.k2 = 0.004;
+  first.intrinsics.k3 = -0.0007;
+  first.intrinsics.p1 = 0.0003;
+  first.intrinsics.p2 = -0.0002;
+  first.intrinsics.rollingShutterLineTimeNs = 15000.0;
   const KeptLens kept = Amend(Nothing(), first);
   const Result<Intrinsics> doubled = KeptLensFor(kept, 1280, 960);
   ASSERT_TRUE(doubled.ok()) << doubled.status.detail;
@@ -428,6 +449,13 @@ TEST(KeptLens, TheLensHandedToRefineIsAtTheCapturesSize) {
   EXPECT_EQ(doubled.value.cx, 644.0);
   EXPECT_EQ(doubled.value.cy, 472.0);
   EXPECT_EQ(doubled.value.k1, -0.02);
+  EXPECT_EQ(doubled.value.k2, 0.004);
+  EXPECT_EQ(doubled.value.k3, -0.0007);
+  EXPECT_EQ(doubled.value.p1, 0.0003);
+  EXPECT_EQ(doubled.value.p2, -0.0002);
+  // Not a length: whether a mode at another size reads its rows faster is the sensor's to say, and
+  // nothing reads it yet.
+  EXPECT_EQ(doubled.value.rollingShutterLineTimeNs, 15000.0);
   EXPECT_EQ(doubled.value.focalUncertainty, std::hypot(0.001, 0.0002));
 
   // And a capture measured at that size amends the kept lens back at its own.
@@ -441,8 +469,15 @@ TEST(KeptLens, TheLensHandedToRefineIsAtTheCapturesSize) {
 
 TEST(KeptLens, NoLensIsHandedToRefineWhereNoneIsKept) {
   EXPECT_EQ(KeptLensFor(Nothing(), 640, 480).status.code, StatusCode::NotFound);
+  // An unset size is refused whether or not a lens is kept: `NotFound` tells the caller to go on
+  // from its guess, and a frame of no size is nothing to go on with (round 3).
+  EXPECT_EQ(KeptLensFor(Nothing(), 0, 0).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(Nothing(), -5, 7).status.code, StatusCode::InvalidArgument);
   const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
   EXPECT_EQ(KeptLensFor(kept, 640, 360).status.code, StatusCode::InvalidArgument);
+  // Turned on its side is another shape too: the principal point would be off-centre by the
+  // difference of the edges (round 3).
+  EXPECT_EQ(KeptLensFor(kept, 480, 640).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(KeptLensFor(kept, 0, 0).status.code, StatusCode::InvalidArgument);
   KeptLens spoiled = kept;
   spoiled.noise = -1.0;
@@ -458,12 +493,36 @@ TEST(KeptLens, FiguresThatCombinePastTheDoublesAreRefused) {
   const double huge = 1.5e308;
   EXPECT_EQ(AmendKeptLens(Nothing(), Fitted(500.0, huge, huge)).status.code,
             StatusCode::InvalidArgument);
+  // Combined as independent errors, not added: 1e308 and 1e308 make 1.41e308, which is a figure.
+  EXPECT_TRUE(AmendKeptLens(Nothing(), Fitted(500.0, 1e308, 1e308)).ok());
   KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
   kept.noise = huge;
   kept.modelError = huge;
   EXPECT_EQ(AmendKeptLens(kept, Fitted(505.0, 0.001, 0.0002)).status.code,
             StatusCode::InvalidArgument);
   EXPECT_EQ(KeptLensFor(kept, 640, 480).status.code, StatusCode::InvalidArgument);
+}
+
+// A lens computed from valid inputs can still fail to be one: a scale or a size ratio can carry a
+// focal length past the doubles, and a principal point just inside a small frame can
+// round onto the edge of a larger one. Neither is kept nor handed on (round 3).
+TEST(KeptLens, ALensThatCannotProjectIsNeitherKeptNorHandedOn) {
+  GlobalSolution huge = Fitted(1000.0, 0.001, 0.0002);
+  huge.focalScale = 1e306;
+  EXPECT_EQ(AmendKeptLens(Nothing(), huge).status.code, StatusCode::InvalidArgument);
+  const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
+  EXPECT_EQ(AmendKeptLens(kept, huge).status.code, StatusCode::InvalidArgument);
+
+  KeptLens far = kept;
+  far.lens.fx = 1e308;
+  far.lens.fy = 1e308;
+  ASSERT_TRUE(KeptLensFor(far, 640, 480).ok()) << "the premise: usable at its own size";
+  EXPECT_EQ(KeptLensFor(far, 1280, 960).status.code, StatusCode::InvalidArgument);
+
+  KeptLens small = Amend(Nothing(), Fitted(5.0, 0.001, 0.0002, 3, 3));
+  small.lens.cx = std::nextafter(3.0, 0.0);
+  ASSERT_TRUE(KeptLensFor(small, 3, 3).ok()) << "the premise: usable at its own size";
+  EXPECT_EQ(KeptLensFor(small, 17, 17).status.code, StatusCode::InvalidArgument);
 }
 
 }  // namespace

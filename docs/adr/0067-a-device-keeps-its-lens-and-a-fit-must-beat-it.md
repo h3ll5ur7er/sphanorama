@@ -57,8 +57,8 @@ of them. Three things stand in the way of keeping it.
    (decision 4):
    - **Every precise least amends it, taken or not**, and only in its focal length. The first
      version amended only with fits `Refine` took, and froze: a second capture of the same shape
-     shares the first's model error, so its fit is surer than a lens made from both only where its
-     noise is lower, and in the rings measured nothing was taken from the third capture on — 2 of 20
+     shares the first's model error, so its fit is surer than the lens kept from the captures before
+     it only where its noise is below that lens's, and in the rings measured nothing was taken from the third capture on — 2 of 20
      rings amended the lens (round 1). Whether
      `Refine` takes a fit is a question about that capture's rotations; whether a least measured
      the lens is ADR 0066's precision, and a capture answered under the kept lens still measured it.
@@ -82,8 +82,9 @@ of them. Three things stand in the way of keeping it.
      same shape amends the same lens. A frame of another shape is refused: it is a crop, which the
      long edge does not describe.
    - The first measurement is taken whole. A kept lens that cannot project, figures that are not
-     finite and at least zero, and a negative count are refused, since a NaN made from one would be
-     a focal length every later `Refine` refuses.
+     finite and at least zero or that combine past the largest double, a negative count, and a
+     capture that would leave a kept lens that cannot project are refused, since a lens made from
+     one would be one every later call refuses — and so could never be replaced (round 3).
 
    A utility rather than an engine because it is one formula with no alternatives on the table, and
    rather than a manager's private code because two managers will need it and managers do not call
@@ -105,7 +106,10 @@ of them. Three things stand in the way of keeping it.
      figures are finite and so is their combination, which `AmendKeptLens` refuses otherwise, so
      nothing written needs an infinity the document format may not spell. A document that does not read back whole is
      refused and the capture starts from the guess, never read with its missing figures as zero —
-     zero is a lens known exactly, the one reading that nothing afterwards would ever move.
+     zero is a lens known exactly, the one reading that nothing afterwards would ever move. So is a
+     document that reads back whole and that `KeptLensFor` refuses: it is discarded, the capture
+     starts from the guess, and its own least is taken whole and overwrites it, rather than a key
+     every later build is refused on (round 3).
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
      a build: `KeptLensFor` handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.
@@ -121,7 +125,8 @@ of them. Three things stand in the way of keeping it.
 
 5. **A new axis.** "What this device's camera is known to be" varies with the device, the browser's
    camera identity, and how estimates are combined, and nothing in the volatility map owned it. It is
-   V17: `utilities/kept_lens` for how a capture amends it, V12's store for where it lives.
+   V17: `utilities/kept_lens` for how a capture amends it and how it is handed to one, V12's store
+   for where it lives.
 
 ## Consequences
 
