@@ -99,8 +99,9 @@ within 0.063% and solves as though it had been right. Only where the loops see i
 a lone small loop, or a strip of them, keeps the lens it was handed however far out, and
 `lensFitted` says which happened. Distortion is not fitted. **A device keeps its lens** (ADR 0067):
 a lens now says how sure it is (`Intrinsics::focalUncertainty`, infinite for a guess), `Refine`
-takes a fit only where it is surer than the lens it was handed, and `utilities/kept_lens` is the
-rule for amending a kept lens with one more capture. Where it is stored and which manager writes it
+takes a fit only where it is surer than the lens it was handed, and `utilities/kept_lens` amends a
+kept lens with every precise least, taken or not — amending only with taken fits froze it after two
+captures. Where it is stored and which manager writes it
 are decided and wait for their writer, since `PanoramaBuildManager` does not run `Refine` yet.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,

@@ -746,6 +746,15 @@ export interface GlobalSolution {
    */
   lensFitted: boolean;
   /**
+   * Where the least puts the focal length, as a multiple of `intrinsics`' own, wherever it is
+   * precise — every condition above but the last, whether or not it was taken — and zero, which is
+   * never a scale, where it is not. So one where `lensFitted`. A lens a device keeps is amended with
+   * every precise least, including one this call did not take because the kept lens handed in was
+   * surer: a second capture of one shape shares the first's model error and never beats a lens
+   * made from both, and it still measured the lens (ADR 0067).
+   */
+  focalScale: number;
+  /**
    * How far the focal length's least could be from where it is, as a standard deviation in its
    * natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
    * on it (ADR 0066). The pairs' noise alone, which more matches or another capture of the same lens

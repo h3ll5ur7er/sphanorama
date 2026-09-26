@@ -144,7 +144,9 @@ class IRegistrationEngine {
   // `focalUncertainty` of the lens handed in, `initial` comes back as given, every field of it, and
   // `lensFitted` is false. A lens read from a reported field of view is a guess, and any precise fit
   // replaces it; a lens a device kept from earlier captures can be surer than a weak loop's fit, and
-  // is not replaced by one (ADR 0067). A fitted lens carries its own figure in `focalUncertainty`. Loops too weak to see the focal length
+  // is not replaced by one (ADR 0067). A fitted lens carries its own figure in `focalUncertainty`, and
+  // wherever the least is precise, taken or not, `GlobalSolution::focalScale` says where it lies,
+  // which is what a kept lens is amended with. Loops too weak to see the focal length
   // past the pairs' noise or past that misreading are refused this way, however many of them there
   // are and however far their least lies from the lens handed in. Where the lens is fitted the
   // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give.

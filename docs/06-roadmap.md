@@ -846,7 +846,7 @@ that has to be ordered.
   out, and `lensFitted` says which. Distortion is not fitted; that is a bundle adjustment's job, and the
   carried matches are its input. **A device keeps its lens** (ADR 0067): a lens says how sure it is,
   `Refine` takes a fit only where it is surer than the lens it replaces, and `utilities/kept_lens`
-  amends a kept lens with one more capture — the storage and the writer wait for the build manager
+  amends a kept lens with every precise least, taken or not — the storage and the writer wait for the build manager
   to run `Refine`. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore

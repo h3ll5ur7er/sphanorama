@@ -45,38 +45,62 @@ of them. Three things stand in the way of keeping it.
    stand, and one is added: the fit's combined uncertainty must be less than `initial.focalUncertainty`.
    Against a guess every precise fit is surer, so nothing changes for a lens read from a field of
    view; against a kept lens, a weak loop's fit no longer replaces a better one. Where the fit is not
-   taken its `focalSpread` and `focalModelError` are still reported, so a caller can see what it
-   would have been. A `focalUncertainty` that is not a figure — NaN, which compares false against
-   everything and would let every fit through, or below zero — is refused as `InvalidArgument`.
+   taken its `focalSpread` and `focalModelError` are still reported, and where it was precise —
+   every condition but this one — so is where it lies: `GlobalSolution::focalScale`, as a multiple
+   of the lens returned, one where the fit was taken and zero where there was no precise least. A
+   `focalUncertainty` that is not a figure — NaN, which compares false against everything and would
+   let every fit through, or below zero — is refused as `InvalidArgument`.
 
 3. **What a device keeps, and how a capture amends it.** `utilities/kept_lens` holds `KeptLens` —
    the lens, its noise and its model error kept apart, and how many captures it was made from — and
    `AmendKeptLens`, the rule for one more capture:
-   - Only a capture `Refine` fitted amends it, and only its focal length. A refused capture's least
-     was not precise, or not surer than the lens it was handed, and its rotations were not solved
-     under it; distortion and the principal point are not fitted (ADR 0066).
-   - Captures are weighed by their own noise, in the natural log of the focal length. The kept noise
-     is the inverse-variance combination and shrinks as captures agree; the kept model error is the
-     same weighting of each capture's own, because that is the bias of the weighted mean, and it does
-     not shrink. `lens.focalUncertainty` is the two combined, which is what the next `Refine` weighs
-     a fit against.
-   - The focal length is read as a fraction of the long edge, so a capture at another frame size
-     amends the same lens.
-   - The first fitted capture is taken whole. A lens known exactly is not moved, and a capture known
-     exactly replaces a lens that is not, because an infinite weight is not something to average.
+   - **Every precise least amends it, taken or not**, and only in its focal length. The first
+     version amended only with fits `Refine` took, and froze: a second capture of the same shape
+     shares the first's model error, so its fit is never surer than a lens made from both, and from
+     the third capture on nothing was taken — 2 of 20 rings amended the lens (round 1). Whether
+     `Refine` takes a fit is a question about that capture's rotations; whether a least measured
+     the lens is ADR 0066's precision, and a capture answered under the kept lens still measured it.
+     A least that is not precise amends nothing: taken whole as a first measurement, a flat cost's
+     least tens of percent out would be the lens the next capture is planned from. Distortion and
+     the principal point are not fitted (ADR 0066).
+   - **Weighed for the least uncertainty.** The model errors add rather than combining as
+     independent errors — both are the one lens misread, and each is reported as a size without
+     its sign, so they are taken to lean the same way — and the weight between the kept lens and
+     the capture is the one that leaves `hypot(noise, modelError)` least, in closed form and clamped
+     to the two of them. Where the model errors agree, as they do for a device capturing the plan
+     its lens gives it, that is the inverse-variance weight by the noise, the noise shrinks as
+     captures agree and the model error stays. Where they differ it is never less sure than either
+     input, which the noise alone did not promise: a quiet lens with a large model error outweighed
+     a capture `Refine` had just found surer, and left the kept lens at 0.142% from a capture at
+     0.048% (round 1).
+   - **Exact is both figures zero**, and it falls out of the weight rather than being a case: a lens
+     known exactly is not moved, and a capture known exactly replaces a lens that is not. The noise
+     alone at zero is not exact, and keying on it froze a lens with a model error.
+   - The focal length is read as a fraction of the long edge, so a capture at another size of the
+     same shape amends the same lens. A frame of another shape is refused: it is a crop, which the
+     long edge does not describe.
+   - The first measurement is taken whole. A kept lens that cannot project, figures that are not
+     finite and at least zero, and a negative count are refused, since a NaN made from one would be
+     a focal length every later `Refine` refuses.
 
    A utility rather than an engine because it is one formula with no alternatives on the table, and
    rather than a manager's private code because two managers will need it and managers do not call
    managers.
 
 4. **Where it is kept, and who reads and writes it** — decided here, built with its writer:
-   - **Keyed by camera and mode**: the track's `deviceId` and the frame size it settled on. A
-     `deviceId` is per origin and resets when site data is cleared, which is exactly the lifetime of
-     the store it is kept in, so a key and its lens are lost together or not at all.
+   - **Keyed by camera and frame shape**: the track's `deviceId` and the shape of the frame it
+     settled on, reduced — 4:3, not 1280 x 960 — since `AmendKeptLens` reads another size of one
+     shape as the same lens and refuses another shape. A `deviceId` is per origin and resets when
+     site data is cleared, which is exactly the lifetime of the store it is kept in, so a key and
+     its lens are lost together or not at all.
    - **Stored as a device document in V12's store.** `IProjectStoreAccess` already persists documents
      to IndexedDB behind a resident copy (ADR 0014); a device-scoped document there is the same
      volatility — where metadata is persisted — with a different key, not a new resource access.
-     Normalised by the long edge on the way in.
+     Stored at the size it was kept at, which is how `AmendKeptLens` answers it. A guess is stored
+     as no document at all: a kept lens's figures are always finite, so nothing written needs an
+     infinity the document format may not spell. A document that does not read back whole is
+     refused and the capture starts from the guess, never read with its missing figures as zero —
+     zero is a lens known exactly, the one reading that nothing afterwards would ever move.
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
      a build: the kept lens handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.
@@ -87,28 +111,35 @@ of them. Three things stand in the way of keeping it.
 
 ## Consequences
 
-- **A contract change** in `types.h` (`Intrinsics::focalUncertainty`, and one more condition on
-  `GlobalSolution::lensFitted`) and in `engines/registration_engine.h` (`Refine`'s lens paragraph,
+- **A contract change** in `types.h` (`Intrinsics::focalUncertainty`, `GlobalSolution::focalScale`,
+  and one more condition on `GlobalSolution::lensFitted`) and in `engines/registration_engine.h` (`Refine`'s lens paragraph,
   and a refusal for an uncertainty that is not a figure). The TypeScript mirror moves with them. A
   lens built anywhere without the field set is a guess, so every existing caller behaves as before.
 - **A utility with no caller in `core/src` yet.** `kept_lens` is reached from its tests alone until
   the build manager runs `Refine`, the cost ADR 0062 took for `rotation_averaging` and for the same
   reason: the rule can be decided and tested before its caller exists, and building the storage now
   would be storage nothing writes.
-- **A kept lens that is wrong and sure stays wrong.** Only a surer fit displaces it, and the model
-  error it carries is a scale rather than a bound (ADR 0066's consequences: a k1 misreading, radial
-  only). A capture whose fit disagrees with the kept lens by many of their combined deviations is the
-  signal that it is wrong, and nothing yet reads it; clearing site data is today's only reset.
+- **A kept lens that is wrong and sure is slow to leave it.** Each capture moves it only by the
+  weight its figures earn, and the model error it carries is a scale rather than a bound (ADR
+  0066's consequences: a k1 misreading, radial only). A capture whose `focalScale` puts it many of
+  their combined deviations from the kept lens is the signal that it is wrong, and nothing yet reads
+  it; clearing site data is today's only reset.
 - **The wide-lens cost ADR 0066 recorded closes once a lens is kept, not before.** The first capture
   on a device is still weighed against the guess, and weak loops on a wide lens are still fitted then.
-- **Captures as good as the first do not improve the kept lens.** A strong shape's uncertainty is
-  mostly its model error — a twelve-frame ring reads 0.014% of noise and 0.046% of model error — and
-  the next capture of the same shape shares it, so its fit is no surer than the lens it would
-  replace and is not taken, and only a taken fit amends the lens. The kept lens improves when a
-  capture is surer than it: a stronger shape, or less noise. Averaging in every capture's noise
-  would shrink a figure the model error keeps large, which is the rejected alternative below.
-- **One camera mode's lens is not used for another.** A phone that settles on a different frame size
-  next time starts from the guess again, rather than risk a crop the long edge does not describe.
+- **The kept lens stops improving at its model error.** A strong shape's uncertainty is mostly its
+  model error — a twelve-frame ring reads 0.014% of noise and 0.046% of model error — and more
+  captures of the same shape shrink only the noise, so the combined figure approaches 0.046% and
+  stays there. `Refine` answers under the kept lens wherever a capture's own figure is not below it
+  — for a capture of the same shape, wherever its noise is not below the kept lens's — and each
+  capture's measurement amends the lens either way.
+- **The order captures arrive in matters where their model errors differ.** Each amend is the
+  best combination of the two it is handed, not of every capture there has been; where the model
+  errors agree the two are the same and order does not matter. The rejected alternative below is
+  what order independence would cost.
+- **Another shape of frame starts from the guess, and another size of one shape does not.** Reading
+  a size as the same lens assumes the camera scales its whole sensor to it. A mode that crops to
+  the same shape — a digital zoom — would be averaged in as the same lens, and nothing here can
+  tell it apart.
 
 ## Rejected alternatives
 
@@ -118,11 +149,26 @@ because the kept lens would then be counted twice: once in `Refine`'s answer and
 caller amends the kept lens with it. Keeping `Refine` to "the better of the two" and the combination
 in `AmendKeptLens` counts every capture once.
 
-**Amend the kept lens with every least, weighed by its noise.** A capture `Refine` refused still
-measured something, and inverse-variance weighting would give it the small weight it deserves.
-Rejected because the weight is the noise and the danger is the model error: a weak loop reads 0.3%
-of model error with a noise that can be under 0.15% (ADR 0066), so its least would be weighted as
-though it were good. Only fits `Refine` took, which passed both, amend the lens.
+**Amend the kept lens only with fits `Refine` took.** The first version of this ADR, on the
+argument that a refused fit's rotations were not solved under it. Rejected in round 1 because it
+froze the lens after two captures, above: a fit is refused for being no surer than the kept lens,
+which says nothing against it as a measurement.
+
+**Amend it with every least, precise or not, weighed for its uncertainty.** The weight would give a
+weak loop the small say its figures deserve. Rejected because a first measurement is taken whole,
+and because the model error is a scale rather than a bound (ADR 0066): a weak loop's figures are
+the least trustworthy ones there are, and ADR 0066's precision is the line below which they are
+not believed.
+
+**Weigh each capture by its noise alone.** The textbook inverse-variance mean, and the first
+version of this ADR. Rejected because the noise is not the whole of the uncertainty: weighed by it,
+a quiet lens with a large model error outweighs a capture with a small one, and the answer can be
+less sure than the capture was.
+
+**Keep every capture and weigh them all at once.** Order independence where the model errors
+differ, at the cost of a document that grows with every capture. Rejected because a device captures
+the plan its lens gives it, whose model errors agree, and there the pairwise rule is already the
+whole answer.
 
 **A new resource access for device facts.** Where a document is persisted is V12's volatility
 whatever the document is about, and a second port over the same IndexedDB would be two owners of one

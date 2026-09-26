@@ -1788,13 +1788,16 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     // And surer than the lens it would replace: a lens kept from earlier captures can be surer than
     // a weak loop's fit, and replacing it would trade a known lens for a worse one (ADR 0067).
     const double sure = std::hypot(spread, shift);
-    if (least && sure <= kFocalPrecision && sure < initial.focalUncertainty) {
+    const bool precise = least && sure <= kFocalPrecision;
+    if (precise) solution.focalScale = bestScale;
+    if (precise && sure < initial.focalUncertainty) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;
       solution.intrinsics.fy *= bestScale;
       solution.intrinsics.estimated = true;
       solution.intrinsics.focalUncertainty = sure;
       solution.lensFitted = true;
+      solution.focalScale = 1.0;
     }
   }
   solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;

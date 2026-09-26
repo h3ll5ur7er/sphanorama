@@ -1104,6 +1104,7 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
   ASSERT_TRUE(open.ok()) << open.status.detail;
   EXPECT_TRUE(std::isinf(open.value.focalSpread));
   EXPECT_TRUE(std::isinf(open.value.focalModelError));
+  EXPECT_EQ(open.value.focalScale, 0.0);
 }
 
 /**
@@ -1321,6 +1322,7 @@ TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
   ASSERT_TRUE(overGuess.value.lensFitted) << "the premise: over a guess, this grid is fitted";
   const double sure = std::hypot(overGuess.value.focalSpread, overGuess.value.focalModelError);
   EXPECT_EQ(overGuess.value.intrinsics.focalUncertainty, sure);
+  EXPECT_EQ(overGuess.value.focalScale, 1.0) << "the least is the lens it answers with";
 
   // Handed the same focal length as a lens kept surer than the fit, it stands, every field of it.
   Intrinsics kept = guess;
@@ -1331,9 +1333,31 @@ TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
   EXPECT_FALSE(overKept.value.lensFitted);
   EXPECT_EQ(overKept.value.intrinsics.fx, kept.fx);
   EXPECT_EQ(overKept.value.intrinsics.focalUncertainty, kept.focalUncertainty);
-  // What the fit would have been is still reported, so a caller keeping the lens can see it.
+  // What the fit would have been is still reported, where it lies and how sure it is, so a caller
+  // keeping the lens can amend it with a measurement this call did not take.
+  EXPECT_EQ(overKept.value.intrinsics.fx * overKept.value.focalScale, overGuess.value.intrinsics.fx);
   EXPECT_EQ(overKept.value.focalSpread, overGuess.value.focalSpread);
   EXPECT_EQ(overKept.value.focalModelError, overGuess.value.focalModelError);
+  // And the rotations are the pairs' own, not the refitted trial's the fit would have brought: the
+  // same pairs with no matches to refit from give them exactly.
+  std::vector<PairwiseResult> unrefittable = pairs;
+  for (PairwiseResult& pair : unrefittable) pair.inlierMatches.clear();
+  const Result<GlobalSolution> own = engine_.Refine(unrefittable, PriorsOut(shapes.grid), kept);
+  ASSERT_TRUE(own.ok()) << own.status.detail;
+  ASSERT_EQ(overKept.value.rotations.size(), own.value.rotations.size());
+  for (size_t i = 0; i < own.value.rotations.size(); ++i) {
+    const Quat& got = overKept.value.rotations[i];
+    const Quat& want = own.value.rotations[i];
+    EXPECT_TRUE(got.w == want.w && got.x == want.x && got.y == want.y && got.z == want.z) << i;
+  }
+
+  // As sure as the fit is not surer, and the figure weighed is the two combined, not the noise
+  // alone: the noise is below this lens, the two together are not.
+  kept.focalUncertainty = sure;
+  ASSERT_LT(overGuess.value.focalSpread, kept.focalUncertainty) << "the premise";
+  const Result<GlobalSolution> overEqual = engine_.Refine(pairs, PriorsOut(shapes.grid), kept);
+  ASSERT_TRUE(overEqual.ok()) << overEqual.status.detail;
+  EXPECT_FALSE(overEqual.value.lensFitted);
 
   // And one kept less surely than the fit is replaced by it.
   kept.focalUncertainty = 1.1 * sure;
@@ -1342,12 +1366,14 @@ TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
   EXPECT_TRUE(overLooser.value.lensFitted);
   EXPECT_EQ(overLooser.value.intrinsics.fx, overGuess.value.intrinsics.fx);
   EXPECT_EQ(overLooser.value.intrinsics.focalUncertainty, sure);
+  EXPECT_EQ(overLooser.value.focalScale, 1.0);
 
   // A lens known exactly is never replaced.
   kept.focalUncertainty = 0.0;
   const Result<GlobalSolution> overExact = engine_.Refine(pairs, PriorsOut(shapes.grid), kept);
   ASSERT_TRUE(overExact.ok()) << overExact.status.detail;
   EXPECT_FALSE(overExact.value.lensFitted);
+  EXPECT_EQ(overExact.value.focalScale, overKept.value.focalScale);
 }
 
 /**
@@ -1368,12 +1394,15 @@ TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
   ASSERT_LT(over.value.focalModelError, 0.002) << "the premise: the model error alone is within it";
   EXPECT_GT(std::hypot(over.value.focalSpread, over.value.focalModelError), 0.002);
   EXPECT_FALSE(over.value.lensFitted);
+  // Not precise, so not a measurement of the lens, and nothing a kept one is amended with.
+  EXPECT_EQ(over.value.focalScale, 0.0);
 
   const Result<GlobalSolution> under =
       engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2), PriorsOut(shapes.grid), lens);
   ASSERT_TRUE(under.ok()) << under.status.detail;
   EXPECT_LT(std::hypot(under.value.focalSpread, under.value.focalModelError), 0.002);
   EXPECT_TRUE(under.value.lensFitted);
+  EXPECT_EQ(under.value.focalScale, 1.0);
 }
 
 /**
