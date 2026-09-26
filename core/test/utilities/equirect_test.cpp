@@ -56,6 +56,21 @@ TEST(Equirect, TheSeamIsTheSameDirectionFromBothSides) {
   EXPECT_NEAR(left->z, 0.7071067812, 1e-9) << "the seam is behind the viewer";
 }
 
+// Longitude goes round, so a column a whole width either side of another looks the same way.
+TEST(Equirect, AColumnOutsideTheWidthWraps) {
+  for (const double x : {0.5, 37.25, 99.75}) {
+    const std::optional<Vec3> inside = EquirectDirection(Pixel{x, 20.5}, 100, 50);
+    ASSERT_TRUE(inside.has_value());
+    for (const double shift : {-100.0, 100.0, 300.0}) {
+      const std::optional<Vec3> outside = EquirectDirection(Pixel{x + shift, 20.5}, 100, 50);
+      ASSERT_TRUE(outside.has_value()) << x + shift;
+      EXPECT_NEAR(outside->x, inside->x, 1e-12) << x + shift;
+      EXPECT_NEAR(outside->y, inside->y, 1e-12) << x + shift;
+      EXPECT_NEAR(outside->z, inside->z, 1e-12) << x + shift;
+    }
+  }
+}
+
 TEST(Equirect, AnswersAreUnit) {
   for (double x = 0.25; x < 16.0; x += 1.5) {
     for (double y = 0.25; y < 8.0; y += 1.25) {

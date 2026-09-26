@@ -99,8 +99,11 @@ class CompositionAccuracy : public ::testing::Test {
     if (!preview.ok()) return result;
     owned_.push_back(preview.value);
     const FrameRef& drawn = preview.value;
+    // Read through the reference's rows too, so a preview of another shape stops here rather than
+    // reading past them.
     EXPECT_EQ(drawn.width, reference_.width);
     EXPECT_EQ(drawn.height, reference_.height);
+    if (drawn.width != reference_.width || drawn.height != reference_.height) return result;
     Result<std::span<uint8_t>> a = store_.Pin(drawn);
     Result<std::span<uint8_t>> b = store_.Pin(reference_);
     EXPECT_TRUE(a.ok() && b.ok());

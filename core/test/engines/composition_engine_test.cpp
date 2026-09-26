@@ -283,6 +283,36 @@ TEST_F(NearestCentreComposition, AFrameLookingForwardCoversTheCentreAndNothingBe
   EXPECT_NEAR(tall, 128.0 * 46.8 / 180.0, 1.5);
 }
 
+// Where a frame's image ends is where it stops covering: a direction the lens puts half a source
+// pixel past either side edge is left uncovered, and one half a pixel inside it is covered.
+TEST_F(NearestCentreComposition, AFrameCoversUpToItsEdgeAndNoFurther) {
+  constexpr int32_t kPreview = 256;
+  const Vec3 centre = *EquirectDirection(Pixel{128.5, 64.5}, kPreview, kPreview / 2);
+  // The turn that lands the preview's centre pixel at column `x` of the frame, found by bisection
+  // on the projection itself, so it holds for whatever lens the fixture has.
+  const auto turnLanding = [&](double x) {
+    const auto column = [&](double degrees) {
+      return Project(lens, Rotate(Conjugate(FromAzimuthElevation(degrees, 0.0)), centre)).pixel.x;
+    };
+    double lo = -45.0, hi = 45.0;
+    const bool rising = column(hi) > column(lo);
+    for (int k = 0; k < 100; ++k) {
+      const double mid = 0.5 * (lo + hi);
+      ((column(mid) < x) == rising ? lo : hi) = mid;
+    }
+    return FromAzimuthElevation(0.5 * (lo + hi), 0.0);
+  };
+  const std::vector<std::pair<double, uint8_t>> cases = {
+      {-0.5, 0}, {0.5, 255}, {kWidth - 0.5, 255}, {kWidth + 0.5, 0}};
+  for (const auto& [x, alpha] : cases) {
+    frames.clear();
+    solution.frames.clear();
+    solution.rotations.clear();
+    Look(turnLanding(x), Rgb{10, 20, 30});
+    EXPECT_EQ(Render(kPreview).At(128, 64)[3], alpha) << "landing at column " << x;
+  }
+}
+
 // Turned a quarter to the left, the frame lands a quarter of the way across: `FromAzimuthElevation`
 // turns toward -X, and longitude increases toward +X.
 TEST_F(NearestCentreComposition, ARotationMovesWhereTheFrameLands) {
@@ -450,6 +480,8 @@ TEST_F(NearestCentreComposition, AHandleClaimingMoreThanTheStoreHoldsIsRefused) 
   EXPECT_EQ(Refused(), StatusCode::InvalidArgument) << "a stride past the allocation";
   frames[0].stride = kWidth * 4 - 4;
   EXPECT_EQ(Refused(), StatusCode::InvalidArgument) << "a stride shorter than a row";
+  frames[0].stride = kWidth * 4 + 4;
+  EXPECT_EQ(Refused(), StatusCode::InvalidArgument) << "a stride one pixel past the allocation";
 }
 
 // The store's own code for a frame it does not hold: it cannot say the frame's tier, so the frame is
@@ -488,6 +520,7 @@ TEST_F(NearestCentreComposition, AnAnswerOfAnotherShapeThanAskedIsRefusedAndForg
   const int64_t before = real.Budget().value.heapUsedBytes;
   const std::vector<std::pair<const char*, std::function<void(FrameRef&)>>> lies = {
       {"a stride padded past the allocation", [](FrameRef& f) { f.stride += 64; }},
+      {"a stride padded one pixel past it", [](FrameRef& f) { f.stride += 4; }},
       {"a stride shorter than a row", [](FrameRef& f) { f.stride -= 4; }},
       {"another width", [](FrameRef& f) { f.width -= 2; }},
       {"another height", [](FrameRef& f) { f.height += 1; }},
@@ -512,6 +545,7 @@ TEST_F(NearestCentreComposition, AnAnswerTheStoreWillNotReleaseIsARefusalThatSay
   EXPECT_NE(answer.status.detail.find("still pinned"), std::string::npos) << answer.status.detail;
   // And hands it back, since nothing else can name it to the store.
   ASSERT_TRUE(answer.value.id.valid()) << "the preview it could not give back";
+  EXPECT_EQ(store.outstanding(), 1) << "pinned once, by the release that was declined";
   CleanUpHandedBack(answer.value);
   EXPECT_TRUE(real.Clear().ok()) << "nothing is left pinned";
 }
@@ -829,9 +863,14 @@ TEST_F(NearestCentreComposition, AFrameRefusedAfterItWasPinnedWhoseReleaseIsDecl
 
 // A frame left pinned is named, by its place in the solution and its id: its caller may hold pins
 // of its own on the others, and `ResidencyOf` cannot say which pin is whose.
+// The middle one of three, so neither the first nor the last borrowed; and its buffer relabelled,
+// since the memory store issues the id and the buffer from one counter and would otherwise let a
+// name spelt from either pass for the other.
 TEST_F(NearestCentreComposition, AFrameLeftPinnedIsNamed) {
   Look(Quat{}, Rgb{1, 2, 3});
-  Look(FromAzimuthElevation(180.0, 0.0), Rgb{4, 5, 6});
+  Look(FromAzimuthElevation(120.0, 0.0), Rgb{4, 5, 6});
+  Look(FromAzimuthElevation(240.0, 0.0), Rgb{7, 8, 9});
+  frames[1].buffer = BufferId{frames[1].buffer.value + 1000};
   store.refuseRelease = PinCountingStore::Whose::HandedIn;
   store.refuseReleaseOnlyOf = frames[1].id;
   const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
@@ -850,8 +889,8 @@ TEST_F(NearestCentreComposition, AHandleNamingThePreviewIsRefused) {
   Result<FrameRef> probe = real.Allocate(2, 2, PixelFormat::RGBA8);
   ASSERT_TRUE(probe.ok());
   ASSERT_TRUE(real.Forget(probe.value).ok());
+  // Only the id: the store names frames by it, so a guard asking the buffer would miss this.
   frames[0].id = FrameId{probe.value.id.value + 1};
-  frames[0].buffer = BufferId{probe.value.buffer.value + 1};
   solution.frames[0] = frames[0].id;
   const int64_t before = real.Budget().value.heapUsedBytes;
   EXPECT_TRUE(RefusedSaying("the preview itself"));
@@ -876,30 +915,36 @@ TEST_F(NearestCentreComposition, AFrameFoundPinnedWhoseReleaseIsDeclinedIsNotToB
 // A declined release is not followed by a demotion nobody hears about: the frame is left exactly as
 // reported — pinned, in the heap — and not half put back.
 TEST(NearestCentrePreview, AFrameWhoseReleaseIsDeclinedIsLeftAsReported) {
-  FakeSpillSink sink;
-  MemoryFrameStoreAccess real{int64_t{1} << 24, &sink};
-  PinCountingStore store{real};
-  NearestCentreCompositionEngine engine{store};
-  GlobalSolution solution;
-  solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
-  Result<FrameRef> frame = real.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
-  ASSERT_TRUE(frame.ok());
-  ASSERT_TRUE(real.Demote(frame.value, Residency::Spilled).ok());
-  const std::vector<FrameRef> frames = {frame.value};
-  solution.frames.push_back(frame.value.id);
-  solution.rotations.push_back(Quat{});
-  store.refuseRelease = PinCountingStore::Whose::HandedIn;
-  sink.FailWrites(true);
-  const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
-  EXPECT_NE(refused.detail.find("still pinned"), std::string::npos) << refused.detail;
-  EXPECT_NE(refused.detail.find("put back in Spilled"), std::string::npos)
-      << "the tier the caller has to restore, which only the call knew: " << refused.detail;
-  EXPECT_EQ(real.ResidencyOf(frame.value).value, Residency::HeapPinned);
-  // Doing what it says restores what the call found.
-  EXPECT_TRUE(real.Release(frame.value).ok()) << "the pin the refusal names is there to release";
-  sink.FailWrites(false);
-  EXPECT_TRUE(real.Demote(frame.value, Residency::Spilled).ok());
-  EXPECT_EQ(real.Budget().value.heapUsedBytes, 0) << "the preview was given back, the frame put back";
+  for (const auto& [tier, name] : {std::pair{Residency::Spilled, "Spilled"},
+                                   std::pair{Residency::HeapEncoded, "HeapEncoded"}}) {
+    FakeSpillSink sink;
+    MemoryFrameStoreAccess real{int64_t{1} << 24, &sink};
+    PinCountingStore store{real};
+    NearestCentreCompositionEngine engine{store};
+    GlobalSolution solution;
+    solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
+    Result<FrameRef> frame = real.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+    ASSERT_TRUE(frame.ok());
+    ASSERT_TRUE(real.Demote(frame.value, tier).ok());
+    const int64_t found = real.Budget().value.heapUsedBytes;
+    const std::vector<FrameRef> frames = {frame.value};
+    solution.frames.push_back(frame.value.id);
+    solution.rotations.push_back(Quat{});
+    store.refuseRelease = PinCountingStore::Whose::HandedIn;
+    sink.FailWrites(true);
+    const Status refused = engine.RenderPreview(solution, frames, {}, 64).status;
+    EXPECT_NE(refused.detail.find("still pinned"), std::string::npos) << name << ": " << refused.detail;
+    EXPECT_NE(refused.detail.find(std::string("put back in ") + name), std::string::npos)
+        << "the tier the caller has to restore, which only the call knew: " << refused.detail;
+    EXPECT_EQ(real.ResidencyOf(frame.value).value, Residency::HeapPinned) << name;
+    // Doing what it says restores what the call found.
+    EXPECT_TRUE(real.Release(frame.value).ok()) << name << ": the pin the refusal names";
+    sink.FailWrites(false);
+    EXPECT_TRUE(real.Demote(frame.value, tier).ok()) << name;
+    EXPECT_EQ(real.ResidencyOf(frame.value).value, tier) << name;
+    EXPECT_EQ(real.Budget().value.heapUsedBytes, found)
+        << name << ": the preview was given back, the frame put back";
+  }
 }
 
 // The other methods are later increments, and say so.
