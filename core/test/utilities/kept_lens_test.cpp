@@ -112,6 +112,11 @@ TEST(KeptLens, ACaptureThatMeasuredNothingLeavesItAlone) {
   // And its copies say so, whatever it was handed claiming: nothing kept is a guess (round 4).
   EXPECT_TRUE(std::isinf(still.lens.focalUncertainty));
   EXPECT_FALSE(still.lens.estimated);
+  // Nothing kept is not read, so a writer holding no document at all — a default lens, which could
+  // not project — is not refused for it.
+  const Result<KeptLens> fresh = AmendKeptLens(KeptLens{}, imprecise);
+  ASSERT_TRUE(fresh.ok()) << fresh.status.detail;
+  EXPECT_EQ(fresh.value.captures, 0);
 }
 
 // The kept lens is handed to `Refine`, which answers under it wherever a capture's own fit is not
@@ -394,6 +399,23 @@ TEST(KeptLens, MalformedInputIsRefused) {
     EXPECT_EQ(amended.status.code, StatusCode::InvalidArgument) << row.why;
   }
 
+  // The entry checks each need an input the exit check cannot see (round 4). A scale that is not a
+  // figure, against an exact kept lens, which takes the weight whole and never reads the capture's
+  // focal length the scale would spoil:
+  const KeptLens exact = Amend(Nothing(), Fitted(500.0, 0.0, 0.0));
+  for (const double scale : {nan, -1.0, inf}) {
+    GlobalSolution c = capture;
+    c.focalScale = scale;
+    EXPECT_EQ(AmendKeptLens(exact, c).status.code, StatusCode::InvalidArgument) << scale;
+  }
+  // And a kept lens that cannot project, against an exact capture, which replaces its focal length
+  // and turns its signs back to ones that would pass:
+  KeptLens negative = kept;
+  negative.lens.fx = -500.0;
+  negative.lens.fy = -505.0;
+  EXPECT_EQ(AmendKeptLens(negative, Fitted(505.0, 0.0, 0.0)).status.code,
+            StatusCode::InvalidArgument);
+
   // Nothing kept means nothing is read from it; a capture that measured nothing is not read either.
   KeptLens nothing = Nothing();
   nothing.lens.fx = nan;
@@ -479,6 +501,8 @@ TEST(KeptLens, NoLensIsHandedToRefineWhereNoneIsKept) {
   // from its guess, and a frame of no size is nothing to go on with (round 3).
   EXPECT_EQ(KeptLensFor(Nothing(), 0, 0).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(KeptLensFor(Nothing(), -5, 7).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(Nothing(), 640, 0).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(Nothing(), 0, 480).status.code, StatusCode::InvalidArgument);
   const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
   EXPECT_EQ(KeptLensFor(kept, 640, 360).status.code, StatusCode::InvalidArgument);
   // Turned on its side is another shape too: the principal point would be off-centre by the
@@ -523,6 +547,10 @@ TEST(KeptLens, ALensThatCannotProjectIsNeitherKeptNorHandedOn) {
   EXPECT_EQ(AmendKeptLens(Nothing(), huge).status.code, StatusCode::InvalidArgument);
   const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
   EXPECT_EQ(AmendKeptLens(kept, huge).status.code, StatusCode::InvalidArgument);
+  // And one carried to zero: a focal length under a pixel times the smallest double rounds there.
+  GlobalSolution vanishing = Fitted(0.4, 0.001, 0.0002);
+  vanishing.focalScale = std::numeric_limits<double>::denorm_min();
+  EXPECT_EQ(AmendKeptLens(Nothing(), vanishing).status.code, StatusCode::InvalidArgument);
 
   KeptLens far = kept;
   far.lens.fx = 1e308;
