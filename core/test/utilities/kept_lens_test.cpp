@@ -504,10 +504,13 @@ TEST(KeptLens, NoLensIsHandedToRefineWhereNoneIsKept) {
   EXPECT_EQ(KeptLensFor(Nothing(), 640, 0).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(KeptLensFor(Nothing(), 0, 480).status.code, StatusCode::InvalidArgument);
   const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
-  EXPECT_EQ(KeptLensFor(kept, 640, 360).status.code, StatusCode::InvalidArgument);
+  // A frame of another shape is the document's fault, not the call's: the document is read by its
+  // frame's shape, so one that answers for another shape disagrees with its own key, and left in
+  // place would refuse every build under it (round 5).
+  EXPECT_EQ(KeptLensFor(kept, 640, 360).status.code, StatusCode::FailedPrecondition);
   // Turned on its side is another shape too: the principal point would be off-centre by the
   // difference of the edges (round 3).
-  EXPECT_EQ(KeptLensFor(kept, 480, 640).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(kept, 480, 640).status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(KeptLensFor(kept, 0, 0).status.code, StatusCode::InvalidArgument);
   // A kept lens that is not one is the stored document's fault, not the call's, and has a code of
   // its own: the caller discards the document on it and on nothing else (round 4).

@@ -107,12 +107,14 @@ of them. Three things stand in the way of keeping it.
      nothing written needs an infinity the document format may not spell. A document that does not read back whole is
      refused and the capture starts from the guess, never read with its missing figures as zero —
      zero is a lens known exactly, the one reading that nothing afterwards would ever move. So is a
-     document that reads back whole and is not a kept lens — `KeptLensFor` answers
-     `FailedPrecondition` for it, and for nothing else: it is deleted, the capture starts from the
-     guess, and its own least, if it has a precise one, is taken whole and written in its place,
-     rather than a key every later build is refused on (round 3). A refusal of the call —
-     `InvalidArgument`, a frame of no size or another shape, or one this lens cannot project at —
-     leaves the document be, and that capture starts from the guess (round 4).
+     document that reads back whole and is not a kept lens, or is one of another shape than the key
+     it was read under — `KeptLensFor` answers `FailedPrecondition` for these, and for nothing else:
+     `PanoramaBuildManager` deletes it, the capture starts from the guess, and its own least, if it
+     has a precise one, is taken whole and written in its place, rather than a key every later build
+     is refused on (rounds 3 and 5). A refusal of the call — `InvalidArgument`, a frame of no size or
+     one this lens cannot project at — leaves the document be, and that capture starts from the
+     guess (round 4). `CaptureSessionManager` plans from the guess on any refusal and writes
+     nothing, so the document has one writer (round 5).
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
      a build: `KeptLensFor` handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.

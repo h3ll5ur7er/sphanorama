@@ -131,9 +131,11 @@ Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t heig
   if (kept.captures == 0) {
     return Err<Intrinsics>(StatusCode::NotFound, kComponent, "no lens is kept");
   }
+  // The document is read by its frame's shape, so a kept lens of another one disagrees with its own
+  // key: the document's fault, and left in place it would refuse every build under that key.
   if (!SameShape(width, height, kept.lens)) {
-    return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent,
-                           "the frame is another shape than the kept lens's");
+    return Err<Intrinsics>(StatusCode::FailedPrecondition, kComponent,
+                           "the kept lens is another shape than the frame it is read for");
   }
   const double ratio = static_cast<double>(std::max(width, height)) /
                        static_cast<double>(std::max(kept.lens.width, kept.lens.height));
