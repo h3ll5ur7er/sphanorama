@@ -103,9 +103,15 @@ TEST(KeptLens, ACaptureThatMeasuredNothingLeavesItAlone) {
   EXPECT_TRUE(settled.lens.estimated);
 
   // Nor does it start one: the first build on a device can measure nothing.
-  const KeptLens still = Amend(Nothing(), imprecise);
+  KeptLens claimed = Nothing();
+  claimed.lens.focalUncertainty = 0.0;
+  claimed.lens.estimated = true;
+  const KeptLens still = Amend(claimed, imprecise);
   EXPECT_EQ(still.captures, 0);
   EXPECT_EQ(still.lens.fx, 480.0);
+  // And its copies say so, whatever it was handed claiming: nothing kept is a guess (round 4).
+  EXPECT_TRUE(std::isinf(still.lens.focalUncertainty));
+  EXPECT_FALSE(still.lens.estimated);
 }
 
 // The kept lens is handed to `Refine`, which answers under it wherever a capture's own fit is not
@@ -479,12 +485,17 @@ TEST(KeptLens, NoLensIsHandedToRefineWhereNoneIsKept) {
   // difference of the edges (round 3).
   EXPECT_EQ(KeptLensFor(kept, 480, 640).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(KeptLensFor(kept, 0, 0).status.code, StatusCode::InvalidArgument);
+  // A kept lens that is not one is the stored document's fault, not the call's, and has a code of
+  // its own: the caller discards the document on it and on nothing else (round 4).
   KeptLens spoiled = kept;
   spoiled.noise = -1.0;
-  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::FailedPrecondition);
   spoiled = kept;
   spoiled.lens.fx = 0.0;
-  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::FailedPrecondition);
+  spoiled = kept;
+  spoiled.captures = -1;
+  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::FailedPrecondition);
 }
 
 // Two finite figures can combine past the largest double, and an infinite uncertainty is a guess —
@@ -500,7 +511,7 @@ TEST(KeptLens, FiguresThatCombinePastTheDoublesAreRefused) {
   kept.modelError = huge;
   EXPECT_EQ(AmendKeptLens(kept, Fitted(505.0, 0.001, 0.0002)).status.code,
             StatusCode::InvalidArgument);
-  EXPECT_EQ(KeptLensFor(kept, 640, 480).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(kept, 640, 480).status.code, StatusCode::FailedPrecondition);
 }
 
 // A lens computed from valid inputs can still fail to be one: a scale or a size ratio can carry a

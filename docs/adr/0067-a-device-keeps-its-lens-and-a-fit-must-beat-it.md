@@ -100,16 +100,19 @@ of them. Three things stand in the way of keeping it.
      to IndexedDB behind a resident copy (ADR 0014); a device-scoped document there is the same
      volatility — where metadata is persisted — with a different key, not a new resource access.
      Stored at the size it was kept at, which is how `AmendKeptLens` answers it: the lens, its noise,
-     its model error and its count, and not `focalUncertainty`, which is the two figures combined
-     and a second copy of them — read back unset it is a guess, which any fit replaces, and zeroed
-     it is exact, which none does (round 2). A guess is stored as no document at all: a kept lens's
+     its model error and its count, and not `focalUncertainty` or `estimated`, which the figures and
+     the count imply and are a second copy of them — read back unset the uncertainty is a guess,
+     which any fit replaces, and zeroed it is exact, which none does (round 2). A guess is stored as no document at all: a kept lens's
      figures are finite and so is their combination, which `AmendKeptLens` refuses otherwise, so
      nothing written needs an infinity the document format may not spell. A document that does not read back whole is
      refused and the capture starts from the guess, never read with its missing figures as zero —
      zero is a lens known exactly, the one reading that nothing afterwards would ever move. So is a
-     document that reads back whole and that `KeptLensFor` refuses: it is discarded, the capture
-     starts from the guess, and its own least is taken whole and overwrites it, rather than a key
-     every later build is refused on (round 3).
+     document that reads back whole and is not a kept lens — `KeptLensFor` answers
+     `FailedPrecondition` for it, and for nothing else: it is deleted, the capture starts from the
+     guess, and its own least, if it has a precise one, is taken whole and written in its place,
+     rather than a key every later build is refused on (round 3). A refusal of the call —
+     `InvalidArgument`, a frame of no size or another shape, or one this lens cannot project at —
+     leaves the document be, and that capture starts from the guess (round 4).
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
      a build: `KeptLensFor` handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.

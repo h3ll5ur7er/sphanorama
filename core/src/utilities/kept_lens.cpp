@@ -59,7 +59,11 @@ double KeptWeight(double keptNoise, double keptModel, double noise, double model
 // kept lens came in with, and a lens that cannot project refused rather than kept, since no later
 // call could read it to replace it.
 Result<KeptLens> Settled(KeptLens kept) {
-  if (kept.captures == 0) return Ok(kept);
+  if (kept.captures == 0) {
+    kept.lens.focalUncertainty = std::numeric_limits<double>::infinity();
+    kept.lens.estimated = false;
+    return Ok(kept);
+  }
   if (!IsUsableLens(kept.lens)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
                          "the lens the capture would leave kept cannot project");
@@ -119,7 +123,11 @@ Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t heig
   if (width <= 0 || height <= 0) {
     return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent, "the frame has no size");
   }
-  if (Status checked = CheckKept(kept); !checked.ok()) return checked;
+  if (Status checked = CheckKept(kept); !checked.ok()) {
+    // The stored lens's fault rather than the call's, so its caller can tell which to discard.
+    checked.code = StatusCode::FailedPrecondition;
+    return checked;
+  }
   if (kept.captures == 0) {
     return Err<Intrinsics>(StatusCode::NotFound, kComponent, "no lens is kept");
   }

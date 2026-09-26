@@ -37,9 +37,10 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
 // The lens to hand `Refine` for a capture whose frames are `width` by `height`: the kept one, its
 // lengths in pixels scaled to that size by the long edge, and its `focalUncertainty` derived from
 // the noise and model error kept rather than read from the copy the lens carries. `NotFound` where
-// nothing is kept, so the caller starts from its guess; `InvalidArgument` for a frame with no size
-// or of another shape, a kept lens `AmendKeptLens` would refuse, and a kept lens that cannot
-// project at that size.
+// nothing is kept, so the caller starts from its guess; `FailedPrecondition` for a kept lens
+// `AmendKeptLens` would refuse, which is the stored document's fault and the one refusal its caller
+// discards the document on; `InvalidArgument` for a frame with no size or of another shape, and for
+// a kept lens that cannot project at that size, which are this call's and leave the document be.
 Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t height);
 
 }  // namespace sphanorama
