@@ -1240,11 +1240,16 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   Intrinsics barrel = TrueLens();
   barrel.k1 = -0.1;
   Intrinsics offCentre = TrueLens();
-  offCentre.cx = 200.0;
-  offCentre.cy = 150.0;
+  // Nearer the far corner than the near one, so the corner furthest from it is (0, 0): with the
+  // centre toward the top left, the furthest is (w, h), and a rule that always took that passed.
+  offCentre.cx = 440.0;
+  offCentre.cy = 330.0;
   Intrinsics tangential = TrueLens();
-  tangential.p1 = 0.005;
-  tangential.p2 = -0.004;
+  // Strong enough that the corners' undistorted radii differ by 15% in their cube; at a third of it
+  // they differed by 5%, inside the test's own wander, and a rule that took the corner furthest in
+  // pixels failed by a hair (round 9).
+  tangential.p1 = 0.015;
+  tangential.p2 = -0.012;
   for (const auto& [lens, which] : {std::pair{TrueLens(), "640 x 480"}, std::pair{doubled, "1280 x 960"},
                                     std::pair{barrel, "barrel"}, std::pair{offCentre, "off centre"},
                                     std::pair{tangential, "tangential"}}) {
