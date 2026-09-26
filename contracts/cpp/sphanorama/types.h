@@ -753,7 +753,7 @@ struct GlobalSolution {
   // lens does not carry. A fraction of the focal length, not pixels, so it does not change with the
   // size of the frame. Not noise: a lens's distortion is the same in every capture, so more captures
   // do not shrink it, and more matches move it only by where they sit — the misreading grows toward
-  // the corner — which is why it is reported apart from `focalSpread`. 0.03 to 0.05% where loops see
+  // the corner — which is why it is reported apart from `focalSpread`. 0.02 to 0.05% where loops see
   // the focal length well, as a ring or a grid does, and more where the matches crowd one edge of
   // the frame: 0.09% for a ring whose every other pair keeps only its top row. 0.27 to 0.33% on a lone
   // small loop or a chain of them, which read distortion through the same curve of the tangent they

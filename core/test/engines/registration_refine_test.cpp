@@ -1153,6 +1153,9 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
       const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << "chords, " << k1 << ", seed " << seed;
+      // Refused by the model error, not the noise.
+      EXPECT_LT(solved.value.focalSpread, 0.002) << "chords, " << k1 << ", seed " << seed;
+      EXPECT_GT(solved.value.focalModelError, 0.002) << "chords, " << k1 << ", seed " << seed;
       EXPECT_EQ(solved.value.intrinsics.fx, lens.fx) << "chords, " << k1 << ", seed " << seed;
     }
   }
@@ -1178,6 +1181,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
       const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), doubled);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << "chords at 1280, " << k1 << ", seed " << seed;
+      EXPECT_LT(solved.value.focalSpread, 0.002) << "chords at 1280, " << k1 << ", seed " << seed;
+      EXPECT_GT(solved.value.focalModelError, 0.002) << "chords at 1280, " << k1 << ", seed " << seed;
     }
   }
   // A ring has the loops to absorb the same distortion into a focal length a little off and keep its
@@ -1210,13 +1215,16 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
  * the focal length moves the least — measured by misreading it.
  *
  * Rendered through a radial distortion that moves the corner that far either way and handed the lens
- * without it, a ring and a grid put their least where the error they report under that lens says,
- * within 4% of it — 0.046% and 0.044% — the search stopping within a tenth of that. Handed the focal length 8% out as well, the same, because the
+ * without it, a ring and a grid put their least where the error they report under that lens says:
+ * 0.046% and 0.044%. Four times over, so the search's own tolerance — a tenth of one misreading —
+ * is small beside what it finds: within 1.6%, and it moves linearly. Handed the focal length 8% out as well, the same, because the
  * misreading is under the lens the least was found at, not the one handed in. At twice the
  * resolution, the same: the misreading was half a pixel at first, which halved at 1280 x 960 — the
  * size the page grabs at — and let the chords shape round 7 refused be fitted again (round 8). And
  * on a lens handed in with barrel distortion, the same: the corner's radius is the undistorted one
  * the added k1 acts on, not the pixel's, which read the misreading a quarter too small (round 8).
+ * And with the optical centre off the middle of the frame, the same: the corner is the one
+ * furthest from it, and every other lens here has its centre in the middle, where any corner is.
  */
 TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   const NoisyShapes shapes;
@@ -1229,13 +1237,23 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   doubled.height *= 2;
   Intrinsics barrel = TrueLens();
   barrel.k1 = -0.1;
+  Intrinsics offCentre = TrueLens();
+  offCentre.cx = 200.0;
+  offCentre.cy = 150.0;
   for (const auto& [lens, which] : {std::pair{TrueLens(), "640 x 480"}, std::pair{doubled, "1280 x 960"},
-                                    std::pair{barrel, "barrel"}}) {
-    const UnprojectedDirection far =
-        Unproject(lens, Pixel{static_cast<double>(lens.width), static_cast<double>(lens.height)});
-    ASSERT_TRUE(far.valid) << which;
-    const double corner = std::hypot(far.direction.x, far.direction.y) / far.direction.z;
-    const double misread = 0.001 / (corner * corner * corner);
+                                    std::pair{barrel, "barrel"}, std::pair{offCentre, "off centre"}}) {
+    // The corner furthest from the optical centre, whichever it is.
+    double corner = 0.0;
+    for (const double x : {0.0, static_cast<double>(lens.width)}) {
+      for (const double y : {0.0, static_cast<double>(lens.height)}) {
+        const UnprojectedDirection at = Unproject(lens, Pixel{x, y});
+        ASSERT_TRUE(at.valid) << which;
+        corner = std::max(corner, std::hypot(at.direction.x, at.direction.y) / -at.direction.z);
+      }
+    }
+    // Four thousandths, so the search's own tolerance is a quarter as large beside what it finds.
+    constexpr double kTimes = 4.0;
+    const double misread = kTimes * 0.001 / (corner * corner * corner);
     for (const double k1 : {lens.k1 - misread, lens.k1 + misread}) {
       Intrinsics distorted = lens;
       distorted.k1 = k1;
@@ -1254,15 +1272,41 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
               std::tuple{grid, shapes.grid, "a grid"}}) {
           const Result<GlobalSolution> solved =
               engine_.Refine(pairs, PriorsOut(poses), Scaled(lens, scale));
-          ASSERT_TRUE(solved.ok()) << solved.status.detail;
+          ASSERT_TRUE(solved.ok()) << which << ", " << why << ", k1 " << k1 << ": " << solved.status.detail;
           ASSERT_TRUE(solved.value.lensFitted) << which << ", " << why << ", k1 " << k1 << ", scale " << scale;
           const double moved = std::abs(std::log(solved.value.intrinsics.fx / lens.fx));
-          EXPECT_NEAR(moved / solved.value.focalModelError, 1.0, 0.05)
+          EXPECT_NEAR(moved / (kTimes * solved.value.focalModelError), 1.0, 0.03)
               << which << ", " << why << ", k1 " << k1 << ", scale " << scale;
         }
       }
     }
   }
+}
+
+/**
+ * The noise and the model error are combined, not judged one at a time.
+ *
+ * The grid at 1.08 px, in this seed, is precise to 0.197% by its noise and 0.045% by its model error
+ * — each within the two tenths of a percent a fit is taken at, and 0.202% combined as independent
+ * errors, which is not. Judged by the larger of the two it was fitted (round 8). The next seed reads
+ * 0.196% combined and is fitted, so the refusal is the combination's and not the grid's.
+ */
+TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
+  const NoisyShapes shapes;
+  const Intrinsics lens = TrueLens();
+  const Result<GlobalSolution> over =
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 1), PriorsOut(shapes.grid), lens);
+  ASSERT_TRUE(over.ok()) << over.status.detail;
+  ASSERT_LT(over.value.focalSpread, 0.002) << "the premise: the noise alone is within it";
+  ASSERT_LT(over.value.focalModelError, 0.002) << "the premise: the model error alone is within it";
+  EXPECT_GT(std::hypot(over.value.focalSpread, over.value.focalModelError), 0.002);
+  EXPECT_FALSE(over.value.lensFitted);
+
+  const Result<GlobalSolution> under =
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2), PriorsOut(shapes.grid), lens);
+  ASSERT_TRUE(under.ok()) << under.status.detail;
+  EXPECT_LT(std::hypot(under.value.focalSpread, under.value.focalModelError), 0.002);
+  EXPECT_TRUE(under.value.lensFitted);
 }
 
 /**

@@ -113,9 +113,10 @@ closes. Three things follow.
    change in each edge's error projected on how the errors move with the scale. It is not noise. An
    unreported distortion is the same on every match and every loop, so no number of either averages
    it away, and a weak loop reads it through the same curve of the tangent it reads the focal length
-   through. The ring and the grid read 0.046% and 0.044%, and a real distortion that size moves
-   their least by that within 4%, at 640 x 480 or twice that, and on a lens handed in with barrel
-   distortion; the photograph ring 0.034 to 0.047%; a triangle, a ring whose loop
+   through. The ring and the grid read 0.046% and 0.044% — less with the optical centre off the
+   middle of the frame, 0.027% and 0.016%, its furthest corner being further — and a real
+   distortion four times that size moves their least four times as far, within 1.6%, at 640 x 480
+   or twice that, on a lens handed in with barrel distortion, and off centre; the photograph ring 0.034 to 0.047%; a triangle, a ring whose loop
    skips a frame, and a ring open at one pair with a chord across every other frame 0.27 to 0.33%.
    The ring's least moves and its rotations do not: it absorbs a k1 of -0.01 — 2.6 px at the corner
    — into a focal length 0.24% short, and -0.03 into 0.72%, with its rotations within a hundredth of

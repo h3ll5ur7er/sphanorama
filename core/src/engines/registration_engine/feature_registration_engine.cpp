@@ -1320,8 +1320,8 @@ constexpr double kFocalPrecision = 0.002;
 // least as well — by the same on every match and every loop, so no number of either averages it
 // away. So the lens is misread on purpose: its k1 moved until the furthest corner lands this far out,
 // every pair refitted under that at the least, and the change in the edges' errors projected on how
-// they move with the scale. A ring and a grid read 0.046 and 0.044%, and a real distortion that size
-// moves their least by that within 4%. A weak loop reads the focal length through the tangent's curve
+// they move with the scale. A ring and a grid read 0.046 and 0.044%, and a real distortion four times
+// that size moves their least four times as far, within 1.6%. A weak loop reads the focal length through the tangent's curve
 // and distortion through the same curve, and reads 0.27 to 0.33%: a triangle, a ring whose loop
 // skips a frame, and a ring open at one pair with a chord across every other frame — whose noise
 // alone reads 0.15% at 0.4 px, and which a floor on each match's noise, this constant's first use,
@@ -1740,9 +1740,10 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const double bestScale = std::exp(bestLog);
     const FocalTrial shorter = trial(bestLog - kPrecisionStep, initial);
     const FocalTrial longer = trial(bestLog + kPrecisionStep, initial);
-    // The lens misread at the frame's furthest corner, as a radial distortion it does not carry:
-    // outward, which moves a barrel lens's fold further out rather than in. At the corner's
-    // undistorted radius, which is the one the added k1 acts on. A lens that gives its own corner no
+    // The lens misread at the frame's furthest corner, as a radial distortion it does not carry, at
+    // the corner's undistorted radius, which is the one the added k1 acts on. Outward, though either
+    // way reads the same shift to within a percent, and no scored match can lose its direction to
+    // it: each has one at seven tenths of this focal length, where it sits further out still. A lens that gives its own corner no
     // direction is not one this can misread, and is not fitted.
     const Intrinsics found = ScaledLens(initial, bestScale);
     const UnprojectedDirection far = Unproject(
@@ -1750,7 +1751,8 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
                      found.cy < found.height - found.cy ? static_cast<double>(found.height) : 0.0});
     FocalTrial misread;
     if (far.valid) {
-      const double corner = std::hypot(far.direction.x, far.direction.y) / far.direction.z;
+      // Camera space looks down -Z.
+      const double corner = std::hypot(far.direction.x, far.direction.y) / -far.direction.z;
       Intrinsics misreadLens = initial;
       misreadLens.k1 += kLensModel / (corner * corner * corner);
       misread = trial(bestLog, misreadLens);
