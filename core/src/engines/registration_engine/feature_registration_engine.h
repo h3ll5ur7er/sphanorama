@@ -83,8 +83,9 @@ int RansacSampleBudget(double agreeing);
 // gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
 // one of the two resource accesses an engine may touch.
 //
-// `Refine` solves for rotations through `utilities/rotation_averaging` and needs none of OpenCV; it
-// lives here because this is the engine that has pairs to hand it (ADR 0065).
+// `Refine` solves for rotations through `utilities/rotation_averaging` (ADR 0065), and it needed none
+// of OpenCV until it fitted the focal length: each trial refits the pairs by Kabsch, which here is
+// `cv::SVD` (ADR 0066). So a `Refine` outside this engine needs a Kabsch of its own.
 //
 // `EstimatePairwise` matches by Lowe's ratio test, lifts both keypoint sets to bearings through
 // `camera_model` — which is why it needs the lens, ADR 0054 — and fits the rotation most of the
@@ -104,10 +105,13 @@ class FeatureRegistrationEngine final : public IRegistrationEngine {
                                 const Intrinsics& initial) override;
 
  private:
-  // The whole of extraction, written as if exceptions did not exist — every failure it knows about
-  // is a `Result`. `ExtractFeatures` wraps it in the one `try` this component has, because OpenCV
-  // reports failures we do not know about by throwing (ADR 0047, ADR 0052).
+  // The whole of extraction, and of refinement, written as if exceptions did not exist — every
+  // failure they know about is a `Result`. `ExtractFeatures` and `Refine` wrap them in a `try`, as
+  // `EstimatePairwise` wraps its own body, because OpenCV reports failures we do not know about by
+  // throwing (ADR 0047, ADR 0052).
   Result<FeatureSet> Extract(const FrameRef& frame);
+  Result<GlobalSolution> Solve(std::span<const PairwiseResult> pairs,
+                               std::span<const FramePrior> priors, const Intrinsics& initial);
 
   IFrameStoreAccess& frames_;
   FeatureDetector detector_;

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <set>
 #include <numbers>
 #include <string>
 #include <utility>
@@ -904,6 +905,7 @@ Result<cv::Mat> ReadDescriptors(const FeatureSet& set, std::span<uint8_t> rows, 
  * disagree with the sensor.
  */
 Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vector<Vec3>& to,
+                                   const std::vector<Pixel>& source,
                                    const std::vector<Pixel>& observed, const Quat& prior,
                                    const Intrinsics& lens) {
   const auto residualPx = [&](const cv::Matx33d& r, size_t at) -> double {
@@ -1052,6 +1054,13 @@ Result<PairwiseResult> FitRotation(const std::vector<Vec3>& from, const std::vec
   // conjunct in the very line that exists because the previous gate was two unfalsifiable
   // conjuncts — which is what a reviewer pointed out when the first fix carried it across.
   answer.accepted = agreeing >= kInlierFraction;
+  // The same rows `inliers` counts, so the two cannot disagree on an engine's answer (ADR 0066).
+  answer.inlierMatches.reserve(bestInliers.size());
+  for (size_t at : bestInliers) {
+    answer.inlierMatches.push_back(
+        PixelMatch{static_cast<float>(source[at].x), static_cast<float>(source[at].y),
+                   static_cast<float>(observed[at].x), static_cast<float>(observed[at].y)});
+  }
   return Ok(answer);
 }
 
@@ -1201,6 +1210,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
 
     std::vector<Vec3> fromAll;
     std::vector<Vec3> toAll;
+    std::vector<Pixel> source;
     std::vector<Pixel> observed;
     for (const std::vector<cv::DMatch>& pair : knn) {
       if (pair.size() < 2) continue;
@@ -1232,6 +1242,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       if (!bearingsA.value[ia].usable || !bearingsB.value[ib].usable) continue;
       fromAll.push_back(bearingsA.value[ia].direction);
       toAll.push_back(bearingsB.value[ib].direction);
+      source.push_back(bearingsA.value[ia].pixel);
       observed.push_back(bearingsB.value[ib].pixel);
     }
 
@@ -1245,7 +1256,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     }
 
     const Result<PairwiseResult> fitted =
-        FitRotation(fromAll, toAll, observed, prior, lens);
+        FitRotation(fromAll, toAll, source, observed, prior, lens);
     if (!fitted.ok()) return fitted;
 
     PairwiseResult answer = fitted.value;
@@ -1267,15 +1278,288 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
 // plateau from above and four from below (ADR 0064, ADR 0065).
 constexpr double kPriorWeightPerInlier = 0.01;
 
+namespace {
+
+// The focal lengths searched, as a scale of the one `Refine` was handed. Chosen rather than
+// measured: a field of view a page reports is a guess about the preview, and a guess out by more
+// than this leaves the inlier sets — chosen under it — too far from the truth to refit. What was
+// measured is that every pair of the photograph ring is still accepted at 10% out (ADR 0066).
+constexpr double kFocalScaleLow = 0.7;
+constexpr double kFocalScaleHigh = 1.4;
+// The search stops when the bracket is this narrow in log scale. A hundredth of a percent of focal
+// length moves a ring's closure by about 0.03 degrees, under every median the accuracy table holds.
+constexpr double kFocalScaleTolerance = 1e-4;
+// A least is an answer only where it is precise, and how precise is a property of the pairs' noise
+// and of how sharply the loops see the focal length — not of how much the loops fail to close at
+// the least, which is what the cost there is. That residual is a chi-square on the handful of
+// degrees of freedom the loops leave, independent of the error that moves the least: judged by it,
+// a ring with one skipping pair was fitted 2.2% out, and the photograph ring refused a fit within
+// 0.25% (a reviewer's probes, rounds 3 and 4). So the precision is estimated from what cannot move
+// with the least: each pair's own residual after its Kabsch fit, which no loop absorbs, through
+// each pair's information about its rotation, and the change in each edge's error across a step
+// either side of the least (ADR 0066).
+//
+// Measured over seeds 1 to 200 of noise at 0.4 to 2 px, the estimate's error in standard deviations
+// has a root mean square of 0.83 to 0.95 on every shape fitted — a twelve-frame ring, a two-by-four
+// grid, a ring of uneven pairs — and reached 2.8 at the most; a reviewer's seeds 9000 to 9099 put the
+// ring's at 1.15, one of them at 4.1 (round 7), so it is good to about 15% either way. The spread itself barely moves between seeds,
+// which is what makes it a threshold at all: 0.007 to 0.037% for the ring, 0.07 to 0.38% for the
+// grid, 0.39 to 2.8% for a triangle or a ring whose one loop skips a frame, and 0.005 to 0.14% for
+// the photograph ring's pairs, whichever detector, with up to 1.5 px of noise added to them.
+//
+// Taken when that spread and the model error below are together within `kFocalPrecision` — two
+// tenths of a percent, about a twentieth of a degree of ORB's median — and not otherwise, however far
+// the least lies from the lens handed in.
+constexpr double kFocalPrecision = 0.002;
+// **And no lens model is trusted to better than a thousandth of the focal length at the frame's
+// corner** — half a pixel on the 640 x 480, 65-degree frames the tests use, a pixel at the 1280 the
+// page grabs. Still a function of the field of view, through the corner's radius: at 104 degrees a
+// weak loop reads 0.058% and a ring 0.025%, and weak loops there are fitted, a tenth of a degree
+// worse than an exactly right lens left alone (round 9). ADR 0066 says why that stands.
+// Chosen, not measured: what a phone's ISP leaves is not measured here. A fraction of the focal
+// length rather than a count of pixels, because a lens's distortion does not change with the size of
+// the frame it is read into; counted in pixels it halved at 1280, and the chords below were fitted
+// 1.6% out again (round 8). The spread is the pairs' noise, and a lens model a little wrong moves the
+// least as well — by the same on every match and every loop, so no number of either averages it
+// away. So the lens is misread on purpose: its k1 moved until the furthest corner lands this far out,
+// every pair refitted under that at the least, and the change in the edges' errors projected on how
+// they move with the scale. A ring and a grid read 0.046 and 0.044%, and a real distortion four times
+// that size moves their least four times as far, within 1.6%. A weak loop reads the focal length through the tangent's curve
+// and distortion through the same curve, and reads 0.27 to 0.33%: a triangle, a ring whose loop
+// skips a frame, and a ring open at one pair with a chord across every other frame — whose noise
+// alone reads 0.15% at 0.4 px, and which a floor on each match's noise, this constant's first use,
+// fitted 1.8% out under a k1 of -0.01, its rotations six times worse, because a floor per match
+// shrinks as the matches and loops grow (round 7). A ring's least moves too, a k1 of -0.01 taking it
+// 0.24% short, but its rotations stay within a hundredth of a degree: it has the loops to make the
+// lens it fits consistent.
+//
+// A k1 is one shape of radial error. Others of the same size move the least by other amounts: a k2
+// or a k3 that moves the corner as far, a half to a quarter as much; a mustache that peaks at this
+// size inside the frame and is zero at the corner, two and a half to three times as much, on shapes
+// that read 0.05% and fit their rotations regardless (a reviewer's probe, round 8). So the figure is
+// a scale that separates weak loops from strong ones — six to one — not a bound on every lens error.
+constexpr double kLensModel = 1e-3;
+// The step either side of the least that the precision is measured across: wide enough that the
+// solver's stopping rule is small beside the change it makes, narrow enough that the cost is still
+// the parabola it is near the least.
+constexpr double kPrecisionStep = 0.005;
+
+// The solve under one focal scale, and how far it leaves the pairs refitted under it.
+struct FocalTrial {
+  double costDeg2 = std::numeric_limits<double>::infinity();
+  // Each scored edge's error as a rotation vector in degrees, and the inverse of its pair's
+  // information about its own rotation: what the precision of a least is read from.
+  std::vector<cv::Vec3d> errorsDeg;
+  std::vector<cv::Matx33d> spreads;
+  // The pairs' own residual per match and axis, in square degrees, after each Kabsch fit: each
+  // scored pair's, and all of them pooled.
+  std::vector<double> residualsDeg2;
+  double residualDeg2 = std::numeric_limits<double>::infinity();
+  AveragedRotations averaged;
+};
+
+Intrinsics ScaledLens(const Intrinsics& initial, double scale) {
+  Intrinsics lens = initial;
+  lens.fx *= scale;
+  lens.fy *= scale;
+  return lens;
+}
+
+// An edge the focal search scores, with the matches it scores it on.
+struct ScoredEdge {
+  size_t edge = 0;
+  std::vector<PixelMatch> matches;
+};
+
+// Every scored pair refitted from its matches under the scaled lens, then solved as `Refine`
+// solves. Scored by the inlier-weighted mean square of the edge errors, not their median: a median
+// steps as one edge overtakes another and a search over it stalls on the steps.
+//
+// **Over the scored edges only, and on the same matches at every scale.** An edge between frames
+// the solve leaves unplaced was scored against the identity it gives them, and its whole angle —
+// which shrinks as the focal length grows — pulled the fit toward a longer lens. And a scale that
+// lost a pair's matches through a fold was scored on fewer of them, or not at all, so an end of the
+// bracket could cost infinity and pass for a cost that rose.
+FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
+                         std::vector<RelativeRotation> edges,
+                         const std::vector<ScoredEdge>& scored,
+                         const std::vector<Quat>& anchors) {
+  const Intrinsics lens = ScaledLens(initial, scale);
+  FocalTrial trial;
+  double squares = 0.0;
+  double freedoms = 0.0;
+  for (const ScoredEdge& at : scored) {
+    std::vector<Vec3> from;
+    std::vector<Vec3> to;
+    for (const PixelMatch& match : at.matches) {
+      const UnprojectedDirection a = Unproject(lens, Pixel{match.ax, match.ay});
+      const UnprojectedDirection b = Unproject(lens, Pixel{match.bx, match.by});
+      if (!a.valid || !b.valid) return trial;
+      from.push_back(a.direction);
+      to.push_back(b.direction);
+    }
+    cv::Matx33d fitted;
+    if (!KabschRotation(from, to, &fitted)) return trial;
+    edges[at.edge].rotation = FromMatrix(fitted);
+    // Two coordinates a match, three spent on the rotation.
+    cv::Matx33d information = cv::Matx33d::zeros();
+    double own = 0.0;
+    for (size_t i = 0; i < from.size(); ++i) {
+      const cv::Vec3d seen(to[i].x, to[i].y, to[i].z);
+      const cv::Vec3d moved = fitted * cv::Vec3d(from[i].x, from[i].y, from[i].z);
+      const double deg = std::acos(std::clamp(moved.dot(seen), -1.0, 1.0)) * 180.0 / std::numbers::pi;
+      own += deg * deg;
+      information += cv::Matx33d::eye() - seen * seen.t();
+    }
+    squares += own;
+    freedoms += 2.0 * static_cast<double>(from.size()) - 3.0;
+    trial.residualsDeg2.push_back(own / (2.0 * static_cast<double>(from.size()) - 3.0));
+    trial.spreads.push_back(information.inv());
+  }
+  trial.residualDeg2 = squares / freedoms;
+  trial.averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
+  if (!trial.averaged.valid) return trial;
+  double sum = 0.0;
+  double weights = 0.0;
+  for (const ScoredEdge& at : scored) {
+    const RelativeRotation& edge = edges[at.edge];
+    const Quat solved =
+        Normalize(Multiply(Conjugate(trial.averaged.rotations[static_cast<size_t>(edge.to)]),
+                           trial.averaged.rotations[static_cast<size_t>(edge.from)]));
+    const double deg = AngleBetween(solved, edge.rotation) * 180.0 / std::numbers::pi;
+    sum += edge.weight * deg * deg;
+    weights += edge.weight;
+    // In the pair's second frame, where its information was gathered.
+    Quat off = Normalize(Multiply(edge.rotation, Conjugate(solved)));
+    if (off.w < 0.0) off = Quat{-off.w, -off.x, -off.y, -off.z};
+    const double half = std::sqrt(off.x * off.x + off.y * off.y + off.z * off.z);
+    const double perUnit = half > 0.0 ? 2.0 * std::atan2(half, off.w) / half : 2.0;
+    trial.errorsDeg.push_back(cv::Vec3d(off.x, off.y, off.z) * (perUnit * 180.0 / std::numbers::pi));
+  }
+  trial.costDeg2 = sum / weights;
+  return trial;
+}
+
+// How far, in log focal scale, the least could be from where it is, as a standard deviation. Each
+// edge's error moves with the scale by the change across the two trials either side; the least is
+// where the weighted errors stop moving, and the pairs' own noise, through each pair's information
+// about its rotation, is how far that point wanders. Infinite where the errors do not move at all,
+// which is a cost with no least.
+//
+// **Each pair's own noise**, not the pairs' pooled: the solve pushes a loop's misfit onto its
+// lightest edge, so a thin pair's noise counts for most exactly where a pool of the rest would dilute
+// it. One pair of a ring thinned to fifteen matches at twenty times the others' noise was fitted in
+// every seed from the pool, up to 0.8% out, and is refused from its own (round 7). Never below the
+// pool, though: three matches leave a pair three degrees of freedom, and its own figure can read so
+// quiet that, taken alone, it put a ring's least eight of its spreads out.
+//
+// **And a pair measured twice counts once**: the two share their correspondences, so their noise is
+// one noise, and summing it as two independent ones read the spread √2 tight (round 5). Each edge's
+// term is scaled by how many scored edges join its two frames, which is exact where they are copies
+// and reads √2 wide where two measurements of one pair happen to be independent — the safe side.
+double FocalScaleSpread(const FocalTrial& best, const FocalTrial& shorter,
+                        const FocalTrial& longer, const std::vector<RelativeRotation>& edges,
+                        const std::vector<ScoredEdge>& scored) {
+  std::map<std::pair<int32_t, int32_t>, int> measured;
+  for (const ScoredEdge& at : scored) {
+    ++measured[std::minmax(edges[at.edge].from, edges[at.edge].to)];
+  }
+  double noise = 0.0;
+  double signal = 0.0;
+  for (size_t e = 0; e < scored.size(); ++e) {
+    const RelativeRotation& edge = edges[scored[e].edge];
+    const double weight = edge.weight;
+    const double variance =
+        std::max(best.residualsDeg2.at(e), best.residualDeg2) *
+        static_cast<double>(measured[std::minmax(edge.from, edge.to)]);
+    // Checked access: a trial that was not scored stopped before it had an error for every edge,
+    // and is refused before this is reached; reaching it anyway is `Internal`, not a stray read.
+    const cv::Vec3d moves =
+        (longer.errorsDeg.at(e) - shorter.errorsDeg.at(e)) * (1.0 / (2.0 * kPrecisionStep));
+    noise += weight * weight * variance * moves.dot(best.spreads.at(e) * moves);
+    signal += weight * moves.dot(moves);
+  }
+  if (!(signal > 0.0)) return std::numeric_limits<double>::infinity();
+  return std::sqrt(noise) / signal;
+}
+
+// How far the least moves, in log focal scale, when every pair is refitted under `misread` instead
+// of the lens the least was found under: the change in each edge's error, projected on how the errors
+// move with the scale. Linear, which a half-pixel misreading is small enough for. Infinite where the
+// errors do not move with the scale.
+double FocalScaleShift(const FocalTrial& best, const FocalTrial& misread, const FocalTrial& shorter,
+                       const FocalTrial& longer, const std::vector<RelativeRotation>& edges,
+                       const std::vector<ScoredEdge>& scored) {
+  double pull = 0.0;
+  double signal = 0.0;
+  for (size_t e = 0; e < scored.size(); ++e) {
+    const double weight = edges[scored[e].edge].weight;
+    const cv::Vec3d moves =
+        (longer.errorsDeg.at(e) - shorter.errorsDeg.at(e)) * (1.0 / (2.0 * kPrecisionStep));
+    pull += weight * moves.dot(misread.errorsDeg.at(e) - best.errorsDeg.at(e));
+    signal += weight * moves.dot(moves);
+  }
+  if (!(signal > 0.0)) return std::numeric_limits<double>::infinity();
+  return std::abs(pull) / signal;
+}
+
+// Whether the accepted pairs close a loop, counting two pairs between the same frames once: a pair
+// measured twice agrees with itself under any focal length, which is no loop at all.
+//
+// Not implied by the cost rising, and not by the precision, though that refuses the open eleven-pair
+// chain of the refine test's ring today. The chain's priors, each three degrees out, pull hard
+// enough to give the cost a minimum, and it sits where their error puts it rather than the pixels' —
+// under an earlier rule, without this, the chain was fitted to 502.7 of 500. Neither the pairs' noise
+// nor the lens model measures that pull: on exact matches they read 0.65 to 0.71% and 0.047%, so the
+// precision refuses a chain only because its noise happens to exceed the threshold. This refuses it
+// for what it is, and leaves its spread and model error infinite.
+bool ClosesALoop(const std::vector<RelativeRotation>& edges, size_t frames) {
+  std::vector<int32_t> parent(frames);
+  for (size_t i = 0; i < frames; ++i) parent[i] = static_cast<int32_t>(i);
+  const auto root = [&](int32_t i) {
+    while (parent[static_cast<size_t>(i)] != i) i = parent[static_cast<size_t>(i)];
+    return i;
+  };
+  std::set<std::pair<int32_t, int32_t>> seen;
+  for (const RelativeRotation& edge : edges) {
+    const auto key = std::minmax(edge.from, edge.to);
+    if (!seen.insert(key).second) continue;
+    const int32_t a = root(edge.from);
+    const int32_t b = root(edge.to);
+    if (a == b) return true;
+    parent[static_cast<size_t>(a)] = b;
+  }
+  return false;
+}
+
+}  // namespace
+
 Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const PairwiseResult> pairs,
                                                         std::span<const FramePrior> priors,
                                                         const Intrinsics& initial) {
+  // The same boundary as `ExtractFeatures`', for the same reason: the focal search's Kabsch is
+  // `cv::SVD`. Nothing here is known to make it throw — a 3x3 of finite doubles meets everything it
+  // asserts — which is exactly the case the catch-all exists for.
+  try {
+    return Solve(pairs, priors, initial);
+  } catch (const cv::Exception& thrown) {
+    return Err<GlobalSolution>(StatusCode::Internal, kComponent,
+                               std::string("OpenCV refused during the focal fit: ") + thrown.what());
+  } catch (const std::exception& thrown) {
+    return Err<GlobalSolution>(StatusCode::Internal, kComponent,
+                               std::string("refinement failed: ") + thrown.what());
+  }
+}
+
+Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const PairwiseResult> pairs,
+                                                       std::span<const FramePrior> priors,
+                                                       const Intrinsics& initial) {
   if (priors.empty()) {
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "no priors, so no frames to solve for");
   }
-  // Not read by the solve, and still refused: it comes back as the lens the answer is expressed
-  // under, and an answer expressed under no lens is one nothing downstream can project.
+  // Refused up front: the focal search scales it, and it comes back as the lens the answer is
+  // expressed under, fitted or not — an answer under no lens is one nothing downstream can project.
   if (!IsUsableLens(initial)) {
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "the lens given is not a usable lens");
@@ -1315,6 +1599,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
     if (anchoredPrior) ++priorsUsed;
   }
   std::vector<RelativeRotation> edges;
+  std::vector<const PairwiseResult*> sources;  // parallel to `edges`
   for (const PairwiseResult& pair : pairs) {
     const auto from = indexOf.find(pair.a.value);
     const auto to = indexOf.find(pair.b.value);
@@ -1342,6 +1627,24 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
       return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                  "an accepted pair has counts no engine fills in");
     }
+    // The matches are the inliers `inliers` counts, so a pair carrying both says one thing twice,
+    // and where the two differ nothing here can tell which is wrong (ADR 0066). None at all is a
+    // pair built without them, which is allowed and leaves the lens unfitted.
+    if (!pair.inlierMatches.empty()) {
+      if (pair.inlierMatches.size() != static_cast<size_t>(pair.inliers)) {
+        return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                   "an accepted pair carries matches its inlier count disagrees "
+                                   "with");
+      }
+      for (const PixelMatch& match : pair.inlierMatches) {
+        if (!std::isfinite(match.ax) || !std::isfinite(match.ay) || !std::isfinite(match.bx) ||
+            !std::isfinite(match.by)) {
+          return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                     "an accepted pair carries matches that are not pixels");
+        }
+      }
+    }
+    sources.push_back(&pair);
     edges.push_back(RelativeRotation{from->second, to->second, pair.relativeRotation,
                                      static_cast<double>(pair.inliers)});
   }
@@ -1356,7 +1659,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
                                "reconstruction faces");
   }
 
-  const AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
+  AveragedRotations averaged = AverageRotations(edges, anchors, kPriorWeightPerInlier);
   // Everything the solver refuses is refused above with its reason, so this is a refusal that list
   // did not anticipate — reported as ours rather than guessed at as one of the caller's.
   if (!averaged.valid) {
@@ -1366,6 +1669,124 @@ Result<GlobalSolution> FeatureRegistrationEngine::Refine(std::span<const Pairwis
 
   GlobalSolution solution;
   solution.intrinsics = initial;
+
+  // The focal length, where a loop of pairs can see it (ADR 0066). A pair alone cannot: its pixel
+  // residual is flat within a few percent of the truth, while a ring fails to close by about three
+  // degrees a percent. So the search is over the solve, not over any pair.
+  //
+  // Scored only where the solve placed both frames — an edge inside a component nothing anchors is
+  // left out of the solve, and so out of the fit — and only on the matches that have a direction, in
+  // both frames, at the short end of the bracket, so every scale is scored on the same evidence. A
+  // pair left with fewer than three is not refitted — Kabsch takes two, with nothing to check them
+  // against — and then the lens is passed through: that is the answer for a pair built without
+  // matches, and for one whose matches a folding lens loses within the range searched.
+  std::vector<bool> unplaced(anchors.size(), false);
+  for (const int32_t i : averaged.unplaced) unplaced[static_cast<size_t>(i)] = true;
+  // Filtered at the low end, where a folding lens loses the most: a longer focal length brings
+  // every pixel nearer the centre. Not everywhere, though — under tangential distortion the pixels
+  // `Unproject` takes are not a star about the centre, and a match can lose its direction partway
+  // along — so the search below also refuses to answer if any trial could not be scored.
+  const Intrinsics lowest = ScaledLens(initial, kFocalScaleLow);
+  const auto directed = [&](float x, float y) { return Unproject(lowest, Pixel{x, y}).valid; };
+  std::vector<ScoredEdge> scored;
+  std::vector<RelativeRotation> scoredEdges;
+  bool refittable = true;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    if (unplaced[static_cast<size_t>(edges[e].from)] || unplaced[static_cast<size_t>(edges[e].to)]) {
+      continue;
+    }
+    ScoredEdge at{e, {}};
+    for (const PixelMatch& match : sources[e]->inlierMatches) {
+      if (directed(match.ax, match.ay) && directed(match.bx, match.by)) {
+        at.matches.push_back(match);
+      }
+    }
+    if (at.matches.size() < 3) refittable = false;
+    scoredEdges.push_back(edges[e]);
+    scored.push_back(std::move(at));
+  }
+  if (refittable && ClosesALoop(scoredEdges, anchors.size())) {
+    // Every trial scored, or no answer: a scale whose trial fails is a window the golden section
+    // steps around and then settles at the edge of, and an end that fails costs infinity, which
+    // passes for a cost that rose. One such match of ninety put a fit 3.2% out (ADR 0066).
+    bool everyTrialScored = true;
+    const auto trial = [&](double logScale, const Intrinsics& under) {
+      FocalTrial scoredTrial = TryFocalScale(std::exp(logScale), under, edges, scored, anchors);
+      if (!std::isfinite(scoredTrial.costDeg2)) everyTrialScored = false;
+      return scoredTrial;
+    };
+    const double golden = (std::sqrt(5.0) - 1.0) / 2.0;
+    double lo = std::log(kFocalScaleLow);
+    double hi = std::log(kFocalScaleHigh);
+    double x1 = hi - golden * (hi - lo);
+    double x2 = lo + golden * (hi - lo);
+    FocalTrial f1 = trial(x1, initial);
+    FocalTrial f2 = trial(x2, initial);
+    while (hi - lo > kFocalScaleTolerance) {
+      if (f1.costDeg2 <= f2.costDeg2) {
+        hi = x2;
+        x2 = x1;
+        f2 = std::move(f1);
+        x1 = hi - golden * (hi - lo);
+        f1 = trial(x1, initial);
+      } else {
+        lo = x1;
+        x1 = x2;
+        f1 = std::move(f2);
+        x2 = lo + golden * (hi - lo);
+        f2 = trial(x2, initial);
+      }
+    }
+    const bool firstIsBest = f1.costDeg2 <= f2.costDeg2;
+    FocalTrial& best = firstIsBest ? f1 : f2;
+    const double bestLog = firstIsBest ? x1 : x2;
+    const double bestScale = std::exp(bestLog);
+    const FocalTrial shorter = trial(bestLog - kPrecisionStep, initial);
+    const FocalTrial longer = trial(bestLog + kPrecisionStep, initial);
+    // The lens misread at the frame's furthest corner, as a radial distortion it does not carry, at
+    // the corner's undistorted radius, which is the one the added k1 acts on — the largest of the
+    // four, since under tangential distortion the furthest in pixels is not always the furthest out.
+    // Outward, though either way reads the same shift to within a percent, and no scored match can
+    // lose its direction to it: each has one at seven tenths of this focal length, where it sits
+    // further out still. Of the corners that have a direction: a tangential lens can fold one and
+    // not the others. A lens that gives no corner a direction is not one this can misread, and is
+    // not fitted.
+    const Intrinsics found = ScaledLens(initial, bestScale);
+    double corner = 0.0;
+    for (const double x : {0.0, static_cast<double>(found.width)}) {
+      for (const double y : {0.0, static_cast<double>(found.height)}) {
+        const UnprojectedDirection at = Unproject(found, Pixel{x, y});
+        // Camera space looks down -Z.
+        if (at.valid) corner = std::max(corner, std::hypot(at.direction.x, at.direction.y) / -at.direction.z);
+      }
+    }
+    const bool cornerDirected = corner > 0.0;
+    FocalTrial misread;
+    if (cornerDirected) {
+      Intrinsics misreadLens = initial;
+      misreadLens.k1 += kLensModel / (corner * corner * corner);
+      misread = trial(bestLog, misreadLens);
+    }
+    // A least with the cost rising on both sides, not one at an end of the bracket with the cost
+    // past it lower still; and precise.
+    const bool least = shorter.costDeg2 > best.costDeg2 && longer.costDeg2 > best.costDeg2;
+    const double none = std::numeric_limits<double>::infinity();
+    const double spread =
+        everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored) : none;
+    const double shift = everyTrialScored && cornerDirected
+                             ? FocalScaleShift(best, misread, shorter, longer, edges, scored)
+                             : none;
+    // A least at an end of the bracket is no least, however sharply the cost falls toward it.
+    solution.focalSpread = least ? spread : none;
+    solution.focalModelError = least ? shift : none;
+    if (least && std::hypot(spread, shift) <= kFocalPrecision) {
+      averaged = std::move(best.averaged);
+      solution.intrinsics.fx *= bestScale;
+      solution.intrinsics.fy *= bestScale;
+      solution.intrinsics.estimated = true;
+      solution.lensFitted = true;
+    }
+  }
   solution.medianEdgeErrorDeg = averaged.medianEdgeErrorDeg;
   solution.maxEdgeErrorDeg = averaged.maxEdgeErrorDeg;
   solution.edgesUsed = averaged.edgesUsed;

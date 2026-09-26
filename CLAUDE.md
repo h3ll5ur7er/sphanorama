@@ -43,7 +43,7 @@ coverage and acceptance are all decided in the core.
 **What is real.** Five of the six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness) and now
 `Registration`, in part. `Registration` needs the care of a qualified sentence: all three of its methods are
-implemented — `Refine` solving for rotations only, with the lens passed through (ADR 0065) — but it
+implemented — `Refine` solving for rotations and fitting the focal length (ADR 0065, ADR 0066) — but it
 exists only where OpenCV does so a browser build still gets the null one, and no composition root
 selects it yet: it is reached from tests. **The pair estimator is now scored against a dataset**,
 which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
@@ -89,11 +89,16 @@ sweeps at any weight, ninety frames in under nine hundred. **And `Refine` is wir
 each prior names its frame, accepted pairs are weighed by their inliers, and the priors at a hundredth
 of an inlier each decide which way the reconstruction faces, place one piece against another where
 the pairs leave a seam, and otherwise barely touch its shape. Solving the photograph ring with its
-closing pair, against priors each three degrees out, gives medians of 0.055 (ORB), 0.035 (AKAZE) and
-0.026 (SIFT) against the chain's 0.101, 0.061 and 0.024 — the closing pair halves the two weaker
-detectors and leaves SIFT a little worse, for a reason not yet known. The lens is passed through:
-refining it needs the matched points, and `PairwiseResult` carries only how many there were, so that
-is a later step with its own contract change.
+closing pair, against priors each three degrees out, gives medians of 0.046 (ORB), 0.029 (AKAZE) and
+0.014 (SIFT) against the chain's 0.101, 0.061 and 0.024. **And the focal length is fitted** (ADR
+0066), because it turned out to be the whole of the exit criterion on a phone: 2% out puts ORB's
+median at 0.50 degrees, and a pair cannot see the error — only a loop can. Each pair carries its
+inlier matches as pixels, and `Refine` searches for the focal scale under which the pairs, refitted
+from them, agree best; from 10% out either way it recovers the photograph ring's focal length to
+within 0.063% and solves as though it had been right. Only where the loops see it precisely, though:
+a lone small loop, or a strip of them, keeps the lens it was handed however far out, and
+`lensFitted` says which happened. Distortion is not fitted, and the lens a device keeps between
+captures is the next decision.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its

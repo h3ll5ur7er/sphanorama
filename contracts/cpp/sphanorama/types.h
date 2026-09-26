@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <span>
 #include <string>
@@ -120,6 +121,9 @@ struct Intrinsics {
   double k1 = 0, k2 = 0, k3 = 0, p1 = 0, p2 = 0;   // Brown-Conrady
   int32_t width = 0, height = 0;
   double rollingShutterLineTimeNs = 0;             // 0 == global shutter / unknown
+  // Whether any field was estimated from frames rather than assumed — today only the focal length
+  // can be (ADR 0066). It travels with the lens, so a lens a device kept from an earlier capture is
+  // still an estimate; whether *this* call fitted it is `GlobalSolution::lensFitted`.
   bool estimated = false;
 };
 
@@ -597,6 +601,21 @@ struct FeatureSet {
   int32_t extractor = 0;
 };
 
+// One correspondence a pairwise rotation agrees with: where it sits in frame `a` and where in
+// frame `b`, in pixels. Pixels rather than directions, because a direction is a pixel already taken
+// through a lens, and the matches exist to let a lens be fitted after the fact (ADR 0066). Floats,
+// because the detectors' keypoints are floats and the matches are what bounds a pair's memory.
+//
+// **Not a pixel until something writes one**, as `PairwiseResult::relativeRotation` is not a
+// rotation: zero would be the image's corner matched to itself — finite, counted, and in a
+// reviewer's probe enough to pull a fit 3% out. `Refine` refuses a match that is not finite.
+struct PixelMatch {
+  float ax = std::numeric_limits<float>::quiet_NaN();
+  float ay = std::numeric_limits<float>::quiet_NaN();
+  float bx = std::numeric_limits<float>::quiet_NaN();
+  float by = std::numeric_limits<float>::quiet_NaN();
+};
+
 struct PairwiseResult {
   FrameId a, b;
   // **Not a rotation until something writes one**, unlike `Quat`'s own default, which is the
@@ -639,6 +658,14 @@ struct PairwiseResult {
   // counted should ask for another frame. An earlier implementation set this from the same condition that decided the
   // refusal, which made it a constant `true` on every returned result and told a caller nothing.
   bool accepted = false;
+  // The correspondences the returned rotation agrees with, which `inliers` counts — so on an engine's
+  // answer the two are the same number, and `Refine` refuses an accepted pair where they are not.
+  // Carried because the focal length is invisible to a pair and visible to a loop of them: `Refine`
+  // refits every accepted pair between frames the solve places from these, under each lens it tries
+  // (ADR 0066). At most one per feature of frame `a`, so bounded by the detector's cap. Empty on a
+  // pair built without them, whose rotation cannot be refitted, and then — if the solve places both
+  // its frames — `Refine` passes the lens through.
+  std::vector<PixelMatch> inlierMatches;
 };
 
 // One frame's sensor prior, with the frame it belongs to. A `PoseSample` has no frame of its own:
@@ -657,8 +684,8 @@ struct FramePrior {
 
 // One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
 //
-// **Every figure is in degrees because the solve is over rotations.** A pixel residual needs the
-// matched points, and a `PairwiseResult` carries only how many there were (ADR 0065).
+// **Every figure is in degrees because the solve is over rotations**, including when the lens was
+// fitted: the fit is scored by how well the pairs agree as rotations (ADR 0066).
 struct GlobalSolution {
   // The frames the solve placed, in the order their priors were given. A frame it could not place is
   // left out of both of these and named in `droppedFrames`, so neither ever holds a value that was
@@ -666,13 +693,15 @@ struct GlobalSolution {
   std::vector<FrameId> frames;
   std::vector<Quat> rotations;      // parallel to frames
 
-  // The lens the rotations are expressed under: `Refine`'s `initial`, returned as given. A
-  // compositor needs it beside them, and nothing refines it yet — that needs the correspondences,
-  // which no `PairwiseResult` carries (ADR 0065).
+  // The lens the rotations are expressed under, which a compositor needs beside them: `Refine`'s
+  // `initial` with the focal length fitted where `lensFitted` says so, and every field as given
+  // where it does not (ADR 0066).
   Intrinsics intrinsics;
 
   // How far the answer leaves the pairs it used, and over how many. Read them together: no
   // disagreement over eleven pairs and none over zero are the same two figures and not the same fact.
+  // Where `lensFitted`, "the pairs" are each pair refitted from its matches under the fitted lens,
+  // not the `relativeRotation` it was handed: those were measured under the lens the fit replaced.
   double medianEdgeErrorDeg = 0;
   double maxEdgeErrorDeg = 0;
   int32_t edgesUsed = 0;
@@ -697,6 +726,43 @@ struct GlobalSolution {
   std::vector<FrameId> ambiguousFrames;
   // False when the solve ran out of sweeps; the rotations are the best it reached.
   bool converged = false;
+  // Whether this call fitted the focal length, rather than `intrinsics.estimated`, which says
+  // whether a lens was ever estimated and is passed through with the rest of an unfitted one — a
+  // lens a device kept from an earlier capture is an estimate this call did not make. False where
+  // the fit is not an answer (ADR 0066): the placed frames' accepted pairs close no loop; one of
+  // them keeps fewer than three matches with a direction at the shortest focal length searched; any
+  // trial of the search, the misread one below included, could not be scored on those matches; the cost does not rise on both sides
+  // of its least, as at an end of the range or with no least at all; the lens gives the frame's
+  // corner no direction; or the least is not precise — `focalSpread` and `focalModelError`, combined
+  // as independent errors, over two tenths of a percent — however far it lies from the lens handed
+  // in.
+  bool lensFitted = false;
+  // How far the focal length's least could be from where it is, as a standard deviation in its
+  // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
+  // on it (ADR 0066). The pairs' noise alone, which more matches or another capture of the same lens
+  // average down; what a lens model a little wrong does is `focalModelError`, which they do not.
+  // Reported wherever the search reached a least — the cost rising on both sides of it — taken or
+  // not, so a caller can weigh a fitted lens against others and see how near a refused one came;
+  // infinite where it did not: no loop, too few matches, a trial not scored, or a least at an end of
+  // the range. Loops that cannot see the focal length leave a cost flat but for rounding, which may
+  // still rise either side of some scale: they report infinity or a spread of tens of percent and
+  // more, never one a fit could be taken on.
+  double focalSpread = std::numeric_limits<double>::infinity();
+  // How far the least moves, in the same units, under a lens whose furthest corner is misread by a
+  // thousandth of the focal length — on a 65-degree lens half a pixel at 640 x 480, a pixel at 1280 —
+  // as a k1 the
+  // lens does not carry. A fraction of the focal length, not pixels, so it does not change with the
+  // size of the frame. Not noise: a lens's distortion is the same in every capture, so more captures
+  // do not shrink it, and more matches move it only by where they sit — the misreading grows toward
+  // the corner — which is why it is reported apart from `focalSpread`. On a 65-degree lens, 0.02 to
+  // 0.05% where loops see the focal length well, as a ring or a grid does, and more where the matches
+  // crowd one edge of the frame: 0.09% for a ring whose every other pair keeps only its top row. 0.27
+  // to 0.33% on a lone small loop or a chain of them, which read distortion through the same curve of
+  // the tangent they read the focal length through. Less on a wider lens, whose corner is further
+  // out — 0.025% and 0.058% at 104 degrees — and more on a narrower one. A scale, not a bound: other radial errors of the same size move a
+  // least from a quarter to three times as far, and tangential distortion or a rolling shutter by
+  // more. Infinite where `focalSpread` is, and where the lens gives the frame's corner no direction.
+  double focalModelError = std::numeric_limits<double>::infinity();
 };
 
 struct GainMap { std::vector<double> perFrameGain; std::vector<FrameId> frames; };

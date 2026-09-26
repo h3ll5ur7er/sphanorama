@@ -135,10 +135,10 @@ export interface CaptureHost {
  * A rear phone camera, roughly. The browser does not report field of view at all, and the
  * coverage plan cannot be built without one.
  *
- * This is a placeholder with a real successor: Phase 2's bundle adjustment estimates focal length
- * from the captured frames, which is the only way to actually know. Until then the plan is built
- * on an assumption, and a wrong assumption shows up as cells that overlap more or less than
- * intended rather than as a failure.
+ * This is a placeholder with a real successor: `Refine` can fit the focal length from the captured
+ * frames (ADR 0066), which is the only way to actually know — after the capture, and not yet fed
+ * back into a plan. Until it is, the plan is built on an assumption, and a wrong assumption shows
+ * up as cells that overlap more or less than intended rather than as a failure.
  */
 const ASSUMED_LONG_EDGE_FOV_DEG = 66;
 const FALLBACK_ASPECT = 4 / 3;
