@@ -448,6 +448,13 @@ TEST_F(Refine, InputThatIsNotAProblemIsRefused) {
   refused(firstFour, unnamed, Lens(), StatusCode::InvalidArgument, "a prior names no frame");
 
   refused(pairs, priors, Intrinsics{}, StatusCode::InvalidArgument, "not a usable lens");
+  // How sure a lens is must be a figure: no figure is infinity, a guess, and nothing is surer than
+  // zero.
+  for (const double unsure : {std::numeric_limits<double>::quiet_NaN(), -0.001}) {
+    Intrinsics claimed = Lens();
+    claimed.focalUncertainty = unsure;
+    refused(pairs, priors, claimed, StatusCode::InvalidArgument, "focal uncertainty");
+  }
   // Wrong in one field only, so a check that reads only some of them is not enough.
   Intrinsics oneFieldOut = Lens();
   oneFieldOut.cy = oneFieldOut.height + 1.0;
@@ -1292,6 +1299,55 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
       }
     }
   }
+}
+
+/**
+ * A fit is taken only where it is surer than the lens it would replace (ADR 0067).
+ *
+ * Against a guess — the lens a page reports, which says nothing of how sure it is — any fit precise
+ * enough to take is surer. Against a lens a device kept from earlier captures it need not be: the
+ * weak loops a wide lens lets through, fitted within the two tenths of a percent, left rotations
+ * ten times worse than an exactly right lens left alone (ADR 0066, round 9). So a lens says how
+ * sure it is, the fit is weighed against that, and a fitted lens carries its own figure out.
+ */
+TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
+  const NoisyShapes shapes;
+  const Intrinsics guess = TrueLens();
+  ASSERT_TRUE(std::isinf(guess.focalUncertainty)) << "the premise: a lens by default is a guess";
+  const std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 0.8, 1);
+
+  const Result<GlobalSolution> overGuess = engine_.Refine(pairs, PriorsOut(shapes.grid), guess);
+  ASSERT_TRUE(overGuess.ok()) << overGuess.status.detail;
+  ASSERT_TRUE(overGuess.value.lensFitted) << "the premise: over a guess, this grid is fitted";
+  const double sure = std::hypot(overGuess.value.focalSpread, overGuess.value.focalModelError);
+  EXPECT_EQ(overGuess.value.intrinsics.focalUncertainty, sure);
+
+  // Handed the same focal length as a lens kept surer than the fit, it stands, every field of it.
+  Intrinsics kept = guess;
+  kept.focalUncertainty = 0.9 * sure;
+  kept.estimated = true;
+  const Result<GlobalSolution> overKept = engine_.Refine(pairs, PriorsOut(shapes.grid), kept);
+  ASSERT_TRUE(overKept.ok()) << overKept.status.detail;
+  EXPECT_FALSE(overKept.value.lensFitted);
+  EXPECT_EQ(overKept.value.intrinsics.fx, kept.fx);
+  EXPECT_EQ(overKept.value.intrinsics.focalUncertainty, kept.focalUncertainty);
+  // What the fit would have been is still reported, so a caller keeping the lens can see it.
+  EXPECT_EQ(overKept.value.focalSpread, overGuess.value.focalSpread);
+  EXPECT_EQ(overKept.value.focalModelError, overGuess.value.focalModelError);
+
+  // And one kept less surely than the fit is replaced by it.
+  kept.focalUncertainty = 1.1 * sure;
+  const Result<GlobalSolution> overLooser = engine_.Refine(pairs, PriorsOut(shapes.grid), kept);
+  ASSERT_TRUE(overLooser.ok()) << overLooser.status.detail;
+  EXPECT_TRUE(overLooser.value.lensFitted);
+  EXPECT_EQ(overLooser.value.intrinsics.fx, overGuess.value.intrinsics.fx);
+  EXPECT_EQ(overLooser.value.intrinsics.focalUncertainty, sure);
+
+  // A lens known exactly is never replaced.
+  kept.focalUncertainty = 0.0;
+  const Result<GlobalSolution> overExact = engine_.Refine(pairs, PriorsOut(shapes.grid), kept);
+  ASSERT_TRUE(overExact.ok()) << overExact.status.detail;
+  EXPECT_FALSE(overExact.value.lensFitted);
 }
 
 /**

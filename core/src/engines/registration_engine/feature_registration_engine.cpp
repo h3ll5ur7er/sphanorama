@@ -1564,6 +1564,12 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                "the lens given is not a usable lens");
   }
+  // A fit is weighed against it, so it has to be a figure: NaN compares false against everything and
+  // would let every fit through, and a negative is surer than exact.
+  if (!(initial.focalUncertainty >= 0.0)) {
+    return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                               "the lens given has no focal uncertainty to weigh a fit against");
+  }
   // Indexed with `int32_t` because the solver is. Past that the index wraps and the solver refuses
   // the size — as it does 2^31 accepted pairs — which comes back as `Internal`: a `FramePrior` is 88 bytes on a 64-bit build, so that
   // needs 189 GB of priors, and wasm32 cannot address it at all.
@@ -1779,11 +1785,15 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     // A least at an end of the bracket is no least, however sharply the cost falls toward it.
     solution.focalSpread = least ? spread : none;
     solution.focalModelError = least ? shift : none;
-    if (least && std::hypot(spread, shift) <= kFocalPrecision) {
+    // And surer than the lens it would replace: a lens kept from earlier captures can be surer than
+    // a weak loop's fit, and replacing it would trade a known lens for a worse one (ADR 0067).
+    const double sure = std::hypot(spread, shift);
+    if (least && sure <= kFocalPrecision && sure < initial.focalUncertainty) {
       averaged = std::move(best.averaged);
       solution.intrinsics.fx *= bestScale;
       solution.intrinsics.fy *= bestScale;
       solution.intrinsics.estimated = true;
+      solution.intrinsics.focalUncertainty = sure;
       solution.lensFitted = true;
     }
   }

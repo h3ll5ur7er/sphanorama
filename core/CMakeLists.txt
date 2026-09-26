@@ -26,6 +26,7 @@ add_library(sphanorama_core
   src/utilities/pixel_format.cpp
   src/utilities/quaternion.cpp
   src/utilities/quaternion_average.cpp
+  src/utilities/kept_lens.cpp
   src/utilities/rotation_averaging.cpp
 )
 

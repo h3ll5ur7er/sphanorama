@@ -125,6 +125,13 @@ struct Intrinsics {
   // can be (ADR 0066). It travels with the lens, so a lens a device kept from an earlier capture is
   // still an estimate; whether *this* call fitted it is `GlobalSolution::lensFitted`.
   bool estimated = false;
+  // How far the focal length could be from the truth, as a standard deviation in its natural log —
+  // about the fraction it could be out. Infinity, the default, is a guess, which is what a lens read
+  // from a reported field of view is; zero is a lens known exactly. A fitted lens carries its fit's
+  // `focalSpread` and `focalModelError` combined, and `Refine` takes a fit only where that is less
+  // than the lens it was handed (ADR 0067). Not read by `IsUsableLens`: it says how well the lens is
+  // known, not where a direction lands.
+  double focalUncertainty = std::numeric_limits<double>::infinity();
 };
 
 // ---------------------------------------------------------------- sensing
@@ -734,8 +741,8 @@ struct GlobalSolution {
   // trial of the search, the misread one below included, could not be scored on those matches; the cost does not rise on both sides
   // of its least, as at an end of the range or with no least at all; the lens gives the frame's
   // corner no direction; or the least is not precise — `focalSpread` and `focalModelError`, combined
-  // as independent errors, over two tenths of a percent — however far it lies from the lens handed
-  // in.
+  // as independent errors, over two tenths of a percent, or not less than the lens handed in's own
+  // `focalUncertainty` (ADR 0067) — however far it lies from the lens handed in.
   bool lensFitted = false;
   // How far the focal length's least could be from where it is, as a standard deviation in its
   // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
