@@ -1,6 +1,8 @@
 # 0066 — `Refine` fits the focal length, from the inlier matches each pair now carries
 
-**Status:** accepted
+**Status:** accepted; decision 3 amended by
+[0067](0067-a-device-keeps-its-lens-and-a-fit-must-beat-it.md), which adds that a fit must also be
+surer than the lens handed in
 
 ## Context
 

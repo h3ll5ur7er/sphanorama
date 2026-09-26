@@ -844,7 +844,10 @@ that has to be ordered.
   though it had been right — where the loops see the focal length precisely, which a ring does and
   a lone small loop or a strip of them does not: those keep the lens they were handed however far
   out, and `lensFitted` says which. Distortion is not fitted; that is a bundle adjustment's job, and the
-  carried matches are its input. The accuracy number this phase exits on **is
+  carried matches are its input. **A device keeps its lens** (ADR 0067): a lens says how sure it is,
+  `Refine` takes a fit only where it is surer than the lens it replaces, and `utilities/kept_lens`
+  amends a kept lens with every precise least, taken or not — the storage and the writer wait for the build manager
+  to run `Refine`. The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles

@@ -85,6 +85,15 @@ export interface Intrinsics {
    * still an estimate; whether *this* call fitted it is `GlobalSolution::lensFitted`.
    */
   estimated: boolean;
+  /**
+   * How far the focal length could be from the truth, as a standard deviation in its natural log —
+   * about the fraction it could be out. Infinity, the default, is a guess, which is what a lens read
+   * from a reported field of view is; zero is a lens known exactly. A fitted lens carries its fit's
+   * `focalSpread` and `focalModelError` combined, and `Refine` takes a fit only where that is less
+   * than the lens it was handed (ADR 0067). Not read by `IsUsableLens`: it says how well the lens is
+   * known, not where a direction lands.
+   */
+  focalUncertainty: number;
 }
 
 /** ---------------------------------------------------------------- sensing */
@@ -732,10 +741,19 @@ export interface GlobalSolution {
    * trial of the search, the misread one below included, could not be scored on those matches; the cost does not rise on both sides
    * of its least, as at an end of the range or with no least at all; the lens gives the frame's
    * corner no direction; or the least is not precise — `focalSpread` and `focalModelError`, combined
-   * as independent errors, over two tenths of a percent — however far it lies from the lens handed
-   * in.
+   * as independent errors, over two tenths of a percent, or not less than the lens handed in's own
+   * `focalUncertainty` (ADR 0067) — however far it lies from the lens handed in.
    */
   lensFitted: boolean;
+  /**
+   * Where the least puts the focal length, as a multiple of `intrinsics`' own, wherever it is
+   * precise — every condition above but the last, whether or not it was taken — and zero, which is
+   * never a scale, where it is not. So one where `lensFitted`. A lens a device keeps is amended with
+   * every precise least, including one this call did not take because the kept lens handed in was
+   * surer: a capture of a shape the kept lens was made from shares its model error, so it is surer
+   * only where its noise is below the kept lens's, and it measured the lens either way (ADR 0067).
+   */
+  focalScale: number;
   /**
    * How far the focal length's least could be from where it is, as a standard deviation in its
    * natural log — about the fraction it could be out — from the scatter the pairs' own residuals put

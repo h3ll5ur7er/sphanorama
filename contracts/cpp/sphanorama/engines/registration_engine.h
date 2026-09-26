@@ -140,15 +140,24 @@ class IRegistrationEngine {
   // them, where the cost does not rise on both sides of its least, where the lens gives the frame's
   // corner no direction, or where the least is not precise — how far the pairs' noise could move it
   // and how far a lens misread by a thousandth of the focal length at the frame's corner does,
-  // within two tenths of a percent together — `initial` comes back as
-  // given, every field of it, and `lensFitted` is false. Loops too weak to see the focal length
+  // within two tenths of a percent together — or where that is not less than the
+  // `focalUncertainty` of the lens handed in, `initial` comes back as given, every field of it, and
+  // `lensFitted` is false. A lens read from a reported field of view is a guess, and any precise fit
+  // replaces it; a lens a device kept from earlier captures can be surer than a weak loop's fit, and
+  // is not replaced by one (ADR 0067). A fitted lens carries its own figure in `focalUncertainty`, and
+  // wherever the least is precise, taken or not, `GlobalSolution::focalScale` says where it lies,
+  // which is what a kept lens is amended with. Loops too weak to see the focal length
   // past the pairs' noise or past that misreading are refused this way, however many of them there
   // are and however far their least lies from the lens handed in. Where the lens is fitted the
-  // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give.
+  // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give; where
+  // it is not, they are that one, read as measured under `initial` — so pairs estimated under
+  // another lens give rotations that lens's error, whether or not a precise least was found (ADR
+  // 0067).
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
-  // claims one, a lens `IsUsableLens` would not accept, a pair naming a frame with no prior or the
+  // claims one, a lens `IsUsableLens` would not accept or whose `focalUncertainty` is not a figure
+  // at all — NaN, or below zero — a pair naming a frame with no prior or the
   // same frame twice, or an accepted pair whose rotation is not one — including one never written,
   // which `PairwiseResult` defaults so as to be refused — or whose counts no engine fills in: no
   // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's

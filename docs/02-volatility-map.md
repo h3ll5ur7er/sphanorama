@@ -29,6 +29,7 @@ wrong place.
 | V14 | **Where heavy math executes** — scalar C++, WASM SIMD, WASM threads, WebGPU compute | Device capability | `IComputeDeviceAccess` |
 | V15 | **How a result leaves the device** — download, Web Share, File System Access, clipboard | Platform APIs | `IExportAccess` |
 | V16 | **How a stored frame is made small enough to look at** — the reduction factor, the filter, the pixel format it lands in | The surface doing the reviewing, and what a crossing costs | `FramePreviewEngine` |
+| V17 | **What this device's camera is known to be** — the lens kept between captures, how one more capture amends it, what it is keyed by | Device, the browser's camera identity, how estimates are combined | `utilities/kept_lens` for the amendment and for the lens a capture is handed; V12's store for where it lives (ADR 0067) |
 
 Sensor *absence* moved out of V5 and into V1 with ADR 0044. It was V5's while the engine could absorb it — vision-only mode, and nothing above needed to know. It is not an estimation strategy any more but a decision about whether to open a session at all, which is V1's, and `CaptureSessionManager::RequireMotion` is where it lives. `PoseMode::VisionOnly` stays in the contract for the day `RegistrationEngine` can carry one, at which point it comes back to V5.
 

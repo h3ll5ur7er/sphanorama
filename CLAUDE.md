@@ -97,8 +97,12 @@ inlier matches as pixels, and `Refine` searches for the focal scale under which 
 from them, agree best; from 10% out either way it recovers the photograph ring's focal length to
 within 0.063% and solves as though it had been right. Only where the loops see it precisely, though:
 a lone small loop, or a strip of them, keeps the lens it was handed however far out, and
-`lensFitted` says which happened. Distortion is not fitted, and the lens a device keeps between
-captures is the next decision.
+`lensFitted` says which happened. Distortion is not fitted. **A device keeps its lens** (ADR 0067):
+a lens now says how sure it is (`Intrinsics::focalUncertainty`, infinite for a guess), `Refine`
+takes a fit only where it is surer than the lens it was handed, and `utilities/kept_lens` amends a
+kept lens with every precise least, taken or not — amending only with taken fits froze it after two
+captures. Where it is stored and which manager writes it
+are decided and wait for their writer, since `PanoramaBuildManager` does not run `Refine` yet.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
