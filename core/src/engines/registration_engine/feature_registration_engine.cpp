@@ -1312,7 +1312,10 @@ constexpr double kFocalScaleTolerance = 1e-4;
 // the least lies from the lens handed in.
 constexpr double kFocalPrecision = 0.002;
 // **And no lens model is trusted to better than a thousandth of the focal length at the frame's
-// corner** — half a pixel on the 640 x 480 frames the tests use, a pixel at the 1280 the page grabs.
+// corner** — half a pixel on the 640 x 480, 65-degree frames the tests use, a pixel at the 1280 the
+// page grabs. Still a function of the field of view, through the corner's radius: at 104 degrees a
+// weak loop reads 0.058% and a ring 0.025%, and weak loops there are fitted, a tenth of a degree
+// worse than an exactly right lens left alone (round 9). ADR 0066 says why that stands.
 // Chosen, not measured: what a phone's ISP leaves is not measured here. A fraction of the focal
 // length rather than a count of pixels, because a lens's distortion does not change with the size of
 // the frame it is read into; counted in pixels it halved at 1280, and the chords below were fitted
@@ -1741,18 +1744,25 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const FocalTrial shorter = trial(bestLog - kPrecisionStep, initial);
     const FocalTrial longer = trial(bestLog + kPrecisionStep, initial);
     // The lens misread at the frame's furthest corner, as a radial distortion it does not carry, at
-    // the corner's undistorted radius, which is the one the added k1 acts on. Outward, though either
-    // way reads the same shift to within a percent, and no scored match can lose its direction to
-    // it: each has one at seven tenths of this focal length, where it sits further out still. A lens that gives its own corner no
-    // direction is not one this can misread, and is not fitted.
+    // the corner's undistorted radius, which is the one the added k1 acts on — the largest of the
+    // four, since under tangential distortion the furthest in pixels is not always the furthest out.
+    // Outward, though either way reads the same shift to within a percent, and no scored match can
+    // lose its direction to it: each has one at seven tenths of this focal length, where it sits
+    // further out still. Of the corners that have a direction: a tangential lens can fold one and
+    // not the others. A lens that gives no corner a direction is not one this can misread, and is
+    // not fitted.
     const Intrinsics found = ScaledLens(initial, bestScale);
-    const UnprojectedDirection far = Unproject(
-        found, Pixel{found.cx < found.width - found.cx ? static_cast<double>(found.width) : 0.0,
-                     found.cy < found.height - found.cy ? static_cast<double>(found.height) : 0.0});
+    double corner = 0.0;
+    for (const double x : {0.0, static_cast<double>(found.width)}) {
+      for (const double y : {0.0, static_cast<double>(found.height)}) {
+        const UnprojectedDirection at = Unproject(found, Pixel{x, y});
+        // Camera space looks down -Z.
+        if (at.valid) corner = std::max(corner, std::hypot(at.direction.x, at.direction.y) / -at.direction.z);
+      }
+    }
+    const bool cornerDirected = corner > 0.0;
     FocalTrial misread;
-    if (far.valid) {
-      // Camera space looks down -Z.
-      const double corner = std::hypot(far.direction.x, far.direction.y) / -far.direction.z;
+    if (cornerDirected) {
       Intrinsics misreadLens = initial;
       misreadLens.k1 += kLensModel / (corner * corner * corner);
       misread = trial(bestLog, misreadLens);
@@ -1763,7 +1773,7 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     const double none = std::numeric_limits<double>::infinity();
     const double spread =
         everyTrialScored ? FocalScaleSpread(best, shorter, longer, edges, scored) : none;
-    const double shift = everyTrialScored && far.valid
+    const double shift = everyTrialScored && cornerDirected
                              ? FocalScaleShift(best, misread, shorter, longer, edges, scored)
                              : none;
     // A least at an end of the bracket is no least, however sharply the cost falls toward it.

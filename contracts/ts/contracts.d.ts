@@ -751,15 +751,17 @@ export interface GlobalSolution {
   focalSpread: number;
   /**
    * How far the least moves, in the same units, under a lens whose furthest corner is misread by a
-   * thousandth of the focal length — half a pixel at 640 x 480, a pixel at 1280 x 960 — as a k1 the
+   * thousandth of the focal length — on a 65-degree lens half a pixel at 640 x 480, a pixel at 1280 —
+   * as a k1 the
    * lens does not carry. A fraction of the focal length, not pixels, so it does not change with the
    * size of the frame. Not noise: a lens's distortion is the same in every capture, so more captures
    * do not shrink it, and more matches move it only by where they sit — the misreading grows toward
-   * the corner — which is why it is reported apart from `focalSpread`. 0.02 to 0.05% where loops see
-   * the focal length well, as a ring or a grid does, and more where the matches crowd one edge of
-   * the frame: 0.09% for a ring whose every other pair keeps only its top row. 0.27 to 0.33% on a lone
-   * small loop or a chain of them, which read distortion through the same curve of the tangent they
-   * read the focal length through. A scale, not a bound: other radial errors of the same size move a
+   * the corner — which is why it is reported apart from `focalSpread`. On a 65-degree lens, 0.02 to
+   * 0.05% where loops see the focal length well, as a ring or a grid does, and more where the matches
+   * crowd one edge of the frame: 0.09% for a ring whose every other pair keeps only its top row. 0.27
+   * to 0.33% on a lone small loop or a chain of them, which read distortion through the same curve of
+   * the tangent they read the focal length through. Less on a wider lens, whose corner is further
+   * out — 0.025% and 0.058% at 104 degrees — and more on a narrower one. A scale, not a bound: other radial errors of the same size move a
    * least from a quarter to three times as far, and tangential distortion or a rolling shutter by
    * more. Infinite where `focalSpread` is, and where the lens gives the frame's corner no direction.
    */

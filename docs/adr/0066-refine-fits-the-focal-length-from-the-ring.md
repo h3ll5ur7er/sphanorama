@@ -263,6 +263,20 @@ closes. Three things follow.
   reviewer's probe, round 8). So `focalModelError` is a scale that separates weak loops from strong
   ones, six to one, and not a bound on every lens error; a lens kept across captures has to read it
   that way. And a lens model can be wrong otherwise than radially.
+- **Wide lenses separate weak loops from strong ones less.** A thousandth of the focal length at
+  the corner is a thousandth at a corner that is further out on a wider lens, and the misreading's
+  k1 falls as the cube of that radius. At 104 degrees a ring reads 0.025% and a weak loop 0.058%,
+  against 0.046% and 0.30% at 65, and the weak loops are fitted: at 1280 x 960 the chords, and at
+  4000 x 3000 the triangle and the skipping ring too, and at 80 degrees the chords. Against an
+  *exactly right* lens left alone, their rotations come out 8 to 13 times worse, 0.02 to 0.09
+  degrees against 0.002 to 0.011; with a residual k1 two to four times the thousandth assumed, 0.19
+  to 0.40 degrees against 0.06 to 0.11 (a reviewer's probe, round 9). No one constant separates the
+  two at every field of view: one that refused the weak loops at 104 degrees, a k1 fixed rather than
+  scaled, refuses the ring there too. And what these fits are measured against — a lens already right
+  to a tenth of a percent — is not what `Refine` is handed today, which is a field of view the page
+  reports; it is what a kept lens will be. So this stands, and the lens a device keeps (the next ADR)
+  has to weigh a fit against the precision of the lens it would replace, which is the comparison
+  these figures make and this decision cannot.
   Under a rolling shutter with 3 to 10 degrees a second of hand shake, or an unreported tangential
   distortion, a reviewer's grids handed the right lens were fitted 0.25 to 0.5% off, their rotations
   1.5 to 1.7 times worse and the spread understating the error two- to five-fold — though that is at

@@ -1225,6 +1225,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
  * the added k1 acts on, not the pixel's, which read the misreading a quarter too small (round 8).
  * And with the optical centre off the middle of the frame, the same: the corner is the one
  * furthest from it, and every other lens here has its centre in the middle, where any corner is.
+ * And under tangential distortion, the same: the furthest corner is the one whose direction is
+ * furthest out, which is not always the one furthest in pixels (round 9).
  */
 TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   const NoisyShapes shapes;
@@ -1240,8 +1242,12 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
   Intrinsics offCentre = TrueLens();
   offCentre.cx = 200.0;
   offCentre.cy = 150.0;
+  Intrinsics tangential = TrueLens();
+  tangential.p1 = 0.005;
+  tangential.p2 = -0.004;
   for (const auto& [lens, which] : {std::pair{TrueLens(), "640 x 480"}, std::pair{doubled, "1280 x 960"},
-                                    std::pair{barrel, "barrel"}, std::pair{offCentre, "off centre"}}) {
+                                    std::pair{barrel, "barrel"}, std::pair{offCentre, "off centre"},
+                                    std::pair{tangential, "tangential"}}) {
     // The corner furthest from the optical centre, whichever it is.
     double corner = 0.0;
     for (const double x : {0.0, static_cast<double>(lens.width)}) {
