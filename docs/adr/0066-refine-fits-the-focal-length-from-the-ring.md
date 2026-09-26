@@ -143,7 +143,8 @@ closes. Three things follow.
    through keeps `estimated` as it was given, and a fitted one has it set.
 
    **And `GlobalSolution::focalSpread` says how sure.** The least's standard deviation in log focal
-   scale, reported wherever the search reached a least, taken or not, and infinite where it did not.
+   scale, reported wherever the search reached a least with the cost rising on both sides, taken or
+   not, and infinite where it did not — an end of the bracket is no least.
    A lens kept across captures will need it to weigh one capture's fit against another's, and it is
    what a test can hold the estimate to: until it was reported, the calibration above was prose, and
    a reviewer found every part of the estimate — the degrees of freedom, the frame a pair's

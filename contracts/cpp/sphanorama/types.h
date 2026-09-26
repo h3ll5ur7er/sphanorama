@@ -738,9 +738,12 @@ struct GlobalSolution {
   bool lensFitted = false;
   // That standard deviation: how far the focal length's least could be from where it is, in its
   // natural log — about the fraction it could be out — from the scatter the pairs' own residuals put
-  // on it (ADR 0066). Reported wherever the search reached a least, taken or not, so a caller can
-  // weigh a fitted lens against others and see how near a refused one came; infinite where it did
-  // not: no loop, too few matches, a trial not scored, or loops that do not see the focal length.
+  // on it (ADR 0066). Reported wherever the search reached a least — the cost rising on both sides
+  // of it — taken or not, so a caller can weigh a fitted lens against others and see how near a
+  // refused one came; infinite where it did not: no loop, too few matches, a trial not scored, or a
+  // least at an end of the range. Loops that cannot see the focal length leave a cost flat but for
+  // rounding, which may still rise either side of some scale: they report infinity or a spread of
+  // tens of percent and more, never one a fit could be taken on.
   double focalSpread = std::numeric_limits<double>::infinity();
 };
 

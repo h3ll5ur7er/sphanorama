@@ -817,6 +817,15 @@ TEST_F(Refine, ALensNothingCanSeeIsPassedThrough) {
       EXPECT_EQ(out.height, initial.height) << why;
       EXPECT_EQ(out.rollingShutterLineTimeNs, initial.rollingShutterLineTimeNs) << why;
       EXPECT_EQ(out.estimated, estimated) << why;
+      // No least to report a spread for — at an end of the bracket too, however sharply the cost
+      // falls toward it. The rolled loop's cost is flat but for rounding, which can rise either side
+      // of some scale; what it reports then is no spread a fit could be taken on.
+      if (std::string(why) == "a loop about the viewing axis") {
+        EXPECT_TRUE(std::isinf(solved.value.focalSpread) || solved.value.focalSpread > 0.1)
+            << why << ": " << solved.value.focalSpread;
+      } else {
+        EXPECT_TRUE(std::isinf(solved.value.focalSpread)) << why << ": " << solved.value.focalSpread;
+      }
 
       // And the rotations are the solve of the pairs' own rotations, not a trial's: the same pairs
       // with no matches to refit from, which cannot reach the search at all, give them exactly.
@@ -979,16 +988,17 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
  * The spread `Refine` reports is the scatter the least actually has, and a measured figure.
  *
  * Two halves, because each catches what the other cannot. Over twenty seeds of each fitted shape,
- * the least's error in reported spreads has a root mean square near one — 0.79 when measured,
- * conservative on the uneven ring and the skipping ring — so a spread wrong by half or double is
- * caught. But a band that wide passes a spread 10 or 20% off, and the parts it is built from each
+ * the least's error in reported spreads has a root mean square near one — 0.86 over these eighty
+ * fits, the grid's at 1.07 and the rest's 0.73 to 0.80, and 0.83 to 0.95 each over two hundred
+ * seeds — so a spread wrong by half or double is caught. But a band that wide passes a spread 10 or 20% off, and the parts it is built from each
  * move it by that much: three coordinates a match rather than two moved the grid's 19%, a pair's
  * information gathered in its first frame rather than its second 11%, its error vector in the
  * other frame 11%, and the pairs' weights dropped moved the skipping ring's 9% (round 5). So one
  * seed of each is also held to within 3% of what it measured.
  *
  * And the spread is reported where the fit is refused, since a caller weighing lenses wants to see
- * how near a refused one came, and is infinite where no least was reached at all.
+ * how near a refused one came, and is infinite where no least was reached at all — including a
+ * search that stopped at an end of its bracket, which `ALensNothingCanSeeIsPassedThrough` asserts.
  */
 TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
   const NoisyShapes shapes;
