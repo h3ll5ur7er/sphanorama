@@ -5,6 +5,8 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "utilities/camera_model.h"
@@ -18,7 +20,9 @@ constexpr const char* kComponent = "NearestCentreCompositionEngine";
 constexpr int32_t kChannels = 4;
 
 // Releases every pin taken so far on every path out, so a refusal part-way through cannot leave a
-// frame pinned for the rest of the session.
+// frame pinned for the rest of the session. The success path asks with `ReleaseAll`, because a
+// frame of the caller's left pinned is something the caller has to hear about; the destructor only
+// retries what that declined, on paths already reporting a refusal of their own.
 class Pins {
  public:
   explicit Pins(IFrameStoreAccess& store) : store_(store) {}
@@ -31,6 +35,19 @@ class Pins {
     Result<std::span<uint8_t>> pinned = store_.Pin(frame);
     if (pinned.ok()) held_.push_back(frame);
     return pinned;
+  }
+  // The first refusal, with every frame the store did release no longer held.
+  Status ReleaseAll() {
+    Status first = Status::Ok();
+    std::vector<FrameRef> declined;
+    for (const FrameRef& frame : held_) {
+      Status released = store_.Release(frame);
+      if (released.ok()) continue;
+      declined.push_back(frame);
+      if (first.ok()) first = std::move(released);
+    }
+    held_ = std::move(declined);
+    return first;
   }
 
  private:
@@ -161,10 +178,29 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   const int32_t height = width / 2;
   Result<FrameRef> answer = frames_.Allocate(width, height, PixelFormat::RGBA8);
   if (!answer.ok()) return answer.status;
+
+  // Gives the answer back on a refusal, and says so when the store will not take it, since its
+  // bytes then stay charged with nothing else reporting them.
+  auto abandon = [&](StatusCode code, std::string detail, bool pinned) {
+    if (pinned && !frames_.Release(answer.value).ok()) {
+      detail += "; and the store would not release the preview, so its bytes are still charged";
+    } else if (!frames_.Forget(answer.value).ok()) {
+      detail += "; and the store would not forget the preview, so its bytes are still charged";
+    }
+    return Err<FrameRef>(code, kComponent, std::move(detail));
+  };
+
   Result<std::span<uint8_t>> out = frames_.Pin(answer.value);
-  if (!out.ok()) {
-    (void)frames_.Forget(answer.value);
-    return out.status;
+  if (!out.ok()) return abandon(out.status.code, out.status.detail, false);
+  // The rows are written through the handle, and `Allocate` promises nothing about stride, so the
+  // handle is held to the bytes before anything is written through it.
+  const FrameRef& drawn = answer.value;
+  if (drawn.width != width || drawn.height != height ||
+      drawn.stride < static_cast<int64_t>(width) * kChannels ||
+      drawn.stride > static_cast<int64_t>(out.value.size()) / height) {
+    return abandon(StatusCode::Internal,
+                   "the store described the preview's frame as another shape than was asked for",
+                   true);
   }
   std::memset(out.value.data(), 0, out.value.size());
 
@@ -176,7 +212,7 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   }
 
   for (int32_t y = 0; y < height; ++y) {
-    uint8_t* row = out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(answer.value.stride);
+    uint8_t* row = out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(drawn.stride);
     for (int32_t x = 0; x < width; ++x) {
       const std::optional<Vec3> direction = EquirectDirection(Pixel{x + 0.5, y + 0.5}, width, height);
       if (!direction.has_value()) continue;
@@ -204,7 +240,15 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
       pixel[3] = 255;
     }
   }
-  (void)frames_.Release(answer.value);
+  if (Status inputs = pins.ReleaseAll(); !inputs.ok()) {
+    return abandon(inputs.code, "a frame handed in could not be released: " + inputs.detail, true);
+  }
+  if (Status released = frames_.Release(answer.value); !released.ok()) {
+    return Err<FrameRef>(released.code, kComponent,
+                         "the preview could not be released: " + released.detail +
+                             "; it is still pinned, so it cannot be forgotten and its bytes are "
+                             "still charged");
+  }
   return answer;
 }
 

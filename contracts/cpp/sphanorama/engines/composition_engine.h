@@ -46,8 +46,10 @@ class ICompositionEngine {
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size than
   // the solution's lens, a lens that cannot project when there is a frame to project, a rotation
   // that is not one, gains that do not name the frames or are not figures, and a `maxWidth` under
-  // 2; `Unsupported` for a frame that is not `RGBA8`; the store's own status when a frame cannot be
-  // pinned or the answer allocated.
+  // 2; `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes
+  // as another shape than was asked; the store's own status when a frame cannot be pinned or
+  // released, or the answer allocated. A refusal gives the answer back, and says so when the store
+  // will not take it.
   virtual Result<FrameRef> RenderPreview(const GlobalSolution&, std::span<const FrameRef> frames,
                                          const GainMap&, int32_t maxWidth) = 0;
 };

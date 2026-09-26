@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -25,11 +26,18 @@ namespace {
 using Rgb = std::array<uint8_t, 3>;
 
 // Counts pins per frame, so a test can say every pin was released on every path; fills what it
-// allocates with garbage; and can refuse to pin what it allocates, which is the one refusal the
-// memory store cannot be made to give.
+// allocates with garbage; and can give the refusals and the handles the memory store never does —
+// a pin, a release or a forget declined, and an allocation described as another shape than it is.
 class PinCountingStore final : public IFrameStoreAccess {
  public:
+  enum class Whose { Nobody, Allocated, HandedIn };
   bool refusePinOfAllocated = false;
+  bool refuseForgetOfAllocated = false;
+  // Refused once each, so the refusal is the call under test's to report rather than permanent.
+  Whose refuseRelease = Whose::Nobody;
+  int releaseRefusals = 1;
+  // Applied to the handle `Allocate` answers with; the allocation itself is the real store's.
+  std::function<void(FrameRef&)> describeAllocated;
   explicit PinCountingStore(IFrameStoreAccess& real) : real_(real) {}
   int32_t outstanding() const {
     int32_t total = 0;
@@ -48,11 +56,14 @@ class PinCountingStore final : public IFrameStoreAccess {
       std::fill(bytes.value.begin(), bytes.value.end(), uint8_t{0xA5});
       (void)real_.Release(allocated.value);
     }
+    if (describeAllocated) describeAllocated(allocated.value);
     return allocated;
   }
+  bool Allocated(const FrameRef& frame) const {
+    return std::find(allocated_.begin(), allocated_.end(), frame.buffer.value) != allocated_.end();
+  }
   Result<std::span<uint8_t>> Pin(const FrameRef& frame) override {
-    if (refusePinOfAllocated &&
-        std::find(allocated_.begin(), allocated_.end(), frame.buffer.value) != allocated_.end()) {
+    if (refusePinOfAllocated && Allocated(frame)) {
       return Err<std::span<uint8_t>>(StatusCode::Internal, "PinCountingStore", "refused");
     }
     Result<std::span<uint8_t>> pinned = real_.Pin(frame);
@@ -60,6 +71,11 @@ class PinCountingStore final : public IFrameStoreAccess {
     return pinned;
   }
   Status Release(const FrameRef& frame) override {
+    const Whose whose = Allocated(frame) ? Whose::Allocated : Whose::HandedIn;
+    if (refuseRelease == whose && releaseRefusals > 0) {
+      --releaseRefusals;
+      return Fail(StatusCode::Internal, "PinCountingStore", "declined to release");
+    }
     Status released = real_.Release(frame);
     if (released.ok()) --pins_[frame.buffer.value];
     return released;
@@ -67,7 +83,12 @@ class PinCountingStore final : public IFrameStoreAccess {
   Result<Residency> ResidencyOf(const FrameRef& f) override { return real_.ResidencyOf(f); }
   Status Demote(const FrameRef& f, Residency t) override { return real_.Demote(f, t); }
   Status Adopt(const FrameRef& f) override { return real_.Adopt(f); }
-  Status Forget(const FrameRef& f) override { return real_.Forget(f); }
+  Status Forget(const FrameRef& f) override {
+    if (refuseForgetOfAllocated && Allocated(f)) {
+      return Fail(StatusCode::Internal, "PinCountingStore", "declined to forget");
+    }
+    return real_.Forget(f);
+  }
   Status Clear() override { return real_.Clear(); }
   Result<uint64_t> TierGeneration() override { return real_.TierGeneration(); }
   Result<uint64_t> ContentHash(const FrameRef& f) override { return real_.ContentHash(f); }
@@ -356,6 +377,55 @@ TEST_F(NearestCentreComposition, AnAnswerThatCannotBePinnedIsForgotten) {
   store.refusePinOfAllocated = true;
   EXPECT_EQ(Refused(64), StatusCode::Internal) << "the store's own refusal";
   EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "nothing is left accounted for";
+}
+
+// A store may describe what it allocated differently from what was asked — padded rows, or fewer of
+// them — and the preview is written through that description, so it is checked against the bytes
+// before anything is written. Without the check a padded stride writes past the allocation.
+TEST_F(NearestCentreComposition, AnAnswerOfAnotherShapeThanAskedIsRefusedAndForgotten) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  const int64_t before = real.Budget().value.heapUsedBytes;
+  const std::vector<std::pair<const char*, std::function<void(FrameRef&)>>> lies = {
+      {"a stride padded past the allocation", [](FrameRef& f) { f.stride += 64; }},
+      {"a stride shorter than a row", [](FrameRef& f) { f.stride -= 4; }},
+      {"another width", [](FrameRef& f) { f.width -= 2; }},
+      {"another height", [](FrameRef& f) { f.height += 1; }},
+  };
+  for (const auto& [lie, describe] : lies) {
+    store.describeAllocated = describe;
+    EXPECT_EQ(Refused(64), StatusCode::Internal) << lie;
+    EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << lie << ": the answer is forgotten";
+  }
+}
+
+// A preview the store will not let go of is not an answer: its caller could not forget it.
+TEST_F(NearestCentreComposition, AnAnswerTheStoreWillNotReleaseIsARefusalThatSaysSo) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  store.refuseRelease = PinCountingStore::Whose::Allocated;
+  Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
+  ASSERT_FALSE(answer.ok());
+  EXPECT_EQ(answer.status.code, StatusCode::Internal) << "the store's own code";
+  EXPECT_NE(answer.status.detail.find("still pinned"), std::string::npos) << answer.status.detail;
+}
+
+// Nor is one produced while a frame the caller handed in stays pinned: the preview is forgotten and
+// the release refused is what the caller hears about.
+TEST_F(NearestCentreComposition, AFrameHandedInThatWillNotBeReleasedIsARefusal) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  const int64_t before = real.Budget().value.heapUsedBytes;
+  store.refuseRelease = PinCountingStore::Whose::HandedIn;
+  EXPECT_EQ(Refused(64), StatusCode::Internal);
+  EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "the preview is forgotten";
+}
+
+// Where giving the answer back fails too, the refusal says the bytes are still charged.
+TEST_F(NearestCentreComposition, AnAnswerThatCanBeNeitherPinnedNorForgottenSaysItIsStillCharged) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  store.refusePinOfAllocated = true;
+  store.refuseForgetOfAllocated = true;
+  Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
+  ASSERT_FALSE(answer.ok());
+  EXPECT_NE(answer.status.detail.find("still charged"), std::string::npos) << answer.status.detail;
 }
 
 // The other methods are later increments, and say so.
