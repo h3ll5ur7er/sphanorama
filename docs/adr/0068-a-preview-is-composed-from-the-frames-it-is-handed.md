@@ -82,17 +82,20 @@ composite should look like.
   scaling the value it encodes. Interpolation is affine, so it is indifferent to the encoding. The
   harness passes no gains and nothing here claims to measure them.
 - **The cost is every frame for every preview pixel**, pruned only by the nearest-so-far test:
-  a render and its comparison take 1.2 seconds for 12 frames at 1024 wide in a debug build. A full
+  a render and its comparison take 1.4 to 1.5 seconds for 12 frames at 1024 wide in a debug build,
+  where the single-pass engine this replaced took 1.1 to 1.2 — the price of the next bullet. A full
   sphere plans around sixty frames, and an index from direction to candidate frames is the fix when
   a measurement on a phone asks for it.
 - **The memory is one frame and the answer**, not the sphere. A kept frame is about 4.9 MB against a
   128 MB ceiling on a mid-range phone (ADR 0023), so a sixty-frame sphere does not fit, and the
   first version, which pinned every frame at once, refused the preview of a real capture at any
-  size. The preview is decided first, from geometry alone, as one frame index a pixel. That takes
-  two bytes a preview pixel, half the preview's own size, in the core's heap rather than the store.
-  Then each frame that colours anything is pinned, painted from, released, and demoted back to the
-  tier it was found in, as `CandidatePreview` does. The two-byte index is why a solution naming
-  65,535 frames or more is refused.
+  size. The preview is decided first, from geometry alone, as one frame index a pixel, kept in the
+  preview's own red and green bytes with alpha 0 until the pixel is painted — so the store charges
+  for everything the call holds. Then each frame that colours anything is pinned, painted from,
+  released, and demoted back to the tier it was found in, as `CandidatePreview` does. A frame the
+  store cannot put back, or cannot say the tier of, is a refusal rather than a preview that
+  quietly left it in the heap. The two-byte index is why a solution naming 65,535 frames or more
+  is refused.
 - **No composition root selects it yet**, as with `Registration`: it is reached from tests, and
   `PanoramaBuildManager` still answers `Unsupported`.
 - The dataset renderer (`Rendered`) moved from `registration_accuracy_test.cpp` into

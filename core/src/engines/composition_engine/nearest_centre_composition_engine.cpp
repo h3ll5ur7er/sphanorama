@@ -18,18 +18,19 @@ namespace {
 
 constexpr const char* kComponent = "NearestCentreCompositionEngine";
 constexpr int32_t kChannels = 4;
-// Each preview pixel records the frame that colours it in two bytes, so a solution may name one
-// frame fewer than this.
+// Each preview pixel records the frame that colours it in two of its own bytes, so a solution may
+// name one frame fewer than this.
 constexpr uint16_t kNoFrame = std::numeric_limits<uint16_t>::max();
 
-// One frame of the caller's, pinned while its pixels are painted and then put back where it was.
-// Frames are borrowed one at a time so that the preview of a sphere larger than the heap can still
-// be made: a pin faults a spilled frame in, and the release is followed by the demotion that sends
-// it back (the rule `CandidatePreview` follows, and for the same reason). A frame found pinned was
-// pinned by somebody whose pin outlives this call, and the store refuses to demote to `HeapPinned`,
-// so it is left as it is without a case of its own. `Release` is asked explicitly, because a
-// caller's frame left pinned is something the caller has to hear about; the destructor only retries
-// it, on paths already reporting a refusal of their own.
+// One frame of the caller's, pinned while its pixels are painted and then given back: released, and
+// demoted to the tier it was found in. Frames are borrowed one at a time so that the preview of a
+// sphere larger than the heap can still be made, and the demotion is what keeps it true — a pin
+// faults a spilled frame in (the rule `CandidatePreview` follows, and for the same reason). A frame
+// found pinned was pinned by somebody whose pin outlives this call, so it is where it was once the
+// release is done, and demoting it would be refused.
+//
+// Every path that pinned calls `GiveBack` and reports what it answers; the destructor only retries
+// a release the store declined, on a path already reporting that it did.
 class Borrowed {
  public:
   Borrowed(IFrameStoreAccess& store, const FrameRef& frame)
@@ -37,18 +38,26 @@ class Borrowed {
   Borrowed(const Borrowed&) = delete;
   Borrowed& operator=(const Borrowed&) = delete;
   ~Borrowed() {
-    if (pinned_) (void)store_.Release(frame_);
+    if (pinned_) (void)GiveBack();
   }
+  const Result<Residency>& before() const { return before_; }
   Result<std::span<uint8_t>> Pin() {
     Result<std::span<uint8_t>> pinned = store_.Pin(frame_);
     pinned_ = pinned.ok();
     return pinned;
   }
-  Status Release() {
-    if (Status released = store_.Release(frame_); !released.ok()) return released;
+  Status GiveBack() {
+    if (Status released = store_.Release(frame_); !released.ok()) {
+      return Fail(released.code, kComponent,
+                  "the store declined to release a frame handed in: " + released.detail);
+    }
     pinned_ = false;
-    // Discarded: a store that will not take the frame back leaves it resident and accounted for.
-    if (before_.ok()) (void)store_.Demote(frame_, before_.value);
+    if (before_.value == Residency::HeapPinned) return Status::Ok();
+    if (Status demoted = store_.Demote(frame_, before_.value); !demoted.ok()) {
+      return Fail(demoted.code, kComponent,
+                  "a frame handed in could not be put back in the tier it was found in: " +
+                      demoted.detail);
+    }
     return Status::Ok();
   }
 
@@ -215,22 +224,33 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     }
     return projected.pixel;
   };
-  std::vector<uint16_t> choice(static_cast<size_t>(width) * static_cast<size_t>(height), kNoFrame);
+  // The index is kept in the answer's own bytes until the pixel is painted — red and green hold
+  // the frame, alpha 0 says not yet painted — so the preview costs one frame and the answer and
+  // nothing the store does not charge for.
+  auto pixelAt = [&](int32_t x, int32_t y) {
+    return out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(drawn.stride) +
+           static_cast<size_t>(x) * kChannels;
+  };
+  auto indexAt = [&](const uint8_t* pixel) {
+    return static_cast<uint16_t>(pixel[0] | (pixel[1] << 8));
+  };
   std::vector<bool> chosenAnywhere(count, false);
   for (int32_t y = 0; y < height; ++y) {
     for (int32_t x = 0; x < width; ++x) {
-      const std::optional<Vec3> direction = directionAt(x, y);
-      if (!direction.has_value()) continue;
-      double squarest = -std::numeric_limits<double>::infinity();
-      uint16_t& chosen = choice[static_cast<size_t>(y) * static_cast<size_t>(width) +
-                                static_cast<size_t>(x)];
-      for (size_t i = 0; i < count; ++i) {
-        const double facing = Dot(axes[i], *direction);
-        if (facing <= squarest || !landing(i, *direction).has_value()) continue;
-        squarest = facing;
-        chosen = static_cast<uint16_t>(i);
+      uint16_t chosen = kNoFrame;
+      if (const std::optional<Vec3> direction = directionAt(x, y); direction.has_value()) {
+        double squarest = -std::numeric_limits<double>::infinity();
+        for (size_t i = 0; i < count; ++i) {
+          const double facing = Dot(axes[i], *direction);
+          if (facing <= squarest || !landing(i, *direction).has_value()) continue;
+          squarest = facing;
+          chosen = static_cast<uint16_t>(i);
+        }
       }
       if (chosen != kNoFrame) chosenAnywhere[chosen] = true;
+      uint8_t* pixel = pixelAt(x, y);
+      pixel[0] = static_cast<uint8_t>(chosen & 0xFF);
+      pixel[1] = static_cast<uint8_t>(chosen >> 8);
     }
   }
 
@@ -238,35 +258,43 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     if (!chosenAnywhere[i]) continue;
     const FrameRef& frame = frames[i];
     Borrowed borrowed(frames_, frame);
+    if (!borrowed.before().ok()) {
+      return abandon(borrowed.before().status.code,
+                     "the store could not say which tier a frame handed in is in, so it cannot be "
+                     "read and put back: " + borrowed.before().status.detail, true);
+    }
     Result<std::span<uint8_t>> pinned = borrowed.Pin();
     if (!pinned.ok()) return abandon(pinned.status.code, pinned.status.detail, true);
     // A frame is a value the caller hands in; the pinned span is what the store really holds.
     const int64_t rowBytes = static_cast<int64_t>(frame.width) * kChannels;
     if (frame.stride < rowBytes ||
         static_cast<int64_t>(frame.stride) * frame.height > static_cast<int64_t>(pinned.value.size())) {
-      return abandon(StatusCode::InvalidArgument,
-                     "a frame claims more rows or a longer row than the store holds", true);
+      std::string detail = "a frame claims more rows or a longer row than the store holds";
+      if (Status given = borrowed.GiveBack(); !given.ok()) detail += "; and " + given.detail;
+      return abandon(StatusCode::InvalidArgument, std::move(detail), true);
     }
     for (int32_t y = 0; y < height; ++y) {
-      uint8_t* row = out.value.data() + static_cast<size_t>(y) * static_cast<size_t>(drawn.stride);
       for (int32_t x = 0; x < width; ++x) {
-        if (choice[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] !=
-            i) {
-          continue;
-        }
+        uint8_t* pixel = pixelAt(x, y);
+        if (pixel[3] != 0 || indexAt(pixel) != i) continue;
         // Chosen above only where it lands, so both are answers here.
         const std::optional<Pixel> at = landing(i, *directionAt(x, y));
         const std::array<double, 3> rgb = Sample(pinned.value, frame, *at);
-        uint8_t* pixel = row + static_cast<size_t>(x) * kChannels;
         for (size_t c = 0; c < 3; ++c) {
           pixel[c] = static_cast<uint8_t>(std::min(255.0, std::round(rgb[c] * gain[i])));
         }
         pixel[3] = 255;
       }
     }
-    if (Status released = borrowed.Release(); !released.ok()) {
-      return abandon(released.code, "a frame handed in could not be released: " + released.detail,
-                     true);
+    if (Status given = borrowed.GiveBack(); !given.ok()) {
+      return abandon(given.code, given.detail, true);
+    }
+  }
+  // What no frame sees is transparent black, not the index it was left holding.
+  for (int32_t y = 0; y < height; ++y) {
+    for (int32_t x = 0; x < width; ++x) {
+      uint8_t* pixel = pixelAt(x, y);
+      if (pixel[3] == 0) pixel[0] = pixel[1] = pixel[2] = 0;
     }
   }
 

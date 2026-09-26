@@ -36,6 +36,7 @@ class PinCountingStore final : public IFrameStoreAccess {
   enum class Whose { Nobody, Allocated, HandedIn };
   bool refusePinOfAllocated = false;
   bool refuseForgetOfAllocated = false;
+  bool refuseResidency = false;
   // Refused once each, so the refusal is the call under test's to report rather than permanent.
   Whose refuseRelease = Whose::Nobody;
   int releaseRefusals = 1;
@@ -83,7 +84,10 @@ class PinCountingStore final : public IFrameStoreAccess {
     if (released.ok()) --pins_[frame.buffer.value];
     return released;
   }
-  Result<Residency> ResidencyOf(const FrameRef& f) override { return real_.ResidencyOf(f); }
+  Result<Residency> ResidencyOf(const FrameRef& f) override {
+    if (refuseResidency) return Err<Residency>(StatusCode::Internal, "PinCountingStore", "unsure");
+    return real_.ResidencyOf(f);
+  }
   Status Demote(const FrameRef& f, Residency t) override { return real_.Demote(f, t); }
   Status Adopt(const FrameRef& f) override { return real_.Adopt(f); }
   Status Forget(const FrameRef& f) override {
@@ -422,7 +426,7 @@ TEST_F(NearestCentreComposition, AFrameTheStoreDoesNotHoldIsTheStoresRefusal) {
   EXPECT_EQ(store.outstanding(), 0) << "the first frame's pin is released";
 }
 
-// A preview the store has no room for is the store's refusal, with the frames' pins released.
+// A preview the store has no room for is the store's refusal, before any frame is pinned.
 TEST_F(NearestCentreComposition, AnAnswerTheStoreCannotHoldIsTheStoresRefusal) {
   Look(Quat{}, Rgb{1, 2, 3});
   const int64_t before = real.Budget().value.heapUsedBytes;
@@ -529,6 +533,93 @@ TEST(NearestCentrePreview, IsMadeOfASphereLargerThanTheHeapAndLeavesItWhereItWas
   EXPECT_EQ(colours.size(), 8U) << "every frame coloured some of it";
   EXPECT_TRUE(store.Release(preview.value).ok());
   EXPECT_TRUE(store.Forget(preview.value).ok());
+}
+
+// A frame its caller already holds pinned is read and left pinned, once: the preview's own pin
+// comes and goes, and it does not try to demote a frame somebody else is holding.
+TEST_F(NearestCentreComposition, AFrameItsCallerHoldsPinnedIsReadAndLeftPinned) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  ASSERT_TRUE(real.Pin(frames[0]).ok());
+  EXPECT_EQ(Render(64).At(32, 16)[3], 255) << "the preview is made";
+  EXPECT_EQ(real.ResidencyOf(frames[0]).value, Residency::HeapPinned);
+  EXPECT_TRUE(real.Release(frames[0]).ok()) << "the caller's pin is still there to release";
+  EXPECT_FALSE(real.Release(frames[0]).ok()) << "and it was the only one left";
+}
+
+// A frame whose tier the store cannot say is not read: reading it would fault it in with nothing to
+// say where to put it back.
+TEST_F(NearestCentreComposition, AFrameWhoseTierTheStoreCannotSayIsNotRead) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  const int64_t before = real.Budget().value.heapUsedBytes;
+  store.refuseResidency = true;
+  EXPECT_EQ(Refused(), StatusCode::Internal) << "the store's own code";
+  EXPECT_EQ(real.Budget().value.heapUsedBytes, before) << "the preview is given back";
+}
+
+// While a pixel waits for its frame, its colour bytes hold that frame's index; once painted they
+// are a colour. A frame painted in a colour that spells another frame's index keeps its pixels.
+TEST_F(NearestCentreComposition, APaintedColourIsNotTakenForAFrameIndex) {
+  Look(FromAzimuthElevation(20.0, 0.0), Rgb{1, 0, 200});  // red 1, green 0: frame 1's index
+  Look(FromAzimuthElevation(-20.0, 0.0), Rgb{0, 0, 90});
+  const Preview preview = Render(360);
+  EXPECT_EQ(preview.At(170, 90), (std::array<uint8_t, 4>{1, 0, 200, 255}))
+      << "where both frames see, the squarer one's colour stays";
+  EXPECT_EQ(preview.At(190, 90), (std::array<uint8_t, 4>{0, 0, 90, 255}));
+}
+
+// One spilled frame looking forward, in a store with a sink, for the cases that are about where a
+// frame is left afterwards.
+struct SpilledForward {
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{int64_t{1} << 24, &sink};
+  NearestCentreCompositionEngine engine{store};
+  GlobalSolution solution;
+  std::vector<FrameRef> frames;
+  SpilledForward() {
+    solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
+    Result<FrameRef> frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+    EXPECT_TRUE(frame.ok());
+    EXPECT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+    frames.push_back(frame.value);
+    solution.frames.push_back(frame.value.id);
+    solution.rotations.push_back(Quat{});
+  }
+  int64_t HeapUsed() { return store.Budget().value.heapUsedBytes; }
+};
+
+// A refusal after the frame was pinned still puts it back: the heap it was spilled out of is not
+// taken back by a preview that was never made.
+TEST(NearestCentrePreview, AFrameRefusedAfterItWasPinnedIsStillPutBackWhereItWas) {
+  SpilledForward spilled;
+  spilled.frames[0].stride = kWidth * 4 * 2;
+  Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
+  EXPECT_EQ(answer.status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(spilled.store.ResidencyOf(spilled.frames[0]).value, Residency::Spilled);
+  EXPECT_EQ(spilled.HeapUsed(), 0) << "neither the frame nor the answer is left in the heap";
+}
+
+// A frame the store will not put back is a promise the preview could not keep, so it is a refusal
+// that says so rather than an answer with a frame quietly left in the heap.
+TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
+  SpilledForward spilled;
+  spilled.sink.FailWrites(true);
+  Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
+  ASSERT_FALSE(answer.ok());
+  EXPECT_NE(answer.status.detail.find("tier it was found in"), std::string::npos)
+      << answer.status.detail;
+  EXPECT_EQ(spilled.HeapUsed(), kWidth * kHeight * 4) << "the answer is given back; the frame "
+                                                           "is where the store left it";
+}
+
+// A handle refused after its pin, whose release the store then declines, says so: the frame is
+// still pinned, and its caller cannot forget it until that pin goes.
+TEST_F(NearestCentreComposition, AFrameRefusedAfterItWasPinnedWhoseReleaseIsDeclinedSaysSo) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  frames[0].stride = kWidth * 4 * 2;
+  store.refuseRelease = PinCountingStore::Whose::HandedIn;
+  const Status refused = Refusal();
+  EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << "the refusal is still the handle's";
+  EXPECT_NE(refused.detail.find("declined to release"), std::string::npos) << refused.detail;
 }
 
 // The other methods are later increments, and say so.

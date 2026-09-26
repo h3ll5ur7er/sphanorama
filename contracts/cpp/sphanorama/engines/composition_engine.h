@@ -45,15 +45,17 @@ class ICompositionEngine {
   //
   // Each frame is read on its own and put back in the tier it was found in, so the preview of a
   // sphere larger than the heap can still be made: what it holds at once is one frame and the
-  // answer.
+  // answer. A frame that colours none of the preview is not read at all, so nothing below that is
+  // learnt by reading — its tier, its pin, its bytes — is asked of it.
   //
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size than
   // the solution's lens, a handle claiming more bytes than the store holds for it, a lens that
   // cannot project when there is a frame to project, a rotation that is not one, gains that do not
-  // name the frames or are not figures, 65,535 frames or more, and a `maxWidth` under 2; `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes
-  // as another shape than was asked; the store's own status when a frame cannot be pinned or
-  // released, or the answer allocated. A refusal gives the answer back, and says so when the store
-  // will not take it.
+  // name the frames or are not figures, 65,535 frames or more, and a `maxWidth` under 2;
+  // `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes as
+  // another shape than was asked; the store's own status when it cannot say a frame's tier, pin
+  // it, release it or put it back, or allocate the answer. A refusal gives the answer back, and
+  // says so when the store will not take it.
   virtual Result<FrameRef> RenderPreview(const GlobalSolution&, std::span<const FrameRef> frames,
                                          const GainMap&, int32_t maxWidth) = 0;
 };
