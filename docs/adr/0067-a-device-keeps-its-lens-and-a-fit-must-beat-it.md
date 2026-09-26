@@ -91,9 +91,14 @@ of them. Three things stand in the way of keeping it.
    managers.
 
 4. **Where it is kept, and who reads and writes it** — decided here, built with its writer:
-   - **Keyed by camera and frame shape**: the track's `deviceId` and the shape of the frame it
-     settled on, reduced — 4:3, not 1280 x 960 — since `AmendKeptLens` reads another size of one
-     shape as the same lens and refuses another shape. A `deviceId` is per origin and resets when
+   - **Keyed by camera and frame shape**: the track's `deviceId` and the shape of the frames
+     grabbed, reduced — 4:3, not 1280 x 960 — since `AmendKeptLens` reads another size of one shape
+     as the same lens and refuses another shape. The shape is reduced from the very `width` and
+     `height` `KeptLensFor` is called with: the grabbed frames' own, after the page's resize, with
+     their orientation kept, so a portrait capture's 3:4 is a key of its own and a phone turned
+     between captures keeps two lenses rather than deleting one for the other. Not the track's
+     settings, which the resize can round away from and which need not turn with the frames; a
+     reader holding only those does not read the document (round 6). A `deviceId` is per origin and resets when
      site data is cleared, which is exactly the lifetime of the store it is kept in, so a key and
      its lens are lost together or not at all.
    - **Stored as a device document in V12's store.** `IProjectStoreAccess` already persists documents
@@ -111,10 +116,12 @@ of them. Three things stand in the way of keeping it.
      it was read under — `KeptLensFor` answers `FailedPrecondition` for these, and for nothing else:
      `PanoramaBuildManager` deletes it, the capture starts from the guess, and its own least, if it
      has a precise one, is taken whole and written in its place, rather than a key every later build
-     is refused on (rounds 3 and 5). A refusal of the call — `InvalidArgument`, a frame of no size or
-     one this lens cannot project at — leaves the document be, and that capture starts from the
-     guess (round 4). `CaptureSessionManager` plans from the guess on any refusal and writes
-     nothing, so the document has one writer (round 5).
+     is refused on (rounds 3 and 5). `InvalidArgument` leaves the document be, and that capture
+     starts from the guess: a frame of no size is the call's fault, and a size this lens cannot
+     project at is a size the document cannot serve while it still serves its own and every other
+     size of its shape — reached only by a lens at the edge of the doubles, and not worth a document
+     that serves the rest (rounds 4 and 6). `CaptureSessionManager` plans from the guess on any
+     refusal and writes nothing, so the document has one writer (round 5).
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
      a build: `KeptLensFor` handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.

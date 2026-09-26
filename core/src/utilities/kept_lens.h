@@ -41,8 +41,9 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
 // `AmendKeptLens` would refuse, or one of another shape than the frame — the document is read by its
 // frame's shape, so that is the document disagreeing with its own key — which are the stored
 // document's fault and the one refusal its caller discards the document on; `InvalidArgument` for a
-// frame with no size, and for a kept lens that cannot project at that size, which are this call's
-// and leave the document be.
+// frame with no size, which is the call's, and for a kept lens that cannot project at that size,
+// which only a lens at the edge of the doubles reaches and which still serves its own size and every
+// other size of its shape — neither discards the document.
 Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t height);
 
 }  // namespace sphanorama
