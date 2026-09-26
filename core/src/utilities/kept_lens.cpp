@@ -12,6 +12,27 @@ constexpr const char* kComponent = "KeptLens";
 
 bool IsFigure(double value) { return std::isfinite(value) && value >= 0.0; }
 
+// And the two together: finite figures past about 1e308 combine to an infinity, which is a guess.
+bool AreFigures(double noise, double modelError) {
+  return IsFigure(noise) && IsFigure(modelError) && std::isfinite(std::hypot(noise, modelError));
+}
+
+bool SameShape(int32_t width, int32_t height, const Intrinsics& lens) {
+  // Products of two positive int32s, which an int64 holds.
+  return static_cast<int64_t>(width) * lens.height == static_cast<int64_t>(height) * lens.width;
+}
+
+Status CheckKept(const KeptLens& kept) {
+  if (kept.captures < 0) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "a negative count of captures");
+  }
+  if (kept.captures > 0 && (!IsUsableLens(kept.lens) || !AreFigures(kept.noise, kept.modelError))) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "the kept lens cannot project, or its noise and model error are not figures");
+  }
+  return Status::Ok();
+}
+
 // The weight on the kept lens, of one, that minimises the combined uncertainty
 //   w^2 keptNoise^2 + (1-w)^2 noise^2 + (w keptModel + (1-w) model)^2.
 // The model errors add rather than combine as independent errors: both are the one lens misread,
@@ -37,22 +58,14 @@ double KeptWeight(double keptNoise, double keptModel, double noise, double model
 }  // namespace
 
 Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& capture) {
-  if (kept.captures < 0) {
-    return Err<KeptLens>(StatusCode::InvalidArgument, kComponent, "a negative count of captures");
-  }
-  if (kept.captures > 0 &&
-      (!IsUsableLens(kept.lens) || !IsFigure(kept.noise) || !IsFigure(kept.modelError))) {
-    return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
-                         "the kept lens cannot project, or its noise or model error is not a figure");
-  }
+  if (Status checked = CheckKept(kept); !checked.ok()) return checked;
   if (!IsFigure(capture.focalScale)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent, "the capture's scale is not a figure");
   }
   if (capture.focalScale == 0.0) return Ok(kept);
-  if (!IsUsableLens(capture.intrinsics) || !IsFigure(capture.focalSpread) ||
-      !IsFigure(capture.focalModelError)) {
+  if (!IsUsableLens(capture.intrinsics) || !AreFigures(capture.focalSpread, capture.focalModelError)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
-                         "the capture's lens cannot project, or its spread or model error is not a figure");
+                         "the capture's lens cannot project, or its spread and model error are not figures");
   }
 
   Intrinsics measured = capture.intrinsics;
@@ -68,9 +81,7 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
     first.captures = 1;
     return Ok(first);
   }
-  // Products of two positive int32s, which an int64 holds.
-  if (static_cast<int64_t>(measured.width) * kept.lens.height !=
-      static_cast<int64_t>(measured.height) * kept.lens.width) {
+  if (!SameShape(measured.width, measured.height, kept.lens)) {
     return Err<KeptLens>(StatusCode::InvalidArgument, kComponent,
                          "the capture's frame is another shape than the kept lens's");
   }
@@ -92,6 +103,29 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
   amended.lens.estimated = true;
   if (amended.captures < std::numeric_limits<int32_t>::max()) ++amended.captures;
   return Ok(amended);
+}
+
+Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t height) {
+  if (Status checked = CheckKept(kept); !checked.ok()) return checked;
+  if (kept.captures == 0) {
+    return Err<Intrinsics>(StatusCode::NotFound, kComponent, "no lens is kept");
+  }
+  if (width <= 0 || height <= 0 || !SameShape(width, height, kept.lens)) {
+    return Err<Intrinsics>(StatusCode::InvalidArgument, kComponent,
+                           "the frame is another shape than the kept lens's");
+  }
+  const double ratio = static_cast<double>(std::max(width, height)) /
+                       static_cast<double>(std::max(kept.lens.width, kept.lens.height));
+  Intrinsics lens = kept.lens;
+  lens.fx *= ratio;
+  lens.fy *= ratio;
+  lens.cx *= ratio;
+  lens.cy *= ratio;
+  lens.width = width;
+  lens.height = height;
+  lens.focalUncertainty = std::hypot(kept.noise, kept.modelError);
+  lens.estimated = true;
+  return Ok(lens);
 }
 
 }  // namespace sphanorama

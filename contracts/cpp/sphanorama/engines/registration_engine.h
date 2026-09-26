@@ -149,7 +149,10 @@ class IRegistrationEngine {
   // which is what a kept lens is amended with. Loops too weak to see the focal length
   // past the pairs' noise or past that misreading are refused this way, however many of them there
   // are and however far their least lies from the lens handed in. Where the lens is fitted the
-  // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give.
+  // rotations are the refitted pairs' solve, not the one their own `relativeRotation`s give; where
+  // it is not, they are that one, read as measured under `initial` — so pairs estimated under
+  // another lens give rotations that lens's error, whether or not a precise least was found (ADR
+  // 0067).
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence

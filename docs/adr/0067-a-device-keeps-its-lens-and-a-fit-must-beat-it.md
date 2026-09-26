@@ -52,12 +52,14 @@ of them. Three things stand in the way of keeping it.
    let every fit through, or below zero — is refused as `InvalidArgument`.
 
 3. **What a device keeps, and how a capture amends it.** `utilities/kept_lens` holds `KeptLens` —
-   the lens, its noise and its model error kept apart, and how many captures it was made from — and
-   `AmendKeptLens`, the rule for one more capture:
+   the lens, its noise and its model error kept apart, and how many captures it was made from —
+   `AmendKeptLens`, the rule for one more capture, and `KeptLensFor`, the lens a capture is handed
+   (decision 4):
    - **Every precise least amends it, taken or not**, and only in its focal length. The first
      version amended only with fits `Refine` took, and froze: a second capture of the same shape
-     shares the first's model error, so its fit is never surer than a lens made from both, and from
-     the third capture on nothing was taken — 2 of 20 rings amended the lens (round 1). Whether
+     shares the first's model error, so its fit is surer than a lens made from both only where its
+     noise is lower, and in the rings measured nothing was taken from the third capture on — 2 of 20
+     rings amended the lens (round 1). Whether
      `Refine` takes a fit is a question about that capture's rotations; whether a least measured
      the lens is ADR 0066's precision, and a capture answered under the kept lens still measured it.
      A least that is not precise amends nothing: taken whole as a first measurement, a flat cost's
@@ -96,14 +98,26 @@ of them. Three things stand in the way of keeping it.
    - **Stored as a device document in V12's store.** `IProjectStoreAccess` already persists documents
      to IndexedDB behind a resident copy (ADR 0014); a device-scoped document there is the same
      volatility — where metadata is persisted — with a different key, not a new resource access.
-     Stored at the size it was kept at, which is how `AmendKeptLens` answers it. A guess is stored
-     as no document at all: a kept lens's figures are always finite, so nothing written needs an
-     infinity the document format may not spell. A document that does not read back whole is
+     Stored at the size it was kept at, which is how `AmendKeptLens` answers it: the lens, its noise,
+     its model error and its count, and not `focalUncertainty`, which is the two figures combined
+     and a second copy of them — read back unset it is a guess, which any fit replaces, and zeroed
+     it is exact, which none does (round 2). A guess is stored as no document at all: a kept lens's
+     figures are finite and so is their combination, which `AmendKeptLens` refuses otherwise, so
+     nothing written needs an infinity the document format may not spell. A document that does not read back whole is
      refused and the capture starts from the guess, never read with its missing figures as zero —
      zero is a lens known exactly, the one reading that nothing afterwards would ever move.
    - **Read by `CaptureSessionManager`** at `Begin`, to plan from the kept lens's field of view where
      one exists rather than the 66-degree assumption, and **written by `PanoramaBuildManager`** after
-     a build: the kept lens handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.
+     a build: `KeptLensFor` handed to `Refine` as `initial`, and `AmendKeptLens` applied to its answer.
+     `KeptLensFor` is the kept lens at the capture's frame size — its lengths in pixels scaled by the
+     long edge, since a capture's matches are pixels of the frame it was grabbed at and `Refine`
+     reads them through the lens it is handed — with `focalUncertainty` derived from the figures
+     kept. It answers `NotFound` where nothing is kept, and the caller starts from its guess. The
+     same lens goes to `EstimatePairwise`: where `Refine` does not take a fit it answers with the
+     pairs' own rotations, so a capture answered under the kept lens is only as good as the lens
+     its pairs were estimated under — a median of 0.97 degrees on a ring whose pairs came from
+     another, where the fit taken gives 0.037 (round 2). Refitting at the kept lens on that one
+     refusal would fix it there and not on ADR 0066's, which pass the pairs' rotations through too.
 
 5. **A new axis.** "What this device's camera is known to be" varies with the device, the browser's
    camera identity, and how estimates are combined, and nothing in the volatility map owned it. It is
@@ -121,9 +135,11 @@ of them. Three things stand in the way of keeping it.
   would be storage nothing writes.
 - **A kept lens that is wrong and sure is slow to leave it.** Each capture moves it only by the
   weight its figures earn, and the model error it carries is a scale rather than a bound (ADR
-  0066's consequences: a k1 misreading, radial only). A capture whose `focalScale` puts it many of
-  their combined deviations from the kept lens is the signal that it is wrong, and nothing yet reads
-  it; clearing site data is today's only reset.
+  0066's consequences: a k1 misreading, radial only). A capture whose least lies many of their
+  combined deviations from the kept lens is the signal that it is wrong: `intrinsics.fx` times
+  `focalScale` against the `fx` handed in, since `focalScale` alone is one wherever the fit was
+  taken, which is where the capture was surer than the kept lens (round 2). Nothing yet reads it;
+  clearing site data is today's only reset.
 - **The wide-lens cost ADR 0066 recorded closes once a lens is kept, not before.** The first capture
   on a device is still weighed against the guess, and weak loops on a wide lens are still fitted then.
 - **The kept lens stops improving at its model error.** A strong shape's uncertainty is mostly its

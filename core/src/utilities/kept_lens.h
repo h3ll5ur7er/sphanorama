@@ -11,8 +11,8 @@ namespace sphanorama {
 //
 // The pairs' noise and a lens model's error are kept apart because they combine differently: noise
 // averages down over captures, and the error of misreading the same lens the same way does not
-// (ADR 0066). `lens.focalUncertainty` is the two combined, which is what `Refine` weighs a new fit
-// against; it is written here and never read.
+// (ADR 0066). `lens.focalUncertainty` is the two combined, written for whoever reads the lens but
+// never read here: a document need not carry it, and `KeptLensFor` derives it again.
 struct KeptLens {
   Intrinsics lens;
   double noise = std::numeric_limits<double>::infinity();
@@ -28,8 +28,16 @@ struct KeptLens {
 //
 // `InvalidArgument` for a kept lens that cannot project or whose figures are not finite and at
 // least zero, a negative count, a scale that is not finite and at least zero, a measuring capture
-// whose lens cannot project or whose figures are not finite and at least zero, and a capture whose
-// frame is another shape than the kept lens's.
+// whose lens cannot project or whose figures are not finite and at least zero, figures on either
+// side that combine past the largest double, and a capture whose frame is another shape than the
+// kept lens's.
 Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& capture);
+
+// The lens to hand `Refine` for a capture whose frames are `width` by `height`: the kept one, its
+// lengths in pixels scaled to that size by the long edge, and its `focalUncertainty` derived from
+// the noise and model error kept rather than read from the copy the lens carries. `NotFound` where
+// nothing is kept, so the caller starts from its guess; `InvalidArgument` for a frame of another
+// shape and for a kept lens `AmendKeptLens` would refuse.
+Result<Intrinsics> KeptLensFor(const KeptLens& kept, int32_t width, int32_t height);
 
 }  // namespace sphanorama

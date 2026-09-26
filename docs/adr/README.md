@@ -15,7 +15,7 @@ forward, one is *added* in one of three places, and the body below it is left al
   a banner (0006, 0027, 0039, 0041, 0042, 0043, 0044, 0047, 0049, 0050, 0052, 0053, 0055, 0056,
   0060, 0062); ten of those carry a Status line (0006, 0047, 0049, 0050, 0052, 0053, 0055, 0056,
   0060, 0062), and seven of *those* carry a Status **chain** — a "narrowed by", "superseded by",
-  "extended by", "moved by", "retracted by" or "withdrawn by" pointer (0006, 0047, 0049, 0052, 0056,
+  "extended by", "amended by", "moved by", "retracted by" or "withdrawn by" pointer (0006, 0047, 0049, 0052, 0056,
   0060, 0062). The membership list has been
   right through two extensions of this vocabulary and the vocabulary has been one short of it both
   times: 0060's line reads "one figure retracted by", and the word was missing from this sentence

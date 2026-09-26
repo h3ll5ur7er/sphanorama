@@ -195,10 +195,12 @@ TEST(KeptLens, NeverLessSureThanEitherLensItCombines) {
           const KeptLens kept = Amend(Nothing(), Fitted(500.0, kNoise, kModel));
           const KeptLens both = Amend(kept, Fitted(503.0, cNoise, cModel));
           const double surer = std::min(std::hypot(kNoise, kModel), std::hypot(cNoise, cModel));
-          EXPECT_LE(both.lens.focalUncertainty, surer)
+          // To rounding: a random sweep finds the combination 2e-16 over the surer input, and the
+          // focal length an ulp outside the two it lies between (round 2).
+          EXPECT_LE(both.lens.focalUncertainty, surer * (1.0 + 1e-15))
               << kNoise << " " << kModel << " " << cNoise << " " << cModel;
-          EXPECT_GE(both.lens.fx, 500.0);
-          EXPECT_LE(both.lens.fx, 503.0);
+          EXPECT_GE(both.lens.fx, 500.0 - 1e-12);
+          EXPECT_LE(both.lens.fx, 503.0 + 1e-12);
         }
       }
     }
@@ -253,6 +255,10 @@ TEST(KeptLens, OnlyTheFocalLengthIsAmended) {
   kept = Amend(kept, other);
   ASSERT_EQ(kept.captures, 2) << "the premise: the capture counted";
   EXPECT_NEAR(kept.lens.fx, std::sqrt(500.0 * 504.0), 1e-9);
+  // A lens read back without `estimated` is estimated once amended.
+  KeptLens read = Amend(Nothing(), first);
+  read.lens.estimated = false;
+  EXPECT_TRUE(Amend(read, other).lens.estimated);
   // Pixels that are not square stay as they were: `fy` moves in proportion with `fx`.
   EXPECT_NEAR(kept.lens.fy / kept.lens.fx, 1.01, 1e-12);
   EXPECT_EQ(kept.lens.k1, -0.02);
@@ -286,6 +292,11 @@ TEST(KeptLens, ExactIsBothFiguresZero) {
   even = Amend(even, Fitted(510.0, 0.0, 0.0005));
   EXPECT_EQ(even.lens.fx, 500.0);
   EXPECT_EQ(even.lens.focalUncertainty, 0.0005);
+
+  // And two exact lenses that disagree: nothing to scale by, and the kept one stands.
+  KeptLens both = Amend(Nothing(), Fitted(500.0, 0.0, 0.0));
+  both = Amend(both, Fitted(510.0, 0.0, 0.0));
+  EXPECT_EQ(both.lens.fx, 500.0);
 }
 
 // The weight is a ratio of squares, and a square of a figure small or large enough leaves the
@@ -298,6 +309,16 @@ TEST(KeptLens, TheWeightDoesNotDependOnTheScaleOfTheFigures) {
     EXPECT_NEAR(kept.lens.fx, std::sqrt(500.0 * 505.0), 1e-9) << figure;
     EXPECT_NEAR(kept.noise / figure, std::sqrt(0.5), 1e-12) << figure;
     EXPECT_NEAR(kept.modelError / figure, 1.0, 1e-12) << figure;
+  }
+  // Whichever of the four is the large one sets the scale: scaled by any other, it squares past
+  // the doubles (round 2).
+  for (int large = 0; large < 4; ++large) {
+    double f[4] = {1e-170, 1e-170, 1e-170, 1e-170};
+    f[large] = 1e-3;
+    const KeptLens kept =
+        Amend(Amend(Nothing(), Fitted(500.0, f[0], f[1])), Fitted(505.0, f[2], f[3]));
+    EXPECT_TRUE(std::isfinite(kept.lens.fx)) << large;
+    EXPECT_LE(kept.lens.focalUncertainty, 1e-3) << large;
   }
 }
 
@@ -320,27 +341,28 @@ TEST(KeptLens, MalformedInputIsRefused) {
 
   struct Row {
     std::string why;
+    bool spoilsKept;
     std::function<void(KeptLens&, GlobalSolution&)> spoil;
   };
   const std::vector<Row> rows = {
-      {"a negative count", [](KeptLens& k, GlobalSolution&) { k.captures = -1; }},
-      {"a kept lens that cannot project", [](KeptLens& k, GlobalSolution&) { k.lens.fx = 0.0; }},
-      {"kept noise NaN", [&](KeptLens& k, GlobalSolution&) { k.noise = nan; }},
-      {"kept noise below zero", [](KeptLens& k, GlobalSolution&) { k.noise = -0.001; }},
-      {"kept noise infinite", [&](KeptLens& k, GlobalSolution&) { k.noise = inf; }},
-      {"kept model error NaN", [&](KeptLens& k, GlobalSolution&) { k.modelError = nan; }},
-      {"kept model error below zero", [](KeptLens& k, GlobalSolution&) { k.modelError = -0.001; }},
-      {"kept model error infinite", [&](KeptLens& k, GlobalSolution&) { k.modelError = inf; }},
-      {"a scale NaN", [&](KeptLens&, GlobalSolution& c) { c.focalScale = nan; }},
-      {"a scale below zero", [](KeptLens&, GlobalSolution& c) { c.focalScale = -1.0; }},
-      {"a scale infinite", [&](KeptLens&, GlobalSolution& c) { c.focalScale = inf; }},
-      {"a capture that cannot project", [](KeptLens&, GlobalSolution& c) { c.intrinsics.fy = -1.0; }},
-      {"a spread NaN", [&](KeptLens&, GlobalSolution& c) { c.focalSpread = nan; }},
-      {"a spread below zero", [](KeptLens&, GlobalSolution& c) { c.focalSpread = -0.001; }},
-      {"a spread infinite", [&](KeptLens&, GlobalSolution& c) { c.focalSpread = inf; }},
-      {"a model error NaN", [&](KeptLens&, GlobalSolution& c) { c.focalModelError = nan; }},
-      {"a model error below zero", [](KeptLens&, GlobalSolution& c) { c.focalModelError = -0.001; }},
-      {"a model error infinite", [&](KeptLens&, GlobalSolution& c) { c.focalModelError = inf; }},
+      {"a negative count", true, [](KeptLens& k, GlobalSolution&) { k.captures = -1; }},
+      {"a kept lens that cannot project", true, [](KeptLens& k, GlobalSolution&) { k.lens.fx = 0.0; }},
+      {"kept noise NaN", true, [&](KeptLens& k, GlobalSolution&) { k.noise = nan; }},
+      {"kept noise below zero", true, [](KeptLens& k, GlobalSolution&) { k.noise = -0.001; }},
+      {"kept noise infinite", true, [&](KeptLens& k, GlobalSolution&) { k.noise = inf; }},
+      {"kept model error NaN", true, [&](KeptLens& k, GlobalSolution&) { k.modelError = nan; }},
+      {"kept model error below zero", true, [](KeptLens& k, GlobalSolution&) { k.modelError = -0.001; }},
+      {"kept model error infinite", true, [&](KeptLens& k, GlobalSolution&) { k.modelError = inf; }},
+      {"a scale NaN", false, [&](KeptLens&, GlobalSolution& c) { c.focalScale = nan; }},
+      {"a scale below zero", false, [](KeptLens&, GlobalSolution& c) { c.focalScale = -1.0; }},
+      {"a scale infinite", false, [&](KeptLens&, GlobalSolution& c) { c.focalScale = inf; }},
+      {"a capture that cannot project", false, [](KeptLens&, GlobalSolution& c) { c.intrinsics.fy = -1.0; }},
+      {"a spread NaN", false, [&](KeptLens&, GlobalSolution& c) { c.focalSpread = nan; }},
+      {"a spread below zero", false, [](KeptLens&, GlobalSolution& c) { c.focalSpread = -0.001; }},
+      {"a spread infinite", false, [&](KeptLens&, GlobalSolution& c) { c.focalSpread = inf; }},
+      {"a model error NaN", false, [&](KeptLens&, GlobalSolution& c) { c.focalModelError = nan; }},
+      {"a model error below zero", false, [](KeptLens&, GlobalSolution& c) { c.focalModelError = -0.001; }},
+      {"a model error infinite", false, [&](KeptLens&, GlobalSolution& c) { c.focalModelError = inf; }},
   };
   for (const Row& row : rows) {
     KeptLens k = kept;
@@ -360,6 +382,88 @@ TEST(KeptLens, MalformedInputIsRefused) {
   measuredNothing.focalSpread = inf;
   measuredNothing.focalModelError = nan;
   EXPECT_TRUE(AmendKeptLens(kept, measuredNothing).ok());
+  // But a kept lens is read whatever the capture measured: a corrupt one is refused, not handed back.
+  for (const Row& row : rows) {
+    if (!row.spoilsKept) continue;
+    KeptLens k = kept;
+    GlobalSolution unused = capture;
+    row.spoil(k, unused);
+    EXPECT_EQ(AmendKeptLens(k, measuredNothing).status.code, StatusCode::InvalidArgument) << row.why;
+  }
+}
+
+// What `Refine` is handed. `lens.focalUncertainty` is `hypot(noise, modelError)` over again, and a
+// kept lens read back from a document need not carry it right: left at its default it reads as a
+// guess, which any precise fit replaces, and zeroed it reads as exact, which none does (round 2).
+// So the figure handed in is derived from the two that are kept, never read from the copy.
+TEST(KeptLens, TheLensHandedToRefineDerivesItsUncertainty) {
+  const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
+  for (const double copy : {std::numeric_limits<double>::infinity(), 0.0, 5.0}) {
+    KeptLens read = kept;
+    read.lens.focalUncertainty = copy;
+    read.lens.estimated = false;
+    const Result<Intrinsics> lens = KeptLensFor(read, 640, 480);
+    ASSERT_TRUE(lens.ok()) << lens.status.detail;
+    EXPECT_EQ(lens.value.focalUncertainty, std::hypot(0.001, 0.0002)) << copy;
+    EXPECT_EQ(lens.value.fx, 500.0);
+    EXPECT_TRUE(lens.value.estimated);
+  }
+}
+
+// A capture's matches are pixels of the frame it was grabbed at, and the lens it is handed must be
+// that frame's: the kept one at another size of its shape, every length in pixels scaled by the
+// ratio of the long edges and the distortion, which is in normalised coordinates, as it was.
+TEST(KeptLens, TheLensHandedToRefineIsAtTheCapturesSize) {
+  GlobalSolution first = Fitted(500.0, 0.001, 0.0002);
+  first.intrinsics.fy = 505.0;
+  first.intrinsics.cx = 322.0;
+  first.intrinsics.cy = 236.0;
+  const KeptLens kept = Amend(Nothing(), first);
+  const Result<Intrinsics> doubled = KeptLensFor(kept, 1280, 960);
+  ASSERT_TRUE(doubled.ok()) << doubled.status.detail;
+  EXPECT_EQ(doubled.value.width, 1280);
+  EXPECT_EQ(doubled.value.height, 960);
+  EXPECT_EQ(doubled.value.fx, 1000.0);
+  EXPECT_EQ(doubled.value.fy, 1010.0);
+  EXPECT_EQ(doubled.value.cx, 644.0);
+  EXPECT_EQ(doubled.value.cy, 472.0);
+  EXPECT_EQ(doubled.value.k1, -0.02);
+  EXPECT_EQ(doubled.value.focalUncertainty, std::hypot(0.001, 0.0002));
+
+  // And a capture measured at that size amends the kept lens back at its own.
+  GlobalSolution atDouble;
+  atDouble.intrinsics = doubled.value;
+  atDouble.focalScale = 1.0;
+  atDouble.focalSpread = 0.0;
+  atDouble.focalModelError = 0.0;
+  EXPECT_EQ(Amend(kept, atDouble).lens.fx, 500.0);
+}
+
+TEST(KeptLens, NoLensIsHandedToRefineWhereNoneIsKept) {
+  EXPECT_EQ(KeptLensFor(Nothing(), 640, 480).status.code, StatusCode::NotFound);
+  const KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
+  EXPECT_EQ(KeptLensFor(kept, 640, 360).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(kept, 0, 0).status.code, StatusCode::InvalidArgument);
+  KeptLens spoiled = kept;
+  spoiled.noise = -1.0;
+  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::InvalidArgument);
+  spoiled = kept;
+  spoiled.lens.fx = 0.0;
+  EXPECT_EQ(KeptLensFor(spoiled, 640, 480).status.code, StatusCode::InvalidArgument);
+}
+
+// Two finite figures can combine past the largest double, and an infinite uncertainty is a guess —
+// the one reading a kept lens must never have, since any fit replaces it (round 2).
+TEST(KeptLens, FiguresThatCombinePastTheDoublesAreRefused) {
+  const double huge = 1.5e308;
+  EXPECT_EQ(AmendKeptLens(Nothing(), Fitted(500.0, huge, huge)).status.code,
+            StatusCode::InvalidArgument);
+  KeptLens kept = Amend(Nothing(), Fitted(500.0, 0.001, 0.0002));
+  kept.noise = huge;
+  kept.modelError = huge;
+  EXPECT_EQ(AmendKeptLens(kept, Fitted(505.0, 0.001, 0.0002)).status.code,
+            StatusCode::InvalidArgument);
+  EXPECT_EQ(KeptLensFor(kept, 640, 480).status.code, StatusCode::InvalidArgument);
 }
 
 }  // namespace
