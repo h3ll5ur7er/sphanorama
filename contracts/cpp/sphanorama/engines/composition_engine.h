@@ -69,8 +69,10 @@ class ICompositionEngine {
   // tier unless it was found pinned. The refusal's detail names the frame, by its place in the
   // solution and its id, and the tier to put it back in — for a person reading it, since a detail
   // is never parsed. A caller that means to recover by program asks each frame's tier before the
-  // call and holds no pins of its own on them during it: the frame left pinned is then the one
-  // `ResidencyOf` reports `HeapPinned`, to be released and put back in the tier it had.
+  // call and holds no pins of its own on them during it. After a refusal, a frame whose tier has
+  // changed is out of place — one the store would not release reads `HeapPinned`, one it would
+  // not put back reads the tier it was faulted into — and is released if it reads `HeapPinned`,
+  // then put back in the tier it had.
   virtual Result<FrameRef> RenderPreview(const GlobalSolution&, std::span<const FrameRef> frames,
                                          const GainMap&, int32_t maxWidth) = 0;
 };

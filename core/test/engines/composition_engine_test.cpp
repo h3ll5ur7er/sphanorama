@@ -290,32 +290,44 @@ TEST_F(NearestCentreComposition, AFrameLookingForwardCoversTheCentreAndNothingBe
 }
 
 // Where a frame's image ends is where it stops covering: a direction the lens puts half a source
-// pixel past either side edge is left uncovered, and one half a pixel inside it is covered.
+// pixel past any edge is left uncovered, and one half a pixel inside it is covered.
 TEST_F(NearestCentreComposition, AFrameCoversUpToItsEdgeAndNoFurther) {
   constexpr int32_t kPreview = 256;
   const Vec3 centre = *EquirectDirection(Pixel{128.5, 64.5}, kPreview, kPreview / 2);
-  // The turn that lands the preview's centre pixel at column `x` of the frame, found by bisection
-  // on the projection itself, so it holds for whatever lens the fixture has.
-  const auto turnLanding = [&](double x) {
-    const auto column = [&](double degrees) {
-      return Project(lens, Rotate(Conjugate(FromAzimuthElevation(degrees, 0.0)), centre)).pixel.x;
+  // The turn — about the vertical for a column, in elevation for a row — that lands the preview's
+  // centre pixel at `target` of the frame, found by bisection on the projection itself, so it
+  // holds for whatever lens the fixture has.
+  const auto turnLanding = [&](double target, bool row) {
+    const auto turn = [&](double degrees) {
+      return row ? FromAzimuthElevation(0.0, degrees) : FromAzimuthElevation(degrees, 0.0);
+    };
+    const auto landed = [&](double degrees) {
+      const Pixel at = Project(lens, Rotate(Conjugate(turn(degrees)), centre)).pixel;
+      return row ? at.y : at.x;
     };
     double lo = -45.0, hi = 45.0;
-    const bool rising = column(hi) > column(lo);
+    const bool rising = landed(hi) > landed(lo);
     for (int k = 0; k < 100; ++k) {
       const double mid = 0.5 * (lo + hi);
-      ((column(mid) < x) == rising ? lo : hi) = mid;
+      ((landed(mid) < target) == rising ? lo : hi) = mid;
     }
-    return FromAzimuthElevation(0.5 * (lo + hi), 0.0);
+    return turn(0.5 * (lo + hi));
   };
-  const std::vector<std::pair<double, uint8_t>> cases = {
-      {-0.5, 0}, {0.5, 255}, {kWidth - 0.5, 255}, {kWidth + 0.5, 0}};
-  for (const auto& [x, alpha] : cases) {
+  struct Case {
+    double target;
+    bool row;
+    uint8_t alpha;
+  };
+  const std::vector<Case> cases = {
+      {-0.5, false, 0},  {0.5, false, 255},  {kWidth - 0.5, false, 255},  {kWidth + 0.5, false, 0},
+      {-0.5, true, 0},   {0.5, true, 255},   {kHeight - 0.5, true, 255},  {kHeight + 0.5, true, 0}};
+  for (const Case& c : cases) {
     frames.clear();
     solution.frames.clear();
     solution.rotations.clear();
-    Look(turnLanding(x), Rgb{10, 20, 30});
-    EXPECT_EQ(Render(kPreview).At(128, 64)[3], alpha) << "landing at column " << x;
+    Look(turnLanding(c.target, c.row), Rgb{10, 20, 30});
+    EXPECT_EQ(Render(kPreview).At(128, 64)[3], c.alpha)
+        << "landing at " << (c.row ? "row " : "column ") << c.target;
   }
 }
 
@@ -385,6 +397,18 @@ TEST_F(NearestCentreComposition, AGainScalesItsFramesColourAndSaturates) {
   EXPECT_EQ(Render(256, gains).At(128, 64), (std::array<uint8_t, 4>{100, 50, 5, 255}));
   gains.perFrameGain = {2.0};
   EXPECT_EQ(Render(256, gains).At(128, 64), (std::array<uint8_t, 4>{255, 200, 20, 255}));
+}
+
+// Each frame's gain is its own: two frames of one colour, each drawn at its own gain.
+TEST_F(NearestCentreComposition, EachFrameIsScaledByItsOwnGain) {
+  Look(Quat{}, Rgb{100, 100, 100});
+  Look(FromAzimuthElevation(90.0, 0.0), Rgb{100, 100, 100});
+  GainMap gains;
+  gains.frames = solution.frames;
+  gains.perFrameGain = {0.5, 2.0};
+  const Preview preview = Render(256, gains);
+  EXPECT_EQ(preview.At(128, 64), (std::array<uint8_t, 4>{50, 50, 50, 255})) << "frame 0";
+  EXPECT_EQ(preview.At(64, 64), (std::array<uint8_t, 4>{200, 200, 200, 255})) << "frame 1";
 }
 
 // A solution that placed nothing is a sphere nothing sees, not a refusal.
@@ -849,6 +873,15 @@ TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
       << answer.status.detail;
   EXPECT_EQ(spilled.HeapUsed(), kWidth * kHeight * 4) << "the answer is given back; the frame "
                                                            "is where the store left it";
+  // The contract's recovery: a frame whose tier changed is out of place — this one released, so
+  // not pinned — and goes back in the tier it had.
+  const Result<Residency> now = spilled.store.ResidencyOf(spilled.frames[0]);
+  ASSERT_TRUE(now.ok());
+  EXPECT_NE(now.value, Residency::Spilled) << "its tier changed";
+  EXPECT_NE(now.value, Residency::HeapPinned) << "so there is no pin to release";
+  spilled.sink.FailWrites(false);
+  EXPECT_TRUE(spilled.store.Demote(spilled.frames[0], Residency::Spilled).ok());
+  EXPECT_EQ(spilled.HeapUsed(), 0) << "and it is back where it was found";
 }
 
 // A frame that cannot be pinned is refused with the store's own code: here a spilled one with no room
@@ -885,13 +918,14 @@ TEST_F(NearestCentreComposition, AFrameRefusedAfterItWasPinnedWhoseReleaseIsDecl
 
 // A frame left pinned is named, by its place in the solution and its id: its caller may hold pins
 // of its own on the others, and `ResidencyOf` cannot say which pin is whose.
-// The middle one of three, so neither the first nor the last borrowed; and its buffer relabelled,
-// since the memory store issues the id and the buffer from one counter and would otherwise let a
-// name spelt from either pass for the other.
+// The second of four, so neither the first nor the last borrowed nor its own place counted from the
+// end; and its buffer relabelled, since the memory store issues the id and the buffer from one
+// counter and would otherwise let a name spelt from either pass for the other.
 TEST_F(NearestCentreComposition, AFrameLeftPinnedIsNamed) {
   Look(Quat{}, Rgb{1, 2, 3});
-  Look(FromAzimuthElevation(120.0, 0.0), Rgb{4, 5, 6});
-  Look(FromAzimuthElevation(240.0, 0.0), Rgb{7, 8, 9});
+  Look(FromAzimuthElevation(90.0, 0.0), Rgb{4, 5, 6});
+  Look(FromAzimuthElevation(180.0, 0.0), Rgb{7, 8, 9});
+  Look(FromAzimuthElevation(270.0, 0.0), Rgb{10, 11, 12});
   frames[1].buffer = BufferId{frames[1].buffer.value + 1000};
   store.refuseRelease = PinCountingStore::Whose::HandedIn;
   store.refuseReleaseOnlyOf = frames[1].id;
