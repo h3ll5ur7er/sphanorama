@@ -93,9 +93,10 @@ composite should look like.
   preview's own red and green bytes with alpha 0 until the pixel is painted — so nothing that
   grows with the preview is held outside the store, only some sixty bytes a frame of bookkeeping.
   Then each frame that colours anything is pinned, painted from, released, and demoted back to the
-  tier it was found in, as `CandidatePreview` does. A frame the store cannot put back, or cannot
-  say the tier of, is a refusal rather than a preview that quietly left it in the heap. The
-  two-byte index is why a solution naming 65,536 frames or more is refused.
+  tier it was found in, as `CandidatePreview` does. A frame the store cannot put back is left in
+  the heap and the refusal says so, and one it cannot say the tier of is not read at all — rather
+  than a preview that quietly left either in the heap. The two-byte index is why a solution naming
+  65,536 frames or more is refused.
 - **A refusal can hand something back.** When the store will not take the preview back, the
   refusal's value is the preview — released if `ResidencyOf` says it is still pinned, then forgotten
   — because nothing else can name it to the store again. And a frame handed in whose release the

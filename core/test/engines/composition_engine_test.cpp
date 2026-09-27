@@ -671,6 +671,20 @@ TEST_F(NearestCentreComposition, TheAnswerIsWrittenThroughItsOwnStride) {
   const Preview trimmed = Render(256);
   ASSERT_EQ(trimmed.width, packed.width);
   EXPECT_TRUE(trimmed.bytes == packed.bytes);
+  // And one byte fewer is a last row not held. A trim shortens only the span the store answers,
+  // not its allocation, so an overrun past it is invisible: the bound's refusal is what to assert.
+  store.trimTailOfAllocated = 16 * 4 + 1;
+  EXPECT_EQ(Refused(256), StatusCode::Internal) << "one byte short of the last row";
+}
+
+// A preview of one row or two, where the bound's branches for few rows are the only guards.
+TEST_F(NearestCentreComposition, AnAnswerOfOneOrTwoRowsIsHeldToItsBytes) {
+  Look(Quat{}, Rgb{1, 2, 3});
+  store.trimTailOfAllocated = 4;
+  EXPECT_EQ(Refused(2), StatusCode::Internal) << "a one-row answer shorter than its row";
+  store.trimTailOfAllocated = 0;
+  store.describeAllocated = [](FrameRef& f) { f.stride += 4; };
+  EXPECT_EQ(Refused(4), StatusCode::Internal) << "a two-row answer whose stride runs past";
 }
 
 // And a frame is read through its own stride: a handle naming the left half of a wider allocation
@@ -687,6 +701,10 @@ TEST_F(NearestCentreComposition, AFrameIsReadThroughItsOwnStride) {
   // And the span ends where the last row ends: its padding is never read, so it need not be held.
   store.trimTailOfHandedIn = kWidth * 4;
   const Preview preview = Render(512);
+  // One byte fewer and the last row is not held: refused, before anything is read past it.
+  store.trimTailOfHandedIn = kWidth * 4 + 1;
+  EXPECT_EQ(Refused(64), StatusCode::InvalidArgument) << "one byte short of the last row";
+  store.trimTailOfHandedIn = kWidth * 4;
   int32_t checked = 0;
   for (int32_t y = 0; y < preview.height; ++y) {
     for (int32_t x = 0; x < preview.width; ++x) {
