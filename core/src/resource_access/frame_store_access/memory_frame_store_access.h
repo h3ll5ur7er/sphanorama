@@ -62,6 +62,11 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
     // would make a successful Pin depend on a cleanup that has nothing to do with it — so a frame
     // can be resident and still have something down there with its name on it.
     bool inSink = false;
+    // Whether that copy is still the one the store put there, so that putting back a frame that
+    // was only read can skip the write. Not the same as `inSink` either: a sink that refuses a
+    // rewrite may already have given up the old copy — the browser's does — and Forget still owes
+    // it a Drop for whatever is left, while a put-back must no longer count on it.
+    bool sinkCopyIntact = false;
     Residency residency = Residency::HeapEncoded;
     int pins = 0;
   };

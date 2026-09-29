@@ -204,18 +204,26 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   }
 
   if (target == Residency::Spilled && entry->residency != Residency::Spilled) {
-    // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
-    // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
-    // failure would lose a captured cell to a full disk.
-    if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
-        !written.ok()) {
-      spill_refusal_ = written.detail;
-      return written;
+    // A frame faulted in to be read and put back unchanged is already in the sink. Writing it
+    // again costs a write per read, and on the browser sink a rewrite that fails has already let
+    // the old copy go — so a caller that only read a frame could lose it to a full disk.
+    const uint64_t hash = HashBytes(entry->bytes);
+    if (!(entry->sinkCopyIntact && hash == entry->spilledHash)) {
+      // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
+      // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
+      // failure would lose a captured cell to a full disk.
+      if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
+          !written.ok()) {
+        spill_refusal_ = written.detail;
+        entry->sinkCopyIntact = false;
+        return written;
+      }
+      // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
+      spill_refusal_.reset();
+      entry->spilledHash = hash;
+      entry->inSink = true;
+      entry->sinkCopyIntact = true;
     }
-    // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
-    spill_refusal_.reset();
-    entry->spilledHash = HashBytes(entry->bytes);
-    entry->inSink = true;
     std::vector<uint8_t>().swap(entry->bytes);
   } else if (target != Residency::Spilled && entry->residency == Residency::Spilled) {
     // Demote is named for the direction it usually goes, and the contract lets a caller name any
@@ -272,6 +280,10 @@ Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
   // and a spilled frame cannot be written to, so it is true now.
   entry.spilledHash = frame.contentHash;
   entry.inSink = true;
+  // Intact, but only as good as the carried hash: a document that carries none (0) never matches
+  // the bytes, so a frame adopted that way is written again on its first put-back — the safe way
+  // round.
+  entry.sinkCopyIntact = true;
   entry.residency = Residency::Spilled;
   entries_.emplace(frame.id.value, std::move(entry));
   spilled_ += size;

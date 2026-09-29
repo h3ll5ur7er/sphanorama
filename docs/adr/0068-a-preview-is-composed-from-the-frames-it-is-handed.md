@@ -90,13 +90,17 @@ composite should look like.
   128 MB ceiling on a mid-range phone (ADR 0023), so a sixty-frame sphere does not fit, and the
   first version, which pinned every frame at once, refused the preview of a real capture at any
   size. The preview is decided first, from geometry alone, as one frame index a pixel, kept in the
-  preview's own red and green bytes with alpha 0 until the pixel is painted — so nothing that
-  grows with the preview is held outside the store, only some sixty bytes a frame of bookkeeping.
-  Then each frame that colours anything is pinned, painted from, released, and demoted back to the
-  tier it was found in, as `CandidatePreview` does. A frame the store cannot put back is left in
-  the heap and the refusal says so, and one it cannot say the tier of is not read at all — rather
-  than a preview that quietly left either in the heap. The two-byte index is why a solution naming
-  65,536 frames or more is refused.
+  preview's own red and green bytes with alpha 0 until the pixel is painted — so nothing that grows
+  with the preview is held outside the store, only some sixty bytes a frame of bookkeeping. Then
+  each frame that colours anything is pinned, painted from, released, and demoted back to the tier
+  it was found in, as `CandidatePreview` does. Putting a spilled frame back writes nothing when its
+  bytes still hash to the copy the sink holds, so a preview does not rewrite the sphere to the spill
+  file on every render — and cannot lose a cell to a failed rewrite, which on the browser sink gives
+  up the old copy before it takes the new one (ADR 0030). A frame adopted from a document that
+  carries no content hash is the exception: nothing vouches for its copy, so it is written again. A
+  frame the store cannot put back is left in the heap and the refusal says so, and one it cannot say
+  the tier of is not read at all — rather than a preview that quietly left either in the heap. The
+  two-byte index is why a solution naming 65,536 frames or more is refused.
 - **A refusal can hand something back.** When the store will not take the preview back, the
   refusal's value is the preview — released if `ResidencyOf` says it is still pinned, then forgotten
   — because nothing else can name it to the store again. And a frame handed in whose release the

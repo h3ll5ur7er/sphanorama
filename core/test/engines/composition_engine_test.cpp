@@ -841,13 +841,25 @@ struct SpilledForward {
   NearestCentreCompositionEngine engine{store};
   GlobalSolution solution;
   std::vector<FrameRef> frames;
-  explicit SpilledForward(bool spill = true, int64_t ceiling = int64_t{1} << 24)
+  // `adopted`: spilled by an earlier session and adopted from its document, which carries no
+  // content hash, so the store cannot vouch for the sink's copy and putting it back writes.
+  explicit SpilledForward(bool spill = true, int64_t ceiling = int64_t{1} << 24,
+                          bool adopted = false)
       : store(ceiling, &sink) {
     solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
-    Result<FrameRef> frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
-    EXPECT_TRUE(frame.ok());
-    if (spill) {
-      EXPECT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+    Result<FrameRef> frame;
+    if (adopted) {
+      MemoryFrameStoreAccess earlier{ceiling, &sink};
+      frame = earlier.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+      EXPECT_TRUE(frame.ok());
+      EXPECT_TRUE(earlier.Demote(frame.value, Residency::Spilled).ok());
+      EXPECT_TRUE(store.Adopt(frame.value).ok());
+    } else {
+      frame = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+      EXPECT_TRUE(frame.ok());
+      if (spill) {
+        EXPECT_TRUE(store.Demote(frame.value, Residency::Spilled).ok());
+      }
     }
     frames.push_back(frame.value);
     solution.frames.push_back(frame.value.id);
@@ -880,9 +892,10 @@ TEST_F(NearestCentreComposition, ARefusalHandingThePreviewBackKeepsItsOwnCode) {
 }
 
 // A frame the store will not put back is a promise the preview could not keep, so it is a refusal
-// that says so rather than an answer with a frame quietly left in the heap.
+// that says so rather than an answer with a frame quietly left in the heap. Put back unchanged, a
+// frame the store spilled itself needs no write; one adopted without a content hash does.
 TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
-  SpilledForward spilled;
+  SpilledForward spilled(true, int64_t{1} << 24, /*adopted=*/true);
   spilled.sink.FailWrites(true);
   Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
   ASSERT_FALSE(answer.ok());
@@ -900,6 +913,17 @@ TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
   spilled.sink.FailWrites(false);
   EXPECT_TRUE(spilled.store.Demote(spilled.frames[0], Residency::Spilled).ok());
   EXPECT_EQ(spilled.HeapUsed(), 0) << "and it is back where it was found";
+}
+
+// A preview only reads, so the frames it borrows go back to the sink without being written again.
+TEST(NearestCentrePreview, ReadingASpilledFrameWritesNothingBack) {
+  SpilledForward spilled;
+  const int written = spilled.sink.Writes();
+  Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
+  ASSERT_TRUE(answer.ok()) << answer.status.detail;
+  EXPECT_EQ(spilled.sink.Writes(), written);
+  EXPECT_EQ(spilled.store.ResidencyOf(spilled.frames[0]).value, Residency::Spilled);
+  EXPECT_TRUE(spilled.store.Forget(answer.value).ok());
 }
 
 // A frame that cannot be pinned is refused with the store's own code: here a spilled one with no room
