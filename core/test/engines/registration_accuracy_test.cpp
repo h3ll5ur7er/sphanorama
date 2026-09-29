@@ -37,6 +37,7 @@
 #include "support/rendered_dataset.h"
 #include "support/rotation_scoring.h"
 #include "support/synthetic_dataset.h"
+#include "support/wrong_priors.h"
 #include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 
@@ -206,10 +207,8 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
     // cannot be absorbed by the very rotation being estimated. That is the order a fused phone
     // orientation is out by when it is working, so a registration that cannot beat it is not worth
     // having — and one that can is being measured on the pixels, which is the point.
-    const Quat truthStep = Multiply(Conjugate(dataset.value.frames[at].trueRotation),
-                                    dataset.value.frames[at - 1].trueRotation);
-    const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
-    const Quat prior = Normalize(Multiply(truthStep, nudge));
+    const Quat prior = test::PairPriorThreeDegreesOut(dataset.value.frames[at - 1].trueRotation,
+                                                      dataset.value.frames[at].trueRotation);
     const Result<PairwiseResult> pair =
         engine.EstimatePairwise(sets[at - 1], sets[at], prior, dataset.value.lens);
     if (!pair.ok() || !pair.value.accepted) {
@@ -264,7 +263,7 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
       score.meanDeg, score.maxDeg);
 
   // **The anti-echo floor is gone, and the reason is worth keeping.** A `medianDeg < 3.0` assertion
-  // stood here, defended on the grounds that it is tied to the three-degree `nudge` while the
+  // stood here, defended on the grounds that it is tied to the three-degree perturbation while the
   // accuracy bound is tied to the detectors. That was arguable at a 0.5 bound and is not at 0.2: it
   // is strictly subsumed, so it can never be the assertion that fails, and a test that credits it
   // with catching the prior echo is miscrediting it. What actually catches an echo is the
@@ -452,25 +451,15 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   for (int at = 0; at < kFrames; ++at) {
     const size_t a = static_cast<size_t>(at);
     const size_t b = static_cast<size_t>((at + 1) % kFrames);
-    const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
-    const Quat prior = Normalize(Multiply(Multiply(Conjugate(truth[b]), truth[a]), nudge));
-    const Result<PairwiseResult> pair =
-        engine.EstimatePairwise(sets[a], sets[b], prior, dataset.value.lens);
+    const Result<PairwiseResult> pair = engine.EstimatePairwise(
+        sets[a], sets[b], test::PairPriorThreeDegreesOut(truth[a], truth[b]), dataset.value.lens);
     ASSERT_TRUE(pair.ok()) << "pair " << a << "-" << b << ": " << pair.status.detail;
     pairs.push_back(pair.value);
   }
 
-  std::vector<FramePrior> priors;
-  for (size_t i = 0; i < truth.size(); ++i) {
-    const double at = static_cast<double>(i);
-    const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
-    FramePrior prior;
-    prior.frame = dataset.value.frames[i].frame.id;
-    prior.pose.orientation =
-        Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
-    prior.pose.confidence = 1.0;   // anchored, as every burst-captured frame's is (ADR 0044)
-    priors.push_back(prior);
-  }
+  std::vector<FrameId> ids;
+  for (const SyntheticFrame& frame : dataset.value.frames) ids.push_back(frame.frame.id);
+  const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(ids, truth);
 
   const Result<GlobalSolution> solved = engine.Refine(pairs, priors, dataset.value.lens);
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -545,17 +534,9 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     sets.push_back(features.value);
     truth.push_back(frame.trueRotation);
   }
-  std::vector<FramePrior> priors;
-  for (size_t i = 0; i < truth.size(); ++i) {
-    const double at = static_cast<double>(i);
-    const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
-    FramePrior prior;
-    prior.frame = dataset.value.frames[i].frame.id;
-    prior.pose.orientation =
-        Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
-    prior.pose.confidence = 1.0;
-    priors.push_back(prior);
-  }
+  std::vector<FrameId> ids;
+  for (const SyntheticFrame& frame : dataset.value.frames) ids.push_back(frame.frame.id);
+  const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(ids, truth);
 
   for (const double scale : {0.90, 0.95, 1.05, 1.10}) {
     Intrinsics guess = dataset.value.lens;
@@ -565,9 +546,8 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     for (int at = 0; at < kFrames; ++at) {
       const size_t a = static_cast<size_t>(at);
       const size_t b = static_cast<size_t>((at + 1) % kFrames);
-      const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
-      const Quat prior = Normalize(Multiply(Multiply(Conjugate(truth[b]), truth[a]), nudge));
-      const Result<PairwiseResult> pair = engine.EstimatePairwise(sets[a], sets[b], prior, guess);
+      const Result<PairwiseResult> pair = engine.EstimatePairwise(
+          sets[a], sets[b], test::PairPriorThreeDegreesOut(truth[a], truth[b]), guess);
       ASSERT_TRUE(pair.ok()) << scale << " pair " << a << "-" << b << ": " << pair.status.detail;
       pairs.push_back(pair.value);
     }
@@ -697,10 +677,8 @@ TEST(Acceptance, AnAnswerWithAMinorityBehindItIsReturnedAndNotAccepted) {
   ASSERT_GT(dataset.value.frames.size(), kFirst + 1)
       << "the dataset has " << dataset.value.frames.size() << " frames and this test reads index "
       << (kFirst + 1);
-  const Quat truthStep = Multiply(Conjugate(dataset.value.frames[kFirst + 1].trueRotation),
-                                  dataset.value.frames[kFirst].trueRotation);
-  const Quat nudge = FromAxisAngle(Vec3{1, 0, 0}, 3.0 * std::numbers::pi / 180.0);
-  const Quat step = Normalize(Multiply(truthStep, nudge));
+  const Quat step = test::PairPriorThreeDegreesOut(dataset.value.frames[kFirst].trueRotation,
+                                                   dataset.value.frames[kFirst + 1].trueRotation);
 
   int accepted = 0;
   int answeredButNotAccepted = 0;
