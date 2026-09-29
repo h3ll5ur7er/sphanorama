@@ -345,8 +345,13 @@ class HeldFrame {
   bool gone_ = false;
 };
 
-/** One P6 file, read into a frame of `lens`'s shape. */
-Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const Intrinsics& lens) {
+/**
+ * One P6 file, read into a frame `lens.width` x `lens.height`, refused as "`<file>` is WxH and
+ * `<sized>`" when it is another shape. Only the lens's shape is read, so the reference, which has
+ * no lens, is read through one that has nothing else in it.
+ */
+Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const Intrinsics& lens,
+                           const std::string& sized) {
   std::ifstream in(path, std::ios::binary);
   if (!in) return Err<FrameRef>(StatusCode::NotFound, kComponent, "cannot open " + path.string());
 
@@ -422,9 +427,7 @@ Result<FrameRef> ReadFrame(IFrameStoreAccess& store, const fs::path& path, const
     // every feature in the wrong place while the file looked perfectly well-formed.
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
                          path.filename().string() + " is " + std::to_string(width) + "x" +
-                             std::to_string(height) + " and truth.json records a " +
-                             std::to_string(lens.width) + "x" + std::to_string(lens.height) +
-                             " lens");
+                             std::to_string(height) + " and " + sized);
   }
 
   const Result<FrameRef> allocated = store.Allocate(lens.width, lens.height, PixelFormat::RGBA8);
@@ -827,7 +830,10 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
                       "a frame entry names a path rather than a file in the dataset: " + named);
       }
 
-      const Result<FrameRef> read = ReadFrame(store, fs::path(directory) / named, dataset.lens);
+      const Result<FrameRef> read =
+          ReadFrame(store, fs::path(directory) / named, dataset.lens,
+                    "truth.json records a " + std::to_string(dataset.lens.width) + "x" +
+                        std::to_string(dataset.lens.height) + " lens");
       if (!read.ok()) return refuse(read.status.code, read.status.detail);
       owned.Keep(read.value);
       frame.frame = read.value;
@@ -869,6 +875,16 @@ Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store,
 
   owned.Commit();
   return Ok(std::move(dataset));
+}
+
+Result<FrameRef> LoadSyntheticReference(IFrameStoreAccess& store, const std::string& directory,
+                                        int32_t width, int32_t height) {
+  Intrinsics shape;
+  shape.width = width;
+  shape.height = height;
+  return ReadFrame(store, fs::path(directory) / "reference.ppm", shape,
+                   "the reference was asked for at " + std::to_string(width) + "x" +
+                       std::to_string(height));
 }
 
 }  // namespace sphanorama

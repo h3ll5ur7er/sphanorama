@@ -54,14 +54,22 @@ class MemoryFrameStoreAccess final : public IFrameStoreAccess {
     // the bytes are not here to ask.
     std::vector<uint8_t> bytes;
     int64_t size = 0;
-    // Taken as the bytes left for the sink and read back by ContentHash while they are gone. It
-    // cannot go stale: a spilled frame cannot be pinned, so nothing can write to it.
+    // The hash of the sink's copy, taken whenever the store learns what that copy is — a write, or
+    // a whole read — and answered by ContentHash while the bytes are gone. While spilled it cannot
+    // go stale, since nothing can pin the frame to write to it. While resident it can, on purpose:
+    // bytes that no longer hash to it are a frame changed since, and a put-back writes them.
     uint64_t spilledHash = 0;
     // Whether the sink is holding a copy, which is not the same question as whether the frame is
     // spilled. A fault-in reads the bytes back and leaves the copy where it is — taking it away
     // would make a successful Pin depend on a cleanup that has nothing to do with it — so a frame
     // can be resident and still have something down there with its name on it.
     bool inSink = false;
+    // Whether a resident frame's bytes came whole from a copy the sink still holds — set by the
+    // fault-in that read them, and read only while the frame is resident — so that putting back a
+    // frame that was only read can skip the write. Not the same as `inSink`: a sink that refuses a
+    // rewrite, or a clear, may already have given up the copy — the browser's does — and Forget
+    // still owes it a Drop for whatever is left, while a put-back must no longer count on it.
+    bool sinkCopyIntact = false;
     Residency residency = Residency::HeapEncoded;
     int pins = 0;
   };

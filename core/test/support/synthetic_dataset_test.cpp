@@ -201,7 +201,8 @@ class AwkwardStore final : public IFrameStoreAccess {
  * an oversight. Every refusal in the loader now carries a phrase only its own guard writes, and
  * every test below asserts that phrase.
  */
-::testing::AssertionResult RefusedWith(const Result<SyntheticDataset>& loaded, StatusCode code,
+template <typename T>
+::testing::AssertionResult RefusedWith(const Result<T>& loaded, StatusCode code,
                                        const std::string& phrase) {
   if (loaded.ok()) return ::testing::AssertionFailure() << "the load succeeded";
   if (loaded.status.code != code) {
@@ -315,6 +316,58 @@ TEST_F(Dataset, ThePixelsInTheStoreAreThePixelsOnDisk) {
   EXPECT_EQ(wrong, 0) << wrong << " of " << width * height << " pixels differ from the file";
   EXPECT_TRUE(store.Release(frame).ok());
   ForgetAll(loaded.value);
+}
+
+/** A `reference.ppm` of `width` x `height`, whose every byte says where it is. */
+std::vector<uint8_t> WriteReference(const Scratch& scratch, int32_t width, int32_t height) {
+  std::vector<uint8_t> payload;
+  for (int32_t at = 0; at < width * height * 3; ++at) payload.push_back(static_cast<uint8_t>(at * 7));
+  std::ofstream out(scratch.file("reference.ppm"), std::ios::binary | std::ios::trunc);
+  out << "P6\n" << width << " " << height << "\n255\n";
+  out.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+  return payload;
+}
+
+TEST_F(Dataset, ReadsTheReferenceItWasAskedFor) {
+  const Scratch scratch;
+  const std::vector<uint8_t> onDisk = WriteReference(scratch, 8, 4);
+  const Result<FrameRef> loaded = LoadSyntheticReference(store, scratch.path(), 8, 4);
+  ASSERT_TRUE(loaded.ok()) << loaded.status.detail;
+  EXPECT_EQ(loaded.value.width, 8);
+  EXPECT_EQ(loaded.value.height, 4);
+  EXPECT_EQ(loaded.value.format, PixelFormat::RGBA8);
+  const Result<std::span<uint8_t>> pinned = store.Pin(loaded.value);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  int64_t wrong = 0;
+  for (int32_t y = 0; y < 4; ++y) {
+    for (int32_t x = 0; x < 8; ++x) {
+      const uint8_t* px = pinned.value.data() + static_cast<size_t>(y) * loaded.value.stride + x * 4;
+      const size_t at = (static_cast<size_t>(y) * 8 + x) * 3;
+      if (px[0] != onDisk[at] || px[1] != onDisk[at + 1] || px[2] != onDisk[at + 2]) ++wrong;
+      if (px[3] != 255) ++wrong;
+    }
+  }
+  EXPECT_EQ(wrong, 0);
+  EXPECT_TRUE(store.Release(loaded.value).ok());
+  EXPECT_TRUE(store.Forget(loaded.value).ok()) << "the reference is the caller's";
+}
+
+TEST_F(Dataset, RefusesAReferenceThatWasNotWritten) {
+  const Scratch scratch;
+  const int64_t before = HeapUsed();
+  EXPECT_EQ(LoadSyntheticReference(store, scratch.path(), 8, 4).status.code, StatusCode::NotFound);
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+// A reference of another size is another preview's, and comparing against it would compare every
+// pixel with a different direction's.
+TEST_F(Dataset, RefusesAReferenceOfAnotherSizeThanAskedFor) {
+  const Scratch scratch;
+  WriteReference(scratch, 8, 4);
+  const int64_t before = HeapUsed();
+  EXPECT_TRUE(RefusedWith(LoadSyntheticReference(store, scratch.path(), 16, 8),
+                          StatusCode::InvalidArgument, "and the reference was asked for at 16x8"));
+  EXPECT_EQ(HeapUsed(), before);
 }
 
 TEST_F(Dataset, RefusesADirectoryThatIsNotThere) {

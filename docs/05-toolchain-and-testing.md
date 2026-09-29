@@ -225,6 +225,9 @@ is contradicted by the bullet immediately under it:
   the pairs (ADR 0066); before that SIFT's solve sat a little above its chain (ADR 0065). The datasets are still geometry-only. Twice now this bullet has been wrong in opposite directions — "available now"
   overcorrected a stale sentence, and the correction outlived the code that made it true, surviving a
   whole branch that added the measurement because the branch never opened this file;
+- the preview composed from those frames at their true rotations and compared, pixel for pixel,
+  with the photograph sampled where the preview looks — `--reference-width` writes that answer key
+  from the photograph rather than from anything in C++ (ADR 0068);
 - ghost detection scored against a known mask (needs the movers);
 - a reproducible regression suite that costs nothing to re-shoot;
 - fixtures for the fake `ICameraAccess`, so managers can be tested end-to-end without a camera.

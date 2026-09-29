@@ -140,6 +140,12 @@ Status MemoryFrameStoreAccess::FaultIn(Entry& entry, uint64_t id) {
   // better than remembering to undo it.
   std::vector<uint8_t> bytes(static_cast<size_t>(entry.size));
   if (auto read = spill_->Read(id, std::span<uint8_t>(bytes)); !read.ok()) return read;
+  // A whole read is what vouches for the sink's copy: it holds exactly these bytes. Recorded so
+  // that putting the frame back unchanged skips the write, which matters most for an adopted
+  // frame — its document carries no hash, and without this every frame of a resumed sphere would
+  // go through the rewrite that loses the only copy when the sink refuses it.
+  entry.spilledHash = HashBytes(bytes);
+  entry.sinkCopyIntact = true;
   entry.bytes = std::move(bytes);
   return Status::Ok();
 }
@@ -204,18 +210,25 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
   }
 
   if (target == Residency::Spilled && entry->residency != Residency::Spilled) {
-    // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
-    // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
-    // failure would lose a captured cell to a full disk.
-    if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
-        !written.ok()) {
-      spill_refusal_ = written.detail;
-      return written;
+    // A frame faulted in to be read and put back unchanged is already in the sink. Writing it
+    // again costs a write per read, and on the browser sink a rewrite that fails has already let
+    // the old copy go — so a caller that only read a frame could lose it to a full disk.
+    const uint64_t hash = HashBytes(entry->bytes);
+    if (!(entry->sinkCopyIntact && hash == entry->spilledHash)) {
+      // The write comes first and the heap is freed only once it succeeds. A sink out of quota is
+      // the ordinary case on a phone, and a demotion that dropped the bytes and then reported
+      // failure would lose a captured cell to a full disk.
+      if (auto written = spill_->Write(frame.id.value, std::span<const uint8_t>(entry->bytes));
+          !written.ok()) {
+        spill_refusal_ = written.detail;
+        entry->sinkCopyIntact = false;
+        return written;
+      }
+      // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
+      spill_refusal_.reset();
+      entry->spilledHash = hash;
+      entry->inSink = true;
     }
-    // Whatever was wrong is not wrong now, so the next refusal should not still be blaming it.
-    spill_refusal_.reset();
-    entry->spilledHash = HashBytes(entry->bytes);
-    entry->inSink = true;
     std::vector<uint8_t>().swap(entry->bytes);
   } else if (target != Residency::Spilled && entry->residency == Residency::Spilled) {
     // Demote is named for the direction it usually goes, and the contract lets a caller name any
@@ -297,7 +310,12 @@ Status MemoryFrameStoreAccess::Clear() {
     // Asked of the sink even when this store has spilled nothing, which is the whole point: the
     // frames that make a clear necessary belong to a process that is gone, and this store has
     // never heard of them. A sink that has nothing to drop reports success.
-    if (auto cleared = spill_->Clear(); !cleared.ok()) return cleared;
+    if (auto cleared = spill_->Clear(); !cleared.ok()) {
+      // Refused is not the same as untouched down there — the browser's refuses when its handle
+      // has gone — so no copy is counted on to spare a write any more.
+      for (auto& held : entries_) held.second.sinkCopyIntact = false;
+      return cleared;
+    }
   }
   entries_.clear();
   heap_used_ = 0;

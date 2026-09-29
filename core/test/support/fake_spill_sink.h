@@ -34,6 +34,9 @@ class FakeSpillSink final : public ISpillSink {
     fail_writes_ = fail;
     write_refusal_ = std::move(detail);
   }
+  // What the browser sink does when a rewrite fails: its old slot was released before the new one
+  // was taken, so the frame's earlier copy is gone along with the write that failed.
+  void LoseCopyOnFailedWrite(bool lose) { lose_on_failed_write_ = lose; }
   void FailReads(bool fail) { fail_reads_ = fail; }
   void FailDrops(bool fail) { fail_drops_ = fail; }
   void FailClears(bool fail) { fail_clears_ = fail; }
@@ -53,6 +56,7 @@ class FakeSpillSink final : public ISpillSink {
   int drops_ = 0;
   bool fail_writes_ = false;
   std::string write_refusal_ = "no room to spill this frame";
+  bool lose_on_failed_write_ = false;
   bool fail_reads_ = false;
   bool fail_drops_ = false;
   int clears_ = 0;

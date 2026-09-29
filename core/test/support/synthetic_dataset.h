@@ -157,4 +157,17 @@ struct SyntheticDataset {
  */
 Result<SyntheticDataset> LoadSyntheticDataset(IFrameStoreAccess& store, const std::string& directory);
 
+/**
+ * The `reference.ppm` a dataset was written with when the generator was given `--reference-width`:
+ * the world the frames were rendered from, sampled at a `width` x `height` preview's pixel centres
+ * (ADR 0068). The compositor's round trip compares its preview with this.
+ *
+ * `RGBA8`, in the signed encoding the frames use, and **the caller's** to `Forget`. The caller
+ * names the size it asked for, and a file of another size is refused rather than read: it is some
+ * other preview's reference. `NotFound` when the dataset was written without one; otherwise the
+ * refusals of a frame file, since it is read the same way.
+ */
+Result<FrameRef> LoadSyntheticReference(IFrameStoreAccess& store, const std::string& directory,
+                                        int32_t width, int32_t height);
+
 }  // namespace sphanorama

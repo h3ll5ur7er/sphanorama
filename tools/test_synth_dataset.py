@@ -2180,6 +2180,18 @@ class EquirectangularMapping(unittest.TestCase):
         u, _ = direction_to_equirect(np.array([[1.0, 0.0, 0.0]]), 512, 256)
         self.assertAlmostEqual(u[0], 384.0, places=9)
 
+    def test_a_direction_off_every_axis_lands_where_the_arithmetic_puts_it(self):
+        """The twin of `Equirect.APixelOffEveryAxisIsWhereTheArithmeticPutsIt` in the core.
+
+        The compositor's panorama and this renderer's must agree on where a direction lands, and a
+        convention both shared wrongly would round-trip a dataset perfectly (ADR 0050). So both
+        suites assert these decimals, worked by hand from longitude 112.5 and latitude 22.5, which
+        is the centre of pixel (6, 1) of an 8 x 4 panorama.
+        """
+        u, v = direction_to_equirect(np.array([[0.8535533906, 0.3826834324, 0.3535533906]]), 8, 4)
+        self.assertAlmostEqual(u[0], 6.5, places=8)
+        self.assertAlmostEqual(v[0], 1.5, places=8)
+
     def test_the_seam_wraps_rather_than_clamping(self):
         just_before = direction_to_equirect(np.array([[-1e-9, 0.0, 1.0]]), 512, 256)[0][0]
         just_after = direction_to_equirect(np.array([[1e-9, 0.0, 1.0]]), 512, 256)[0][0]
@@ -2374,6 +2386,78 @@ class GroundTruth(unittest.TestCase):
         expected = np.round(expected * 255.0).astype(np.uint8)
         np.testing.assert_array_equal(np.frombuffer(body, dtype=np.uint8).reshape(16, 24, 3),
                                       expected)
+
+
+class AReferenceIsThePanoramaAtThePreviewsPixelCentres(unittest.TestCase):
+    """`reference.ppm`: what a preview of the dataset should look like, for the compositor's harness.
+
+    The compositor draws a panorama from the frames, and the round trip needs the panorama it should
+    have drawn. Sampled here, from the world the frames were rendered from, rather than in C++ from
+    the frames, for ADR 0050's reason: a reference computed through the code under test agrees with
+    it about everything the two get wrong together.
+    """
+
+    def _written(self, panorama, width, **kwargs):
+        lens = lens_from_fov(66.0, 50.0, 8, 6)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), panorama, lens, [Pose.identity()],
+                          reference_width=width, **kwargs)
+            raw = (Path(directory) / "reference.ppm").read_bytes()
+        header, _, body = raw.partition(b"255\n")
+        return header, np.frombuffer(body, dtype=np.uint8)
+
+    def test_at_the_panoramas_own_width_it_is_the_panorama(self):
+        # The preview's pixel centres are the panorama's, so a bilinear sample at each one is that
+        # pixel exactly. Asserted against the panorama's own bytes, with no sampling in the check.
+        panorama = direction_encoded_panorama(16, 8)
+        header, body = self._written(panorama, 16)
+        self.assertEqual(header, b"P6\n16 8\n")
+        np.testing.assert_array_equal(body.reshape(8, 16, 3), _to_bytes(panorama))
+
+    def test_at_half_the_width_each_pixel_is_the_two_by_two_block_it_covers(self):
+        # A half-width centre sits on the corner four panorama pixels share, so bilinear weighs them
+        # equally: the box average, which is arithmetic nobody has to trust the sampler for.
+        panorama = direction_encoded_panorama(16, 8)
+        header, body = self._written(panorama, 8)
+        self.assertEqual(header, b"P6\n8 4\n")
+        blocks = panorama.reshape(4, 2, 8, 2, 3).mean(axis=(1, 3))
+        np.testing.assert_array_equal(body.reshape(4, 8, 3), _to_bytes(blocks))
+
+    def test_without_one_asked_for_there_is_none(self):
+        lens = lens_from_fov(66.0, 50.0, 8, 6)
+        with tempfile.TemporaryDirectory() as directory:
+            write_dataset(Path(directory), direction_encoded_panorama(16, 8), lens,
+                          [Pose.identity()])
+            self.assertFalse((Path(directory) / "reference.ppm").exists())
+
+    def test_a_width_that_is_not_a_previews_is_refused(self):
+        # A preview is twice as wide as it is high, so an odd width has no preview to be the
+        # reference of, and nothing narrower than two has a half to be high.
+        # By the guard's own sentence: numpy refuses a negative shape with a ValueError of its own.
+        panorama = direction_encoded_panorama(16, 8)
+        for width in (0, 1, 7, -2):
+            with self.subTest(width=width), self.assertRaisesRegex(ValueError, "no preview"):
+                self._written(panorama, width)
+
+    def test_the_command_line_writes_one_and_refuses_an_odd_width(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "dataset"
+            argv = ["synth_dataset.py", "--out", str(out), "--frames", "1", "--width", "6",
+                    "--height", "4"]
+            old = sys.argv
+            try:
+                sys.argv = argv + ["--reference-width", "16"]
+                self.assertEqual(synth_dataset.main(), 0)
+                self.assertTrue((out / "reference.ppm").read_bytes().startswith(b"P6\n16 8\n"))
+                for refused in ("15", "0", "-2"):
+                    sys.argv = argv + ["--reference-width", refused]
+                    with self.subTest(width=refused), \
+                            contextlib.redirect_stderr(io.StringIO()) as complaint, \
+                            self.assertRaises(SystemExit):
+                        synth_dataset.main()
+                    self.assertIn("--reference-width must be even", complaint.getvalue())
+            finally:
+                sys.argv = old
 
 
 class TheContractTheCppLoaderReads(unittest.TestCase):
