@@ -61,6 +61,7 @@ add_executable(sphanorama_tests
   support/fake_camera_access.cpp
   support/rotation_scoring.cpp
   support/rotation_scoring_test.cpp
+  support/wrong_priors_test.cpp
   support/fake_spill_sink.cpp
   support/fake_export_access.cpp
   support/fake_image_codec_access.cpp

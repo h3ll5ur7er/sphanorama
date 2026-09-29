@@ -89,7 +89,12 @@ class CompositionAccuracy : public ::testing::Test {
   // Every frame goes back on every path out, a failed assertion included, and the store is then
   // empty: a preview left behind is a leak nothing else would report.
   void TearDown() override {
-    for (const FrameRef& frame : owned_) EXPECT_TRUE(store_.Forget(frame).ok());
+    for (const FrameRef& frame : owned_) {
+      // The store's own sentence: a pin left behind and a handle it never allocated both refuse,
+      // and only the detail tells them apart.
+      const Status forgotten = store_.Forget(frame);
+      EXPECT_TRUE(forgotten.ok()) << "frame " << frame.id.value << ": " << forgotten.detail;
+    }
     Result<FrameStoreBudget> budget = store_.Budget();
     ASSERT_TRUE(budget.ok());
     EXPECT_EQ(budget.value.heapUsedBytes, 0);

@@ -21,11 +21,14 @@ inline Quat PairPriorThreeDegreesOut(const Quat& a, const Quat& b) {
 }
 
 // A prior for every frame, each three degrees out about an axis of its own, so the priors cannot
-// agree on a wrong shape. Anchored, as every burst-captured frame's is (ADR 0044).
+// agree on a wrong shape. Anchored, as every burst-captured frame's is (ADR 0044). Lists of two
+// lengths answer none rather than the shorter, so a caller that mismatched them solves nothing
+// instead of a ring missing its last frames.
 inline std::vector<FramePrior> FramePriorsThreeDegreesOut(const std::vector<FrameId>& frames,
                                                           const std::vector<Quat>& truth) {
   std::vector<FramePrior> priors;
-  for (size_t i = 0; i < truth.size() && i < frames.size(); ++i) {
+  if (frames.size() != truth.size()) return priors;
+  for (size_t i = 0; i < truth.size(); ++i) {
     const double at = static_cast<double>(i);
     const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
     FramePrior prior;
