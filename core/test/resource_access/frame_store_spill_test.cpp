@@ -123,7 +123,7 @@ TEST_F(FrameStoreSpill, AFrameReadAndPutBackUnchangedIsNotWrittenAgain) {
   ASSERT_TRUE(store.Release(frame).ok());
   ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
   EXPECT_EQ(sink.Writes(), 1) << "the sink already held these bytes";
-  EXPECT_EQ(HeapUsed(), 0) << "and the heap is given back all the same";
+  EXPECT_EQ(HeapUsed(), 0) << "and the budget is given back all the same";
   EXPECT_EQ(store.ResidencyOf(frame).value, Residency::Spilled);
 
   auto pinned = store.Pin(frame);
@@ -178,6 +178,54 @@ TEST_F(FrameStoreSpill, AFrameChangedWhileResidentIsWrittenAgain) {
   ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
   EXPECT_EQ(sink.Writes(), 2);
   EXPECT_EQ(sink.Held(frame.id.value).front(), 0x4D);
+}
+
+// A frame changed and changed back is compared with what the sink holds now, not with the first
+// thing it ever held — so the copy is rewritten, and a spilled frame's hash is of the bytes down
+// there.
+TEST_F(FrameStoreSpill, AFrameChangedAndChangedBackIsWrittenEachTime) {
+  const FrameRef frame = Allocate();
+  Fill(frame, 0x3C);
+  const uint64_t first = store.ContentHash(frame).value;
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  Fill(frame, 0x4D);
+  const uint64_t second = store.ContentHash(frame).value;
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  EXPECT_EQ(store.ContentHash(frame).value, second) << "spilled, it answers for what is down there";
+  Fill(frame, 0x3C);
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  EXPECT_EQ(sink.Writes(), 3);
+  EXPECT_EQ(sink.Held(frame.id.value).front(), 0x3C);
+  EXPECT_EQ(store.ContentHash(frame).value, first);
+}
+
+// A rewrite the sink refused, on a sink that kept the old copy, still leaves something down there
+// with the frame's name on it: forgetting the frame drops it.
+TEST_F(FrameStoreSpill, AFrameWhoseRewriteWasRefusedIsStillDroppedWhenForgotten) {
+  const FrameRef frame = Allocate();
+  Fill(frame, 0x3C);
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  Fill(frame, 0x4D);
+  sink.FailWrites(true);
+  ASSERT_FALSE(store.Demote(frame, Residency::Spilled).ok());
+  ASSERT_TRUE(sink.Holds(frame.id.value)) << "the premise: this sink kept the old copy";
+  ASSERT_TRUE(store.Forget(frame).ok());
+  EXPECT_FALSE(sink.Holds(frame.id.value));
+}
+
+// A sink that refused to empty itself may have emptied some of itself — the browser's refuses when
+// its handle has gone — so the store trusts none of the copies it had counted on.
+TEST_F(FrameStoreSpill, ARefusedClearIsNotTakenForCopiesStillThere) {
+  const FrameRef frame = Allocate();
+  Fill(frame, 0x3C);
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  ASSERT_TRUE(store.Pin(frame).ok());
+  ASSERT_TRUE(store.Release(frame).ok());
+  sink.FailClears(true);
+  ASSERT_FALSE(store.Clear().ok());
+  sink.FailClears(false);
+  ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  EXPECT_EQ(sink.Writes(), 2) << "written again, rather than trusting a copy the clear may have taken";
 }
 
 // A rewrite the sink refused may have taken the old copy with it, as the browser's does, so the
@@ -445,6 +493,29 @@ TEST(FrameStoreRefusal, ARefusalWithNoRefusedSpillBehindItDoesNotInventOne) {
   auto refused = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
   ASSERT_EQ(refused.status.code, StatusCode::FrameStoreExhausted);
   EXPECT_EQ(refused.status.detail.find("spill"), std::string::npos)
+      << "the refusal was: " << refused.status.detail;
+}
+
+// A put-back that wrote nothing tells the store nothing about the sink, so it does not clear the
+// blame a refused write earned: the next refusal still names the full disk.
+TEST(FrameStoreRefusal, APutBackThatWroteNothingDoesNotClearTheBlame) {
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess store{kFrameBytes * 2, &sink};
+  auto first = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(first.ok());
+  ASSERT_TRUE(store.Demote(first.value, Residency::Spilled).ok());
+  ASSERT_TRUE(store.Pin(first.value).ok());
+  ASSERT_TRUE(store.Release(first.value).ok());
+  auto second = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(second.ok());
+  sink.FailWrites(true);
+  ASSERT_FALSE(store.Demote(second.value, Residency::Spilled).ok());
+  ASSERT_TRUE(store.Demote(first.value, Residency::Spilled).ok()) << "unchanged, so no write";
+
+  ASSERT_TRUE(store.Allocate(kWidth, kHeight, PixelFormat::RGBA8).ok());
+  auto refused = store.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_EQ(refused.status.code, StatusCode::FrameStoreExhausted);
+  EXPECT_NE(refused.status.detail.find("no room to spill this frame"), std::string::npos)
       << "the refusal was: " << refused.status.detail;
 }
 

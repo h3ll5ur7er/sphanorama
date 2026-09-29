@@ -314,7 +314,12 @@ Status MemoryFrameStoreAccess::Clear() {
     // Asked of the sink even when this store has spilled nothing, which is the whole point: the
     // frames that make a clear necessary belong to a process that is gone, and this store has
     // never heard of them. A sink that has nothing to drop reports success.
-    if (auto cleared = spill_->Clear(); !cleared.ok()) return cleared;
+    if (auto cleared = spill_->Clear(); !cleared.ok()) {
+      // Refused is not the same as untouched down there — the browser's refuses when its handle
+      // has gone — so no copy is counted on to spare a write any more.
+      for (auto& held : entries_) held.second.sinkCopyIntact = false;
+      return cleared;
+    }
   }
   entries_.clear();
   heap_used_ = 0;
