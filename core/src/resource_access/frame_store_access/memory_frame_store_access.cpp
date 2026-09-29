@@ -140,6 +140,12 @@ Status MemoryFrameStoreAccess::FaultIn(Entry& entry, uint64_t id) {
   // better than remembering to undo it.
   std::vector<uint8_t> bytes(static_cast<size_t>(entry.size));
   if (auto read = spill_->Read(id, std::span<uint8_t>(bytes)); !read.ok()) return read;
+  // A whole read is what vouches for the sink's copy: it holds exactly these bytes. Recorded so
+  // that putting the frame back unchanged skips the write, which matters most for an adopted
+  // frame — its document carries no hash, and without this every frame of a resumed sphere would
+  // go through the rewrite that loses the only copy when the sink refuses it.
+  entry.spilledHash = HashBytes(bytes);
+  entry.sinkCopyIntact = true;
   entry.bytes = std::move(bytes);
   return Status::Ok();
 }
@@ -280,9 +286,8 @@ Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
   // and a spilled frame cannot be written to, so it is true now.
   entry.spilledHash = frame.contentHash;
   entry.inSink = true;
-  // Intact, but only as good as the carried hash: a document that carries none (0) never matches
-  // the bytes, so a frame adopted that way is written again on its first put-back — the safe way
-  // round.
+  // Intact: it is the copy the document names. The carried hash is not what makes a put-back skip
+  // its write — the fault-in records the hash of what it read (see FaultIn).
   entry.sinkCopyIntact = true;
   entry.residency = Residency::Spilled;
   entries_.emplace(frame.id.value, std::move(entry));

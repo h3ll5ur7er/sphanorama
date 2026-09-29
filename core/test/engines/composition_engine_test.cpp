@@ -40,6 +40,7 @@ class PinCountingStore final : public IFrameStoreAccess {
   static constexpr StatusCode kReleaseDeclined = StatusCode::FailedPrecondition;
   static constexpr StatusCode kTierUnknown = StatusCode::Cancelled;
   static constexpr StatusCode kForgetDeclined = StatusCode::StorageQuotaExceeded;
+  static constexpr StatusCode kDemoteRefused = StatusCode::ComputeUnavailable;
   bool refusePinOfAllocated = false;
   bool refusePinOfHandedIn = false;
   // Allocates this many pixels more a row than asked and says so only through the stride: a real
@@ -51,6 +52,9 @@ class PinCountingStore final : public IFrameStoreAccess {
   int64_t trimTailOfHandedIn = 0;
   bool refuseForgetOfAllocated = false;
   bool refuseResidency = false;
+  // A put-back the store will not make. The memory store writes nothing to put back a frame it
+  // only lent, so a failing sink no longer reaches this; a store that refuses is the way left.
+  bool refuseDemote = false;
   // Refused once each, so the refusal is the call under test's to report rather than permanent.
   Whose refuseRelease = Whose::Nobody;
   int releaseRefusals = 1;
@@ -115,7 +119,10 @@ class PinCountingStore final : public IFrameStoreAccess {
     if (refuseResidency) return Err<Residency>(kTierUnknown, "PinCountingStore", "unsure");
     return real_.ResidencyOf(f);
   }
-  Status Demote(const FrameRef& f, Residency t) override { return real_.Demote(f, t); }
+  Status Demote(const FrameRef& f, Residency t) override {
+    if (refuseDemote) return Fail(kDemoteRefused, "PinCountingStore", "would not put it back");
+    return real_.Demote(f, t);
+  }
   Status Adopt(const FrameRef& f) override { return real_.Adopt(f); }
   Status Forget(const FrameRef& f) override {
     if (refuseForgetOfAllocated && Allocated(f)) {
@@ -842,7 +849,7 @@ struct SpilledForward {
   GlobalSolution solution;
   std::vector<FrameRef> frames;
   // `adopted`: spilled by an earlier session and adopted from its document, which carries no
-  // content hash, so the store cannot vouch for the sink's copy and putting it back writes.
+  // content hash — a frame of a resumed capture.
   explicit SpilledForward(bool spill = true, int64_t ceiling = int64_t{1} << 24,
                           bool adopted = false)
       : store(ceiling, &sink) {
@@ -892,38 +899,52 @@ TEST_F(NearestCentreComposition, ARefusalHandingThePreviewBackKeepsItsOwnCode) {
 }
 
 // A frame the store will not put back is a promise the preview could not keep, so it is a refusal
-// that says so rather than an answer with a frame quietly left in the heap. Put back unchanged, a
-// frame the store spilled itself needs no write; one adopted without a content hash does.
+// that says so rather than an answer with a frame quietly left in the heap.
 TEST(NearestCentrePreview, AFrameTheStoreWillNotPutBackIsARefusal) {
-  SpilledForward spilled(true, int64_t{1} << 24, /*adopted=*/true);
-  spilled.sink.FailWrites(true);
-  Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess real{int64_t{1} << 24, &sink};
+  PinCountingStore store{real};
+  NearestCentreCompositionEngine engine{store};
+  GlobalSolution solution;
+  solution.intrinsics = LensFromFieldOfView(60.0, 46.8, kWidth, kHeight);
+  Result<FrameRef> frame = real.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  ASSERT_TRUE(real.Demote(frame.value, Residency::Spilled).ok());
+  const std::vector<FrameRef> frames = {frame.value};
+  solution.frames.push_back(frame.value.id);
+  solution.rotations.push_back(Quat{});
+  store.refuseDemote = true;
+  Result<FrameRef> answer = engine.RenderPreview(solution, frames, {}, 64);
   ASSERT_FALSE(answer.ok());
-  EXPECT_EQ(answer.status.code, StatusCode::FrameStoreExhausted) << "the store's own code";
+  EXPECT_EQ(answer.status.code, PinCountingStore::kDemoteRefused) << "the store's own code";
   EXPECT_NE(answer.status.detail.find("tier it was found in"), std::string::npos)
       << answer.status.detail;
-  EXPECT_EQ(spilled.HeapUsed(), kWidth * kHeight * 4) << "the answer is given back; the frame "
-                                                           "is where the store left it";
+  EXPECT_EQ(real.Budget().value.heapUsedBytes, kWidth * kHeight * 4)
+      << "the answer is given back; the frame is where the store left it";
   // The contract's recovery: a frame whose tier changed is out of place — this one released, so
   // not pinned — and goes back in the tier it had.
-  const Result<Residency> now = spilled.store.ResidencyOf(spilled.frames[0]);
+  const Result<Residency> now = real.ResidencyOf(frame.value);
   ASSERT_TRUE(now.ok());
   EXPECT_NE(now.value, Residency::Spilled) << "its tier changed";
   EXPECT_NE(now.value, Residency::HeapPinned) << "so there is no pin to release";
-  spilled.sink.FailWrites(false);
-  EXPECT_TRUE(spilled.store.Demote(spilled.frames[0], Residency::Spilled).ok());
-  EXPECT_EQ(spilled.HeapUsed(), 0) << "and it is back where it was found";
+  store.refuseDemote = false;
+  EXPECT_TRUE(real.Demote(frame.value, Residency::Spilled).ok());
+  EXPECT_EQ(real.Budget().value.heapUsedBytes, 0) << "and it is back where it was found";
 }
 
-// A preview only reads, so the frames it borrows go back to the sink without being written again.
+// A preview only reads, so the frames it borrows go back to the sink without being written again —
+// a frame of a resumed capture, adopted from a document that carries no hash, included.
 TEST(NearestCentrePreview, ReadingASpilledFrameWritesNothingBack) {
-  SpilledForward spilled;
-  const int written = spilled.sink.Writes();
-  Result<FrameRef> answer = spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
-  ASSERT_TRUE(answer.ok()) << answer.status.detail;
-  EXPECT_EQ(spilled.sink.Writes(), written);
-  EXPECT_EQ(spilled.store.ResidencyOf(spilled.frames[0]).value, Residency::Spilled);
-  EXPECT_TRUE(spilled.store.Forget(answer.value).ok());
+  for (const bool adopted : {false, true}) {
+    SpilledForward spilled(true, int64_t{1} << 24, adopted);
+    const int written = spilled.sink.Writes();
+    Result<FrameRef> answer =
+        spilled.engine.RenderPreview(spilled.solution, spilled.frames, {}, 64);
+    ASSERT_TRUE(answer.ok()) << answer.status.detail;
+    EXPECT_EQ(spilled.sink.Writes(), written) << (adopted ? "adopted" : "spilled here");
+    EXPECT_EQ(spilled.store.ResidencyOf(spilled.frames[0]).value, Residency::Spilled);
+    EXPECT_TRUE(spilled.store.Forget(answer.value).ok());
+  }
 }
 
 // A frame that cannot be pinned is refused with the store's own code: here a spilled one with no room

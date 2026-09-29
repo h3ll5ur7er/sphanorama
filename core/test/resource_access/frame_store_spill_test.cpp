@@ -132,10 +132,11 @@ TEST_F(FrameStoreSpill, AFrameReadAndPutBackUnchangedIsNotWrittenAgain) {
   EXPECT_TRUE(store.Release(frame).ok());
 }
 
-// An adopted frame is in the sink too, and as far as the hash its document carried vouches for it:
-// one that carries the real hash goes back without a write, and one that carries none (0, which
-// is every document today) is written again, since nothing says the copy is these bytes.
-TEST_F(FrameStoreSpill, AnAdoptedFrameIsTrustedAsFarAsItsCarriedHash) {
+// An adopted frame is in the sink too, and the read that faulted it in is what vouches for the
+// copy — not the hash its document carried, which is 0 in every document today. Rewriting it would
+// put every frame of a resumed sphere through the write this exists to avoid, and a refused one,
+// on a sink that gives up the old copy first, loses the frame across the next reload.
+TEST_F(FrameStoreSpill, AnAdoptedFrameReadAndPutBackIsNotWrittenAgain) {
   FrameRef frame;
   {
     MemoryFrameStoreAccess earlier{1 << 20, &sink};
@@ -146,20 +147,26 @@ TEST_F(FrameStoreSpill, AnAdoptedFrameIsTrustedAsFarAsItsCarriedHash) {
     ASSERT_TRUE(pinned.ok());
     std::fill(pinned.value.begin(), pinned.value.end(), uint8_t{0x21});
     ASSERT_TRUE(earlier.Release(frame).ok());
-    frame.contentHash = earlier.ContentHash(frame).value;
     ASSERT_TRUE(earlier.Demote(frame, Residency::Spilled).ok());
   }
+  ASSERT_EQ(frame.contentHash, 0u) << "the premise: a document carries no hash";
+  sink.LoseCopyOnFailedWrite(true);
+  sink.FailWrites(true);  // any write now would lose the only copy
   const int written = sink.Writes();
-  for (const bool carried : {true, false}) {
-    MemoryFrameStoreAccess resumed{1 << 20, &sink};
-    FrameRef handle = frame;
-    if (!carried) handle.contentHash = 0;
-    ASSERT_TRUE(resumed.Adopt(handle).ok());
-    ASSERT_TRUE(resumed.Pin(handle).ok());
-    ASSERT_TRUE(resumed.Release(handle).ok());
-    ASSERT_TRUE(resumed.Demote(handle, Residency::Spilled).ok());
-    EXPECT_EQ(sink.Writes(), written + (carried ? 0 : 1)) << (carried ? "carried" : "none");
-  }
+  MemoryFrameStoreAccess resumed{1 << 20, &sink};
+  ASSERT_TRUE(resumed.Adopt(frame).ok());
+  ASSERT_TRUE(resumed.Pin(frame).ok());
+  ASSERT_TRUE(resumed.Release(frame).ok());
+  EXPECT_TRUE(resumed.Demote(frame, Residency::Spilled).ok()) << "put back without a write";
+  EXPECT_EQ(sink.Writes(), written);
+  ASSERT_TRUE(sink.Holds(frame.id.value)) << "and the copy is still there for the next reload";
+
+  MemoryFrameStoreAccess reloaded{1 << 20, &sink};
+  ASSERT_TRUE(reloaded.Adopt(frame).ok());
+  auto pinned = reloaded.Pin(frame);
+  ASSERT_TRUE(pinned.ok()) << pinned.status.detail;
+  EXPECT_EQ(pinned.value.front(), 0x21);
+  EXPECT_TRUE(reloaded.Release(frame).ok());
 }
 
 // But a frame written to while it was resident goes back as it is now.
