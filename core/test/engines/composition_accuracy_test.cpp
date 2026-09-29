@@ -9,8 +9,8 @@
  * as the registration measurement is (ADR 0055).
  *
  * With the true rotations this measures the compositor alone. It is not gauge-free — a common
- * rotation moves the whole preview against the reference — so an *estimated* solution has its
- * gauge taken off before it is composed, and that is the next increment rather than this one.
+ * rotation moves the whole preview against the reference — so a registered solution has its gauge
+ * taken off before it is composed, with the alignment the rotation scorer computes.
  */
 #include <gtest/gtest.h>
 
@@ -22,9 +22,12 @@
 #include <vector>
 
 #include "engines/composition_engine/nearest_centre_composition_engine.h"
+#include "engines/registration_engine/feature_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/rendered_dataset.h"
+#include "support/rotation_scoring.h"
 #include "support/synthetic_dataset.h"
+#include "support/wrong_priors.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -86,7 +89,12 @@ class CompositionAccuracy : public ::testing::Test {
   // Every frame goes back on every path out, a failed assertion included, and the store is then
   // empty: a preview left behind is a leak nothing else would report.
   void TearDown() override {
-    for (const FrameRef& frame : owned_) EXPECT_TRUE(store_.Forget(frame).ok());
+    for (const FrameRef& frame : owned_) {
+      // The store's own sentence: a pin left behind and a handle it never allocated both refuse,
+      // and only the detail tells them apart.
+      const Status forgotten = store_.Forget(frame);
+      EXPECT_TRUE(forgotten.ok()) << "frame " << frame.id.value << ": " << forgotten.detail;
+    }
     Result<FrameStoreBudget> budget = store_.Budget();
     ASSERT_TRUE(budget.ok());
     EXPECT_EQ(budget.value.heapUsedBytes, 0);
@@ -181,6 +189,97 @@ TEST_F(CompositionAccuracy, ATenthOfADegreeIsVisible) {
   EXPECT_EQ(drawn.equatorCovered, 1.0) << "the premise: the same sphere is drawn";
   EXPECT_GT(drawn.meanError, kMeanErrorBound);
 }
+
+class RegisteredComposition : public CompositionAccuracy,
+                              public ::testing::WithParamInterface<FeatureDetector> {};
+
+// The ring registered from its own pixels and solved by `Refine`, as a phone would hand it over:
+// pairs and priors three degrees out, and a lens 5% long — the order the page's assumed field of
+// view can be out by on a device's first capture, before it has kept a lens (ADR 0067; no browser
+// reports one). That is the registration table's `AFocalLengthOutIsFittedFromTheRing` at 1.05,
+// composed.
+//
+// The solve faces wherever the priors agree, 0.26 degrees from the truth, and a common turn moves
+// the whole preview against the reference, so the gauge comes off first: the rotation that best
+// carries the solve onto the truth, applied to every frame, which leaves what registration got
+// wrong relative to itself.
+TEST_P(RegisteredComposition, ARegisteredRingComposesToThePhotographOnceItsGaugeIsRemoved) {
+  Intrinsics guess = truth_.intrinsics;
+  guess.fx *= 1.05;
+  guess.fy *= 1.05;
+
+  FeatureRegistrationEngine registration{store_, GetParam()};
+  std::vector<FeatureSet> sets;
+  for (const FrameRef& frame : frames_) {
+    const Result<FeatureSet> features = registration.ExtractFeatures(frame);
+    ASSERT_TRUE(features.ok()) << features.status.detail;
+    // A count of zero allocated nothing, and the store would refuse to forget its default handles.
+    if (features.value.count > 0) {
+      owned_.push_back(features.value.keypoints);
+      owned_.push_back(features.value.descriptors);
+    }
+    sets.push_back(features.value);
+  }
+  std::vector<PairwiseResult> pairs;
+  for (size_t a = 0; a < sets.size(); ++a) {
+    const size_t b = (a + 1) % sets.size();
+    const Result<PairwiseResult> pair = registration.EstimatePairwise(
+        sets[a], sets[b], test::PairPriorThreeDegreesOut(truth_.rotations[a], truth_.rotations[b]),
+        guess);
+    ASSERT_TRUE(pair.ok()) << "pair " << a << "-" << b << ": " << pair.status.detail;
+    pairs.push_back(pair.value);
+  }
+  const Result<GlobalSolution> solved = registration.Refine(
+      pairs, test::FramePriorsThreeDegreesOut(truth_.frames, truth_.rotations), guess);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  ASSERT_EQ(solved.value.frames, truth_.frames);
+  EXPECT_EQ(solved.value.edgesUsed, kFrames) << "not every pair was accepted";
+  EXPECT_TRUE(solved.value.lensFitted);
+
+  const test::GaugeAlignment gauge =
+      test::BestGaugeAlignment(solved.value.rotations, truth_.rotations);
+  ASSERT_TRUE(gauge.valid && gauge.isUnique);
+  // The premise below that leaving the gauge on fails the bound is a premise only while there is a
+  // gauge to leave on: priors that happened to agree on the truth would face the solve there, and
+  // the premise would then fail for a reason that is not the compositor's.
+  const double gaugeDeg = AngleBetween(gauge.rotation, Quat{}) * 180.0 / std::numbers::pi;
+  ASSERT_GT(gaugeDeg, 0.15) << "the priors agree on the truth, so there is no gauge to take off";
+  GlobalSolution aligned = solved.value;
+  for (Quat& rotation : aligned.rotations) rotation = Normalize(Multiply(gauge.rotation, rotation));
+
+  const Comparison drawn = Compose(aligned);
+  // The two premises, each a thing the preview needed from the solve and got: the gauge taken off,
+  // and the lens it fitted rather than the one it was handed.
+  const Comparison facingThePriors = Compose(solved.value);
+  GlobalSolution underTheGuess = aligned;
+  underTheGuess.intrinsics = guess;
+  const Comparison guessed = Compose(underTheGuess);
+
+  const test::RotationScore score = test::ScoreRotations(solved.value.rotations, truth_.rotations);
+  // One line a detector: the gate counts them against the instantiations, as it does `[accuracy]`.
+  std::printf("[registered] detector=%d fx=%+.4f%% gauge=%.4f deg median=%.4f max=%.4f mean=%.3f "
+              "p99=%d unaligned=%.3f guessed=%.3f\n",
+              static_cast<int>(GetParam()),
+              100.0 * (solved.value.intrinsics.fx / truth_.intrinsics.fx - 1.0),
+              gaugeDeg, score.medianDeg,
+              score.maxDeg, drawn.meanError, drawn.p99Error, facingThePriors.meanError,
+              guessed.meanError);
+
+  // Today's run: 1.547, 1.378 and 1.215 (ORB, AKAZE, SIFT) against the truth's 1.193, p99 14, 13
+  // and 11; about 5 with the gauge left on, and 14.2 to 14.3 under the guess. The truth's bound
+  // rather than one per detector: the rotations are bounded in degrees in
+  // `registration_accuracy_test.cpp`, and what this adds is that nothing between the solve and the
+  // preview loses what they got right. Written also in `docs/06-roadmap.md` and `CLAUDE.md`, which
+  // move with these.
+  EXPECT_EQ(drawn.equatorCovered, 1.0);
+  EXPECT_LE(drawn.meanError, kMeanErrorBound);
+  EXPECT_LE(drawn.p99Error, kP99ErrorBound);
+  EXPECT_GT(facingThePriors.meanError, kMeanErrorBound);
+  EXPECT_GT(guessed.meanError, kMeanErrorBound);
+}
+
+INSTANTIATE_TEST_SUITE_P(EveryDetector, RegisteredComposition,
+                         ::testing::ValuesIn(kAllFeatureDetectors));
 
 }  // namespace
 }  // namespace sphanorama
