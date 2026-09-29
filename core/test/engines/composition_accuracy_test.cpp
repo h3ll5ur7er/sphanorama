@@ -239,6 +239,11 @@ TEST_P(RegisteredComposition, ARegisteredRingComposesToThePhotographOnceItsGauge
   const test::GaugeAlignment gauge =
       test::BestGaugeAlignment(solved.value.rotations, truth_.rotations);
   ASSERT_TRUE(gauge.valid && gauge.isUnique);
+  // The premise below that leaving the gauge on fails the bound is a premise only while there is a
+  // gauge to leave on: priors that happened to agree on the truth would face the solve there, and
+  // the premise would then fail for a reason that is not the compositor's.
+  const double gaugeDeg = AngleBetween(gauge.rotation, Quat{}) * 180.0 / std::numbers::pi;
+  ASSERT_GT(gaugeDeg, 0.15) << "the priors agree on the truth, so there is no gauge to take off";
   GlobalSolution aligned = solved.value;
   for (Quat& rotation : aligned.rotations) rotation = Normalize(Multiply(gauge.rotation, rotation));
 
@@ -256,7 +261,7 @@ TEST_P(RegisteredComposition, ARegisteredRingComposesToThePhotographOnceItsGauge
               "p99=%d unaligned=%.3f guessed=%.3f\n",
               static_cast<int>(GetParam()),
               100.0 * (solved.value.intrinsics.fx / truth_.intrinsics.fx - 1.0),
-              AngleBetween(gauge.rotation, Quat{}) * 180.0 / std::numbers::pi, score.medianDeg,
+              gaugeDeg, score.medianDeg,
               score.maxDeg, drawn.meanError, drawn.p99Error, facingThePriors.meanError,
               guessed.meanError);
 

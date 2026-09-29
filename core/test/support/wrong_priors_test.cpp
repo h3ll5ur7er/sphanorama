@@ -56,32 +56,34 @@ TEST(WrongPriors, EveryFramePriorIsThreeDegreesOutInAWayOfItsOwn) {
     EXPECT_NEAR(AngleBetween(priors[i].pose.orientation, ring[i]) * kDegPerRad, 3.0, 1e-6) << i;
     orientations.push_back(priors[i].pose.orientation);
   }
-  // Not one turn shared by all, which would face the whole ring three degrees wrong: what they
-  // agree on together is near the truth, and composing a registered ring relies on it being so.
-  const GaugeAlignment agreed = BestGaugeAlignment(orientations, ring);
-  ASSERT_TRUE(agreed.valid);
-  EXPECT_LT(AngleBetween(agreed.rotation, Quat{}) * kDegPerRad, 1.0);
-  // Nor one axis in every camera's own frame, which on a ring averages out of that check and still
-  // gets every step between neighbours wrong the same way — a consistent wrong shape. Each about an
-  // axis of its own, the steps' errors differ.
-  std::vector<Quat> stepErrors;
-  for (size_t a = 0; a < ring.size(); ++a) {
-    const size_t b = (a + 1) % ring.size();
-    const Quat truthStep = Multiply(Conjugate(ring[b]), ring[a]);
-    const Quat priorStep = Multiply(Conjugate(orientations[b]), orientations[a]);
-    stepErrors.push_back(Multiply(Conjugate(truthStep), priorStep));
+  // Wrong relative to each other, not only together: a turn shared by every frame leaves the
+  // priors' shape exact, and the gauge-free score is how far their shape is from the ring's. Three
+  // degrees each, so about three; zero is the frame-level form of handing the solve the truth.
+  EXPECT_GT(ScoreRotations(orientations, ring).medianDeg, 2.0);
+  // Each about an axis of its own, taken in its camera's frame and compared as lines, so no two
+  // frames share one either way round. The closest pair of the helper's axes is 11.96 degrees.
+  std::vector<Vec3> axes;
+  for (size_t i = 0; i < priors.size(); ++i) {
+    const Quat off = Multiply(Conjugate(ring[i]), orientations[i]);
+    axes.push_back(Normalize(Vec3{off.x, off.y, off.z}));
   }
-  double spread = 0.0;
-  for (const Quat& error : stepErrors) {
-    spread = std::max(spread, AngleBetween(error, stepErrors.front()) * kDegPerRad);
+  double closest = 180.0;
+  for (size_t a = 0; a < axes.size(); ++a) {
+    for (size_t b = a + 1; b < axes.size(); ++b) {
+      const double along = std::abs(Dot(axes[a], axes[b]));
+      closest = std::min(closest, std::acos(std::min(along, 1.0)) * kDegPerRad);
+    }
   }
-  EXPECT_GT(spread, 1.0);
+  EXPECT_GT(closest, 10.0);
 }
 
 TEST(WrongPriors, ListsOfTwoLengthsAnswerNoPriors) {
   const std::vector<Quat> ring = ARing();
-  const std::vector<FrameId> ids{FrameId{1}, FrameId{2}};
-  EXPECT_TRUE(FramePriorsThreeDegreesOut(ids, ring).empty());
+  EXPECT_TRUE(FramePriorsThreeDegreesOut({FrameId{1}, FrameId{2}}, ring).empty());
+  std::vector<FrameId> more;
+  for (size_t i = 0; i <= ring.size(); ++i) more.push_back(FrameId{1 + i});
+  EXPECT_TRUE(FramePriorsThreeDegreesOut(more, ring).empty());
+  EXPECT_TRUE(FramePriorsThreeDegreesOut(more, {}).empty());
 }
 
 }  // namespace
