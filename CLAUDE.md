@@ -60,7 +60,8 @@ not a defect, and ADR 0056 is the record of it. A periodic world is the one plac
 must not be scored. `Composition` has one method of five: `RenderPreview` colours each direction
 from the frame looking at it most squarely, which shows a misregistration as a step rather than
 blurring it away. A round trip against the photograph the frames were rendered from measures it at
-a mean of 1.19 bytes, and sees a tenth of a degree (ADR 0068). Seams, exposure and blending are the
+a mean of 1.19 bytes, and sees a tenth of a degree (ADR 0068); a ring registered and solved from
+its own pixels, then turned onto the truth by the scorer's gauge, composes at 1.22 to 1.55. Seams, exposure and blending are the
 rest of what Phase 2 is for. This line said Phase 1 until Phase 2
 actually started; Phase 1 is the guided capture, whose exit criterion stands at two of three
 conditions on one device — a Pixel 9 Pro XL, which captured a full sphere and survived both a reload

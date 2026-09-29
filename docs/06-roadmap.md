@@ -867,9 +867,13 @@ that has to be ordered.
   `RenderPreview` colours each direction from the frame looking at it most squarely, and a round
   trip against the photograph a ring was rendered from measures it at a mean error of 1.19 bytes
   with the true rotations. A tenth of a degree of misregistration reads 2.84, so the harness can see
-  errors well inside registration's 0.5-degree threshold. It is not gauge-free, so composing an
-  *estimated* ring means aligning it to the truth first, which is next. Everything else in this
-  bullet answers `Unsupported`, and no composition root selects the engine yet.
+  errors well inside registration's 0.5-degree threshold. **And a registered ring composes inside
+  the same bound**: registered from its pixels against priors three degrees out and a lens 5% long,
+  solved by `Refine`, and turned onto the truth by the gauge the rotation scorer computes — the
+  comparison is not gauge-free, and without that turn every detector reads about 5. It measures
+  1.55 (ORB), 1.38 (AKAZE) and 1.22 (SIFT), and composed under the lens it was handed rather than
+  the one it fitted, 14.3. Everything else in this bullet answers `Unsupported`, and no composition
+  root selects the engine yet.
 - `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
 
