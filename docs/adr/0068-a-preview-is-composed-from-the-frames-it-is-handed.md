@@ -98,9 +98,12 @@ composite should look like.
   file on every render — and cannot lose a cell to a failed rewrite, which on the browser sink gives
   up the old copy before it takes the new one (ADR 0030). The read that faulted the frame in is what
   vouches for that copy, so this holds for a frame of a resumed capture too, whose document carries
-  no hash. A frame the store cannot put back is left in the heap and the refusal says so, and one it
-  cannot say the tier of is not read at all — rather than a preview that quietly left either in the
-  heap. The two-byte index is why a solution naming 65,536 frames or more is refused.
+  no hash. That refines ADR 0020's spilled content hash: it is now also taken when a fault-in reads
+  the copy, and while the frame is resident it is compared with the bytes to tell whether the frame
+  has changed since, so it goes stale there on purpose. A frame the store cannot put back is left in
+  the heap and the refusal says so, and one it cannot say the tier of is not read at all — rather
+  than a preview that quietly left either in the heap. The two-byte index is why a solution naming
+  65,536 frames or more is refused.
 - **A refusal can hand something back.** When the store will not take the preview back, the
   refusal's value is the preview — released if `ResidencyOf` says it is still pinned, then forgotten
   — because nothing else can name it to the store again. And a frame handed in whose release the

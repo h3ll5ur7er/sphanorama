@@ -228,7 +228,6 @@ Status MemoryFrameStoreAccess::Demote(const FrameRef& frame, Residency target) {
       spill_refusal_.reset();
       entry->spilledHash = hash;
       entry->inSink = true;
-      entry->sinkCopyIntact = true;
     }
     std::vector<uint8_t>().swap(entry->bytes);
   } else if (target != Residency::Spilled && entry->residency == Residency::Spilled) {
@@ -286,9 +285,6 @@ Status MemoryFrameStoreAccess::Adopt(const FrameRef& frame) {
   // and a spilled frame cannot be written to, so it is true now.
   entry.spilledHash = frame.contentHash;
   entry.inSink = true;
-  // Intact: it is the copy the document names. The carried hash is not what makes a put-back skip
-  // its write — the fault-in records the hash of what it read (see FaultIn).
-  entry.sinkCopyIntact = true;
   entry.residency = Residency::Spilled;
   entries_.emplace(frame.id.value, std::move(entry));
   spilled_ += size;

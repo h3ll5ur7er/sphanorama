@@ -280,8 +280,9 @@ export function createSpillHost(file: SpillFile, index?: SpillFile): SpillHost {
       // The old slot goes back before the new one is taken, which is what makes a rewrite of the
       // same size land in the same place: the free list is exact-fit and LIFO, so the hole just
       // made is the one handed straight back. Special-casing it would be a branch that cannot be
-      // told from this one from the outside. The store demotes, faults in and demotes the same
-      // frame repeatedly as pressure moves, so growing the file per rewrite is not hypothetical.
+      // told from this one from the outside. A frame put back unchanged never reaches here — the
+      // store skips the write — but one changed while resident, or retried after a refused write
+      // or clear, does, and growing the file per rewrite would be paid on every one.
       const existing = slots.get(frame);
       if (existing) {
         slots.delete(frame);
