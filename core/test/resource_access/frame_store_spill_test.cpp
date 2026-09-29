@@ -257,6 +257,7 @@ TEST_F(FrameStoreSpill, ASinkThatRefusesTheReadLeavesTheFrameSpilledRatherThanEm
   const FrameRef frame = Allocate();
   Fill(frame, 0x11);
   ASSERT_TRUE(store.Demote(frame, Residency::Spilled).ok());
+  const uint64_t hash = store.ContentHash(frame).value;
   sink.FailReads(true);
 
   EXPECT_FALSE(store.Pin(frame).ok());
@@ -264,6 +265,7 @@ TEST_F(FrameStoreSpill, ASinkThatRefusesTheReadLeavesTheFrameSpilledRatherThanEm
   ASSERT_TRUE(residency.ok());
   EXPECT_EQ(residency.value, Residency::Spilled);
   EXPECT_EQ(HeapUsed(), 0) << "a failed fault-in charged the heap for bytes it does not hold";
+  EXPECT_EQ(store.ContentHash(frame).value, hash) << "a read that failed learnt nothing";
 
   // And the failure is not terminal: the next read succeeds and the frame is intact.
   sink.FailReads(false);
