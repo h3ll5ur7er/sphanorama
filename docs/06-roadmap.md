@@ -872,7 +872,7 @@ that has to be ordered.
   solved by `Refine`, and turned onto the truth by the gauge the rotation scorer computes — the
   comparison is not gauge-free, and without that turn every detector reads about 5. It measures
   1.55 (ORB), 1.38 (AKAZE) and 1.22 (SIFT), and composed under the lens it was handed rather than
-  the one it fitted, 14.3. Everything else in this bullet answers `Unsupported`, and no composition
+  the one it fitted, 14.2 to 14.3. Everything else in this bullet answers `Unsupported`, and no composition
   root selects the engine yet.
 - `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.

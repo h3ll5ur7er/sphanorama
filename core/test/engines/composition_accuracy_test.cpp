@@ -189,9 +189,10 @@ class RegisteredComposition : public CompositionAccuracy,
                               public ::testing::WithParamInterface<FeatureDetector> {};
 
 // The ring registered from its own pixels and solved by `Refine`, as a phone would hand it over:
-// pairs and priors three degrees out, and a lens 5% long, since nothing on a phone knows the focal
-// length better than the field of view the browser reports. That is the registration table's
-// `AFocalLengthOutIsFittedFromTheRing` at 1.05, composed.
+// pairs and priors three degrees out, and a lens 5% long — the order the page's assumed field of
+// view can be out by on a device's first capture, before it has kept a lens (ADR 0067; no browser
+// reports one). That is the registration table's `AFocalLengthOutIsFittedFromTheRing` at 1.05,
+// composed.
 //
 // The solve faces wherever the priors agree, 0.26 degrees from the truth, and a common turn moves
 // the whole preview against the reference, so the gauge comes off first: the rotation that best
@@ -255,10 +256,11 @@ TEST_P(RegisteredComposition, ARegisteredRingComposesToThePhotographOnceItsGauge
               guessed.meanError);
 
   // Today's run: 1.547, 1.378 and 1.215 (ORB, AKAZE, SIFT) against the truth's 1.193, p99 14, 13
-  // and 11; about 5 with the gauge left on, and 14.3 under the guess. The truth's bound rather than
-  // one per detector: the rotations are bounded in degrees in `registration_accuracy_test.cpp`, and
-  // what this adds is that nothing between the solve and the preview loses what they got right.
-  // Written also in `docs/06-roadmap.md` and `CLAUDE.md`, which move with these.
+  // and 11; about 5 with the gauge left on, and 14.2 to 14.3 under the guess. The truth's bound
+  // rather than one per detector: the rotations are bounded in degrees in
+  // `registration_accuracy_test.cpp`, and what this adds is that nothing between the solve and the
+  // preview loses what they got right. Written also in `docs/06-roadmap.md` and `CLAUDE.md`, which
+  // move with these.
   EXPECT_EQ(drawn.equatorCovered, 1.0);
   EXPECT_LE(drawn.meanError, kMeanErrorBound);
   EXPECT_LE(drawn.p99Error, kP99ErrorBound);
