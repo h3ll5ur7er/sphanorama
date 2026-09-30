@@ -351,9 +351,8 @@ TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
-// A project, not a session, since ADR 0070. Both answers are `NotFound`, so the detail is what
-// shows the id arrived: a project that exists and holds no capture is refused for that, and an id
-// dispatched as some other number would be refused as no project at all.
+// A project, not a session, since ADR 0070. Both answers are `NotFound`, so the detail — which names
+// the project it was asked about — is what shows the id arrived as sent.
 TEST(Facade, ABuildIsStartedForTheProjectItNames) {
   const auto start = [](double project) {
     wire::Writer args;
@@ -366,16 +365,18 @@ TEST(Facade, ABuildIsStartedForTheProjectItNames) {
   };
   const Status nowhere = start(4041.0);
   EXPECT_EQ(nowhere.code, StatusCode::NotFound);
-  EXPECT_EQ(nowhere.detail, "no such project");
+  EXPECT_EQ(nowhere.detail, "project 4041 does not exist");
 
   wire::Writer named;
   named.PutString("empty");
   Response opened = Call("ProjectManager.create", named.bytes());
   wire::Reader created = opened.reader();
   ASSERT_EQ(ReadStatus(created).code, StatusCode::Ok);
-  const Status empty = start(created.GetF64());
+  const double id = created.GetF64();
+  const Status empty = start(id);
   EXPECT_EQ(empty.code, StatusCode::NotFound);
-  EXPECT_EQ(empty.detail, "this project holds no capture");
+  EXPECT_EQ(empty.detail, "project " + std::to_string(static_cast<uint64_t>(id))
+                              + " holds no capture");
 }
 
 TEST(Facade, TheResultBufferSurvivesUntilTheNextCall) {

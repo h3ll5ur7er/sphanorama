@@ -43,6 +43,9 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     std::vector<PairwiseResult> estimated;
     GlobalSolution solution;
     std::optional<FrameRef> preview;
+    // Capture frames a refusal left out of their tier that the store would not put back yet, with
+    // the tier each belongs in.
+    std::vector<std::pair<FrameRef, Residency>> misplaced;
     size_t done = 0;
   };
 
@@ -51,6 +54,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Status ExtractFeatures(Build& build, size_t frame);
   // Back to the tier it was found in, since reading it faulted it in.
   Status PutBack(const FrameRef& frame, Residency found);
+  Status PutBackOrKeep(Build& build, const FrameRef& frame, Residency found);
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
   Status Compose(Build& build);

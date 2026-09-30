@@ -346,8 +346,10 @@ What is left, and what has landed since:
   there and really the right length. The tier now carries a token saying which capture is in it —
   minted on every clear, kept in the spill index, recorded in the session document, and compared by
   `Resume`, which refuses a document that names another one and keeps it (ADR 0035). A host with no
-  spill tier at all answers zero, which is a token like any other and matches the documents written
-  against it, so a desktop and a browser without OPFS still resume what they can.
+  spill tier at all answers zero, which matches the documents written against it, so a desktop and
+  a browser without OPFS still resume what they can — which is a plan and no frames, since `Adopt`
+  refuses every frame of a tierless store. Zero does not vouch for which process's frames an id
+  names, so a build refuses it (ADR 0070).
 - **What a refused resume does to the offer — settled.** ADR 0035 expected that when the page's
   resume flow arrived, what it would need was "a project that stops being offered rather than a
   document that has been destroyed". The flow landed alongside it and did neither, and the two ADRs

@@ -48,7 +48,10 @@ everything, and it could not have done otherwise as declared, for three reasons.
      as well as after every burst, so it does not name frames the store has forgotten. A pick the
      cell no longer holds gives way to the ranking: a discarding retake leaves the pick behind with
      no way to clear it, and no screen can show a frame that is gone. The first version refused
-     such a pick, which made every build after a retake of a picked cell impossible.
+     such a pick, which made every build after a retake of a picked cell impossible. A pick at or
+     past the candidate counter the document recorded is refused instead: the document never saw
+     it, because a rewrite failed, and the ranking would build from a frame other than the one the
+     user chose. A pick a retake discarded is always below that counter.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was
@@ -64,7 +67,9 @@ everything, and it could not have done otherwise as declared, for three reasons.
      frames did not register is left out, as a declined edge; an unaccepted one is kept, since
      `Refine` ignores it by contract (ADR 0056). A frame with no features is paired with nothing and
      placed by its prior.
-   - **Every frame is put back in the tier it was found in** after its features are read, since
+   - **Every frame is put back in the tier it was found in** after its features are read, and after
+     a preview that refused having left one pinned or faulted in (`RenderPreview` says it may),
+     since
      extraction leaves a spilled frame resident (`FeatureSet`'s comment), and a sphere's worth of
      faulted-in frames is the heap refusal ADR 0023 exists to avoid. The feature sets are forgotten
      once the last pair is estimated: `Refine` reads the pairs' matches, not the sets.
@@ -78,13 +83,21 @@ everything, and it could not have done otherwise as declared, for three reasons.
 
 ## Consequences
 
-- **A host with no spill tier captures but does not build.** Its tier generation is zero in every
-  tab and frame identities restart with each, so a document an earlier tab wrote names ids a live
-  capture now holds, and the store answers for them. Nothing the build can ask tells the two apart
-  — `Resume` is refused on such a host by `Adopt`, for the same reason — so `Start` refuses rather
-  than build from another capture's pixels. Every browser this targets has an origin private file
-  system; the degraded mode docs/04 §4.1 supports is a capture, and a store that could say which
-  tab it belongs to is what would lift this.
+- **A host with no spill tier captures but does not build.** That is a browser with no origin
+  private file system, one whose handle would not open (`bridge/runtime.h`), and every native
+  build. Its tier generation is zero in every tab and frame identities restart with each, so a
+  document an earlier tab wrote names ids a live capture now holds, and the store answers for
+  them. Nothing the build can ask tells the two apart — `Resume` is refused on such a host by
+  `Adopt` for any document that names a frame — so `Start` refuses rather than build from another
+  capture's pixels. This is a real cost: such a browser was "degraded rather than broken" for
+  capture and is now broken for the panorama. A store that could say which tab it belongs to is
+  what would lift it, and `TierGeneration`'s contract now says zero cannot be matched by id.
+- **ADR 0065's "placed through its pairs" does not hold in a build.** A frame whose pose was not
+  measured — one `Resume` demoted, or a pick of one — is paired with nothing, because the build
+  pairs by the direction a pose gives, and `Refine` drops it. So a cell ranked without a manual
+  pick gives its best *measured* frame, and a cell whose only or picked frame is unmeasured is
+  left out of a panorama that still completes. Surfacing `droppedFrames` to a client is a
+  contract change for the change that shows a build.
 - **An offered frame is never built from**, even when it ranks first or is picked, because the
   document leaves it out — its bytes are not in the tier (ADR 0023). Nothing offers a frame today.
 

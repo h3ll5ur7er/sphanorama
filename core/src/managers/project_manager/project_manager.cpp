@@ -72,8 +72,8 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
                 "a selection needs a real cell and a real candidate");
   }
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
-  // Recorded so the next build can treat it exactly like a retake: one dirty node, one partial
-  // rebuild (ADR 0004).
+  // Read by the next build's `Start` (ADR 0070); a partial rebuild from this one dirty node is
+  // ADR 0004's design and not built yet.
   return store_.WriteDocument(project, SelectionDocumentKey(node), std::to_string(candidate.value));
 }
 

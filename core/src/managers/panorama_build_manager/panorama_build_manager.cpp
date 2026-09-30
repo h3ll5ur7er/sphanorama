@@ -51,13 +51,17 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
                         "a build is already running; cancel it first");
   }
 
-  if (!projects_.ReadDocument(project, "title").ok()) {
-    return Err<BuildId>(StatusCode::NotFound, kComponent, "no such project");
+  // Only an absent title is an absent project; any other failure is the store's, and says so.
+  if (auto title = projects_.ReadDocument(project, "title"); !title.ok()) {
+    if (title.status.code != StatusCode::NotFound) return title.status;
+    return Err<BuildId>(StatusCode::NotFound, kComponent,
+                        Named("project", project.value) + " does not exist");
   }
   auto text = projects_.ReadDocument(project, kSessionDocumentKey);
   if (!text.ok()) {
     if (text.status.code == StatusCode::NotFound) {
-      return Err<BuildId>(StatusCode::NotFound, kComponent, "this project holds no capture");
+      return Err<BuildId>(StatusCode::NotFound, kComponent,
+                          Named("project", project.value) + " holds no capture");
     }
     return text.status;
   }
@@ -96,7 +100,12 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
 
   Build build;
   for (const auto& [node, candidates] : cells) {
-    const Candidate* chosen = candidates.front();
+    // By rank, the best frame whose pose was measured: one that was not is paired with nothing and
+    // dropped by the solve, and choosing it would leave the cell out of a build that still
+    // completes. A cell with no measured frame gives its best all the same, and loses it.
+    const auto measured = std::find_if(candidates.begin(), candidates.end(),
+                                       [](const Candidate* c) { return c->pose.confidence > 0.0; });
+    const Candidate* chosen = measured != candidates.end() ? *measured : candidates.front();
     auto pick = projects_.ReadDocument(project, SelectionDocumentKey(NodeId{node}));
     if (pick.ok()) {
       const std::optional<CandidateId> named = ParseSelectionDocument(pick.value);
@@ -108,6 +117,14 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
       // A pick the cell no longer holds gives way to the ranking: a discarding retake took it, and
       // no screen can show a frame that is gone. An offered frame is never written down (its
       // bytes are not in the tier), so a pick of one gives way too — the gap ADR 0070 records.
+      // Unless the document never saw it: a pick at or past the counter it recorded was made after
+      // it was last written — a rewrite that failed — and the ranking would then build from a frame
+      // other than the one the user chose and is shown. A pick a retake discarded is always below.
+      if (named->value >= document.nextCandidate) {
+        return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
+                            "the pick recorded for " + Named("cell", node)
+                                + " is newer than this capture's document");
+      }
       const auto found = std::find_if(candidates.begin(), candidates.end(),
                                       [&](const Candidate* c) { return c->id == *named; });
       if (found != candidates.end()) chosen = *found;
@@ -145,6 +162,8 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
     }
     // Asked rather than assumed: a tab reloaded without resuming has a store that never held them.
     if (auto residency = frames_.ResidencyOf(frame); !residency.ok()) {
+      // A store that cannot answer has not said the frame is gone.
+      if (residency.status.code != StatusCode::NotFound) return residency.status;
       return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
                           "the store does not hold " + Named("frame", frame.id.value)
                               + " of this capture: " + residency.status.detail);
@@ -221,7 +240,7 @@ Status PanoramaBuildManager::ExtractFeatures(Build& build, size_t index) {
   // faulted-in frames is the heap refusal cooling exists to avoid (ADR 0023). On a refusal too: an
   // engine reads the frame before it allocates its answer, so a want of room arrives with the frame
   // already faulted in, and leaving it there is the one thing that makes the want worse.
-  Status restored = PutBack(frame, found);
+  Status restored = PutBackOrKeep(build, frame, found);
   if (!features.ok()) {
     if (!restored.ok()) features.status.detail += "; and " + restored.detail;
     return features.status;
@@ -231,9 +250,25 @@ Status PanoramaBuildManager::ExtractFeatures(Build& build, size_t index) {
 
 Status PanoramaBuildManager::PutBack(const FrameRef& frame, Residency found) {
   if (found == Residency::HeapPinned) return Status::Ok();
-  SPH_TRY(const Residency now, frames_.ResidencyOf(frame));
-  if (now == found) return Status::Ok();
+  auto now = frames_.ResidencyOf(frame);
+  if (now.status.code == StatusCode::NotFound) return Status::Ok();
+  if (!now.ok()) return now.status;
+  // Pinned now and not before: a call that could not release it left it so (`RenderPreview`
+  // says as much), and nobody else holds a pin on a frame the build found unpinned.
+  if (now.value == Residency::HeapPinned) {
+    if (Status released = frames_.Release(frame); !released.ok()) return released;
+    SPH_TRY(now.value, frames_.ResidencyOf(frame));
+  }
+  if (now.value == found) return Status::Ok();
   return frames_.Demote(frame, found);
+}
+
+Status PanoramaBuildManager::PutBackOrKeep(Build& build, const FrameRef& frame, Residency found) {
+  Status restored = PutBack(frame, found);
+  // Kept for `Cancel` and the next `Start` to retry: a capture frame left pinned is one the next
+  // capture's `Clear` refuses to empty the store around.
+  if (!restored.ok()) build.misplaced.emplace_back(frame, found);
+  return restored;
 }
 
 Status PanoramaBuildManager::EstimatePair(Build& build, size_t index) {
@@ -285,8 +320,22 @@ Status PanoramaBuildManager::Compose(Build& build) {
     }
     frames.push_back(*found);
   }
+  // Asked before the call, so a refusal that leaves a frame out of place can be put right
+  // (`RenderPreview`): the frames are the capture's, not the build's.
+  std::vector<std::optional<Residency>> tiers;
+  tiers.reserve(frames.size());
+  for (const FrameRef& frame : frames) {
+    auto tier = frames_.ResidencyOf(frame);
+    tiers.push_back(tier.ok() ? std::optional<Residency>(tier.value) : std::nullopt);
+  }
   auto preview = composition_.RenderPreview(build.solution, frames, GainMap{}, build.previewWidth);
   if (!preview.ok()) {
+    for (size_t i = 0; i < frames.size(); ++i) {
+      if (!tiers[i]) continue;
+      if (Status restored = PutBackOrKeep(build, frames[i], *tiers[i]); !restored.ok()) {
+        preview.status.detail += "; and " + restored.detail;
+      }
+    }
     // A refusal that could not give the answer back hands it over instead, and it is this build's
     // to release and forget (`RenderPreview`) — held as the preview, so a refused release is
     // retried by `Cancel` like any other.
@@ -337,8 +386,7 @@ Status PanoramaBuildManager::GiveBackPreview(Build& build) {
   if (residency.value == Residency::HeapPinned) {
     if (Status released = frames_.Release(preview); !released.ok()) return released;
   }
-  Status forgotten = frames_.Forget(preview);
-  if (!Gone(forgotten)) return forgotten;
+  if (Status forgotten = frames_.Forget(preview); !forgotten.ok()) return forgotten;
   build.preview.reset();
   return Status::Ok();
 }
@@ -346,6 +394,14 @@ Status PanoramaBuildManager::GiveBackPreview(Build& build) {
 Status PanoramaBuildManager::Release(Build& build) {
   Status first = ForgetFeatures(build);
   if (Status given = GiveBackPreview(build); !given.ok() && first.ok()) first = given;
+  std::vector<std::pair<FrameRef, Residency>> still;
+  for (const auto& [frame, tier] : build.misplaced) {
+    if (Status restored = PutBack(frame, tier); !restored.ok()) {
+      still.emplace_back(frame, tier);
+      if (first.ok()) first = restored;
+    }
+  }
+  build.misplaced = std::move(still);
   return first;
 }
 

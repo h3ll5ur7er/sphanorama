@@ -81,8 +81,11 @@ class IFrameStoreAccess {
   // **Zero means there is no durable tier at all** — a store with no sink, which is a desktop or
   // a browser with no origin private file system. That is a real answer rather than an absent
   // one: such a store has no pixels that can outlive it, so no document can be matched to the
-  // wrong ones, and a document written against it records zero and matches zero later. What it
-  // does not do is make those frames reachable; `Adopt` still refuses, saying there is no tier.
+  // wrong ones *through `Adopt`*, which refuses every frame of it, saying there is no tier. A
+  // document written against it records zero and matches zero later. **Zero does not vouch for an
+  // identity**, though: this store's identities restart with every process, so a reader that looks
+  // an old document's frames up by id finds whatever the current process allocated under them.
+  // `PanoramaBuildManager` refuses zero for that reason (ADR 0070).
   //
   // Fallible because a sink can be there and unable to answer — a page whose worker script is
   // older than its module. A store that cannot say which capture its tier holds must not have a

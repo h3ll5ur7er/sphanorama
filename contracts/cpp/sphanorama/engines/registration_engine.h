@@ -92,7 +92,8 @@ class IRegistrationEngine {
   //   it backwards.** It said `Unsupported` is "the only status this method returns in any shipping
   //   browser build", which reads as a fact about what browsers see. `PanoramaBuildManager` is the
   //   one caller (ADR 0070), and every composition root hands it the null engine today, so outside
-  //   tests `Unsupported` is what it sees in every build until a root selects the real one. What
+  //   tests `Unsupported` is what a build on a store with a spill tier sees until a root selects
+  //   the real one (one without is refused before any engine is asked). What
   //   stays conditional is the build: a root that selects it gets the null engine wherever OpenCV
   //   is absent, which since ADR 0069 is only a build configured without it, not the browser — so a
   //   caller written against the codes above and not this one is writing for the build it will

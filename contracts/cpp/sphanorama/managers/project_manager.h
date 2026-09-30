@@ -22,8 +22,10 @@ class IProjectManager {
   virtual Result<ProjectId> Create(std::string_view title) = 0;
   virtual Status Delete(ProjectId project) = 0;
 
-  // A manual override of automatic burst selection. Marks the node dirty for the next build, so
-  // it takes exactly the same path as a retake.
+  // A manual override of automatic burst selection, read by the next build's `Start` — a partial
+  // rebuild from one dirty node is the design (ADR 0004) and not built yet, so today a pick takes
+  // effect on a new build (ADR 0070). A pick of a candidate the cell no longer holds is accepted
+  // here and gives way to the ranking there.
   //
   // An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
   // chosen here", so writing one would put the two halves of this pair in contradiction: a

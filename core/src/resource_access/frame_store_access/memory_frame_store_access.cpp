@@ -332,9 +332,10 @@ Result<uint64_t> MemoryFrameStoreAccess::TierGeneration() {
   //
   // Zero when there is no sink, and that is an answer rather than a refusal: a store with nowhere
   // to spill has no pixels that can outlive it, so there is no capture for a document to be
-  // matched against wrongly. A document written here records zero and matches zero on the way
-  // back — and every frame it names is refused by `Adopt`, which is where the honest failure for
-  // a tierless store already is.
+  // matched against wrongly through `Adopt`. A document written here records zero and matches
+  // zero on the way back — and every frame it names is refused by `Adopt`, which is where the
+  // honest failure for a tierless store is. A reader by id has no such backstop; the contract
+  // says so.
   if (spill_ == nullptr) return Ok<uint64_t>(0);
   return spill_->Generation();
 }

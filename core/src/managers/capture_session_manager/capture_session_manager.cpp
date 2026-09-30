@@ -502,9 +502,11 @@ void CaptureSessionManager::Checkpoint() const {
   for (const Candidate& candidate : AllCandidates()) {
     if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
   }
-  // Not reported, and there is nobody to report it to: this runs on the way out of a burst the
-  // caller has already been told about. A write that fails costs the resume, not the capture —
-  // the frames are still in the store and the session is still live.
+  // Not reported, and there is nobody to report it to: this runs on the way out of a burst, a
+  // discarding retake or an offer the caller has already been told about. A write that fails costs
+  // the resume and the build — a build refuses a document naming frames a retake has since let go
+  // of, until the next write lands — but not the capture: the frames are still in the store and
+  // the session is still live.
   (void)projects_.WriteDocument(project_, kSessionDocumentKey, EncodeSessionDocument(stored));
 }
 

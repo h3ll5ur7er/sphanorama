@@ -1134,24 +1134,34 @@ export interface PanoramaBuildManager {
   /**
    * Builds from what the project's capture wrote down: its session document, one frame per cell —
    * the cell's manual pick where one was recorded and the cell still holds it, and otherwise the
-   * best-ranked frame the capture wrote down — and the capture's field of view at the frames'
-   * size (ADR 0070). Frames are paired only where their poses were measured.
+   * best-ranked frame the capture wrote down whose pose was measured — and the capture's field of
+   * view at the frames' size (ADR 0070). Frames are paired only where their poses were measured,
+   * so a cell whose frame was not — a pick of one, or a cell with no other — is left out of the
+   * panorama, and the build still completes. What it reads is what the capture last managed to
+   * write down: a rewrite that failed leaves the document behind the capture, and a build started
+   * meanwhile uses the older ranking — refused only where that would override a pick.
    * Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
    * a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
    * `NotFound` for a project that does not exist or holds no capture; `Unsupported` for a document
    * this build cannot read, as `ICaptureSessionManager::Resume` answers; `FailedPrecondition` while
    * another build is running, on a store with no spill tier, for a capture with nothing in it, one
    * whose frames the store no longer holds — a tab reloaded without resuming, or a tier a newer
-   * capture emptied — one naming a frame in two cells, one with no measured pose, frames of more
-   * than one size, and a field of view that is not a lens; `Internal` for a recorded pick that is
-   * not a candidate at all, and a pick's own read failure as the store reports it;
+   * capture emptied, or a document a failed rewrite left naming frames a retake had discarded —
+   * one naming a frame in two cells, one with no measured pose, frames of more than one size, a
+   * field of view that is not a lens, and a recorded pick newer than the document, which a failed
+   * rewrite also leaves; `Internal` for a recorded pick that is not a candidate at
+   * all; the store's own status, whole, where it could not read the title, the document or a pick,
+   * say which tier it holds, or say where a frame is — none of which says the thing is absent;
    * `Unsupported` for a cubemap and `InvalidArgument` for an output narrower than two. Starting
    * after a build has finished releases the finished one's panorama, and if the store will not,
    * this refuses with the store's status and the finished build stands.
    */
   start(project: ProjectId, spec: BuildSpec): Promise<Result<BuildId>>;
   /**
-   * Does the build's next step and says where it has got to. A finished build — `Complete` or
+   * Does the build's next step and says where it has got to. A step that fails puts back any
+   * capture frame it left out of its tier, and what the store will not put back yet is retried by
+   * `Cancel` and the next `Start`, as the build's own frames are.
+   * A finished build — `Complete` or
    * `Failed` — answers the same progress however often it is asked, and `failure` says why one
    * failed. `fraction` counts steps: it never goes back, and it is one exactly when the build is
    * complete.
@@ -1202,8 +1212,10 @@ export interface ProjectManager {
   create(title: string): Promise<Result<ProjectId>>;
   delete(project: ProjectId): Promise<Result<void>>;
   /**
-   * A manual override of automatic burst selection. Marks the node dirty for the next build, so
-   * it takes exactly the same path as a retake.
+   * A manual override of automatic burst selection, read by the next build's `Start` — a partial
+   * rebuild from one dirty node is the design (ADR 0004) and not built yet, so today a pick takes
+   * effect on a new build (ADR 0070). A pick of a candidate the cell no longer holds is accepted
+   * here and gives way to the ranking there.
    * An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
    * chosen here", so writing one would put the two halves of this pair in contradiction: a
    * document the writer accepted and the reader has to call corrupt.
