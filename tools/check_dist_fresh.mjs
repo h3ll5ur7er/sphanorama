@@ -408,14 +408,16 @@ export function wasmBuildsAreUpToDate(repoRoot) {
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const dir = join(repoRoot, 'build', preset);
     if (!existsSync(join(dir, 'build.ninja'))) continue;
-    const probe = spawnSync('ninja', ['-C', dir, '-n'], { encoding: 'utf8' });
+    // Run in the build directory rather than pointed at it with `-C`, which prints the directory it
+    // enters — a path that can hold anything, the answer included.
+    const probe = spawnSync('ninja', ['-n'], { cwd: dir, encoding: 'utf8' });
     // `status !== 0` covers a ninja that failed *and* a ninja that never ran: `spawnSync` reports
     // ENOENT as `status === null`, so an explicit `probe.error ||` in front of this was a clause no
     // input could reach. Both mean the same thing here anyway — nobody answered, so forgive nothing.
     if (probe.status !== 0) return null;
     asked = true;
-    // A line of its own, not a phrase anywhere: `-C` prints the directory it enters first, and a
-    // checkout whose path held the phrase read as idle while ninja still had steps to run.
+    // A line of its own, not a phrase anywhere: an edge ninja would run can describe itself in any
+    // words, and a phrase match read a busy build as idle.
     const lines = `${probe.stdout}\n${probe.stderr}`.split('\n').map((line) => line.trim());
     if (!lines.includes('ninja: no work to do.')) return false;
   }
@@ -457,8 +459,8 @@ export function coreSourcesFromNinja(repoRoot) {
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const dir = join(repoRoot, 'build', preset);
     if (!existsSync(join(dir, 'build.ninja'))) continue;
-    const probe = spawnSync('ninja', ['-C', dir, '-t', 'inputs', 'bridge/sphanorama-core.js'],
-                            { encoding: 'utf8' });
+    const probe = spawnSync('ninja', ['-t', 'inputs', 'bridge/sphanorama-core.js'],
+                            { cwd: dir, encoding: 'utf8' });
     if (probe.status !== 0) return null;
     asked = true;
     for (const line of probe.stdout.split('\n')) {

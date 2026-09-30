@@ -94,6 +94,13 @@ describe('the WebAssembly accuracy step', () => {
     expect(status).toBe(0);
   });
 
+  it('stops when it cannot make a scratch directory, rather than rendering at the root', () => {
+    const { status, output } = runWith({ env: { ...process.env, TMPDIR: join(tmpdir(), 'nowhere-at-all') } },
+                                       buildDir());
+    expect(output).toMatch(/could not make a scratch directory/);
+    expect(status).toBe(2);
+  });
+
   it('names a build directory with no runner rather than skipping it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'wasm-accuracy-'));
     made.push(dir);

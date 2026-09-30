@@ -283,7 +283,7 @@ describe('the dist freshness check', () => {
       const shim = join(root, 'bin', 'ninja');
       // Respects `-C` the way real ninja does — it exits 1 on a directory with no manifest — so a
       // sabotage that deletes the existence check is not silently answered by the shim instead.
-      writeFileSync(shim, `#!/bin/sh\n[ -f "$2/build.ninja" ] || exit 1\n${script}\n`);
+      writeFileSync(shim, `#!/bin/sh\n[ -f build.ninja ] || exit 1\n${script}\n`);
       chmodSync(shim, 0o755);
       for (const preset of ['wasm-release', 'wasm-release-threaded']) {
         mkdirSync(join(root, 'build', preset), { recursive: true });
@@ -371,11 +371,11 @@ describe('the dist freshness check', () => {
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
       made.push(root);
       const shim = treeWithNinja(root, [
-        '[ "$3 $4 $5" = "-t inputs bridge/sphanorama-core.js" ] || exit 1',
+        '[ "$1 $2 $3" = "-t inputs bridge/sphanorama-core.js" ] || exit 1',
         'echo /src/core/a.cpp',
         'echo core/CMakeFiles/x.dir/a.cpp.o',
         'echo ../../src/rel.cc',
-        'case "$2" in *threaded*) echo /src/core/threaded_only.cpp;; esac',
+        'case "$PWD" in *threaded*) echo /src/core/threaded_only.cpp;; esac',
       ].join('\n'));
       const sources = withPath(join(shim, '..'), () => coreSourcesFromNinja(root));
       expect([...sources].sort()).toEqual(
@@ -414,7 +414,7 @@ describe('the dist freshness check', () => {
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
       made.push(root);
       const shim = treeWithNinja(root,
-        'case "$2" in *threaded*) exit 1;; *) echo /src/core/a.cpp;; esac');
+        'case "$PWD" in *threaded*) exit 1;; *) echo /src/core/a.cpp;; esac');
       expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root))).toBeNull();
     });
 
@@ -428,12 +428,25 @@ describe('the dist freshness check', () => {
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
 
+    it('asks without -C, whose banner prints a path that could spell the answer', () => {
+      // A directory may hold a newline, and `-C` prints the directory it enters: a path containing
+      // "\nninja: no work to do.\n" put the answer on a line of its own while ninja had work queued.
+      // Run in the build directory instead, ninja prints no path at all.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, [
+        'if [ "$1" = "-C" ]; then printf "ninja: Entering directory \\`x\\nninja: no work to do.\\n\'\\n"; fi',
+        'echo "[1/1] Linking out.js"',
+      ].join('\n'));
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+
     it('asks about both presets, not just the first', () => {
       // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
       made.push(root);
       const shim = treeWithNinja(root,
-        'case "$2" in *threaded*) echo "[1/2] Building CXX object foo.o";; *) echo "ninja: no work to do.";; esac');
+        'case "$PWD" in *threaded*) echo "[1/2] Building CXX object foo.o";; *) echo "ninja: no work to do.";; esac');
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
   });
@@ -548,7 +561,7 @@ describe('the dist freshness check', () => {
       mkdirSync(join(tree.root, 'bin'), { recursive: true });
       const shim = join(tree.root, 'bin', 'ninja');
       writeFileSync(shim, '#!/bin/sh\n'
-        + `if [ "$3" = "-t" ]; then echo "${join(tree.root, 'core/src/a.cpp')}"; exit 0; fi\n`
+        + `if [ "$1" = "-t" ]; then echo "${join(tree.root, 'core/src/a.cpp')}"; exit 0; fi\n`
         + 'echo "ninja: no work to do."\n');
       chmodSync(shim, 0o755);
       tree.put(touched, Date.now());

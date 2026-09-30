@@ -25,7 +25,8 @@ fi
 # The panorama `--ring` names is relative to the repository root, as the native renderer reads it,
 # so it and the renderer are found from here rather than from wherever this was called.
 root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)
-scratch=$(mktemp -d)
+# Refused rather than left empty, which would put every scratch path at the filesystem's root.
+scratch=$(mktemp -d) || { echo "$0: could not make a scratch directory" >&2; exit 2; }
 trap 'rm -rf "$scratch"' EXIT
 
 # A whole number, and nothing else: no sign, no space, no second line. How large is the comparisons'
