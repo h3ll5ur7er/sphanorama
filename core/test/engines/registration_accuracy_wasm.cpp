@@ -17,6 +17,7 @@
 
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "support/photograph.h"
 #include "support/rotation_scoring.h"
 #include "support/solved_ring.h"
 #include "support/synthetic_dataset.h"
@@ -127,10 +128,11 @@ int main(int argc, char** argv) {
     std::printf("%d\n", static_cast<int>(kAllFeatureDetectors.size()));
     return 0;
   }
-  // The ring to render, from the one place it is written, so the script holds no copy to drift.
+  // The ring to render and the world to render it from, from the one place each is written, so
+  // the script holds no copy to drift.
   if (argc == 2 && std::strcmp(argv[1], "--ring") == 0) {
-    std::printf("%d %d %d\n", test::kSolvedRingFrames, test::kSolvedRingWidth,
-                test::kSolvedRingHeight);
+    std::printf("%d %d %d %s\n", test::kSolvedRingFrames, test::kSolvedRingWidth,
+                test::kSolvedRingHeight, test::kPhotograph);
     return 0;
   }
   if (argc != 2) {

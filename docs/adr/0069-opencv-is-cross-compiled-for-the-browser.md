@@ -49,8 +49,9 @@ follows was written again from the start.
 4. **The registration table is measured in WebAssembly.** `registration_accuracy_wasm.cpp` solves
    the photograph ring as `TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` does — the same
    ring, solve, bounds and facing check, all from `support/solved_ring.h` — compiled for WebAssembly
-   and run under node, for both builds. The runner reports the ring's shape (`--ring`) and refuses a
-   dataset of any other, so the script that renders it holds no copy. `tools/wasm_accuracy.sh`
+   and run under node, for both builds. The runner reports the ring's shape and the panorama it is
+   rendered from (`--ring`) and refuses a dataset of any other shape, so the script that renders it
+   holds no copy of either. `tools/wasm_accuracy.sh`
    renders and runs it; the gate and CI call that script, and it fails a run that measured fewer
    detectors than the binary has, or whose answers are not the numbers it asked for.
 

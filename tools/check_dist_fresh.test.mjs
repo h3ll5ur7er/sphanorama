@@ -13,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkDistIsFreshIn, expandPresetMacros, kEnvironmentDependent, kUnknownMacro,
-         wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
+import { checkDistIsFreshIn, coreSourcesFromNinja, expandPresetMacros, kEnvironmentDependent,
+         kUnknownMacro, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
 
 const made = [];
 afterEach(() => {
@@ -78,9 +78,10 @@ function aFreshTree() {
  * `argv` is the Playwright invocation, defaulting to one with no positional filter — every spec in
  * scope, which is the strict reading and what `gate.sh` does.
  */
-function complaint(root, argv = ['node', 'playwright', 'test'], upToDate = () => null) {
+function complaint(root, argv = ['node', 'playwright', 'test'], upToDate = () => null,
+                   coreSources = () => null) {
   try {
-    checkDistIsFreshIn(root, argv, upToDate);
+    checkDistIsFreshIn(root, argv, upToDate, coreSources);
     return null;
   } catch (error) {
     return error.message;
@@ -143,6 +144,29 @@ describe('the dist freshness check', () => {
                              { file: join(tree.root, 'bridge/b.cpp') }]));
     tree.put('core/src/a.cpp', Date.now());
     expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('ignores a C++ source the wasm build compiles into something other than the core', () => {
+    // ADR 0069 gave the OpenCV engine a library of its own, which the accuracy runner links and the
+    // module does not. The wasm build compiles it, so the compile database lists it — and touching
+    // it rebuilt that library and the runner and never relinked the core, so the complaint could
+    // not be cleared. What counts is what the core is built from, which only ninja knows.
+    const tree = aFreshTree();
+    const engine = 'core/src/engines/registration_engine/feature_registration_engine.cpp';
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
+                             { file: join(tree.root, engine) }]));
+    tree.put(engine, Date.now());
+    const theCore = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, theCore)).toBeNull();
+  });
+
+  it('still catches a C++ source the core is built from, when ninja names it', () => {
+    const tree = aFreshTree();
+    tree.put('core/src/a.cpp', Date.now());
+    const theCore = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, theCore))
+      .toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('counts every C++ source when there is no compile database to narrow it', () => {
@@ -280,6 +304,37 @@ describe('the dist freshness check', () => {
         rmSync(join(root, 'build', missing), { recursive: true, force: true });
         expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root)), missing).toBe(true);
       }
+    });
+
+    it('reads the core\'s sources out of the module\'s link graph, in both presets', () => {
+      // Real ninja prints sources as absolute paths and objects relative to the build directory;
+      // only sources count, and the threaded preset's are added to the single-threaded one's.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, [
+        '[ "$3 $4 $5" = "-t inputs bridge/sphanorama-core.js" ] || exit 1',
+        'echo /src/core/a.cpp',
+        'echo core/CMakeFiles/x.dir/a.cpp.o',
+        'echo ../../src/rel.cc',
+        'case "$2" in *threaded*) echo /src/core/threaded_only.cpp;; esac',
+      ].join('\n'));
+      const sources = withPath(join(shim, '..'), () => coreSourcesFromNinja(root));
+      expect([...sources].sort()).toEqual(
+        ['/src/core/a.cpp', '/src/core/threaded_only.cpp', join(root, 'src', 'rel.cc')].sort());
+    });
+
+    it('does not answer for the core when ninja fails, or names no source', () => {
+      // An empty set would narrow `.cpp` sources to none — the check switched off, from a ninja
+      // whose `inputs` lists objects only. Both fall back to the compile database instead.
+      for (const script of ['exit 1', 'echo core/CMakeFiles/x.dir/a.cpp.o']) {
+        const root = mkdtempSync(join(tmpdir(), 'probe-'));
+        made.push(root);
+        const shim = treeWithNinja(root, script);
+        expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root)), script).toBeNull();
+      }
+      const bare = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(bare);
+      expect(coreSourcesFromNinja(bare)).toBeNull();
     });
 
     it('asks about both presets, not just the first', () => {
@@ -781,6 +836,12 @@ describe('the dist freshness check', () => {
       expect(complaint(tree.root, undefined, () => false), source)
         .toMatch(/compiled core is older than the C\+\+/);
     }
+    // And with ninja idle, which is the state that tells the rules apart: pending work makes every
+    // build file suspect, so only here does "the graph does not name it" have to be what convicts.
+    const tree = aFreshTree();
+    tree.put('cmake/another.cmake', Date.now());
+    expect(complaint(tree.root, undefined, () => true))
+      .toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('forgives an included build file the graph names, as it forgives a CMakeLists', () => {

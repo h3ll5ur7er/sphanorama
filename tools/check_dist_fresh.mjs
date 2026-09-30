@@ -404,6 +404,35 @@ export function wasmBuildsAreUpToDate(repoRoot) {
   return asked ? true : null;
 }
 
+/**
+ * The C++ sources the wasm core is built from, as absolute paths — asked of ninja, which walks the
+ * module's link graph (`-t inputs`) and so knows what the compile database cannot: a translation
+ * unit the build compiles into something else. ADR 0069's engine library is that — compiled, linked
+ * by the accuracy runner, not by the module — and narrowing by the compile database counted it, so
+ * touching it rebuilt the library and never the core, and the complaint could not be cleared.
+ *
+ * `null` means ninja could not answer for a preset that has a build, or named no source at all —
+ * a ninja whose `inputs` is not transitive lists only objects, and an empty set would switch the
+ * narrowing off rather than on. The caller then falls back to the compile database.
+ */
+export function coreSourcesFromNinja(repoRoot) {
+  const files = new Set();
+  let asked = false;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const dir = join(repoRoot, 'build', preset);
+    if (!existsSync(join(dir, 'build.ninja'))) continue;
+    const probe = spawnSync('ninja', ['-C', dir, '-t', 'inputs', 'bridge/sphanorama-core.js'],
+                            { encoding: 'utf8' });
+    if (probe.status !== 0) return null;
+    asked = true;
+    for (const line of probe.stdout.split('\n')) {
+      const input = line.trim();
+      if (/\.(c|cc|cxx|cpp)$/.test(input)) files.add(resolve(dir, input));
+    }
+  }
+  return asked && files.size > 0 ? files : null;
+}
+
 function compiledTranslationUnits(repoRoot) {
   const files = new Set();
   let read = false;
@@ -424,7 +453,8 @@ function compiledTranslationUnits(repoRoot) {
 }
 
 export function checkDistIsFreshIn(repoRoot, argv = process.argv,
-                                   upToDateProbe = wasmBuildsAreUpToDate) {
+                                   upToDateProbe = wasmBuildsAreUpToDate,
+                                   coreSources = coreSourcesFromNinja) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -497,20 +527,20 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
     // does, and three of them are outside every source directory named here.
     //
-    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that need not be
-    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, and a build
-    // configured without it compiles that file nowhere. The wasm presets have OpenCV since ADR
-    // 0069, so today they compile it; the narrowing is for the build that does not. Without this
-    // narrowing, touching that file made the core stale in a way nothing could clear — ninja has no
-    // work to do for a source it does not compile, so the wasm never becomes newer and the
+    // A `.cpp` counts only if the core is built from it. Since ADR 0052 that need not be every
+    // source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, and a build
+    // configured without it compiles that file nowhere; since ADR 0069 the wasm presets compile it
+    // into a library the module does not link. Either way, touching it made the core stale in a way
+    // nothing could clear — no rebuild relinks the core for a source it is not built from, so the
     // instruction this error gives cannot be followed. A deadlock rather than a false alarm, which
-    // is why it is a fix here and not a note in the message.
+    // is why it is a fix here and not a note in the message. Ninja's link graph answers it; the
+    // compile database, which answers only "compiled at all", is the fallback.
     //
     // Headers and the three CMake files are deliberately not narrowed: a header is not a
     // translation unit and never appears in a compile database, and a preset or a compile flag
     // changes the core exactly as a `.cpp` does.
     const upToDate = upToDateProbe(repoRoot);
-    const compiled = compiledTranslationUnits(repoRoot);
+    const compiled = coreSources(repoRoot) ?? compiledTranslationUnits(repoRoot);
     const accept = compiled === null
       ? () => true
       : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
