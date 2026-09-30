@@ -138,8 +138,12 @@ function canReachBridgeSpecs(argv) {
  * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
  * caller then treats a build file the old way, which is the conservative direction.
  */
+// A `CMakeLists.txt`, or an include such as `cmake/opencv.cmake`, which sets the flags OpenCV is
+// compiled with in both wasm builds since ADR 0069. Walking for the one name missed it.
+const isBuildFile = (name) => name === 'CMakeLists.txt' || name.endsWith('.cmake');
+
 /**
- * Every `CMakeLists.txt` in the tree, as absolute paths — found by walking, not by being listed.
+ * Every CMake build file in the tree, as absolute paths — found by walking, not by being listed.
  *
  * The list was written down four times on this branch and was one short every time, most recently
  * by excluding all of them from the source walk and naming four back. A fifth anywhere — say
@@ -166,7 +170,7 @@ function cmakeFilesInTree(repoRoot) {
       if (skip.has(entry.name)) continue;
       const full = join(at, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.name === 'CMakeLists.txt') found.push(full);
+      else if (isBuildFile(entry.name)) found.push(full);
     }
   };
   walk(repoRoot);
@@ -192,7 +196,7 @@ function buildFilesTheGraphNames(repoRoot) {
     } catch {
       continue;
     }
-    for (const match of text.matchAll(/(\S*CMakeLists\.txt)/g)) {
+    for (const match of text.matchAll(/(\S*(?:CMakeLists\.txt|\.cmake))(?=\s|$)/g)) {
       named.add(resolve(join(repoRoot, 'build', preset), match[1]));
     }
   }
@@ -493,13 +497,14 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
     // does, and three of them are outside every source directory named here.
     //
-    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that is no longer
-    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, which the wasm
-    // build does not have, so it is compiled natively and nowhere else. Without this narrowing,
-    // touching that file made the core stale in a way nothing could clear — ninja has no work to do
-    // for a source it does not compile, so the wasm never becomes newer and the instruction this
-    // error gives cannot be followed. A deadlock rather than a false alarm, which is why it is a
-    // fix here and not a note in the message.
+    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that need not be
+    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, and a build
+    // configured without it compiles that file nowhere. The wasm presets have OpenCV since ADR
+    // 0069, so today they compile it; the narrowing is for the build that does not. Without this
+    // narrowing, touching that file made the core stale in a way nothing could clear — ninja has no
+    // work to do for a source it does not compile, so the wasm never becomes newer and the
+    // instruction this error gives cannot be followed. A deadlock rather than a false alarm, which
+    // is why it is a fix here and not a note in the message.
     //
     // Headers and the three CMake files are deliberately not narrowed: a header is not a
     // translation unit and never appears in a compile database, and a preset or a compile flag
@@ -519,16 +524,16 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // cannot know that: a header never appears in a compile database, so the narrowing above covers
     // `.cpp` only, and every header under these roots counted as a source of the wasm core.
     //
-    // This branch produced the instance. `feature_registration_engine.h` is included by a single
-    // translation unit the wasm build does not compile, so no wasm graph names it and no rebuild can
-    // make the core newer than it — touching it was a complaint nothing could clear, which is the
-    // fifth time that shape has been found in this file.
+    // The branch that added this produced the instance. `feature_registration_engine.h` was
+    // included by a single translation unit the wasm build did not compile until ADR 0069, so no
+    // wasm graph named it and no rebuild could make the core newer than it — touching it was a
+    // complaint nothing could clear, which is the fifth time that shape has been found in this file.
     //
     // Only headers, and only when ninja answered. A `.cpp` the wasm build *does* compile stays a
     // staleness whatever ninja says — an inert source edit is not a thing, and the case beside this
     // one in the suite says so deliberately.
     const headerSettled = upToDate === true;
-    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full)
+    const acceptSource = (full) => !isBuildFile(full.slice(full.lastIndexOf('/') + 1))
       && !(headerSettled && /\.(h|hh|hpp|hxx|inc)$/.test(full))
       && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']

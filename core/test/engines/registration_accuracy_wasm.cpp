@@ -98,6 +98,9 @@ bool Measure(MemoryFrameStoreAccess& store, const SyntheticDataset& dataset,
            "not every pair was accepted"},
           {score.medianDeg < test::kSolvedRingMedianBoundDeg, "the median is past its bound"},
           {score.maxDeg < test::kSolvedRingMaxBoundDeg, "the worst frame is past its bound"},
+          {test::FacingAwayFromThePriorsDeg(dataset.frames, score) <
+               test::kSolvedRingFacingBoundDeg,
+           "the solve does not face where the priors agree"},
       };
       for (const auto& check : checks) {
         if (!check.ok) {
@@ -124,8 +127,14 @@ int main(int argc, char** argv) {
     std::printf("%d\n", static_cast<int>(kAllFeatureDetectors.size()));
     return 0;
   }
+  // The ring to render, from the one place it is written, so the script holds no copy to drift.
+  if (argc == 2 && std::strcmp(argv[1], "--ring") == 0) {
+    std::printf("%d %d %d\n", test::kSolvedRingFrames, test::kSolvedRingWidth,
+                test::kSolvedRingHeight);
+    return 0;
+  }
   if (argc != 2) {
-    std::printf("usage: %s <rendered dataset directory> | --detectors\n", argv[0]);
+    std::printf("usage: %s <rendered dataset directory> | --detectors | --ring\n", argv[0]);
     return 2;
   }
   MemoryFrameStoreAccess store{1 << 28};
@@ -134,7 +143,15 @@ int main(int argc, char** argv) {
     std::printf("FAIL load: %s\n", dataset.status.detail.c_str());
     return 1;
   }
-  bool held = true;
+  // A ring of another shape is a different measurement from the one the bounds were set on.
+  bool held = dataset.value.frames.size() == static_cast<size_t>(test::kSolvedRingFrames) &&
+              dataset.value.lens.width == test::kSolvedRingWidth &&
+              dataset.value.lens.height == test::kSolvedRingHeight;
+  if (!held) {
+    std::printf("FAIL: the dataset is %zu frames of %d by %d, and the ring is %d of %d by %d\n",
+                dataset.value.frames.size(), dataset.value.lens.width, dataset.value.lens.height,
+                test::kSolvedRingFrames, test::kSolvedRingWidth, test::kSolvedRingHeight);
+  }
   for (const FeatureDetector detector : kAllFeatureDetectors) {
     held = ConvertsOpenCvsThrows(store, detector) && held;
     held = Measure(store, dataset.value, detector) && held;

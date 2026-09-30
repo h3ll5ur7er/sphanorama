@@ -12,17 +12,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SPHANORAMA_BUILD_TESTS "Build the native test suite" ON)
 
 # OpenCV is the dependency ADR 0005 chose, ADR 0047 wires in and ADR 0069 cross-compiles: on by
-# default on every platform, so the browser gets the same registration engine the native tests
-# measure. Off is still a configuration — a build without it gets `NullRegistrationEngine` — and
-# the clang build that asks a narrow question about the core's own arithmetic turns it off.
+# default on every platform, so the browser's build has the same registration engine the native
+# tests measure — which its runtime does not select yet. Off is still a configuration — a build
+# without it gets `NullRegistrationEngine` — and the clang build that asks a narrow question about
+# the core's own arithmetic turns it off.
 option(SPHANORAMA_WITH_OPENCV "Build the OpenCV-backed engines and cross-checks" ON)
 if(EMSCRIPTEN AND SPHANORAMA_WITH_OPENCV)
   # WebAssembly's own exception handling, for the one translation unit that catches OpenCV's
   # (ADR 0052) and for OpenCV itself, which throws. Emscripten's JavaScript-emulated exceptions are
   # the alternative, and ADR 0069 says why not. Compiled everywhere, which changes nothing in a
-  # translation unit built `-fno-exceptions`; *linked* only by an executable that reaches OpenCV,
-  # because the link is what brings in an exception-handling runtime — 28,961 bytes gzipped on a
-  # module that never throws. The module takes the flag when it first links the engine.
+  # translation unit built `-fno-exceptions`; *linked* by whatever links the registration engine,
+  # whose library carries the flag, because the link is what brings in an exception-handling
+  # runtime — 28,961 bytes gzipped on a module that never throws.
   add_compile_options(-fwasm-exceptions)
 endif()
 if(SPHANORAMA_WITH_OPENCV)

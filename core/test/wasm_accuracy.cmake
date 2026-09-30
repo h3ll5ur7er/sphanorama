@@ -9,10 +9,12 @@ add_executable(sphanorama_wasm_accuracy
   ${CMAKE_CURRENT_LIST_DIR}/support/synthetic_dataset.cpp
   ${CMAKE_CURRENT_LIST_DIR}/support/rotation_scoring.cpp)
 target_include_directories(sphanorama_wasm_accuracy PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(sphanorama_wasm_accuracy PRIVATE sphanorama_core sphanorama_opencv)
+# The exception-handling runtime comes with the engine's library rather than being asked for here,
+# so this links the way anything else that reaches the engine will.
+target_link_libraries(sphanorama_wasm_accuracy PRIVATE sphanorama_registration sphanorama_opencv)
 # The test suite's warnings rather than the core's: it compiles the same test-support sources.
 target_compile_options(sphanorama_wasm_accuracy PRIVATE -Wall -Wextra -Werror)
 # The dataset is read from the host's disk, which is all a harness under node needs.
 target_link_options(sphanorama_wasm_accuracy PRIVATE
-  -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=node -fwasm-exceptions)
+  -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=node)
 set_target_properties(sphanorama_wasm_accuracy PROPERTIES SUFFIX ".cjs")

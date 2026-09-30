@@ -424,8 +424,8 @@ TEST_P(Accuracy, ConsecutiveFramesOfARingRegisterToWithinTheStatedBound) {
  * the per-pair errors are independent rather than one drift a closure removes exactly.
  */
 TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
-  constexpr int kFrames = 12;
-  Rendered rendered(kFrames, 640, 480, World::Photograph);
+  constexpr int kFrames = test::kSolvedRingFrames;
+  Rendered rendered(kFrames, test::kSolvedRingWidth, test::kSolvedRingHeight, World::Photograph);
   ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
   if (!rendered.ok()) {
     GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. " << rendered.why();
@@ -451,9 +451,6 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   const Result<GlobalSolution> solved =
       test::SolveRingThreeDegreesOut(engine, sets, dataset.value.frames, dataset.value.lens);
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
-  std::vector<FrameId> ids;
-  for (const SyntheticFrame& frame : dataset.value.frames) ids.push_back(frame.frame.id);
-  const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(ids, truth);
   ASSERT_EQ(solved.value.rotations.size(), truth.size());
   EXPECT_TRUE(solved.value.converged);
   // Fitted even handed the rendered lens: the figures below are the refitted pairs' solve, and a
@@ -471,11 +468,8 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
 
   // **Facing where the priors agree**, since that is the one thing they are there to decide. The
   // priors' own agreed gauge is 0.26 degrees from the truth; the solve lands within 0.0002 of it.
-  std::vector<Quat> orientations;
-  for (const FramePrior& prior : priors) orientations.push_back(prior.pose.orientation);
-  const test::GaugeAlignment agreed = test::BestGaugeAlignment(orientations, truth);
-  ASSERT_TRUE(agreed.valid);
-  EXPECT_LT(AngleBetween(agreed.rotation, score.alignment) * 180.0 / std::numbers::pi, 0.001);
+  EXPECT_LT(test::FacingAwayFromThePriorsDeg(dataset.value.frames, score),
+            test::kSolvedRingFacingBoundDeg);
 
   // Today's run: ORB 0.0464/0.0510/0.1408, AKAZE 0.0293/0.0332/0.0660, SIFT 0.0142/0.0144/0.0331
   // (median, mean, max), against the chain's 0.1009, 0.0612 and 0.0239 medians, with the focal

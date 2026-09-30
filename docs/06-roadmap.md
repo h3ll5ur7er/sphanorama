@@ -883,8 +883,8 @@ this list only because it is the thing that measures the others.
 
 **Exit:** measured on a **native** build and, since ADR 0069, on both **WASM** builds too — the
 same solve under node, held to the same bounds, in the gate and CI. It transfers, and not exactly:
-SIFT agrees in every figure, ORB and AKAZE within a ten-thousandth or two, because AKAZE's floating
-point is not bit-exact across instruction sets. What is still not measured is a phone. Node on a
+SIFT agrees in every figure, ORB and AKAZE within a ten-thousandth or two, because floating point
+is not bit-exact across instruction sets. What is still not measured is a phone. Node on a
 desktop extracts twelve frames in 0.16 s (ORB) to 0.94 s (SIFT) single-threaded, and the
 single-threaded WASM speed question is explicitly part of what "which detector wins" means here.
 

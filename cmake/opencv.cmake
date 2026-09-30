@@ -58,11 +58,28 @@ endforeach()
 # ARM probes are not run against a compiler that has neither. Its thread pool follows the build:
 # the threaded preset compiles `-pthread` and gets OpenCV's pthreads backend, the single-threaded
 # one gets none rather than a backend whose `pthread_create` fails at run time (ADR 0069).
+#
+# Which build this is, is asked of the compiler rather than read off `CMAKE_CXX_FLAGS`: `-pthread`
+# can arrive from a per-configuration flag, a toolchain file or `EMCC_CFLAGS`, and a spelling match
+# would miss each of them and leave the threaded build single-threaded without a word. The result is
+# unset first, because a check caches its answer and a build directory can change its flags; and the
+# check is compiled in the build's own configuration, without which `try_compile` leaves out the
+# per-configuration flags — measured: `-pthread` in `CMAKE_CXX_FLAGS_RELEASE` read as unthreaded.
 if(EMSCRIPTEN)
   set(CPU_BASELINE "" CACHE STRING "" FORCE)
   set(CPU_DISPATCH "" CACHE STRING "" FORCE)
   set(CV_ENABLE_INTRINSICS ON CACHE BOOL "" FORCE)
-  if(CMAKE_CXX_FLAGS MATCHES "(^| )-pthread( |$)")
+  include(CheckCXXSourceCompiles)
+  unset(SPHANORAMA_COMPILES_WITH_THREADS CACHE)
+  block(SCOPE_FOR VARIABLES)
+    set(CMAKE_TRY_COMPILE_CONFIGURATION "${CMAKE_BUILD_TYPE}")
+    check_cxx_source_compiles("
+      #ifndef __EMSCRIPTEN_PTHREADS__
+      #error single-threaded
+      #endif
+      int main() { return 0; }" SPHANORAMA_COMPILES_WITH_THREADS)
+  endblock()
+  if(SPHANORAMA_COMPILES_WITH_THREADS)
     set(WITH_PTHREADS_PF ON CACHE BOOL "" FORCE)
   else()
     set(WITH_PTHREADS_PF OFF CACHE BOOL "" FORCE)

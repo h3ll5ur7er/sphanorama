@@ -101,8 +101,8 @@ if [ "$have_emcc" = no ]; then
 else
   step "wasm build"          bash -c "cmake --preset wasm-release && cmake --build build/wasm-release"
   step "wasm threaded build" bash -c "cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded"
-  step "wasm accuracy"       tools/wasm_accuracy.sh build/wasm-release build/wasm-release-threaded
   step "size budget"         bash -c "uv run --locked tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge && uv run --locked tools/size_budget.py --profile wasm-release-threaded --build-dir build/wasm-release-threaded/bridge"
+  step "wasm accuracy"       tools/wasm_accuracy.sh build/wasm-release build/wasm-release-threaded
   step "shell unit tests"    npm test
   step "build the shell"     npm run build
   step "browser tests"       npx playwright test

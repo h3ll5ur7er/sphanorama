@@ -14,8 +14,8 @@
 // textured and blank — rather than numbers, which is the shape the engineering skill asks for and
 // the shape that survives a detector being retuned.
 //
-// The whole file is conditional on OpenCV (ADR 0052). A WASM-only checkout has no registration and
-// therefore no registration tests, which the CMake comment says where a reader will look for them.
+// The whole file is conditional on OpenCV (ADR 0052), and native: the WASM builds have OpenCV too
+// since ADR 0069, and what they run of registration is `registration_accuracy_wasm.cpp`.
 #include <gtest/gtest.h>
 
 #include <opencv2/core.hpp>

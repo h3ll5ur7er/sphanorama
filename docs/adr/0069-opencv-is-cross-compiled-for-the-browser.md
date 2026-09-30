@@ -28,23 +28,31 @@ follows was written again from the start.
    so a build directory whose cache still says off from the old default is overridden at the next
    configure rather than left silently without it. `native-contracting` keeps it off, for the reason
    it gives.
-2. **WebAssembly exception handling** (`-fwasm-exceptions`), compiled everywhere and linked only by
-   an executable that reaches OpenCV: the harness below today, the module when it first calls the
-   engine. The compile flag changes nothing in a translation unit built `-fno-exceptions`; the link
-   flag brings in an exception-handling runtime, which is not free. Emscripten 6.0.9 emits the
-   legacy encoding, which Chrome 95 and Safari 15.2 run — older than the 128-bit SIMD the module
-   already requires, so the browser floor does not move. ADR 0006 is untouched: nothing throws
-   across a layer or the WebAssembly boundary; one engine converts at its own edge, now in both
-   builds.
+2. **WebAssembly exception handling** (`-fwasm-exceptions`), compiled everywhere and linked by
+   whatever links the registration engine, which is a library of its own so that its interface can
+   carry the flag: the harness below today, the module when it first calls the engine. The compile
+   flag changes nothing in a translation unit built `-fno-exceptions`; the link flag brings in an
+   exception-handling runtime, which is not free. And it cannot be left to each executable to ask
+   for: one linked without it links cleanly, and the first throw aborts it. Emscripten 6.0.9 emits the
+   legacy encoding, which needs Chrome 95, Firefox 100 and Safari 15.2, where the 128-bit SIMD the
+   module already requires needs Chrome 91, Firefox 89 and Safari 16.4. So the floor moves on Chrome
+   and Firefox, by versions from 2021 and 2022 that phones have long updated past, and not on Safari
+   — and it moves when the module first links the runtime, not in this change. ADR 0006 is
+   untouched: nothing throws across a layer or the WebAssembly boundary; one engine converts at its
+   own edge, now in both builds.
 3. **One instruction set and no dispatch.** Under Emscripten, OpenCV's CPU baseline and dispatch
    lists are empty and its universal intrinsics compile to WebAssembly SIMD, which every preset asks
    for. Its thread pool follows the build: the threaded preset compiles `-pthread` and gets OpenCV's
-   pthreads backend, the single-threaded one gets none.
+   pthreads backend, the single-threaded one gets none. Which build is which is asked of the
+   compiler (`__EMSCRIPTEN_PTHREADS__`) rather than read off the flags' spelling, which misses a
+   `-pthread` from anywhere but `CMAKE_CXX_FLAGS`.
 4. **The registration table is measured in WebAssembly.** `registration_accuracy_wasm.cpp` solves
    the photograph ring as `TheRingSolvedWithItsClosingPairIsWithinTheStatedBound` does — the same
-   solve and bounds, from `support/solved_ring.h` — compiled by Emscripten and run under node, for
-   both WebAssembly builds. `tools/wasm_accuracy.sh` renders the ring and runs it; the gate and CI
-   call that script, and fail a run that measured fewer detectors than the binary has.
+   ring, solve, bounds and facing check, all from `support/solved_ring.h` — compiled for WebAssembly
+   and run under node, for both builds. The runner reports the ring's shape (`--ring`) and refuses a
+   dataset of any other, so the script that renders it holds no copy. `tools/wasm_accuracy.sh`
+   renders and runs it; the gate and CI call that script, and it fails a run that measured fewer
+   detectors than the binary has, or whose answers are not the numbers it asked for.
 
 ## Consequences
 
@@ -52,20 +60,24 @@ follows was written again from the start.
 
   | | single-threaded | threaded |
   | --- | --- | --- |
-  | the module, which calls no registration | 98,950 | 112,157 |
+  | the module, which calls no registration | 98,935 | 112,134 |
   | a probe calling every registration method, null engine | 78,470 | — |
   | the same probe, OpenCV engine, all three detectors | 605,431 | 635,956 |
 
   The two probes were linked alike, with the exception flag, so the 527 KB between them is the
   engine and OpenCV. The exception-handling runtime is on top of that, and measured on the module by
-  linking it with and without the flag it is 28,961 bytes: about 556 KB of the 8 MB budget in all,
-  when the module first calls the engine. It does not grow yet (98,950 against 98,953 before this
-  change), because nothing in it reaches the engine: `bridge/runtime.h` still holds
+  linking it with and without the flag it is about 29 KB (28,961 and 28,969 on two relinks): about
+  556 KB of the 8 MB budget in all, when the module first calls the engine. These are `gzip -9` of
+  the file; `size_budget.py`, which CI enforces, compresses its own way and reads 98,924 against
+  98,928 on main. It does not grow yet (98,935 against 98,953 by `gzip -9`, four bytes fewer by the
+  budget's reckoning), because nothing in it reaches the engine: `bridge/runtime.h` still holds
   `NullRegistrationEngine`, the linker drops what is unreachable, and the module does not link the
-  exception runtime until it needs one. **The size budget cannot see OpenCV until
+  exception runtime until it needs one. **All of it is at `-O3`, not the `-Oz` the presets ask
+  for**: CMake's Release flags come after the preset's and the last level wins, for the core as for
+  OpenCV. That predates this ADR and is its own change, which will move every figure here. **The size budget cannot see OpenCV until
   `PanoramaBuildManager` calls it**, which is when the table above becomes the module's.
-- **The accuracy, measured, and one detector is not bit-exact.** Solving the ring, median and worst
-  frame in degrees:
+- **The accuracy, measured, and it is not bit-exact.** Solving the ring, median and worst frame in
+  degrees:
 
   | | native | WebAssembly |
   | --- | --- | --- |
@@ -75,10 +87,11 @@ follows was written again from the start.
 
   The two WebAssembly builds agree with each other to every printed digit. Against native, SIFT
   agrees in every figure, ORB in its median with its worst frame a ten-thousandth further out, and
-  AKAZE differs in the fourth decimal and in its fitted focal length (492.744 against 492.766),
-  because its floating-point paths are not bit-exact across instruction sets. That is the reason the
-  WebAssembly figures are measured rather than inferred from the native ones, and why they are held
-  to the bounds rather than to the native figures.
+  AKAZE in the fourth decimal and in its fitted focal length (492.744 against 492.766). Floating
+  point is not bit-exact across instruction sets — AKAZE's diffusion most visibly, and some ORB path
+  enough to move one frame. That is the reason the WebAssembly figures are measured rather than
+  inferred from the native ones, and why they are held to the bounds rather than to the native
+  figures.
 - **The speed, from the spike, whose flags these presets reproduce**, under node on the machine that
   measured the rest, extracting features from twelve 640 by 480 frames — against native with OpenCV
   held to one thread, so the comparison is of instruction sets rather than of thread counts:
@@ -111,17 +124,23 @@ follows was written again from the start.
   `native-contracting` is clang but has OpenCV off — and CI now makes it on every push.
 - **CI builds OpenCV twice more**, once per WebAssembly preset, each cached as the native builds are
   and keyed on emcc's version as well as the pin and the presets, since the presets' flags compile
-  OpenCV here.
+  OpenCV here. Every one of those caches rebuilt most of OpenCV on a hit until this change, the
+  native ones included, because they held neither `.ninja_deps` nor the headers configure generates
+  beside `_deps`. The deploy builds only the module, which links none of it, and restores CI's cache
+  without saving one of its own.
 
 ## Rejected alternatives
 
 ***Emscripten's JavaScript-emulated exceptions*** (`-fexceptions`). They need no browser support at
-all, and work: the harness passes under them, the one-pixel throw included. They cost more for
-nothing the browser floor needed, since every call that might throw becomes a trip through
-JavaScript. Measured on the harness binary, which links everything registration does: 661,059 bytes
-gzipped against 624,930 (5.8% more), glue 22,223 against 19,997, and a full run under node 3.80 to
-3.90 s against 3.45 to 3.77. And they are fussier about mixing: asking for catching on a translation
-unit built `-fno-exceptions` is a hard error, where WebAssembly's handling leaves such a unit alone.
+all, and work: the harness passes under them, the one-pixel throw included, and they would keep the
+browser floor where SIMD puts it — Chrome 91 and Firefox 89 rather than 95 and 100. That is what
+they buy, and it is four Chrome versions from 2021 and eleven Firefox versions to 2022, paid for on
+every device, since every call that might throw becomes a trip through JavaScript. Measured on the
+harness binary as it was before the ring and facing checks were added to it, which links everything
+registration does: 661,059 bytes gzipped against 624,930 (5.8% more), glue 22,223 against 19,997,
+and a full run under node 3.80 to 3.90 s against 3.45 to 3.77. And they are fussier about mixing:
+asking for catching on a translation unit built `-fno-exceptions` is a hard error, where
+WebAssembly's handling leaves such a unit alone.
 
 ***OpenCV's own `opencv.js` build.*** It is the official WebAssembly OpenCV, and it is a JavaScript
 API over embind: the engine would call it through the boundary this architecture keeps pixels from

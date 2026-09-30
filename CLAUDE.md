@@ -110,16 +110,16 @@ are decided and wait for their writer, since `PanoramaBuildManager` does not run
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 and cross-compiled for the browser too (ADR 0069): about 556 KB of the 8 MB budget, WebAssembly's
-own exceptions, and a registration table measured under node that matches the native one to the
-fourth decimal — exactly for SIFT, one ten-thousandth out on ORB's worst frame and two on AKAZE,
-whose floating point is not bit-exact across instruction sets. Its first use was not an engine: it
-cross-checked the camera model against `cv::projectPoints`, asking our inverse to invert *their*
-forward map, which is a stronger statement than agreeing with their inverse — `cv::undistortPoints`
-runs five passes of the fixed point we replaced, so on a wide lens theirs is the one that is wrong.
-The Python tooling runs through `uv` with a committed lock file, so `uv run tools/…` and `uv add`,
-never pip (ADR 0048) — with one exception that bites if you copy the line: the dataset renderer
-needs `uv run --group datasets tools/…`, because numpy and Pillow are in a group so the checkers
-stay standard-library only (ADR 0050, ADR 0059).
+own exceptions, and a registration table measured under node that agrees with the native one to
+within two ten-thousandths of a degree — exactly for SIFT, one out on ORB's worst frame and two on
+AKAZE, since floating point is not bit-exact across instruction sets. Its first use was not an
+engine: it cross-checked the camera model against `cv::projectPoints`, asking our inverse to invert
+*their* forward map, which is a stronger statement than agreeing with their inverse —
+`cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens theirs is
+the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so `uv run
+tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the line:
+the dataset renderer needs `uv run --group datasets tools/…`, because numpy and Pillow are in a
+group so the checkers stay standard-library only (ADR 0050, ADR 0059).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that

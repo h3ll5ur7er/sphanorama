@@ -13,8 +13,8 @@ namespace sphanorama {
 //
 // It is a construction-time choice rather than a contract type, so whoever composes this engine
 // picks one and no caller above the engine layer learns that detectors exist. Today that is the
-// tests: the only composition root in the repository is the WASM runtime, which has no OpenCV and
-// holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
+// tests: the only composition root in the repository is the WASM runtime, which has OpenCV since
+// ADR 0069 and still holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
 // in earnest is the one that runs the accuracy harness, and it does not exist yet.
 // `Count` is not a detector. It is here so the list below can be *checked* rather than remembered.
 //

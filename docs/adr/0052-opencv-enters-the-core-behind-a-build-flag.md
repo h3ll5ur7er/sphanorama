@@ -4,11 +4,16 @@
 [ADR 0053](0053-the-harness-reads-its-own-datasets.md); "the flag is off for WASM" superseded by
 [ADR 0069](0069-opencv-is-cross-compiled-for-the-browser.md)
 
-> **The browser's build has OpenCV since ADR 0069**, so "the browser gets a null registration" is now
-> true of the runtime and not of the build: the WASM builds compile the OpenCV engine, and
+> **The browser's build has OpenCV since ADR 0069**, so "the browser gets a null registration" is
+> now true of the runtime and not of the build: the WASM builds compile the OpenCV engine, and
 > `bridge/runtime.h` still holds the null one because no composition root selects the real one yet.
-> The rest of this ADR stands — the flag, the null object for a build without it, and the exception
-> boundary, which now converts in both builds under WebAssembly's own exception handling.
+> The flag, the null object for a build without it, and the exception boundary stand; the boundary
+> now converts in both builds, under WebAssembly's own exception handling. Three more sentences
+> below were true of a browser build without OpenCV and are not of one with it: that a selection in
+> the WASM runtime "would be dead code today" (it would be reachable, only unused), that the WASM
+> transfer of the accuracy figures is "a measurement nobody has taken" (ADR 0069 took it), and that
+> "the size budget only bites where the engine is absent" (it bites on the WASM builds, which now
+> have the engine, once the module calls it).
 
 > **The exception boundary below covers four translation units, not one.** The sentence further down
 > says `feature_registration_engine.cpp` carries `-fexceptions` "and on no other translation unit",

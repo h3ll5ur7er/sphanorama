@@ -46,12 +46,13 @@ function aFreshTree() {
   put('contracts/cpp/c.h', t);
   put('core/CMakeLists.txt', t);
   put('CMakeLists.txt', t);
+  put('cmake/opencv.cmake', t);
   put('CMakePresets.json', t);
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     put(`build/${preset}/CMakeCache.txt`, t + 1000, 'CMAKE_CXX_FLAGS:STRING=-msimd128\n');
     put(`build/${preset}/build.ninja`, t + 1000,
         'build build.ninja: RERUN_CMAKE | ../../CMakeLists.txt ../../core/CMakeLists.txt '
-        + '../../bridge/CMakeLists.txt\n');
+        + '../../bridge/CMakeLists.txt ../../cmake/opencv.cmake\n');
   }
   put('CMakePresets.json', t, JSON.stringify({
     configurePresets: [
@@ -122,10 +123,10 @@ describe('the dist freshness check', () => {
 
   it('ignores a C++ source the wasm build does not compile', () => {
     // ADR 0052 put the first core source behind a build flag: `feature_registration_engine.cpp`
-    // needs OpenCV, which the wasm build does not have, so it is compiled natively and nowhere
-    // else. Before this, touching it made the core permanently stale — ninja had no work to do,
-    // so the wasm could never become newer than it, and the check could not be cleared by doing
-    // what it asked. A deadlock, not a false alarm.
+    // needs OpenCV, and a wasm build configured without it compiles it nowhere — every wasm build,
+    // until ADR 0069 turned it on in the presets. Before this, touching it made the core
+    // permanently stale — ninja had no work to do, so the wasm could never become newer than it,
+    // and the check could not be cleared by doing what it asked. A deadlock, not a false alarm.
     const tree = aFreshTree();
     tree.put('build/wasm-release/compile_commands.json', undefined,
              JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
@@ -771,6 +772,26 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
+  it('checks a build file that is not called CMakeLists.txt', () => {
+    // `cmake/opencv.cmake` sets the flags OpenCV is compiled with in both wasm builds since ADR 0069,
+    // and the walk looked for one file name. An include is a build file whatever it is called.
+    for (const source of ['cmake/opencv.cmake', 'cmake/another.cmake']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now());
+      expect(complaint(tree.root, undefined, () => false), source)
+        .toMatch(/compiled core is older than the C\+\+/);
+    }
+  });
+
+  it('forgives an included build file the graph names, as it forgives a CMakeLists', () => {
+    // The same deadlock the CMakeLists rule exists for: a comment edit to an include reconfigures,
+    // gives ninja nothing to do, and could never be cleared if only CMakeLists were read out of the
+    // graph.
+    const tree = aFreshTree();
+    tree.put('cmake/opencv.cmake', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
   it('forgives a build file when ninja says there is nothing left to do', () => {
     // A `CMakeLists.txt` edit that is inert for a preset — a comment, or a branch that preset does
     // not take — reconfigures and produces no work, so the core is never relinked and can never
@@ -828,8 +849,9 @@ describe('the dist freshness check', () => {
 
   it('forgives a header ninja has already accounted for', () => {
     // The fifth instance of this file's recurring defect, and this branch's own doing:
-    // `feature_registration_engine.h` is included only by a translation unit the wasm build does
-    // not compile, so no wasm graph names it and no rebuild can make the core newer than it.
+    // `feature_registration_engine.h` was then included only by a translation unit the wasm build
+    // did not compile, so no wasm graph named it and no rebuild could make the core newer than it.
+    // The presets compile it since ADR 0069; a build without OpenCV still does not.
     // Touching it was a complaint whose printed remedy could not clear it.
     //
     // `.ninja_deps` records every header any compiled translation unit included, so when ninja says
