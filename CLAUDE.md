@@ -43,9 +43,9 @@ coverage and acceptance are all decided in the core.
 **What is real.** All six engine contracts have a real implementation — `CoveragePlanner`
 (rings), `Pose` (orientation), `FramePreview` (box), `FrameQuality` (sharpness), and
 `Registration` and `Composition`, each in part. `Registration` needs the care of a qualified sentence: all three of its methods are
-implemented — `Refine` solving for rotations and fitting the focal length (ADR 0065, ADR 0066) — but it
-exists only where OpenCV does so a browser build still gets the null one, and no composition root
-selects it yet: it is reached from tests. **The pair estimator is now scored against a dataset**,
+implemented — `Refine` solving for rotations and fitting the focal length (ADR 0065, ADR 0066) — and
+the browser's build has it too since ADR 0069, but no composition root selects it yet: it is reached
+from tests, and the browser runtime still holds the null one. **The pair estimator is now scored against a dataset**,
 which is what that qualification was waiting for: on a twelve-frame ring rendered from a photographed
 panorama, against a sensor prior perturbed three degrees, all three detectors register all eleven
 consecutive pairs, with medians of 0.024 degrees (SIFT), 0.061 (AKAZE) and 0.101 (ORB) — the
@@ -109,14 +109,17 @@ captures. Where it is stored and which manager writes it
 are decided and wait for their writer, since `PanoramaBuildManager` does not run `Refine` yet.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
-native only — the WASM cross-compile has its own size budget and is still deferred (ADR 0047). Its
-first use was not an engine: it cross-checked the camera model against `cv::projectPoints`, asking
-our inverse to invert *their* forward map, which is a stronger statement than agreeing with their
-inverse — `cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens
-theirs is the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so
-`uv run tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the
-line: the dataset renderer needs `uv run --group datasets tools/…`, because numpy and Pillow are in
-a group so the checkers stay standard-library only (ADR 0050, ADR 0059).
+and cross-compiled for the browser too (ADR 0069): about 556 KB of the 8 MB budget, WebAssembly's
+own exceptions, and a registration table measured under node that agrees with the native one to
+within two ten-thousandths of a degree — exactly for SIFT, one out on ORB's worst frame and two on
+AKAZE, since floating point is not bit-exact across instruction sets. Its first use was not an
+engine: it cross-checked the camera model against `cv::projectPoints`, asking our inverse to invert
+*their* forward map, which is a stronger statement than agreeing with their inverse —
+`cv::undistortPoints` runs five passes of the fixed point we replaced, so on a wide lens theirs is
+the one that is wrong. The Python tooling runs through `uv` with a committed lock file, so `uv run
+tools/…` and `uv add`, never pip (ADR 0048) — with one exception that bites if you copy the line:
+the dataset renderer needs `uv run --group datasets tools/…`, because numpy and Pillow are in a
+group so the checkers stay standard-library only (ADR 0050, ADR 0059).
 
 The order from here is **the harness before the algorithm**, because registration accuracy is
 invisible to the eye — a rotation a degree out looks fine until the seam. The first piece of that

@@ -37,5 +37,9 @@ if(EMSCRIPTEN)
     # back to C++; without them the port fails the first time a document exists.
     -sEXPORTED_RUNTIME_METHODS=HEAP32,HEAPU8,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8
   )
-  set_target_properties(sphanorama_module PROPERTIES OUTPUT_NAME "sphanorama-core" SUFFIX ".js")
+  # Pinned beside the bridge's other outputs, where the size budget, the shell and the deploy look
+  # for it. OpenCV caches `EXECUTABLE_OUTPUT_PATH` as `bin/` for every executable after it, which is
+  # where the native test binaries have always gone and where this would go too (ADR 0069).
+  set_target_properties(sphanorama_module PROPERTIES OUTPUT_NAME "sphanorama-core" SUFFIX ".js"
+                        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 endif()

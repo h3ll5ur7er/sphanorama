@@ -11,7 +11,9 @@
 #
 # Usage: tools/gate.sh
 set -u
-cd "$(dirname "$0")/.."
+# With CDPATH cleared: an entry holding a `tools/` of its own would otherwise take `cd tools/..`
+# there, and every step after it would run in the wrong tree.
+CDPATH= cd -- "$(dirname -- "$0")/.." >/dev/null || exit 2
 
 # Same default location tools/setup_emsdk.sh installs into, overridable the same way.
 EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
@@ -102,6 +104,7 @@ else
   step "wasm build"          bash -c "cmake --preset wasm-release && cmake --build build/wasm-release"
   step "wasm threaded build" bash -c "cmake --preset wasm-release-threaded && cmake --build build/wasm-release-threaded"
   step "size budget"         bash -c "uv run --locked tools/size_budget.py --profile wasm-release --build-dir build/wasm-release/bridge && uv run --locked tools/size_budget.py --profile wasm-release-threaded --build-dir build/wasm-release-threaded/bridge"
+  step "wasm accuracy"       tools/wasm_accuracy.sh build/wasm-release build/wasm-release-threaded
   step "shell unit tests"    npm test
   step "build the shell"     npm run build
   step "browser tests"       npx playwright test

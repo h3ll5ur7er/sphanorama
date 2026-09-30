@@ -19,8 +19,8 @@ set(SPHANORAMA_OPENCV_TESTS "")
 if(SPHANORAMA_WITH_OPENCV)
   set(SPHANORAMA_OPENCV_TESTS
       "utilities/camera_model_opencv_test.cpp"
-      # Registration exists only where OpenCV does (ADR 0052), so its tests do too. A reader looking
-      # for registration coverage in a WASM-only checkout will find none, and that is the reason.
+      # Registration exists only where OpenCV does (ADR 0052), so its tests do too. The WASM builds
+      # measure it with `registration_accuracy_wasm.cpp` instead (ADR 0069), outside this suite.
       "engines/registration_engine_test.cpp"
       # The accuracy measurement, which needs a registration, a dataset reader and a scorer at
       # once. It renders its own dataset and skips without `uv`, per ADR 0055.
@@ -95,7 +95,7 @@ if(SPHANORAMA_WITH_OPENCV)
   #
   # A reviewer found it by reading compile_commands.json rather than the CMakeLists, which is the
   # only place the answer was visible.
-  target_link_libraries(sphanorama_tests PRIVATE sphanorama_opencv)
+  target_link_libraries(sphanorama_tests PRIVATE sphanorama_registration sphanorama_opencv)
 
   # The two translation units here that may throw, for the same reason `feature_registration_engine`
   # does in the core (ADR 0052): `cv::Exception` is how OpenCV reports ordinary failure, and the

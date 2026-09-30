@@ -44,9 +44,10 @@ removing one.
   V8 into one opaque dependency and make incremental rebuild impossible. We use its algorithms
   piecemeal behind our own engine contracts.
 
-  **Native today, WASM later.** `SPHANORAMA_WITH_OPENCV` is on for native builds and forced off under
-  Emscripten: cross-compiling the subset has its own size budget and its own failure modes, and
-  nothing about writing the algorithms needs it in a browser first.
+  **Native and WASM.** `SPHANORAMA_WITH_OPENCV` is on in every preset but `native-contracting`,
+  and the WASM presets set it explicitly. Under Emscripten the subset is built for WebAssembly SIMD
+  with no CPU dispatch, throws and catches with WebAssembly's own exceptions, and gets OpenCV's
+  thread pool only in the threaded build (ADR 0069).
 - **Vite** for the PWA, `workbox` for the service worker, plus a COOP/COEP shim service worker for
   hosts that cannot set the headers (GitHub Pages).
 - Binary size budget: **< 8 MB** compressed for the core, enforced in CI. It is a phone over
@@ -66,11 +67,14 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    what the generator *refuses* matters more than what it emits.
 3. **Native build and tests** — debug, plus a second pass under AddressSanitizer and
    UndefinedBehaviorSanitizer. Both jobs build OpenCV from source, so both cache `_deps` *and*
-   `.ninja_log` — ninja marks any output with no log entry dirty, so the cache did nothing without
-   the log. That is also why the key carries a toolchain identity (compiler, ninja and cmake
-   versions) and not just the runner OS: restoring the log restores ninja's belief that those
-   objects are current, and a runner image rotating to a different compiler would otherwise link
-   objects nothing can notice are stale.
+   `.ninja_log`, `.ninja_deps` and the headers OpenCV's configure writes beside `_deps` — ninja
+   marks any output with no log or deps entry dirty, and a header configure rewrites is newer than
+   every cached object, so the cache did nothing without them. That is also why the key carries a
+   toolchain identity (compiler, ninja and cmake versions) and not just the runner OS: restoring the
+   log restores ninja's belief that those objects are current, and a runner image rotating to a
+   different compiler would otherwise link objects nothing can notice are stale. The `wasm` job
+   caches its two OpenCV builds the same way, and a hit there still rebuilds OpenCV (ADR 0069 says
+   why).
 
    The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so OpenCV's translation units are
    instrumented too, under `-fno-sanitize-recover=all` — with exactly one check lifted from them.
@@ -98,9 +102,10 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    `tools/check_dist_fresh.mjs` is their precondition rather than a step of its own: Playwright's
    `globalSetup`, refusing to run the suite against a bundle or a core older than the sources it
    was built from. It compares both wasm presets and the glue `.js` against the C++ that the wasm
-   build actually compiles — read from each preset's `compile_commands.json`, because since ADR 0052
-   a core source can be native-only, and a source ninja never builds could otherwise make the core
-   permanently stale — and the build
+   core is built from — asked of ninja's link graph for the module (`-t inputs`), with each preset's
+   `compile_commands.json` as the fallback, because a core source can be native-only (ADR 0052) or
+   compiled into a library the module does not link (ADR 0069), and a source no rebuild of the core
+   answers for would otherwise make it permanently stale — and the build
    files, and it exists because two false-green sabotage runs got through — one after
    `npm run build` had exited non-zero on a typecheck error and left the previous `dist` standing.
 7. **Conflict markers** — `tools/conflict_marker_check.py`, because a merge marker in a tracked
@@ -134,6 +139,14 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
     checker but a guard on one: the measurement skips without `uv`, and `ctest` reported "100%
     tests passed" while running none of it. The step derives the expected count from
     `--gtest_list_tests` and fails on a skip, a shortfall or a floor of zero.
+12. **The registration table measured in WASM** — in the `wasm` job, after both builds.
+    `tools/wasm_accuracy.sh` renders the ring the native measurement renders and runs
+    `sphanorama_wasm_accuracy` over it under node in each build, held to the native bounds through
+    `support/solved_ring.h`. Like item 11 it is a measurement with its own guard rather than a
+    checker: it fails when the runner is missing, answers `--detectors` or `--ring` with anything
+    but the numbers and panorama it asked for, or prints fewer `[wasm-solved]` lines than the
+    detectors it reports (ADR 0069). Those refusals are tested against fake runners by
+    `tools/wasm_accuracy.test.mjs`, in `npm test`.
 
 **This list has been short before, and that is the argument for the sentence below it.** What are now
 items 10 and 11 were missing until the branch that added them was reviewed as a whole against `main`

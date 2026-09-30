@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "support/photograph.h"
+
 namespace sphanorama::test {
 
 namespace fs = std::filesystem;
@@ -63,8 +65,6 @@ inline std::string Quoted(const std::string& raw) {
  */
 enum class World { Photograph, Checkerboard };
 
-/** Relative to the repository root, which is where the generator's command runs. */
-inline constexpr const char* kPhotograph = "core/test/data/panoramas/small_hangar_01_1k.jpg";
 
 /**
  * A rendered ring, or nothing.

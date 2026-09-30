@@ -47,8 +47,9 @@ still decide *whether and how* frames are aligned; the utility is arithmetic for
 relationship `camera_model` and `quaternion` have to the engines that use them — and since ADR 0065 like them it has a caller in `core/src`:
 `FeatureRegistrationEngine::Refine` builds the edges, chooses the weights and answers for the result.
 It is separate for a reason the map cares about: `EstimatePairwise` needs OpenCV and this does
-not, so a browser build — which gets the null engine (ADR 0052) — could have the half of registration
-that is quaternions once a `Refine` lives outside the OpenCV engine; today it has none of it. `quaternion_average` sits under both it and
+not, so a build without OpenCV — which gets the null engine (ADR 0052), and which since ADR 0069 is
+not the browser — could have the half of registration that is quaternions once a `Refine` lives
+outside the OpenCV engine; today it has none of it. `quaternion_average` sits under both it and
 the test-side scorer, so the eigensolver ADR 0049 measured exists once.
 
 Until that caller arrived it was the one thing in `core/src` the **"how registration accuracy is

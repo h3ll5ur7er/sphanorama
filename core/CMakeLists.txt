@@ -32,24 +32,12 @@ add_library(sphanorama_core
   src/utilities/rotation_averaging.cpp
 )
 
-# The registration engine is the first shipped core code that depends on OpenCV, and the WASM build
-# does not have it (ADR 0047, ADR 0052). So it compiles only where OpenCV does, and a build without
-# it gets `NullRegistrationEngine` — which is already in the sources above, unconditionally, because
-# the null object is what the composition root falls back to rather than a stand-in for a missing
-# file.
+# The registration engine is the first shipped core code that depends on OpenCV (ADR 0052). It
+# compiles wherever OpenCV does, which is every preset but `native-contracting` since ADR 0069, and a
+# build without it gets `NullRegistrationEngine` — which is already in the sources above,
+# unconditionally, because the null object is what the composition root falls back to rather than a
+# stand-in for a missing file.
 if(SPHANORAMA_WITH_OPENCV)
-  target_sources(sphanorama_core
-    PRIVATE src/engines/registration_engine/feature_registration_engine.cpp)
-  # The one translation unit in the core that may throw, and the one that has to catch.
-  #
-  # ADR 0047 named this and left the decision to the ADR introducing the first OpenCV-backed engine:
-  # `cv::Exception` is how OpenCV reports ordinary failure, so an engine calling it cannot be
-  # compiled `-fno-exceptions` and still keep the `Result<T>` every contract here promises. ADR 0052
-  # takes that decision — this file converts at its own edge and nothing above it learns that
-  # OpenCV throws. `-fexceptions` is appended after the target's own options, so it wins.
-  set_source_files_properties(src/engines/registration_engine/feature_registration_engine.cpp
-    PROPERTIES COMPILE_OPTIONS "-fexceptions")
-  target_link_libraries(sphanorama_core PRIVATE sphanorama_opencv)
   target_compile_definitions(sphanorama_core PUBLIC SPHANORAMA_WITH_OPENCV=1)
 endif()
 
@@ -57,9 +45,9 @@ target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/s
 target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts)
 
 # Exceptions and RTTI are off in the core: nothing may throw across the WASM boundary (ADR 0006),
-# and both cost binary size we have budgeted away. One translation unit takes `-fexceptions` back —
-# see the `SPHANORAMA_WITH_OPENCV` block above, which grants it and says why — because `cv::Exception`
-# is how OpenCV reports ordinary failure, and it converts at its own edge (ADR 0052).
+# and both cost binary size we have budgeted away. The registration engine below takes
+# `-fexceptions` back, because `cv::Exception` is how OpenCV reports ordinary failure, and it
+# converts at its own edge (ADR 0052).
 #
 # -fno-rtti is PUBLIC rather than PRIVATE because it changes what the compiler emits for a class,
 # not just how this library is built. A consumer compiled with RTTI references type info the core
@@ -69,3 +57,24 @@ target_compile_options(sphanorama_core PUBLIC -fno-rtti)
 target_compile_options(sphanorama_core PRIVATE
   -fno-exceptions
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+
+if(SPHANORAMA_WITH_OPENCV)
+  # A library of its own so that what linking OpenCV costs travels with it. OpenCV throws, and under
+  # WebAssembly a throw with no exception-handling runtime linked aborts the module rather than
+  # reaching the engine's `catch` — and nothing warns at link time. So the link flag is this
+  # library's interface: whatever links the engine links the runtime, and the module, which does
+  # not link it yet, does not pay the 29 KB for it (ADR 0069).
+  #
+  # ADR 0047 named the exception question and left it to the ADR introducing the first
+  # OpenCV-backed engine; ADR 0052 answered it: this translation unit may throw and must catch, and
+  # nothing above it learns that OpenCV throws.
+  add_library(sphanorama_registration
+    src/engines/registration_engine/feature_registration_engine.cpp)
+  target_link_libraries(sphanorama_registration PUBLIC sphanorama_core PRIVATE sphanorama_opencv)
+  target_compile_options(sphanorama_registration PRIVATE
+    -fexceptions
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+  if(EMSCRIPTEN)
+    target_link_options(sphanorama_registration INTERFACE -fwasm-exceptions)
+  endif()
+endif()

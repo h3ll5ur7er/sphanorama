@@ -13,8 +13,8 @@ namespace sphanorama {
 //
 // It is a construction-time choice rather than a contract type, so whoever composes this engine
 // picks one and no caller above the engine layer learns that detectors exist. Today that is the
-// tests: the only composition root in the repository is the WASM runtime, which has no OpenCV and
-// holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
+// tests: the only composition root in the repository is the WASM runtime, which has OpenCV since
+// ADR 0069 and still holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
 // in earnest is the one that runs the accuracy harness, and it does not exist yet.
 // `Count` is not a detector. It is here so the list below can be *checked* rather than remembered.
 //
@@ -79,9 +79,9 @@ int RansacSampleBudget(double agreeing);
 
 // V7 — feature extraction, matching and global refinement over OpenCV.
 //
-// Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build
-// gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
-// one of the two resource accesses an engine may touch.
+// Compiled only when `SPHANORAMA_WITH_OPENCV` is on, which since ADR 0069 includes the WASM builds;
+// `NullRegistrationEngine` is what a build without it gets (ADR 0052). It reads pixels and allocates
+// frames, so it holds `IFrameStoreAccess` — one of the two resource accesses an engine may touch.
 //
 // `Refine` solves for rotations through `utilities/rotation_averaging` (ADR 0065), and it needed none
 // of OpenCV until it fitted the focal length: each trial refits the pairs by Kabsch, which here is

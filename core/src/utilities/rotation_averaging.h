@@ -13,10 +13,10 @@ namespace sphanorama {
 // **This is the maths under `IRegistrationEngine::Refine`, and it is here rather than in that engine
 // because it needs no pixels.** `EstimatePairwise` needs OpenCV; this needs quaternions. Keeping
 // them apart is what lets it be tested without a frame store or a detector, and is what would let a
-// build without OpenCV — every browser build today (ADR 0052) — have the half of registration that
-// is arithmetic. Only half of that holds today: the one caller is `FeatureRegistrationEngine::
-// Refine`, which exists only where OpenCV does, so a browser build reaches this only once a
-// `Refine` lives outside that engine (ADR 0065).
+// build without OpenCV have the half of registration that is arithmetic. Only half of that holds:
+// the one caller is `FeatureRegistrationEngine::Refine`, which exists only where OpenCV does — every
+// preset but one since ADR 0069 — so a build without it reaches this only once a `Refine` lives
+// outside that engine (ADR 0065).
 //
 // **The problem it solves is that a chain has no memory.** Eleven pairwise rotations chained in
 // order give twelve absolute rotations, and every error in step k is carried by every frame after

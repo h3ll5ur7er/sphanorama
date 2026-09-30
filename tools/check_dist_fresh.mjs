@@ -14,7 +14,7 @@
  * Modification times rather than hashes, because the question is only "was this built after the
  * code changed" and a fresh checkout has no `dist` at all — the missing case is the loud one.
  */
-import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,9 +116,11 @@ function canReachBridgeSpecs(argv) {
  * The C++ translation units the wasm builds actually compile, as absolute paths — read from the
  * compile database CMake exports (`CMAKE_EXPORT_COMPILE_COMMANDS` is on repo-wide).
  *
- * `null` means there was nothing to read, and the caller then counts every source. That fallback is
- * the conservative direction on purpose: a check that quietly stops asking because a build
- * directory is missing is worse than one that asks too often.
+ * The fallback when ninja cannot say what the core is built from, and not a safe one: it counts a
+ * translation unit compiled into a library the module does not link, which no rebuild of the core
+ * answers for — the engine since ADR 0069. `null` means there was nothing to read, and the caller
+ * then counts every source, because a check that quietly stops asking because a build directory
+ * is missing is worse than one that asks too often.
  */
 /**
  * Whether either wasm build has work it has not done — asked of ninja, which is the only thing that
@@ -138,8 +140,12 @@ function canReachBridgeSpecs(argv) {
  * `null` means ninja could not be asked — not on PATH, no build directory, a non-zero exit — and the
  * caller then treats a build file the old way, which is the conservative direction.
  */
+// A `CMakeLists.txt`, or an include such as `cmake/opencv.cmake`, which sets the flags OpenCV is
+// compiled with in both wasm builds since ADR 0069. Walking for the one name missed it.
+const isBuildFile = (name) => name === 'CMakeLists.txt' || name.endsWith('.cmake');
+
 /**
- * Every `CMakeLists.txt` in the tree, as absolute paths — found by walking, not by being listed.
+ * Every CMake build file in the tree, as absolute paths — found by walking, not by being listed.
  *
  * The list was written down four times on this branch and was one short every time, most recently
  * by excluding all of them from the source walk and naming four back. A fifth anywhere — say
@@ -166,7 +172,7 @@ function cmakeFilesInTree(repoRoot) {
       if (skip.has(entry.name)) continue;
       const full = join(at, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.name === 'CMakeLists.txt') found.push(full);
+      else if (isBuildFile(entry.name)) found.push(full);
     }
   };
   walk(repoRoot);
@@ -192,8 +198,13 @@ function buildFilesTheGraphNames(repoRoot) {
     } catch {
       continue;
     }
-    for (const match of text.matchAll(/(\S*CMakeLists\.txt)/g)) {
-      named.add(resolve(join(repoRoot, 'build', preset), match[1]));
+    // A path in `build.ninja` escapes a space, a colon and a dollar with `$` rather than quoting,
+    // so a name is a run of escapes and ordinary characters, and is unescaped before it is read.
+    for (const [token] of text.matchAll(/(?:\$[ :$]|[^\s$])+/g)) {
+      const path = token.replace(/\$([ :$])/g, '$1');
+      if (isBuildFile(path.slice(path.lastIndexOf('/') + 1))) {
+        named.add(realPath(resolve(join(repoRoot, 'build', preset), path)));
+      }
     }
   }
   return named;
@@ -378,7 +389,15 @@ function presetsMatchTheBuildDirectories(repoRoot) {
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
       // `line === null` is a variable the preset declares and this build directory has never held —
       // a *newly added* one, which is exactly a configure that has not happened.
-      if (line === null || line[1].trim() !== expanded.trim()) return false;
+      if (line === null) return false;
+      // A path CMake caches collapsed, so it is compared collapsed: an `EMSDK` with a trailing slash
+      // expands to `…//upstream/…` against a cache holding `…/upstream/…`, and a string comparison
+      // refused an inert edit in a way no configure could clear.
+      const cached = line[1].trim();
+      const same = name === 'CMAKE_TOOLCHAIN_FILE'
+        ? resolve(repoRoot, cached) === resolve(repoRoot, expanded.trim())
+        : cached === expanded.trim();
+      if (!same) return false;
     }
   }
   return true;
@@ -389,15 +408,67 @@ export function wasmBuildsAreUpToDate(repoRoot) {
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     const dir = join(repoRoot, 'build', preset);
     if (!existsSync(join(dir, 'build.ninja'))) continue;
-    const probe = spawnSync('ninja', ['-C', dir, '-n'], { encoding: 'utf8' });
+    // Run in the build directory rather than pointed at it with `-C`, which prints the directory it
+    // enters — a path that can hold anything, the answer included.
+    const probe = spawnSync('ninja', ['-n'], { cwd: dir, encoding: 'utf8' });
     // `status !== 0` covers a ninja that failed *and* a ninja that never ran: `spawnSync` reports
     // ENOENT as `status === null`, so an explicit `probe.error ||` in front of this was a clause no
     // input could reach. Both mean the same thing here anyway — nobody answered, so forgive nothing.
     if (probe.status !== 0) return null;
     asked = true;
-    if (!`${probe.stdout}${probe.stderr}`.includes('no work to do')) return false;
+    // A line of its own, not a phrase anywhere: an edge ninja would run can describe itself in any
+    // words, and a phrase match read a busy build as idle.
+    const lines = `${probe.stdout}\n${probe.stderr}`.split('\n').map((line) => line.trim());
+    if (!lines.includes('ninja: no work to do.')) return false;
   }
   return asked ? true : null;
+}
+
+/**
+ * A path as the file system resolves it, or as given when it names nothing. The build records the
+ * path it was configured through and this file walks the one node resolves, so a checkout reached
+ * through a symlink spelled every source two ways, matched none, and forgave every `.cpp`.
+ */
+function realPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/** A path as ninja prints it, which is wrapped in single quotes when it holds `@~=:,` or a space. */
+function unquoteNinja(text) {
+  return /^'.*'$/.test(text) ? text.slice(1, -1).replaceAll("'\\''", "'") : text;
+}
+
+/**
+ * The C++ sources the wasm core is built from, as absolute paths — asked of ninja, which walks the
+ * module's link graph (`-t inputs`) and so knows what the compile database cannot: a translation
+ * unit the build compiles into something else. ADR 0069's engine library is that — compiled, linked
+ * by the accuracy runner, not by the module — and narrowing by the compile database counted it, so
+ * touching it rebuilt the library and never the core, and the complaint could not be cleared.
+ *
+ * `null` means ninja could not answer for a preset that has a build, or named no source at all —
+ * a ninja whose `inputs` is not transitive lists only objects, and an empty set would switch the
+ * narrowing off rather than on. The caller then falls back to the compile database.
+ */
+export function coreSourcesFromNinja(repoRoot) {
+  const files = new Set();
+  let asked = false;
+  for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+    const dir = join(repoRoot, 'build', preset);
+    if (!existsSync(join(dir, 'build.ninja'))) continue;
+    const probe = spawnSync('ninja', ['-t', 'inputs', 'bridge/sphanorama-core.js'],
+                            { cwd: dir, encoding: 'utf8' });
+    if (probe.status !== 0) return null;
+    asked = true;
+    for (const line of probe.stdout.split('\n')) {
+      const input = unquoteNinja(line.trim());
+      if (/\.(c|cc|cxx|cpp)$/.test(input)) files.add(resolve(dir, input));
+    }
+  }
+  return asked && files.size > 0 ? files : null;
 }
 
 function compiledTranslationUnits(repoRoot) {
@@ -420,7 +491,8 @@ function compiledTranslationUnits(repoRoot) {
 }
 
 export function checkDistIsFreshIn(repoRoot, argv = process.argv,
-                                   upToDateProbe = wasmBuildsAreUpToDate) {
+                                   upToDateProbe = wasmBuildsAreUpToDate,
+                                   coreSources = coreSourcesFromNinja) {
   const dist = join(repoRoot, 'dist');
   if (!existsSync(dist)) {
     throw new Error(
@@ -493,22 +565,24 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // compile flag or a source added to a `CMakeLists.txt` changes the core exactly as a `.cpp`
     // does, and three of them are outside every source directory named here.
     //
-    // A `.cpp` counts only if the wasm build actually compiles it. Since ADR 0052 that is no longer
-    // every source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, which the wasm
-    // build does not have, so it is compiled natively and nowhere else. Without this narrowing,
-    // touching that file made the core stale in a way nothing could clear — ninja has no work to do
-    // for a source it does not compile, so the wasm never becomes newer and the instruction this
-    // error gives cannot be followed. A deadlock rather than a false alarm, which is why it is a
-    // fix here and not a note in the message.
+    // A `.cpp` counts only if the core is built from it. Since ADR 0052 that need not be every
+    // source under `core/src`: `feature_registration_engine.cpp` needs OpenCV, and a build
+    // configured without it compiles that file nowhere; since ADR 0069 the wasm presets compile it
+    // into a library the module does not link. Either way, touching it made the core stale in a way
+    // nothing could clear — no rebuild relinks the core for a source it is not built from, so the
+    // instruction this error gives cannot be followed. A deadlock rather than a false alarm, which
+    // is why it is a fix here and not a note in the message. Ninja's link graph answers it; the
+    // compile database, which answers only "compiled at all", is the fallback.
     //
     // Headers and the three CMake files are deliberately not narrowed: a header is not a
     // translation unit and never appears in a compile database, and a preset or a compile flag
     // changes the core exactly as a `.cpp` does.
     const upToDate = upToDateProbe(repoRoot);
-    const compiled = compiledTranslationUnits(repoRoot);
+    const named = coreSources(repoRoot) ?? compiledTranslationUnits(repoRoot);
+    const compiled = named === null ? null : new Set([...named].map(realPath));
     const accept = compiled === null
       ? () => true
-      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
+      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(realPath(full));
     // Every `CMakeLists.txt` is judged by the build-file rule below instead of here, and *all* of
     // them are — `cmakeFilesInTree` walks for them, so one in a directory this source walk covers is
     // handled once rather than twice or not at all. An earlier version excluded them here and named
@@ -519,16 +593,16 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // cannot know that: a header never appears in a compile database, so the narrowing above covers
     // `.cpp` only, and every header under these roots counted as a source of the wasm core.
     //
-    // This branch produced the instance. `feature_registration_engine.h` is included by a single
-    // translation unit the wasm build does not compile, so no wasm graph names it and no rebuild can
-    // make the core newer than it — touching it was a complaint nothing could clear, which is the
-    // fifth time that shape has been found in this file.
+    // The branch that added this produced the instance. `feature_registration_engine.h` was
+    // included by a single translation unit the wasm build did not compile until ADR 0069, so no
+    // wasm graph named it and no rebuild could make the core newer than it — touching it was a
+    // complaint nothing could clear, which is the fifth time that shape has been found in this file.
     //
     // Only headers, and only when ninja answered. A `.cpp` the wasm build *does* compile stays a
     // staleness whatever ninja says — an inert source edit is not a thing, and the case beside this
     // one in the suite says so deliberately.
     const headerSettled = upToDate === true;
-    const acceptSource = (full) => !/CMakeLists\.txt$/.test(full)
+    const acceptSource = (full) => !isBuildFile(full.slice(full.lastIndexOf('/') + 1))
       && !(headerSettled && /\.(h|hh|hpp|hxx|inc)$/.test(full))
       && accept(full);
     const sources = ['core/src', 'bridge', 'contracts/cpp']
@@ -551,7 +625,7 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const stillSuspect = [
       ...cmakeFilesInTree(repoRoot)
         .map((path) => ({ rel: path.slice(repoRoot.length + 1), ...newest(path) }))
-        .filter((s) => !graphNames.has(s.path)),
+        .filter((s) => !graphNames.has(realPath(s.path))),
       ...(presetSettled
         ? []
         : [{ rel: 'CMakePresets.json', ...newest(join(repoRoot, 'CMakePresets.json')) }]),

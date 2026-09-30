@@ -8,13 +8,14 @@
 //
 // Each case builds a whole fake repository in a temp directory and runs the real check against it,
 // so what is asserted is the check's behaviour rather than a re-implementation of its arithmetic.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync, existsSync,
+         symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkDistIsFreshIn, expandPresetMacros, kEnvironmentDependent, kUnknownMacro,
-         wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
+import { checkDistIsFreshIn, coreSourcesFromNinja, expandPresetMacros, kEnvironmentDependent,
+         kUnknownMacro, wasmBuildsAreUpToDate } from './check_dist_fresh.mjs';
 
 const made = [];
 afterEach(() => {
@@ -25,8 +26,8 @@ afterEach(() => {
 });
 
 /** A repository where everything is in order, so each test can break exactly one thing. */
-function aFreshTree() {
-  const root = mkdtempSync(join(tmpdir(), 'fresh-'));
+function aFreshTree(prefix = 'fresh-') {
+  const root = mkdtempSync(join(tmpdir(), prefix));
   made.push(root);
   const put = (rel, at, body) => {
     const path = join(root, rel);
@@ -46,12 +47,13 @@ function aFreshTree() {
   put('contracts/cpp/c.h', t);
   put('core/CMakeLists.txt', t);
   put('CMakeLists.txt', t);
+  put('cmake/opencv.cmake', t);
   put('CMakePresets.json', t);
   for (const preset of ['wasm-release', 'wasm-release-threaded']) {
     put(`build/${preset}/CMakeCache.txt`, t + 1000, 'CMAKE_CXX_FLAGS:STRING=-msimd128\n');
     put(`build/${preset}/build.ninja`, t + 1000,
         'build build.ninja: RERUN_CMAKE | ../../CMakeLists.txt ../../core/CMakeLists.txt '
-        + '../../bridge/CMakeLists.txt\n');
+        + '../../bridge/CMakeLists.txt ../../cmake/opencv.cmake\n');
   }
   put('CMakePresets.json', t, JSON.stringify({
     configurePresets: [
@@ -77,9 +79,10 @@ function aFreshTree() {
  * `argv` is the Playwright invocation, defaulting to one with no positional filter — every spec in
  * scope, which is the strict reading and what `gate.sh` does.
  */
-function complaint(root, argv = ['node', 'playwright', 'test'], upToDate = () => null) {
+function complaint(root, argv = ['node', 'playwright', 'test'], upToDate = () => null,
+                   coreSources = () => null) {
   try {
-    checkDistIsFreshIn(root, argv, upToDate);
+    checkDistIsFreshIn(root, argv, upToDate, coreSources);
     return null;
   } catch (error) {
     return error.message;
@@ -122,10 +125,10 @@ describe('the dist freshness check', () => {
 
   it('ignores a C++ source the wasm build does not compile', () => {
     // ADR 0052 put the first core source behind a build flag: `feature_registration_engine.cpp`
-    // needs OpenCV, which the wasm build does not have, so it is compiled natively and nowhere
-    // else. Before this, touching it made the core permanently stale — ninja had no work to do,
-    // so the wasm could never become newer than it, and the check could not be cleared by doing
-    // what it asked. A deadlock, not a false alarm.
+    // needs OpenCV, and a wasm build configured without it compiles it nowhere — every wasm build,
+    // until ADR 0069 turned it on in the presets. Before this, touching it made the core
+    // permanently stale — ninja had no work to do, so the wasm could never become newer than it,
+    // and the check could not be cleared by doing what it asked. A deadlock, not a false alarm.
     const tree = aFreshTree();
     tree.put('build/wasm-release/compile_commands.json', undefined,
              JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
@@ -142,6 +145,87 @@ describe('the dist freshness check', () => {
                              { file: join(tree.root, 'bridge/b.cpp') }]));
     tree.put('core/src/a.cpp', Date.now());
     expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('ignores a C++ source the wasm build compiles into something other than the core', () => {
+    // ADR 0069 gave the OpenCV engine a library of its own, which the accuracy runner links and the
+    // module does not. The wasm build compiles it, so the compile database lists it — and touching
+    // it rebuilt that library and the runner and never relinked the core, so the complaint could
+    // not be cleared. What counts is what the core is built from, which only ninja knows.
+    const tree = aFreshTree();
+    const engine = 'core/src/engines/registration_engine/feature_registration_engine.cpp';
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(tree.root, 'core/src/a.cpp') },
+                             { file: join(tree.root, engine) }]));
+    tree.put(engine, Date.now());
+    const theCore = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, theCore)).toBeNull();
+  });
+
+  it('still catches a C++ source the core is built from, when ninja names it', () => {
+    const tree = aFreshTree();
+    tree.put('core/src/a.cpp', Date.now());
+    const theCore = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, theCore))
+      .toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('matches the build\'s paths to the tree\'s through a symlinked checkout', () => {
+    // CMake records the path it was configured through and node resolves the real one, so a tree
+    // reached through a symlink named every source one way and walked it the other: nothing
+    // matched, every `.cpp` was forgiven, and a stale core passed. Both sides are real paths now.
+    const tree = aFreshTree();
+    const link = join(mkdtempSync(join(tmpdir(), 'link-')), 'checkout');
+    made.push(dirname(link));
+    symlinkSync(tree.root, link);
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(link, 'core/src/a.cpp') }]));
+    tree.put('core/src/a.cpp', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+    const viaLink = () => new Set([join(link, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, viaLink))
+      .toMatch(/compiled core is older than the C\+\+/);
+    // And the other way round: the build names the real path and the check walks the link.
+    const real = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(link, undefined, () => true, real))
+      .toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('forgives a build file the graph names through a symlinked checkout', () => {
+    // The same two spellings in the other rule: the graph names the configured path, the walk finds
+    // the real one, and an inert edit the graph accounts for was a complaint nothing could clear.
+    const tree = aFreshTree();
+    const link = join(mkdtempSync(join(tmpdir(), 'link-')), 'checkout');
+    made.push(dirname(link));
+    symlinkSync(tree.root, link);
+    for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+      tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+               `build build.ninja: RERUN_CMAKE | ${join(link, 'core/CMakeLists.txt')}\n`);
+    }
+    tree.put('core/CMakeLists.txt', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    // And the other way round: the graph names the real path and the check walks the link.
+    for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+      tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+               `build build.ninja: RERUN_CMAKE | ${join(tree.root, 'core/CMakeLists.txt')}\n`);
+    }
+    expect(complaint(link, undefined, () => true)).toBeNull();
+  });
+
+  it('forgives a build file the graph names under a path ninja escapes', () => {
+    // `build.ninja` escapes a space, a colon and a dollar with `$` rather than quoting them, so a
+    // checkout under such a path split each name at the space, kept `$:` literally, forgave
+    // nothing, and turned an inert edit into a complaint no rebuild could clear.
+    for (const prefix of ['my dir ', 'a:b-', 'cost$-']) {
+      const tree = aFreshTree(prefix);
+      const escaped = join(tree.root, 'core/CMakeLists.txt').replace(/[$ :]/g, (c) => `$${c}`);
+      for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+        tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+                 `build build.ninja: RERUN_CMAKE | ${escaped} $\n    ../../CMakeLists.txt\n`);
+      }
+      tree.put('core/CMakeLists.txt', Date.now());
+      expect(complaint(tree.root, undefined, () => true), prefix).toBeNull();
+    }
   });
 
   it('counts every C++ source when there is no compile database to narrow it', () => {
@@ -194,12 +278,20 @@ describe('the dist freshness check', () => {
   // the *branch* testable and left the *function* untested, and a green suite was the proof.
   describe('the ninja probe itself', () => {
     /** A build directory with a `build.ninja` that says what we want it to say. */
-    function treeWithNinja(root, script) {
-      mkdirSync(join(root, 'bin'), { recursive: true });
-      const shim = join(root, 'bin', 'ninja');
-      // Respects `-C` the way real ninja does — it exits 1 on a directory with no manifest — so a
-      // sabotage that deletes the existence check is not silently answered by the shim instead.
-      writeFileSync(shim, `#!/bin/sh\n[ -f "$2/build.ninja" ] || exit 1\n${script}\n`);
+    function treeWithNinja(root, script, binRoot = root) {
+      mkdirSync(join(binRoot, 'bin'), { recursive: true });
+      const shim = join(binRoot, 'bin', 'ninja');
+      // Behaves as real ninja does in the two ways the probes depend on. `-C` enters the directory
+      // and announces it, so a probe that went back to `-C` meets the banner rather than a missing
+      // manifest. And a directory with no manifest exits 1, so a sabotage that deletes the existence
+      // check is not silently answered by the shim instead.
+      // `-C` is honoured wherever it appears, since ninja reads its options with getopt.
+      writeFileSync(shim, '#!/bin/sh\n'
+        + 'dir=; prev=; for arg in "$@"; do [ "$prev" = "-C" ] && dir=$arg; prev=$arg; done\n'
+        + 'if [ -n "$dir" ]; then cd "$dir" || exit 1; '
+        + 'printf "ninja: Entering directory \\`%s\'\\n" "$dir"; fi\n'
+        + 'if [ "$1" = "-C" ]; then shift 2; fi\n'
+        + `[ -f build.ninja ] || exit 1\n${script}\n`);
       chmodSync(shim, 0o755);
       for (const preset of ['wasm-release', 'wasm-release-threaded']) {
         mkdirSync(join(root, 'build', preset), { recursive: true });
@@ -281,12 +373,89 @@ describe('the dist freshness check', () => {
       }
     });
 
+    it('reads the core\'s sources out of the module\'s link graph, in both presets', () => {
+      // Real ninja prints sources as absolute paths and objects relative to the build directory;
+      // only sources count, and the threaded preset's are added to the single-threaded one's.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, [
+        '[ "$1 $2 $3" = "-t inputs bridge/sphanorama-core.js" ] || exit 1',
+        'echo /src/core/a.cpp',
+        'echo core/CMakeFiles/x.dir/a.cpp.o',
+        'echo ../../src/rel.cc',
+        'case "$PWD" in *threaded*) echo /src/core/threaded_only.cpp;; esac',
+      ].join('\n'));
+      const sources = withPath(join(shim, '..'), () => coreSourcesFromNinja(root));
+      expect([...sources].sort()).toEqual(
+        ['/src/core/a.cpp', '/src/core/threaded_only.cpp', join(root, 'src', 'rel.cc')].sort());
+    });
+
+    it('does not answer for the core when ninja fails, or names no source', () => {
+      // An empty set would narrow `.cpp` sources to none — the check switched off, from a ninja
+      // whose `inputs` lists objects only. Both fall back to the compile database instead.
+      for (const script of ['exit 1', 'echo core/CMakeFiles/x.dir/a.cpp.o']) {
+        const root = mkdtempSync(join(tmpdir(), 'probe-'));
+        made.push(root);
+        const shim = treeWithNinja(root, script);
+        expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root)), script).toBeNull();
+      }
+      const bare = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(bare);
+      expect(coreSourcesFromNinja(bare)).toBeNull();
+    });
+
+    it('reads a source whose path ninja quotes', () => {
+      // ninja 1.11 wraps a path in single quotes when it holds a space or one of `@~=:,`, and the
+      // extension test read the closing quote as the end of the name — so a checkout under such a
+      // path named no source, fell back to the compile database, and deadlocked again.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, `echo "'/src/my dir/a.cpp'"; echo "'/src/it'\\''s/b.cpp'"`);
+      const sources = withPath(join(shim, '..'), () => coreSourcesFromNinja(root));
+      expect([...sources].sort()).toEqual(['/src/it\'s/b.cpp', '/src/my dir/a.cpp']);
+    });
+
+    it('does not answer for the core when one preset\'s ninja fails and the other\'s answers', () => {
+      // The rule is "every preset with a build answers, or nobody does": a `continue` in place of
+      // the early `return null` would let one preset's link graph stand for both, and a shim that
+      // fails for both cannot tell the two apart.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root,
+        'case "$PWD" in *threaded*) exit 1;; *) echo /src/core/a.cpp;; esac');
+      expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root))).toBeNull();
+    });
+
+    it('does not read the phrase in a directory name as ninja\'s answer', () => {
+      // A checkout whose path contains "no work to do" read as idle while ninja listed the steps it
+      // still had to run, once anything printed that path: the answer is a line, not a phrase.
+      const root = mkdtempSync(join(tmpdir(), 'no work to do-'));
+      made.push(root);
+      // The whole answer mid-line as well, so a match on it anywhere is caught, not only the phrase.
+      const shim = treeWithNinja(root,
+        `echo "[1/2] Building CXX object ${root}/ninja: no work to do./foo.o"`);
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+
+    it('asks without -C, whose banner prints a path that could spell the answer', () => {
+      // A directory may hold a newline, and `-C` prints the directory it enters: a path containing
+      // "\nninja: no work to do.\n" put the answer on a line of its own while ninja had work queued.
+      // Run in the build directory instead, ninja prints no path at all. The shim announces `-C` as
+      // ninja does, so going back to it fails this case for exactly that reason.
+      // The shim lives outside that directory, whose `:` would split a PATH entry.
+      const base = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(base);
+      const root = join(base, 'x\nninja: no work to do.\n-');
+      const shim = treeWithNinja(root, 'echo "[1/1] Linking out.js"', base);
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+
     it('asks about both presets, not just the first', () => {
       // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
       made.push(root);
       const shim = treeWithNinja(root,
-        'case "$2" in *threaded*) echo "[1/2] Building CXX object foo.o";; *) echo "ninja: no work to do.";; esac');
+        'case "$PWD" in *threaded*) echo "[1/2] Building CXX object foo.o";; *) echo "ninja: no work to do.";; esac');
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
   });
@@ -386,6 +555,37 @@ describe('the dist freshness check', () => {
     let message = null;
     try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
     expect(message).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('asks the real ninja which sources the core is built from, when none is injected', () => {
+    // The same rule for the `coreSources` binding as for the probe above: every other case injects
+    // it, so a default of `() => null` brought the deadlock back and `() => new Set()` stopped
+    // checking every `.cpp`, and the suite stayed green under both. One shim answers both questions
+    // — idle, and a link graph naming `a.cpp` and not the engine — and the pair below needs the real
+    // default on each side: the first dies to `() => null`, the second to `() => new Set()`.
+    const engine = 'core/src/engines/registration_engine/feature_registration_engine.cpp';
+    for (const [touched, expected] of [[engine, null], ['core/src/a.cpp', 'complaint']]) {
+      const tree = aFreshTree();
+      tree.put(engine, Date.now() - 100000);
+      mkdirSync(join(tree.root, 'bin'), { recursive: true });
+      const shim = join(tree.root, 'bin', 'ninja');
+      writeFileSync(shim, '#!/bin/sh\n'
+        + `if [ "$1" = "-t" ]; then echo "${join(tree.root, 'core/src/a.cpp')}"; exit 0; fi\n`
+        + 'echo "ninja: no work to do."\n');
+      chmodSync(shim, 0o755);
+      tree.put(touched, Date.now());
+
+      const saved = process.env.PATH;
+      process.env.PATH = `${join(tree.root, 'bin')}:${saved}`;
+      try {
+        let message = null;
+        try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
+        if (expected === null) expect(message, touched).toBeNull();
+        else expect(message, touched).toMatch(/compiled core is older than the C\+\+/);
+      } finally {
+        process.env.PATH = saved;
+      }
+    }
   });
 
   it('does not forgive a preset whose generator or toolchain changed', () => {
@@ -498,6 +698,18 @@ describe('the dist freshness check', () => {
       // inherits, so reading the base's value instead compares `-Oz -flto` against a cache holding
       // `-pthread -Oz -flto` and refuses.
       const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].displayName = 'a better sentence about the same build';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('forgives it when the toolchain path is spelled the way CMake would not cache it', () => {
+      // CMake caches the toolchain path collapsed, so an `EMSDK` with a trailing slash — which
+      // `emsdk_env.sh` is happy to export — expanded to `/opt/sdk//upstream/…` against a cache holding
+      // `/opt/sdk/upstream/…`, and an inert edit was refused in a way no configure could clear.
+      const tree = realShaped(aFreshTree());
+      process.env.SPHANORAMA_TEST_SDK = '/opt/sdk/';
       const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
       presets.configurePresets[0].displayName = 'a better sentence about the same build';
       tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
@@ -771,6 +983,32 @@ describe('the dist freshness check', () => {
     expect(complaint(tree.root, undefined, () => true)).toMatch(/compiled core is older than the C\+\+/);
   });
 
+  it('checks a build file that is not called CMakeLists.txt', () => {
+    // `cmake/opencv.cmake` sets the flags OpenCV is compiled with in both wasm builds since ADR 0069,
+    // and the walk looked for one file name. An include is a build file whatever it is called.
+    for (const source of ['cmake/opencv.cmake', 'cmake/another.cmake']) {
+      const tree = aFreshTree();
+      tree.put(source, Date.now());
+      expect(complaint(tree.root, undefined, () => false), source)
+        .toMatch(/compiled core is older than the C\+\+/);
+    }
+    // And with ninja idle, which is the state that tells the rules apart: pending work makes every
+    // build file suspect, so only here does "the graph does not name it" have to be what convicts.
+    const tree = aFreshTree();
+    tree.put('cmake/another.cmake', Date.now());
+    expect(complaint(tree.root, undefined, () => true))
+      .toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('forgives an included build file the graph names, as it forgives a CMakeLists', () => {
+    // The same deadlock the CMakeLists rule exists for: a comment edit to an include reconfigures,
+    // gives ninja nothing to do, and could never be cleared if only CMakeLists were read out of the
+    // graph.
+    const tree = aFreshTree();
+    tree.put('cmake/opencv.cmake', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
+  });
+
   it('forgives a build file when ninja says there is nothing left to do', () => {
     // A `CMakeLists.txt` edit that is inert for a preset — a comment, or a branch that preset does
     // not take — reconfigures and produces no work, so the core is never relinked and can never
@@ -828,8 +1066,9 @@ describe('the dist freshness check', () => {
 
   it('forgives a header ninja has already accounted for', () => {
     // The fifth instance of this file's recurring defect, and this branch's own doing:
-    // `feature_registration_engine.h` is included only by a translation unit the wasm build does
-    // not compile, so no wasm graph names it and no rebuild can make the core newer than it.
+    // `feature_registration_engine.h` was then included only by a translation unit the wasm build
+    // did not compile, so no wasm graph named it and no rebuild could make the core newer than it.
+    // The presets compile it since ADR 0069; a build without OpenCV still does not.
     // Touching it was a complaint whose printed remedy could not clear it.
     //
     // `.ninja_deps` records every header any compiled translation unit included, so when ninja says

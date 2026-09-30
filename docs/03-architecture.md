@@ -407,9 +407,9 @@ with whatever the camera happened to be pointing at, nothing anywhere verified t
 came from that cell's direction, and the failure was invisible until a build stage this repo does
 not have yet. Vision-only orientation is what would make those labels true — frame-to-frame
 tracking seeded by `RegistrationEngine` — and what that needs does not exist. `ExtractFeatures` is
-real since Phase 2 began, though **only where OpenCV is linked**, which is not the browser this use
-case happens in (ADR 0052). *Matching* is written now — `EstimatePairwise` registers a pair and is
-measured — but it is native-only for the same reason, and frame-to-frame **tracking**, which is the
+real since Phase 2 began, natively first and in the browser's build since ADR 0069, where no
+composition root selects it yet. *Matching* is written now — `EstimatePairwise` registers a pair
+and is measured, in both builds — and frame-to-frame **tracking**, which is the
 part this argument actually rests on, is not written anywhere. A pairwise rotation between two
 frames the caller already chose is not a tracker. Until there is one, the honest answer is a message
 rather than a sphere.

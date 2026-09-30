@@ -92,10 +92,10 @@ class IRegistrationEngine {
   //   it backwards.** It said `Unsupported` is "the only status this method returns in any shipping
   //   browser build", which reads as a fact about what browsers see. No manager takes an
   //   `IRegistrationEngine` at all, so nothing outside tests calls this method in any build. The
-  //   accurate statement is conditional: the first composition root that wires this up will get the
-  //   null engine everywhere OpenCV is absent, which today is every browser build, and `Unsupported`
-  //   is what it will see. A caller written against the codes above and not this one is writing for
-  //   the build that does not exist yet.
+  //   accurate statement is conditional: a composition root that wires this up gets the null engine
+  //   wherever OpenCV is absent, and `Unsupported` is what it sees. Since ADR 0069 that is only a
+  //   build configured without it, not the browser — so a caller written against the codes above
+  //   and not this one is writing for the build it will usually get, and wrong about the other.
   //
   // An `Ok` result is not the same as an accepted one: see `PairwiseResult::accepted`, which is
   // false when a rotation was found and a minority of the correspondences agree with it (ADR 0056).

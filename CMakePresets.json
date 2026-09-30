@@ -53,7 +53,9 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SPHANORAMA_BUILD_TESTS": "OFF",
-        "CMAKE_CXX_FLAGS": "-msimd128 -Oz -flto"
+        "SPHANORAMA_WITH_OPENCV": "ON",
+        "CMAKE_CXX_FLAGS": "-msimd128 -Oz -flto",
+        "CMAKE_C_FLAGS": "-msimd128 -Oz -flto"
       }
     },
     {
@@ -63,6 +65,7 @@
       "binaryDir": "${sourceDir}/build/wasm-release-threaded",
       "cacheVariables": {
         "CMAKE_CXX_FLAGS": "-msimd128 -pthread -Oz -flto",
+        "CMAKE_C_FLAGS": "-msimd128 -pthread -Oz -flto",
         "CMAKE_EXE_LINKER_FLAGS": "-pthread -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency"
       }
     },
@@ -74,6 +77,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-msimd128 -O0 -g",
+        "CMAKE_C_FLAGS": "-msimd128 -O0 -g",
         "CMAKE_EXE_LINKER_FLAGS": "-sASSERTIONS=2 -sSAFE_HEAP=1"
       }
     }
