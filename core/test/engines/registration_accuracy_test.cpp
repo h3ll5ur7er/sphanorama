@@ -36,6 +36,7 @@
 #include "support/match_noise.h"
 #include "support/rendered_dataset.h"
 #include "support/rotation_scoring.h"
+#include "support/solved_ring.h"
 #include "support/synthetic_dataset.h"
 #include "support/wrong_priors.h"
 #include "utilities/camera_model.h"
@@ -447,22 +448,12 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
     truth.push_back(frame.trueRotation);
   }
 
-  std::vector<PairwiseResult> pairs;
-  for (int at = 0; at < kFrames; ++at) {
-    const size_t a = static_cast<size_t>(at);
-    const size_t b = static_cast<size_t>((at + 1) % kFrames);
-    const Result<PairwiseResult> pair = engine.EstimatePairwise(
-        sets[a], sets[b], test::PairPriorThreeDegreesOut(truth[a], truth[b]), dataset.value.lens);
-    ASSERT_TRUE(pair.ok()) << "pair " << a << "-" << b << ": " << pair.status.detail;
-    pairs.push_back(pair.value);
-  }
-
+  const Result<GlobalSolution> solved =
+      test::SolveRingThreeDegreesOut(engine, sets, dataset.value.frames, dataset.value.lens);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
   std::vector<FrameId> ids;
   for (const SyntheticFrame& frame : dataset.value.frames) ids.push_back(frame.frame.id);
   const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(ids, truth);
-
-  const Result<GlobalSolution> solved = engine.Refine(pairs, priors, dataset.value.lens);
-  ASSERT_TRUE(solved.ok()) << solved.status.detail;
   ASSERT_EQ(solved.value.rotations.size(), truth.size());
   EXPECT_TRUE(solved.value.converged);
   // Fitted even handed the rendered lens: the figures below are the refitted pairs' solve, and a
@@ -500,8 +491,8 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
   // The median's bound is what fails a solve that has lost the closing pair: handed eleven, ORB
   // reads 0.1005, AKAZE 0.0601 and SIFT 0.0229, and only ORB's is past 0.08 — which is why the
   // bound is tighter than twice the measurement, and why `edgesUsed` is asserted above as well.
-  EXPECT_LT(score.medianDeg, 0.08);
-  EXPECT_LT(score.maxDeg, 0.25);
+  EXPECT_LT(score.medianDeg, test::kSolvedRingMedianBoundDeg);
+  EXPECT_LT(score.maxDeg, test::kSolvedRingMaxBoundDeg);
 }
 
 /**
