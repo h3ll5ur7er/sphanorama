@@ -20,6 +20,14 @@ constexpr int32_t kWidestPreview = 2048;
 std::string Named(const char* what, uint64_t id) {
   return std::string(what) + " " + std::to_string(id);
 }
+
+// Whether a frame the build held is no longer the store's to charge for. `NotFound` is not a
+// refusal to let go: the store emptied itself under the build — a new capture begins by clearing it
+// (ADR 0034) — and nothing named by that id will ever be forgettable again, so keeping the handle
+// to retry would strand the build rather than recover it.
+bool Gone(const Status& forgotten) {
+  return forgotten.ok() || forgotten.code == StatusCode::NotFound;
+}
 }  // namespace
 
 PanoramaBuildManager::PanoramaBuildManager(IRegistrationEngine& registration,
@@ -62,6 +70,15 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   // The tier first, because it decides whether the identities below name this capture's pixels at
   // all (ADR 0035).
   SPH_TRY(const uint64_t generation, frames_.TierGeneration());
+  // Zero is a store with no spill tier, whose frames cannot outlive the tab — so a document it
+  // wrote names identities that restart with every tab, and a stale one matches a live capture's
+  // frames by id alone. There is nothing here that can tell the two apart; `Resume` is refused on
+  // such a store by `Adopt`, and a build is refused here, rather than made from another capture's
+  // pixels.
+  if (generation == 0) {
+    return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
+                        "a device with no spill tier cannot say whose frames a capture names");
+  }
   if (generation != document.generation) {
     return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
                         "the frames this capture names belong to another capture's tier");
@@ -88,20 +105,35 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
                             "the pick recorded for " + Named("cell", node)
                                 + " is not a candidate identity");
       }
+      // A pick the cell no longer holds gives way to the ranking: a discarding retake took it, and
+      // no screen can show a frame that is gone. An offered frame is never written down (its
+      // bytes are not in the tier), so a pick of one gives way too — the gap ADR 0070 records.
       const auto found = std::find_if(candidates.begin(), candidates.end(),
                                       [&](const Candidate* c) { return c->id == *named; });
-      if (found == candidates.end()) {
-        return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
-                            "the pick recorded for " + Named("cell", node) + " names "
-                                + Named("candidate", named->value)
-                                + ", which the cell does not hold");
-      }
-      chosen = *found;
+      if (found != candidates.end()) chosen = *found;
     } else if (pick.status.code != StatusCode::NotFound) {
       return pick.status;
     }
     build.frames.push_back(chosen->frame);
     build.poses.push_back(chosen->pose);
+  }
+
+  // Two cells naming one frame would give it two priors, which the solve refuses — after every
+  // extraction and pair had been paid for.
+  for (size_t a = 0; a < build.frames.size(); ++a) {
+    for (size_t b = a + 1; b < build.frames.size(); ++b) {
+      if (build.frames[a].id == build.frames[b].id) {
+        return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
+                            "this capture names " + Named("frame", build.frames[a].id.value)
+                                + " in two cells");
+      }
+    }
+  }
+  // Nor does the solve face a panorama nothing anchored, and it would say so only at the end.
+  if (std::none_of(build.poses.begin(), build.poses.end(),
+                   [](const PoseSample& pose) { return pose.confidence > 0.0; })) {
+    return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
+                        "no frame of this capture was taken at a measured pose");
   }
 
   const int32_t width = build.frames.front().width;
@@ -126,11 +158,16 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
                         "this capture's field of view is not a lens");
   }
 
-  // Cells overlap where their frames look within the narrower field of view of each other.
+  // Cells overlap where their frames look within the narrower field of view of each other — by
+  // the direction each looked, so a frame rolled against its neighbour still pairs with it. Only
+  // measured poses are read: at confidence zero the orientation is not one (`PoseSampleDefect`),
+  // and the direction `Normalize` would invent for it is straight ahead.
   const double reach = std::min(document.spec.horizontalFovDeg, document.spec.verticalFovDeg)
                        * std::numbers::pi / 180.0;
   for (size_t a = 0; a < build.frames.size(); ++a) {
+    if (build.poses[a].confidence <= 0.0) continue;
     for (size_t b = a + 1; b < build.frames.size(); ++b) {
+      if (build.poses[b].confidence <= 0.0) continue;
       const double apart = AngleBetweenDirections(Direction(build.poses[a].orientation),
                                                   Direction(build.poses[b].orientation));
       if (apart < reach) build.pairs.emplace_back(a, b);
@@ -179,15 +216,24 @@ Status PanoramaBuildManager::ExtractFeatures(Build& build, size_t index) {
   const FrameRef& frame = build.frames[index];
   SPH_TRY(const Residency found, frames_.ResidencyOf(frame));
   auto features = registration_.ExtractFeatures(frame);
-  if (!features.ok()) return features.status;
-  build.features.push_back(features.value);
+  if (features.ok()) build.features.push_back(features.value);
   // Extraction leaves the frame resident whatever tier it was in (`FeatureSet`), and a sphere of
-  // faulted-in frames is the heap refusal cooling exists to avoid (ADR 0023).
-  if (found != Residency::HeapPinned) {
-    SPH_TRY(const Residency now, frames_.ResidencyOf(frame));
-    if (now != found) return frames_.Demote(frame, found);
+  // faulted-in frames is the heap refusal cooling exists to avoid (ADR 0023). On a refusal too: an
+  // engine reads the frame before it allocates its answer, so a want of room arrives with the frame
+  // already faulted in, and leaving it there is the one thing that makes the want worse.
+  Status restored = PutBack(frame, found);
+  if (!features.ok()) {
+    if (!restored.ok()) features.status.detail += "; and " + restored.detail;
+    return features.status;
   }
-  return Status::Ok();
+  return restored;
+}
+
+Status PanoramaBuildManager::PutBack(const FrameRef& frame, Residency found) {
+  if (found == Residency::HeapPinned) return Status::Ok();
+  SPH_TRY(const Residency now, frames_.ResidencyOf(frame));
+  if (now == found) return Status::Ok();
+  return frames_.Demote(frame, found);
 }
 
 Status PanoramaBuildManager::EstimatePair(Build& build, size_t index) {
@@ -242,13 +288,11 @@ Status PanoramaBuildManager::Compose(Build& build) {
   auto preview = composition_.RenderPreview(build.solution, frames, GainMap{}, build.previewWidth);
   if (!preview.ok()) {
     // A refusal that could not give the answer back hands it over instead, and it is this build's
-    // to release and forget (`RenderPreview`).
+    // to release and forget (`RenderPreview`) — held as the preview, so a refused release is
+    // retried by `Cancel` like any other.
     if (preview.value.id.valid()) {
-      auto residency = frames_.ResidencyOf(preview.value);
-      if (residency.ok() && residency.value == Residency::HeapPinned) {
-        (void)frames_.Release(preview.value);
-      }
-      if (!frames_.Forget(preview.value).ok()) build.preview = preview.value;
+      build.preview = preview.value;
+      (void)GiveBackPreview(build);
     }
     return preview.status;
   }
@@ -268,27 +312,40 @@ Status PanoramaBuildManager::ForgetFeatures(Build& build) {
     };
     Status descriptors = forget(set.descriptors);
     Status keypoints = forget(set.keypoints);
-    if (!descriptors.ok() || !keypoints.ok()) {
+    if (!Gone(descriptors) || !Gone(keypoints)) {
       FeatureSet left = set;
-      if (descriptors.ok()) left.descriptors = FrameRef{};
-      if (keypoints.ok()) left.keypoints = FrameRef{};
+      if (Gone(descriptors)) left.descriptors = FrameRef{};
+      if (Gone(keypoints)) left.keypoints = FrameRef{};
       kept.push_back(left);
-      if (first.ok()) first = descriptors.ok() ? keypoints : descriptors;
+      if (first.ok()) first = Gone(descriptors) ? keypoints : descriptors;
     }
   }
   build.features = std::move(kept);
   return first;
 }
 
+Status PanoramaBuildManager::GiveBackPreview(Build& build) {
+  if (!build.preview) return Status::Ok();
+  const FrameRef preview = *build.preview;
+  auto residency = frames_.ResidencyOf(preview);
+  if (residency.status.code == StatusCode::NotFound) {
+    build.preview.reset();
+    return Status::Ok();
+  }
+  if (!residency.ok()) return residency.status;
+  // Pinned only when `RenderPreview` handed it back unreleased; nothing else pins it.
+  if (residency.value == Residency::HeapPinned) {
+    if (Status released = frames_.Release(preview); !released.ok()) return released;
+  }
+  Status forgotten = frames_.Forget(preview);
+  if (!Gone(forgotten)) return forgotten;
+  build.preview.reset();
+  return Status::Ok();
+}
+
 Status PanoramaBuildManager::Release(Build& build) {
   Status first = ForgetFeatures(build);
-  if (build.preview) {
-    if (Status forgotten = frames_.Forget(*build.preview); forgotten.ok()) {
-      build.preview.reset();
-    } else if (first.ok()) {
-      first = forgotten;
-    }
-  }
+  if (Status given = GiveBackPreview(build); !given.ok() && first.ok()) first = given;
   return first;
 }
 
@@ -334,6 +391,12 @@ Result<PanoramaRef> PanoramaBuildManager::Panorama(BuildId id) {
   if (build->progress.stage != BuildStage::Complete || !build->preview) {
     return Err<PanoramaRef>(StatusCode::FailedPrecondition, kComponent,
                             "this build has not completed");
+  }
+  // Asked rather than assumed: a new capture empties the store, and a handle it no longer holds is
+  // not a panorama.
+  if (!frames_.ResidencyOf(*build->preview).ok()) {
+    return Err<PanoramaRef>(StatusCode::FailedPrecondition, kComponent,
+                            "the store no longer holds this build's panorama; build again");
   }
   PanoramaRef panorama;
   panorama.build = id;

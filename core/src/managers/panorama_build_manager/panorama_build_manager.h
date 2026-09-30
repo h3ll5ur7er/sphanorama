@@ -49,12 +49,16 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   size_t StepCount(const Build& build) const;
   Status Step(Build& build);
   Status ExtractFeatures(Build& build, size_t frame);
+  // Back to the tier it was found in, since reading it faulted it in.
+  Status PutBack(const FrameRef& frame, Residency found);
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
   Status Compose(Build& build);
   // Everything the build holds, given back. Answers the first refusal and keeps what was refused.
   Status Release(Build& build);
   Status ForgetFeatures(Build& build);
+  // Released if `RenderPreview` handed it back pinned, then forgotten; kept for a retry otherwise.
+  Status GiveBackPreview(Build& build);
   void Abandon(Build& build, Status why);
   void Report(Build& build);
   Result<Build*> Find(BuildId id);

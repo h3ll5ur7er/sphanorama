@@ -1246,6 +1246,9 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
   Trim(cell, judged);
   // After the trim, so nothing forgotten is demoted on its way out.
   Cool(cell);
+  // The offered frame is not written down (its bytes are not in the tier), but the reordering and
+  // whatever the trim pushed out are, for the same reason a discarding retake is.
+  Checkpoint();
   return Ok(FrameVerdict::Accepted);
 }
 
@@ -1348,6 +1351,9 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
 
   if (replace) {
     if (auto it = candidates_.find(node.value); it != candidates_.end()) Discard(it->second);
+    // Written down now rather than at the next burst: a build reads the document (ADR 0070), and
+    // one written before this names frames the store has just forgotten.
+    Checkpoint();
   }
   return Status::Ok();
 }

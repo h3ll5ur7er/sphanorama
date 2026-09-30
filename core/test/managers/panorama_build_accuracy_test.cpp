@@ -22,6 +22,7 @@
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_project_store_access.h"
+#include "support/fake_spill_sink.h"
 #include "support/rendered_dataset.h"
 #include "support/synthetic_dataset.h"
 #include "utilities/camera_model.h"
@@ -154,7 +155,10 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
   }
 
   static std::unique_ptr<Rendered> rendered_;
-  MemoryFrameStoreAccess store_{1 << 28};
+  // With a spill tier, as in a browser: a build refuses a store without one, whose frames it
+  // cannot tell from another tab's (ADR 0070).
+  FakeSpillSink sink_;
+  MemoryFrameStoreAccess store_{1 << 28, &sink_};
   FakeProjectStoreAccess projects_;
   NearestCentreCompositionEngine composition_{store_};
   Intrinsics lens_;

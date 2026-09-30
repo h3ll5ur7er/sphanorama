@@ -42,10 +42,18 @@ everything, and it could not have done otherwise as declared, for three reasons.
    across the ticks the client already makes — applied to the other long thing the core does.
 4. **What a build is made from.**
    - **One frame per cell**: the cell's manual pick where `ProjectManager` recorded one, and
-     otherwise its first candidate in the document, which is the ranking's best — the document
-     lists each cell's candidates in the order the ranking left them. A pick naming a candidate the
-     cell does not hold is refused rather than replaced by the ranking's: the review screen would
-     show one frame and the panorama would be made from another.
+     otherwise its first candidate in the document, which is the best-ranked of the frames the
+     capture wrote down — the document lists each cell's candidates in the order the ranking left
+     them, and `CaptureSessionManager` now rewrites it after a discarding retake and after an offer
+     as well as after every burst, so it does not name frames the store has forgotten. A pick the
+     cell no longer holds gives way to the ranking: a discarding retake leaves the pick behind with
+     no way to clear it, and no screen can show a frame that is gone. The first version refused
+     such a pick, which made every build after a retake of a picked cell impossible.
+   - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
+     nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
+     direction a degenerate one normalises to is straight ahead. A capture where no pose was
+     measured is refused at `Start`, as is one naming a frame in two cells: the solve refuses both,
+     and would say so only after every extraction and pair had been paid for.
    - **The lens is the capture's field of view at the grabbed frames' size**
      (`LensFromFieldOfView`), not the camera's maximum size the document records: the page grabs at
      most 1280 on the long edge, and matches are pixels of the grabbed frame. Every selected frame
@@ -69,6 +77,16 @@ everything, and it could not have done otherwise as declared, for three reasons.
    finished releases the finished one's panorama.
 
 ## Consequences
+
+- **A host with no spill tier captures but does not build.** Its tier generation is zero in every
+  tab and frame identities restart with each, so a document an earlier tab wrote names ids a live
+  capture now holds, and the store answers for them. Nothing the build can ask tells the two apart
+  — `Resume` is refused on such a host by `Adopt`, for the same reason — so `Start` refuses rather
+  than build from another capture's pixels. Every browser this targets has an origin private file
+  system; the degraded mode docs/04 §4.1 supports is a capture, and a store that could say which
+  tab it belongs to is what would lift this.
+- **An offered frame is never built from**, even when it ranks first or is picked, because the
+  document leaves it out — its bytes are not in the tier (ADR 0023). Nothing offers a frame today.
 
 - **A contract change** in `managers/panorama_build_manager.h`, and the generated TypeScript and
   dispatch with it. Nothing in the shell calls `Start` yet.

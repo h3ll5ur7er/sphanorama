@@ -351,16 +351,31 @@ TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
-// A project, not a session, since ADR 0070 — and the runtime's manager reads the project store,
-// so an id nobody created is refused there rather than by a stub that refused everything.
-TEST(Facade, ABuildForAProjectThatDoesNotExistIsRefused) {
-  wire::Writer args;
-  args.PutF64(4041.0);
-  BuildSpec spec;
-  codec::Encode(args, spec);
-  Response response = Call("PanoramaBuildManager.start", args.bytes());
-  wire::Reader in = response.reader();
-  EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
+// A project, not a session, since ADR 0070. Both answers are `NotFound`, so the detail is what
+// shows the id arrived: a project that exists and holds no capture is refused for that, and an id
+// dispatched as some other number would be refused as no project at all.
+TEST(Facade, ABuildIsStartedForTheProjectItNames) {
+  const auto start = [](double project) {
+    wire::Writer args;
+    args.PutF64(project);
+    BuildSpec spec;
+    codec::Encode(args, spec);
+    Response response = Call("PanoramaBuildManager.start", args.bytes());
+    wire::Reader in = response.reader();
+    return ReadStatus(in);
+  };
+  const Status nowhere = start(4041.0);
+  EXPECT_EQ(nowhere.code, StatusCode::NotFound);
+  EXPECT_EQ(nowhere.detail, "no such project");
+
+  wire::Writer named;
+  named.PutString("empty");
+  Response opened = Call("ProjectManager.create", named.bytes());
+  wire::Reader created = opened.reader();
+  ASSERT_EQ(ReadStatus(created).code, StatusCode::Ok);
+  const Status empty = start(created.GetF64());
+  EXPECT_EQ(empty.code, StatusCode::NotFound);
+  EXPECT_EQ(empty.detail, "this project holds no capture");
 }
 
 TEST(Facade, TheResultBufferSurvivesUntilTheNextCall) {

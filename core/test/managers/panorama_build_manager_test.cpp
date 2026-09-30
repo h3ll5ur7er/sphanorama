@@ -45,12 +45,14 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
 
   Result<FeatureSet> ExtractFeatures(const FrameRef& frame) override {
     extracted.push_back(frame.id);
-    if (auto found = extractFailures.find(frame.id.value); found != extractFailures.end()) {
-      return found->second;
-    }
+    // The real engine pins before it allocates, so a refusal for want of room arrives with the
+    // frame already faulted in; `failAfterReading` says which way round this one refuses.
+    const auto found = extractFailures.find(frame.id.value);
+    if (found != extractFailures.end() && !failAfterReading) return found->second;
     auto pinned = store_.Pin(frame);
     if (!pinned.ok()) return pinned.status;
     if (auto released = store_.Release(frame); !released.ok()) return released;
+    if (found != extractFailures.end()) return found->second;
     FeatureSet set;
     set.frame = frame.id;
     set.extractor = 1;
@@ -78,7 +80,7 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
     pair.relativeRotation = prior;
     pair.inliers = 50;
     pair.correspondences = 60;
-    pair.accepted = true;
+    pair.accepted = unaccepted.count({a.frame.value, b.frame.value}) == 0;
     return Ok(pair);
   }
 
@@ -106,6 +108,10 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
       std::reverse(solution.frames.begin(), solution.frames.end());
       std::reverse(solution.rotations.begin(), solution.rotations.end());
     }
+    if (placeAStranger) {
+      solution.frames.push_back(FrameId{999999});
+      solution.rotations.push_back(Quat{});
+    }
     return Ok(solution);
   }
 
@@ -122,11 +128,14 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
   Intrinsics refinedLens;
   int refines = 0;
   std::map<uint64_t, Status> extractFailures;
+  bool failAfterReading = false;
   std::set<uint64_t> featureless;
   std::map<std::pair<uint64_t, uint64_t>, Status> pairFailures;
   Status refineFailure;
   std::set<uint64_t> dropped;
   bool reverse = false;
+  bool placeAStranger = false;
+  std::set<std::pair<uint64_t, uint64_t>> unaccepted;
 
  private:
   IFrameStoreAccess& store_;
@@ -183,6 +192,74 @@ class ScriptedCompositionEngine final : public ICompositionEngine {
   IFrameStoreAccess& store_;
 };
 
+// The store as the manager sees it, refusing `Release` as many times as it is told to. No real
+// store refuses a release of a frame it holds pinned, and `RenderPreview` hands its answer back in
+// exactly the case where one did — so the manager's retry is reachable only through this.
+class ReluctantFrameStore final : public IFrameStoreAccess {
+ public:
+  explicit ReluctantFrameStore(IFrameStoreAccess& real) : real_(real) {}
+
+  Result<FrameStoreBudget> Budget() override { return real_.Budget(); }
+  Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
+    return real_.Allocate(width, height, format);
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef& frame) override { return real_.Pin(frame); }
+  Status Release(const FrameRef& frame) override {
+    if (releaseRefusals > 0) {
+      --releaseRefusals;
+      return Fail(StatusCode::Internal, "test", "will not release it this time");
+    }
+    return real_.Release(frame);
+  }
+  Result<Residency> ResidencyOf(const FrameRef& frame) override { return real_.ResidencyOf(frame); }
+  Status Demote(const FrameRef& frame, Residency target) override {
+    if (demoteRefusals > 0) {
+      --demoteRefusals;
+      return Fail(StatusCode::StorageQuotaExceeded, "test", "no room in the tier");
+    }
+    return real_.Demote(frame, target);
+  }
+  Status Adopt(const FrameRef& frame) override { return real_.Adopt(frame); }
+  Status Forget(const FrameRef& frame) override {
+    if (forgetRefusals > 0) {
+      --forgetRefusals;
+      return Fail(StatusCode::Internal, "test", "will not forget it this time");
+    }
+    return real_.Forget(frame);
+  }
+  Status Clear() override { return real_.Clear(); }
+  Result<uint64_t> TierGeneration() override { return real_.TierGeneration(); }
+  Result<uint64_t> ContentHash(const FrameRef& frame) override { return real_.ContentHash(frame); }
+
+  int releaseRefusals = 0;
+  int demoteRefusals = 0;
+  int forgetRefusals = 0;
+
+ private:
+  IFrameStoreAccess& real_;
+};
+
+// A project store that fails one key's reads with a code of the test's choosing. No store here
+// fails a read with anything but `NotFound`, and the manager must not read any other failure of a
+// pick as "nobody chose".
+class UnreadablePickStore final : public IProjectStoreAccess {
+ public:
+  UnreadablePickStore(IProjectStoreAccess& real, std::string key) : real_(real), key_(key) {}
+  Result<std::vector<ProjectId>> ListProjects() override { return real_.ListProjects(); }
+  Result<std::string> ReadDocument(ProjectId project, std::string_view key) override {
+    if (key == key_) return Err<std::string>(StatusCode::StorageQuotaExceeded, "test", "unreadable");
+    return real_.ReadDocument(project, key);
+  }
+  Status WriteDocument(ProjectId project, std::string_view key, std::string_view value) override {
+    return real_.WriteDocument(project, key, value);
+  }
+  Status DeleteProject(ProjectId project) override { return real_.DeleteProject(project); }
+
+ private:
+  IProjectStoreAccess& real_;
+  std::string key_;
+};
+
 class PanoramaBuildManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -235,12 +312,22 @@ class PanoramaBuildManagerTest : public ::testing::Test {
   }
 
   // Polls until the build finishes, and answers every progress it reported on the way.
-  std::vector<BuildProgress> RunToEnd(BuildId build, int limit = 1000) {
+  std::vector<BuildProgress> RunToEnd(BuildId build) { return RunToEnd(manager_, build); }
+
+  // Never empty: a build that could not be polled at all answers one progress saying so, so a
+  // caller reading `.back()` reads a failure rather than past the end.
+  static std::vector<BuildProgress> RunToEnd(IPanoramaBuildManager& manager, BuildId build) {
     std::vector<BuildProgress> seen;
-    for (int i = 0; i < limit; ++i) {
-      auto progress = manager_.Poll(build);
+    for (int i = 0; i < 1000; ++i) {
+      auto progress = manager.Poll(build);
       EXPECT_TRUE(progress.ok()) << progress.status.detail;
-      if (!progress.ok()) break;
+      if (!progress.ok()) {
+        BuildProgress unpolled;
+        unpolled.stage = BuildStage::Failed;
+        unpolled.failure = progress.status;
+        seen.push_back(unpolled);
+        break;
+      }
       seen.push_back(progress.value);
       if (progress.value.stage == BuildStage::Complete
           || progress.value.stage == BuildStage::Failed) {
@@ -264,6 +351,60 @@ class PanoramaBuildManagerTest : public ::testing::Test {
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesAProjectThatDoesNotExist) {
   EXPECT_EQ(manager_.Start(ProjectId{99}, BuildSpec{}).status.code, StatusCode::NotFound);
+}
+
+// A capture under an id nobody created — the title is what makes a project one, as it is for
+// `Begin`.
+TEST_F(PanoramaBuildManagerTest, StartRefusesACaptureInAProjectNobodyCreated) {
+  CaptureRing(2);
+  ASSERT_TRUE(projects_.WriteDocument(ProjectId{99}, kSessionDocumentKey,
+                                      EncodeSessionDocument(document_)).ok());
+  const auto started = manager_.Start(ProjectId{99}, BuildSpec{});
+  EXPECT_EQ(started.status.code, StatusCode::NotFound);
+  EXPECT_EQ(started.status.detail, "no such project");
+}
+
+// With no spill tier, frame identities restart with every tab and a stale document matches a live
+// capture's frames by id alone.
+TEST_F(PanoramaBuildManagerTest, StartRefusesAStoreWithNoSpillTier) {
+  MemoryFrameStoreAccess tierless{1 << 26};
+  PanoramaBuildManager manager{registration_, composition_, tierless, projects_};
+  auto frame = tierless.Allocate(kWidth, kHeight, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  Candidate candidate;
+  candidate.id = CandidateId{1};
+  candidate.node = NodeId{1};
+  candidate.frame = frame.value;
+  candidate.pose.confidence = 1.0;
+  document_.candidates.push_back(candidate);
+  document_.generation = 0;
+  document_.spec.horizontalFovDeg = kHorizontalFovDeg;
+  document_.spec.verticalFovDeg = kVerticalFovDeg;
+  document_.session = 1;
+  document_.nextCandidate = 2;
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                      EncodeSessionDocument(document_)).ok());
+  EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+  EXPECT_TRUE(tierless.Forget(frame.value).ok());
+}
+
+// Each would reach the solve, which refuses it, after every extraction and pair had been paid for.
+TEST_F(PanoramaBuildManagerTest, StartRefusesOneFrameInTwoCells) {
+  CaptureRing(3);
+  document_.candidates[2].frame = document_.candidates[0].frame;
+  WriteDocument();
+  EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+}
+
+TEST_F(PanoramaBuildManagerTest, StartRefusesACaptureNoMeasuredPoseAnchors) {
+  CaptureRing(3);
+  for (Candidate& candidate : document_.candidates) candidate.pose.confidence = 0.0;
+  WriteDocument();
+  EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+  // One measured pose is enough to say which way the panorama faces.
+  document_.candidates[1].pose.confidence = 1.0;
+  WriteDocument();
+  EXPECT_TRUE(manager_.Start(kProject, BuildSpec{}).ok());
 }
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesAProjectWithNoCapture) {
@@ -362,15 +503,26 @@ TEST_F(PanoramaBuildManagerTest, ACellGivesTheCandidateSomebodyChose) {
   EXPECT_EQ(registration_.extracted, (std::vector<FrameId>{chosen.frame.id, other.frame.id}));
 }
 
-// The review screen shows the pick; a build that quietly used the ranking's instead would make a
-// panorama from a frame nobody was shown.
-TEST_F(PanoramaBuildManagerTest, APickNamingACandidateTheCellDoesNotHoldIsRefused) {
-  AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+// A discarding retake takes the picked frame with it and leaves the pick behind, and no screen can
+// show a frame that is gone — so the ranking decides again, rather than every later build being
+// refused for a pick nobody can clear.
+TEST_F(PanoramaBuildManagerTest, APickTheCellNoLongerHoldsGivesWayToTheRanking) {
+  const Candidate best = AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
   const Candidate elsewhere = AddCandidate(NodeId{2}, FromAzimuthElevation(30.0, 0.0));
   WriteDocument();
   ASSERT_TRUE(projects_.WriteDocument(kProject, SelectionDocumentKey(NodeId{1}),
                                       std::to_string(elsewhere.id.value)).ok());
-  EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  EXPECT_EQ(registration_.extracted, (std::vector<FrameId>{best.frame.id, elsewhere.frame.id}));
+}
+
+TEST_F(PanoramaBuildManagerTest, APickThatCannotBeReadRefusesTheBuild) {
+  CaptureRing(2);
+  UnreadablePickStore unreadable{projects_, SelectionDocumentKey(NodeId{2})};
+  PanoramaBuildManager manager{registration_, composition_, store_, unreadable};
+  EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::StorageQuotaExceeded);
 }
 
 TEST_F(PanoramaBuildManagerTest, APickThatIsNotACandidateIsRefused) {
@@ -417,7 +569,13 @@ TEST_F(PanoramaBuildManagerTest, EachPollDoesOneStep) {
       EXPECT_LT(progress.value.fraction, 1.0) << "step " << step;
     }
   }
-  EXPECT_EQ(stages.back(), BuildStage::Complete);
+  // Each progress names the step the next `Poll` does.
+  std::vector<BuildStage> expected(11, BuildStage::Features);
+  expected.insert(expected.end(), 12, BuildStage::PairwiseMatching);
+  expected.push_back(BuildStage::GlobalSolve);
+  expected.push_back(BuildStage::Projecting);
+  expected.push_back(BuildStage::Complete);
+  EXPECT_EQ(stages, expected);
   EXPECT_EQ(last, 1.0);
   EXPECT_EQ(registration_.extracted.size(), 12u);
   EXPECT_EQ(registration_.asked.size(), 12u);
@@ -605,6 +763,20 @@ TEST_F(PanoramaBuildManagerTest, AFailedExtractionFailsTheBuildAndKeepsNothing) 
   EXPECT_EQ(last.failure.code, StatusCode::FrameStoreExhausted);
   EXPECT_EQ(HeapUsed(), before);
   EXPECT_EQ(manager_.Panorama(build.value).status.code, StatusCode::FailedPrecondition);
+
+  // A failed build is finished: asked again it answers the same and reads nothing more.
+  const size_t extracted = registration_.extracted.size();
+  auto again = manager_.Poll(build.value);
+  ASSERT_TRUE(again.ok());
+  EXPECT_EQ(again.value.stage, BuildStage::Failed);
+  EXPECT_EQ(again.value.failure.code, StatusCode::FrameStoreExhausted);
+  EXPECT_EQ(registration_.extracted.size(), extracted);
+
+  // And it does not stand in the way of the next one.
+  registration_.extractFailures.clear();
+  auto next = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(next.ok()) << next.status.detail;
+  EXPECT_EQ(RunToEnd(next.value).back().stage, BuildStage::Complete);
 }
 
 TEST_F(PanoramaBuildManagerTest, AFailedSolveFailsTheBuild) {
@@ -719,6 +891,240 @@ TEST_F(PanoramaBuildManagerTest, GhostsAndInvalidateAreNotBuiltYet) {
   EXPECT_EQ(manager_.Invalidate(build.value, dirty).code, StatusCode::Unsupported);
   EXPECT_EQ(manager_.Ghosts(BuildId{99}).status.code, StatusCode::NotFound);
   EXPECT_EQ(manager_.Invalidate(BuildId{99}, dirty).code, StatusCode::NotFound);
+}
+
+// The capture manager empties the store when a new capture begins (ADR 0034), and a build holds no
+// pin between two `Poll`s to stop it. What the build held is gone then, not refused: a `Forget`
+// answering `NotFound` has nothing left to retry, and a build that kept retrying it could never be
+// cancelled or replaced.
+TEST_F(PanoramaBuildManagerTest, AStoreEmptiedUnderAFinishedBuildDoesNotStrandIt) {
+  CaptureRing(3);
+  auto first = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(first.ok());
+  ASSERT_EQ(RunToEnd(first.value).back().stage, BuildStage::Complete);
+  ASSERT_TRUE(store_.Clear().ok());
+  // And its panorama is not handed out as though the store still held it.
+  EXPECT_EQ(manager_.Panorama(first.value).status.code, StatusCode::FailedPrecondition);
+
+  document_.candidates.clear();
+  CaptureRing(3);
+  auto second = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(second.ok()) << second.status.detail;
+  EXPECT_EQ(RunToEnd(second.value).back().stage, BuildStage::Complete);
+}
+
+TEST_F(PanoramaBuildManagerTest, AStoreEmptiedUnderARunningBuildDoesNotStrandIt) {
+  CaptureRing(4);
+  auto first = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(first.ok());
+  for (int step = 0; step < 2; ++step) ASSERT_TRUE(manager_.Poll(first.value).ok());
+  ASSERT_TRUE(store_.Clear().ok());
+  auto failed = manager_.Poll(first.value);
+  ASSERT_TRUE(failed.ok());
+  EXPECT_EQ(failed.value.stage, BuildStage::Failed);
+  EXPECT_TRUE(manager_.Cancel(first.value).ok());
+
+  document_.candidates.clear();
+  CaptureRing(3);
+  auto second = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(second.ok()) << second.status.detail;
+  EXPECT_EQ(RunToEnd(second.value).back().stage, BuildStage::Complete);
+}
+
+// `RenderPreview` hands its answer back pinned when the store would not release it, and the build
+// then releases and forgets it — on every retry, not once: a pin nothing retries is 8 MB that
+// `Cancel` can never give back, however willing the store becomes.
+TEST_F(PanoramaBuildManagerTest, AHandedBackPreviewIsReleasedWhenTheStoreWillAgain) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not take it back");
+  composition_.handBackPinned = true;
+  const int64_t before = HeapUsed();
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  // Three extractions, the arc's two pairs and the solve; the next step is the preview.
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.releaseRefusals = 1;
+  auto composed = manager.Poll(build.value);
+  ASSERT_TRUE(composed.ok());
+  ASSERT_EQ(composed.value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.releaseRefusals, 0) << "the build never tried to release the preview";
+  ASSERT_GT(HeapUsed(), before);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+// A refusal from an engine that had already read the frame leaves it faulted in, and the want of
+// room that refusal usually means is what a resident capture frame makes worse.
+TEST_F(PanoramaBuildManagerTest, AFrameGoesBackToItsTierWhenItsExtractionIsRefused) {
+  CaptureRing(3);
+  const FrameRef cold = document_.candidates[1].frame;
+  ASSERT_TRUE(store_.Demote(cold, Residency::Spilled).ok());
+  registration_.extractFailures[cold.id.value] =
+      Fail(StatusCode::FrameStoreExhausted, "test", "no room for the answer");
+  registration_.failAfterReading = true;
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  const BuildProgress last = RunToEnd(build.value).back();
+  ASSERT_EQ(last.stage, BuildStage::Failed);
+  EXPECT_EQ(last.failure.code, StatusCode::FrameStoreExhausted);
+  auto residency = store_.ResidencyOf(cold);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_EQ(residency.value, Residency::Spilled);
+}
+
+TEST_F(PanoramaBuildManagerTest, AFrameThatCannotGoBackToItsTierFailsTheBuild) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  ASSERT_TRUE(store_.Demote(document_.candidates[0].frame, Residency::Spilled).ok());
+  reluctant.demoteRefusals = 1;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  auto polled = manager.Poll(build.value);
+  ASSERT_TRUE(polled.ok());
+  EXPECT_EQ(polled.value.stage, BuildStage::Failed);
+  EXPECT_EQ(polled.value.failure.code, StatusCode::StorageQuotaExceeded);
+}
+
+// With nothing to pair, the features are given back before the solve rather than held to the end.
+TEST_F(PanoramaBuildManagerTest, ABuildWithNoPairsGivesItsFeaturesBackBeforeTheSolve) {
+  AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+  AddCandidate(NodeId{2}, FromAzimuthElevation(180.0, 0.0));
+  WriteDocument();
+  const int64_t before = HeapUsed();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 3; ++step) ASSERT_TRUE(manager_.Poll(build.value).ok());
+  ASSERT_EQ(registration_.refines, 1);
+  EXPECT_TRUE(registration_.asked.empty());
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+TEST_F(PanoramaBuildManagerTest, ASolveThatPlacesAFrameTheBuildNeverReadFailsIt) {
+  CaptureRing(3);
+  registration_.placeAStranger = true;
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  const BuildProgress last = RunToEnd(build.value).back();
+  EXPECT_EQ(last.stage, BuildStage::Failed);
+  EXPECT_EQ(last.failure.code, StatusCode::Internal);
+  EXPECT_EQ(composition_.renders, 0);
+}
+
+TEST_F(PanoramaBuildManagerTest, APreviewRefusedWithNothingHandedBackLeavesNothingHeld) {
+  CaptureRing(3);
+  composition_.failure = Fail(StatusCode::Unsupported, "test", "not a format it draws");
+  const int64_t before = HeapUsed();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  EXPECT_EQ(RunToEnd(build.value).back().stage, BuildStage::Failed);
+  EXPECT_EQ(HeapUsed(), before);
+  EXPECT_TRUE(manager_.Cancel(build.value).ok());
+}
+
+// A `Forget` the store refuses keeps charging the bytes, so the build keeps the handle and the next
+// `Cancel` asks again — and only then is the build gone.
+TEST_F(PanoramaBuildManagerTest, ACancelTheStoreRefusesIsTriedAgain) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(4);
+  const int64_t before = HeapUsed();
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 3; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.forgetRefusals = 1;
+  EXPECT_EQ(manager.Cancel(build.value).code, StatusCode::Internal);
+  EXPECT_GT(HeapUsed(), before);
+  auto still = manager.Poll(build.value);
+  ASSERT_TRUE(still.ok()) << "a build whose cancel was refused is still there to cancel";
+  EXPECT_EQ(still.value.stage, BuildStage::Failed);
+  EXPECT_EQ(still.value.failure.code, StatusCode::Cancelled);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), before);
+  EXPECT_EQ(manager.Poll(build.value).status.code, StatusCode::NotFound);
+}
+
+TEST_F(PanoramaBuildManagerTest, AFinishedBuildTheStoreWillNotReleaseStandsUntilItWill) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const int64_t before = HeapUsed();
+  auto first = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(first.ok());
+  ASSERT_EQ(RunToEnd(manager, first.value).back().stage, BuildStage::Complete);
+  reluctant.forgetRefusals = 1;
+  EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::Internal);
+  EXPECT_TRUE(manager.Panorama(first.value).ok()) << "the finished build did not stand";
+  auto second = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(second.ok()) << second.status.detail;
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+// `Refine` ignores an unaccepted pair by contract (ADR 0056), so the build hands it over rather
+// than deciding for it.
+TEST_F(PanoramaBuildManagerTest, AnUnacceptedPairIsHandedToTheSolve) {
+  CaptureRing(12);
+  const uint64_t a = document_.candidates[3].frame.id.value;
+  const uint64_t b = document_.candidates[4].frame.id.value;
+  registration_.unaccepted.insert({a, b});
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  RunToEnd(build.value);
+  ASSERT_EQ(registration_.refinedPairs.size(), 12u);
+  EXPECT_EQ(std::count_if(registration_.refinedPairs.begin(), registration_.refinedPairs.end(),
+                          [](const PairwiseResult& pair) { return !pair.accepted; }),
+            1);
+}
+
+// By the direction each frame looked, not by how far apart the whole orientations are: a frame
+// held on its side looks where its neighbour looks.
+TEST_F(PanoramaBuildManagerTest, AFrameRolledAgainstItsNeighbourStillPairsWithIt) {
+  AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+  AddCandidate(NodeId{2}, Multiply(FromAzimuthElevation(10.0, 0.0),
+                                   FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2)));
+  WriteDocument();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  RunToEnd(build.value);
+  EXPECT_EQ(registration_.asked.size(), 1u);
+}
+
+// The narrower field of view decides the reach, whichever way the frame is held: fifty-five degrees
+// apart is inside a 66-degree width and outside a 50-degree one.
+TEST_F(PanoramaBuildManagerTest, TheNarrowerFieldOfViewDecidesWhichCellsPair) {
+  AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+  AddCandidate(NodeId{2}, FromAzimuthElevation(55.0, 0.0));
+  WriteDocument();
+  for (const bool portrait : {false, true}) {
+    document_.spec.horizontalFovDeg = portrait ? kVerticalFovDeg : kHorizontalFovDeg;
+    document_.spec.verticalFovDeg = portrait ? kHorizontalFovDeg : kVerticalFovDeg;
+    ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                        EncodeSessionDocument(document_)).ok());
+    registration_.asked.clear();
+    auto build = manager_.Start(kProject, BuildSpec{});
+    ASSERT_TRUE(build.ok()) << build.status.detail;
+    RunToEnd(build.value);
+    EXPECT_TRUE(registration_.asked.empty()) << (portrait ? "portrait" : "landscape");
+  }
+}
+
+// At confidence zero the orientation is not a measurement, and the direction a degenerate one
+// normalises to is straight ahead — which would pair it with whatever looks that way.
+TEST_F(PanoramaBuildManagerTest, AFrameWhosePoseWasNotMeasuredIsPairedWithNothing) {
+  CaptureRing(12);
+  document_.candidates[0].pose.confidence = 0.0;
+  document_.candidates[0].pose.orientation = Quat{0, 0, 0, 0};
+  WriteDocument();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  for (const auto& asked : registration_.asked) {
+    EXPECT_NE(asked.a, document_.candidates[0].frame.id);
+    EXPECT_NE(asked.b, document_.candidates[0].frame.id);
+  }
+  EXPECT_EQ(registration_.asked.size(), 10u);
 }
 
 TEST_F(PanoramaBuildManagerTest, ABuildNobodyStartedIsNotFound) {

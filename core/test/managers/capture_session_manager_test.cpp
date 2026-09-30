@@ -2686,6 +2686,24 @@ TEST_F(CaptureSession, RetakeCanDiscardWhenAskedTo) {
   EXPECT_TRUE(manager->Candidates(node).value.empty());
 }
 
+// The document is what a build reads (ADR 0070), so a cell emptied here and left written down would
+// be built from frames the store has already forgotten — or refused for naming them.
+TEST_F(CaptureSession, ADiscardingRetakeIsWrittenDown) {
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  const NodeId node = FirstNode();
+  ASSERT_TRUE(FireBurst(node, burst).ok());
+  ASSERT_TRUE(manager->RequestRetake(node, /*replace=*/true).ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  for (const Candidate& candidate : document.candidates) {
+    EXPECT_NE(candidate.node, node) << "candidate " << candidate.id.value << " was discarded";
+  }
+}
+
 TEST_F(CaptureSession, RetakingAnUnknownCellIsRefused) {
   Begin();
   EXPECT_EQ(manager->RequestRetake(NodeId{9999}, false).code, StatusCode::NotFound);
@@ -3800,6 +3818,42 @@ TEST_F(CaptureSession, AnOfferedFrameTakesItsPlaceInTheRankingRatherThanTheEnd) 
   // Last to arrive, so first under this ranking — which is the point: position is the ranking's
   // to decide, not arrival's.
   EXPECT_EQ(strip[0].frame.id.value, imported.value.id.value);
+}
+
+// An offered frame is ranked into the cell and can push one of its burst's frames out, which the
+// store then forgets — so the document has to stop naming it there and then, not at the next burst.
+TEST_F(CaptureSession, AFramePushedOutByAnOfferIsNoLongerWrittenDown) {
+  ReversedQualityEngine reversed;
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  // Bursts until the cell stops growing, so the offer has to push something out.
+  BurstSpec burst;
+  burst.frameCount = 5;
+  size_t held = 0;
+  for (int retake = 0; retake < 4; ++retake) {
+    ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok()) << "burst " << retake;
+    held = ranked.Candidates(node).value.size();
+  }
+  auto imported = store->Allocate(8, 8, PixelFormat::RGBA8);
+  ASSERT_TRUE(imported.ok());
+  ASSERT_TRUE(ranked.OfferFrame(node, imported.value, PoseSample{}).ok());
+  ASSERT_EQ(ranked.Candidates(node).value.size(), held) << "the offer did not push anything out";
+
+  std::set<uint64_t> holding;
+  for (const Candidate& candidate : ranked.Candidates(node).value) {
+    holding.insert(candidate.id.value);
+  }
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  for (const Candidate& candidate : document.candidates) {
+    if (candidate.node != node) continue;
+    EXPECT_EQ(holding.count(candidate.id.value), 1u)
+        << "the document still names candidate " << candidate.id.value;
+  }
 }
 
 TEST_F(CaptureSession, AnOfferThatCannotBeRankedLeavesTheCellAlone) {

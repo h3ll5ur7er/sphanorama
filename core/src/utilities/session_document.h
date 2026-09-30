@@ -40,6 +40,10 @@ struct SessionDocument {
   uint64_t generation = 0;
   CapturePlanSpec spec;
   Intrinsics lens;
+  // Each cell's candidates best first, in the order the ranking left them — a build takes the first
+  // as the cell's frame where nobody picked (ADR 0070) — and rewritten after every burst, discarding
+  // retake and offer, so a write that succeeded names no frame the capture has since let go of.
+  //
   // Only the frames this session's own bursts produced, and the reason is where their bytes are.
   // Cooling spills a cell's own candidates and deliberately leaves offered ones alone (ADR 0023),
   // so an offered frame — a file import, a manual shutter — has nothing in the sink under its
