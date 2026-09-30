@@ -65,6 +65,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
    */
   Result<MotionCapability> RequireMotion();
   /** Clears the dwell, so no session inherits one another session counted. */
+  Status RequireIssuableCandidate() const;
   void ResetDwell();
   bool HasNode(NodeId node) const;
   /** The cell by id, or null. Callers that need the cone rather than merely its existence. */

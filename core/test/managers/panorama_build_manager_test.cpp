@@ -1084,6 +1084,80 @@ TEST_F(PanoramaBuildManagerTest, AFrameSomebodyElseHoldsPinnedKeepsItsPin) {
   EXPECT_TRUE(store_.Release(held).ok()) << "the build released a pin that was not its own";
 }
 
+// Only a store that says a frame is gone has given it back: one that cannot say where the panorama
+// is has not, and forgetting the build over it would leave 8 MB in the heap that nothing names.
+TEST_F(PanoramaBuildManagerTest, APanoramaWhoseTierCannotBeReadIsKeptForTheNextCancel) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const int64_t before = HeapUsed();
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(manager, build.value).back().stage, BuildStage::Complete);
+  reluctant.residencyRefusals = 1;
+  EXPECT_EQ(manager.Cancel(build.value).code, StatusCode::Internal);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+// A frame found pinned has no colder tier to go back to, and a retry after its holder let go must
+// not try to demote it into one — `HeapPinned` is not a tier a demotion can produce, and asking
+// for it would refuse every `Cancel` and `Start` from then on.
+TEST_F(PanoramaBuildManagerTest, AFrameFoundPinnedIsLeftWhereItIsAfterItsHolderLetsGo) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef held = document_.candidates[0].frame;
+  ASSERT_TRUE(store_.Pin(held).ok());
+  composition_.failure = Fail(StatusCode::Internal, "test", "refused with nothing out of place");
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.residencyAnswersFirst = 3;
+  reluctant.residencyRefusals = 1;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.residencyRefusals, 0);
+  ASSERT_TRUE(store_.Release(held).ok());
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_TRUE(manager.Start(kProject, BuildSpec{}).ok());
+}
+
+// Pins are counted, so the build's release leaves a frame pinned while somebody else holds it too —
+// and a demotion of a pinned frame is refused. The frame is left to its holder.
+TEST_F(PanoramaBuildManagerTest, AFrameStillPinnedAfterTheBuildsReleaseIsLeftToItsHolder) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef cold = document_.candidates[1].frame;
+  ASSERT_TRUE(store_.Demote(cold, Residency::Spilled).ok());
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.releaseRefusals = 3;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_TRUE(store_.Pin(cold).ok());
+  const Status cancelled = manager.Cancel(build.value);
+  EXPECT_TRUE(cancelled.ok()) << cancelled.detail;
+  EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::HeapPinned);
+  EXPECT_TRUE(store_.Release(cold).ok()) << "the build released a pin that was not its own";
+}
+
+// An engine that could not release leaves one pin per call that borrowed the frame, and a feature
+// frame is borrowed by every pair it is in — so on a ring, two.
+TEST_F(PanoramaBuildManagerTest, AFeatureFrameEveryPairLeftPinnedIsStillGivenBack) {
+  CaptureRing(12);
+  registration_.leaveFeaturesPinned = true;
+  const int64_t before = HeapUsed();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  const BuildProgress last = RunToEnd(build.value).back();
+  EXPECT_EQ(last.stage, BuildStage::Complete) << last.failure.detail;
+  EXPECT_TRUE(manager_.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), before);
+}
+
 // A feature set's frames are the build's alone, so a pin on one is an engine's that could not
 // release it — the real engine's `BorrowedFrame` discards a refused `Release` — and nothing but
 // the build can name the frame to release it.

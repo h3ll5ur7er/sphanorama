@@ -30,6 +30,12 @@ describe('candidateStrip', () => {
     expect(strip.map((entry) => entry.isInForce)).toEqual([false, true, false]);
   });
 
+  it('falls back to the build\'s pick, not the first, when the chosen frame is gone', () => {
+    const unmeasuredFirst = [candidate(7, 0.9, 0), candidate(3, 0.5), candidate(9, 0.2)];
+    const strip = candidateStrip(unmeasuredFirst, 42 as CandidateId);
+    expect(strip.map((entry) => entry.isInForce)).toEqual([false, true, false]);
+  });
+
   it('keeps the first when no frame of the cell was measured', () => {
     const noneMeasured = [candidate(7, 0.9, 0), candidate(3, 0.5, 0)];
     const strip = candidateStrip(noneMeasured, 0 as CandidateId);

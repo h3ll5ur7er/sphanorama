@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -42,8 +41,8 @@ struct SessionDocument {
   CapturePlanSpec spec;
   Intrinsics lens;
   // Each cell's candidates best first, in the order the ranking left them — a build takes the first
-  // as the cell's frame where nobody picked (ADR 0070) — and rewritten after every burst, discarding
-  // retake and offer, so a write that succeeded names no frame the capture has since let go of.
+  // whose pose was measured as the cell's frame where nobody picked (ADR 0070) — and rewritten after
+  // every burst, discarding retake and offer, so a write that succeeded names no frame the capture has since let go of.
   //
   // Only the frames this session's own bursts produced, and the reason is where their bytes are.
   // Cooling spills a cell's own candidates and deliberately leaves offered ones alone (ADR 0023),
@@ -53,10 +52,12 @@ struct SessionDocument {
   std::vector<Candidate> candidates;
 };
 
-// Whether a counter could have issued this identity: zero is "none", and no counter steps past the
-// largest, so a document or a pick naming either names something no capture made.
+// Whether a capture may issue this identity: not zero, which is "none", and below 2^53, since an
+// identity crosses to the page as a double and one past that reaches it as its neighbour's. A
+// document or a pick naming any other names something no capture made, and a counter that has got
+// there issues nothing more.
 inline bool IssuableCandidate(CandidateId id) {
-  return id.valid() && id.value != std::numeric_limits<uint64_t>::max();
+  return id.valid() && id.value < (uint64_t{1} << 53);
 }
 
 std::string EncodeSessionDocument(const SessionDocument& stored);

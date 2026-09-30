@@ -955,7 +955,9 @@ export interface CaptureSessionManager {
    * against an id nobody created would leave a titleless project in the user's list.
    * A pick outlives the capture it was made in, and this never issues a candidate identity a
    * recorded pick names — a build would honour the pick for a frame nobody chose (ADR 0070). So a
-   * pick the project store cannot read refuses this with the store's status, camera closed.
+   * pick the project store cannot read refuses this with the store's status, camera closed. Nor is
+   * an identity at or past 2^53 issued, since one crosses to the page as a double: a capture whose
+   * counter has got there takes no more frames, and a burst or an offer is refused instead.
    */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
@@ -1079,7 +1081,8 @@ export interface CaptureSessionManager {
    * Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
    * committed burst. The order is an answer rather than a record of when the shutter fired, so a
    * review client can show a strip and name the automatic pick without deciding what "best"
-   * means — which is V6's, and not a client's to borrow.
+   * means — which is V6's, and not a client's to borrow. The automatic pick is the first whose pose
+   * was measured, or the first where none was: the frame a build takes (ADR 0070).
    */
   candidates(node: NodeId): Promise<Result<Candidate[]>>;
   /**

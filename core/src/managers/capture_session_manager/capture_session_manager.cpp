@@ -495,7 +495,22 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;
   active_ = true;
+  // Written down when a pick moved it, so a build started now reads the counter this session issues
+  // from: behind it, the pick would read as newer than the document and refuse the build while the
+  // review strip shows the ranking in force.
+  if (next != stored.nextCandidate) Checkpoint();
   return Ok(session_);
+}
+
+Status CaptureSessionManager::RequireIssuableCandidate() const {
+  // Refused rather than issued. A pick at the top of the range steps the counter there, and an
+  // identity past it wraps through zero into a document every door refuses — a capture that could
+  // no longer be resumed or built, lost to a single stored number.
+  if (!IssuableCandidate(CandidateId{next_candidate_})) {
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "this capture has issued every candidate identity it can");
+  }
+  return Status::Ok();
 }
 
 void CaptureSessionManager::ResetDwell() {
@@ -1133,6 +1148,7 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // One deadline for both waits, because from here they are the same question: the settle set it
   // when the burst was armed, every frame since has set it one interval ahead.
   if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
+  if (Status issuable = RequireIssuableCandidate(); !issuable.ok()) return Abandon(issuable);
 
   // `ArmBurst` checked the pose it armed on; this is the one that breaks mid-burst, which would
   // file every later frame as a candidate no `Refine` could use. Same code as at the arm (ADR 0065).
@@ -1232,6 +1248,8 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
     return Err<FrameVerdict>(StatusCode::InvalidArgument, kComponent,
                              "the pose offered has " + std::string(*defect));
   }
+
+  if (auto issuable = RequireIssuableCandidate(); !issuable.ok()) return issuable;
 
   std::vector<Candidate>& cell = candidates_[node.value];
   Candidate candidate;

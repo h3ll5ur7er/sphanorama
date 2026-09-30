@@ -250,15 +250,18 @@ Status PanoramaBuildManager::PutBack(Misplaced& misplaced) {
     // Pinned now and not when found: a call that could not release it left it so (`RenderPreview`
     // says as much). Nothing in the tree holds a pin across calls, so the pin is the engine's.
     if (Status released = frames_.Release(misplaced.frame); !released.ok()) return released;
-    now.value = Residency::HeapEncoded;
+    misplaced.pinOwed = false;
+    // Asked again rather than assumed: pins are counted, and a holder's keeps the frame pinned.
+    SPH_TRY(now.value, frames_.ResidencyOf(misplaced.frame));
   }
   misplaced.pinOwed = false;
   // The build only faults frames in, and a frame it faulted in is left unpinned in the heap. Found
   // anywhere else, it is where it was found, or where something that is not the build has put it
-  // since — cooled by the capture, or pinned by a holder `Pin` made a promise to.
-  if (now.value != Residency::HeapEncoded || misplaced.found == Residency::HeapEncoded) {
-    return Status::Ok();
-  }
+  // since — cooled by the capture, or pinned by a holder `Pin` made a promise to. And a frame found
+  // in the heap has no colder tier to go back to.
+  const bool foundInHeap =
+      misplaced.found == Residency::HeapEncoded || misplaced.found == Residency::HeapPinned;
+  if (now.value != Residency::HeapEncoded || foundInHeap) return Status::Ok();
   return frames_.Demote(misplaced.frame, misplaced.found);
 }
 
@@ -391,8 +394,11 @@ Status PanoramaBuildManager::Discard(const FrameRef& frame) {
   // The build's frames have handles nothing else was given, so every pin on one is an engine's that
   // could not release it — a preview handed back unreleased, or a feature frame behind a refused
   // `Release` the engine discarded — and the build is the only thing left that can name it.
-  if (residency.value == Residency::HeapPinned) {
+  // One pin per call that borrowed it: a feature frame is borrowed by every pair it is in. Each
+  // release takes one, so this ends.
+  while (residency.value == Residency::HeapPinned) {
     if (Status released = frames_.Release(frame); !released.ok()) return released;
+    SPH_TRY(residency.value, frames_.ResidencyOf(frame));
   }
   return frames_.Forget(frame);
 }

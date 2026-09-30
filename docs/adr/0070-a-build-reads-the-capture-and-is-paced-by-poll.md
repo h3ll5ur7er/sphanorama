@@ -42,8 +42,8 @@ everything, and it could not have done otherwise as declared, for three reasons.
    across the ticks the client already makes — applied to the other long thing the core does.
 4. **What a build is made from.**
    - **One frame per cell**: the cell's manual pick where `ProjectManager` recorded one, and
-     otherwise its first candidate in the document, which is the best-ranked of the frames the
-     capture wrote down — the document lists each cell's candidates in the order the ranking left
+     otherwise its best-ranked candidate in the document whose pose was measured (see below) —
+     which amends ADR 0026's automatic pick of `Candidates(node)[0]` — the document lists each cell's candidates in the order the ranking left
      them, and `CaptureSessionManager` now rewrites it after a discarding retake and after an offer
      as well as after every burst, so it does not name frames the store has forgotten. A pick the
      cell no longer holds gives way to the ranking: a discarding retake leaves the pick behind with
@@ -53,10 +53,13 @@ everything, and it could not have done otherwise as declared, for three reasons.
      it, because a rewrite failed, and the ranking would build from a frame other than the one the
      user chose. A pick a retake discarded is always below that counter.
    - **A pick always names the frame it was made on.** `CaptureSessionManager` issues no candidate
-     identity a recorded pick names, at `Begin` or at `Resume`: the document's counter alone would
-     reissue the one a pick made after a failed rewrite names, once the tab reloads, and a new tab's
-     counter restarts at 1 while an earlier capture's picks survive. Either would hand the pick to a
-     frame nobody chose, and the build would honour it. A pick the store cannot read refuses both.
+     identity a recorded pick names, at `Begin` or at `Resume`, and writes the stepped counter down
+     at once: the document's counter alone would reissue the one a pick made after a failed rewrite
+     names, once the tab reloads, and a new tab's counter restarts at 1 while an earlier capture's
+     picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
+     it. A pick the store cannot read refuses both. Nor does it issue an identity at or past 2^53,
+     since one crosses to the page as a double and arrives there as its neighbour; a capture whose
+     counter has got there takes no more frames rather than issue one.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was

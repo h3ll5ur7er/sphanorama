@@ -153,6 +153,8 @@ TEST_F(Projects, AnUnsetIdIsNotASelection) {
   EXPECT_EQ(manager->SetSelection(created.value, NodeId{3},
                                   CandidateId{std::numeric_limits<uint64_t>::max()}).code,
             StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{uint64_t{1} << 53}).code,
+            StatusCode::InvalidArgument);
 
   // And nothing was written: the cell still reads as one nobody has chosen for, rather than as a
   // document this manager cannot parse.

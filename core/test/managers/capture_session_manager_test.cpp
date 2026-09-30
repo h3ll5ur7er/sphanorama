@@ -3357,6 +3357,26 @@ class CaptureSessionUnderPressure : public ::testing::Test {
   std::unique_ptr<CaptureSessionManager> manager;
 };
 
+// A pick on any cell of the plan, not just the first — a one-cell plan cannot tell the two apart.
+TEST_F(CaptureSessionUnderPressure, ABeginStepsPastAPickOnTheLastCellOfThePlan) {
+  Begin();
+  const std::vector<CoverageNode> nodes = manager->GetPlan().value.nodes;
+  ASSERT_GT(nodes.size(), 1u);
+  ASSERT_TRUE(manager->End().ok());
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(nodes.back().id), "1").ok());
+
+  CaptureSessionManager fresh(rings, aiming, quality, preview, *camera, *sensor, *store,
+                              *projects, clock);
+  ASSERT_TRUE(fresh.Begin(kProject, Spec()).ok());
+  const NodeId node = AimedNode(fresh);
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(FireBurstOn(fresh, clock, node, burst).ok());
+  for (const Candidate& candidate : fresh.Candidates(node).value) {
+    EXPECT_NE(candidate.id.value, 1u) << "a picked identity was issued to another frame";
+  }
+}
+
 TEST_F(CaptureSessionUnderPressure, ACapturedCellsFramesLeaveTheHeap) {
   // The moment a burst is ranked, its frames are cold: nothing looks at a captured cell's pixels
   // again until the build or the review client asks, and both of those go through Pin, which
@@ -4979,6 +4999,44 @@ TEST_F(ResumedSession, ABeginNeverMintsACandidateIdentityAPickAlreadyNames) {
   }
 }
 
+// A pick at the top of the range steps the counter to where the next identity is one no capture
+// may issue — past 2^53 the page reads it as its neighbour, and at the very top it wraps through
+// zero into a document every door refuses. So the capture refuses to issue it, and stays readable.
+TEST_F(ResumedSession, APickAtTheTopOfTheRangeCannotMakeTheCaptureUnreadable) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(first.End().ok());
+  ASSERT_TRUE(projects->WriteDocument(
+      kProject, SelectionDocumentKey(node),
+      std::to_string((uint64_t{1} << 53) - 1)).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
+  (void)FireBurstOn(second, clock, node, BurstSpec{});
+  // An offered frame takes an identity from the same counter.
+  auto offered = second_store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(offered.ok());
+  PoseSample anchored;
+  anchored.confidence = 1.0;
+  (void)second.OfferFrame(node, offered.value, anchored);
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_LT(candidate.id.value, uint64_t{1} << 53) << "issued " << candidate.id.value;
+    EXPECT_TRUE(candidate.id.valid());
+  }
+  ASSERT_TRUE(second.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  EXPECT_TRUE(DecodeSessionDocument(written.value, document));
+}
+
 // Only an absent pick is no pick: one that cannot be read may name the very identity the counter
 // is about to issue, so neither door opens on it — and neither opens the camera first.
 TEST_F(ResumedSession, APickThatCannotBeReadRefusesBothDoors) {
@@ -5020,6 +5078,72 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
   SessionDocument document;
   EXPECT_FALSE(DecodeSessionDocument(tampered, document));
   EXPECT_FALSE(ParseSelectionDocument(std::to_string(std::numeric_limits<uint64_t>::max())));
+  // Nor any the page could not name exactly: an identity crosses to it as a double.
+  const std::string past = std::to_string(uint64_t{1} << 53);
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 1, past), document));
+  EXPECT_FALSE(ParseSelectionDocument(past));
+  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 53) - 1)));
+}
+
+// A document whose counter is already at the top — only an edit can put it there — takes no more
+// frames rather than issue an identity no capture may.
+TEST_F(ResumedSession, ACounterAtTheTopOfTheRangeIssuesNothing) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  ASSERT_TRUE(projects->WriteDocument(
+      kProject, kSessionDocumentKey,
+      SetField(written.value, "session", 2,
+               std::to_string(std::numeric_limits<uint64_t>::max()))).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  (void)FireBurstOn(second, clock, node, BurstSpec{});
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_LT(candidate.id.value, uint64_t{1} << 53) << "issued " << candidate.id.value;
+    EXPECT_TRUE(candidate.id.valid());
+  }
+}
+
+// The counter a pick moved is written down at once: behind it, a build started before the next burst
+// reads the pick as newer than the document and refuses, while the strip shows the ranking in force.
+TEST_F(ResumedSession, AResumeWritesDownACounterAPickMoved) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument before;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, before));
+  const uint64_t unseen = before.nextCandidate;
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
+                                      std::to_string(unseen)).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  auto rewritten = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(rewritten.ok());
+  SessionDocument after;
+  ASSERT_TRUE(DecodeSessionDocument(rewritten.value, after));
+  EXPECT_GT(after.nextCandidate, unseen);
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
