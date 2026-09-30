@@ -26,8 +26,8 @@ afterEach(() => {
 });
 
 /** A repository where everything is in order, so each test can break exactly one thing. */
-function aFreshTree() {
-  const root = mkdtempSync(join(tmpdir(), 'fresh-'));
+function aFreshTree(prefix = 'fresh-') {
+  const root = mkdtempSync(join(tmpdir(), prefix));
   made.push(root);
   const put = (rel, at, body) => {
     const path = join(root, rel);
@@ -185,6 +185,10 @@ describe('the dist freshness check', () => {
     const viaLink = () => new Set([join(link, 'core/src/a.cpp')]);
     expect(complaint(tree.root, undefined, () => true, viaLink))
       .toMatch(/compiled core is older than the C\+\+/);
+    // And the other way round: the build names the real path and the check walks the link.
+    const real = () => new Set([join(tree.root, 'core/src/a.cpp')]);
+    expect(complaint(link, undefined, () => true, real))
+      .toMatch(/compiled core is older than the C\+\+/);
   });
 
   it('forgives a build file the graph names through a symlinked checkout', () => {
@@ -200,6 +204,28 @@ describe('the dist freshness check', () => {
     }
     tree.put('core/CMakeLists.txt', Date.now());
     expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    // And the other way round: the graph names the real path and the check walks the link.
+    for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+      tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+               `build build.ninja: RERUN_CMAKE | ${join(tree.root, 'core/CMakeLists.txt')}\n`);
+    }
+    expect(complaint(link, undefined, () => true)).toBeNull();
+  });
+
+  it('forgives a build file the graph names under a path ninja escapes', () => {
+    // `build.ninja` escapes a space, a colon and a dollar with `$` rather than quoting them, so a
+    // checkout under such a path split each name at the space, kept `$:` literally, forgave
+    // nothing, and turned an inert edit into a complaint no rebuild could clear.
+    for (const prefix of ['my dir ', 'a:b-', 'cost$-']) {
+      const tree = aFreshTree(prefix);
+      const escaped = join(tree.root, 'core/CMakeLists.txt').replace(/[$ :]/g, (c) => `$${c}`);
+      for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+        tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+                 `build build.ninja: RERUN_CMAKE | ${escaped} $\n    ../../CMakeLists.txt\n`);
+      }
+      tree.put('core/CMakeLists.txt', Date.now());
+      expect(complaint(tree.root, undefined, () => true), prefix).toBeNull();
+    }
   });
 
   it('counts every C++ source when there is no compile database to narrow it', () => {
@@ -640,6 +666,18 @@ describe('the dist freshness check', () => {
       // inherits, so reading the base's value instead compares `-Oz -flto` against a cache holding
       // `-pthread -Oz -flto` and refuses.
       const tree = realShaped(aFreshTree());
+      const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
+      presets.configurePresets[0].displayName = 'a better sentence about the same build';
+      tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));
+      expect(complaint(tree.root, undefined, () => true)).toBeNull();
+    });
+
+    it('forgives it when the toolchain path is spelled the way CMake would not cache it', () => {
+      // CMake caches the toolchain path collapsed, so an `EMSDK` with a trailing slash — which
+      // `emsdk_env.sh` is happy to export — expanded to `/opt/sdk//upstream/…` against a cache holding
+      // `/opt/sdk/upstream/…`, and an inert edit was refused in a way no configure could clear.
+      const tree = realShaped(aFreshTree());
+      process.env.SPHANORAMA_TEST_SDK = '/opt/sdk/';
       const presets = JSON.parse(readFileSync(join(tree.root, 'CMakePresets.json'), 'utf8'));
       presets.configurePresets[0].displayName = 'a better sentence about the same build';
       tree.put('CMakePresets.json', Date.now(), JSON.stringify(presets));

@@ -26,15 +26,20 @@ afterEach(() => {
  * as they are, so a banner line or a stray word is the runner's rather than this helper's.
  */
 function buildDir({ detectors = '3\n', ring = `2 16 12 ${panorama}\n`, solved = 3, exit = 0,
-                    askExit = 0 } = {}) {
+                    detectorsExit = 0, ringExit = 0 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wasm-accuracy-'));
   made.push(dir);
   mkdirSync(join(dir, 'bin'));
   const runner = join(dir, 'bin', 'sphanorama_wasm_accuracy.cjs');
   writeFileSync(runner, `
     const arg = process.argv[2];
-    if (arg === '--detectors') { process.stdout.write(${JSON.stringify(detectors)}); process.exit(${askExit}); }
-    if (arg === '--ring') { process.stdout.write(${JSON.stringify(ring)}); process.exit(${askExit}); }
+    if (arg === '--detectors') { process.stdout.write(${JSON.stringify(detectors)}); process.exit(${detectorsExit}); }
+    if (arg === '--ring') { process.stdout.write(${JSON.stringify(ring)}); process.exit(${ringExit}); }
+    // Measures only what was rendered, so a script that skipped the render cannot pass.
+    if (!require('node:fs').existsSync(require('node:path').join(arg, 'truth.json'))) {
+      console.log('FAIL: no rendered ring at ' + arg);
+      process.exit(1);
+    }
     for (let i = 0; i < ${solved}; i += 1) console.log('[wasm-solved] detector=' + i);
     process.exit(${exit});
   `);
@@ -47,8 +52,14 @@ function run(...dirs) {
 }
 
 function runFrom(cwd, ...dirs) {
-  const result = spawnSync('bash', [join(repoRoot, 'tools', 'wasm_accuracy.sh'), ...dirs],
-                           { cwd, encoding: 'utf8' });
+  return runWith({ cwd }, ...dirs);
+}
+
+function runWith({ cwd = repoRoot, env = process.env, script = join(repoRoot, 'tools', 'wasm_accuracy.sh') },
+                 ...dirs) {
+  const result = spawnSync('bash', [script, ...dirs],
+                           // A hang is a failure: a ring too large to render took the step with it.
+                           { cwd, env, encoding: 'utf8', timeout: 60000 });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
@@ -69,6 +80,14 @@ describe('the WebAssembly accuracy step', () => {
     expect(status).toBe(0);
   });
 
+  it('passes with CDPATH exported, which makes `cd` print where it went', () => {
+    // Called by a relative path, as the gate calls it, since CDPATH is consulted only for those.
+    const { status, output } = runWith({ env: { ...process.env, CDPATH: '.' }, script: 'tools/wasm_accuracy.sh' },
+                                       buildDir());
+    expect(output).toMatch(/\[wasm-solved\] detector=2/);
+    expect(status).toBe(0);
+  });
+
   it('names a build directory with no runner rather than skipping it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'wasm-accuracy-'));
     made.push(dir);
@@ -80,7 +99,9 @@ describe('the WebAssembly accuracy step', () => {
   it('fails on any answer to --detectors that is not a count of at least one', () => {
     // The twenty digits are the case `[` cannot compare, and it answers that with status 2 — which
     // an unnegated `[ … -lt 1 ]` read as "not less than one" and so as a pass.
-    for (const detectors of ['99999999999999999999\n', '0\n', '3 detectors\n', '3\nnote\n', '', '-3\n']) {
+    // `+3` and ` 3` are the ones `[` accepts, so `count` alone refuses them.
+    for (const detectors of ['99999999999999999999\n', '0\n', '3 detectors\n', '3\nnote\n', '', '-3\n',
+                             '+3\n', ' 3\n']) {
       const { status, output } = run(buildDir({ detectors, solved: 0 }));
       expect(output, JSON.stringify(detectors)).toMatch(/--detectors did not answer with a count/);
       expect(status, JSON.stringify(detectors)).toBe(1);
@@ -88,15 +109,30 @@ describe('the WebAssembly accuracy step', () => {
   });
 
   it('fails when asking a question fails, whatever was printed', () => {
-    const { status, output } = run(buildDir({ askExit: 1 }));
-    expect(output).toMatch(/--detectors did not answer/);
+    // Each question on its own, since a failing first question hides the second.
+    const detectors = run(buildDir({ detectorsExit: 1 }));
+    expect(detectors.output).toMatch(/--detectors did not answer/);
+    expect(detectors.status).toBe(1);
+    const ring = run(buildDir({ ringExit: 1 }));
+    expect(ring.output).toMatch(/--ring did not answer/);
+    expect(ring.status).toBe(1);
+  });
+
+  it('fails when the ring does not render, rather than measuring nothing', () => {
+    // A file that is not an image passes every check on the answer's shape and is refused by the
+    // renderer.
+    const { status, output } = run(buildDir({ ring: '2 16 12 README.md\n' }));
+    expect(output).toMatch(/the ring did not render, so nothing was measured/);
     expect(status).toBe(1);
   });
 
   it('fails on any answer to --ring that is not a shape and a panorama that exists', () => {
     for (const ring of ['2 16 12\n', '2 16 12 core/test/data/panoramas/nowhere.jpg\n',
                         `2 16 12 ${panorama} extra\n`, `2 16 12 ${panorama}\nnote\n`,
-                        `two 16 12 ${panorama}\n`, '']) {
+                        `two 16 12 ${panorama}\n`, `2 sixteen 12 ${panorama}\n`,
+                        `2 16 twelve ${panorama}\n`, '0 16 12\n', `99999999999999999999 16 12 ${panorama}\n`,
+                        `2 99999999999999999999 12 ${panorama}\n`, `2 16 99999999999999999999 ${panorama}\n`,
+                        `2 0 12 ${panorama}\n`, `2 16 0 ${panorama}\n`, '']) {
       const { status, output } = run(buildDir({ ring }));
       expect(output, JSON.stringify(ring)).toMatch(/--ring did not answer with frames, width, height/);
       expect(status, JSON.stringify(ring)).toBe(1);

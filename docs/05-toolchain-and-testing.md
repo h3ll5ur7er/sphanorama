@@ -69,11 +69,12 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
    UndefinedBehaviorSanitizer. Both jobs build OpenCV from source, so both cache `_deps` *and*
    `.ninja_log`, `.ninja_deps` and the headers OpenCV's configure writes beside `_deps` — ninja
    marks any output with no log or deps entry dirty, and a header configure rewrites is newer than
-   every cached object, so the cache did nothing without them. The `wasm` job caches its two
-   OpenCV builds the same way, and a hit there still rebuilds OpenCV (ADR 0069 says why). That is also why the key carries a toolchain identity (compiler, ninja and cmake
-   versions) and not just the runner OS: restoring the log restores ninja's belief that those
-   objects are current, and a runner image rotating to a different compiler would otherwise link
-   objects nothing can notice are stale.
+   every cached object, so the cache did nothing without them. That is also why the key carries a
+   toolchain identity (compiler, ninja and cmake versions) and not just the runner OS: restoring the
+   log restores ninja's belief that those objects are current, and a runner image rotating to a
+   different compiler would otherwise link objects nothing can notice are stale. The `wasm` job
+   caches its two OpenCV builds the same way, and a hit there still rebuilds OpenCV (ADR 0069 says
+   why).
 
    The sanitizer preset sets `CMAKE_CXX_FLAGS` globally, so OpenCV's translation units are
    instrumented too, under `-fno-sanitize-recover=all` — with exactly one check lifted from them.

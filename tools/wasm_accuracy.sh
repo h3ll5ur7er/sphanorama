@@ -24,12 +24,13 @@ fi
 
 # The panorama `--ring` names is relative to the repository root, as the native renderer reads it,
 # so it and the renderer are found from here rather than from wherever this was called.
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
 # A whole number, and nothing else: no sign, no space, no second line. How large is the comparisons'
-# business, and they fail on a number too wide for `[` (`tools/wasm_accuracy.test.mjs`).
+# business: every number the runner answers is held to at least one, and a number too wide for `[`
+# fails that (`tools/wasm_accuracy.test.mjs`). One that fits and is merely huge reaches the renderer.
 count() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
@@ -52,6 +53,7 @@ for dir in "$@"; do
   ring=$(node "$runner" --ring) || ring=
   read -r frames width height panorama extra <<<"$ring"
   if [ -n "${extra:-}" ] || ! count "${frames:-}" || ! count "${width:-}" || ! count "${height:-}" \
+      || ! [ "$frames" -ge 1 ] || ! [ "$width" -ge 1 ] || ! [ "$height" -ge 1 ] \
       || [ ! -f "$root/${panorama:-}" ] || ! [ "$(printf '%s' "$ring" | wc -l)" -eq 0 ]; then
     echo "$dir: --ring did not answer with frames, width, height and a panorama: '$ring'" >&2
     status=1

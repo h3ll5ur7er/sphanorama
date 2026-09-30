@@ -198,8 +198,13 @@ function buildFilesTheGraphNames(repoRoot) {
     } catch {
       continue;
     }
-    for (const match of text.matchAll(/(\S*(?:CMakeLists\.txt|\.cmake))(?=\s|$)/g)) {
-      named.add(realPath(resolve(join(repoRoot, 'build', preset), match[1])));
+    // A path in `build.ninja` escapes a space, a colon and a dollar with `$` rather than quoting,
+    // so a name is a run of escapes and ordinary characters, and is unescaped before it is read.
+    for (const [token] of text.matchAll(/(?:\$[ :$]|[^\s$])+/g)) {
+      const path = token.replace(/\$([ :$])/g, '$1');
+      if (isBuildFile(path.slice(path.lastIndexOf('/') + 1))) {
+        named.add(realPath(resolve(join(repoRoot, 'build', preset), path)));
+      }
     }
   }
   return named;
@@ -384,7 +389,15 @@ function presetsMatchTheBuildDirectories(repoRoot) {
       const line = new RegExp(`^${name}:[^=]*=(.*)$`, 'm').exec(cache);
       // `line === null` is a variable the preset declares and this build directory has never held —
       // a *newly added* one, which is exactly a configure that has not happened.
-      if (line === null || line[1].trim() !== expanded.trim()) return false;
+      if (line === null) return false;
+      // A path CMake caches collapsed, so it is compared collapsed: an `EMSDK` with a trailing slash
+      // expands to `…//upstream/…` against a cache holding `…/upstream/…`, and a string comparison
+      // refused an inert edit in a way no configure could clear.
+      const cached = line[1].trim();
+      const same = name === 'CMAKE_TOOLCHAIN_FILE'
+        ? resolve(repoRoot, cached) === resolve(repoRoot, expanded.trim())
+        : cached === expanded.trim();
+      if (!same) return false;
     }
   }
   return true;
