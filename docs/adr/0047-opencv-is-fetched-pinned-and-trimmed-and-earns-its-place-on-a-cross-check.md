@@ -1,7 +1,13 @@
 # 0047 — OpenCV is fetched, pinned and trimmed, and earns its place on a cross-check
 
 **Status:** accepted; one consequence superseded by
-[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md)
+[ADR 0052](0052-opencv-enters-the-core-behind-a-build-flag.md), and "linked natively only" by
+[ADR 0069](0069-opencv-is-cross-compiled-for-the-browser.md)
+
+> **OpenCV is cross-compiled for the browser now** (ADR 0069). The decision below links it natively
+> only and forces the flag off under Emscripten; both stopped being true when Phase 2 registration
+> needed a browser, which is the condition this ADR's third rejected alternative waited for. What
+> ADR 0069 measured is the size budget and the SIMD and failure-mode questions named here.
 
 > **The sanitizer remedy named below is superseded.** This ADR said that when OpenCV tripped the
 > sanitizers the answer would be "a suppressions file scoped to `_deps/opencv-src`, not turning

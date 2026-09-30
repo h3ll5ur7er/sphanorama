@@ -2079,11 +2079,12 @@ TEST(DetectorDefaults, TheAkazeParametersCopiedFromOpenCvAreStillOpenCvs) {
 }
 
 TEST(NullRegistration, RefusesEverythingRatherThanPretending) {
-  // Kept beside the real one so the pair is visible: the null engine is what a WASM build gets
-  // (ADR 0052), and it refuses rather than returning an identity that would look like a stitch.
+  // Kept beside the real one so the pair is visible: the null engine is what a build without OpenCV
+  // gets (ADR 0052), and it refuses rather than returning an identity that would look like a stitch.
   //
-  // All three, because this is the engine `bridge/runtime.h` holds and every browser gets: an `Ok`
-  // from any of them would be an identity registration or an empty solution that looks like a stitch.
+  // All three, because this is the engine `bridge/runtime.h` still holds — the browser has OpenCV
+  // since ADR 0069, and no composition root selects the real engine yet: an `Ok` from any of them
+  // would be an identity registration or an empty solution that looks like a stitch.
   NullRegistrationEngine engine;
   // The code, not just the refusal. A reviewer changed this one to `InvalidArgument` and all 714
   // tests stayed green: the two methods added when this gap was first closed assert their codes and

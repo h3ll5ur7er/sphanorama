@@ -14,7 +14,7 @@ differences are decisions, each with an ADR:
 
 - Repo layout, CMake presets, pinned emsdk, Vite PWA shell. *The trimmed OpenCV WASM build was
   deferred: nothing needs it until Phase 2 registration, and carrying it would have meant tuning a
-  build for code that does not exist.*
+  build for code that does not exist.* It arrived with that registration (ADR 0069).
 - Utilities bar: `Result<T>`, status codes, logger, clock, config, arena.
 - The generated boundary: the C++ header **is** the IDL (ADR 0009), generating the TypeScript
   mirror, both halves of a **binary wire codec** (ADR 0013 — not FlatBuffers, which would have
@@ -205,9 +205,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
    What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
    to correct, 0.5 s to learn an offset — have never met a real phone.
-4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (nothing needs it in a
-   browser until Phase 2 registration ships, and the size budget has 8.36 MB of headroom — the
-   native build of the same trimmed subset is in, ADR 0047) and the `bench/` CLI, which Phase 2's
+4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (deferred until Phase 2
+   registration needed it in a browser, and built then — ADR 0069) and the `bench/` CLI, which Phase 2's
    accuracy harness is the first thing to actually need. (This said Phase 1's, from before the
    harness had a phase: it measures registration accuracy, and Phase 1 does no registration. The
    synthetic-dataset generator was listed here too until it was built — ADR 0050.)
@@ -400,9 +399,9 @@ What is left, and what has landed since:
   camera happened to be pointing at, and nothing verified the two agreed — a folder of pictures
   with a plan's worth of guessed labels, undetectable until a build stage that does not exist yet.
   `RegistrationEngine` is what would make the labels true, and what that needs is not what exists:
-  feature extraction and pairwise matching landed in Phase 2 — natively only, so not in the browser
-  where this use case lives (ADR 0052) — while the frame-to-frame tracking this argument rests on has
-  not. Registering two frames a caller hands over is not tracking a camera through a sequence.
+  feature extraction and pairwise matching landed in Phase 2 — natively first, and in the browser
+  where this use case lives since ADR 0069 — while the frame-to-frame tracking this argument rests on
+  has not. Registering two frames a caller hands over is not tracking a camera through a sequence.
   Getting there is far future and possibly never. So `Begin` and `Resume` refuse with `SensorUnavailable` before either
   opens a camera, and the user gets a sentence saying what is required and what is missing
   (ADR 0044).
@@ -829,8 +828,8 @@ that has to be ordered.
   recovered from pixels without one (ADR 0054). *And refinement is in, for
   rotations* (ADR 0065): each prior names its frame, accepted pairs are weighed by their inliers, and
   the solve is `core/src/utilities/rotation_averaging`, which a build without OpenCV could also
-  have once a `Refine` lives outside the OpenCV engine; today every browser build gets the null
-  engine's `Unsupported` — relative rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
+  have once a `Refine` lives outside the OpenCV engine; today a build configured without it gets the
+  null engine's `Unsupported` — relative rotations and per-frame priors in, one consistent set of absolute rotations out. It is where a
   ring's closing edge stops being thrown away. Measured on a twelve-frame ring whose every edge
   carries the same 0.2-degree bias: chaining leaves the worst frame 1.100 degrees out, and the same
   edges with the twelfth one included leave it 0.000028 — where the solver stops rather than the
@@ -851,7 +850,8 @@ that has to be ordered.
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
-  only where OpenCV does, so a browser build still has the null engine (ADR 0052), and all three
+  wherever OpenCV does, which includes the browser's build since ADR 0069 — though the browser's
+  runtime holds the null engine until something selects the real one — and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.
 
@@ -881,10 +881,11 @@ Listed in dependency order, which is not build order: **the accuracy harness on 
 comes first**, before any of the above, for the reason in "What to build first" below. It is last in
 this list only because it is the thing that measures the others.
 
-**Exit:** measured on a **native** build, and this needs saying now rather than being assumed.
-Registration compiles only where OpenCV does (ADR 0052) and the WASM cross-compile is still deferred
-(ADR 0047), so the number below comes from the native build. Whether it transfers to a WASM build of
-the same code is a second measurement nobody has taken, and it is not implied by the first: the
+**Exit:** measured on a **native** build and, since ADR 0069, on both **WASM** builds too — the
+same solve under node, held to the same bounds, in the gate and CI. It transfers, and not exactly:
+SIFT agrees in every figure, ORB and AKAZE within a ten-thousandth or two, because AKAZE's floating
+point is not bit-exact across instruction sets. What is still not measured is a phone. Node on a
+desktop extracts twelve frames in 0.16 s (ORB) to 0.94 s (SIFT) single-threaded, and the
 single-threaded WASM speed question is explicitly part of what "which detector wins" means here.
 
 Synthetic-dataset registration median error under a stated angular threshold — median

@@ -79,9 +79,9 @@ int RansacSampleBudget(double agreeing);
 
 // V7 — feature extraction, matching and global refinement over OpenCV.
 //
-// Compiled only when `SPHANORAMA_WITH_OPENCV` is on; `NullRegistrationEngine` is what a WASM build
-// gets instead (ADR 0052). It reads pixels and allocates frames, so it holds `IFrameStoreAccess` —
-// one of the two resource accesses an engine may touch.
+// Compiled only when `SPHANORAMA_WITH_OPENCV` is on, which since ADR 0069 includes the WASM builds;
+// `NullRegistrationEngine` is what a build without it gets (ADR 0052). It reads pixels and allocates
+// frames, so it holds `IFrameStoreAccess` — one of the two resource accesses an engine may touch.
 //
 // `Refine` solves for rotations through `utilities/rotation_averaging` (ADR 0065), and it needed none
 // of OpenCV until it fitted the focal length: each trial refits the pairs by Kabsch, which here is

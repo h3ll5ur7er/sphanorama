@@ -44,9 +44,9 @@ The same principles are packaged as a project skill at [`.claude/skills/sphanora
 
 - **Core** — C++20 compiled to WebAssembly (SIMD + threads) via Emscripten. Holds all Managers,
   Engines and ResourceAccess *contracts*. It uses OpenCV for features and geometry from Phase 2 on,
-  but **only where OpenCV is linked, which is not the browser**: the WASM cross-compile has its own
-  size budget and is deferred, so a browser build gets a null registration engine (ADR 0047,
-  ADR 0052). Blending is not written yet in either build.
+  natively and in the browser: a trimmed subset is cross-compiled to WASM and registers as it does
+  natively, and costs about 556 KB of the 8 MB budget once something calls it (ADR 0069). Nothing
+  in the browser does yet. Blending is not written yet in either build.
 - **Shell** — a thin TypeScript PWA. Camera, motion sensors, storage, and the capture UI. Supplies
   concrete ResourceAccess adapters to the core; contains no business logic.
 - **Tooling** — Python, run through `uv`, for contract codegen, the architecture checks CI runs, and

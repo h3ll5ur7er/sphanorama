@@ -43,6 +43,19 @@ jobs:
 
       # The single-threaded build, because GitHub Pages cannot serve COOP/COEP and the threaded
       # one does not degrade without it — it hangs on load (ADR 0011).
+      # OpenCV is cross-compiled into the core (ADR 0069), so it is cached here as in CI's wasm job,
+      # under the same key: the two jobs build the same preset from the same pin.
+      - name: record the toolchain identity
+        run: |
+          { emcc --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
+      - name: cache the OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/wasm-release/_deps
+            build/wasm-release/.ninja_log
+          key: opencv-wasm-release-${{ runner.os }}-${{ hashFiles('cmake/opencv.cmake', 'CMakePresets.json', '.toolchain-identity') }}
       - name: build core
         run: cmake --preset wasm-release && cmake --build build/wasm-release
       - name: size budget

@@ -331,6 +331,28 @@ jobs:
           version: 6.0.9
           actions-cache-folder: emsdk-cache
 
+      # OpenCV is cross-compiled in both (ADR 0069), and cached for the reasons the native job's
+      # cache gives — `.ninja_log` included, keyed on the pin and the toolchain. The toolchain here is
+      # emcc, which the step records, since `c++` is not what compiles these objects.
+      - name: record the toolchain identity
+        run: |
+          { emcc --version; ninja --version; cmake --version; } > .toolchain-identity
+          cat .toolchain-identity
+      - name: cache the single-threaded OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/wasm-release/_deps
+            build/wasm-release/.ninja_log
+          key: opencv-wasm-release-${{ runner.os }}-${{ hashFiles('cmake/opencv.cmake', 'CMakePresets.json', '.toolchain-identity') }}
+      - name: cache the threaded OpenCV build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/wasm-release-threaded/_deps
+            build/wasm-release-threaded/.ninja_log
+          key: opencv-wasm-release-threaded-${{ runner.os }}-${{ hashFiles('cmake/opencv.cmake', 'CMakePresets.json', '.toolchain-identity') }}
+
       # Both artifacts are supported configurations, not a build and a fallback (ADR 0011).
       - name: build single-threaded core
         run: cmake --preset wasm-release && cmake --build build/wasm-release
@@ -350,6 +372,10 @@ jobs:
           cache: npm
       - name: install deps
         run: npm ci && npx playwright install --with-deps chromium
+      # The registration table measured in both builds, under node (ADR 0069). The same script the
+      # gate runs, which fails a run that measured nothing.
+      - name: registration accuracy in WebAssembly
+        run: tools/wasm_accuracy.sh build/wasm-release build/wasm-release-threaded
       - name: shell unit tests
         run: npm test
       - name: build the shell

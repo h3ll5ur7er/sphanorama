@@ -8,8 +8,8 @@
 #
 # **From source, pinned, rather than from the system.** The same reasoning as googletest in
 # core/test/CMakeLists.txt: a floating dependency turns an unrelated upstream change into a red build
-# on a day nobody touched this repo. It also has to be the *same* OpenCV that the WASM build will
-# eventually cross-compile, and a distribution package cannot be that.
+# on a day nobody touched this repo. It also has to be the *same* OpenCV that the WASM build
+# cross-compiles (ADR 0069), and a distribution package cannot be that.
 #
 # The cost is honest and worth stating: a cold configure downloads the tree and the first build is
 # long. It is cached in the build directory afterwards.
@@ -52,6 +52,23 @@ foreach(off
   set(${off} OFF CACHE BOOL "" FORCE)
 endforeach()
 
+# Under Emscripten there is no CPU to dispatch on: the module is built for one instruction set,
+# WebAssembly with 128-bit SIMD, which every preset already asks for with `-msimd128` and which
+# OpenCV's universal intrinsics compile to. Baseline and dispatch lists are emptied so its x86 and
+# ARM probes are not run against a compiler that has neither. Its thread pool follows the build:
+# the threaded preset compiles `-pthread` and gets OpenCV's pthreads backend, the single-threaded
+# one gets none rather than a backend whose `pthread_create` fails at run time (ADR 0069).
+if(EMSCRIPTEN)
+  set(CPU_BASELINE "" CACHE STRING "" FORCE)
+  set(CPU_DISPATCH "" CACHE STRING "" FORCE)
+  set(CV_ENABLE_INTRINSICS ON CACHE BOOL "" FORCE)
+  if(CMAKE_CXX_FLAGS MATCHES "(^| )-pthread( |$)")
+    set(WITH_PTHREADS_PF ON CACHE BOOL "" FORCE)
+  else()
+    set(WITH_PTHREADS_PF OFF CACHE BOOL "" FORCE)
+  endif()
+endif()
+
 # `GIT_SHALLOW` with a commit hash is documented as unsupported — ExternalProject's docs say
 # GIT_TAG "works only with branch names and tags" under it, because the clone is
 # `--depth 1 --no-single-branch` and a hash is then only reachable by luck. It is kept anyway
@@ -71,11 +88,10 @@ FetchContent_Declare(opencv
 # which does `*(const short*)(tab + idx[k])`. `idx[k]` is a *pixel* index into an 8-bit row, so that
 # address is odd for half of all inputs no matter how the row's base is aligned: this is not a
 # misalignment we could fix by allocating differently, and the read is in bounds — ASan reports
-# nothing, only `-fsanitize=alignment` does. Undefined by the letter of the standard, and fine on the
-# one instruction set this was measured on — x86-64, where unaligned loads are architectural. That is
-# a statement about where we run the sanitizers, not a promise about every target: the WASM
-# cross-compile ADR 0047 defers has its own answer to give when it arrives, and this comment is not
-# it.
+# nothing, only `-fsanitize=alignment` does. Undefined by the letter of the standard, and fine on
+# both instruction sets this is built for: x86-64, where unaligned loads are architectural, and
+# WebAssembly, whose loads carry an alignment *hint* an engine may not fault on. Measured there
+# too: the ring registers under `-sSAFE_HEAP=1`, which the `wasm-debug` preset links (ADR 0069).
 #
 # It is scoped by saving and restoring CMAKE_CXX_FLAGS around the `add_subdirectory` that
 # FetchContent performs, so the exemption reaches OpenCV's translation units and stops there. Our own

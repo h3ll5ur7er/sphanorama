@@ -44,9 +44,10 @@ removing one.
   V8 into one opaque dependency and make incremental rebuild impossible. We use its algorithms
   piecemeal behind our own engine contracts.
 
-  **Native today, WASM later.** `SPHANORAMA_WITH_OPENCV` is on for native builds and forced off under
-  Emscripten: cross-compiling the subset has its own size budget and its own failure modes, and
-  nothing about writing the algorithms needs it in a browser first.
+  **Native and WASM.** `SPHANORAMA_WITH_OPENCV` is on in every preset but `native-contracting`,
+  and the WASM presets set it explicitly. Under Emscripten the subset is built for WebAssembly SIMD
+  with no CPU dispatch, throws and catches with WebAssembly's own exceptions, and gets OpenCV's
+  thread pool only in the threaded build (ADR 0069).
 - **Vite** for the PWA, `workbox` for the service worker, plus a COOP/COEP shim service worker for
   hosts that cannot set the headers (GitHub Pages).
 - Binary size budget: **< 8 MB** compressed for the core, enforced in CI. It is a phone over
@@ -134,6 +135,12 @@ The call rules in §3.3 are only real if they fail a build. What runs today:
     checker but a guard on one: the measurement skips without `uv`, and `ctest` reported "100%
     tests passed" while running none of it. The step derives the expected count from
     `--gtest_list_tests` and fails on a skip, a shortfall or a floor of zero.
+12. **The registration table measured in WASM** — in the `wasm` job, after both builds.
+    `tools/wasm_accuracy.sh` renders the ring the native measurement renders and runs
+    `sphanorama_wasm_accuracy` over it under node in each build, held to the native bounds through
+    `support/solved_ring.h`. Like item 11 it is a measurement with its own guard rather than a
+    checker: it fails when the runner is missing or prints fewer `[wasm-solved]` lines than the
+    detectors it reports (ADR 0069).
 
 **This list has been short before, and that is the argument for the sentence below it.** What are now
 items 10 and 11 were missing until the branch that added them was reviewed as a whole against `main`
