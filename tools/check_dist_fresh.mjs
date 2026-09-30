@@ -14,7 +14,7 @@
  * Modification times rather than hashes, because the question is only "was this built after the
  * code changed" and a fresh checkout has no `dist` at all — the missing case is the loud one.
  */
-import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,9 +116,11 @@ function canReachBridgeSpecs(argv) {
  * The C++ translation units the wasm builds actually compile, as absolute paths — read from the
  * compile database CMake exports (`CMAKE_EXPORT_COMPILE_COMMANDS` is on repo-wide).
  *
- * `null` means there was nothing to read, and the caller then counts every source. That fallback is
- * the conservative direction on purpose: a check that quietly stops asking because a build
- * directory is missing is worse than one that asks too often.
+ * The fallback when ninja cannot say what the core is built from, and not a safe one: it counts a
+ * translation unit compiled into a library the module does not link, which no rebuild of the core
+ * answers for — the engine since ADR 0069. `null` means there was nothing to read, and the caller
+ * then counts every source, because a check that quietly stops asking because a build directory
+ * is missing is worse than one that asks too often.
  */
 /**
  * Whether either wasm build has work it has not done — asked of ninja, which is the only thing that
@@ -197,7 +199,7 @@ function buildFilesTheGraphNames(repoRoot) {
       continue;
     }
     for (const match of text.matchAll(/(\S*(?:CMakeLists\.txt|\.cmake))(?=\s|$)/g)) {
-      named.add(resolve(join(repoRoot, 'build', preset), match[1]));
+      named.add(realPath(resolve(join(repoRoot, 'build', preset), match[1])));
     }
   }
   return named;
@@ -405,6 +407,24 @@ export function wasmBuildsAreUpToDate(repoRoot) {
 }
 
 /**
+ * A path as the file system resolves it, or as given when it names nothing. The build records the
+ * path it was configured through and this file walks the one node resolves, so a checkout reached
+ * through a symlink spelled every source two ways, matched none, and forgave every `.cpp`.
+ */
+function realPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/** A path as ninja prints it, which is wrapped in single quotes when it holds `@~=:,` or a space. */
+function unquoteNinja(text) {
+  return /^'.*'$/.test(text) ? text.slice(1, -1).replaceAll("'\\''", "'") : text;
+}
+
+/**
  * The C++ sources the wasm core is built from, as absolute paths — asked of ninja, which walks the
  * module's link graph (`-t inputs`) and so knows what the compile database cannot: a translation
  * unit the build compiles into something else. ADR 0069's engine library is that — compiled, linked
@@ -426,7 +446,7 @@ export function coreSourcesFromNinja(repoRoot) {
     if (probe.status !== 0) return null;
     asked = true;
     for (const line of probe.stdout.split('\n')) {
-      const input = line.trim();
+      const input = unquoteNinja(line.trim());
       if (/\.(c|cc|cxx|cpp)$/.test(input)) files.add(resolve(dir, input));
     }
   }
@@ -540,10 +560,11 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     // translation unit and never appears in a compile database, and a preset or a compile flag
     // changes the core exactly as a `.cpp` does.
     const upToDate = upToDateProbe(repoRoot);
-    const compiled = coreSources(repoRoot) ?? compiledTranslationUnits(repoRoot);
+    const named = coreSources(repoRoot) ?? compiledTranslationUnits(repoRoot);
+    const compiled = named === null ? null : new Set([...named].map(realPath));
     const accept = compiled === null
       ? () => true
-      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(full);
+      : (full) => !/\.(c|cc|cxx|cpp)$/.test(full) || compiled.has(realPath(full));
     // Every `CMakeLists.txt` is judged by the build-file rule below instead of here, and *all* of
     // them are — `cmakeFilesInTree` walks for them, so one in a directory this source walk covers is
     // handled once rather than twice or not at all. An earlier version excluded them here and named
@@ -586,7 +607,7 @@ export function checkDistIsFreshIn(repoRoot, argv = process.argv,
     const stillSuspect = [
       ...cmakeFilesInTree(repoRoot)
         .map((path) => ({ rel: path.slice(repoRoot.length + 1), ...newest(path) }))
-        .filter((s) => !graphNames.has(s.path)),
+        .filter((s) => !graphNames.has(realPath(s.path))),
       ...(presetSettled
         ? []
         : [{ rel: 'CMakePresets.json', ...newest(join(repoRoot, 'CMakePresets.json')) }]),

@@ -145,7 +145,9 @@ int main(int argc, char** argv) {
     std::printf("FAIL load: %s\n", dataset.status.detail.c_str());
     return 1;
   }
-  // A ring of another shape is a different measurement from the one the bounds were set on.
+  // A ring of another shape is a different measurement from the one the bounds were set on. Its
+  // world is not checked here: `truth.json` does not record the panorama, so what keeps it the
+  // photograph is that `--ring` is the only place the script learns which to render from.
   bool held = dataset.value.frames.size() == static_cast<size_t>(test::kSolvedRingFrames) &&
               dataset.value.lens.width == test::kSolvedRingWidth &&
               dataset.value.lens.height == test::kSolvedRingHeight;

@@ -359,7 +359,9 @@ jobs:
 
       # OpenCV is cross-compiled in both (ADR 0069), and cached for the reasons the native job's
       # cache gives — `.ninja_log` included, keyed on the pin and the toolchain. The toolchain here is
-      # emcc, which the step records, since `c++` is not what compiles these objects.
+      # emcc, which the step records, since `c++` is not what compiles these objects. **A hit here
+      # still rebuilds OpenCV**: every object also depends on Emscripten's sysroot headers, which
+      # this runner's toolchain writes on first use, newer than anything restored (ADR 0069).
       - name: record the toolchain identity
         run: |
           { emcc --version; ninja --version; cmake --version; } > .toolchain-identity

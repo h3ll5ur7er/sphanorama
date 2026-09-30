@@ -22,13 +22,17 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
+# The panorama `--ring` names is relative to the repository root, as the native renderer reads it,
+# so it and the renderer are found from here rather than from wherever this was called.
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-# A whole number of at most nine digits, and nothing else: no sign, no space, no second line.
+# A whole number, and nothing else: no sign, no space, no second line. How large is the comparisons'
+# business, and they fail on a number too wide for `[` (`tools/wasm_accuracy.test.mjs`).
 count() {
   case "$1" in
-    ''|*[!0-9]*|??????????*) return 1 ;;
+    ''|*[!0-9]*) return 1 ;;
   esac
 }
 
@@ -48,15 +52,16 @@ for dir in "$@"; do
   ring=$(node "$runner" --ring) || ring=
   read -r frames width height panorama extra <<<"$ring"
   if [ -n "${extra:-}" ] || ! count "${frames:-}" || ! count "${width:-}" || ! count "${height:-}" \
-      || [ ! -f "${panorama:-}" ] || ! [ "$(printf '%s' "$ring" | wc -l)" -eq 0 ]; then
+      || [ ! -f "$root/${panorama:-}" ] || ! [ "$(printf '%s' "$ring" | wc -l)" -eq 0 ]; then
     echo "$dir: --ring did not answer with frames, width, height and a panorama: '$ring'" >&2
     status=1
     continue
   fi
   rendered="$scratch/ring-$frames-$width-$height-$(printf '%s' "$panorama" | tr '/' '_')"
-  if [ ! -d "$rendered" ] && ! uv run --locked --group datasets tools/synth_dataset.py \
+  if [ ! -d "$rendered" ] && ! uv run --locked --project "$root" --group datasets \
+      "$root/tools/synth_dataset.py" \
       --out "$rendered" --frames "$frames" --width "$width" --height "$height" \
-      --panorama "$panorama" >"$scratch/render.log" 2>&1; then
+      --panorama "$root/$panorama" >"$scratch/render.log" 2>&1; then
     cat "$scratch/render.log"
     echo "$dir: the ring did not render, so nothing was measured" >&2
     status=1

@@ -8,7 +8,8 @@
 //
 // Each case builds a whole fake repository in a temp directory and runs the real check against it,
 // so what is asserted is the check's behaviour rather than a re-implementation of its arithmetic.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync, chmodSync, existsSync,
+         symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -167,6 +168,38 @@ describe('the dist freshness check', () => {
     const theCore = () => new Set([join(tree.root, 'core/src/a.cpp')]);
     expect(complaint(tree.root, undefined, () => true, theCore))
       .toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('matches the build\'s paths to the tree\'s through a symlinked checkout', () => {
+    // CMake records the path it was configured through and node resolves the real one, so a tree
+    // reached through a symlink named every source one way and walked it the other: nothing
+    // matched, every `.cpp` was forgiven, and a stale core passed. Both sides are real paths now.
+    const tree = aFreshTree();
+    const link = join(mkdtempSync(join(tmpdir(), 'link-')), 'checkout');
+    made.push(dirname(link));
+    symlinkSync(tree.root, link);
+    tree.put('build/wasm-release/compile_commands.json', undefined,
+             JSON.stringify([{ file: join(link, 'core/src/a.cpp') }]));
+    tree.put('core/src/a.cpp', Date.now());
+    expect(complaint(tree.root)).toMatch(/compiled core is older than the C\+\+/);
+    const viaLink = () => new Set([join(link, 'core/src/a.cpp')]);
+    expect(complaint(tree.root, undefined, () => true, viaLink))
+      .toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('forgives a build file the graph names through a symlinked checkout', () => {
+    // The same two spellings in the other rule: the graph names the configured path, the walk finds
+    // the real one, and an inert edit the graph accounts for was a complaint nothing could clear.
+    const tree = aFreshTree();
+    const link = join(mkdtempSync(join(tmpdir(), 'link-')), 'checkout');
+    made.push(dirname(link));
+    symlinkSync(tree.root, link);
+    for (const preset of ['wasm-release', 'wasm-release-threaded']) {
+      tree.put(`build/${preset}/build.ninja`, Date.now() - 99000,
+               `build build.ninja: RERUN_CMAKE | ${join(link, 'core/CMakeLists.txt')}\n`);
+    }
+    tree.put('core/CMakeLists.txt', Date.now());
+    expect(complaint(tree.root, undefined, () => true)).toBeNull();
   });
 
   it('counts every C++ source when there is no compile database to narrow it', () => {
@@ -337,6 +370,28 @@ describe('the dist freshness check', () => {
       expect(coreSourcesFromNinja(bare)).toBeNull();
     });
 
+    it('reads a source whose path ninja quotes', () => {
+      // ninja 1.11 wraps a path in single quotes when it holds a space or one of `@~=:,`, and the
+      // extension test read the closing quote as the end of the name — so a checkout under such a
+      // path named no source, fell back to the compile database, and deadlocked again.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root, `echo "'/src/my dir/a.cpp'"; echo "'/src/it'\\''s/b.cpp'"`);
+      const sources = withPath(join(shim, '..'), () => coreSourcesFromNinja(root));
+      expect([...sources].sort()).toEqual(['/src/it\'s/b.cpp', '/src/my dir/a.cpp']);
+    });
+
+    it('does not answer for the core when one preset\'s ninja fails and the other\'s answers', () => {
+      // The rule is "every preset with a build answers, or nobody does": a `continue` in place of
+      // the early `return null` would let one preset's link graph stand for both, and a shim that
+      // fails for both cannot tell the two apart.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root,
+        'case "$2" in *threaded*) exit 1;; *) echo /src/core/a.cpp;; esac');
+      expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root))).toBeNull();
+    });
+
     it('asks about both presets, not just the first', () => {
       // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));
@@ -442,6 +497,37 @@ describe('the dist freshness check', () => {
     let message = null;
     try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
     expect(message).toMatch(/compiled core is older than the C\+\+/);
+  });
+
+  it('asks the real ninja which sources the core is built from, when none is injected', () => {
+    // The same rule for the `coreSources` binding as for the probe above: every other case injects
+    // it, so a default of `() => null` brought the deadlock back and `() => new Set()` stopped
+    // checking every `.cpp`, and the suite stayed green under both. One shim answers both questions
+    // — idle, and a link graph naming `a.cpp` and not the engine — and the pair below needs the real
+    // default on each side: the first dies to `() => null`, the second to `() => new Set()`.
+    const engine = 'core/src/engines/registration_engine/feature_registration_engine.cpp';
+    for (const [touched, expected] of [[engine, null], ['core/src/a.cpp', 'complaint']]) {
+      const tree = aFreshTree();
+      tree.put(engine, Date.now() - 100000);
+      mkdirSync(join(tree.root, 'bin'), { recursive: true });
+      const shim = join(tree.root, 'bin', 'ninja');
+      writeFileSync(shim, '#!/bin/sh\n'
+        + `if [ "$3" = "-t" ]; then echo "${join(tree.root, 'core/src/a.cpp')}"; exit 0; fi\n`
+        + 'echo "ninja: no work to do."\n');
+      chmodSync(shim, 0o755);
+      tree.put(touched, Date.now());
+
+      const saved = process.env.PATH;
+      process.env.PATH = `${join(tree.root, 'bin')}:${saved}`;
+      try {
+        let message = null;
+        try { checkDistIsFreshIn(tree.root, ['node', 'playwright', 'test']); } catch (e) { message = e.message; }
+        if (expected === null) expect(message, touched).toBeNull();
+        else expect(message, touched).toMatch(/compiled core is older than the C\+\+/);
+      } finally {
+        process.env.PATH = saved;
+      }
+    }
   });
 
   it('does not forgive a preset whose generator or toolchain changed', () => {

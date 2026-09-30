@@ -127,7 +127,11 @@ follows was written again from the start.
   and keyed on emcc's version as well as the pin and the presets, since the presets' flags compile
   OpenCV here. Every one of those caches rebuilt most of OpenCV on a hit until this change, the
   native ones included, because they held neither `.ninja_deps` nor the headers configure generates
-  beside `_deps`. The deploy builds only the module, which links none of it, and restores CI's cache
+  beside `_deps`; the native build step measured 2:18 on a miss and 0:31 on the next hit.
+  **The WebAssembly ones still rebuild**, measured at eight minutes on a hit as on a miss: every
+  OpenCV object also depends on the 834 headers of Emscripten's own sysroot, which a fresh runner's
+  toolchain writes on first use, newer than every restored object. Making them hit is its own
+  change. The deploy builds only the module, which links none of it, and restores CI's cache
   without saving one of its own.
 
 ## Rejected alternatives
