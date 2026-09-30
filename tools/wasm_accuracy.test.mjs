@@ -57,9 +57,11 @@ function runFrom(cwd, ...dirs) {
 
 function runWith({ cwd = repoRoot, env = process.env, script = join(repoRoot, 'tools', 'wasm_accuracy.sh') },
                  ...dirs) {
-  const result = spawnSync('bash', [script, ...dirs],
-                           // A hang is a failure: a ring too large to render took the step with it.
-                           { cwd, env, encoding: 'utf8', timeout: 60000 });
+  // A hang is a failure: a ring too large to render took the step with it. Through `timeout`, which
+  // signals the whole process group, because a timeout on `bash` alone left the renderer it had
+  // started running after the test had failed.
+  const result = spawnSync('timeout', ['-k', '5', '60', 'bash', script, ...dirs],
+                           { cwd, env, encoding: 'utf8' });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
@@ -81,8 +83,12 @@ describe('the WebAssembly accuracy step', () => {
   });
 
   it('passes with CDPATH exported, which makes `cd` print where it went', () => {
-    // Called by a relative path, as the gate calls it, since CDPATH is consulted only for those.
-    const { status, output } = runWith({ env: { ...process.env, CDPATH: '.' }, script: 'tools/wasm_accuracy.sh' },
+    // Called by a relative path, as the gate calls it, since CDPATH is consulted only for those, and
+    // with a CDPATH entry holding a `tools/` of its own, which `cd tools/..` would otherwise go to.
+    const decoy = mkdtempSync(join(tmpdir(), 'decoy-'));
+    made.push(decoy);
+    mkdirSync(join(decoy, 'tools'));
+    const { status, output } = runWith({ env: { ...process.env, CDPATH: decoy }, script: 'tools/wasm_accuracy.sh' },
                                        buildDir());
     expect(output).toMatch(/\[wasm-solved\] detector=2/);
     expect(status).toBe(0);
@@ -122,6 +128,7 @@ describe('the WebAssembly accuracy step', () => {
     // A file that is not an image passes every check on the answer's shape and is refused by the
     // renderer.
     const { status, output } = run(buildDir({ ring: '2 16 12 README.md\n' }));
+    expect(output).toMatch(/could not be read as an image/);
     expect(output).toMatch(/the ring did not render, so nothing was measured/);
     expect(status).toBe(1);
   });
@@ -130,7 +137,10 @@ describe('the WebAssembly accuracy step', () => {
     for (const ring of ['2 16 12\n', '2 16 12 core/test/data/panoramas/nowhere.jpg\n',
                         `2 16 12 ${panorama} extra\n`, `2 16 12 ${panorama}\nnote\n`,
                         `two 16 12 ${panorama}\n`, `2 sixteen 12 ${panorama}\n`,
-                        `2 16 twelve ${panorama}\n`, '0 16 12\n', `99999999999999999999 16 12 ${panorama}\n`,
+                        `2 16 twelve ${panorama}\n`, `0 16 12 ${panorama}\n`,
+                        `99999999999999999999 16 12 ${panorama}\n`,
+                        // A sign, which `[` accepts and only `count` refuses.
+                        `+2 16 12 ${panorama}\n`, `2 +16 12 ${panorama}\n`, `2 16 +12 ${panorama}\n`,
                         `2 99999999999999999999 12 ${panorama}\n`, `2 16 99999999999999999999 ${panorama}\n`,
                         `2 0 12 ${panorama}\n`, `2 16 0 ${panorama}\n`, '']) {
       const { status, output } = run(buildDir({ ring }));

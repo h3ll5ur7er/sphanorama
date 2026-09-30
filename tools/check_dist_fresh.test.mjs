@@ -418,6 +418,16 @@ describe('the dist freshness check', () => {
       expect(withPath(join(shim, '..'), () => coreSourcesFromNinja(root))).toBeNull();
     });
 
+    it('does not read the phrase in a directory name as ninja\'s answer', () => {
+      // `ninja -C` prints the directory it enters before anything else, so a checkout whose path
+      // contains "no work to do" read as idle while ninja listed the steps it still had to run.
+      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(root);
+      const shim = treeWithNinja(root,
+        'echo "ninja: Entering directory \\`/x/no work to do/build\'"; echo "[1/2] Building CXX object foo.o"');
+      expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
+    });
+
     it('asks about both presets, not just the first', () => {
       // A shim that answers "idle" for the single-threaded tree and "busy" for the threaded one.
       const root = mkdtempSync(join(tmpdir(), 'probe-'));

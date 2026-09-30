@@ -414,7 +414,10 @@ export function wasmBuildsAreUpToDate(repoRoot) {
     // input could reach. Both mean the same thing here anyway — nobody answered, so forgive nothing.
     if (probe.status !== 0) return null;
     asked = true;
-    if (!`${probe.stdout}${probe.stderr}`.includes('no work to do')) return false;
+    // A line of its own, not a phrase anywhere: `-C` prints the directory it enters first, and a
+    // checkout whose path held the phrase read as idle while ninja still had steps to run.
+    const lines = `${probe.stdout}\n${probe.stderr}`.split('\n').map((line) => line.trim());
+    if (!lines.includes('ninja: no work to do.')) return false;
   }
   return asked ? true : null;
 }
