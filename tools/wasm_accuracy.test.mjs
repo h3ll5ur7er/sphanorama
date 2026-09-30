@@ -26,7 +26,7 @@ afterEach(() => {
  * as they are, so a banner line or a stray word is the runner's rather than this helper's.
  */
 function buildDir({ detectors = '3\n', ring = `2 16 12 ${panorama}\n`, solved = 3, exit = 0,
-                    detectorsExit = 0, ringExit = 0, prefix = 'wasm-accuracy-' } = {}) {
+                    detectorsExit = 0, ringExit = 0, prefix = 'wasm-accuracy-', tail = '' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   made.push(dir);
   mkdirSync(join(dir, 'bin'));
@@ -41,6 +41,7 @@ function buildDir({ detectors = '3\n', ring = `2 16 12 ${panorama}\n`, solved = 
       process.exit(1);
     }
     for (let i = 0; i < ${solved}; i += 1) console.log('[wasm-solved] detector=' + i);
+    process.stdout.write(${JSON.stringify(tail)});
     process.exit(${exit});
   `);
   chmodSync(runner, 0o644);
@@ -104,10 +105,13 @@ describe('the WebAssembly accuracy step', () => {
   it('prints the measurement under the build directory\'s own name, whatever it holds', () => {
     // The name went into a sed program as text: a `|` ended the command, so the table never reached
     // the log and the step stayed green, and a `&` put the matched text in its place.
-    for (const prefix of ['odd|dir-', 'a&b-', 'back\\slash-']) {
-      const dir = buildDir({ prefix });
+    // `%d` too, which a name used as printf's format would consume; and a last line with no newline,
+    // which `read` alone would drop.
+    for (const prefix of ['odd|dir-', 'a&b-', 'back\\slash-', '100%d-']) {
+      const dir = buildDir({ prefix, tail: 'tail' });
       const { status, output } = run(dir);
       expect(output, prefix).toContain(`${dir}: [wasm-solved] detector=2`);
+      expect(output, prefix).toContain(`${dir}: tail`);
       expect(status, prefix).toBe(0);
     }
   });

@@ -285,9 +285,12 @@ describe('the dist freshness check', () => {
       // and announces it, so a probe that went back to `-C` meets the banner rather than a missing
       // manifest. And a directory with no manifest exits 1, so a sabotage that deletes the existence
       // check is not silently answered by the shim instead.
+      // `-C` is honoured wherever it appears, since ninja reads its options with getopt.
       writeFileSync(shim, '#!/bin/sh\n'
-        + 'if [ "$1" = "-C" ]; then cd "$2" || exit 1; '
-        + 'printf "ninja: Entering directory \\`%s\'\\n" "$2"; shift 2; fi\n'
+        + 'dir=; prev=; for arg in "$@"; do [ "$prev" = "-C" ] && dir=$arg; prev=$arg; done\n'
+        + 'if [ -n "$dir" ]; then cd "$dir" || exit 1; '
+        + 'printf "ninja: Entering directory \\`%s\'\\n" "$dir"; fi\n'
+        + 'if [ "$1" = "-C" ]; then shift 2; fi\n'
         + `[ -f build.ninja ] || exit 1\n${script}\n`);
       chmodSync(shim, 0o755);
       for (const preset of ['wasm-release', 'wasm-release-threaded']) {
@@ -428,7 +431,9 @@ describe('the dist freshness check', () => {
       // still had to run, once anything printed that path: the answer is a line, not a phrase.
       const root = mkdtempSync(join(tmpdir(), 'no work to do-'));
       made.push(root);
-      const shim = treeWithNinja(root, `echo "[1/2] Building CXX object ${root}/foo.o"`);
+      // The whole answer mid-line as well, so a match on it anywhere is caught, not only the phrase.
+      const shim = treeWithNinja(root,
+        `echo "[1/2] Building CXX object ${root}/ninja: no work to do./foo.o"`);
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
 
