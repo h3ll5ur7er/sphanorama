@@ -52,13 +52,12 @@ struct SessionDocument {
   std::vector<Candidate> candidates;
 };
 
-// Whether a capture may issue this identity: not zero, which is "none", and below 2^53, since an
-// identity crosses to the page as a double and one past that reaches it as its neighbour's. A
-// document or a pick naming any other names something no capture made, and a counter that has got
-// there issues nothing more.
-inline bool IssuableCandidate(CandidateId id) {
-  return id.valid() && id.value < (uint64_t{1} << 53);
-}
+// Whether a counter may issue this identity: not zero, which is "none", and below 2^53, since an
+// identity crosses to the page — and to the spill sink — as a double, and one past that reaches it
+// as its neighbour's. A document or a pick naming any other names something no capture made, and a
+// counter that has got there issues nothing more.
+inline bool IssuableIdentity(uint64_t id) { return id != 0 && id < (uint64_t{1} << 53); }
+inline bool IssuableCandidate(CandidateId id) { return IssuableIdentity(id.value); }
 
 std::string EncodeSessionDocument(const SessionDocument& stored);
 

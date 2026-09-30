@@ -29,8 +29,8 @@ class IProjectManager {
   //
   // An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
   // chosen here", so writing one would put the two halves of this pair in contradiction: a
-  // document the writer accepted and the reader has to call corrupt. So is the largest candidate
-  // identity, which no counter steps past and so no capture can have issued.
+  // document the writer accepted and the reader has to call corrupt. So is a candidate at or past
+  // 2^53, which no capture issues: an identity crosses to the page as a double.
   virtual Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) = 0;
 
   // What was chosen for a cell, or nothing.

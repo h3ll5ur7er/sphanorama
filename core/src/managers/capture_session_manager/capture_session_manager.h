@@ -64,8 +64,9 @@ class CaptureSessionManager final : public ICaptureSessionManager {
    * cannot say (ADR 0044).
    */
   Result<MotionCapability> RequireMotion();
-  /** Clears the dwell, so no session inherits one another session counted. */
+  /** Refuses once the counter has reached an identity no capture may issue (`IssuableCandidate`). */
   Status RequireIssuableCandidate() const;
+  /** Clears the dwell, so no session inherits one another session counted. */
   void ResetDwell();
   bool HasNode(NodeId node) const;
   /** The cell by id, or null. Callers that need the cone rather than merely its existence. */

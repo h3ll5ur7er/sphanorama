@@ -1144,6 +1144,47 @@ TEST_F(PanoramaBuildManagerTest, AFrameStillPinnedAfterTheBuildsReleaseIsLeftToI
   EXPECT_TRUE(store_.Release(cold).ok()) << "the build released a pin that was not its own";
 }
 
+// A tier that cannot be read after the build's release is one it cannot say it put back, so the
+// frame is kept — having paid the pin, it owes nothing more.
+TEST_F(PanoramaBuildManagerTest, AFrameWhoseTierCannotBeReadAfterItsReleaseIsTriedAgain) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef cold = document_.candidates[0].frame;
+  ASSERT_TRUE(store_.Demote(cold, Residency::Spilled).ok());
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  // The three tiers asked before the call and the first frame's after it; then its re-read.
+  reluctant.residencyAnswersFirst = 4;
+  reluctant.residencyRefusals = 1;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.residencyRefusals, 0);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::Spilled);
+}
+
+TEST_F(PanoramaBuildManagerTest, APinPaidBeforeARefusedReadIsNotPaidAgain) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef cold = document_.candidates[0].frame;
+  ASSERT_TRUE(store_.Demote(cold, Residency::Spilled).ok());
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.residencyAnswersFirst = 4;
+  reluctant.residencyRefusals = 1;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_TRUE(store_.Pin(cold).ok());
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_TRUE(store_.Release(cold).ok()) << "the build released a pin that was not its own";
+}
+
 // An engine that could not release leaves one pin per call that borrowed the frame, and a feature
 // frame is borrowed by every pair it is in — so on a ring, two.
 TEST_F(PanoramaBuildManagerTest, AFeatureFrameEveryPairLeftPinnedIsStillGivenBack) {

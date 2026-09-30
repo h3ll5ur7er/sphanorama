@@ -59,7 +59,8 @@ everything, and it could not have done otherwise as declared, for three reasons.
      picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
      it. A pick the store cannot read refuses both. Nor does it issue an identity at or past 2^53,
      since one crosses to the page as a double and arrives there as its neighbour; a capture whose
-     counter has got there takes no more frames rather than issue one.
+     counter has got there takes no more frames rather than issue one, and a session document
+     naming a candidate, frame or session identity past it is refused, since each steps a counter.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was

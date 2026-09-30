@@ -26,8 +26,11 @@ Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
       if (pick.status.code == StatusCode::NotFound) continue;
       return pick.status;
     }
-    // One naming no identity a counter could issue steps past nothing, and a build refuses it.
-    if (const auto named = ParseSelectionDocument(pick.value)) {
+    // One naming no identity a counter could issue steps past nothing, and a build refuses it. Nor
+    // does one no counter can step past: no counter will reach it either, and stepping to it would
+    // leave the capture unable to take a frame.
+    const auto named = ParseSelectionDocument(pick.value);
+    if (named && IssuableCandidate(CandidateId{named->value + 1})) {
       next = std::max(next, named->value + 1);
     }
   }
@@ -271,7 +274,10 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
-  auto next = PastEveryPick(projects_, project, plan.value, next_candidate_);
+  // Carried on from the last capture in this tab, so its identities stay distinct from this one's —
+  // unless that one exhausted it, which is no reason for this one to take no frames.
+  const uint64_t from = IssuableCandidate(CandidateId{next_candidate_}) ? next_candidate_ : 1;
+  auto next = PastEveryPick(projects_, project, plan.value, from);
   if (!next.ok()) {
     (void)camera_.Close();
     return next.status;
@@ -776,6 +782,9 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // single camera can honestly serve.
     return Fail(StatusCode::FailedPrecondition, kComponent, "a burst is already in flight");
   }
+  // Before anything is locked: a capture that can issue no identity takes no frame, and the dwell
+  // would fire into this refusal every cycle, locking and releasing the camera each time.
+  if (Status issuable = RequireIssuableCandidate(); !issuable.ok()) return issuable;
 
   // The camera has to be looking at the cell it is about to fill.
   //
