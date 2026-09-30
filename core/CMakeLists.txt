@@ -30,6 +30,7 @@ add_library(sphanorama_core
   src/utilities/quaternion_average.cpp
   src/utilities/kept_lens.cpp
   src/utilities/rotation_averaging.cpp
+  src/utilities/session_document.cpp
 )
 
 # The registration engine is the first shipped core code that depends on OpenCV (ADR 0052). It

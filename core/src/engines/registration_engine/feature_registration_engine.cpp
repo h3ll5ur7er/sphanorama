@@ -287,9 +287,9 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     // nothing real: `MemoryFrameStoreAccess::Allocate` packs planar rows.
     //
     // Besides `Allocate`, a stride is written by the generated wire decoder — in both halves,
-    // `codec.h` and `shell/src/bridge/codec.generated.ts` — and by `CaptureSessionManager`'s
-    // `DecodeSession`, which reads one out of a persisted project document with `operator>>` and
-    // hands the result to an engine. That last one is why this is a guard and not an assertion: a
+    // `codec.h` and `shell/src/bridge/codec.generated.ts` — and by `utilities/session_document`'s
+    // `DecodeSessionDocument`, which reads one out of a persisted project document with
+    // `operator>>` and hands the result to an engine. That last one is why this is a guard and not an assertion: a
     // stride can arrive from a file written by an older build.
     //
     // The count has been wrong in four successive drafts of this comment — one writer, then two,

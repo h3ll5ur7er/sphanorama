@@ -3,12 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <array>
-#include <iomanip>
 #include <numbers>
-#include <sstream>
 #include <string>
 
 #include "utilities/quaternion.h"
+#include "utilities/session_document.h"
 
 namespace sphanorama {
 namespace {
@@ -54,221 +53,6 @@ constexpr int64_t kDwellNs = 2'000'000'000;
 // keeps the ordinary case exact and makes the unknown case cost at most a seventh of a dwell.
 constexpr int64_t kMaxDwellCreditNs = 300'000'000;
 constexpr double kRadToDeg = 180.0 / std::numbers::pi;
-
-// ------------------------------------------------------------------ the session document
-//
-// What a tab leaves behind. It is deliberately a flat text document rather than the generated
-// wire codec: that codec belongs to the boundary (ADR 0013) and a manager reaching into bridge/
-// would be a client dependency pointing the wrong way. This is small enough to read in a
-// debugger, which is worth something for the one artefact whose job is to outlive the process
-// that wrote it.
-//
-// Versioned by its first line. A document from a build that wrote a different shape is refused
-// rather than guessed at — half a restored session is a coverage map that lies about which cells
-// hold frames.
-//
-// Version 2 added the tier line, and every version-1 document stopped loading with it. That is
-// the right outcome rather than a cost of it: a document written before this build is precisely
-// one that cannot say which capture its frames belong to, and reading it would mean assuming the
-// answer this field exists to stop assuming (ADR 0035).
-constexpr const char* kSessionKey = "session";
-constexpr int kSessionVersion = 2;
-
-// Every double round-trips: 17 significant digits is what IEEE-754 needs to come back bit for
-// bit, and a pose that drifts in the last place on every reload would be a slow corruption of the
-// only thing anchoring a cell to a direction.
-std::string Digits(double value) {
-  std::ostringstream out;
-  out << std::setprecision(17) << value;
-  return out.str();
-}
-
-template <typename Enum>
-bool ReadEnum(std::istringstream& in, int limit, Enum& out) {
-  int raw = -1;
-  if (!(in >> raw) || raw < 0 || raw >= limit) return false;
-  out = static_cast<Enum>(raw);
-  return true;
-}
-
-struct StoredSession {
-  uint64_t session = 0;
-  uint64_t nextCandidate = 1;
-  // Which spill tier the frames below are in, as the store reported it when this was written.
-  // Frame identities restart at 1 in every process and the tier does not, so the identities alone
-  // do not say whose pixels they are; this is what a resume compares before it adopts any of them
-  // (ADR 0035). Zero is a real value — a host with no spill tier at all — rather than "unset".
-  uint64_t generation = 0;
-  CapturePlanSpec spec;
-  Intrinsics lens;
-  // Only the frames this session's own bursts produced, and the reason is where their bytes are.
-  // Cooling spills a cell's own candidates and deliberately leaves offered ones alone (ADR 0023),
-  // so an offered frame — a file import, a manual shutter — has nothing in the sink under its
-  // name. Writing it down would restore a candidate whose first Pin fails, which is a cell
-  // claiming evidence it cannot produce. The caller's handle went away with the tab that held it.
-  std::vector<Candidate> candidates;
-};
-
-std::string EncodeSession(const StoredSession& stored) {
-  std::ostringstream out;
-  out << "sphanorama-session " << kSessionVersion << '\n';
-  out << "session " << stored.session << ' ' << stored.nextCandidate << '\n';
-  // A line of its own rather than a field on the session line: it is a statement about the tier
-  // the frames are in, not about the session's counters, and the two are written from different
-  // places.
-  out << "tier " << stored.generation << '\n';
-  out << "lens " << stored.lens.width << ' ' << stored.lens.height << '\n';
-  out << "spec " << static_cast<int>(stored.spec.strategy)
-      << ' ' << Digits(stored.spec.horizontalFovDeg)
-      << ' ' << Digits(stored.spec.verticalFovDeg)
-      << ' ' << Digits(stored.spec.overlapTarget)
-      << ' ' << Digits(stored.spec.acceptanceConeDeg)
-      << ' ' << (stored.spec.coverPoles ? 1 : 0)
-      << ' ' << static_cast<int>(stored.spec.motion) << '\n';
-
-  for (const Candidate& candidate : stored.candidates) {
-    const FrameRef& frame = candidate.frame;
-    const PoseSample& pose = candidate.pose;
-    const QualityScore& quality = candidate.quality;
-    out << "candidate " << candidate.id.value << ' ' << candidate.node.value
-        << ' ' << frame.id.value << ' ' << frame.buffer.value
-        << ' ' << static_cast<int>(frame.format)
-        << ' ' << frame.width << ' ' << frame.height << ' ' << frame.stride
-        << ' ' << frame.timestampNs << ' ' << frame.contentHash
-        << ' ' << pose.timestampNs
-        << ' ' << Digits(pose.orientation.w) << ' ' << Digits(pose.orientation.x)
-        << ' ' << Digits(pose.orientation.y) << ' ' << Digits(pose.orientation.z)
-        << ' ' << Digits(pose.angularVelocity.x) << ' ' << Digits(pose.angularVelocity.y)
-        << ' ' << Digits(pose.angularVelocity.z)
-        << ' ' << Digits(pose.confidence) << ' ' << (pose.visuallyCorrected ? 1 : 0)
-        << ' ' << Digits(quality.sharpness) << ' ' << Digits(quality.motionBlur)
-        << ' ' << Digits(quality.exposureAgreement) << ' ' << Digits(quality.alignmentResidual)
-        << ' ' << Digits(quality.moverPenalty) << ' ' << Digits(quality.aggregate) << '\n';
-  }
-  return out.str();
-}
-
-// All or nothing. A line this does not understand fails the whole read, because the alternative
-// is a session that comes back missing the cells whose lines were malformed — and a coverage map
-// that quietly lost a cell is worse than one that refuses to load, which at least says so.
-bool DecodeSession(const std::string& text, StoredSession& out) {
-  std::istringstream lines(text);
-  std::string line;
-
-  if (!std::getline(lines, line)) return false;
-  {
-    std::istringstream header(line);
-    std::string tag;
-    int version = 0;
-    if (!(header >> tag >> version) || tag != "sphanorama-session" || version != kSessionVersion) {
-      return false;
-    }
-  }
-
-  // Nothing may be left over on a line once this build has read what it knows about. A trailing
-  // field is a document from a shape this one does not have, and the version gate is the only
-  // sanctioned way to read one of those — taking the prefix that fits is how a session comes back
-  // missing whatever the extra field was there to say.
-  const auto exhausted = [](std::istringstream& in) {
-    std::string extra;
-    return !(in >> extra);
-  };
-
-  bool sawSession = false, sawLens = false, sawSpec = false, sawTier = false;
-  while (std::getline(lines, line)) {
-    if (line.empty()) continue;
-    std::istringstream in(line);
-    std::string tag;
-    in >> tag;
-    if (tag == "session") {
-      if (!(in >> out.session >> out.nextCandidate)) return false;
-      // Zero is not an identity: `Id::valid()` is `value != 0` and every counter in this codebase
-      // starts at 1. A document carrying one is one this build cannot honour, and restoring it
-      // would seat the session under a name nothing can legitimately hold.
-      if (out.session == 0 || out.nextCandidate == 0) return false;
-      if (!exhausted(in)) return false;
-      sawSession = true;
-    } else if (tag == "tier") {
-      // Zero is legal here, unlike the identities above: it is what a host with no spill tier
-      // reports, and a document written against one has to be able to say so.
-      if (!(in >> out.generation)) return false;
-      if (!exhausted(in)) return false;
-      sawTier = true;
-    } else if (tag == "lens") {
-      if (!(in >> out.lens.width >> out.lens.height)) return false;
-      if (!exhausted(in)) return false;
-      sawLens = true;
-    } else if (tag == "spec") {
-      int coverPoles = 0;
-      if (!ReadEnum(in, 3, out.spec.strategy)) return false;
-      if (!(in >> out.spec.horizontalFovDeg >> out.spec.verticalFovDeg >> out.spec.overlapTarget
-               >> out.spec.acceptanceConeDeg >> coverPoles)) {
-        return false;
-      }
-      if (!ReadEnum(in, 4, out.spec.motion)) return false;
-      out.spec.coverPoles = coverPoles != 0;
-      if (!exhausted(in)) return false;
-      sawSpec = true;
-    } else if (tag == "candidate") {
-      Candidate candidate;
-      int corrected = 0;
-      if (!(in >> candidate.id.value >> candidate.node.value
-               >> candidate.frame.id.value >> candidate.frame.buffer.value)) {
-        return false;
-      }
-      if (!ReadEnum(in, 7, candidate.frame.format)) return false;
-      if (!(in >> candidate.frame.width >> candidate.frame.height >> candidate.frame.stride
-               >> candidate.frame.timestampNs >> candidate.frame.contentHash
-               >> candidate.pose.timestampNs
-               >> candidate.pose.orientation.w >> candidate.pose.orientation.x
-               >> candidate.pose.orientation.y >> candidate.pose.orientation.z
-               >> candidate.pose.angularVelocity.x >> candidate.pose.angularVelocity.y
-               >> candidate.pose.angularVelocity.z
-               >> candidate.pose.confidence >> corrected
-               >> candidate.quality.sharpness >> candidate.quality.motionBlur
-               >> candidate.quality.exposureAgreement >> candidate.quality.alignmentResidual
-               >> candidate.quality.moverPenalty >> candidate.quality.aggregate)) {
-        return false;
-      }
-      // Same rule as the session line above, and it matters more here: a candidate or frame under
-      // an invalid identity is one the store would be asked to adopt, and the first thing to go
-      // wrong with it would go wrong a long way from this document.
-      if (!candidate.id.valid() || !candidate.node.valid() || !candidate.frame.id.valid()
-          || !candidate.frame.buffer.valid()) {
-        return false;
-      }
-      // A pose `OfferFrame` would refuse at the door keeps its frame and loses its claim: it comes
-      // back unanchored, which is what a pose nobody measured already is. Restored as it stands, it
-      // would be written back by every checkpoint and refuse every `Refine` built from the capture;
-      // refusing the document instead cost the whole sphere, since the page reads a refusal here
-      // as one a later build can open and the one button it leaves clears the tier (ADR 0065).
-      if (PoseSampleDefect(candidate.pose)) candidate.pose.confidence = 0.0;
-      if (!exhausted(in)) return false;
-      candidate.pose.visuallyCorrected = corrected != 0;
-      out.candidates.push_back(candidate);
-    } else {
-      // An unknown tag is a document from a shape this build does not have, which the version
-      // line should already have caught. Refusing rather than skipping keeps that the only way a
-      // newer document can be read, instead of half-read.
-      return false;
-    }
-  }
-  // The tier line is required, not defaulted. A document that does not say which capture it
-  // belongs to is exactly the document this build must not act on, and a missing line reading as
-  // zero would make it look like one written on a host with no tier at all.
-  if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
-
-  // The candidates win where the two disagree, for the same reason the spill index's slots beat
-  // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
-  // behind them — a write torn between the candidate lines and the session line — would have the
-  // next burst issue ids naming frames the cell is already holding, and a cell with two
-  // candidates under one id has two frames as far as everything downstream can tell. Raised
-  // rather than refused, because nothing is lost by raising it and a capture is lost by refusing.
-  for (const Candidate& candidate : out.candidates) {
-    out.nextCandidate = std::max(out.nextCandidate, candidate.id.value + 1);
-  }
-  return true;
-}
 
 // Puts a cell's candidates into the order the quality engine named.
 //
@@ -550,13 +334,13 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
 
   // Read before the camera is touched, for the same reason Begin checks the title first: asking
   // for a camera on behalf of a session that cannot start is the worst order to fail in.
-  auto document = projects_.ReadDocument(project, kSessionKey);
+  auto document = projects_.ReadDocument(project, kSessionDocumentKey);
   if (!document.ok()) {
     return Err<SessionId>(StatusCode::NotFound, kComponent,
                           "this project has no session to resume");
   }
-  StoredSession stored;
-  if (!DecodeSession(document.value, stored)) {
+  SessionDocument stored;
+  if (!DecodeSessionDocument(document.value, stored)) {
     // Kept, not deleted. The bytes it names may still be in the sink, and a build that can read
     // this shape may yet come along; throwing away the only record of a capture because this
     // build cannot parse it is the one unrecoverable move available here.
@@ -709,7 +493,7 @@ void CaptureSessionManager::Checkpoint() const {
   auto generation = frames_.TierGeneration();
   if (!generation.ok()) return;
 
-  StoredSession stored;
+  SessionDocument stored;
   stored.generation = generation.value;
   stored.session = session_.value;
   stored.nextCandidate = next_candidate_;
@@ -721,7 +505,7 @@ void CaptureSessionManager::Checkpoint() const {
   // Not reported, and there is nobody to report it to: this runs on the way out of a burst the
   // caller has already been told about. A write that fails costs the resume, not the capture —
   // the frames are still in the store and the session is still live.
-  (void)projects_.WriteDocument(project_, kSessionKey, EncodeSession(stored));
+  (void)projects_.WriteDocument(project_, kSessionDocumentKey, EncodeSessionDocument(stored));
 }
 
 Result<CapturePlan> CaptureSessionManager::GetPlan() const {

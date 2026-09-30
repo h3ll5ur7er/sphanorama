@@ -3863,7 +3863,7 @@ TEST_F(ResumedSession, AResumeCheckpointsTheSphereItReplannedRatherThanTheDevice
     auto document = projects->ReadDocument(kProject, "session");
     EXPECT_TRUE(document.ok()) << document.status.detail;
     if (!document.ok()) return -1;
-    // The `spec` line's last field, which is where `EncodeSession` puts the capability.
+    // The `spec` line's last field, which is where `EncodeSessionDocument` puts the capability.
     std::istringstream lines(document.value);
     for (std::string line; std::getline(lines, line);) {
       if (line.rfind("spec ", 0) != 0) continue;
