@@ -845,8 +845,9 @@ that has to be ordered.
   out, and `lensFitted` says which. Distortion is not fitted; that is a bundle adjustment's job, and the
   carried matches are its input. **A device keeps its lens** (ADR 0067): a lens says how sure it is,
   `Refine` takes a fit only where it is surer than the lens it replaces, and `utilities/kept_lens`
-  amends a kept lens with every precise least, taken or not — the storage and the writer wait for the build manager
-  to run `Refine`. The accuracy number this phase exits on **is
+  amends a kept lens with every precise least, taken or not. The build manager runs `Refine` now,
+  and the storage and the writer still wait: a capture's document names no camera, so a build
+  cannot say whose lens it fitted (ADR 0070). The accuracy number this phase exits on **is
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
@@ -873,8 +874,16 @@ that has to be ordered.
   comparison is not gauge-free, and without that turn every detector reads about 5. It measures
   1.55 (ORB), 1.38 (AKAZE) and 1.22 (SIFT), and composed under the lens it was handed rather than
   the one it fitted, 14.2 to 14.3. Everything else in this bullet answers `Unsupported`, and no composition
-  root selects the engine yet.
-- `PanoramaBuildManager`: staged progress, low-res preview first, then full render.
+  root selects the engine yet — the build manager below reaches it from tests.
+- `PanoramaBuildManager`: staged progress, low-res preview first, then full render. **The preview
+  is in** (ADR 0070): `Start` reads a project's session document, one frame per cell — the manual
+  pick where one was recorded — and each `Poll` does one step: a frame's features, a pair, the
+  solve, the preview. Over the real engines, the photograph ring with every pose three degrees out
+  builds to within 1.56 (ORB), 1.37 (AKAZE) and 1.23 (SIFT) bytes of the photograph, against 28.6
+  for the frames placed where the poses say. The browser's composition root hands it null engines
+  still, so there a build fails at its first step; selecting the real ones — a detector, a feature
+  cap and a preview width for a phone, and the 556 KB — is the next change, with the page that
+  starts a build and shows it. Tiles, ghosts and incremental rebuild answer `Unsupported`.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
 
 Listed in dependency order, which is not build order: **the accuracy harness on synthetic datasets

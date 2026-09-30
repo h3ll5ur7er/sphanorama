@@ -85,8 +85,8 @@ describe('Unsupported is not always about the camera', () => {
     })).toBe(detail);
     expect(describeFailure({
       code: 'Unsupported', component: 'PanoramaBuildManager',
-      detail: 'nothing to build until Phase 2',
-    })).toBe('nothing to build until Phase 2');
+      detail: 'nothing detects movers yet',
+    })).toBe('nothing detects movers yet');
   });
 });
 

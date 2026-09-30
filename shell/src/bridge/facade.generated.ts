@@ -160,9 +160,9 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
 
 export function createPanoramaBuildManagerProxy(call: FacadeCall) {
   return {
-    async start(session: C.SessionId, spec: C.BuildSpec) {
+    async start(project: C.ProjectId, spec: C.BuildSpec) {
       const args = new Writer();
-      args.f64(session);
+      args.f64(project);
       codec.encodeBuildSpec(args, spec);
       const raw = await call('PanoramaBuildManager.start', args.finish());
       const input = new Reader(raw);

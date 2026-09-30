@@ -32,6 +32,7 @@
 #include "support/fake_motion_sensor_access.h"
 #include "support/fake_spill_sink.h"
 #include "support/fake_project_store_access.h"
+#include "utilities/session_document.h"
 #include "utilities/quaternion.h"
 #include "utilities/clock.h"
 
@@ -3724,6 +3725,36 @@ TEST_F(CaptureSession, CandidatesComeBackRankedRatherThanInCaptureOrder) {
   ASSERT_EQ(strip.size(), 3u);
   EXPECT_GT(strip[0].id.value, strip[1].id.value);
   EXPECT_GT(strip[1].id.value, strip[2].id.value);
+}
+
+// The document keeps the ranking too, and a build depends on it: a cell nobody picked from is built
+// from the first candidate the document lists for it (ADR 0070). Read back through the codec
+// rather than through `Candidates`, which is the manager's memory and not what a reload has.
+TEST_F(CaptureSession, TheDocumentListsACellsCandidatesRankedToo) {
+  ReversedQualityEngine reversed;
+  CaptureSessionManager ranked(planner, pose, reversed, preview, *camera, *sensor, *store,
+                               *projects, clock);
+  ASSERT_TRUE(ranked.Begin(kProject, Spec()).ok());
+  BurstSpec burst;
+  burst.frameCount = 3;
+  const NodeId node = ranked.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(ranked, clock, node, burst).ok());
+
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  std::vector<uint64_t> listed;
+  for (const Candidate& candidate : document.candidates) {
+    if (candidate.node == node) listed.push_back(candidate.id.value);
+  }
+  std::vector<uint64_t> strip;
+  for (const Candidate& candidate : ranked.Candidates(node).value) {
+    strip.push_back(candidate.id.value);
+  }
+  ASSERT_EQ(listed.size(), 3u);
+  EXPECT_EQ(listed, strip);
+  EXPECT_GT(listed[0], listed[2]) << "the document is in capture order, not the ranking's";
 }
 
 TEST_F(CaptureSession, ARankingThatNamesACandidateTwiceDoesNotDuplicateIt) {

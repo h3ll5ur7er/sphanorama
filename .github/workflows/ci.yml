@@ -133,7 +133,7 @@ jobs:
           # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
           # make visible. It covers the `expected=` line too, which CI was relying on to abort.
           set +e
-          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*:EveryDetector/RegisteredComposition.*'
+          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*:EveryDetector/RegisteredComposition.*:EveryDetector/PanoramaBuildAccuracy.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
           # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-debug/bin/sphanorama_tests --gtest_list_tests \
@@ -173,6 +173,12 @@ jobs:
           registered=$(grep -c '^\[registered\]' "$log" || true)
           if [ "$registered" -ne "$expected" ]; then
             echo "the registered preview ran $registered detectors and the binary has $expected" >&2
+            status=1
+          fi
+          # And the same ring built through the build manager, one `[built]` line a detector.
+          built=$(grep -c '^\[built\]' "$log" || true)
+          if [ "$built" -ne "$expected" ]; then
+            echo "the build manager built with $built detectors and the binary has $expected" >&2
             status=1
           fi
           if [ "$measured" -ne "$expected" ]; then
@@ -257,7 +263,7 @@ jobs:
           # dies before `cat "$log"` is a red tick with no output — the failure this guard exists to
           # make visible. It covers the `expected=` line too, which CI was relying on to abort.
           set +e
-          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*:EveryDetector/RegisteredComposition.*'
+          filter='EveryDetector/Accuracy.*:Acceptance.*:CompositionAccuracy.*:EveryDetector/RegisteredComposition.*:EveryDetector/PanoramaBuildAccuracy.*'
           # How many `[accuracy]` lines a complete run prints, asked of the binary rather than
           # written down, so a fourth detector cannot go unmeasured.
           expected=$(./build/native-asan/bin/sphanorama_tests --gtest_list_tests \
@@ -297,6 +303,12 @@ jobs:
           registered=$(grep -c '^\[registered\]' "$log" || true)
           if [ "$registered" -ne "$expected" ]; then
             echo "the registered preview ran $registered detectors and the binary has $expected" >&2
+            status=1
+          fi
+          # And the same ring built through the build manager, one `[built]` line a detector.
+          built=$(grep -c '^\[built\]' "$log" || true)
+          if [ "$built" -ne "$expected" ]; then
+            echo "the build manager built with $built detectors and the binary has $expected" >&2
             status=1
           fi
           if [ "$measured" -ne "$expected" ]; then

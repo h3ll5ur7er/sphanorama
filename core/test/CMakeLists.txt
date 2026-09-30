@@ -27,6 +27,8 @@ if(SPHANORAMA_WITH_OPENCV)
       "engines/registration_accuracy_test.cpp"
       # The preview's round trip renders its dataset the same way and reads it with the same loader.
       "engines/composition_accuracy_test.cpp"
+      # The build manager over the real engines, which renders its ring the same way.
+      "managers/panorama_build_accuracy_test.cpp"
       # The renderer both harnesses shell out to finds the generator through the data directory, which
       # is defined only here.
       "support/rendered_dataset_test.cpp"
@@ -49,6 +51,7 @@ add_executable(sphanorama_tests
   wire_test.cpp
   managers/capture_session_manager_test.cpp
   managers/project_manager_test.cpp
+  managers/panorama_build_manager_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/heap_budget_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/facade_test.cpp

@@ -351,14 +351,16 @@ TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
-TEST(Facade, ABuildCannotBeStartedYetAndSaysSo) {
+// A project, not a session, since ADR 0070 — and the runtime's manager reads the project store,
+// so an id nobody created is refused there rather than by a stub that refused everything.
+TEST(Facade, ABuildForAProjectThatDoesNotExistIsRefused) {
   wire::Writer args;
-  args.PutF64(1.0);
+  args.PutF64(4041.0);
   BuildSpec spec;
   codec::Encode(args, spec);
   Response response = Call("PanoramaBuildManager.start", args.bytes());
   wire::Reader in = response.reader();
-  EXPECT_EQ(ReadStatus(in).code, StatusCode::Unsupported);
+  EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
 TEST(Facade, TheResultBufferSurvivesUntilTheNextCall) {

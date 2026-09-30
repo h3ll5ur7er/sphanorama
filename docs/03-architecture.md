@@ -183,10 +183,16 @@ estimate. Its loop is:
 It never stitches and never blends.
 
 ### PanoramaBuildManager (V2)
-Owns a build. Takes a session's selections and drives:
+Owns a build. Takes a project's capture — the session document and each cell's pick — and drives:
 `RegistrationEngine` (features → pairwise → global refine) → `CompositionEngine` (exposure → ghost
 detection → seams → blend → project). Emits staged progress and a low-resolution preview long
 before the final render.
+
+**What it builds today is the preview** (ADR 0070). `Start` reads the document through
+`utilities/session_document`, one frame per cell, and refuses what it can before a pixel is read;
+each `Poll` then does one step — a frame's features, a pair, the solve, the preview — so the core's
+one thread is never held for a whole build. `Invalidate` and `Ghosts` answer `Unsupported` until the
+graph below exists, so in UC-2 and UC-3 the `Invalidate` step is a new `Start` for now.
 
 Its distinguishing responsibility is **incremental invalidation**: `Invalidate(buildId, dirtyNodes)`
 recomputes only the sub-graph a retake touched — the changed cell, its neighbours' pairwise edges,

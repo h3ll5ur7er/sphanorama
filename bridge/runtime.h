@@ -45,8 +45,9 @@ class Runtime {
 
   RingsCoveragePlannerEngine planner_;
   OrientationPoseEngine pose_;
-  // Registration and composition are constructed but not yet handed to a manager: the build
-  // pipeline has nothing to run them over until Phase 2.
+  // Null in every build for now, so a build started here fails at its first step with their
+  // `Unsupported`. Selecting the real ones moves OpenCV into the module and needs a detector and a
+  // feature cap chosen for a phone, which is its own change (ADR 0070).
   NullRegistrationEngine registration_;
   NullCompositionEngine composition_;
 
@@ -126,7 +127,7 @@ class Runtime {
 
   CaptureSessionManager capture_session_{planner_, pose_, quality_, preview_, camera_,
                                          motion_, frames_, projects_, clock_};
-  PanoramaBuildManager panorama_build_;
+  PanoramaBuildManager panorama_build_{registration_, composition_, frames_, projects_};
   ProjectManager project_{projects_};
 };
 
