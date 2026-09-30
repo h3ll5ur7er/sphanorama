@@ -23,7 +23,7 @@ function elements(): ReviewElements {
 
 function candidate(id: number, node: number): Candidate {
   return {
-    id, node, frame: { id },
+    id, node, frame: { id }, pose: { confidence: 1 },
     quality: { sharpness: id / 10, exposureAgreement: 1, motionBlur: 0, aggregate: id / 10 },
   } as unknown as Candidate;
 }

@@ -25,6 +25,10 @@ class ICaptureSessionManager {
   //
   // Refused with `NotFound` when the project does not exist, which is checked first: beginning
   // against an id nobody created would leave a titleless project in the user's list.
+  //
+  // A pick outlives the capture it was made in, and this never issues a candidate identity a
+  // recorded pick names — a build would honour the pick for a frame nobody chose (ADR 0070). So a
+  // pick the project store cannot read refuses this with the store's status, camera closed.
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -46,6 +50,10 @@ class ICaptureSessionManager {
   // A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
   // unanchored, confidence zero: refusing the document for one field would cost every frame of the
   // sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
+  //
+  // Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
+  // refuses it before the camera opens. The document's counter is not enough: a pick made after a
+  // checkpoint failed names an identity past it.
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;

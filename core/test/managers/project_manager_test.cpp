@@ -2,6 +2,7 @@
 // a project that was never created" is load-bearing rather than an edge case.
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -147,6 +148,10 @@ TEST_F(Projects, AnUnsetIdIsNotASelection) {
   EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{0}).code,
             StatusCode::InvalidArgument);
   EXPECT_EQ(manager->SetSelection(created.value, NodeId{0}, CandidateId{7}).code,
+            StatusCode::InvalidArgument);
+  // Nor the largest identity, which no counter can step past and so none can have issued.
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3},
+                                  CandidateId{std::numeric_limits<uint64_t>::max()}).code,
             StatusCode::InvalidArgument);
 
   // And nothing was written: the cell still reads as one nobody has chosen for, rather than as a

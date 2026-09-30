@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,6 +53,12 @@ struct SessionDocument {
   std::vector<Candidate> candidates;
 };
 
+// Whether a counter could have issued this identity: zero is "none", and no counter steps past the
+// largest, so a document or a pick naming either names something no capture made.
+inline bool IssuableCandidate(CandidateId id) {
+  return id.valid() && id.value != std::numeric_limits<uint64_t>::max();
+}
+
 std::string EncodeSessionDocument(const SessionDocument& stored);
 
 // All or nothing. A line this does not understand fails the whole read, because the alternative
@@ -68,8 +75,8 @@ std::string SelectionDocumentKey(NodeId node);
 //
 // Parsed rather than trusted. `ProjectManager` wrote it, but it went through a store that outlives
 // the process and can be edited by anything with the origin's storage — and `stoull` on a
-// non-number throws, which is not available here. Zero is refused with the rest: it is what
-// `GetSelection` answers for "nobody has chosen here", so no document may hold it.
+// non-number throws, which is not available here. An identity no counter could issue is refused with
+// the rest — zero is what `GetSelection` answers for "nobody has chosen here".
 std::optional<CandidateId> ParseSelectionDocument(const std::string& text);
 
 }  // namespace sphanorama

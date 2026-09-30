@@ -52,6 +52,11 @@ everything, and it could not have done otherwise as declared, for three reasons.
      past the candidate counter the document recorded is refused instead: the document never saw
      it, because a rewrite failed, and the ranking would build from a frame other than the one the
      user chose. A pick a retake discarded is always below that counter.
+   - **A pick always names the frame it was made on.** `CaptureSessionManager` issues no candidate
+     identity a recorded pick names, at `Begin` or at `Resume`: the document's counter alone would
+     reissue the one a pick made after a failed rewrite names, once the tab reloads, and a new tab's
+     counter restarts at 1 while an earlier capture's picks survive. Either would hand the pick to a
+     frame nobody chose, and the build would honour it. A pick the store cannot read refuses both.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was
@@ -71,8 +76,13 @@ everything, and it could not have done otherwise as declared, for three reasons.
      a preview that refused having left one pinned or faulted in (`RenderPreview` says it may),
      since
      extraction leaves a spilled frame resident (`FeatureSet`'s comment), and a sphere's worth of
-     faulted-in frames is the heap refusal ADR 0023 exists to avoid. The feature sets are forgotten
-     once the last pair is estimated: `Refine` reads the pairs' matches, not the sets.
+     faulted-in frames is the heap refusal ADR 0023 exists to avoid. What the store will not put
+     back is retried by `Cancel` and the next `Start` — and by then a frame may have been cooled by
+     the capture or pinned by somebody `Pin` made a promise to, so putting back only ever cools a
+     frame, and releases the one pin an engine left exactly once. A preview whose frames' tiers
+     cannot be read is not drawn, since a refusal could not then be put right. The feature sets are
+     forgotten once the last pair is estimated: `Refine` reads the pairs' matches, not the sets; a
+     pin an engine left on one is the build's to release, since nothing else was given its handle.
 5. **What a build answers.** A finished build's panorama is the preview: an equirectangular frame
    no wider than `BuildSpec::outputWidth` or 2048, held by the core until the build is cancelled or
    another is started. No tiles, no ghosts, no incremental rebuild — `Ghosts` and `Invalidate`
@@ -100,6 +110,11 @@ everything, and it could not have done otherwise as declared, for three reasons.
   contract change for the change that shows a build.
 - **An offered frame is never built from**, even when it ranks first or is picked, because the
   document leaves it out — its bytes are not in the tier (ADR 0023). Nothing offers a frame today.
+- **The review strip keeps a copy of the rule.** Which frame a cell gives where nobody picked —
+  the best measured, else the best — is decided in `Start` and marked by
+  `shell/src/clients/review/candidates.ts`, which reads the same candidates. A second copy rather
+  than a question to the core, because asking would be a contract change for one boolean; the two
+  name each other and move together.
 
 - **A contract change** in `managers/panorama_build_manager.h`, and the generated TypeScript and
   dispatch with it. Nothing in the shell calls `Start` yet.

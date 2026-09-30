@@ -13,6 +13,27 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
 
+// The first identity from `next` on that no recorded pick names. Picks outlive the counter that
+// issued them — a pick made after the last checkpoint that succeeded is past the document's
+// counter, and a new tab's counter restarts at 1 — and an identity issued again hands the pick to a
+// frame nobody chose, which a build then honours (ADR 0070). Only an absent pick is none: one that
+// cannot be read may name the very next identity.
+Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
+                               const CapturePlan& plan, uint64_t next) {
+  for (const CoverageNode& node : plan.nodes) {
+    auto pick = projects.ReadDocument(project, SelectionDocumentKey(node.id));
+    if (!pick.ok()) {
+      if (pick.status.code == StatusCode::NotFound) continue;
+      return pick.status;
+    }
+    // One naming no identity a counter could issue steps past nothing, and a build refuses it.
+    if (const auto named = ParseSelectionDocument(pick.value)) {
+      next = std::max(next, named->value + 1);
+    }
+  }
+  return Ok(next);
+}
+
 // How long the camera has to be held on a cell before a burst fires by itself.
 //
 // About two seconds: long enough that a phone swinging past a cell does not trip it, short enough
@@ -250,6 +271,11 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
+  auto next = PastEveryPick(projects_, project, plan.value, next_candidate_);
+  if (!next.ok()) {
+    (void)camera_.Close();
+    return next.status;
+  }
 
   // Late on purpose, and here rather than at the top of this function. Everything above can
   // refuse, and the tier is holding the only copy of whatever sphere came before — a Begin that
@@ -273,6 +299,7 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{next_session_++};
+  next_candidate_ = next.value;
   candidates_.clear();
   burst_owned_.clear();
   // Kept because it is what the plan was made from, and a resume has to make the same one: node
@@ -403,6 +430,8 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     }
   }
 
+  SPH_TRY(const uint64_t next, PastEveryPick(projects_, project, plan.value, stored.nextCandidate));
+
   // The frames come back before the session does. A store that will not take them leaves a
   // coverage map claiming cells whose pixels nothing can reach, which is worse than refusing:
   // the capture would look finished and build into nothing.
@@ -460,8 +489,9 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     burst_owned_.insert(candidate.id.value);
   }
   // Stepped past what the document already used, or the next burst of this session would issue
-  // candidate ids that name restored frames.
-  next_candidate_ = stored.nextCandidate;
+  // candidate ids that name restored frames — and past every pick, which the document may not have
+  // seen.
+  next_candidate_ = next;
   if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;
   active_ = true;

@@ -20,14 +20,6 @@ constexpr int32_t kWidestPreview = 2048;
 std::string Named(const char* what, uint64_t id) {
   return std::string(what) + " " + std::to_string(id);
 }
-
-// Whether a frame the build held is no longer the store's to charge for. `NotFound` is not a
-// refusal to let go: the store emptied itself under the build — a new capture begins by clearing it
-// (ADR 0034) — and nothing named by that id will ever be forgettable again, so keeping the handle
-// to retry would strand the build rather than recover it.
-bool Gone(const Status& forgotten) {
-  return forgotten.ok() || forgotten.code == StatusCode::NotFound;
-}
 }  // namespace
 
 PanoramaBuildManager::PanoramaBuildManager(IRegistrationEngine& registration,
@@ -102,7 +94,8 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   for (const auto& [node, candidates] : cells) {
     // By rank, the best frame whose pose was measured: one that was not is paired with nothing and
     // dropped by the solve, and choosing it would leave the cell out of a build that still
-    // completes. A cell with no measured frame gives its best all the same, and loses it.
+    // completes. A cell with no measured frame gives its best all the same, and loses it. The review
+    // strip marks the same frame (`shell/src/clients/review/candidates.ts`); the two move together.
     const auto measured = std::find_if(candidates.begin(), candidates.end(),
                                        [](const Candidate* c) { return c->pose.confidence > 0.0; });
     const Candidate* chosen = measured != candidates.end() ? *measured : candidates.front();
@@ -248,26 +241,34 @@ Status PanoramaBuildManager::ExtractFeatures(Build& build, size_t index) {
   return restored;
 }
 
-Status PanoramaBuildManager::PutBack(const FrameRef& frame, Residency found) {
-  if (found == Residency::HeapPinned) return Status::Ok();
-  auto now = frames_.ResidencyOf(frame);
+Status PanoramaBuildManager::PutBack(Misplaced& misplaced) {
+  // `NotFound` is a store a new capture emptied (ADR 0034), with nowhere left to put anything back.
+  auto now = frames_.ResidencyOf(misplaced.frame);
   if (now.status.code == StatusCode::NotFound) return Status::Ok();
   if (!now.ok()) return now.status;
-  // Pinned now and not before: a call that could not release it left it so (`RenderPreview`
-  // says as much), and nobody else holds a pin on a frame the build found unpinned.
-  if (now.value == Residency::HeapPinned) {
-    if (Status released = frames_.Release(frame); !released.ok()) return released;
-    SPH_TRY(now.value, frames_.ResidencyOf(frame));
+  if (misplaced.pinOwed && now.value == Residency::HeapPinned) {
+    // Pinned now and not when found: a call that could not release it left it so (`RenderPreview`
+    // says as much). Nothing in the tree holds a pin across calls, so the pin is the engine's.
+    if (Status released = frames_.Release(misplaced.frame); !released.ok()) return released;
+    now.value = Residency::HeapEncoded;
   }
-  if (now.value == found) return Status::Ok();
-  return frames_.Demote(frame, found);
+  misplaced.pinOwed = false;
+  // The build only faults frames in, and a frame it faulted in is left unpinned in the heap. Found
+  // anywhere else, it is where it was found, or where something that is not the build has put it
+  // since — cooled by the capture, or pinned by a holder `Pin` made a promise to.
+  if (now.value != Residency::HeapEncoded || misplaced.found == Residency::HeapEncoded) {
+    return Status::Ok();
+  }
+  return frames_.Demote(misplaced.frame, misplaced.found);
 }
 
 Status PanoramaBuildManager::PutBackOrKeep(Build& build, const FrameRef& frame, Residency found) {
-  Status restored = PutBack(frame, found);
+  // A frame found pinned has no pin the build could owe: every pin on it is somebody else's.
+  Misplaced misplaced{frame, found, found != Residency::HeapPinned};
+  Status restored = PutBack(misplaced);
   // Kept for `Cancel` and the next `Start` to retry: a capture frame left pinned is one the next
   // capture's `Clear` refuses to empty the store around.
-  if (!restored.ok()) build.misplaced.emplace_back(frame, found);
+  if (!restored.ok()) build.misplaced.push_back(misplaced);
   return restored;
 }
 
@@ -321,18 +322,18 @@ Status PanoramaBuildManager::Compose(Build& build) {
     frames.push_back(*found);
   }
   // Asked before the call, so a refusal that leaves a frame out of place can be put right
-  // (`RenderPreview`): the frames are the capture's, not the build's.
-  std::vector<std::optional<Residency>> tiers;
+  // (`RenderPreview`): the frames are the capture's, not the build's. A tier that cannot be asked
+  // is a frame that could not be, so the call is not made.
+  std::vector<Residency> tiers;
   tiers.reserve(frames.size());
   for (const FrameRef& frame : frames) {
-    auto tier = frames_.ResidencyOf(frame);
-    tiers.push_back(tier.ok() ? std::optional<Residency>(tier.value) : std::nullopt);
+    SPH_TRY(const Residency tier, frames_.ResidencyOf(frame));
+    tiers.push_back(tier);
   }
   auto preview = composition_.RenderPreview(build.solution, frames, GainMap{}, build.previewWidth);
   if (!preview.ok()) {
     for (size_t i = 0; i < frames.size(); ++i) {
-      if (!tiers[i]) continue;
-      if (Status restored = PutBackOrKeep(build, frames[i], *tiers[i]); !restored.ok()) {
+      if (Status restored = PutBackOrKeep(build, frames[i], tiers[i]); !restored.ok()) {
         preview.status.detail += "; and " + restored.detail;
       }
     }
@@ -356,17 +357,17 @@ Status PanoramaBuildManager::ForgetFeatures(Build& build) {
     // A count of zero allocated nothing, and its handles name no frame; nor does one an earlier
     // pass already forgot.
     if (set.count == 0) continue;
-    const auto forget = [this](const FrameRef& frame) {
-      return frame.id.valid() ? frames_.Forget(frame) : Status::Ok();
+    const auto discard = [this](const FrameRef& frame) {
+      return frame.id.valid() ? Discard(frame) : Status::Ok();
     };
-    Status descriptors = forget(set.descriptors);
-    Status keypoints = forget(set.keypoints);
-    if (!Gone(descriptors) || !Gone(keypoints)) {
+    Status descriptors = discard(set.descriptors);
+    Status keypoints = discard(set.keypoints);
+    if (!descriptors.ok() || !keypoints.ok()) {
       FeatureSet left = set;
-      if (Gone(descriptors)) left.descriptors = FrameRef{};
-      if (Gone(keypoints)) left.keypoints = FrameRef{};
+      if (descriptors.ok()) left.descriptors = FrameRef{};
+      if (keypoints.ok()) left.keypoints = FrameRef{};
       kept.push_back(left);
-      if (first.ok()) first = Gone(descriptors) ? keypoints : descriptors;
+      if (first.ok()) first = descriptors.ok() ? keypoints : descriptors;
     }
   }
   build.features = std::move(kept);
@@ -375,29 +376,34 @@ Status PanoramaBuildManager::ForgetFeatures(Build& build) {
 
 Status PanoramaBuildManager::GiveBackPreview(Build& build) {
   if (!build.preview) return Status::Ok();
-  const FrameRef preview = *build.preview;
-  auto residency = frames_.ResidencyOf(preview);
-  if (residency.status.code == StatusCode::NotFound) {
-    build.preview.reset();
-    return Status::Ok();
-  }
-  if (!residency.ok()) return residency.status;
-  // Pinned only when `RenderPreview` handed it back unreleased; nothing else pins it.
-  if (residency.value == Residency::HeapPinned) {
-    if (Status released = frames_.Release(preview); !released.ok()) return released;
-  }
-  if (Status forgotten = frames_.Forget(preview); !forgotten.ok()) return forgotten;
+  if (Status discarded = Discard(*build.preview); !discarded.ok()) return discarded;
   build.preview.reset();
   return Status::Ok();
+}
+
+Status PanoramaBuildManager::Discard(const FrameRef& frame) {
+  // `NotFound` is not a refusal to let go: the store emptied itself under the build (ADR 0034), and
+  // nothing named by that id will ever be forgettable again, so keeping the handle to retry would
+  // strand the build rather than recover it.
+  auto residency = frames_.ResidencyOf(frame);
+  if (residency.status.code == StatusCode::NotFound) return Status::Ok();
+  if (!residency.ok()) return residency.status;
+  // The build's frames have handles nothing else was given, so every pin on one is an engine's that
+  // could not release it — a preview handed back unreleased, or a feature frame behind a refused
+  // `Release` the engine discarded — and the build is the only thing left that can name it.
+  if (residency.value == Residency::HeapPinned) {
+    if (Status released = frames_.Release(frame); !released.ok()) return released;
+  }
+  return frames_.Forget(frame);
 }
 
 Status PanoramaBuildManager::Release(Build& build) {
   Status first = ForgetFeatures(build);
   if (Status given = GiveBackPreview(build); !given.ok() && first.ok()) first = given;
-  std::vector<std::pair<FrameRef, Residency>> still;
-  for (const auto& [frame, tier] : build.misplaced) {
-    if (Status restored = PutBack(frame, tier); !restored.ok()) {
-      still.emplace_back(frame, tier);
+  std::vector<Misplaced> still;
+  for (Misplaced& misplaced : build.misplaced) {
+    if (Status restored = PutBack(misplaced); !restored.ok()) {
+      still.push_back(misplaced);
       if (first.ok()) first = restored;
     }
   }
@@ -449,8 +455,9 @@ Result<PanoramaRef> PanoramaBuildManager::Panorama(BuildId id) {
                             "this build has not completed");
   }
   // Asked rather than assumed: a new capture empties the store, and a handle it no longer holds is
-  // not a panorama.
-  if (!frames_.ResidencyOf(*build->preview).ok()) {
+  // not a panorama. Only `NotFound` says so; a store that could not answer has not said it is gone.
+  if (auto residency = frames_.ResidencyOf(*build->preview); !residency.ok()) {
+    if (residency.status.code != StatusCode::NotFound) return residency.status;
     return Err<PanoramaRef>(StatusCode::FailedPrecondition, kComponent,
                             "the store no longer holds this build's panorama; build again");
   }

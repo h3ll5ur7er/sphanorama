@@ -4925,6 +4925,103 @@ TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
   EXPECT_GT(second.Candidates(node).value.size(), before.size());
 }
 
+// A pick made after the document's last successful write names an identity the document's counter
+// never stepped past, and a resume restarting from that counter would issue it again — to a frame
+// nobody picked, which a build would then honour as the pick (ADR 0070).
+TEST_F(ResumedSession, NeverMintsACandidateIdentityAPickAlreadyNames) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  const uint64_t unseen = document.nextCandidate;
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
+                                      std::to_string(unseen)).ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  ASSERT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_NE(candidate.id.value, unseen) << "a picked identity was issued to another frame";
+  }
+}
+
+// A new capture on a project keeps the picks the old one recorded — nothing deletes a document —
+// and its counter restarts in a new tab, so it would otherwise issue the ids those picks name.
+TEST_F(ResumedSession, ABeginNeverMintsACandidateIdentityAPickAlreadyNames) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(first.End().ok());
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node), "1").ok());
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
+  for (const Candidate& candidate : second.Candidates(node).value) {
+    EXPECT_NE(candidate.id.value, 1u) << "a picked identity was issued to another frame";
+  }
+}
+
+// Only an absent pick is no pick: one that cannot be read may name the very identity the counter
+// is about to issue, so neither door opens on it — and neither opens the camera first.
+TEST_F(ResumedSession, APickThatCannotBeReadRefusesBothDoors) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId node = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  projects->RefuseReadsOf(SelectionDocumentKey(node));
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  EXPECT_EQ(second.Resume(kProject).status.code, StatusCode::StorageQuotaExceeded);
+  EXPECT_EQ(second_camera.Opens(), 0);
+  EXPECT_EQ(second.Begin(kProject, Spec()).status.code, StatusCode::StorageQuotaExceeded);
+  EXPECT_FALSE(second_camera.IsOpen()) << "a refused Begin left the camera open";
+}
+
+// No counter can step past the largest identity, so no capture can have issued it — and a document
+// naming one would leave the counter wrapped to zero, below every candidate it holds.
+TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  const std::string tampered = SetField(written.value, "candidate", 1,
+                                        std::to_string(std::numeric_limits<uint64_t>::max()));
+  ASSERT_NE(tampered, written.value);
+  SessionDocument document;
+  EXPECT_FALSE(DecodeSessionDocument(tampered, document));
+  EXPECT_FALSE(ParseSelectionDocument(std::to_string(std::numeric_limits<uint64_t>::max())));
+}
+
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
   // It should be unreachable, since the plan is made from the spec the document carries. But a
   // candidate filed under a cell the sphere does not have is one `Coverage` counts and nothing

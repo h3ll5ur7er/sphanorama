@@ -29,6 +29,15 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Status Cancel(BuildId build) override;
 
  private:
+  // A capture frame the build handed to an engine and has not yet put back where it was found.
+  struct Misplaced {
+    FrameRef frame;
+    Residency found = Residency::HeapEncoded;
+    // Whether a pin the frame carries may be an engine's that could not release it, which the build
+    // then owes. Once released, a pin is somebody else's — `Pin` promises them their mapping.
+    bool pinOwed = true;
+  };
+
   struct Build {
     BuildProgress progress;
     Intrinsics lens;
@@ -43,17 +52,16 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     std::vector<PairwiseResult> estimated;
     GlobalSolution solution;
     std::optional<FrameRef> preview;
-    // Capture frames a refusal left out of their tier that the store would not put back yet, with
-    // the tier each belongs in.
-    std::vector<std::pair<FrameRef, Residency>> misplaced;
+    // Capture frames a refusal left out of their tier that the store would not put back yet.
+    std::vector<Misplaced> misplaced;
     size_t done = 0;
   };
 
   size_t StepCount(const Build& build) const;
   Status Step(Build& build);
   Status ExtractFeatures(Build& build, size_t frame);
-  // Back to the tier it was found in, since reading it faulted it in.
-  Status PutBack(const FrameRef& frame, Residency found);
+  // Back to the tier it was found in, since reading it faulted it in. Records how far it got.
+  Status PutBack(Misplaced& frame);
   Status PutBackOrKeep(Build& build, const FrameRef& frame, Residency found);
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
@@ -61,8 +69,9 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   // Everything the build holds, given back. Answers the first refusal and keeps what was refused.
   Status Release(Build& build);
   Status ForgetFeatures(Build& build);
-  // Released if `RenderPreview` handed it back pinned, then forgotten; kept for a retry otherwise.
   Status GiveBackPreview(Build& build);
+  // Releases and forgets a frame the build made. Ok for one the store no longer holds.
+  Status Discard(const FrameRef& frame);
   void Abandon(Build& build, Status why);
   void Report(Build& build);
   Result<Build*> Find(BuildId id);

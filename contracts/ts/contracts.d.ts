@@ -953,6 +953,9 @@ export interface CaptureSessionManager {
    * this call is the rule, not the only place to be polite about it.
    * Refused with `NotFound` when the project does not exist, which is checked first: beginning
    * against an id nobody created would leave a titleless project in the user's list.
+   * A pick outlives the capture it was made in, and this never issues a candidate identity a
+   * recorded pick names — a build would honour the pick for a frame nobody chose (ADR 0070). So a
+   * pick the project store cannot read refuses this with the store's status, camera closed.
    */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
@@ -972,6 +975,9 @@ export interface CaptureSessionManager {
    * A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
    * unanchored, confidence zero: refusing the document for one field would cost every frame of the
    * sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
+   * Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
+   * refuses it before the camera opens. The document's counter is not enough: a pick made after a
+   * checkpoint failed names an identity past it.
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -1160,7 +1166,10 @@ export interface PanoramaBuildManager {
   /**
    * Does the build's next step and says where it has got to. A step that fails puts back any
    * capture frame it left out of its tier, and what the store will not put back yet is retried by
-   * `Cancel` and the next `Start`, as the build's own frames are.
+   * `Cancel` and the next `Start`, as the build's own frames are. Putting back only ever cools a
+   * frame and releases only the pin an engine left, once, so a retry leaves a frame something else
+   * has moved or pinned since where that component put it. The preview is not drawn when a frame's
+   * tier cannot be read, since that is what a refusal would need to put it back.
    * A finished build — `Complete` or
    * `Failed` — answers the same progress however often it is asked, and `failure` says why one
    * failed. `fraction` counts steps: it never goes back, and it is one exactly when the build is
@@ -1172,7 +1181,8 @@ export interface PanoramaBuildManager {
    * than the spec's `outputWidth` or 2048, and no tiles. **The core holds it**, until the build is
    * cancelled or another is started, so a caller reads it and does not `Forget` it.
    * `FailedPrecondition` for a build that has not completed, and for one whose panorama the store
-   * no longer holds — a new capture empties the store it is in.
+   * no longer holds — a new capture empties the store it is in; the store's own status where it
+   * could not say.
    */
   panorama(build: BuildId): Promise<Result<PanoramaRef>>;
   /**
@@ -1218,7 +1228,8 @@ export interface ProjectManager {
    * here and gives way to the ranking there.
    * An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
    * chosen here", so writing one would put the two halves of this pair in contradiction: a
-   * document the writer accepted and the reader has to call corrupt.
+   * document the writer accepted and the reader has to call corrupt. So is the largest candidate
+   * identity, which no counter steps past and so no capture can have issued.
    */
   setSelection(project: ProjectId, node: NodeId, candidate: CandidateId): Promise<Result<void>>;
   /**

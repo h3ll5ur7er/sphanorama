@@ -70,6 +70,9 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
   Result<PairwiseResult> EstimatePairwise(const FeatureSet& a, const FeatureSet& b,
                                           const Quat& prior, const Intrinsics& lens) override {
     asked.push_back({a.frame, b.frame, prior, lens});
+    // The real engine's `BorrowedFrame` discards a refused `Release`, which leaves the set's frame
+    // pinned behind a call that answered.
+    if (leaveFeaturesPinned) (void)store_.Pin(a.descriptors);
     if (auto found = pairFailures.find({a.frame.value, b.frame.value});
         found != pairFailures.end()) {
       return found->second;
@@ -135,6 +138,7 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
   std::set<uint64_t> dropped;
   bool reverse = false;
   bool placeAStranger = false;
+  bool leaveFeaturesPinned = false;
   std::set<std::pair<uint64_t, uint64_t>> unaccepted;
 
  private:
@@ -219,7 +223,9 @@ class ReluctantFrameStore final : public IFrameStoreAccess {
     return real_.Release(frame);
   }
   Result<Residency> ResidencyOf(const FrameRef& frame) override {
-    if (residencyRefusals > 0) {
+    if (residencyAnswersFirst > 0) {
+      --residencyAnswersFirst;
+    } else if (residencyRefusals > 0) {
       --residencyRefusals;
       return Err<Residency>(StatusCode::Internal, "test", "cannot say where it is");
     }
@@ -246,6 +252,8 @@ class ReluctantFrameStore final : public IFrameStoreAccess {
 
   int releaseRefusals = 0;
   int residencyRefusals = 0;
+  // Answered truthfully before `residencyRefusals` begin, so a refusal can be aimed at one read.
+  int residencyAnswersFirst = 0;
   int demoteRefusals = 0;
   int forgetRefusals = 0;
 
@@ -560,6 +568,27 @@ TEST_F(PanoramaBuildManagerTest, ARankedCellGivesItsBestMeasuredFrame) {
   ASSERT_TRUE(build.ok()) << build.status.detail;
   RunToEnd(build.value);
   EXPECT_EQ(registration_.extracted, (std::vector<FrameId>{measured.frame.id, other.frame.id}));
+}
+
+// A cell with no measured frame gives its ranked best all the same — and loses it to the solve.
+TEST_F(PanoramaBuildManagerTest, ACellWithNoMeasuredFrameGivesItsRankedBest) {
+  const Candidate best = AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+  document_.candidates.back().pose.confidence = 0.0;
+  AddCandidate(NodeId{1}, FromAzimuthElevation(0.5, 0.0));
+  document_.candidates.back().pose.confidence = 0.0;
+  const Candidate other = AddCandidate(NodeId{2}, FromAzimuthElevation(30.0, 0.0));
+  WriteDocument();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  EXPECT_EQ(registration_.extracted, (std::vector<FrameId>{best.frame.id, other.frame.id}));
+}
+
+TEST_F(PanoramaBuildManagerTest, ACaptureThatCannotBeReadIsNotAProjectWithNoCapture) {
+  CaptureRing(2);
+  UnreadableDocumentStore unreadable{projects_, kSessionDocumentKey};
+  PanoramaBuildManager manager{registration_, composition_, store_, unreadable};
+  EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::StorageQuotaExceeded);
 }
 
 // A pick the document never saw is one made after its last successful write, and building from
@@ -939,8 +968,135 @@ TEST_F(PanoramaBuildManagerTest, ACaptureFrameTheStoreWouldNotPutBackIsTriedAgai
   EXPECT_NE(failed.value.failure.detail.find("will not release it this time"), std::string::npos);
   ASSERT_EQ(reluctant.releaseRefusals, 0);
   EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::HeapPinned);
+  // A retry the store refuses is answered, and kept for the next.
+  const FrameRef first = document_.candidates[0].frame;
+  reluctant.releaseRefusals = 1;
+  EXPECT_EQ(manager.Cancel(build.value).code, StatusCode::Internal);
+  EXPECT_EQ(store_.ResidencyOf(first).value, Residency::HeapPinned);
   EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(first).value, Residency::HeapEncoded);
   EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::Spilled);
+  EXPECT_TRUE(store_.Clear().ok());
+}
+
+// Asked before the call, because it is the only way to put right what a refusal leaves out of place
+// — so a tier that cannot be read is a preview not drawn, rather than a frame nothing puts back.
+TEST_F(PanoramaBuildManagerTest, ATierThatCannotBeReadRefusesThePreviewBeforeItIsDrawn) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.residencyRefusals = 1;
+  auto failed = manager.Poll(build.value);
+  ASSERT_EQ(failed.value.stage, BuildStage::Failed);
+  EXPECT_EQ(failed.value.failure.detail, "cannot say where it is");
+  EXPECT_EQ(composition_.renders, 0);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_TRUE(store_.Clear().ok());
+}
+
+// After the call, a frame whose tier cannot be read is one the build cannot say it put back, so it
+// is kept and asked about again.
+TEST_F(PanoramaBuildManagerTest, AFrameWhoseTierCannotBeReadAfterThePreviewIsTriedAgain) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef first = document_.candidates[0].frame;
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  // The three tiers asked before the call, then the first frame's after it.
+  reluctant.residencyAnswersFirst = 3;
+  reluctant.residencyRefusals = 1;
+  auto failed = manager.Poll(build.value);
+  ASSERT_EQ(failed.value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.residencyRefusals, 0);
+  EXPECT_NE(failed.value.failure.detail.find("cannot say where it is"), std::string::npos);
+  EXPECT_EQ(store_.ResidencyOf(first).value, Residency::HeapPinned);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(first).value, Residency::HeapEncoded);
+  EXPECT_TRUE(store_.Clear().ok());
+}
+
+// A retry comes later, and by then a pin on the frame may be somebody else's — `Pin` promises its
+// mapping until *their* release. The build releases the one pin it owes, once.
+TEST_F(PanoramaBuildManagerTest, ARetryReleasesOnlyThePinTheBuildOwes) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef cold = document_.candidates[1].frame;
+  ASSERT_TRUE(store_.Demote(cold, Residency::Spilled).ok());
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not release a frame");
+  composition_.leaveInputsPinned = true;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.demoteRefusals = 1;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.demoteRefusals, 0);
+  ASSERT_EQ(store_.ResidencyOf(cold).value, Residency::HeapEncoded);
+  ASSERT_TRUE(store_.Pin(cold).ok());
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::HeapPinned);
+  EXPECT_TRUE(store_.Release(cold).ok()) << "the build released a pin that was not its own";
+}
+
+// The build only ever faults a frame in, so putting one back only ever cools it. A frame something
+// else has cooled since is where that component wants it, and warming it again would spend heap on
+// a capture frame nobody is reading.
+TEST_F(PanoramaBuildManagerTest, ARetryLeavesAFrameSomethingElseHasCooledSince) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const FrameRef first = document_.candidates[0].frame;
+  composition_.failure = Fail(StatusCode::Internal, "test", "refused with nothing out of place");
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.residencyAnswersFirst = 3;
+  reluctant.residencyRefusals = 1;
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.residencyRefusals, 0);
+  // The capture cools the cell, as it does the moment a cell's burst is ranked (ADR 0023).
+  ASSERT_TRUE(store_.Demote(first, Residency::Spilled).ok());
+  const int64_t before = HeapUsed();
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(first).value, Residency::Spilled);
+  EXPECT_EQ(HeapUsed(), before);
+}
+
+// Nothing in the tree holds a pin across calls, but `Pin`'s contract allows it — and a frame the
+// build found pinned is one whose pins are all somebody else's.
+TEST_F(PanoramaBuildManagerTest, AFrameSomebodyElseHoldsPinnedKeepsItsPin) {
+  CaptureRing(3);
+  const FrameRef held = document_.candidates[0].frame;
+  ASSERT_TRUE(store_.Pin(held).ok());
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(store_.ResidencyOf(held).value, Residency::HeapPinned);
+  EXPECT_TRUE(store_.Release(held).ok()) << "the build released a pin that was not its own";
+}
+
+// A feature set's frames are the build's alone, so a pin on one is an engine's that could not
+// release it — the real engine's `BorrowedFrame` discards a refused `Release` — and nothing but
+// the build can name the frame to release it.
+TEST_F(PanoramaBuildManagerTest, AFeatureFrameAnEngineLeftPinnedIsStillGivenBack) {
+  CaptureRing(3);
+  registration_.leaveFeaturesPinned = true;
+  const int64_t before = HeapUsed();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  const BuildProgress last = RunToEnd(build.value).back();
+  EXPECT_EQ(last.stage, BuildStage::Complete) << last.failure.detail;
+  EXPECT_TRUE(manager_.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), before);
   EXPECT_TRUE(store_.Clear().ok());
 }
 
@@ -1031,6 +1187,20 @@ TEST_F(PanoramaBuildManagerTest, AStoreEmptiedUnderARunningBuildDoesNotStrandIt)
   EXPECT_EQ(RunToEnd(second.value).back().stage, BuildStage::Complete);
 }
 
+// Only a store that says the panorama is gone has said so; one that cannot answer has not, and
+// "build again" would spend a whole build on a panorama that is still there.
+TEST_F(PanoramaBuildManagerTest, APanoramaWhoseTierCannotBeReadIsNotAGonePanorama) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(manager, build.value).back().stage, BuildStage::Complete);
+  reluctant.residencyRefusals = 1;
+  EXPECT_EQ(manager.Panorama(build.value).status.code, StatusCode::Internal);
+  EXPECT_TRUE(manager.Panorama(build.value).ok());
+}
+
 // `RenderPreview` hands its answer back pinned when the store would not release it, and the build
 // then releases and forgets it — on every retry, not once: a pin nothing retries is 8 MB that
 // `Cancel` can never give back, however willing the store becomes.
@@ -1086,6 +1256,24 @@ TEST_F(PanoramaBuildManagerTest, AFrameThatCannotGoBackToItsTierFailsTheBuild) {
   ASSERT_TRUE(polled.ok());
   EXPECT_EQ(polled.value.stage, BuildStage::Failed);
   EXPECT_EQ(polled.value.failure.code, StatusCode::StorageQuotaExceeded);
+  // And it is tried again, rather than left in the heap for good.
+  EXPECT_EQ(store_.ResidencyOf(document_.candidates[0].frame).value, Residency::HeapEncoded);
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(store_.ResidencyOf(document_.candidates[0].frame).value, Residency::Spilled);
+}
+
+// A new capture empties the store, and a frame it no longer holds has nowhere to be put back to.
+TEST_F(PanoramaBuildManagerTest, AFrameLeftOutOfItsTierInAStoreSinceEmptiedDoesNotStrandTheBuild) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  ASSERT_TRUE(store_.Demote(document_.candidates[0].frame, Residency::Spilled).ok());
+  reluctant.demoteRefusals = 1;
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_TRUE(store_.Clear().ok());
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
 }
 
 // With nothing to pair, the features are given back before the solve rather than held to the end.

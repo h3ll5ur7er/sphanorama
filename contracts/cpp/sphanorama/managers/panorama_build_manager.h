@@ -39,7 +39,10 @@ class IPanoramaBuildManager {
 
   // Does the build's next step and says where it has got to. A step that fails puts back any
   // capture frame it left out of its tier, and what the store will not put back yet is retried by
-  // `Cancel` and the next `Start`, as the build's own frames are.
+  // `Cancel` and the next `Start`, as the build's own frames are. Putting back only ever cools a
+  // frame and releases only the pin an engine left, once, so a retry leaves a frame something else
+  // has moved or pinned since where that component put it. The preview is not drawn when a frame's
+  // tier cannot be read, since that is what a refusal would need to put it back.
   // A finished build — `Complete` or
   // `Failed` — answers the same progress however often it is asked, and `failure` says why one
   // failed. `fraction` counts steps: it never goes back, and it is one exactly when the build is
@@ -50,7 +53,8 @@ class IPanoramaBuildManager {
   // than the spec's `outputWidth` or 2048, and no tiles. **The core holds it**, until the build is
   // cancelled or another is started, so a caller reads it and does not `Forget` it.
   // `FailedPrecondition` for a build that has not completed, and for one whose panorama the store
-  // no longer holds — a new capture empties the store it is in.
+  // no longer holds — a new capture empties the store it is in; the store's own status where it
+  // could not say.
   virtual Result<PanoramaRef> Panorama(BuildId build) = 0;
 
   // `Unsupported` for a build that exists, because nothing detects movers yet — an empty report
