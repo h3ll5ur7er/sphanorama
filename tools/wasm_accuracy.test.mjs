@@ -26,8 +26,8 @@ afterEach(() => {
  * as they are, so a banner line or a stray word is the runner's rather than this helper's.
  */
 function buildDir({ detectors = '3\n', ring = `2 16 12 ${panorama}\n`, solved = 3, exit = 0,
-                    detectorsExit = 0, ringExit = 0 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'wasm-accuracy-'));
+                    detectorsExit = 0, ringExit = 0, prefix = 'wasm-accuracy-' } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
   made.push(dir);
   mkdirSync(join(dir, 'bin'));
   const runner = join(dir, 'bin', 'sphanorama_wasm_accuracy.cjs');
@@ -99,6 +99,17 @@ describe('the WebAssembly accuracy step', () => {
                                        buildDir());
     expect(output).toMatch(/could not make a scratch directory/);
     expect(status).toBe(2);
+  });
+
+  it('prints the measurement under the build directory\'s own name, whatever it holds', () => {
+    // The name went into a sed program as text: a `|` ended the command, so the table never reached
+    // the log and the step stayed green, and a `&` put the matched text in its place.
+    for (const prefix of ['odd|dir-', 'a&b-', 'back\\slash-']) {
+      const dir = buildDir({ prefix });
+      const { status, output } = run(dir);
+      expect(output, prefix).toContain(`${dir}: [wasm-solved] detector=2`);
+      expect(status, prefix).toBe(0);
+    }
   });
 
   it('names a build directory with no runner rather than skipping it', () => {

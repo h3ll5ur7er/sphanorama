@@ -72,7 +72,9 @@ for dir in "$@"; do
   fi
   node "$runner" "$rendered" >"$scratch/run.log" 2>&1
   run=$?
-  sed "s|^|$dir: |" "$scratch/run.log"
+  # The directory's name printed as data, never as part of a program: sed read a `|` in it as the
+  # end of its command and dropped the whole table from the log.
+  while IFS= read -r line || [ -n "$line" ]; do printf '%s: %s\n' "$dir" "$line"; done <"$scratch/run.log"
   measured=$(grep -c '^\[wasm-solved\]' "$scratch/run.log" || true)
   if ! [ "$run" -eq 0 ]; then
     echo "$dir: the measurement failed (exit $run)" >&2

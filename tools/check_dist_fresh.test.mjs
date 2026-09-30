@@ -278,12 +278,17 @@ describe('the dist freshness check', () => {
   // the *branch* testable and left the *function* untested, and a green suite was the proof.
   describe('the ninja probe itself', () => {
     /** A build directory with a `build.ninja` that says what we want it to say. */
-    function treeWithNinja(root, script) {
-      mkdirSync(join(root, 'bin'), { recursive: true });
-      const shim = join(root, 'bin', 'ninja');
-      // Respects `-C` the way real ninja does — it exits 1 on a directory with no manifest — so a
-      // sabotage that deletes the existence check is not silently answered by the shim instead.
-      writeFileSync(shim, `#!/bin/sh\n[ -f build.ninja ] || exit 1\n${script}\n`);
+    function treeWithNinja(root, script, binRoot = root) {
+      mkdirSync(join(binRoot, 'bin'), { recursive: true });
+      const shim = join(binRoot, 'bin', 'ninja');
+      // Behaves as real ninja does in the two ways the probes depend on. `-C` enters the directory
+      // and announces it, so a probe that went back to `-C` meets the banner rather than a missing
+      // manifest. And a directory with no manifest exits 1, so a sabotage that deletes the existence
+      // check is not silently answered by the shim instead.
+      writeFileSync(shim, '#!/bin/sh\n'
+        + 'if [ "$1" = "-C" ]; then cd "$2" || exit 1; '
+        + 'printf "ninja: Entering directory \\`%s\'\\n" "$2"; shift 2; fi\n'
+        + `[ -f build.ninja ] || exit 1\n${script}\n`);
       chmodSync(shim, 0o755);
       for (const preset of ['wasm-release', 'wasm-release-threaded']) {
         mkdirSync(join(root, 'build', preset), { recursive: true });
@@ -419,25 +424,24 @@ describe('the dist freshness check', () => {
     });
 
     it('does not read the phrase in a directory name as ninja\'s answer', () => {
-      // `ninja -C` prints the directory it enters before anything else, so a checkout whose path
-      // contains "no work to do" read as idle while ninja listed the steps it still had to run.
-      const root = mkdtempSync(join(tmpdir(), 'probe-'));
+      // A checkout whose path contains "no work to do" read as idle while ninja listed the steps it
+      // still had to run, once anything printed that path: the answer is a line, not a phrase.
+      const root = mkdtempSync(join(tmpdir(), 'no work to do-'));
       made.push(root);
-      const shim = treeWithNinja(root,
-        'echo "ninja: Entering directory \\`/x/no work to do/build\'"; echo "[1/2] Building CXX object foo.o"');
+      const shim = treeWithNinja(root, `echo "[1/2] Building CXX object ${root}/foo.o"`);
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
 
     it('asks without -C, whose banner prints a path that could spell the answer', () => {
       // A directory may hold a newline, and `-C` prints the directory it enters: a path containing
       // "\nninja: no work to do.\n" put the answer on a line of its own while ninja had work queued.
-      // Run in the build directory instead, ninja prints no path at all.
-      const root = mkdtempSync(join(tmpdir(), 'probe-'));
-      made.push(root);
-      const shim = treeWithNinja(root, [
-        'if [ "$1" = "-C" ]; then printf "ninja: Entering directory \\`x\\nninja: no work to do.\\n\'\\n"; fi',
-        'echo "[1/1] Linking out.js"',
-      ].join('\n'));
+      // Run in the build directory instead, ninja prints no path at all. The shim announces `-C` as
+      // ninja does, so going back to it fails this case for exactly that reason.
+      // The shim lives outside that directory, whose `:` would split a PATH entry.
+      const base = mkdtempSync(join(tmpdir(), 'probe-'));
+      made.push(base);
+      const root = join(base, 'x\nninja: no work to do.\n-');
+      const shim = treeWithNinja(root, 'echo "[1/1] Linking out.js"', base);
       expect(withPath(join(shim, '..'), () => wasmBuildsAreUpToDate(root))).toBe(false);
     });
 

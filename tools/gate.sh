@@ -11,7 +11,9 @@
 #
 # Usage: tools/gate.sh
 set -u
-cd "$(dirname "$0")/.."
+# With CDPATH cleared: an entry holding a `tools/` of its own would otherwise take `cd tools/..`
+# there, and every step after it would run in the wrong tree.
+CDPATH= cd -- "$(dirname -- "$0")/.." >/dev/null || exit 2
 
 # Same default location tools/setup_emsdk.sh installs into, overridable the same way.
 EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
