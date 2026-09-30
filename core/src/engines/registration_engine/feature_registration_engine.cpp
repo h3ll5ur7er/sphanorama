@@ -391,7 +391,8 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
                            "the detector returned fewer descriptors than keypoints");
   }
 
-  const int32_t descriptorBytes = static_cast<int32_t>(descriptors.cols * descriptors.elemSize());
+  const int32_t descriptorBytes =
+      static_cast<int32_t>(static_cast<size_t>(descriptors.cols) * descriptors.elemSize());
 
   Result<FrameRef> descriptorAllocation =
       frames_.Allocate(descriptorBytes, features.count, PixelFormat::Gray8);
@@ -420,7 +421,8 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
   // as its row pitch, so a store that padded rows would write every row at the wrong offset while
   // the total size still fit, which a size check alone cannot see. `FeatureSet` promises its
   // callers `stride == width`; this is where that promise is kept rather than hoped for.
-  const size_t descriptorNeeded = static_cast<size_t>(features.count) * descriptorBytes;
+  const size_t descriptorNeeded =
+      static_cast<size_t>(features.count) * static_cast<size_t>(descriptorBytes);
   const size_t keypointNeeded = static_cast<size_t>(features.count) * kKeypointBytes;
   if (descriptorSpan.value.size() < descriptorNeeded ||
       keypointSpan.value.size() < keypointNeeded) {
@@ -438,8 +440,9 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
     // Through `order`, so a descriptor stays with its keypoint. The two are row-aligned as the
     // detector produced them, and selecting the best `n` reorders both or neither.
     const int from = order[static_cast<size_t>(row)];
-    std::memcpy(descriptorSpan.value.data() + static_cast<size_t>(row) * descriptorBytes,
-                descriptors.ptr(from), static_cast<size_t>(descriptorBytes));
+    const size_t descriptorRowBytes = static_cast<size_t>(descriptorBytes);
+    std::memcpy(descriptorSpan.value.data() + static_cast<size_t>(row) * descriptorRowBytes,
+                descriptors.ptr(from), descriptorRowBytes);
     const float xy[2] = {keypoints[static_cast<size_t>(from)].pt.x,
                          keypoints[static_cast<size_t>(from)].pt.y};
     std::memcpy(keypointSpan.value.data() + static_cast<size_t>(row) * kKeypointBytes, xy,
