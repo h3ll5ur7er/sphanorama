@@ -32,7 +32,7 @@ import { createCoverageRefresh } from './clients/capture/coverage-refresh';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
-import { createBuildClient } from './clients/build/build';
+import { createBuildClient } from './clients/panorama/build';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 

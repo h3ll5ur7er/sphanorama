@@ -46,7 +46,7 @@ reasons.
    store refused is the build's, and `Cancel` gives it back with the rest. This is the second image
    that leaves the core, beside `CandidatePreview`, and the rule ADR 0038 stated still holds: what
    crosses is decided by what it costs, and full-resolution frames still cross only as handles.
-4. **The page asks for 2048, and polls between paints.** `shell/src/clients/build` holds one
+4. **The page asks for 2048, and polls between paints.** `shell/src/clients/panorama` holds one
    button, the progress, and a canvas. A press starts a build, polls it once per turn of the
    event loop — each poll is one step on the core's thread, so neither the core nor the page is
    ever held for a build — shows the stage and the fraction while it runs, and paints the preview

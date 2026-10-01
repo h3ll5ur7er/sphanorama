@@ -1,0 +1,10 @@
+/* The preview sits under the strip, in the review panel it belongs to: there is nothing to build
+   until a plan and a project exist, which is when that panel is shown. */
+#build-preview { margin-top: 1rem; }
+#build-progress { display: block; width: 100%; margin: 0.5rem 0; }
+/* Sized in pixels by the painter, from the preview the core sent; shown at the panel's width. An
+   equirectangular image is twice as wide as it is tall, and `height: auto` keeps it so. */
+#build-canvas { display: block; width: 100%; height: auto; }
+/* An author `display` beats the `hidden` attribute's, so the attribute has to be restated here or a
+   hidden canvas shows anyway — last build's picture under this build's progress. */
+#build-canvas[hidden] { display: none; }
