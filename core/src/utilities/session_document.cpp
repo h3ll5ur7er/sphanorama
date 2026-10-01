@@ -104,8 +104,8 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       // Zero is not an identity: `Id::valid()` is `value != 0` and every counter in this codebase
       // starts at 1. A document carrying one is one this build cannot honour, and restoring it
       // would seat the session under a name nothing can legitimately hold.
-      // The session's own identity is bounded like a candidate's: `Resume` steps the manager's
-      // counter past it, and one at the top would wrap it through zero.
+      // The session's own identity is bounded like a candidate's, by what crosses to the page as a
+      // double exactly. How near that `Resume` will step a counter is its own rule, a tier lower.
       if (!IssuableIdentity(out.session) || out.nextCandidate == 0) return false;
       if (!exhausted(in)) return false;
       sawSession = true;
@@ -154,7 +154,7 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       // Same rule as the session line above, and it matters more here: a candidate or frame under
       // an invalid identity is one the store would be asked to adopt, and the first thing to go
       // wrong with it would go wrong a long way from this document.
-      // A frame's too: `Adopt` steps the store's counter past it.
+      // A frame's too, which crosses to the spill sink as a double.
       if (!IssuableIdentity(candidate.id.value) || !candidate.node.valid()
           || !IssuableIdentity(candidate.frame.id.value)
           || !candidate.frame.buffer.valid()) {
@@ -209,7 +209,7 @@ std::optional<CandidateId> ParseSelectionDocument(const std::string& text) {
   // *content* and would still be needed if the parse could not fail; the first is what makes the
   // zero initialiser not load-bearing, and dropping it would leave the refusal of an overflowing
   // document resting on a standard guarantee about a variable nobody assigned.
-  if (parsed.ec != std::errc{} || parsed.ptr != end || !IdentityWithHeadroom(chosen)) {
+  if (parsed.ec != std::errc{} || parsed.ptr != end || !PickableIdentity(chosen)) {
     return std::nullopt;
   }
   return CandidateId{chosen};

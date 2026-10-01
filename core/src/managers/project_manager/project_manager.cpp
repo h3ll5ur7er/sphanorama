@@ -67,8 +67,8 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
   // contradiction the read path has to call corrupt — a write that creates state its own reader
   // cannot represent. `Id::valid()` is `value != 0` and every counter in these contracts starts
   // at 1, so an unset id is a caller mistake and not a choice anybody made. So is one without the
-  // headroom a pick needs, since every pick is stepped past (`IdentityWithHeadroom`).
-  if (!node.valid() || !IdentityWithHeadroom(candidate.value)) {
+  // headroom a pick needs, since every pick is stepped past (`PickableIdentity`).
+  if (!node.valid() || !PickableIdentity(candidate.value)) {
     return Fail(StatusCode::InvalidArgument, kComponent,
                 "a selection needs a real cell and a real candidate");
   }

@@ -978,9 +978,10 @@ export interface CaptureSessionManager {
    * Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
    * refuses it before the camera opens. The document's counter is not enough: a pick made after a
    * checkpoint failed names an identity past it.
-   * `Unsupported` for a document naming an identity at or past 2^52 — session, candidate, frame or
-   * the candidate counter — since each steps a counter, and one that near the top would have it
-   * issue what this document's own reader refuses (ADR 0070). No capture issues one.
+   * `Unsupported` for a document naming a session, candidate or frame identity at or past 2^52, or
+   * a candidate counter past it, since each steps a counter and one that near the top would have it
+   * issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
+   * it, because a pick is bounded a tier lower; only an edited document holds one.
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -1233,8 +1234,9 @@ export interface ProjectManager {
    * An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
    * chosen here", so writing one would put the two halves of this pair in contradiction: a
    * document the writer accepted and the reader has to call corrupt. So is a candidate at or past
-   * 2^52: every pick is a point the capture's counter is stepped past, and one that near the top
-   * would leave it no room (ADR 0070). A capture issues one only after half the range.
+   * 2^51: every pick is a point the capture's counter is stepped past, and `Resume` takes back only
+   * a capture whose identities are below 2^52, so a pick sits a tier below that (ADR 0070). A
+   * capture issues one only after a quarter of the range.
    */
   setSelection(project: ProjectId, node: NodeId, candidate: CandidateId): Promise<Result<void>>;
   /**

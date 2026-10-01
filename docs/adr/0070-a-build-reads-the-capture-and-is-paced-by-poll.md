@@ -58,16 +58,18 @@ everything, and it could not have done otherwise as declared, for three reasons.
      names, once the tab reloads, and a new tab's counter restarts at 1 while an earlier capture's
      picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
      it. A pick the store cannot read refuses both.
-   - **Identities have two bounds.** A reader accepts any below 2^53, since an identity crosses to
-     the page and the spill sink as a double and one past that arrives as its neighbour's. But a
-     counter stepped past a stored identity — a pick, or a document's session, candidate or frame on
-     `Resume` — needs the identity well below that, or the counter issues past what the reader
-     accepts within a burst or two. So a pick, and every identity `Resume` steps past, must be below
-     2^52: half the range left above, which no capture comes near issuing. `SetSelection` refuses a
-     pick past it, and `Resume` refuses a document naming one, rather than stepping a counter there.
-     Bounding the reader alone at the limit was tried twice in review and each time moved the edge:
-     a counter stepped to just below it issued past it. The cost is that a frame issued at or past
-     2^52 — which only a pick or document edited to near the bound can lead to — cannot be picked.
+   - **Identities have three bounds, a tier apart.** A reader accepts any below 2^53, since an
+     identity crosses to the page and the spill sink as a double and one past that arrives as its
+     neighbour's. `Resume` steps its counters past every identity a document names, so it refuses
+     one naming any at or past 2^52 — half the range short of what the reader accepts, which no
+     capture comes near issuing. And a pick is stepped past by `Begin` and `Resume` alike, so
+     `SetSelection` refuses one at or past 2^51 — a quarter short of what `Resume` takes back, so a
+     capture whose counter a pick moved still resumes. Each tier is what a counter stepped past the
+     one below may issue into. Bounds with no gap between them only moved the edge, and review found
+     it three times: a counter stepped past the last identity one bound admits issues the first the
+     next refuses. The cost is the edge that is left, which only an edited document reaches: one
+     naming an identity just short of 2^52 resumes, and the capture it goes on to make — and every
+     later one in that tab, since the counters outlive a capture — builds but will not resume again.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was

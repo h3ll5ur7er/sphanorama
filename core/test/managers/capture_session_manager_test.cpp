@@ -5043,12 +5043,11 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
   // Nor any the page could not name exactly: an identity crosses to it as a double.
   const std::string past = std::to_string(uint64_t{1} << 53);
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 1, past), document));
-  // A pick needs the headroom every identity a counter is stepped past needs: below 2^52.
-  EXPECT_FALSE(ParseSelectionDocument(std::to_string(uint64_t{1} << 52)));
-  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 52) - 1)));
-  // The same for the other identities the document carries. A frame id is adopted into the store,
-  // whose counter steps past it, and a session id steps the manager's — past 2^53 the page and the
-  // spill sink see neighbours, and at the top either wraps through zero.
+  // A pick sits a tier below what `Resume` takes back: below 2^51.
+  EXPECT_FALSE(ParseSelectionDocument(std::to_string(uint64_t{1} << 51)));
+  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 51) - 1)));
+  // The same for the other identities the document carries: past 2^53 the page and the spill sink
+  // would see a frame or a session as its neighbour.
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 3, past), document));
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "session", 1, past), document));
   // A reader accepts every identity a counter may issue, up to the last below 2^53.
@@ -5058,7 +5057,8 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
 }
 
 // A pick no counter can step past is one no counter will reach either, and stepping past it would
-// leave this capture — and every later one in the tab — unable to take a frame.
+// leave this capture — and every later one in the tab — unable to take a frame. Nor may stepping
+// past one leave a capture whose own document its next `Resume` refuses.
 TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) {
   auto store_with_sink = NewStore();
   FakeCameraAccess camera(store_with_sink);
@@ -5067,10 +5067,12 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
   ASSERT_TRUE(manager.End().ok());
-  // The last pick a counter is stepped past, and picks above it that leave fewer identities than a
-  // burst takes — each of which, stepped past, left no burst able to finish.
+  // The last pick a counter is stepped past and the first it is not, the last below what `Resume`
+  // takes back — which, stepped past, issued identities it refused — and picks that leave fewer
+  // identities than a burst takes, each of which, stepped past, left no burst able to finish.
   const uint64_t top = uint64_t{1} << 53;
-  for (const uint64_t pick : {(uint64_t{1} << 52) - 1, uint64_t{1} << 52, top - 5, top - 2, top - 1}) {
+  for (const uint64_t pick : {(uint64_t{1} << 51) - 1, uint64_t{1} << 51, (uint64_t{1} << 52) - 1,
+                              top - 5, top - 2, top - 1}) {
     ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
                                         std::to_string(pick)).ok());
     ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
@@ -5080,11 +5082,14 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
       EXPECT_LT(candidate.id.value, top) << "pick " << pick << " issued " << candidate.id.value;
     }
     ASSERT_TRUE(manager.End().ok());
-    // And what it wrote is a document its own reader takes back.
-    auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
-    ASSERT_TRUE(written.ok());
-    SessionDocument document;
-    EXPECT_TRUE(DecodeSessionDocument(written.value, document)) << "pick " << pick;
+    // And what it wrote is a document a reload resumes.
+    auto store = NewStore();
+    FakeCameraAccess fresh_camera(store);
+    CaptureSessionManager fresh(planner, pose, quality, preview, fresh_camera, *sensor, *store,
+                                *projects, clock);
+    auto resumed = fresh.Resume(kProject);
+    EXPECT_TRUE(resumed.ok()) << "pick " << pick << ": " << resumed.status.detail;
+    if (resumed.ok()) { EXPECT_TRUE(fresh.End().ok()); }
   }
 }
 
@@ -5115,23 +5120,28 @@ TEST_F(ResumedSession, ASecondCaptureInOneTabIssuesNoIdentityTheFirstDid) {
 
 // A counter is stepped past a stored identity only where half the range is left above it, which no
 // capture comes near issuing. Nearer the top, the counter could issue into what the reader refuses,
-// so `Resume` refuses the document instead — and one that leaves the headroom resumes, captures and
-// stays readable.
+// so `Resume` refuses the document instead. One within the bound resumes and captures, and what that
+// capture writes a build can read. Whether a reload can resume it too depends on how near the bound
+// it started: from where a pick leaves a counter it can, and from one short of the bound — which
+// only an edited document holds — the next identity issued is the bound, which it refuses.
 TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
   // The session, a candidate and a frame, each one short of the bound and at it — and the candidate
-  // counter, which may stand one past the largest identity it would have issued. And the values two
-  // review rounds reproduced with, just below the reader's own bound.
-  struct Case { std::string tag; size_t field; uint64_t value; bool headroom; };
+  // counter, which may stand one past the largest identity it would have issued. The values two
+  // review rounds reproduced with, just below the reader's own bound. And the largest a pick can
+  // leave behind: a candidate counter at 2^51, with the candidate it went on to issue.
+  struct Case { std::string tag; size_t field; uint64_t value; bool headroom; bool resumesAgain; };
   const uint64_t bound = uint64_t{1} << 52;
+  const uint64_t picked = uint64_t{1} << 51;
   const uint64_t top = (uint64_t{1} << 53) - 1;
   const std::vector<Case> cases = {
-      {"session", 1, bound - 1, true},    {"session", 1, bound, false},
-      {"session", 1, top, false},         {"candidate", 1, bound - 1, true},
-      {"candidate", 1, bound, false},     {"candidate", 3, bound - 1, true},
-      {"candidate", 3, bound, false},     {"candidate", 3, top, false},
-      {"session", 2, bound, true},        {"session", 2, bound + 1, false},
+      {"session", 1, bound - 1, true, false},   {"session", 1, bound, false, false},
+      {"session", 1, top, false, false},        {"candidate", 1, bound - 1, true, false},
+      {"candidate", 1, bound, false, false},    {"candidate", 3, bound - 1, true, false},
+      {"candidate", 3, bound, false, false},    {"candidate", 3, top, false, false},
+      {"session", 2, bound, true, false},       {"session", 2, bound + 1, false, false},
+      {"session", 2, picked, true, true},       {"candidate", 1, picked, true, true},
   };
-  for (const auto& [tag, field, value, headroom] : cases) {
+  for (const auto& [tag, field, value, headroom, resumesAgain] : cases) {
     SCOPED_TRACE(tag + " field " + std::to_string(field) + " = " + std::to_string(value));
     // A capture of its own each time: the follow-up `Begin` below empties the tier.
     auto first_store = NewStore();
@@ -5155,6 +5165,22 @@ TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
     auto resumed = manager.Resume(kProject);
     if (!headroom) {
       EXPECT_EQ(resumed.status.code, StatusCode::Unsupported);
+      // Before anything with a side effect: no camera, and no counter stepped — the store's survives
+      // even `Clear`, so a frame adopted on the way to refusing would leave every later capture in
+      // the tab issuing what `Resume` refuses.
+      EXPECT_EQ(camera.Opens(), 0);
+      constexpr ProjectId kOther{2};
+      ASSERT_TRUE(projects->WriteDocument(kOther, "title", "another").ok());
+      ASSERT_TRUE(manager.Begin(kOther, Spec()).ok());
+      EXPECT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+      ASSERT_TRUE(manager.End().ok());
+      auto other_store = NewStore();
+      FakeCameraAccess other_camera(other_store);
+      CaptureSessionManager other(planner, pose, quality, preview, other_camera, *sensor,
+                                  *other_store, *projects, clock);
+      auto reloaded = other.Resume(kOther);
+      EXPECT_TRUE(reloaded.ok()) << reloaded.status.detail;
+      if (reloaded.ok()) { EXPECT_TRUE(other.End().ok()); }
       continue;
     }
     ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
@@ -5168,6 +5194,14 @@ TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
     ASSERT_TRUE(rewritten.ok());
     SessionDocument document;
     EXPECT_TRUE(DecodeSessionDocument(rewritten.value, document));
+    if (!resumesAgain) continue;
+    auto again_store = NewStore();
+    FakeCameraAccess again_camera(again_store);
+    CaptureSessionManager again(planner, pose, quality, preview, again_camera, *sensor,
+                                *again_store, *projects, clock);
+    auto reloaded = again.Resume(kProject);
+    EXPECT_TRUE(reloaded.ok()) << reloaded.status.detail;
+    if (reloaded.ok()) { EXPECT_TRUE(again.End().ok()); }
   }
 }
 

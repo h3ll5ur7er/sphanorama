@@ -55,9 +55,10 @@ class ICaptureSessionManager {
   // refuses it before the camera opens. The document's counter is not enough: a pick made after a
   // checkpoint failed names an identity past it.
   //
-  // `Unsupported` for a document naming an identity at or past 2^52 — session, candidate, frame or
-  // the candidate counter — since each steps a counter, and one that near the top would have it
-  // issue what this document's own reader refuses (ADR 0070). No capture issues one.
+  // `Unsupported` for a document naming a session, candidate or frame identity at or past 2^52, or
+  // a candidate counter past it, since each steps a counter and one that near the top would have it
+  // issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
+  // it, because a pick is bounded a tier lower; only an edited document holds one.
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;

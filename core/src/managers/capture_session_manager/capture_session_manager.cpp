@@ -26,8 +26,8 @@ Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
       if (pick.status.code == StatusCode::NotFound) continue;
       return pick.status;
     }
-    // One that does not parse steps past nothing, and a build refuses it. Every one that does
-    // leaves headroom (`IdentityWithHeadroom`), so stepping past it never nears the top.
+    // One that does not parse steps past nothing, and a build refuses it. Every one that does is a
+    // tier below what `Resume` takes back (`PickableIdentity`), so this capture's own will be too.
     if (const auto named = ParseSelectionDocument(pick.value)) {
       next = std::max(next, named->value + 1);
     }
@@ -36,14 +36,14 @@ Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
 }
 
 // Whether every identity a document names may have a counter stepped past it (`IdentityWithHeadroom`).
-// The counter itself may stand at the top of that range, one past the largest it would have issued.
+// The counter itself may stand at the top of that range, one past the largest it would have issued,
+// and bounds the candidates too: the decoder raises it past every one.
 bool LeavesHeadroom(const SessionDocument& stored) {
   if (!IdentityWithHeadroom(stored.session) || stored.nextCandidate > (uint64_t{1} << 52)) {
     return false;
   }
-  return std::all_of(stored.candidates.begin(), stored.candidates.end(), [](const Candidate& c) {
-    return IdentityWithHeadroom(c.id.value) && IdentityWithHeadroom(c.frame.id.value);
-  });
+  return std::all_of(stored.candidates.begin(), stored.candidates.end(),
+                     [](const Candidate& c) { return IdentityWithHeadroom(c.frame.id.value); });
 }
 
 // How long the camera has to be held on a cell before a burst fires by itself.
@@ -396,7 +396,7 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // refuses, at the next checkpoint. Only an edited document carries one, and it is kept, as above.
   if (!LeavesHeadroom(stored)) {
     return Err<SessionId>(StatusCode::Unsupported, kComponent,
-                          "this project's session document names an identity no capture issues");
+                          "this project's session document names an identity too near the top to resume");
   }
 
   // The live capability rather than the stored one, and before anything with a side effect: the

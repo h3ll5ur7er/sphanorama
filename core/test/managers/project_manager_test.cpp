@@ -154,10 +154,10 @@ TEST_F(Projects, AnUnsetIdIsNotASelection) {
                                   CandidateId{std::numeric_limits<uint64_t>::max()}).code,
             StatusCode::InvalidArgument);
   // Nor one without the headroom every pick needs, since a capture's counter is stepped past it.
-  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{uint64_t{1} << 52}).code,
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{uint64_t{1} << 51}).code,
             StatusCode::InvalidArgument);
   EXPECT_TRUE(manager->SetSelection(created.value, NodeId{9},
-                                    CandidateId{(uint64_t{1} << 52) - 1}).ok());
+                                    CandidateId{(uint64_t{1} << 51) - 1}).ok());
 
   // And nothing was written: the cell still reads as one nobody has chosen for, rather than as a
   // document this manager cannot parse.
