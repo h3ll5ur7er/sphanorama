@@ -52,12 +52,16 @@ struct SessionDocument {
   std::vector<Candidate> candidates;
 };
 
-// Whether a counter may issue this identity: not zero, which is "none", and below 2^53, since an
-// identity crosses to the page — and to the spill sink — as a double, and one past that reaches it
-// as its neighbour's. A document or a pick naming any other names something no capture made, and a
-// counter that has got there issues nothing more.
+// Two bounds, because a reader and a counter need different things (ADR 0070).
+//
+// What a reader accepts: not zero, which is "none", and below 2^53, since an identity crosses to the
+// page — and to the spill sink — as a double, and one past that arrives as its neighbour's.
 inline bool IssuableIdentity(uint64_t id) { return id != 0 && id < (uint64_t{1} << 53); }
-inline bool IssuableCandidate(CandidateId id) { return IssuableIdentity(id.value); }
+// What a counter may be stepped past — a document's identities on `Resume`, a recorded pick — and so
+// what a pick may name: below 2^52. That leaves half the range above it, which no capture comes near
+// issuing, so a counter stepped from any such identity never nears what a reader accepts. A bound
+// nearer the top only moved the edge: a counter stepped to within a burst of it issued past it.
+inline bool IdentityWithHeadroom(uint64_t id) { return id != 0 && id < (uint64_t{1} << 52); }
 
 std::string EncodeSessionDocument(const SessionDocument& stored);
 

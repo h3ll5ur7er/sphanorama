@@ -30,7 +30,8 @@ class IProjectManager {
   // An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
   // chosen here", so writing one would put the two halves of this pair in contradiction: a
   // document the writer accepted and the reader has to call corrupt. So is a candidate at or past
-  // 2^53, which no capture issues: an identity crosses to the page as a double.
+  // 2^52: every pick is a point the capture's counter is stepped past, and one that near the top
+  // would leave it no room (ADR 0070). A capture issues one only after half the range.
   virtual Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) = 0;
 
   // What was chosen for a cell, or nothing.

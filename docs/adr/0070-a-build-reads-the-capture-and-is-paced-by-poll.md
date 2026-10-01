@@ -57,10 +57,17 @@ everything, and it could not have done otherwise as declared, for three reasons.
      at once: the document's counter alone would reissue the one a pick made after a failed rewrite
      names, once the tab reloads, and a new tab's counter restarts at 1 while an earlier capture's
      picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
-     it. A pick the store cannot read refuses both. Nor does it issue an identity at or past 2^53,
-     since one crosses to the page as a double and arrives there as its neighbour; a capture whose
-     counter has got there takes no more frames rather than issue one, and a session document
-     naming a candidate, frame or session identity past it is refused, since each steps a counter.
+     it. A pick the store cannot read refuses both.
+   - **Identities have two bounds.** A reader accepts any below 2^53, since an identity crosses to
+     the page and the spill sink as a double and one past that arrives as its neighbour's. But a
+     counter stepped past a stored identity — a pick, or a document's session, candidate or frame on
+     `Resume` — needs the identity well below that, or the counter issues past what the reader
+     accepts within a burst or two. So a pick, and every identity `Resume` steps past, must be below
+     2^52: half the range left above, which no capture comes near issuing. `SetSelection` refuses a
+     pick past it, and `Resume` refuses a document naming one, rather than stepping a counter there.
+     Bounding the reader alone at the limit was tried twice in review and each time moved the edge:
+     a counter stepped to just below it issued past it. The cost is that a frame issued at or past
+     2^52 — which only a pick or document edited to near the bound can lead to — cannot be picked.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was

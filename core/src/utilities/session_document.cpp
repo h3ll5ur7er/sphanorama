@@ -155,7 +155,7 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       // an invalid identity is one the store would be asked to adopt, and the first thing to go
       // wrong with it would go wrong a long way from this document.
       // A frame's too: `Adopt` steps the store's counter past it.
-      if (!IssuableCandidate(candidate.id) || !candidate.node.valid()
+      if (!IssuableIdentity(candidate.id.value) || !candidate.node.valid()
           || !IssuableIdentity(candidate.frame.id.value)
           || !candidate.frame.buffer.valid()) {
         return false;
@@ -209,7 +209,7 @@ std::optional<CandidateId> ParseSelectionDocument(const std::string& text) {
   // *content* and would still be needed if the parse could not fail; the first is what makes the
   // zero initialiser not load-bearing, and dropping it would leave the refusal of an overflowing
   // document resting on a standard guarantee about a variable nobody assigned.
-  if (parsed.ec != std::errc{} || parsed.ptr != end || !IssuableCandidate(CandidateId{chosen})) {
+  if (parsed.ec != std::errc{} || parsed.ptr != end || !IdentityWithHeadroom(chosen)) {
     return std::nullopt;
   }
   return CandidateId{chosen};

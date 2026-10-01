@@ -1162,6 +1162,8 @@ TEST_F(PanoramaBuildManagerTest, AFrameWhoseTierCannotBeReadAfterItsReleaseIsTri
   reluctant.residencyRefusals = 1;
   ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
   ASSERT_EQ(reluctant.residencyRefusals, 0);
+  // Released and not yet put back: the refusal landed on the read after the release, not before it.
+  ASSERT_EQ(store_.ResidencyOf(cold).value, Residency::HeapEncoded);
   EXPECT_TRUE(manager.Cancel(build.value).ok());
   EXPECT_EQ(store_.ResidencyOf(cold).value, Residency::Spilled);
 }
@@ -1180,6 +1182,9 @@ TEST_F(PanoramaBuildManagerTest, APinPaidBeforeARefusedReadIsNotPaidAgain) {
   reluctant.residencyAnswersFirst = 4;
   reluctant.residencyRefusals = 1;
   ASSERT_EQ(manager.Poll(build.value).value.stage, BuildStage::Failed);
+  ASSERT_EQ(reluctant.residencyRefusals, 0);
+  // Released and not yet put back: the refusal landed on the read after the release, not before it.
+  ASSERT_EQ(store_.ResidencyOf(cold).value, Residency::HeapEncoded);
   ASSERT_TRUE(store_.Pin(cold).ok());
   EXPECT_TRUE(manager.Cancel(build.value).ok());
   EXPECT_TRUE(store_.Release(cold).ok()) << "the build released a pin that was not its own";

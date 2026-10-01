@@ -26,15 +26,24 @@ Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
       if (pick.status.code == StatusCode::NotFound) continue;
       return pick.status;
     }
-    // One naming no identity a counter could issue steps past nothing, and a build refuses it. Nor
-    // does one no counter can step past: no counter will reach it either, and stepping to it would
-    // leave the capture unable to take a frame.
-    const auto named = ParseSelectionDocument(pick.value);
-    if (named && IssuableCandidate(CandidateId{named->value + 1})) {
+    // One that does not parse steps past nothing, and a build refuses it. Every one that does
+    // leaves headroom (`IdentityWithHeadroom`), so stepping past it never nears the top.
+    if (const auto named = ParseSelectionDocument(pick.value)) {
       next = std::max(next, named->value + 1);
     }
   }
   return Ok(next);
+}
+
+// Whether every identity a document names may have a counter stepped past it (`IdentityWithHeadroom`).
+// The counter itself may stand at the top of that range, one past the largest it would have issued.
+bool LeavesHeadroom(const SessionDocument& stored) {
+  if (!IdentityWithHeadroom(stored.session) || stored.nextCandidate > (uint64_t{1} << 52)) {
+    return false;
+  }
+  return std::all_of(stored.candidates.begin(), stored.candidates.end(), [](const Candidate& c) {
+    return IdentityWithHeadroom(c.id.value) && IdentityWithHeadroom(c.frame.id.value);
+  });
 }
 
 // How long the camera has to be held on a cell before a burst fires by itself.
@@ -274,10 +283,9 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
-  // Carried on from the last capture in this tab, so its identities stay distinct from this one's —
-  // unless that one exhausted it, which is no reason for this one to take no frames.
-  const uint64_t from = IssuableCandidate(CandidateId{next_candidate_}) ? next_candidate_ : 1;
-  auto next = PastEveryPick(projects_, project, plan.value, from);
+  // From where the last capture in this tab left off, so this one's identities stay distinct from
+  // those the page was already handed.
+  auto next = PastEveryPick(projects_, project, plan.value, next_candidate_);
   if (!next.ok()) {
     (void)camera_.Close();
     return next.status;
@@ -382,6 +390,13 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     // words rather than a sentence about https (`describeFailure`).
     return Err<SessionId>(StatusCode::Unsupported, kComponent,
                           "this project's session document is from a shape this build cannot read");
+  }
+  // Each identity it names steps a counter — the session's, the candidates', the frame store's
+  // through `Adopt` — and one without headroom would have that counter issue what this very decoder
+  // refuses, at the next checkpoint. Only an edited document carries one, and it is kept, as above.
+  if (!LeavesHeadroom(stored)) {
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          "this project's session document names an identity no capture issues");
   }
 
   // The live capability rather than the stored one, and before anything with a side effect: the
@@ -506,17 +521,6 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // review strip shows the ranking in force.
   if (next != stored.nextCandidate) Checkpoint();
   return Ok(session_);
-}
-
-Status CaptureSessionManager::RequireIssuableCandidate() const {
-  // Refused rather than issued. A pick at the top of the range steps the counter there, and an
-  // identity past it wraps through zero into a document every door refuses — a capture that could
-  // no longer be resumed or built, lost to a single stored number.
-  if (!IssuableCandidate(CandidateId{next_candidate_})) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this capture has issued every candidate identity it can");
-  }
-  return Status::Ok();
 }
 
 void CaptureSessionManager::ResetDwell() {
@@ -782,9 +786,6 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
     // single camera can honestly serve.
     return Fail(StatusCode::FailedPrecondition, kComponent, "a burst is already in flight");
   }
-  // Before anything is locked: a capture that can issue no identity takes no frame, and the dwell
-  // would fire into this refusal every cycle, locking and releasing the camera each time.
-  if (Status issuable = RequireIssuableCandidate(); !issuable.ok()) return issuable;
 
   // The camera has to be looking at the cell it is about to fill.
   //
@@ -1157,7 +1158,6 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // One deadline for both waits, because from here they are the same question: the settle set it
   // when the burst was armed, every frame since has set it one interval ahead.
   if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
-  if (Status issuable = RequireIssuableCandidate(); !issuable.ok()) return Abandon(issuable);
 
   // `ArmBurst` checked the pose it armed on; this is the one that breaks mid-burst, which would
   // file every later frame as a candidate no `Refine` could use. Same code as at the arm (ADR 0065).
@@ -1257,8 +1257,6 @@ Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameR
     return Err<FrameVerdict>(StatusCode::InvalidArgument, kComponent,
                              "the pose offered has " + std::string(*defect));
   }
-
-  if (auto issuable = RequireIssuableCandidate(); !issuable.ok()) return issuable;
 
   std::vector<Candidate>& cell = candidates_[node.value];
   Candidate candidate;

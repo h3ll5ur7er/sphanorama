@@ -4999,52 +4999,6 @@ TEST_F(ResumedSession, ABeginNeverMintsACandidateIdentityAPickAlreadyNames) {
   }
 }
 
-// A counter near the top of the range reaches, partway through a burst, an identity no capture may
-// issue — past 2^53 the page reads it as its neighbour, and at the very top it wraps through zero
-// into a document every door refuses. So the capture refuses to issue it, and stays readable.
-TEST_F(ResumedSession, ACounterNearTheTopOfTheRangeCannotMakeTheCaptureUnreadable) {
-  auto first_store = NewStore();
-  FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
-                              *projects, clock);
-  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
-  const NodeId node = first.GetPlan().value.nodes.front().id;
-  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
-  ASSERT_TRUE(first.End().ok());
-  // Two short of the top, so the burst crosses it partway.
-  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
-  ASSERT_TRUE(written.ok());
-  ASSERT_TRUE(projects->WriteDocument(
-      kProject, kSessionDocumentKey,
-      SetField(written.value, "session", 2, std::to_string((uint64_t{1} << 53) - 2))).ok());
-
-  auto second_store = NewStore();
-  FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
-                               *second_store, *projects, clock);
-  ASSERT_TRUE(second.Resume(kProject).ok());
-  BurstSpec burst;
-  burst.frameCount = 4;
-  // Refused at the frame that would reach the limit, and the burst's earlier frames go with it.
-  EXPECT_EQ(FireBurstOn(second, clock, node, burst).code, StatusCode::FailedPrecondition);
-  // An offered frame takes an identity from the same counter.
-  auto offered = second_store->Allocate(4, 4, PixelFormat::RGBA8);
-  ASSERT_TRUE(offered.ok());
-  PoseSample anchored;
-  anchored.confidence = 1.0;
-  EXPECT_EQ(second.OfferFrame(node, offered.value, anchored).status.code,
-            StatusCode::FailedPrecondition);
-  for (const Candidate& candidate : second.Candidates(node).value) {
-    EXPECT_LT(candidate.id.value, uint64_t{1} << 53) << "issued " << candidate.id.value;
-    EXPECT_TRUE(candidate.id.valid());
-  }
-  ASSERT_TRUE(second.End().ok());
-  auto rewritten = projects->ReadDocument(kProject, kSessionDocumentKey);
-  ASSERT_TRUE(rewritten.ok());
-  SessionDocument document;
-  EXPECT_TRUE(DecodeSessionDocument(rewritten.value, document));
-}
-
 // Only an absent pick is no pick: one that cannot be read may name the very identity the counter
 // is about to issue, so neither door opens on it — and neither opens the camera first.
 TEST_F(ResumedSession, APickThatCannotBeReadRefusesBothDoors) {
@@ -5089,45 +5043,18 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
   // Nor any the page could not name exactly: an identity crosses to it as a double.
   const std::string past = std::to_string(uint64_t{1} << 53);
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 1, past), document));
-  EXPECT_FALSE(ParseSelectionDocument(past));
-  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 53) - 1)));
+  // A pick needs the headroom every identity a counter is stepped past needs: below 2^52.
+  EXPECT_FALSE(ParseSelectionDocument(std::to_string(uint64_t{1} << 52)));
+  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 52) - 1)));
   // The same for the other identities the document carries. A frame id is adopted into the store,
   // whose counter steps past it, and a session id steps the manager's — past 2^53 the page and the
   // spill sink see neighbours, and at the top either wraps through zero.
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 3, past), document));
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "session", 1, past), document));
-  EXPECT_TRUE(DecodeSessionDocument(
-      SetField(written.value, "candidate", 3, std::to_string((uint64_t{1} << 53) - 1)), document));
-}
-
-// A document whose counter is already at the top — only an edit can put it there — takes no more
-// frames rather than issue an identity no capture may.
-TEST_F(ResumedSession, ACounterAtTheTopOfTheRangeIssuesNothing) {
-  auto first_store = NewStore();
-  FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
-                              *projects, clock);
-  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
-  const NodeId node = first.GetPlan().value.nodes.front().id;
-  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
-  ASSERT_TRUE(first.End().ok());
-  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
-  ASSERT_TRUE(written.ok());
-  ASSERT_TRUE(projects->WriteDocument(
-      kProject, kSessionDocumentKey,
-      SetField(written.value, "session", 2,
-               std::to_string(std::numeric_limits<uint64_t>::max()))).ok());
-
-  auto second_store = NewStore();
-  FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
-                               *second_store, *projects, clock);
-  ASSERT_TRUE(second.Resume(kProject).ok());
-  EXPECT_EQ(FireBurstOn(second, clock, node, BurstSpec{}).code, StatusCode::FailedPrecondition);
-  for (const Candidate& candidate : second.Candidates(node).value) {
-    EXPECT_LT(candidate.id.value, uint64_t{1} << 53) << "issued " << candidate.id.value;
-    EXPECT_TRUE(candidate.id.valid());
-  }
+  // A reader accepts every identity a counter may issue, up to the last below 2^53.
+  const std::string last = std::to_string((uint64_t{1} << 53) - 1);
+  EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "candidate", 3, last), document));
+  EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "session", 1, last), document));
 }
 
 // A pick no counter can step past is one no counter will reach either, and stepping past it would
@@ -5140,48 +5067,108 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
   ASSERT_TRUE(manager.End().ok());
-  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
-                                      std::to_string((uint64_t{1} << 53) - 1)).ok());
-
-  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-  EXPECT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
-  EXPECT_FALSE(manager.Candidates(node).value.empty());
+  // The last pick a counter is stepped past, and picks above it that leave fewer identities than a
+  // burst takes — each of which, stepped past, left no burst able to finish.
+  const uint64_t top = uint64_t{1} << 53;
+  for (const uint64_t pick : {(uint64_t{1} << 52) - 1, uint64_t{1} << 52, top - 5, top - 2, top - 1}) {
+    ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
+                                        std::to_string(pick)).ok());
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+    EXPECT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok()) << "pick " << pick;
+    EXPECT_FALSE(manager.Candidates(node).value.empty()) << "pick " << pick;
+    for (const Candidate& candidate : manager.Candidates(node).value) {
+      EXPECT_LT(candidate.id.value, top) << "pick " << pick << " issued " << candidate.id.value;
+    }
+    ASSERT_TRUE(manager.End().ok());
+    // And what it wrote is a document its own reader takes back.
+    auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(written.ok());
+    SessionDocument document;
+    EXPECT_TRUE(DecodeSessionDocument(written.value, document)) << "pick " << pick;
+  }
 }
 
-// One capture's exhausted counter is not the next one's: `Begin` on another project in the same
-// tab takes frames.
-TEST_F(ResumedSession, ACounterAnotherCaptureExhaustedIsNotInherited) {
-  auto first_store = NewStore();
-  FakeCameraAccess first_camera(first_store);
-  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
-                              *projects, clock);
-  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
-  const NodeId node = first.GetPlan().value.nodes.front().id;
-  ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
-  ASSERT_TRUE(first.End().ok());
-  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
-  ASSERT_TRUE(written.ok());
-  ASSERT_TRUE(projects->WriteDocument(
-      kProject, kSessionDocumentKey,
-      SetField(written.value, "session", 2,
-               std::to_string(std::numeric_limits<uint64_t>::max()))).ok());
-
-  auto second_store = NewStore();
-  FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
-                               *second_store, *projects, clock);
-  ASSERT_TRUE(second.Resume(kProject).ok());
-  // Refused before the locks: arming would lock the camera for a burst that can take nothing, and
-  // the dwell fires again every two seconds for as long as the cell is held.
-  EXPECT_EQ(second.ArmBurst(node, BurstSpec{}).code, StatusCode::FailedPrecondition);
-  EXPECT_FALSE(second_camera.ExposureLocked());
-  ASSERT_TRUE(second.End().ok());
+// A second capture in the same tab carries the counter on, so it hands the page no identity the
+// first one already did — a late pick for the first would otherwise name a frame of the second.
+TEST_F(ResumedSession, ASecondCaptureInOneTabIssuesNoIdentityTheFirstDid) {
+  auto store_with_sink = NewStore();
+  FakeCameraAccess camera(store_with_sink);
+  CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, *store_with_sink,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+  std::set<uint64_t> earlier;
+  for (const Candidate& candidate : manager.Candidates(node).value) earlier.insert(candidate.id.value);
+  ASSERT_FALSE(earlier.empty());
+  ASSERT_TRUE(manager.End().ok());
 
   constexpr ProjectId kOther{2};
   ASSERT_TRUE(projects->WriteDocument(kOther, "title", "another").ok());
-  ASSERT_TRUE(second.Begin(kOther, Spec()).ok());
-  EXPECT_TRUE(FireBurstOn(second, clock, node, BurstSpec{}).ok());
-  EXPECT_FALSE(second.Candidates(node).value.empty());
+  ASSERT_TRUE(manager.Begin(kOther, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+  ASSERT_FALSE(manager.Candidates(node).value.empty());
+  for (const Candidate& candidate : manager.Candidates(node).value) {
+    EXPECT_EQ(earlier.count(candidate.id.value), 0u) << "candidate " << candidate.id.value;
+  }
+}
+
+// A counter is stepped past a stored identity only where half the range is left above it, which no
+// capture comes near issuing. Nearer the top, the counter could issue into what the reader refuses,
+// so `Resume` refuses the document instead — and one that leaves the headroom resumes, captures and
+// stays readable.
+TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
+  // The session, a candidate and a frame, each one short of the bound and at it — and the candidate
+  // counter, which may stand one past the largest identity it would have issued. And the values two
+  // review rounds reproduced with, just below the reader's own bound.
+  struct Case { std::string tag; size_t field; uint64_t value; bool headroom; };
+  const uint64_t bound = uint64_t{1} << 52;
+  const uint64_t top = (uint64_t{1} << 53) - 1;
+  const std::vector<Case> cases = {
+      {"session", 1, bound - 1, true},    {"session", 1, bound, false},
+      {"session", 1, top, false},         {"candidate", 1, bound - 1, true},
+      {"candidate", 1, bound, false},     {"candidate", 3, bound - 1, true},
+      {"candidate", 3, bound, false},     {"candidate", 3, top, false},
+      {"session", 2, bound, true},        {"session", 2, bound + 1, false},
+  };
+  for (const auto& [tag, field, value, headroom] : cases) {
+    SCOPED_TRACE(tag + " field " + std::to_string(field) + " = " + std::to_string(value));
+    // A capture of its own each time: the follow-up `Begin` below empties the tier.
+    auto first_store = NewStore();
+    FakeCameraAccess first_camera(first_store);
+    CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor,
+                                *first_store, *projects, clock);
+    ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+    const NodeId node = first.GetPlan().value.nodes.front().id;
+    ASSERT_TRUE(FireBurstOn(first, clock, node, BurstSpec{}).ok());
+    ASSERT_TRUE(first.End().ok());
+    auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(written.ok());
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey,
+                                        SetField(written.value, tag, field, std::to_string(value)))
+                    .ok());
+
+    auto store = NewStore();
+    FakeCameraAccess camera(store);
+    CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, *store,
+                                  *projects, clock);
+    auto resumed = manager.Resume(kProject);
+    if (!headroom) {
+      EXPECT_EQ(resumed.status.code, StatusCode::Unsupported);
+      continue;
+    }
+    ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
+    EXPECT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+    ASSERT_TRUE(manager.End().ok());
+    // And a capture begun after it, whose session and frames follow on from the stepped counters.
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+    EXPECT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+    ASSERT_TRUE(manager.End().ok());
+    auto rewritten = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(rewritten.ok());
+    SessionDocument document;
+    EXPECT_TRUE(DecodeSessionDocument(rewritten.value, document));
+  }
 }
 
 // The counter a pick moved is written down at once: behind it, a build started before the next burst
