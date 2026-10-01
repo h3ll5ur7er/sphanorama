@@ -16,8 +16,9 @@ class IProjectManager {
   //
   // `hasSession` is not that method coming back. It reports that a session document exists, which
   // is metadata about a project and nothing a caller could mistake for a session: there is no
-  // SessionId in a summary, and nothing here parses the document or hands back what is in it. It
-  // is what lets a page offer a resume rather than discover one by attempting it (ADR 0036).
+  // SessionId in a summary, and nothing here hands back what is in the document — `SetSelection`
+  // reads its candidate counter and nothing else (ADR 0070). It is what lets a page offer a resume
+  // rather than discover one by attempting it (ADR 0036).
   virtual Result<std::vector<ProjectSummary>> List() = 0;
   virtual Result<ProjectId> Create(std::string_view title) = 0;
   virtual Status Delete(ProjectId project) = 0;
@@ -31,12 +32,15 @@ class IProjectManager {
   // chosen here", so writing one would put the two halves of this pair in contradiction: a
   // document the writer accepted and the reader has to call corrupt.
   //
-  // So is a candidate no capture of this project issued — at or past its session document's
-  // counter — and one at or past 2^52 whatever the counter says. Every pick is a point the tab's
-  // candidate counter is stepped past, so one nobody issued would move it where no capture has been,
-  // and every identity it then issued would be one this refuses (ADR 0070). A project with nothing
-  // captured is `FailedPrecondition`, a document that cannot be read answers as `Start` does, and a
-  // pick of a frame whose checkpoint has not been written is refused, as the build would refuse it.
+  // So is a candidate at or past the candidate counter the project's session document recorded,
+  // and one at or past 2^52 whatever the counter says. Every pick is a point the tab's candidate
+  // counter is stepped past, so one past every counter would move it where no capture has been, and
+  // every identity it then issued would be one this refuses (ADR 0070). The counter is the tab's
+  // rather than the project's, so a candidate another project's capture issued is accepted, and at
+  // the build gives way to the ranking as any pick the cell does not hold does. A project no capture
+  // was ever begun in is `FailedPrecondition`, a document that cannot be read answers as `Start`
+  // does, and a pick of a frame whose checkpoint has not been written is refused as newer than the
+  // document, as the build would refuse it.
   virtual Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) = 0;
 
   // What was chosen for a cell, or nothing.

@@ -110,9 +110,11 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
       // A pick the cell no longer holds gives way to the ranking: a discarding retake took it, and
       // no screen can show a frame that is gone. An offered frame is never written down (its
       // bytes are not in the tier), so a pick of one gives way too — the gap ADR 0070 records.
-      // Unless the document never saw it: a pick at or past the counter it recorded was made after
-      // it was last written — a rewrite that failed — and the ranking would then build from a frame
-      // other than the one the user chose and is shown. A pick a retake discarded is always below.
+      // Unless the document never saw it: a pick at or past the counter it recorded names a frame
+      // it does not know — one an earlier build's door recorded, which checked nothing, or an
+      // edited one; `SetSelection` takes no such pick now — and the ranking would then build from a
+      // frame other than the one the pick names and the strip shows. A pick a retake discarded is
+      // always below.
       if (named->value >= document.nextCandidate) {
         return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
                             "the pick recorded for " + Named("cell", node)

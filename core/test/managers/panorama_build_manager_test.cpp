@@ -597,8 +597,8 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatCannotBeReadIsNotAProjectWithNoCapt
   EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::StorageQuotaExceeded);
 }
 
-// A pick the document never saw is one made after its last successful write, and building from
-// the ranking would use a frame the user did not choose and is shown as chosen.
+// A pick the document never saw — one an earlier build's door recorded, or an edited one — names a
+// frame it does not know, and building from the ranking would use a frame the strip shows as unpicked.
 TEST_F(PanoramaBuildManagerTest, APickNewerThanTheDocumentRefusesTheBuild) {
   CaptureRing(2);
   ASSERT_TRUE(projects_.WriteDocument(kProject, SelectionDocumentKey(NodeId{1}),

@@ -17,7 +17,8 @@ class IPanoramaBuildManager {
   // so a cell whose frame was not — a pick of one, or a cell with no other — is left out of the
   // panorama, and the build still completes. What it reads is what the capture last managed to
   // write down: a rewrite that failed leaves the document behind the capture, and a build started
-  // meanwhile uses the older ranking — refused only where that would override a pick.
+  // meanwhile uses the older ranking — refused only where a recorded pick is newer than it, which
+  // an earlier build's `SetSelection` or an edited store can leave.
   //
   // Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
   // a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
@@ -28,8 +29,8 @@ class IPanoramaBuildManager {
   // whose frames the store no longer holds — a tab reloaded without resuming, or a tier a newer
   // capture emptied, or a document a failed rewrite left naming frames a retake had discarded —
   // one naming a frame in two cells, one with no measured pose, frames of more than one size, a
-  // field of view that is not a lens, and a recorded pick newer than the document, which a failed
-  // rewrite also leaves; `Internal` for a recorded pick that is not a candidate at
+  // field of view that is not a lens, and a recorded pick newer than the document, which an earlier
+  // build's `SetSelection` or an edited store can leave; `Internal` for a recorded pick that is not a candidate at
   // all; the store's own status, whole, where it could not read the title, the document or a pick,
   // say which tier it holds, or say where a frame is — none of which says the thing is absent;
   // `Unsupported` for a cubemap and `InvalidArgument` for an output narrower than two. Starting

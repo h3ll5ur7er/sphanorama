@@ -32,7 +32,8 @@ everything, and it could not have done otherwise as declared, for three reasons.
    a build. The TypeScript mirror and the facade move with it.
 2. **The session document's codec is a utility**, `utilities/session_document`, with the key a
    cell's manual pick is recorded under and the parser for it. A pure move; it still has one writer,
-   `CaptureSessionManager`. `ProjectManager` still only asks whether a document exists.
+   `CaptureSessionManager`. `ProjectManager`'s listing still only asks whether a document exists,
+   and its `SetSelection` reads one field of it, the candidate counter (see the identity bullet).
 3. **`Start` does the cheap part and `Poll` does the rest, one step a call.** `Start` reads and
    checks everything it can without reading a pixel, and queues the steps: one per frame's
    features, one per pair, one solve, one preview. Each `Poll` performs the next and reports where
@@ -50,14 +51,17 @@ everything, and it could not have done otherwise as declared, for three reasons.
      no way to clear it, and no screen can show a frame that is gone. The first version refused
      such a pick, which made every build after a retake of a picked cell impossible. A pick at or
      past the candidate counter the document recorded is refused instead: the document never saw
-     it, because a rewrite failed, and the ranking would build from a frame other than the one the
-     user chose. A pick a retake discarded is always below that counter.
+     it, and the ranking would build from a frame other than the one the pick names. `SetSelection`
+     records no such pick now, but one an earlier build's door recorded, or an edited one, can stand
+     there. A pick a retake discarded is always below that counter.
    - **A pick always names the frame it was made on.** `CaptureSessionManager` issues no candidate
-     identity a recorded pick names, at `Begin` or at `Resume`, and writes the stepped counter down
-     at once: the document's counter alone would reissue the one a pick made after a failed rewrite
-     names, once the tab reloads, and a new tab's counter restarts at 1 while an earlier capture's
-     picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
-     it. A pick the store cannot read refuses both.
+     identity a pick recorded for a cell of its plan names, at `Begin` or at `Resume`, and writes the
+     stepped counter down at once: a new tab's counter restarts at 1 while an earlier capture's picks
+     survive, and a pick an earlier build's door recorded, or an edited one, can stand past the
+     document's counter. Either would hand the pick to a frame nobody chose, and the build would
+     honour it. A pick the store cannot read refuses both. A pick on a cell the plan lacks is not
+     stepped past, and no build reads it either, since `Start` reads picks only for cells the
+     document holds.
    - **Identities have two bounds, and a pick names only what a capture issued.** A reader accepts
      any below 2^53, since an identity crosses to the page and the spill sink as a double and one
      past that arrives as its neighbour's. A counter is stepped past every identity a document names
@@ -66,10 +70,14 @@ everything, and it could not have done otherwise as declared, for three reasons.
      refuses a document naming one at or past it. No bound alone keeps a counter clear of the next:
      a counter stepped past the last identity a bound admits issues the first it refuses, and review
      found that edge four times, each time one bound lower, the last between the pick door and
-     itself. What ends it is that `SetSelection` takes only a candidate a capture of the project
-     issued, below its document's counter, so stepping past a pick takes a counter nowhere a counter
-     has not already been. The cost is a pick of a frame whose checkpoint failed, which is refused —
-     as the build already refused it, as newer than the document — and the edge that is left, which
+     itself. What ends it is that `SetSelection` takes only a candidate below the counter the
+     project's session document recorded, so stepping past a pick takes a counter nowhere a counter
+     has not already been. That counter is the tab's, so this bounds where a counter has been rather
+     than what the project holds: another project's candidate is accepted, and gives way to the
+     ranking at the build. The costs are a pick of a frame whose checkpoint failed, which is refused
+     — as the build already refused it, as newer than the document — so the tap changes nothing,
+     the strip keeps the choice before it and the reason goes to the console; and the edge that is
+     left, which
      only an edited document reaches: one naming an identity just short of 2^52 resumes, and the
      capture it goes on to make — and every later one in that tab, since the counters outlive a
      capture — builds, but will not resume again and its frames cannot be picked.
@@ -126,6 +134,10 @@ everything, and it could not have done otherwise as declared, for three reasons.
   contract change for the change that shows a build.
 - **An offered frame is never built from**, even when it ranks first or is picked, because the
   document leaves it out — its bytes are not in the tier (ADR 0023). Nothing offers a frame today.
+- **The session document has three readers** — `Resume`, `Start` and `SetSelection` — so a change
+  to its shape reaches `ProjectManager` as well as the two managers that read it whole. One codec
+  keeps them one format; `SetSelection` reads only the counter, because it is the door that bounds
+  where the counter can be stepped.
 - **The review strip keeps a copy of the rule.** Which frame a cell gives where nobody picked —
   the best measured, else the best — is decided in `Start` and marked by
   `shell/src/clients/review/candidates.ts`, which reads the same candidates. A second copy rather

@@ -26,9 +26,11 @@ class ICaptureSessionManager {
   // Refused with `NotFound` when the project does not exist, which is checked first: beginning
   // against an id nobody created would leave a titleless project in the user's list.
   //
-  // A pick outlives the capture it was made in, and this never issues a candidate identity a
-  // recorded pick names — a build would honour the pick for a frame nobody chose (ADR 0070). So a
-  // pick the project store cannot read refuses this with the store's status, camera closed.
+  // A pick outlives the capture it was made in, and this never issues a candidate identity a pick
+  // recorded for a cell of this plan names — a build would honour the pick for a frame nobody chose
+  // (ADR 0070). A new tab's counter restarts at 1, so the document's counter is not what protects
+  // them. A pick on a cell the plan lacks is not read, and no build reads it either. A pick the
+  // project store cannot read refuses this with the store's status, camera closed.
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -52,8 +54,9 @@ class ICaptureSessionManager {
   // sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
   //
   // Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
-  // refuses it before the camera opens. The document's counter is not enough: a pick made after a
-  // checkpoint failed names an identity past it.
+  // refuses it before the camera opens. `SetSelection` records no pick past the document's counter,
+  // but a pick an earlier build's door recorded, which checked nothing, or one edited into the
+  // store, can name one.
   //
   // `Unsupported` for a document naming a session, candidate or frame identity at or past 2^52, or
   // a candidate counter past it, since each steps a counter and one that near the top would have it

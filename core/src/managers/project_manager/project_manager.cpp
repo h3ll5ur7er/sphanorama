@@ -28,9 +28,9 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
     // Asked of the store on every listing rather than remembered. A session document appears
     // while this manager is alive — the capture manager checkpoints one on the way out of every
     // burst — so anything cached here would report the tab's own capture as unresumable, and
-    // that tab is the one holding the phone. Only whether it exists: what is inside is not this
-    // manager's to read, and a listing answering "is there something to come back to" needs
-    // nothing more (ADR 0036).
+    // that tab is the one holding the phone. Only whether it exists: a listing answering "is there
+    // something to come back to" needs nothing more (ADR 0036), and `SetSelection` reads the one
+    // field it needs itself.
     summary.hasSession = store_.ReadDocument(id, kSessionDocumentKey).ok();
     summaries.push_back(std::move(summary));
   }
@@ -73,14 +73,15 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
                 "a selection needs a real cell and a real candidate");
   }
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
-  // Only one a capture of this project issued: below its document's counter. `Begin` and `Resume`
-  // step the tab's counter past every pick, so one nobody issued would move it where no capture has
-  // been, and every identity it went on to issue would be one this door refuses (ADR 0070). A pick
-  // of a frame whose checkpoint has not been written is refused too, as the build would refuse it.
+  // Only one below the counter its session document recorded. `Begin` and `Resume` step the tab's
+  // counter past every pick, so one past every counter would move it where no capture has been, and
+  // every identity it went on to issue would be one this door refuses (ADR 0070). The counter is the
+  // tab's, so this is where a counter has been rather than what this project holds. A pick of a
+  // frame whose checkpoint has not been written is refused too, as the build would refuse it.
   auto document = store_.ReadDocument(project, kSessionDocumentKey);
   if (!document.ok()) {
     if (document.status.code == StatusCode::NotFound) {
-      return Fail(StatusCode::FailedPrecondition, kComponent, "nothing was captured here to pick");
+      return Fail(StatusCode::FailedPrecondition, kComponent, "no capture was begun here to pick from");
     }
     return document.status;
   }
@@ -91,7 +92,7 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
   }
   if (candidate.value >= captured.nextCandidate) {
     return Fail(StatusCode::InvalidArgument, kComponent,
-                "no capture of this project issued that candidate");
+                "that candidate is newer than this project's capture document");
   }
   // Read by the next build's `Start` (ADR 0070); a partial rebuild from this one dirty node is
   // ADR 0004's design and not built yet.

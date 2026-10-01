@@ -953,9 +953,11 @@ export interface CaptureSessionManager {
    * this call is the rule, not the only place to be polite about it.
    * Refused with `NotFound` when the project does not exist, which is checked first: beginning
    * against an id nobody created would leave a titleless project in the user's list.
-   * A pick outlives the capture it was made in, and this never issues a candidate identity a
-   * recorded pick names — a build would honour the pick for a frame nobody chose (ADR 0070). So a
-   * pick the project store cannot read refuses this with the store's status, camera closed.
+   * A pick outlives the capture it was made in, and this never issues a candidate identity a pick
+   * recorded for a cell of this plan names — a build would honour the pick for a frame nobody chose
+   * (ADR 0070). A new tab's counter restarts at 1, so the document's counter is not what protects
+   * them. A pick on a cell the plan lacks is not read, and no build reads it either. A pick the
+   * project store cannot read refuses this with the store's status, camera closed.
    */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
@@ -976,8 +978,9 @@ export interface CaptureSessionManager {
    * unanchored, confidence zero: refusing the document for one field would cost every frame of the
    * sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
    * Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
-   * refuses it before the camera opens. The document's counter is not enough: a pick made after a
-   * checkpoint failed names an identity past it.
+   * refuses it before the camera opens. `SetSelection` records no pick past the document's counter,
+   * but a pick an earlier build's door recorded, which checked nothing, or one edited into the
+   * store, can name one.
    * `Unsupported` for a document naming a session, candidate or frame identity at or past 2^52, or
    * a candidate counter past it, since each steps a counter and one that near the top would have it
    * issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
@@ -1150,7 +1153,8 @@ export interface PanoramaBuildManager {
    * so a cell whose frame was not — a pick of one, or a cell with no other — is left out of the
    * panorama, and the build still completes. What it reads is what the capture last managed to
    * write down: a rewrite that failed leaves the document behind the capture, and a build started
-   * meanwhile uses the older ranking — refused only where that would override a pick.
+   * meanwhile uses the older ranking — refused only where a recorded pick is newer than it, which
+   * an earlier build's `SetSelection` or an edited store can leave.
    * Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
    * a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
    * `NotFound` for a project that does not exist or holds no capture; `Unsupported` for a document
@@ -1159,8 +1163,8 @@ export interface PanoramaBuildManager {
    * whose frames the store no longer holds — a tab reloaded without resuming, or a tier a newer
    * capture emptied, or a document a failed rewrite left naming frames a retake had discarded —
    * one naming a frame in two cells, one with no measured pose, frames of more than one size, a
-   * field of view that is not a lens, and a recorded pick newer than the document, which a failed
-   * rewrite also leaves; `Internal` for a recorded pick that is not a candidate at
+   * field of view that is not a lens, and a recorded pick newer than the document, which an earlier
+   * build's `SetSelection` or an edited store can leave; `Internal` for a recorded pick that is not a candidate at
    * all; the store's own status, whole, where it could not read the title, the document or a pick,
    * say which tier it holds, or say where a frame is — none of which says the thing is absent;
    * `Unsupported` for a cubemap and `InvalidArgument` for an output narrower than two. Starting
@@ -1220,8 +1224,9 @@ export interface ProjectManager {
    * ever have returned a SessionId it had no way to make (ADR 0029).
    * `hasSession` is not that method coming back. It reports that a session document exists, which
    * is metadata about a project and nothing a caller could mistake for a session: there is no
-   * SessionId in a summary, and nothing here parses the document or hands back what is in it. It
-   * is what lets a page offer a resume rather than discover one by attempting it (ADR 0036).
+   * SessionId in a summary, and nothing here hands back what is in the document — `SetSelection`
+   * reads its candidate counter and nothing else (ADR 0070). It is what lets a page offer a resume
+   * rather than discover one by attempting it (ADR 0036).
    */
   list(): Promise<Result<ProjectSummary[]>>;
   create(title: string): Promise<Result<ProjectId>>;
@@ -1234,12 +1239,15 @@ export interface ProjectManager {
    * An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
    * chosen here", so writing one would put the two halves of this pair in contradiction: a
    * document the writer accepted and the reader has to call corrupt.
-   * So is a candidate no capture of this project issued — at or past its session document's
-   * counter — and one at or past 2^52 whatever the counter says. Every pick is a point the tab's
-   * candidate counter is stepped past, so one nobody issued would move it where no capture has been,
-   * and every identity it then issued would be one this refuses (ADR 0070). A project with nothing
-   * captured is `FailedPrecondition`, a document that cannot be read answers as `Start` does, and a
-   * pick of a frame whose checkpoint has not been written is refused, as the build would refuse it.
+   * So is a candidate at or past the candidate counter the project's session document recorded,
+   * and one at or past 2^52 whatever the counter says. Every pick is a point the tab's candidate
+   * counter is stepped past, so one past every counter would move it where no capture has been, and
+   * every identity it then issued would be one this refuses (ADR 0070). The counter is the tab's
+   * rather than the project's, so a candidate another project's capture issued is accepted, and at
+   * the build gives way to the ranking as any pick the cell does not hold does. A project no capture
+   * was ever begun in is `FailedPrecondition`, a document that cannot be read answers as `Start`
+   * does, and a pick of a frame whose checkpoint has not been written is refused as newer than the
+   * document, as the build would refuse it.
    */
   setSelection(project: ProjectId, node: NodeId, candidate: CandidateId): Promise<Result<void>>;
   /**

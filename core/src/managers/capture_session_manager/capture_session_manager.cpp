@@ -14,9 +14,9 @@ namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
 
 // The first identity from `next` on that no recorded pick names. Picks outlive the counter that
-// issued them — a pick made after the last checkpoint that succeeded is past the document's
-// counter, and a new tab's counter restarts at 1 — and an identity issued again hands the pick to a
-// frame nobody chose, which a build then honours (ADR 0070). Only an absent pick is none: one that
+// issued them — a new tab's counter restarts at 1, and a pick an earlier build's door recorded, or
+// an edited one, can stand past the document's counter — and an identity issued again hands the
+// pick to a frame nobody chose, which a build then honours (ADR 0070). Only an absent pick is none: one that
 // cannot be read may name the very next identity.
 Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
                                const CapturePlan& plan, uint64_t next) {
@@ -511,8 +511,8 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     burst_owned_.insert(candidate.id.value);
   }
   // Stepped past what the document already used, or the next burst of this session would issue
-  // candidate ids that name restored frames — and past every pick, which the document may not have
-  // seen.
+  // candidate ids that name restored frames — and past every pick, since one an earlier build's
+  // door recorded, or an edited one, can stand past the document's counter.
   next_candidate_ = next;
   if (stored.session >= next_session_) next_session_ = stored.session + 1;
   pose_state_ = initialPose.value;

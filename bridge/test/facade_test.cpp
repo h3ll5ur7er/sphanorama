@@ -8,6 +8,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "facade.h"
@@ -156,6 +157,22 @@ TEST(Facade, ASelectionCrossesTheBoundaryBothWays) {
   Response wrote = Call("ProjectManager.setSelection", pick.bytes());
   wire::Reader recorded = wrote.reader();
   EXPECT_EQ(ReadStatus(recorded).code, StatusCode::FailedPrecondition);
+
+  // And the candidate arrives as the number sent, which the two answers either side of the
+  // headroom bound tell apart without a capture: it is checked before the document is read, so
+  // one past it is the caller's mistake and the one below it is a pick nothing was captured for.
+  // A candidate swapped with the cell, or off by one, answers the other way.
+  for (const auto& [value, expected] : {std::pair{4503599627370496.0, StatusCode::InvalidArgument},
+                                        std::pair{4503599627370495.0,
+                                                  StatusCode::FailedPrecondition}}) {
+    wire::Writer edge;
+    edge.PutF64(project);
+    edge.PutF64(3.0);
+    edge.PutF64(value);
+    Response answered = Call("ProjectManager.setSelection", edge.bytes());
+    wire::Reader status = answered.reader();
+    EXPECT_EQ(ReadStatus(status).code, expected) << value;
+  }
 
   Response asked = Call("ProjectManager.getSelection", cell.bytes());
   wire::Reader read = asked.reader();

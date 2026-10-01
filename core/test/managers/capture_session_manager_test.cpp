@@ -4945,7 +4945,8 @@ TEST_F(ResumedSession, NeverMintsACandidateIdentityTheDocumentAlreadyUsed) {
   EXPECT_GT(second.Candidates(node).value.size(), before.size());
 }
 
-// A pick made after the document's last successful write names an identity the document's counter
+// A pick past the document's counter — one an earlier build's door recorded, which checked
+// nothing, or an edited one; `SetSelection` takes no such pick now — names an identity the counter
 // never stepped past, and a resume restarting from that counter would issue it again — to a frame
 // nobody picked, which a build would then honour as the pick (ADR 0070).
 TEST_F(ResumedSession, NeverMintsACandidateIdentityAPickAlreadyNames) {
@@ -5108,7 +5109,7 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
 // The review strip's door takes every frame a capture issued and no identity none did. A pick of
 // one nobody issued stepped the tab's counter past it, onto identities this door then refused — on
 // this project and every later one in the tab.
-TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoOtherCan) {
+TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoUnissuedOneCan) {
   ProjectManager picker{*projects};
   auto store_with_sink = NewStore();
   FakeCameraAccess camera(store_with_sink);
@@ -5127,6 +5128,9 @@ TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoOtherCan) {
     EXPECT_TRUE(picker.SetSelection(kProject, node, candidate.id).ok()) << candidate.id.value;
     earlier.insert(candidate.id.value);
   }
+  // Nor the very next identity, which nothing has issued yet: the door stops at the counter.
+  EXPECT_EQ(picker.SetSelection(kProject, node, CandidateId{*earlier.rbegin() + 1}).code,
+            StatusCode::InvalidArgument);
   ASSERT_TRUE(manager.End().ok());
 
   // A pick below the counter moves it nowhere: a capture begun after one, on the same project,
@@ -5261,8 +5265,10 @@ TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
   }
 }
 
-// The counter a pick moved is written down at once: behind it, a build started before the next burst
-// reads the pick as newer than the document and refuses, while the strip shows the ranking in force.
+// The counter a pick moved — one past the document's counter, written underneath the manager as an
+// earlier build's door or an edit could — is written down at once: behind it, a build started before
+// the next burst reads the pick as newer than the document and refuses, while the strip shows the
+// ranking in force.
 TEST_F(ResumedSession, AResumeWritesDownACounterAPickMoved) {
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
