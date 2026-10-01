@@ -393,9 +393,10 @@ Status PanoramaBuildManager::Discard(const FrameRef& frame) {
   auto residency = frames_.ResidencyOf(frame);
   if (residency.status.code == StatusCode::NotFound) return Status::Ok();
   if (!residency.ok()) return residency.status;
-  // The build's frames have handles nothing else was given, so every pin on one is an engine's that
-  // could not release it — a preview handed back unreleased, or a feature frame behind a refused
-  // `Release` the engine discarded — and the build is the only thing left that can name it.
+  // The build's frames have handles nothing else was given, so every pin on one was taken for the
+  // build and could not be let go — a preview handed back unreleased, a feature frame behind a
+  // refused `Release` the engine discarded, or the preview `PanoramaPreview` read for the page —
+  // and the build is the only thing left that can name it.
   // One pin per call that borrowed it: a feature frame is borrowed by every pair it is in. Each
   // release takes one, so this ends.
   while (residency.value == Residency::HeapPinned) {

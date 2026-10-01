@@ -48,10 +48,12 @@ reasons.
    crosses is decided by what it costs, and full-resolution frames still cross only as handles.
 4. **The page asks for 2048, and polls between paints.** `shell/src/clients/panorama` holds one
    button, the progress, and a canvas. A press starts a build, polls it once per turn of the
-   event loop — each poll is one step on the core's thread, so neither the core nor the page is
-   ever held for a build — shows the stage and the fraction while it runs, and paints the preview
-   when it completes. A refused start, a failed build and a core that stops answering each say why,
-   and none leaves an earlier picture on screen under the new words.
+   event loop — each poll is one step on the core's thread, so nothing is held for a whole build,
+   only for a step — shows the stage and the fraction while it runs, and paints the preview when
+   it completes. Between polls it waits while the capture is arming, holding or firing a burst. A
+   refused start, a failed build, a preview the painter could not draw and a core that stops
+   answering each say why, and none leaves an earlier picture on screen under the new words. There
+   is one client for the page, as there is one build in the core.
 
 ## Consequences
 
@@ -59,8 +61,8 @@ reasons.
 
   | | before | after | change |
   | --- | --- | --- | --- |
-  | single-threaded module, gzipped | 110,149 | 666,888 | +556,739 |
-  | threaded module, gzipped | 123,910 | 697,153 | +573,243 |
+  | single-threaded module, gzipped | 110,149 | 666,816 | +556,667 |
+  | threaded module, gzipped | 123,910 | 697,063 | +573,153 |
 
   against budgets of 8 and 10 MB. The single-threaded figure is what ADR 0069 predicted from the
   probe, to within a kilobyte. All of it at `-O3`, which ADR 0069 records as its own change.
@@ -70,16 +72,28 @@ reasons.
 - **The deploy compiles OpenCV.** It builds only the module, and the module links it now — about
   eight minutes, since the WebAssembly objects rebuild on a cache hit (ADR 0069). The deploy still
   restores CI's cache and saves none.
-- **What crosses costs 8 MB, three times.** A 2048 by 1024 RGBA preview is 8 MB in the core's copy,
-  again on the wire and again in the page's canvas, briefly at once. The frame store's ceiling
-  does not see the first two; the page asks for one preview per press, and a press while one is in
-  flight starts nothing.
+- **What crosses costs 8 MB, several times.** A 2048 by 1024 RGBA preview is 8 MB, and one call
+  holds it three times in the core's heap at its peak — the store's frame, the `FramePreview` copied
+  out of it, and the wire encoding of that — then once in the worker's copy out of the heap, once in
+  the page's and once in the canvas. The frame store's ceiling counts only the first. The encoding is
+  handed to the facade's result rather than copied into it (`Writer::Take`), so it lasts until the
+  next call and no longer: a copy would have kept the result at its largest size for the life of the
+  module, 8 MB outside the ceiling after the first preview. The heap a WebAssembly module grows to
+  is never given back to the page, so the peak is the cost, whichever copies are still live; the
+  page asks for one preview per press, and a press while one is in flight starts nothing.
 - **Not measured on a phone**, and this is what makes it measurable: how long a sphere takes to
   build, and the heap a build peaks at — the feature sets held across polls and the preview. Those
   are the figures Phase 2's exit asks for per device class, and the next thing a phone answers.
-- **A build while a capture runs is allowed and not designed for.** Between polls a build pins
-  nothing, so a capture proceeds; a new `Begin` empties the store, and the build then fails as one
-  whose frames went (ADR 0070). The button does not wait for a capture to end.
+- **A build while a capture runs is allowed, and it slows the capture.** The capture's tick waits
+  behind whatever build step is on the core's thread. Feature and pair steps are short; the solve
+  and the preview are one step each, and both grow with the sphere — the preview scans every
+  output pixel against every frame and faults each placed frame in from spill — so during them the
+  reticle and the guidance stand still. A burst would be worse, advancing one frame a tick with its
+  exposure locks held across build steps, so the page holds its next poll while a burst is arming,
+  armed or firing; the step already in flight when one arms is the overlap that remains. How long
+  the long steps take on a phone is part of what is not measured. Between polls a build pins
+  nothing; a new `Begin` empties the store, and the build then fails as one whose frames went
+  (ADR 0070).
 - **The kept lens still has no writer** (ADR 0067): the document names no camera, so a build cannot
   say whose lens it fitted.
 

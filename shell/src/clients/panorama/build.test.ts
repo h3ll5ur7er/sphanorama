@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   BuildId, BuildProgress, BuildStage, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
-import { type BuildCore, type BuildElements, createBuildClient } from './build';
+import {
+  type BuildCore, type BuildElements, createBuildClient, yieldWhile,
+} from './build';
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -47,13 +49,51 @@ function scriptedCore(polls: BuildProgress[]) {
 
 const immediately = () => Promise.resolve();
 
+/** A painter that draws, as `paintPreviewOnCanvas` does: it marks the canvas it drew on. */
+const drawing = () => vi.fn((canvas: HTMLCanvasElement) => { canvas.dataset.preview = 'ready'; });
+
 describe('building a preview', () => {
+  it('shows nothing when the preview could not be drawn, rather than the last one', async () => {
+    // The painter refuses a preview it cannot draw by marking the canvas and leaving its pixels
+    // alone — so the canvas still holds the last build's picture, and showing it would put that
+    // picture under this build's "built".
+    const { core } = scriptedCore([progress('Complete', 1), progress('Complete', 1)]);
+    const ui = elements();
+    let refuse = false;
+    const paint = vi.fn((canvas: HTMLCanvasElement) => {
+      canvas.dataset.preview = refuse ? 'malformed' : 'ready';
+    });
+    const client = createBuildClient(ui, core, paint, immediately);
+
+    await client.build();
+    expect(ui.canvas.hidden).toBe(false);
+    refuse = true;
+    await client.build();
+
+    expect(ui.canvas.hidden).toBe(true);
+    expect(ui.status.textContent).toMatch(/could not be drawn/i);
+  });
+
+  it('does not take a mark the last build left for this one\'s', async () => {
+    const { core } = scriptedCore([progress('Complete', 1), progress('Complete', 1)]);
+    const ui = elements();
+    const paint = drawing();
+    const client = createBuildClient(ui, core, paint, immediately);
+    await client.build();
+    // A painter that returns without marking anything, after one that marked the canvas ready.
+    paint.mockImplementation(() => {});
+
+    await client.build();
+
+    expect(ui.canvas.hidden).toBe(true);
+  });
+
   it('starts a build, polls it to the end, and paints what it made', async () => {
     const { core, calls } = scriptedCore([
       progress('Features', 0.25), progress('GlobalSolve', 0.75), progress('Complete', 1),
     ]);
     const ui = elements();
-    const paint = vi.fn();
+    const paint = drawing();
     const client = createBuildClient(ui, core, paint, immediately);
 
     await client.build();
@@ -81,7 +121,7 @@ describe('building a preview', () => {
     const running = client.build();
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     expect(seen[0][0]).toBe(0.25);
-    expect(seen[0][1]).toMatch(/features/i);
+    expect(seen[0][1]).toContain('finding features in each frame');
     expect(ui.button.disabled).toBe(true);
     release();
     await running;
@@ -103,8 +143,11 @@ describe('building a preview', () => {
   });
 
   it('says why a build was refused, and lets you try again', async () => {
-    const { core, calls } = scriptedCore([]);
+    const { core, calls } = scriptedCore([progress('Complete', 1)]);
+    const started = core.start;
+    let refuse = true;
     core.start = async () => {
+      if (!refuse) return started();
       calls.push('start');
       return {
         ok: false,
@@ -113,7 +156,7 @@ describe('building a preview', () => {
       };
     };
     const ui = elements();
-    const paint = vi.fn();
+    const paint = drawing();
     const client = createBuildClient(ui, core, paint, immediately);
 
     await client.build();
@@ -122,6 +165,71 @@ describe('building a preview', () => {
     expect(paint).not.toHaveBeenCalled();
     expect(calls).toEqual(['start']);
     expect(ui.button.disabled).toBe(false);
+
+    refuse = false;
+    await client.build();
+
+    expect(calls).toEqual(['start', 'start', 'poll 1', 'preview 1']);
+    expect(ui.status.textContent).toMatch(/built/i);
+    expect(ui.canvas.hidden).toBe(false);
+  });
+
+  it('says why a poll was refused, and asks nothing more of that build', async () => {
+    // A build the core no longer holds — a later start took its one slot — answers `NotFound`;
+    // asking again would ask forever.
+    const { core, calls } = scriptedCore([progress('Features', 0.25)]);
+    const polled = core.poll;
+    core.poll = async (build) => {
+      if (calls.includes(`poll ${build}`)) {
+        calls.push(`poll ${build}`);
+        // Asked a third time, the build is being retried: end it here, or the test spins forever.
+        if (calls.length > 3) throw new Error('a refused poll was asked again');
+        return { ok: false, status: { code: 'NotFound', component: 'PanoramaBuildManager',
+          detail: 'no such build' } as Status };
+      }
+      return polled(build);
+    };
+    const ui = elements();
+    const paint = vi.fn();
+    const client = createBuildClient(ui, core, paint, immediately);
+
+    await client.build();
+
+    expect(calls).toEqual(['start', 'poll 1', 'poll 1']);
+    expect(ui.status.textContent).toContain('no such build');
+    expect(paint).not.toHaveBeenCalled();
+    expect(ui.canvas.hidden).toBe(true);
+    expect(ui.button.disabled).toBe(false);
+  });
+
+  it('says why a finished build\'s preview was refused, and shows nothing', async () => {
+    const { core, calls } = scriptedCore([progress('Complete', 1)]);
+    core.preview = async (build) => {
+      calls.push(`preview ${build}`);
+      return { ok: false, status: { code: 'FailedPrecondition', component: 'PanoramaBuildManager',
+        detail: 'the store no longer holds this build\'s panorama; build again' } as Status };
+    };
+    const ui = elements();
+    const paint = vi.fn();
+    const client = createBuildClient(ui, core, paint, immediately);
+
+    await client.build();
+
+    expect(calls).toEqual(['start', 'poll 1', 'preview 1']);
+    expect(ui.status.textContent).toContain('no longer holds this build\'s panorama');
+    expect(ui.status.textContent).not.toMatch(/^built/i);
+    expect(paint).not.toHaveBeenCalled();
+    expect(ui.canvas.hidden).toBe(true);
+    expect(ui.button.disabled).toBe(false);
+  });
+
+  it('hides the canvas from the start, whatever the markup said', () => {
+    const ui = elements();
+    ui.canvas.hidden = false;
+
+    createBuildClient(ui, scriptedCore([]).core, vi.fn(), immediately);
+
+    expect(ui.canvas.hidden).toBe(true);
   });
 
   it('says why a build failed, and draws nothing', async () => {
@@ -160,7 +268,7 @@ describe('building a preview', () => {
     const { core } = scriptedCore([progress('Complete', 1), progress('Features', 0.5),
       progress('Failed', 0.5, { code: 'Internal', component: 'x', detail: 'broke' } as Status)]);
     const ui = elements();
-    const client = createBuildClient(ui, core, vi.fn(), immediately);
+    const client = createBuildClient(ui, core, drawing(), immediately);
 
     await client.build();
     expect(ui.canvas.hidden).toBe(false);
@@ -168,5 +276,39 @@ describe('building a preview', () => {
     // A picture of the last capture under a heading about this one's failure would be read as
     // this one's.
     expect(ui.canvas.hidden).toBe(true);
+  });
+});
+
+describe('waiting between polls', () => {
+  it('waits while the capture is busy, and goes on once it is not', async () => {
+    // A burst advances one frame per capture tick, and a build step holds the core's one thread:
+    // polling while a burst runs spreads the burst's frames across build steps, its locks held.
+    vi.useFakeTimers();
+    try {
+      let busy = true;
+      let resolved = false;
+      void yieldWhile(() => busy, 50)().then(() => { resolved = true; });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(resolved).toBe(false);
+      busy = false;
+      await vi.advanceTimersByTimeAsync(50);
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('yields once even when nothing is busy, so the page can paint', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolved = false;
+      void yieldWhile(() => false, 50)().then(() => { resolved = true; });
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

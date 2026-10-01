@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 // Wire primitives for the generated boundary codec.
@@ -44,6 +45,11 @@ class Writer {
   void PutCount(size_t count) { PutI32(static_cast<int32_t>(count)); }
 
   const std::vector<uint8_t>& bytes() const { return bytes_; }
+
+  // The buffer itself, for a holder that outlives the writer: the facade's result, which a copy
+  // would leave the size of the largest answer it ever held — an 8 MB panorama preview, kept for
+  // the rest of the session.
+  std::vector<uint8_t> Take() && { return std::move(bytes_); }
 
  private:
   void Raw(const void* source, size_t size) {

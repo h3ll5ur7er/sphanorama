@@ -10,6 +10,7 @@
 
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sphanorama/codec.h"
@@ -441,7 +442,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       break;
   }
 
-  g_result = out.bytes();
+  g_result = std::move(out).Take();
   return static_cast<int32_t>(g_result.size());
 }
 

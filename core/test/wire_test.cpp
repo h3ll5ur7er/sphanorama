@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include "sphanorama/wire.h"
 
@@ -54,6 +56,20 @@ TEST(Wire, RoundTripsBinaryPayloads) {
   Writer w;
   w.PutBytes(payload);
   EXPECT_EQ(ReaderOver(w).GetBytes(), payload);
+}
+
+// The facade keeps one result between calls, and a panorama's preview is 8 MB of it. A copy would
+// leave the result holding the largest buffer it was ever assigned until the module unloads; the
+// writer's own buffer, handed over, is the size of this answer and goes with the next one.
+TEST(Wire, TakingTheBytesHandsOverTheBufferRatherThanCopyingIt) {
+  Writer out;
+  out.PutBytes(std::vector<uint8_t>(4096, 7));
+  const uint8_t* written = out.bytes().data();
+
+  const std::vector<uint8_t> taken = std::move(out).Take();
+
+  EXPECT_EQ(taken.data(), written);
+  EXPECT_EQ(taken.size(), 4096u + 4u);
 }
 
 TEST(Wire, ReadingPastTheEndFailsRatherThanReadingGarbage) {

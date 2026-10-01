@@ -28,6 +28,11 @@ export interface BuildElements {
   canvas: HTMLCanvasElement;
 }
 
+/**
+ * Draws a preview onto the canvas and marks it `data-preview="ready"` when it did — the contract
+ * `paintPreviewOnCanvas` keeps. A preview it could not draw is marked otherwise and the canvas's
+ * pixels are left alone, which is why this client reads the mark rather than assuming the paint.
+ */
 export type PaintPanorama = (canvas: HTMLCanvasElement, preview: FramePreview) => void;
 
 /**
@@ -45,15 +50,33 @@ const doing: Partial<Record<BuildStage, string>> = {
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
 
 /**
+ * A wait between polls that does not end while `busy` says the capture needs the core.
+ *
+ * Each poll is one build step on the core's one thread, and a capture's tick waits behind it — so
+ * a burst, which advances one frame a tick (ADR 0018), would be spread across build steps with its
+ * exposure locks held, and its frames would stop being the comparable set the burst is for. Holding
+ * the next poll back until the burst is done costs the build that long; the one step already in
+ * flight when a burst arms is the overlap left (ADR 0071). It yields once even when nothing is
+ * busy, so the page paints the progress between steps.
+ */
+export function yieldWhile(busy: () => boolean, retryMs = 50): () => Promise<void> {
+  return () => new Promise((resolve) => {
+    const check = () => { if (busy()) setTimeout(check, retryMs); else resolve(); };
+    setTimeout(check, 0);
+  });
+}
+
+/**
  * Builds when asked, and says how it is going.
  *
  * `yieldToPage` runs between polls. Each poll is one step of the build on the core's thread
- * (ADR 0070), so the page is never held by one; yielding between them is what lets it paint the
- * progress and keep the viewfinder moving while a sphere's worth of steps goes by.
+ * (ADR 0070), so the core is held for a step and never for a build; yielding between steps is what
+ * lets the page paint the progress and the capture's ticks reach the core. `yieldWhile` is how the
+ * page holds the build back while a burst needs the core.
  */
 export function createBuildClient(
   ui: BuildElements, core: BuildCore, paint: PaintPanorama,
-  yieldToPage: () => Promise<void> = () => new Promise((resolve) => { setTimeout(resolve, 0); }),
+  yieldToPage: () => Promise<void> = yieldWhile(() => false),
 ): { build(): Promise<void> } {
   let running = false;
   ui.canvas.hidden = true;
@@ -88,6 +111,10 @@ export function createBuildClient(
       return;
     }
     paint(ui.canvas, preview.value);
+    if (ui.canvas.dataset.preview !== 'ready') {
+      ui.status.textContent = 'The build finished, but its preview could not be drawn.';
+      return;
+    }
     ui.canvas.hidden = false;
     ui.status.textContent = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
   }
@@ -98,8 +125,10 @@ export function createBuildClient(
       running = true;
       ui.button.disabled = true;
       // Out of sight until this build has something to show: last time's picture under this
-      // time's progress, or this time's failure, would be read as this one's.
+      // time's progress, or this time's failure, would be read as this one's. The mark goes too, or
+      // a painter that drew nothing this time would be read by last time's.
       ui.canvas.hidden = true;
+      delete ui.canvas.dataset.preview;
       try {
         await run();
       } catch (reason: unknown) {
