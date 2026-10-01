@@ -58,18 +58,21 @@ everything, and it could not have done otherwise as declared, for three reasons.
      names, once the tab reloads, and a new tab's counter restarts at 1 while an earlier capture's
      picks survive. Either would hand the pick to a frame nobody chose, and the build would honour
      it. A pick the store cannot read refuses both.
-   - **Identities have three bounds, a tier apart.** A reader accepts any below 2^53, since an
-     identity crosses to the page and the spill sink as a double and one past that arrives as its
-     neighbour's. `Resume` steps its counters past every identity a document names, so it refuses
-     one naming any at or past 2^52 — half the range short of what the reader accepts, which no
-     capture comes near issuing. And a pick is stepped past by `Begin` and `Resume` alike, so
-     `SetSelection` refuses one at or past 2^51 — a quarter short of what `Resume` takes back, so a
-     capture whose counter a pick moved still resumes. Each tier is what a counter stepped past the
-     one below may issue into. Bounds with no gap between them only moved the edge, and review found
-     it three times: a counter stepped past the last identity one bound admits issues the first the
-     next refuses. The cost is the edge that is left, which only an edited document reaches: one
-     naming an identity just short of 2^52 resumes, and the capture it goes on to make — and every
-     later one in that tab, since the counters outlive a capture — builds but will not resume again.
+   - **Identities have two bounds, and a pick names only what a capture issued.** A reader accepts
+     any below 2^53, since an identity crosses to the page and the spill sink as a double and one
+     past that arrives as its neighbour's. A counter is stepped past every identity a document names
+     on `Resume`, and past every pick at `Begin` and `Resume`, so those must be below 2^52 — half the
+     range short of what the reader accepts, which no capture comes near issuing — and `Resume`
+     refuses a document naming one at or past it. No bound alone keeps a counter clear of the next:
+     a counter stepped past the last identity a bound admits issues the first it refuses, and review
+     found that edge four times, each time one bound lower, the last between the pick door and
+     itself. What ends it is that `SetSelection` takes only a candidate a capture of the project
+     issued, below its document's counter, so stepping past a pick takes a counter nowhere a counter
+     has not already been. The cost is a pick of a frame whose checkpoint failed, which is refused —
+     as the build already refused it, as newer than the document — and the edge that is left, which
+     only an edited document reaches: one naming an identity just short of 2^52 resumes, and the
+     capture it goes on to make — and every later one in that tab, since the counters outlive a
+     capture — builds, but will not resume again and its frames cannot be picked.
    - **Only a measured pose is read.** A frame whose pose has confidence zero is paired with
      nothing, because at zero the orientation is not a measurement (`PoseSampleDefect`) and the
      direction a degenerate one normalises to is straight ahead. A capture where no pose was

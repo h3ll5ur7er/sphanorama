@@ -26,8 +26,9 @@ Result<uint64_t> PastEveryPick(IProjectStoreAccess& projects, ProjectId project,
       if (pick.status.code == StatusCode::NotFound) continue;
       return pick.status;
     }
-    // One that does not parse steps past nothing, and a build refuses it. Every one that does is a
-    // tier below what `Resume` takes back (`PickableIdentity`), so this capture's own will be too.
+    // One that does not parse steps past nothing, and a build refuses it. One that does names a
+    // candidate some capture issued, since `SetSelection` takes no other, so stepping past it takes
+    // the counter nowhere a counter has not been — and it leaves headroom (`IdentityWithHeadroom`).
     if (const auto named = ParseSelectionDocument(pick.value)) {
       next = std::max(next, named->value + 1);
     }

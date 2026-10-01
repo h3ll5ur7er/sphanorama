@@ -5043,9 +5043,9 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
   // Nor any the page could not name exactly: an identity crosses to it as a double.
   const std::string past = std::to_string(uint64_t{1} << 53);
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 1, past), document));
-  // A pick sits a tier below what `Resume` takes back: below 2^51.
-  EXPECT_FALSE(ParseSelectionDocument(std::to_string(uint64_t{1} << 51)));
-  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 51) - 1)));
+  // A pick is stepped past, so it needs the headroom `Resume` does: below 2^52.
+  EXPECT_FALSE(ParseSelectionDocument(std::to_string(uint64_t{1} << 52)));
+  EXPECT_TRUE(ParseSelectionDocument(std::to_string((uint64_t{1} << 52) - 1)));
   // The same for the other identities the document carries: past 2^53 the page and the spill sink
   // would see a frame or a session as its neighbour.
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "candidate", 3, past), document));
@@ -5057,8 +5057,11 @@ TEST_F(ResumedSession, RefusesADocumentCarryingTheLargestIdentity) {
 }
 
 // A pick no counter can step past is one no counter will reach either, and stepping past it would
-// leave this capture — and every later one in the tab — unable to take a frame. Nor may stepping
-// past one leave a capture whose own document its next `Resume` refuses.
+// leave this capture — and every later one in the tab — unable to take a frame. Written underneath
+// the manager, since `SetSelection` takes only a candidate a capture issued: these are edited picks.
+// Stepped past one well inside the bound, the capture resumes. Stepped past one short of it, the
+// next identity issued is the bound `Resume` refuses — the cost ADR 0070 names — and what it wrote
+// is still a document a build reads.
 TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) {
   auto store_with_sink = NewStore();
   FakeCameraAccess camera(store_with_sink);
@@ -5067,12 +5070,16 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
   ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
   const NodeId node = manager.GetPlan().value.nodes.front().id;
   ASSERT_TRUE(manager.End().ok());
-  // The last pick a counter is stepped past and the first it is not, the last below what `Resume`
-  // takes back — which, stepped past, issued identities it refused — and picks that leave fewer
-  // identities than a burst takes, each of which, stepped past, left no burst able to finish.
+  // A pick well inside the bound, the last a counter is stepped past and the first it is not, and
+  // picks that leave fewer identities than a burst takes, each of which, stepped past, left no burst
+  // able to finish.
   const uint64_t top = uint64_t{1} << 53;
-  for (const uint64_t pick : {(uint64_t{1} << 51) - 1, uint64_t{1} << 51, (uint64_t{1} << 52) - 1,
-                              top - 5, top - 2, top - 1}) {
+  // The one short of the bound last: the counter it moves is the tab's, so every capture after it
+  // here would start where it left off.
+  struct Pick { uint64_t value; bool resumes; };
+  for (const auto& [pick, resumes] : {Pick{uint64_t{1} << 51, true}, Pick{uint64_t{1} << 52, true},
+                                      Pick{top - 5, true}, Pick{top - 2, true},
+                                      Pick{top - 1, true}, Pick{(uint64_t{1} << 52) - 1, false}}) {
     ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(node),
                                         std::to_string(pick)).ok());
     ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
@@ -5082,6 +5089,11 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
       EXPECT_LT(candidate.id.value, top) << "pick " << pick << " issued " << candidate.id.value;
     }
     ASSERT_TRUE(manager.End().ok());
+    auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(written.ok());
+    SessionDocument document;
+    EXPECT_TRUE(DecodeSessionDocument(written.value, document)) << "pick " << pick;
+    if (!resumes) continue;
     // And what it wrote is a document a reload resumes.
     auto store = NewStore();
     FakeCameraAccess fresh_camera(store);
@@ -5090,6 +5102,50 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
     auto resumed = fresh.Resume(kProject);
     EXPECT_TRUE(resumed.ok()) << "pick " << pick << ": " << resumed.status.detail;
     if (resumed.ok()) { EXPECT_TRUE(fresh.End().ok()); }
+  }
+}
+
+// The review strip's door takes every frame a capture issued and no identity none did. A pick of
+// one nobody issued stepped the tab's counter past it, onto identities this door then refused — on
+// this project and every later one in the tab.
+TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoOtherCan) {
+  ProjectManager picker{*projects};
+  auto store_with_sink = NewStore();
+  FakeCameraAccess camera(store_with_sink);
+  CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, *store_with_sink,
+                                *projects, clock);
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  const NodeId node = manager.GetPlan().value.nodes.front().id;
+  for (const uint64_t unissued : {(uint64_t{1} << 51) - 1, (uint64_t{1} << 52) - 1}) {
+    EXPECT_EQ(picker.SetSelection(kProject, node, CandidateId{unissued}).code,
+              StatusCode::InvalidArgument) << unissued;
+  }
+  ASSERT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+  ASSERT_FALSE(manager.Candidates(node).value.empty());
+  std::set<uint64_t> earlier;
+  for (const Candidate& candidate : manager.Candidates(node).value) {
+    EXPECT_TRUE(picker.SetSelection(kProject, node, candidate.id).ok()) << candidate.id.value;
+    earlier.insert(candidate.id.value);
+  }
+  ASSERT_TRUE(manager.End().ok());
+
+  // A pick below the counter moves it nowhere: a capture begun after one, on the same project,
+  // issues none of the identities the first did.
+  ASSERT_TRUE(picker.SetSelection(kProject, node, CandidateId{*earlier.begin()}).ok());
+  ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+  for (const Candidate& candidate : manager.Candidates(node).value) {
+    EXPECT_EQ(earlier.count(candidate.id.value), 0u) << "reissued " << candidate.id.value;
+  }
+  ASSERT_TRUE(manager.End().ok());
+
+  constexpr ProjectId kOther{2};
+  ASSERT_TRUE(projects->WriteDocument(kOther, "title", "another").ok());
+  ASSERT_TRUE(manager.Begin(kOther, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(manager, clock, node, BurstSpec{}).ok());
+  ASSERT_FALSE(manager.Candidates(node).value.empty());
+  for (const Candidate& candidate : manager.Candidates(node).value) {
+    EXPECT_TRUE(picker.SetSelection(kOther, node, candidate.id).ok()) << candidate.id.value;
   }
 }
 
@@ -5122,13 +5178,13 @@ TEST_F(ResumedSession, ASecondCaptureInOneTabIssuesNoIdentityTheFirstDid) {
 // capture comes near issuing. Nearer the top, the counter could issue into what the reader refuses,
 // so `Resume` refuses the document instead. One within the bound resumes and captures, and what that
 // capture writes a build can read. Whether a reload can resume it too depends on how near the bound
-// it started: from where a pick leaves a counter it can, and from one short of the bound — which
-// only an edited document holds — the next identity issued is the bound, which it refuses.
+// it started: from well inside it, it can, and from one short of the bound — which only an edited
+// document holds — the next identity issued is the bound, which it refuses.
 TEST_F(ResumedSession, AResumeStepsPastNoIdentityThatLeavesNoHeadroom) {
   // The session, a candidate and a frame, each one short of the bound and at it — and the candidate
   // counter, which may stand one past the largest identity it would have issued. The values two
-  // review rounds reproduced with, just below the reader's own bound. And the largest a pick can
-  // leave behind: a candidate counter at 2^51, with the candidate it went on to issue.
+  // review rounds reproduced with, just below the reader's own bound. And a counter well inside the
+  // bound, with the candidate it went on to issue, where a reload resumes what it wrote.
   struct Case { std::string tag; size_t field; uint64_t value; bool headroom; bool resumesAgain; };
   const uint64_t bound = uint64_t{1} << 52;
   const uint64_t picked = uint64_t{1} << 51;

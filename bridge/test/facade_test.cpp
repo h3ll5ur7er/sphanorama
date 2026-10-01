@@ -115,11 +115,13 @@ TEST(Facade, CreatesAProjectAndReadsItBack) {
   EXPECT_TRUE(found);
 }
 
-TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
+TEST(Facade, ASelectionCrossesTheBoundaryBothWays) {
   // The new call in ADR 0040, over the generated dispatch rather than over a manager held
   // directly. Until now the only thing exercising it was one end-to-end test in a browser, which
   // is the slowest place to find a boundary mistake and the one that says least about which end
-  // made it.
+  // made it. A pick names a candidate a capture issued (ADR 0070), and this runtime has no camera
+  // to capture with, so a recorded pick coming back the same number is that end-to-end test's
+  // ("a pick survives the tab that made it"); what crosses here is the refusal and the zero.
   //
   // Each `Response` is held in a named local because `reader()` points into its buffer, which a
   // temporary would free at the end of the statement.
@@ -146,18 +148,19 @@ TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
   // once at the end rather than after every read.
   EXPECT_TRUE(absent.ok()) << "a zero read out of a failed reader is not an answer of zero";
 
+  // Nothing was captured here, so there is nothing to pick, and the refusal crosses as a status.
   wire::Writer pick;
   pick.PutF64(project);
   pick.PutF64(3.0);
   pick.PutF64(7.0);
   Response wrote = Call("ProjectManager.setSelection", pick.bytes());
   wire::Reader recorded = wrote.reader();
-  ASSERT_EQ(ReadStatus(recorded).code, StatusCode::Ok);
+  EXPECT_EQ(ReadStatus(recorded).code, StatusCode::FailedPrecondition);
 
   Response asked = Call("ProjectManager.getSelection", cell.bytes());
   wire::Reader read = asked.reader();
   ASSERT_EQ(ReadStatus(read).code, StatusCode::Ok);
-  EXPECT_EQ(read.GetF64(), 7.0);
+  EXPECT_EQ(read.GetF64(), 0.0);
   EXPECT_TRUE(read.ok());
 
   // And a cell the writer refuses is refused rather than answered, so the two ends cannot be made

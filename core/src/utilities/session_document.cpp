@@ -105,7 +105,7 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       // starts at 1. A document carrying one is one this build cannot honour, and restoring it
       // would seat the session under a name nothing can legitimately hold.
       // The session's own identity is bounded like a candidate's, by what crosses to the page as a
-      // double exactly. How near that `Resume` will step a counter is its own rule, a tier lower.
+      // double exactly. How near that `Resume` will step a counter is its own, tighter rule.
       if (!IssuableIdentity(out.session) || out.nextCandidate == 0) return false;
       if (!exhausted(in)) return false;
       sawSession = true;
@@ -209,7 +209,7 @@ std::optional<CandidateId> ParseSelectionDocument(const std::string& text) {
   // *content* and would still be needed if the parse could not fail; the first is what makes the
   // zero initialiser not load-bearing, and dropping it would leave the refusal of an overflowing
   // document resting on a standard guarantee about a variable nobody assigned.
-  if (parsed.ec != std::errc{} || parsed.ptr != end || !PickableIdentity(chosen)) {
+  if (parsed.ec != std::errc{} || parsed.ptr != end || !IdentityWithHeadroom(chosen)) {
     return std::nullopt;
   }
   return CandidateId{chosen};

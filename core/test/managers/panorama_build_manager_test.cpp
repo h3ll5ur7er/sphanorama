@@ -464,10 +464,16 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesACaptureFromAnotherTier) {
 }
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesFramesOfMoreThanOneSize) {
-  AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
-  AddCandidate(NodeId{2}, FromAzimuthElevation(30.0, 0.0), kWidth * 2, kHeight * 2);
-  WriteDocument();
-  EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+  // Each dimension alone, so neither half of the comparison is carried by the other.
+  for (const auto& [width, height] : {std::pair<int32_t, int32_t>{kWidth * 2, kHeight},
+                                      std::pair<int32_t, int32_t>{kWidth, kHeight * 2}}) {
+    document_.candidates.clear();
+    AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
+    AddCandidate(NodeId{2}, FromAzimuthElevation(30.0, 0.0), width, height);
+    WriteDocument();
+    EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition)
+        << width << "x" << height;
+  }
 }
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesAFieldOfViewThatIsNotALens) {

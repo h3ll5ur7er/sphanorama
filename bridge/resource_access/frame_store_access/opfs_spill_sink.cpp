@@ -13,8 +13,8 @@ constexpr const char* kComponent = "OpfsSpillSink";
 // Frame ids cross as doubles because that is what a JavaScript number is. They come from the
 // store's own counter, which `Adopt` steps past a restored frame's id — and `Resume` adopts nothing
 // from a document naming one at or past 2^52 (`IdentityWithHeadroom`), which leaves the counter half
-// the range below 2^53. Only an edited document comes near even that: picks, the one identity the
-// page writes, are bounded below 2^51. So the exactness limit is not reachable here, unlike project ids, which
+// the range below 2^53. Only an edited document comes near even that: a pick, the one identity the
+// page writes, names only a candidate a capture issued. So the exactness limit is not reachable here, unlike project ids, which
 // arrive from storage and are range-checked before use.
 //
 // The byte spans cross as a pointer and a length, viewed through HEAPU8 rather than copied. The

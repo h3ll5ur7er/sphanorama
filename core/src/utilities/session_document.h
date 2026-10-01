@@ -52,19 +52,18 @@ struct SessionDocument {
   std::vector<Candidate> candidates;
 };
 
-// Three bounds, a tier apart, because each is what a counter stepped past the one below it may issue
-// into (ADR 0070). Two with no gap between them only moved the edge: a counter stepped past the last
-// identity one bound admits issues the first the next refuses.
+// Two bounds, a gap apart, because a counter stepped past the last identity one admits must not issue
+// past the other (ADR 0070).
 //
 // What a reader accepts: not zero, which is "none", and below 2^53, since an identity crosses to the
 // page — and to the spill sink — as a double, and one past that arrives as its neighbour's.
 inline bool IssuableIdentity(uint64_t id) { return id != 0 && id < (uint64_t{1} << 53); }
-// What `Resume` steps its counters past: below 2^52, half the range short of what a reader accepts,
-// which no capture comes near issuing.
+// What a counter may be stepped past — a document's identities on `Resume`, a recorded pick — and so
+// what `Resume` takes back: below 2^52, half the range short of what a reader accepts, which no
+// capture comes near issuing. No bound alone keeps a counter clear of it, since a counter stepped
+// past the last identity a bound admits issues the first it refuses; what does is that the one door
+// the page writes through, `SetSelection`, names only a candidate a capture has already issued.
 inline bool IdentityWithHeadroom(uint64_t id) { return id != 0 && id < (uint64_t{1} << 52); }
-// What a pick may name, which `Begin` and `Resume` step the candidate counter past: below 2^51, so
-// the captures that counter goes on to issue are ones `Resume` takes back.
-inline bool PickableIdentity(uint64_t id) { return id != 0 && id < (uint64_t{1} << 51); }
 
 std::string EncodeSessionDocument(const SessionDocument& stored);
 

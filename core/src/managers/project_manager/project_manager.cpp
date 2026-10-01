@@ -67,12 +67,32 @@ Status ProjectManager::SetSelection(ProjectId project, NodeId node, CandidateId 
   // contradiction the read path has to call corrupt — a write that creates state its own reader
   // cannot represent. `Id::valid()` is `value != 0` and every counter in these contracts starts
   // at 1, so an unset id is a caller mistake and not a choice anybody made. So is one without the
-  // headroom a pick needs, since every pick is stepped past (`PickableIdentity`).
-  if (!node.valid() || !PickableIdentity(candidate.value)) {
+  // headroom a pick needs, since every pick is stepped past (`IdentityWithHeadroom`).
+  if (!node.valid() || !IdentityWithHeadroom(candidate.value)) {
     return Fail(StatusCode::InvalidArgument, kComponent,
                 "a selection needs a real cell and a real candidate");
   }
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
+  // Only one a capture of this project issued: below its document's counter. `Begin` and `Resume`
+  // step the tab's counter past every pick, so one nobody issued would move it where no capture has
+  // been, and every identity it went on to issue would be one this door refuses (ADR 0070). A pick
+  // of a frame whose checkpoint has not been written is refused too, as the build would refuse it.
+  auto document = store_.ReadDocument(project, kSessionDocumentKey);
+  if (!document.ok()) {
+    if (document.status.code == StatusCode::NotFound) {
+      return Fail(StatusCode::FailedPrecondition, kComponent, "nothing was captured here to pick");
+    }
+    return document.status;
+  }
+  SessionDocument captured;
+  if (!DecodeSessionDocument(document.value, captured)) {
+    return Fail(StatusCode::Unsupported, kComponent,
+                "this project's capture was written by a build that cannot be read here");
+  }
+  if (candidate.value >= captured.nextCandidate) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "no capture of this project issued that candidate");
+  }
   // Read by the next build's `Start` (ADR 0070); a partial rebuild from this one dirty node is
   // ADR 0004's design and not built yet.
   return store_.WriteDocument(project, SelectionDocumentKey(node), std::to_string(candidate.value));

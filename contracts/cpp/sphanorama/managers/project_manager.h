@@ -29,10 +29,14 @@ class IProjectManager {
   //
   // An unset cell or candidate is refused. Zero is what `GetSelection` answers for "nobody has
   // chosen here", so writing one would put the two halves of this pair in contradiction: a
-  // document the writer accepted and the reader has to call corrupt. So is a candidate at or past
-  // 2^51: every pick is a point the capture's counter is stepped past, and `Resume` takes back only
-  // a capture whose identities are below 2^52, so a pick sits a tier below that (ADR 0070). A
-  // capture issues one only after a quarter of the range.
+  // document the writer accepted and the reader has to call corrupt.
+  //
+  // So is a candidate no capture of this project issued — at or past its session document's
+  // counter — and one at or past 2^52 whatever the counter says. Every pick is a point the tab's
+  // candidate counter is stepped past, so one nobody issued would move it where no capture has been,
+  // and every identity it then issued would be one this refuses (ADR 0070). A project with nothing
+  // captured is `FailedPrecondition`, a document that cannot be read answers as `Start` does, and a
+  // pick of a frame whose checkpoint has not been written is refused, as the build would refuse it.
   virtual Status SetSelection(ProjectId project, NodeId node, CandidateId candidate) = 0;
 
   // What was chosen for a cell, or nothing.
