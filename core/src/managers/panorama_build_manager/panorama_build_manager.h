@@ -24,6 +24,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Result<BuildId> Start(ProjectId project, const BuildSpec& spec) override;
   Result<BuildProgress> Poll(BuildId build) override;
   Result<PanoramaRef> Panorama(BuildId build) override;
+  Result<FramePreview> PanoramaPreview(BuildId build) override;
   Result<GhostReport> Ghosts(BuildId build) override;
   Status Invalidate(BuildId build, std::span<const NodeId> dirty) override;
   Status Cancel(BuildId build) override;

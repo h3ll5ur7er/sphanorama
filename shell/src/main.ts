@@ -32,6 +32,7 @@ import { createCoverageRefresh } from './clients/capture/coverage-refresh';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
+import { createBuildClient } from './clients/build/build';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -87,6 +88,20 @@ const reviewElements = {
   stripHeading: el<HTMLElement>('strip-heading'),
   strip: el<HTMLElement>('strip'),
 };
+const buildElements = {
+  button: el<HTMLButtonElement>('build-button'),
+  status: el<HTMLElement>('build-status'),
+  progress: el<HTMLProgressElement>('build-progress'),
+  canvas: el<HTMLCanvasElement>('build-canvas'),
+};
+/**
+ * What a build is asked for. The widest preview the core will draw, which a phone holds as 8 MB of
+ * RGBA in each of the core, the wire and the page while it crosses (ADR 0071); the other fields are
+ * the full render's and the core does not read them yet.
+ */
+const PREVIEW_SPEC = {
+  tier: 'Preview', projection: 'Equirectangular', outputWidth: 2048, ghostAware: false,
+} as const;
 
 const camera = createCameraAccess(navigator.mediaDevices);
 // One canvas for the session: grabbing a frame means drawing the viewfinder into it and reading
@@ -757,6 +772,18 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       selection: (node) => core.project.getSelection(project, node),
     },
     paintPreviewOnCanvas);
+
+  // Beside the review panel and for the same reason: a build reads the project's capture, so there
+  // is nothing to build until there is a project. Assigned rather than added, so a second session
+  // in this page replaces the handler instead of stacking a build per session on one press.
+  if (project !== null) {
+    const builder = createBuildClient(buildElements, {
+      start: () => core.panoramaBuild.start(project, PREVIEW_SPEC),
+      poll: (build) => core.panoramaBuild.poll(build),
+      preview: (build) => core.panoramaBuild.panoramaPreview(build),
+    }, paintPreviewOnCanvas);
+    buildElements.button.onclick = () => { void builder.build(); };
+  }
 
   /**
    * Re-reads coverage and redraws the map.

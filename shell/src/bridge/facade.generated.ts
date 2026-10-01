@@ -197,6 +197,18 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
         'malformed response: PanoramaBuildManager.panorama returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
+    async panoramaPreview(build: C.BuildId) {
+      const args = new Writer();
+      args.f64(build);
+      const raw = await call('PanoramaBuildManager.panoramaPreview', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = codec.decodeFramePreview(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.panoramaPreview returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async ghosts(build: C.BuildId) {
       const args = new Writer();
       args.f64(build);

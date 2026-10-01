@@ -1195,6 +1195,15 @@ export interface PanoramaBuildManager {
    */
   panorama(build: BuildId): Promise<Result<PanoramaRef>>;
   /**
+   * The same preview as pixels, for the page to draw: it has no store to resolve the handle
+   * `Panorama` answers against. The whole preview, unreduced — the caller chose its size in the
+   * spec it started with, and the build already holds it at that size (ADR 0071). Refused as
+   * `Panorama` refuses, and with the store's own status where it would not read the preview or let
+   * go of it after; a pin left by a release the store refused is the build's, and `Cancel` gives it
+   * back with the rest.
+   */
+  panoramaPreview(build: BuildId): Promise<Result<FramePreview>>;
+  /**
    * `Unsupported` for a build that exists, because nothing detects movers yet — an empty report
    * would read as a scene with none.
    */

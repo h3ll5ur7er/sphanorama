@@ -113,8 +113,10 @@ frame per cell, the manual pick where there is one — and each `Poll` does one 
 pairs, `Refine` and `RenderPreview`, so no call holds the core's one thread for a whole build
 (ADR 0070). Over the real engines, the photograph ring with every pose three degrees out builds to a
 preview within 1.23 to 1.56 bytes of the photograph, against 28.6 for the frames placed where the
-poses say. The browser's composition root still hands it the null engines, so there a build fails
-at its first step; selecting the real ones is the change that spends the 556 KB.
+poses say. **And a phone builds one**: the browser's runtime selects the real engines, with ORB
+because a preview cannot show what the slower detectors buy, and a button under the review strip
+builds the capture and draws the preview `PanoramaPreview` hands across (ADR 0071). The module
+carries the 557 KB now. How long a sphere takes on a phone, and its peak heap, are not measured.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 and cross-compiled for the browser too (ADR 0069): about 556 KB of the 8 MB budget, WebAssembly's

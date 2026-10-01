@@ -619,6 +619,57 @@ test('the review strip shows the frames, not just their scores', async ({ page }
   }
 });
 
+test('a capture builds into a preview the page draws', async ({ page }) => {
+  // The whole of ADR 0071 in one place: the real engines in the browser's core, a build paced by
+  // the page's polls, and the panorama's pixels back across the worker onto a canvas. Every piece
+  // is tested against a fake somewhere else; this is the only place a captured frame becomes a
+  // panorama on screen, and the only check that would notice the runtime going back to the null
+  // engines, whose build fails at its first step.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, {
+      timeout: 15000,
+    });
+
+    await page.locator('#panel-toggle').click();
+    // Nothing is shown before there is something to show. Asserted on the page rather than on the
+    // attribute, because an author `display` beats `hidden` and the client's tests see only the
+    // attribute.
+    await expect(page.locator('#build-canvas')).toBeHidden();
+    await page.locator('#build-button').click();
+    await expect(page.locator('#build-status')).toContainText(/built/i, { timeout: 60000 });
+    const canvas = page.locator('#build-canvas[data-preview="ready"]');
+    await expect(canvas).toBeVisible();
+
+    const drawn = await page.evaluate(() => {
+      const target = document.getElementById('build-canvas');
+      const pixels = target.getContext('2d').getImageData(0, 0, target.width, target.height).data;
+      let lit = 0;
+      for (let at = 0; at < pixels.length; at += 4) {
+        if (pixels[at] !== 0 || pixels[at + 1] !== 0 || pixels[at + 2] !== 0) lit += 1;
+      }
+      return { width: target.width, height: target.height, lit };
+    });
+    // The width the page asked for, and the equirectangular shape.
+    expect(drawn.width).toBe(2048);
+    expect(drawn.height).toBe(1024);
+    // One cell's frame, placed: some of the sphere and not all of it. A canvas painted from a
+    // preview the core never drew would be dark throughout, and one painted from anything but a
+    // placed frame would have no reason to stop where the frame does.
+    expect(drawn.lit).toBeGreaterThan(0);
+    expect(drawn.lit).toBeLessThan(drawn.width * drawn.height / 2);
+  } finally {
+    await server.close();
+  }
+});
+
 test('a sphere from before the last capture cannot come back as this one', async ({ page }) => {
   // The whole tier generation, end to end, in the one place every piece of it meets: the token in
   // the OPFS index, the token in the session document, a reload between them, and the C ABI in

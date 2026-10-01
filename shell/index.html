@@ -8,6 +8,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="./src/clients/capture/capture.css">
   <link rel="stylesheet" href="./src/clients/review/review.css">
+  <link rel="stylesheet" href="./src/clients/build/build.css">
 </head>
 <body>
   <main id="app">
@@ -86,8 +87,15 @@
         </div>
         <p id="strip-heading" aria-live="polite">Pick a cell to see its candidates.</p>
         <ul id="strip" aria-labelledby="strip-heading"></ul>
+        <section id="build-preview" aria-labelledby="build-heading">
+          <h2 id="build-heading">Preview</h2>
+          <button id="build-button" type="button">Build a preview</button>
+          <progress id="build-progress" max="1" value="0"></progress>
+          <p id="build-status" aria-live="polite">Stitches the frames captured so far into a flat panorama.</p>
+          <canvas id="build-canvas" hidden></canvas>
+        </section>
       </section>
-      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. A burst captures real pixels into the frame store, and a captured cell&rsquo;s frames are spilled out of the heap so a whole sphere fits. The strip below shows what the core knows about each candidate; the frames themselves are not drawn yet, because reading pixels back out of the store has no path across the worker. Markers are placed in the video&rsquo;s own box and mapped through the crop <code>object-fit: cover</code> applies (ADR 0028).</p>
+      <p id="note">Phase 0 walking skeleton. Sensors and camera run in the page; the managers run in the core behind a generated facade, and the reticle is the plan the core built. The field of view is <em>assumed</em> — browsers do not report it, so the plan uses 66° horizontal scaled by your camera&rsquo;s real aspect ratio until Phase 2 estimates the true focal length from captured frames. A burst captures real pixels into the frame store, and a captured cell&rsquo;s frames are spilled out of the heap so a whole sphere fits. The strip below shows each candidate's frame and what the core knows about it, and the preview stitches the frames captured so far, on this device (ADR 0071). Markers are placed in the video&rsquo;s own box and mapped through the crop <code>object-fit: cover</code> applies (ADR 0028).</p>
     </section>
   </main>
   <script type="module" src="./src/main.ts"></script>

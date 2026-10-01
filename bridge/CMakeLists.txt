@@ -16,6 +16,11 @@ add_library(sphanorama_bridge ${SPHANORAMA_BRIDGE_SOURCES})
 
 target_include_directories(sphanorama_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sphanorama_bridge PUBLIC sphanorama_core)
+# The runtime composes the OpenCV-backed engine wherever there is one (ADR 0071), and linking it
+# brings the exception-handling runtime its throws need (ADR 0069).
+if(SPHANORAMA_WITH_OPENCV)
+  target_link_libraries(sphanorama_bridge PUBLIC sphanorama_registration)
+endif()
 target_compile_options(sphanorama_bridge PRIVATE
   -fno-exceptions -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
 

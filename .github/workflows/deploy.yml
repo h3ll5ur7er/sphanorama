@@ -41,10 +41,10 @@ jobs:
           node-version: 22
           cache: npm
 
-      # OpenCV is cross-compiled into the core's build (ADR 0069), and nothing here links it: the
-      # module does not call the engine yet, so only the module is built. The cache is CI's, under
-      # CI's key, and restored without being saved — this job builds none of OpenCV, and a cache it
-      # saved would be the configured tree without the objects, restored by CI on every hit after.
+      # The module calls the OpenCV-backed engine since ADR 0071, so building it builds OpenCV's
+      # WebAssembly objects too — they rebuild on a hit, about eight minutes (ADR 0069). The cache is
+      # CI's, under CI's key, and restored without being saved: CI owns it, and two writers to one
+      # key is how a cache comes back as whichever job finished last.
       - name: record the toolchain identity
         run: |
           { emcc --version; ninja --version; cmake --version; } > .toolchain-identity

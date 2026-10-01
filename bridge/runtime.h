@@ -1,11 +1,15 @@
 #pragma once
 
-#include "engines/composition_engine/null_composition_engine.h"
+#include "engines/composition_engine/nearest_centre_composition_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/frame_preview_engine/box_frame_preview_engine.h"
 #include "engines/frame_quality_engine/sharpness_frame_quality_engine.h"
 #include "engines/pose_engine/orientation_pose_engine.h"
+#if defined(SPHANORAMA_WITH_OPENCV)
+#include "engines/registration_engine/feature_registration_engine.h"
+#else
 #include "engines/registration_engine/null_registration_engine.h"
+#endif
 #include "managers/capture_session_manager/capture_session_manager.h"
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "managers/project_manager/project_manager.h"
@@ -45,12 +49,6 @@ class Runtime {
 
   RingsCoveragePlannerEngine planner_;
   OrientationPoseEngine pose_;
-  // Null in every build for now, so a build started here fails at its first step with their
-  // `Unsupported` where the store has a spill tier, and is refused at `Start` where it has none —
-  // natively, always (ADR 0070). Selecting the real ones moves OpenCV into the module and needs a
-  // detector and a feature cap chosen for a phone, which is its own change.
-  NullRegistrationEngine registration_;
-  NullCompositionEngine composition_;
 
   // Declared before the camera, which holds a reference to it: members are constructed in
   // declaration order, and a camera handed a store that had not been built yet would be reading
@@ -113,6 +111,20 @@ class Runtime {
   // and pixel work reaches the store. This is what makes a review strip show the frames rather
   // than what the core knows about them (ADR 0038).
   BoxFramePreviewEngine preview_{frames_};
+
+  // The engines a build runs, beside the other pixel readers for the same reason (ADR 0071). ORB,
+  // because a preview cannot show what the slower detectors buy: they register the photograph ring
+  // to a median of 0.03 and 0.01 degrees against ORB's 0.05, and a 2048-wide preview spends 0.18
+  // degrees on a pixel, while ORB extracts three to six times faster in the browser — and a phone
+  // waits on extraction once per cell. The 500-feature cap is the engine's own
+  // (`kMaxFeaturesPerFrame`). A build with no OpenCV, the contract-checking one, keeps the null
+  // engine and answers `Unsupported` at its first step.
+#if defined(SPHANORAMA_WITH_OPENCV)
+  FeatureRegistrationEngine registration_{frames_, FeatureDetector::Orb};
+#else
+  NullRegistrationEngine registration_;
+#endif
+  NearestCentreCompositionEngine composition_{frames_};
 
   // The one contract with a real implementation on both platforms: a browser port backed by the
   // page's document host, and an in-memory store natively. Both are held to the same contract
