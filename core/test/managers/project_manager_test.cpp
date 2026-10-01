@@ -2,6 +2,7 @@
 // a project that was never created" is load-bearing rather than an edge case.
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -10,6 +11,7 @@
 #include "managers/project_manager/project_manager.h"
 #include "support/fake_export_access.h"
 #include "support/fake_project_store_access.h"
+#include "utilities/session_document.h"
 
 namespace sphanorama {
 namespace {
@@ -47,6 +49,21 @@ class Projects : public ::testing::Test {
   void SetUp() override {
     manager = std::make_unique<ProjectManager>(store);
   }
+  // A project holding a capture whose counter stands at `next`. A pick names a candidate a capture
+  // issued, so every test that records one needs a capture to have issued it.
+  Result<ProjectId> Captured(const char* title, uint64_t next = 100) {
+    auto created = manager->Create(title);
+    EXPECT_TRUE(created.ok());
+    SessionDocument stored;
+    stored.session = 1;
+    stored.nextCandidate = next;
+    const std::string text = EncodeSessionDocument(stored);
+    SessionDocument decoded;
+    EXPECT_TRUE(DecodeSessionDocument(text, decoded));
+    EXPECT_TRUE(store.WriteDocument(created.value, kSessionDocumentKey, text).ok());
+    return created;
+  }
+
   FakeProjectStoreAccess store;
   FakeExportAccess exporter;
   std::unique_ptr<ProjectManager> manager;
@@ -127,9 +144,10 @@ TEST_F(Projects, DeletingSomethingThatDoesNotExistIsRefused) {
 TEST_F(Projects, SelectionIsRecordedAgainstTheProject) {
   // A manual candidate choice takes the same path as a retake: it marks the node dirty for the
   // next build (ADR 0004). Recording it is what makes that possible.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
+  const auto before = store.WriteCount();
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
-  EXPECT_GT(store.WriteCount(), 1);
+  EXPECT_GT(store.WriteCount(), before);
 }
 
 TEST_F(Projects, SelectionOnAnUnknownProjectIsRefused) {
@@ -143,10 +161,14 @@ TEST_F(Projects, AnUnsetIdIsNotASelection) {
   // contradiction — and it was reachable, because `SetSelection` wrote whatever it was handed.
   // `Id::valid()` is `value != 0` and every counter here starts at 1, so an unset id is a caller
   // mistake rather than a choice.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
   EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{0}).code,
             StatusCode::InvalidArgument);
   EXPECT_EQ(manager->SetSelection(created.value, NodeId{0}, CandidateId{7}).code,
+            StatusCode::InvalidArgument);
+  // Nor the largest identity, which no counter can step past and so none can have issued.
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3},
+                                  CandidateId{std::numeric_limits<uint64_t>::max()}).code,
             StatusCode::InvalidArgument);
 
   // And nothing was written: the cell still reads as one nobody has chosen for, rather than as a
@@ -179,7 +201,7 @@ TEST_F(Projects, AReadThatFailedIsNotACellNobodyHasChosenFor) {
   // the ranking's pick for a cell whose override could not be read — the screen quietly
   // disagreeing with the build, which is the failure this whole call exists to end — and it would
   // do it without a word in the logs.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
 
   UnreadableProjectStoreAccess broken{store, "selection/3", StatusCode::Internal};
@@ -199,7 +221,7 @@ TEST_F(Projects, ARecordedSelectionCanBeReadBack) {
   // The whole point, and what was missing: a pick was written here and read nowhere, so the only
   // thing that knew which candidate was in force was the client that had just set it — and a
   // reload forgets that. The build reads this document; now so can whoever has to show it.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
 
   auto chosen = manager->GetSelection(created.value, NodeId{3});
@@ -226,8 +248,8 @@ TEST_F(Projects, ACellNobodyHasChosenForAnswersZeroRatherThanFailing) {
 TEST_F(Projects, ASelectionIsPerCellAndPerProject) {
   // One key per node, and the key carries the project. Reading a cell's pick must not answer with
   // its neighbour's, and two projects that both chose something for cell 3 must not share it.
-  auto kitchen = manager->Create("kitchen");
-  auto garden = manager->Create("garden");
+  auto kitchen = Captured("kitchen");
+  auto garden = Captured("garden");
   ASSERT_TRUE(manager->SetSelection(kitchen.value, NodeId{3}, CandidateId{7}).ok());
   ASSERT_TRUE(manager->SetSelection(kitchen.value, NodeId{4}, CandidateId{11}).ok());
   ASSERT_TRUE(manager->SetSelection(garden.value, NodeId{3}, CandidateId{2}).ok());
@@ -240,7 +262,7 @@ TEST_F(Projects, ASelectionIsPerCellAndPerProject) {
 TEST_F(Projects, TheLastChoiceForACellIsTheOneThatAnswers) {
   // Changing a pick overwrites rather than accumulating, which is what a user pressing a second
   // thumbnail means.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{8}).ok());
   EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 8u);
@@ -252,7 +274,7 @@ TEST_F(Projects, ASelectionDocumentThatIsNotACandidateIsRefusedRatherThanGuessed
   // with the origin can edit, so "this manager wrote it" is not a reason to trust what comes
   // back. A partial parse is the trap worth naming: "7x" would answer 7 to anything that stopped
   // reading at the first non-digit, and the pick shown would be a candidate nobody chose.
-  auto created = manager->Create("kitchen");
+  auto created = Captured("kitchen");
   for (const char* garbage : {"", "  ", "seven", "7x", "-1", "0", "9999999999999999999999"}) {
     ASSERT_TRUE(store.WriteDocument(created.value, "selection/3", garbage).ok()) << garbage;
     auto chosen = manager->GetSelection(created.value, NodeId{3});
@@ -263,6 +285,50 @@ TEST_F(Projects, ASelectionDocumentThatIsNotACandidateIsRefusedRatherThanGuessed
   // And a real one still reads, so this cannot pass by refusing everything.
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
   EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 7u);
+}
+
+// A pick names a candidate a capture of this project issued: one below its document's counter. A pick
+// of one nobody issued stepped the tab's counter past it, onto identities nobody could pick (ADR 0070).
+TEST_F(Projects, APickNamesACandidateACaptureIssued) {
+  auto created = Captured("kitchen", 8);
+  EXPECT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{4}, CandidateId{8}).code,
+            StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{4},
+                                  CandidateId{(uint64_t{1} << 51) - 1}).code,
+            StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 7u);
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{4}).value.value, 0u);
+
+  // And whatever a counter has reached, never one without the headroom `Resume` needs: an edited
+  // document's counter can stand past it.
+  auto edited = Captured("garden", (uint64_t{1} << 52) + 5);
+  EXPECT_EQ(manager->SetSelection(edited.value, NodeId{3}, CandidateId{uint64_t{1} << 52}).code,
+            StatusCode::InvalidArgument);
+  EXPECT_TRUE(manager->SetSelection(edited.value, NodeId{3},
+                                    CandidateId{(uint64_t{1} << 52) - 1}).ok());
+}
+
+TEST_F(Projects, APickInAProjectNothingWasCapturedInIsRefused) {
+  auto created = manager->Create("kitchen");
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).code,
+            StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 0u);
+}
+
+// Neither is a capture nobody issued anything in, so neither may be read as one.
+TEST_F(Projects, APickAgainstACaptureThatCannotBeReadIsRefused) {
+  auto created = Captured("kitchen");
+  UnreadableProjectStoreAccess broken{store, kSessionDocumentKey, StatusCode::Internal};
+  ProjectManager picker{broken};
+  EXPECT_EQ(picker.SetSelection(created.value, NodeId{3}, CandidateId{7}).code,
+            StatusCode::Internal);
+
+  // The answer `Start` gives a document this build cannot read.
+  ASSERT_TRUE(store.WriteDocument(created.value, kSessionDocumentKey, "sphanorama-session 999").ok());
+  EXPECT_EQ(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).code,
+            StatusCode::Unsupported);
+  EXPECT_EQ(manager->GetSelection(created.value, NodeId{3}).value.value, 0u);
 }
 
 TEST_F(Projects, ReadingASelectionFromAnUnknownProjectIsRefused) {

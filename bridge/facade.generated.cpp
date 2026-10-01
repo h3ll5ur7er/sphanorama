@@ -243,8 +243,8 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       break;
     }
     case 12: {  // PanoramaBuildManager.start
-      SessionId session{};
-      session.value = in.GetId();
+      ProjectId project{};
+      project.value = in.GetId();
       BuildSpec spec{};
       (void)codec::Decode(in, spec);
       if (!in.ok()) {
@@ -252,7 +252,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
                             "malformed arguments"));
         break;
       }
-      auto result = runtime.panoramaBuild().Start(session, spec);
+      auto result = runtime.panoramaBuild().Start(project, spec);
       PutStatus(out, result.status);
       if (result.ok()) {
         out.PutF64(static_cast<double>(result.value.value));

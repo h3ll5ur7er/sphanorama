@@ -73,7 +73,9 @@ export interface ReviewCore {
   candidates(node: NodeId): Promise<Answered<Candidate[]>>;
   candidatePreview(
     node: NodeId, candidate: CandidateId, maxEdge: number): Promise<Answered<FramePreview>>;
-  setSelection(node: NodeId, candidate: CandidateId): Promise<{ readonly ok: boolean }>;
+  /** A refusal carries the core's status, which goes to the console: the screen cannot say why. */
+  setSelection(
+    node: NodeId, candidate: CandidateId): Promise<{ readonly ok: boolean; readonly status?: unknown }>;
   /** What the core has recorded for this cell. A zero candidate means nobody has chosen. */
   selection(node: NodeId): Promise<Answered<CandidateId>>;
 }
@@ -311,8 +313,10 @@ export function createReviewPanel(
             // force without this having to know which happened, and what the strip shows is what
             // the build will use rather than a second copy kept on this side that a reload would
             // forget. The reason still goes to the console, for the same reason `answering` sends
-            // one: the screen cannot carry it and a developer needs it.
-            await core.setSelection(node, entry.candidate);
+            // one: the screen cannot carry it and a developer needs it. A refusal is a resolved
+            // answer rather than a rejection, so it is logged here and not by the `catch`.
+            const answered = await core.setSelection(node, entry.candidate);
+            if (!answered.ok) console.error('sphanorama review: the core refused a pick', answered.status);
           } catch (reason: unknown) {
             console.error('sphanorama review: recording a pick did not answer', reason);
           } finally {

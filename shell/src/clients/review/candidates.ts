@@ -5,8 +5,8 @@
  * `IFrameQualityEngine::Rank`'s answer, handed over by `CaptureSessionManager.Candidates`
  * best-first — sorting here would be a client deciding what "best" means, which is V6's and the
  * most-tuned part of the system. What is *in force* is the manual selection when there is one and
- * the automatic pick otherwise, which is the rule `ProjectManager.SetSelection` implements on the
- * other side (UC-3).
+ * the automatic pick otherwise, which is the rule `PanoramaBuildManager.Start` builds from (UC-3,
+ * ADR 0070).
  */
 import type { Candidate, CandidateId } from '../../../../contracts/ts/contracts';
 
@@ -32,7 +32,7 @@ export type Recorded = CandidateId | 'unreadable';
 export interface StripEntry {
   candidate: CandidateId;
   quality: Candidate['quality'];
-  /** First in the ranking: what the build uses unless somebody says otherwise. */
+  /** What the build uses unless somebody says otherwise: see `automaticPick`. */
   isAutomaticPick: boolean;
   /** What the build will actually use — the manual choice, or the automatic pick. */
   isInForce: boolean;
@@ -51,25 +51,36 @@ export interface StripEntry {
  * without needing a case of its own below: no candidate identity is equal to it. The panel puts
  * the reason in the heading, so an unmarked strip is not left to be read as an empty one.
  */
+/**
+ * The build's pick where nobody chose: the best-ranked frame whose pose was measured, and the best
+ * otherwise. At confidence zero a frame is paired with nothing and the solve drops it, so the build
+ * passes over it (ADR 0070). A copy of `PanoramaBuildManager::Start`'s rule, because the strip
+ * exists to show what that rule decided, and the two move together.
+ */
+function automaticPick(ranked: readonly Candidate[]): Candidate | undefined {
+  return ranked.find((c) => c.pose.confidence > 0) ?? ranked[0];
+}
+
 function honouredId(
   ranked: readonly Candidate[], selected: Recorded): CandidateId | undefined {
   if (selected === 'unreadable') return undefined;
   // Zero has a case of its own rather than falling through the membership test below, so that it
   // stays "nobody has chosen" even if a candidate with id 0 ever reaches this client.
-  if (selected === 0) return ranked[0]?.id;
+  if (selected === 0) return automaticPick(ranked)?.id;
   if (ranked.some((c) => c.id === selected)) return selected;
-  return ranked[0]?.id;
+  return automaticPick(ranked)?.id;
 }
 
 export function candidateStrip(
   ranked: readonly Candidate[], selected: Recorded,
 ): StripEntry[] {
   const honoured = honouredId(ranked, selected);
+  const automatic = automaticPick(ranked);
 
-  return ranked.map((candidate, position) => ({
+  return ranked.map((candidate) => ({
     candidate: candidate.id,
     quality: candidate.quality,
-    isAutomaticPick: position === 0,
+    isAutomaticPick: candidate === automatic,
     isInForce: candidate.id === honoured,
   }));
 }

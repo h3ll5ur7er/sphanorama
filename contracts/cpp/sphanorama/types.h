@@ -553,9 +553,10 @@ struct NodeContext {
 // said it until `ICompositionEngine::RenderPreview` (ADR 0068). Several other calls hand a frame
 // back without saying who owns it —
 // `IFrameStoreAccess::Allocate` itself, `IImageCodecAccess::Decode`,
-// `ICompositionEngine::BlendTile`, `IPanoramaBuildManager::Panorama` and
-// `ICaptureSessionManager::Candidates`; `ICompositionEngine::RenderPreview` was among them until
-// ADR 0068 gave it an implementation and a sentence. No total is given, because four attempts at
+// `ICompositionEngine::BlendTile` and `ICaptureSessionManager::Candidates`;
+// `ICompositionEngine::RenderPreview` was among them until ADR 0068 gave it an implementation and a
+// sentence, and `IPanoramaBuildManager::Panorama` until ADR 0070 did — the other way: the core
+// keeps that one. No total is given, because four attempts at
 // one were each short by one and the argument never depended on it.
 //
 // They are not all the same shape, which is the part worth carrying: a `Panorama`'s tiles and a

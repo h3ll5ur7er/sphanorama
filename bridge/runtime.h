@@ -45,8 +45,10 @@ class Runtime {
 
   RingsCoveragePlannerEngine planner_;
   OrientationPoseEngine pose_;
-  // Registration and composition are constructed but not yet handed to a manager: the build
-  // pipeline has nothing to run them over until Phase 2.
+  // Null in every build for now, so a build started here fails at its first step with their
+  // `Unsupported` where the store has a spill tier, and is refused at `Start` where it has none —
+  // natively, always (ADR 0070). Selecting the real ones moves OpenCV into the module and needs a
+  // detector and a feature cap chosen for a phone, which is its own change.
   NullRegistrationEngine registration_;
   NullCompositionEngine composition_;
 
@@ -64,7 +66,8 @@ class Runtime {
   // The sink is handed over only if the worker installed a host. A browser without one — no
   // origin private file system, or a handle that would not open — gets a store with nowhere to
   // spill rather than a store that lies about having spilled, and a sphere capped at what fits in
-  // RAM is degraded rather than broken.
+  // RAM is degraded rather than broken — for capture. It does not build: identities on a store
+  // with no tier cannot be told from another tab's (ADR 0070).
   //
   // **The browser's ceiling is read from the device** — `navigator.deviceMemory` for a share of
   // the machine's RAM, clamped by what the module was linked to allow (`heap_budget.h` has the
@@ -126,7 +129,7 @@ class Runtime {
 
   CaptureSessionManager capture_session_{planner_, pose_, quality_, preview_, camera_,
                                          motion_, frames_, projects_, clock_};
-  PanoramaBuildManager panorama_build_;
+  PanoramaBuildManager panorama_build_{registration_, composition_, frames_, projects_};
   ProjectManager project_{projects_};
 };
 

@@ -105,8 +105,16 @@ a lone small loop, or a strip of them, keeps the lens it was handed however far 
 a lens now says how sure it is (`Intrinsics::focalUncertainty`, infinite for a guess), `Refine`
 takes a fit only where it is surer than the lens it was handed, and `utilities/kept_lens` amends a
 kept lens with every precise least, taken or not — amending only with taken fits froze it after two
-captures. Where it is stored and which manager writes it
-are decided and wait for their writer, since `PanoramaBuildManager` does not run `Refine` yet.
+captures. Where it is stored and which manager writes it are decided; the writer runs `Refine`
+now but cannot yet say whose lens it fitted, since a capture's document names no camera (ADR 0070).
+
+**And a capture builds.** `PanoramaBuildManager::Start` reads a project's session document — one
+frame per cell, the manual pick where there is one — and each `Poll` does one step of features,
+pairs, `Refine` and `RenderPreview`, so no call holds the core's one thread for a whole build
+(ADR 0070). Over the real engines, the photograph ring with every pose three degrees out builds to a
+preview within 1.23 to 1.56 bytes of the photograph, against 28.6 for the frames placed where the
+poses say. The browser's composition root still hands it the null engines, so there a build fails
+at its first step; selecting the real ones is the change that spends the 556 KB.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 and cross-compiled for the browser too (ADR 0069): about 556 KB of the 8 MB budget, WebAssembly's

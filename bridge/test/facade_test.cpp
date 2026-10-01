@@ -8,6 +8,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "facade.h"
@@ -115,11 +116,13 @@ TEST(Facade, CreatesAProjectAndReadsItBack) {
   EXPECT_TRUE(found);
 }
 
-TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
+TEST(Facade, ASelectionCrossesTheBoundaryBothWays) {
   // The new call in ADR 0040, over the generated dispatch rather than over a manager held
   // directly. Until now the only thing exercising it was one end-to-end test in a browser, which
   // is the slowest place to find a boundary mistake and the one that says least about which end
-  // made it.
+  // made it. A pick names a candidate a capture issued (ADR 0070), and this runtime has no camera
+  // to capture with, so a recorded pick coming back the same number is that end-to-end test's
+  // ("a pick survives the tab that made it"); what crosses here is the refusal and the zero.
   //
   // Each `Response` is held in a named local because `reader()` points into its buffer, which a
   // temporary would free at the end of the statement.
@@ -146,18 +149,35 @@ TEST(Facade, ASelectionCrossesTheBoundaryAndComesBackTheSameNumber) {
   // once at the end rather than after every read.
   EXPECT_TRUE(absent.ok()) << "a zero read out of a failed reader is not an answer of zero";
 
+  // Nothing was captured here, so there is nothing to pick, and the refusal crosses as a status.
   wire::Writer pick;
   pick.PutF64(project);
   pick.PutF64(3.0);
   pick.PutF64(7.0);
   Response wrote = Call("ProjectManager.setSelection", pick.bytes());
   wire::Reader recorded = wrote.reader();
-  ASSERT_EQ(ReadStatus(recorded).code, StatusCode::Ok);
+  EXPECT_EQ(ReadStatus(recorded).code, StatusCode::FailedPrecondition);
+
+  // And the candidate arrives as the number sent, which the two answers either side of the
+  // headroom bound tell apart without a capture: it is checked before the document is read, so
+  // one past it is the caller's mistake and the one below it is a pick nothing was captured for.
+  // A candidate swapped with the cell, or off by one, answers the other way.
+  for (const auto& [value, expected] : {std::pair{4503599627370496.0, StatusCode::InvalidArgument},
+                                        std::pair{4503599627370495.0,
+                                                  StatusCode::FailedPrecondition}}) {
+    wire::Writer edge;
+    edge.PutF64(project);
+    edge.PutF64(3.0);
+    edge.PutF64(value);
+    Response answered = Call("ProjectManager.setSelection", edge.bytes());
+    wire::Reader status = answered.reader();
+    EXPECT_EQ(ReadStatus(status).code, expected) << value;
+  }
 
   Response asked = Call("ProjectManager.getSelection", cell.bytes());
   wire::Reader read = asked.reader();
   ASSERT_EQ(ReadStatus(read).code, StatusCode::Ok);
-  EXPECT_EQ(read.GetF64(), 7.0);
+  EXPECT_EQ(read.GetF64(), 0.0);
   EXPECT_TRUE(read.ok());
 
   // And a cell the writer refuses is refused rather than answered, so the two ends cannot be made
@@ -351,14 +371,32 @@ TEST(Facade, ACaptureSessionForAProjectThatDoesNotExistIsRefused) {
   EXPECT_EQ(ReadStatus(in).code, StatusCode::NotFound);
 }
 
-TEST(Facade, ABuildCannotBeStartedYetAndSaysSo) {
-  wire::Writer args;
-  args.PutF64(1.0);
-  BuildSpec spec;
-  codec::Encode(args, spec);
-  Response response = Call("PanoramaBuildManager.start", args.bytes());
-  wire::Reader in = response.reader();
-  EXPECT_EQ(ReadStatus(in).code, StatusCode::Unsupported);
+// A project, not a session, since ADR 0070. Both answers are `NotFound`, so the detail — which names
+// the project it was asked about — is what shows the id arrived as sent.
+TEST(Facade, ABuildIsStartedForTheProjectItNames) {
+  const auto start = [](double project) {
+    wire::Writer args;
+    args.PutF64(project);
+    BuildSpec spec;
+    codec::Encode(args, spec);
+    Response response = Call("PanoramaBuildManager.start", args.bytes());
+    wire::Reader in = response.reader();
+    return ReadStatus(in);
+  };
+  const Status nowhere = start(4041.0);
+  EXPECT_EQ(nowhere.code, StatusCode::NotFound);
+  EXPECT_EQ(nowhere.detail, "project 4041 does not exist");
+
+  wire::Writer named;
+  named.PutString("empty");
+  Response opened = Call("ProjectManager.create", named.bytes());
+  wire::Reader created = opened.reader();
+  ASSERT_EQ(ReadStatus(created).code, StatusCode::Ok);
+  const double id = created.GetF64();
+  const Status empty = start(id);
+  EXPECT_EQ(empty.code, StatusCode::NotFound);
+  EXPECT_EQ(empty.detail, "project " + std::to_string(static_cast<uint64_t>(id))
+                              + " holds no capture");
 }
 
 TEST(Facade, TheResultBufferSurvivesUntilTheNextCall) {

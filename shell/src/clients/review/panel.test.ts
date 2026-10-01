@@ -23,7 +23,7 @@ function elements(): ReviewElements {
 
 function candidate(id: number, node: number): Candidate {
   return {
-    id, node, frame: { id },
+    id, node, frame: { id }, pose: { confidence: 1 },
     quality: { sharpness: id / 10, exposureAgreement: 1, motionBlur: 0, aggregate: id / 10 },
   } as unknown as Candidate;
 }
@@ -119,7 +119,9 @@ function deferredCore() {
         // The core is what remembers, which is the whole point of the change: the panel keeps no
         // copy, so a write that never lands leaves the previous answer standing.
         if (writesLand) recorded.set(node as number, candidate as number);
-        resolve({ ok: writesLand });
+        resolve(writesLand
+          ? { ok: true }
+          : { ok: false, status: { code: 'InvalidArgument', detail: 'refused by the test' } });
       });
     }),
     selection: (node: NodeId) => (reads === 'reject'
@@ -490,6 +492,7 @@ describe('opening a cell', () => {
     answer(1, [candidate(10, 1), candidate(11, 1)]);
     await opening;
 
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     [...ui.strip.querySelectorAll('button')][0].click();
     answer(1, [candidate(10, 1), candidate(11, 1)]);
     await recorded();
@@ -497,6 +500,11 @@ describe('opening a cell', () => {
     const pressed = [...ui.strip.querySelectorAll('button')]
       .map((button) => button.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['false', 'true']);
+    // The screen cannot carry why, so the console does: a tap that changed nothing with no word
+    // anywhere is the silence a developer cannot debug (ADR 0070).
+    expect(logged).toHaveBeenCalledWith(
+      'sphanorama review: the core refused a pick',
+      expect.objectContaining({ detail: 'refused by the test' }));
     // And it is the core that said so, rather than a strip nobody touched. Asserting the state
     // alone would pass just as well against a panel that never refreshed at all, which is the one
     // other way to leave the previous pick standing — and the wrong one, because the next thing

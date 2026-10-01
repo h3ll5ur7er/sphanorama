@@ -25,6 +25,12 @@ class ICaptureSessionManager {
   //
   // Refused with `NotFound` when the project does not exist, which is checked first: beginning
   // against an id nobody created would leave a titleless project in the user's list.
+  //
+  // A pick outlives the capture it was made in, and this never issues a candidate identity a pick
+  // recorded for a cell of this plan names — a build would honour the pick for a frame nobody chose
+  // (ADR 0070). A new tab's counter restarts at 1, so the document's counter is not what protects
+  // them. A pick on a cell the plan lacks is not read, and no build reads it either. A pick the
+  // project store cannot read refuses this with the store's status, camera closed.
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -46,6 +52,16 @@ class ICaptureSessionManager {
   // A restored candidate whose pose `OfferFrame` would refuse keeps its frame and comes back
   // unanchored, confidence zero: refusing the document for one field would cost every frame of the
   // sphere, and a pose nobody can vouch for is what an unanchored one already means (ADR 0065).
+  //
+  // Like `Begin`, it issues no identity a recorded pick names, and a pick the store cannot read
+  // refuses it before the camera opens. `SetSelection` records no pick past the document's counter,
+  // but a pick an earlier build's door recorded, which checked nothing, or one edited into the
+  // store, can name one.
+  //
+  // `Unsupported` for a document naming a session, candidate or frame identity at or past 2^52, or
+  // a candidate counter past it, since each steps a counter and one that near the top would have it
+  // issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
+  // it, because a pick names only a candidate a capture issued; only an edited document holds one.
   virtual Result<SessionId> Resume(ProjectId project) = 0;
 
   virtual Result<CapturePlan> GetPlan() const = 0;
@@ -156,7 +172,8 @@ class ICaptureSessionManager {
   // Ranked best-first, by the same `IFrameQualityEngine::Rank` the manager already asks on every
   // committed burst. The order is an answer rather than a record of when the shutter fired, so a
   // review client can show a strip and name the automatic pick without deciding what "best"
-  // means — which is V6's, and not a client's to borrow.
+  // means — which is V6's, and not a client's to borrow. The automatic pick is the first whose pose
+  // was measured, or the first where none was: the frame a build takes (ADR 0070).
   virtual Result<std::vector<Candidate>> Candidates(NodeId node) const = 0;
 
   // One candidate's frame, reduced to something a screen can take.

@@ -6,11 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { candidateStrip } from './candidates';
 import type { Candidate, CandidateId } from '../../../../contracts/ts/contracts';
 
-function candidate(id: number, sharpness: number): Candidate {
+function candidate(id: number, sharpness: number, confidence = 1): Candidate {
   return {
     id,
     node: 1,
     frame: { id },
+    pose: { confidence },
     quality: { sharpness, exposureAgreement: 1, motionBlur: 0, aggregate: sharpness },
   } as unknown as Candidate;
 }
@@ -19,6 +20,29 @@ function candidate(id: number, sharpness: number): Candidate {
 const ranked = [candidate(7, 0.9), candidate(3, 0.5), candidate(9, 0.2)];
 
 describe('candidateStrip', () => {
+  it('passes over a frame whose pose was not measured, as the build does', () => {
+    // At confidence zero a frame is paired with nothing and the solve drops it, so the build takes
+    // the best measured one instead (ADR 0070). Marking the other would show a frame the panorama
+    // leaves out as the one it is made from.
+    const unmeasuredFirst = [candidate(7, 0.9, 0), candidate(3, 0.5), candidate(9, 0.2)];
+    const strip = candidateStrip(unmeasuredFirst, 0 as CandidateId);
+    expect(strip.map((entry) => entry.isAutomaticPick)).toEqual([false, true, false]);
+    expect(strip.map((entry) => entry.isInForce)).toEqual([false, true, false]);
+  });
+
+  it('falls back to the build\'s pick, not the first, when the chosen frame is gone', () => {
+    const unmeasuredFirst = [candidate(7, 0.9, 0), candidate(3, 0.5), candidate(9, 0.2)];
+    const strip = candidateStrip(unmeasuredFirst, 42 as CandidateId);
+    expect(strip.map((entry) => entry.isInForce)).toEqual([false, true, false]);
+  });
+
+  it('keeps the first when no frame of the cell was measured', () => {
+    const noneMeasured = [candidate(7, 0.9, 0), candidate(3, 0.5, 0)];
+    const strip = candidateStrip(noneMeasured, 0 as CandidateId);
+    expect(strip.map((entry) => entry.isAutomaticPick)).toEqual([true, false]);
+    expect(strip.map((entry) => entry.isInForce)).toEqual([true, false]);
+  });
+
   it('names the first as the automatic pick, because the core ranked it there', () => {
     // The client does not decide what "best" means — that is the quality engine's, and the strip
     // would be re-deriving it from scores if it sorted here.
