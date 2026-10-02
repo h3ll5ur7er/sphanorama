@@ -109,13 +109,22 @@ describe('building a preview', () => {
   it('waits for the page before every call it makes to the core', async () => {
     // A burst needs the core on consecutive ticks, and a press can come in the middle of one: the
     // start and the preview are calls on the core's thread as much as a poll is.
+    // Each wait ends on a later task, and says so: a call made before it ended — a wait started
+    // and not awaited — lands between the two.
     const { core, calls } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)]);
-    const client = createBuildClient(elements(), core, drawing(), async () => { calls.push('wait'); });
+    const client = createBuildClient(elements(), core, drawing(), async () => {
+      calls.push('wait');
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      calls.push('waited');
+    });
 
     await client.build();
 
     expect(calls).toEqual([
-      'wait', 'start', 'wait', 'poll 1', 'wait', 'poll 1', 'wait', 'preview 1',
+      'wait', 'waited', 'start',
+      'wait', 'waited', 'poll 1',
+      'wait', 'waited', 'poll 1',
+      'wait', 'waited', 'preview 1',
     ]);
   });
 
@@ -181,6 +190,25 @@ describe('building a preview', () => {
 
     const first = client.build();
     await vi.waitFor(() => expect(calls).toContain('poll 1'));
+    await client.build();
+    release();
+    await first;
+
+    expect(calls.filter((call) => call === 'start')).toHaveLength(1);
+  });
+
+  it('starts nothing while the first press is still waiting for the capture', async () => {
+    // The wait before the start can last a whole burst, and nothing has reached the core yet.
+    let release: () => void = () => {};
+    const { core, calls } = scriptedCore([progress('Complete', 1)]);
+    let held = false;
+    const client = createBuildClient(elements(), core, vi.fn(), () => {
+      if (held) return Promise.resolve();
+      held = true;
+      return new Promise<void>((resolve) => { release = resolve; });
+    });
+
+    const first = client.build();
     await client.build();
     release();
     await first;

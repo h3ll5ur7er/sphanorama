@@ -50,7 +50,7 @@ const doing: Partial<Record<BuildStage, string>> = {
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
 
 /**
- * A wait between polls that does not end while `busy` says the capture needs the core.
+ * A wait before each call to the core that does not end while `busy` says the capture needs it.
  *
  * Each call is work on the core's one thread — a poll is a build step, a start reads the capture,
  * the preview is copied out — and a capture's tick waits behind it. So a burst, which advances one

@@ -51,11 +51,12 @@ reasons.
    event loop — each poll is one step on the core's thread, so nothing is held for a whole build,
    only for a step — shows the stage and the fraction while it runs, and paints the preview when
    it completes. Before each call to the core — the start, every poll and the preview read — it
-   waits while the capture is arming, holding or firing a burst, and not once the capture has
-   stopped, since a stopped capture finishes no burst. A
-   refused start, a failed build, a preview the painter could not draw and a core that stops
-   answering each say why, and none leaves an earlier picture on screen under the new words. There
-   is one client for the page, as there is one build in the core.
+   waits while the capture is arming a burst, has one armed, or is firing one, and not once the
+   capture has stopped, since a stopped capture finishes no burst. The dwell before a burst is not
+   waited for: a step can land in it, and the ring stands still for that step. A refused start, a
+   failed build, a preview the painter could not draw and a core that stops answering each say
+   why, and none leaves an earlier picture on screen under the new words. There is one client for
+   the page, as there is one build in the core.
 
 ## Consequences
 
