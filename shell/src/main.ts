@@ -32,7 +32,7 @@ import { createCoverageRefresh } from './clients/capture/coverage-refresh';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
-import { createBuildClient, yieldWhile } from './clients/panorama/build';
+import { captureNeedsCore, createBuildClient, yieldWhile } from './clients/panorama/build';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -106,10 +106,10 @@ const PREVIEW_SPEC = {
 
 /**
  * What the one build client reads when it is pressed: the session's project, and whether the
- * session's capture needs the core between polls. Set by each `pump`, because the client is made
- * once for the page — the core holds one build, so the guard against a second has to span sessions
- * rather than be remade with each, and a session's client left polling under the next session's
- * page would paint into it.
+ * session's capture needs the core before the build's next call. Set by each `pump`, because the
+ * client is made once for the page — the core holds one build, so the guard against a second has to
+ * span sessions rather than be remade with each, and a session's client left polling under the next
+ * session's page would paint into it.
  */
 let buildProject: ProjectId | null = null;
 let captureBusy: () => boolean = () => false;
@@ -790,7 +790,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // session with a project and handed each later session's project and capture as they start.
   if (project !== null) {
     buildProject = project;
-    captureBusy = () => arming || armed || firing;
+    captureBusy = () => captureNeedsCore({ stopped: loopStopped, arming, armed, firing });
     if (builder === null) {
       const client = createBuildClient(buildElements, {
         start: () => core.panoramaBuild.start(buildProject as ProjectId, PREVIEW_SPEC),

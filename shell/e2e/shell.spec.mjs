@@ -150,10 +150,11 @@ function deviceOrientationLookingAt(target) {
  * The cell is read from the plan the core made and the candidates it holds, so calling this again
  * after a burst aims at a different cell rather than back at the one just filled.
  */
-// The first cell nothing was captured in, or with `offAxis` the one whose centre is nearest the
-// horizon a quarter turn round: where a frame turned about the vertical, mirrored, or drawn at the
-// image's middle lands somewhere else. The first cell is a pole's, and the plan's first horizon
-// cell looks straight down -Z, which is the middle of the image.
+// The first cell nothing was captured in, or with `offAxis` the one whose centre is nearest thirty
+// degrees off the horizon, a quarter turn round: where a frame turned about the vertical, flipped
+// either way, or drawn at the image's middle lands somewhere else. The first cell is a pole's, the
+// plan's first horizon cell looks straight down -Z, which is the middle of the image, and any cell
+// on the horizon is its own reflection top to bottom.
 async function aimAtACell(page, { offAxis = false } = {}) {
   // The listener has to be installed before an event can reach it, and it is installed several
   // worker round trips after `#stage` says the session started. Without this wait the dispatch
@@ -178,7 +179,8 @@ async function aimAtACell(page, { offAxis = false } = {}) {
   expect(empty, 'the plan has no cell left to aim at').not.toHaveLength(0);
   const straying = (cell) => {
     const looking = rotate(cell.orientation, { x: 0, y: 0, z: -1 });
-    return Math.abs(looking.y) + (1 - Math.abs(looking.x));
+    const across = Math.hypot(looking.x, looking.z);
+    return Math.abs(Math.abs(looking.y) - 0.5) + (across > 0 ? 1 - Math.abs(looking.x) / across : 1);
   };
   const target = offAxis
     ? empty.reduce((best, cell) => (straying(cell) < straying(best) ? cell : best))
@@ -686,7 +688,8 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
     const centre = equirectPixelOf(rotate(aimed.orientation, { x: 0, y: 0, z: -1 }), 2048, 1024);
     const opposite = equirectPixelOf(rotate(aimed.orientation, { x: 0, y: 0, z: 1 }), 2048, 1024);
     const beside = { column: (centre.column + 512) % 2048, row: centre.row };
-    const drawn = await page.evaluate(({ centre: c, opposite: o, beside: b }) => {
+    const mirrored = { column: centre.column, row: 1023 - centre.row };
+    const drawn = await page.evaluate(({ centre: c, opposite: o, beside: b, mirrored: m }) => {
       const target = document.getElementById('build-canvas');
       const pixels = target.getContext('2d').getImageData(0, 0, target.width, target.height).data;
       const isLit = (at) => pixels[at] !== 0 || pixels[at + 1] !== 0 || pixels[at + 2] !== 0;
@@ -695,9 +698,9 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
       const litAt = ({ column, row }) => isLit((row * target.width + column) * 4);
       return {
         width: target.width, height: target.height, lit,
-        centreLit: litAt(c), oppositeLit: litAt(o), besideLit: litAt(b),
+        centreLit: litAt(c), oppositeLit: litAt(o), besideLit: litAt(b), mirroredLit: litAt(m),
       };
-    }, { centre, opposite, beside });
+    }, { centre, opposite, beside, mirrored });
     // The width the page asked for, and the equirectangular shape.
     expect(drawn.width).toBe(2048);
     expect(drawn.height).toBe(1024);
@@ -705,14 +708,17 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
     // core never drew would be dark throughout, and a frame smeared over the sphere lit throughout.
     expect(drawn.lit).toBeGreaterThan(0);
     expect(drawn.lit).toBeLessThan(drawn.width * drawn.height / 2);
-    // And placed: lit where the cell looks, dark behind it and a quarter turn beside it. The count
-    // alone cannot see a frame flipped, turned, or blitted into a corner unprojected; this can. The
-    // build places the frame at the pose measured when the burst fired, which is inside the cell's
-    // acceptance cone and far inside the frame's half-width, so the centre is lit with room to
-    // spare. A quarter turn is past any lens's half-width, so beside it is dark.
+    // And placed: lit where the cell looks, dark behind it, a quarter turn beside it and in its
+    // reflection in the horizon. The count alone cannot see a frame flipped, turned, or blitted
+    // into a corner unprojected; this can. The build places the frame at the pose measured when
+    // the burst fired, which is inside the cell's acceptance cone and far inside the frame's
+    // half-width, so the centre is lit with room to spare. A quarter turn is past any lens's
+    // half-width and the sixty degrees to the reflection past its half-height, so both are dark.
     expect(drawn.centreLit, `the cell's centre, ${JSON.stringify(centre)}`).toBe(true);
     expect(drawn.oppositeLit, `opposite the cell, ${JSON.stringify(opposite)}`).toBe(false);
     expect(drawn.besideLit, `a quarter turn beside it, ${JSON.stringify(beside)}`).toBe(false);
+    expect(drawn.mirroredLit, `its reflection in the horizon, ${JSON.stringify(mirrored)}`)
+      .toBe(false);
   } finally {
     await server.close();
   }

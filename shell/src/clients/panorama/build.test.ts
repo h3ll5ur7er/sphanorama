@@ -6,7 +6,7 @@ import type {
   BuildId, BuildProgress, BuildStage, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 import {
-  type BuildCore, type BuildElements, createBuildClient, yieldWhile,
+  type BuildCore, type BuildElements, captureNeedsCore, createBuildClient, yieldWhile,
 } from './build';
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -106,13 +106,54 @@ describe('building a preview', () => {
     expect(ui.status.textContent).toMatch(/built/i);
   });
 
+  it('waits for the page before every call it makes to the core', async () => {
+    // A burst needs the core on consecutive ticks, and a press can come in the middle of one: the
+    // start and the preview are calls on the core's thread as much as a poll is.
+    const { core, calls } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)]);
+    const client = createBuildClient(elements(), core, drawing(), async () => { calls.push('wait'); });
+
+    await client.build();
+
+    expect(calls).toEqual([
+      'wait', 'start', 'wait', 'poll 1', 'wait', 'poll 1', 'wait', 'preview 1',
+    ]);
+  });
+
+  it('names each stage the build reports', async () => {
+    const said: string[] = [];
+    const { core } = scriptedCore([
+      progress('Queued', 0), progress('Features', 0.2), progress('PairwiseMatching', 0.4),
+      progress('GlobalSolve', 0.6), progress('Projecting', 0.8), progress('Complete', 1),
+    ]);
+    const ui = elements();
+    const client = createBuildClient(ui, core, drawing(), async () => {
+      said.push(ui.status.textContent ?? '');
+    });
+
+    await client.build();
+
+    expect(said).toEqual([
+      'Building a preview: starting.',
+      'Building a preview: starting.',
+      'Building a preview: starting.',
+      'Building a preview: finding features in each frame.',
+      'Building a preview: matching neighbouring frames.',
+      'Building a preview: solving for where each frame points.',
+      'Building a preview: drawing the panorama.',
+      // And the wait before the preview is read, which says the same until it is drawn.
+      'Building a preview: drawing the panorama.',
+    ]);
+  });
+
   it('shows how far the build has got while it runs', async () => {
     let release: () => void = () => {};
     const seen: Array<[number, string]> = [];
     const { core } = scriptedCore([progress('Features', 0.25), progress('Complete', 1)]);
     const ui = elements();
-    // The page yields between polls; that is where the progress has to be on screen already.
+    // The page yields between polls; that is where the progress has to be on screen already. Held
+    // at the one after the first step, so the button can be seen disabled mid-build.
     const yieldToPage = () => {
+      if (ui.progress.value === 0 || seen.length > 0) return Promise.resolve();
       seen.push([ui.progress.value, ui.status.textContent ?? '']);
       return new Promise<void>((resolve) => { release = resolve; });
     };
@@ -130,8 +171,13 @@ describe('building a preview', () => {
   it('starts nothing while a build is already running', async () => {
     let release: () => void = () => {};
     const { core, calls } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)]);
-    const client = createBuildClient(elements(), core, vi.fn(),
-      () => new Promise<void>((resolve) => { release = resolve; }));
+    // Held once, after the build has polled, so the second press lands on a build that is running.
+    let held = false;
+    const client = createBuildClient(elements(), core, vi.fn(), () => {
+      if (held || !calls.includes('poll 1')) return Promise.resolve();
+      held = true;
+      return new Promise<void>((resolve) => { release = resolve; });
+    });
 
     const first = client.build();
     await vi.waitFor(() => expect(calls).toContain('poll 1'));
@@ -280,15 +326,17 @@ describe('building a preview', () => {
 });
 
 describe('waiting between polls', () => {
-  it('waits while the capture is busy, and goes on once it is not', async () => {
+  it('waits while the capture is busy, however long, and goes on once it is not', async () => {
     // A burst advances one frame per capture tick, and a build step holds the core's one thread:
     // polling while a burst runs spreads the burst's frames across build steps, its locks held.
+    // Ten minutes, so a wait that gives up — or that read `busy` once and slept — is told apart
+    // from one that asks until the answer changes.
     vi.useFakeTimers();
     try {
       let busy = true;
       let resolved = false;
       void yieldWhile(() => busy, 50)().then(() => { resolved = true; });
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
       expect(resolved).toBe(false);
       busy = false;
       await vi.advanceTimersByTimeAsync(50);
@@ -303,12 +351,34 @@ describe('waiting between polls', () => {
     try {
       let resolved = false;
       void yieldWhile(() => false, 50)().then(() => { resolved = true; });
-      await Promise.resolve();
+      // A page paints between tasks, never between microtasks: a yield that a run of microtasks
+      // can see through has not let it paint.
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
       expect(resolved).toBe(false);
       await vi.advanceTimersByTimeAsync(0);
       expect(resolved).toBe(true);
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('whether the capture needs the core', () => {
+  const idle = { stopped: false, arming: false, armed: false, firing: false };
+
+  it('does while a burst is arming, armed or firing', () => {
+    expect(captureNeedsCore({ ...idle, arming: true })).toBe(true);
+    expect(captureNeedsCore({ ...idle, armed: true })).toBe(true);
+    expect(captureNeedsCore({ ...idle, firing: true })).toBe(true);
+  });
+
+  it('does not when no burst is under way', () => {
+    expect(captureNeedsCore(idle)).toBe(false);
+  });
+
+  it('does not once the capture has stopped, whatever its last tick left', () => {
+    // A stopped capture has no next tick to finish a burst with, so a flag it left set would hold
+    // a build for the life of the tab — a camera taken away mid-burst leaves `firing` true.
+    expect(captureNeedsCore({ stopped: true, arming: true, armed: true, firing: true })).toBe(false);
   });
 });

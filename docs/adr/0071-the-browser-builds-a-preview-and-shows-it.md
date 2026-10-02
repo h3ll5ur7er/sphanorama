@@ -50,7 +50,9 @@ reasons.
    button, the progress, and a canvas. A press starts a build, polls it once per turn of the
    event loop — each poll is one step on the core's thread, so nothing is held for a whole build,
    only for a step — shows the stage and the fraction while it runs, and paints the preview when
-   it completes. Between polls it waits while the capture is arming, holding or firing a burst. A
+   it completes. Before each call to the core — the start, every poll and the preview read — it
+   waits while the capture is arming, holding or firing a burst, and not once the capture has
+   stopped, since a stopped capture finishes no burst. A
    refused start, a failed build, a preview the painter could not draw and a core that stops
    answering each say why, and none leaves an earlier picture on screen under the new words. There
    is one client for the page, as there is one build in the core.
@@ -89,8 +91,9 @@ reasons.
   and the preview are one step each, and both grow with the sphere — the preview scans every
   output pixel against every frame and faults each placed frame in from spill — so during them the
   reticle and the guidance stand still. A burst would be worse, advancing one frame a tick with its
-  exposure locks held across build steps, so the page holds its next poll while a burst is arming,
-  armed or firing; the step already in flight when one arms is the overlap that remains. How long
+  exposure locks held across build steps, so the page holds every call to the build while a burst
+  is arming, armed or firing; the call already in flight when one arms is the overlap that
+  remains. How long
   the long steps take on a phone is part of what is not measured. Between polls a build pins
   nothing; a new `Begin` empties the store, and the build then fails as one whose frames went
   (ADR 0070).

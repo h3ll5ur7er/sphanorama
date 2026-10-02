@@ -52,12 +52,13 @@ const why = (status: Status | undefined) => status?.detail || status?.code || 'n
 /**
  * A wait between polls that does not end while `busy` says the capture needs the core.
  *
- * Each poll is one build step on the core's one thread, and a capture's tick waits behind it — so
- * a burst, which advances one frame a tick (ADR 0018), would be spread across build steps with its
- * exposure locks held, and its frames would stop being the comparable set the burst is for. Holding
- * the next poll back until the burst is done costs the build that long; the one step already in
- * flight when a burst arms is the overlap left (ADR 0071). It yields once even when nothing is
- * busy, so the page paints the progress between steps.
+ * Each call is work on the core's one thread — a poll is a build step, a start reads the capture,
+ * the preview is copied out — and a capture's tick waits behind it. So a burst, which advances one
+ * frame a tick (ADR 0018), would be spread across build calls with its exposure locks held, and its
+ * frames would stop being the comparable set the burst is for. Holding every call back until the
+ * burst is done costs the build that long; the one call already in flight when a burst arms is the
+ * overlap left (ADR 0071). It yields once even when nothing is busy, so the page paints the
+ * progress between steps.
  */
 export function yieldWhile(busy: () => boolean, retryMs = 50): () => Promise<void> {
   return () => new Promise((resolve) => {
@@ -66,13 +67,30 @@ export function yieldWhile(busy: () => boolean, retryMs = 50): () => Promise<voi
   });
 }
 
+/** Where the capture is, as far as whether a build may take the core's thread. */
+export interface CaptureState {
+  readonly stopped: boolean;
+  readonly arming: boolean;
+  readonly armed: boolean;
+  readonly firing: boolean;
+}
+
+/**
+ * Whether a burst is under way that the build's next call would split. Not once the capture has
+ * stopped: it has no next tick to finish a burst with, so whatever its last tick left set would
+ * hold a build for the life of the tab — and a camera taken away mid-burst leaves `firing` set.
+ */
+export function captureNeedsCore(capture: CaptureState): boolean {
+  return !capture.stopped && (capture.arming || capture.armed || capture.firing);
+}
+
 /**
  * Builds when asked, and says how it is going.
  *
- * `yieldToPage` runs between polls. Each poll is one step of the build on the core's thread
- * (ADR 0070), so the core is held for a step and never for a build; yielding between steps is what
- * lets the page paint the progress and the capture's ticks reach the core. `yieldWhile` is how the
- * page holds the build back while a burst needs the core.
+ * `yieldToPage` runs before every call to the core. Each poll is one step of the build on the core's
+ * thread (ADR 0070), so the core is held for a step and never for a build; yielding between calls is
+ * what lets the page paint the progress and the capture's ticks reach the core. `yieldWhile` is how
+ * the page holds the build back while a burst needs the core.
  */
 export function createBuildClient(
   ui: BuildElements, core: BuildCore, paint: PaintPanorama,
@@ -84,12 +102,14 @@ export function createBuildClient(
   async function run(): Promise<void> {
     ui.progress.value = 0;
     ui.status.textContent = 'Building a preview: starting.';
+    await yieldToPage();
     const started = await core.start();
     if (!started.ok) {
       ui.status.textContent = `The build was refused: ${why(started.status)}.`;
       return;
     }
     for (;;) {
+      await yieldToPage();
       const polled = await core.poll(started.value);
       if (!polled.ok) {
         ui.status.textContent = `The build could not be asked how it is going: ${why(polled.status)}.`;
@@ -103,8 +123,8 @@ export function createBuildClient(
       }
       if (stage === 'Complete') break;
       ui.status.textContent = `Building a preview: ${doing[stage] ?? stage}.`;
-      await yieldToPage();
     }
+    await yieldToPage();
     const preview = await core.preview(started.value);
     if (!preview.ok) {
       ui.status.textContent = `The build finished, but its preview could not be read: ${why(preview.status)}.`;
