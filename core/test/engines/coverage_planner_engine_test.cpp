@@ -763,7 +763,7 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
 
   EXPECT_EQ(tilted.value.targetNode.value, straight.value.targetNode.value);
   EXPECT_NEAR(tilted.value.angularErrorDeg, straight.value.angularErrorDeg, 1e-6);
-  EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);
+  EXPECT_NEAR(tilted.value.rollErrorDeg, 30.0, 1e-6);
 }
 
 TEST(CoveragePlanner, ReportsNoRollWhenTheCameraIsUpright) {
@@ -812,8 +812,26 @@ TEST(NullCoveragePlanner, AlsoSeparatesRollFromAim) {
   auto tilted = engine.Locate(Aiming(rolled), plan, CoverageState{});
   ASSERT_TRUE(tilted.ok());
   EXPECT_NEAR(tilted.value.angularErrorDeg, 0.0, 1e-6);
-  EXPECT_NEAR(std::abs(tilted.value.rollErrorDeg), 30.0, 1e-6);
+  EXPECT_NEAR(tilted.value.rollErrorDeg, 30.0, 1e-6);
   EXPECT_EQ(tilted.value.action, GuidanceAction::HoldStill);
+}
+
+// Off the cell, the roll is the twist left after the shortest turn onto it, so a level phone beside a
+// level cell thirty degrees up reads some — 7.532 where projecting the cell's horizontal axis read
+// 7.631. Asserted at the engine, because the utility's own tests cannot see which argument the
+// planner puts first or what it does with the answer.
+TEST(NullCoveragePlanner, ReportsTheRollLeftAfterTheShortestTurnOntoTheCell) {
+  NullCoveragePlannerEngine engine;
+  CapturePlan plan;
+  CoverageNode node;
+  node.id = NodeId{1};
+  node.targetOrientation = FromAzimuthElevation(0.0, 30.0);
+  node.acceptanceConeDeg = 5.0;
+  plan.nodes.push_back(node);
+
+  auto beside = engine.Locate(Aiming(FromAzimuthElevation(15.0, 30.0)), plan, CoverageState{});
+  ASSERT_TRUE(beside.ok());
+  EXPECT_NEAR(beside.value.rollErrorDeg, 7.532, 1e-3);
 }
 
 TEST(NullCoveragePlanner, SaysTheSameFourThingsAboutAimAndCoverageTheRealOneDoes) {

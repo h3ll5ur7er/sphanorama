@@ -7,6 +7,7 @@
 #include <limits>
 #include <numbers>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include "support/same_rotation.h"
@@ -593,7 +594,7 @@ TEST(RollBetween, IsAntisymmetric) {
 // Looking exactly opposite ways, every axis perpendicular to the view is a shortest turn and each
 // leaves a different roll, so there is none to report — and zero is what is reported, as for a
 // level pair. Just short of it the turn is unique again and the roll comes back.
-TEST(RollBetween, IsZeroOnlyWhereTheTwoLookExactlyOppositeWays) {
+TEST(RollBetween, IsZeroOnlyNearWhereTheTwoLookOppositeWays) {
   const Quat target = FromAzimuthElevation(0.0, 0.0);
   const Quat away = FromAzimuthElevation(180.0, 0.0);
   for (const double degrees : {0.0, 30.0, -150.0}) {
@@ -603,6 +604,39 @@ TEST(RollBetween, IsZeroOnlyWhereTheTwoLookExactlyOppositeWays) {
   const Quat nearly = FromAzimuthElevation(179.9, 0.0);
   const Quat rolled = Multiply(FromAxisAngle(Direction(nearly), 30.0 / kDegPerRad), nearly);
   EXPECT_NEAR(RollBetween(rolled, target) * kDegPerRad, 30.0, 1e-6);
+}
+
+// Where the band the declaration names sits: about two millionths of a radian of separation either
+// side of opposite. A floor ten times tighter or looser moves one of these across it.
+TEST(RollBetween, ReadsZeroWithinTwoMillionthsOfARadianOfOpposite) {
+  const Quat target{};
+  for (const auto& [shortOf, expected] : {std::pair{4e-6, 90.0}, std::pair{2.5e-6, 90.0},
+                                          std::pair{1e-6, 0.0}, std::pair{1e-7, 0.0}}) {
+    const Quat place = FromAxisAngle(Vec3{1, 0, 0}, std::numbers::pi - shortOf);
+    const Quat rolled = Multiply(FromAxisAngle(Direction(place), 90.0 / kDegPerRad), place);
+    EXPECT_NEAR(RollBetween(rolled, target) * kDegPerRad, expected, 1e-6)
+        << shortOf << " rad short of opposite";
+  }
+}
+
+// A half-turn of roll is pi, the one end of (-pi, pi] the range keeps, so it reads pi from either
+// side rather than pi and -pi.
+TEST(RollBetween, AHalfTurnOfRollReadsPiWhicheverWayItIsAsked) {
+  const Quat target = FromAzimuthElevation(20.0, 10.0);
+  const Quat rolled = Multiply(FromAxisAngle(Direction(target), std::numbers::pi), target);
+  EXPECT_NEAR(RollBetween(rolled, target), std::numbers::pi, 1e-12);
+  EXPECT_NEAR(RollBetween(target, rolled), std::numbers::pi, 1e-12);
+}
+
+// A rotation is a rotation at any length, and a short one must not fall under the opposite-views
+// floor just for being short: that floor is a fraction of a unit turn.
+TEST(RollBetween, ReadsARotationAtAnyLength) {
+  const Quat target = FromAzimuthElevation(0.0, 20.0);
+  const Quat rolled = Multiply(FromAxisAngle(Direction(target), 30.0 / kDegPerRad), target);
+  for (const double scale : {1e-7, 1e7}) {
+    const Quat scaled{rolled.w * scale, rolled.x * scale, rolled.y * scale, rolled.z * scale};
+    EXPECT_NEAR(RollBetween(scaled, target) * kDegPerRad, 30.0, 1e-6) << "scaled by " << scale;
+  }
 }
 
 TEST(RollBetween, ReadsZeroForWhatIsNotARotation) {

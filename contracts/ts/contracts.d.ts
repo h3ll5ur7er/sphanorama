@@ -318,6 +318,13 @@ export type GuidanceAction = 'Seek' | 'HoldStill' | 'Firing' | 'CellDone' | 'Sph
 export interface CaptureGuidance {
   targetNode: NodeId;
   angularErrorDeg: number;
+  /**
+   * How far the phone is rolled against `targetNode` about its own view, in degrees and in
+   * (-180, 180]: positive is counter-clockwise looking along the view, and it wraps at a half-turn.
+   * Measured after the shortest turn from the cell's view to the phone's, so it is the roll owed
+   * once the phone is aimed — and a level phone off the horizon reads some roll against a level
+   * cell beside it, because that turn tips the horizon on the way.
+   */
   rollErrorDeg: number;
   /** [0,1] */
   stability: number;

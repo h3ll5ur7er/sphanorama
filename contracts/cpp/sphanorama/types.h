@@ -356,6 +356,11 @@ enum class GuidanceAction : uint8_t {
 struct CaptureGuidance {
   NodeId targetNode;
   double angularErrorDeg = 0;
+  // How far the phone is rolled against `targetNode` about its own view, in degrees and in
+  // (-180, 180]: positive is counter-clockwise looking along the view, and it wraps at a half-turn.
+  // Measured after the shortest turn from the cell's view to the phone's, so it is the roll owed
+  // once the phone is aimed — and a level phone off the horizon reads some roll against a level
+  // cell beside it, because that turn tips the horizon on the way.
   double rollErrorDeg = 0;
   double stability = 0;          // [0,1]
   GuidanceAction action = GuidanceAction::Seek;

@@ -176,7 +176,7 @@ double AngleBetweenDirections(const Vec3& a, const Vec3& b) {
 namespace {
 // The squared cosine of half the swing below which the views count as opposite: a swing within
 // about two millionths of a radian of a half-turn. Exactly opposite views built from angles in
-// degrees land near 1e-33 and a tenth of a degree short of opposite near 1e-6, so the floor sits
+// degrees land below 1e-30 and a tenth of a degree short of opposite near 1e-6, so the floor sits
 // between them with room either side.
 constexpr double kOppositeViews = 1e-12;
 }  // namespace

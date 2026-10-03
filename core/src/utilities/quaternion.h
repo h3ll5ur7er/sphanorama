@@ -121,10 +121,18 @@ double AngleBetweenDirections(const Vec3& a, const Vec3& b);
 
 // How far `current` is rolled against `target` about its own viewing axis, in radians, signed and
 // in (-pi, pi]: the twist left over once the shortest turn has carried the target's view onto the
-// current one. Zero when that turn alone takes one to the other, and continuous wherever the two
-// look — except where they look exactly opposite ways. There every turn perpendicular to the view
-// is a shortest one and each leaves a different roll, so there is no roll to report, and zero is
-// reported; so it is for anything that is not a rotation. Swapping the two negates it.
+// current one. Zero when that turn alone takes one to the other, and continuous as an angle —
+// a half-turn of roll is where it wraps from pi to just above -pi — wherever the two look, except
+// within about two millionths of a radian of looking opposite ways. At opposite every turn
+// perpendicular to the view is a shortest one and each leaves a different roll, so there is no
+// roll to report; inside that band zero is reported, as it is for anything that is not a rotation.
+// Swapping the two negates it, except at a half-turn of roll exactly, which reads pi either way.
+//
+// **Continuous is not the same as steady near opposite.** No roll can be continuous over every
+// pair of views — the opposite point is where this one gives — so the roll changes fast around it:
+// a level phone circling the point behind a level cell reads two full turns of roll per circuit,
+// and ten degrees from behind it can read ninety. Asked about a cell near the phone, as guidance
+// asks, none of that is reached.
 //
 // Two *level* orientations are not always zero apart: the shortest turn between views at different
 // azimuths away from the horizon tips the horizon as it goes, so a level phone fifteen degrees of

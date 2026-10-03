@@ -45,7 +45,9 @@ describe('describeAttitude', () => {
   it('signs roll the way RollBetween does, and turns with the page', () => {
     // Signed as the core's RollBetween signs two orientations that look the same way — from the
     // level cell's horizontal axis to the camera's, about the viewing axis — because the readout
-    // sits next to the guidance line. Two roll numbers of opposite sign next to each other would be read as a
+    // sits next to the guidance line. The core's side of this is
+    // `RollBetween.MeasuresRotationAboutTheViewingAxisAndIsSigned`; a sign change there is a change
+    // here. Two roll numbers of opposite sign next to each other would be read as a
     // bug in whichever one the reader trusted less.
     expect(from(0, 90, 0, 45)).toBe('az 0° el 0° roll 45°');
     expect(from(0, 90, 0, 315)).toBe('az 0° el 0° roll -45°');
