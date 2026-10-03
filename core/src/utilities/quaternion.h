@@ -119,32 +119,16 @@ Vec3 Normalize(const Vec3& v);
 // this ignores rotation about the axis — which is what "how far off am I aiming" means.
 double AngleBetweenDirections(const Vec3& a, const Vec3& b);
 
-// Rotation about the viewing axis separating two orientations, in radians, signed and in
-// (-pi, pi]. Zero when both are held the same way up.
+// How far `current` is rolled against `target` about its own viewing axis, in radians, signed and
+// in (-pi, pi]: the twist left over once the shortest turn has carried the target's view onto the
+// current one. Zero when that turn alone takes one to the other, and continuous wherever the two
+// look — except where they look exactly opposite ways. There every turn perpendicular to the view
+// is a shortest one and each leaves a different roll, so there is no roll to report, and zero is
+// reported; so it is for anything that is not a rotation. Swapping the two negates it.
 //
-// **Meaningful only while the two look in roughly the same direction, and this is the whole of the
-// promise.** What stood here — "Zero, too, when the two look in opposite directions, where roll has
-// no meaning" — is false twice over, measured. Opposite directions give **180 degrees**, not zero,
-// and the answer is responsive there rather than nonsense: roll the target 30 degrees about its own
-// viewing axis and it reads **-150**. The zero arrives at *ninety* degrees of separation instead,
-// which is a different configuration entirely.
-//
-// Worse, it is not a degeneracy of roll but of the method. The implementation projects the target's
-// +X axis off the current viewing axis, and that projection collapses when the two happen to align
-// — a fact about the target's roll, not about whether roll exists. At azimuth 90 a target rolled by
-// 15 degrees reads **-90**, and azimuth 89 versus 91 at zero roll flips between -0.0000 and
-// 180.0000. A two-degree change in aim, 180 degrees of answer.
-//
-// **Both signs above were published positive and are negative**, which is worth a sentence because
-// of how: they were measured by rolling about the body's +Z axis, and `Direction` is -Z rotated by
-// the orientation, so that is the *negative* viewing axis. The figures were right for what was
-// computed and the sentence describing what was computed was wrong — and they were exactly the two
-// this file published without asserting. They are asserted now.
-//
-// Left as it is rather than fixed here, because every caller asks it against the *nearest* cell,
-// where the separation is small and the function is well behaved, and rewriting it is a change to
-// shipped guidance rather than to this branch's subject. The fix is a swing-twist decomposition,
-// which is defined and continuous everywhere except exactly antipodal.
+// Two *level* orientations are not always zero apart: the shortest turn between views at different
+// azimuths away from the horizon tips the horizon as it goes, so a level phone fifteen degrees of
+// azimuth from a level cell thirty degrees up reads about 7.5 degrees.
 double RollBetween(const Quat& current, const Quat& target);
 
 }  // namespace sphanorama

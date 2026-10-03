@@ -7,6 +7,7 @@
 #include <limits>
 #include <numbers>
 #include <random>
+#include <vector>
 
 #include "support/same_rotation.h"
 #include "utilities/quaternion.h"
@@ -530,113 +531,86 @@ TEST(RollBetween, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
   }
 }
 
-/**
- * What `RollBetween` actually does at large separation, which is not what it used to claim.
- *
- * This test asserted `std::isfinite` and nothing else, under a comment saying roll is undefined at
- * opposite directions and that zero is reported there. Both halves were false and the assertion
- * could not see it: 180.0 is perfectly finite. A test whose only predicate is satisfied by every
- * plausible wrong answer is not a test, and this one guarded the exact input its comment described.
- *
- * Pinned as measured, so the behaviour cannot drift unnoticed and so the declaration's new
- * qualification has something executable under it. These are not assertions that the numbers are
- * *right* — the declaration says at length that they are not — they are assertions that they are
- * what they are until someone fixes the function on purpose.
- */
-TEST(RollBetween, IsOnlyMeaningfulWhileTheTwoLookTheSameWay) {
+// A phone rolled by some angle about its own view reads that angle, wherever it looks relative to
+// the target: the roll is what is left once the shortest turn has carried one view onto the other.
+// Pure azimuth and pure elevation are both that shortest turn, so the roll put on comes back whole —
+// at ninety degrees of separation, where projecting an axis used to collapse, and either side of it.
+TEST(RollBetween, IsTheRollAboutTheCurrentViewWhereverTheTwoLook) {
   const Quat target = FromAzimuthElevation(0.0, 0.0);
-
-  // Opposite directions: 180, not the zero the comment here used to promise, and responsive to the
-  // target's own roll rather than degenerate.
-  const Quat away = FromAzimuthElevation(180.0, 0.0);
-  EXPECT_NEAR(RollBetween(away, target) * kDegPerRad, 180.0, 1e-6);
-
-  // Ninety degrees of *azimuth* is where the projection collapses, and the zero lands there. The
-  // elevation arm reads zero for a different reason and this said they were the same: at elevation
-  // 90 `Dot(flattened, flattened)` is **1**, `flattened` is the honest `(1,0,0)`, and the guard is
-  // never reached. Two arms, two causes, one explanation covering both — the move the header
-  // confesses to about `Conjugate` a few lines into the same commit that wrote this.
-  EXPECT_NEAR(RollBetween(FromAzimuthElevation(90.0, 0.0), target) * kDegPerRad, 0.0, 1e-6);
-  EXPECT_NEAR(RollBetween(FromAzimuthElevation(0.0, 90.0), target) * kDegPerRad, 0.0, 1e-6);
-
-  // And the discontinuity, which is the reason the declaration says "roughly the same direction":
-  // two degrees of aim either side of ninety, at identical roll, differ by half a turn.
-  const double justBelow = RollBetween(FromAzimuthElevation(89.0, 0.0), target) * kDegPerRad;
-  const double justAbove = RollBetween(FromAzimuthElevation(91.0, 0.0), target) * kDegPerRad;
-  EXPECT_NEAR(justBelow, 0.0, 1e-6);
-  EXPECT_NEAR(justAbove, 180.0, 1e-6);
-
-  // Near the target, where every caller asks it, it is well behaved — which is what bounds all of
-  // the above and is asserted here rather than assumed. Same construction as
-  // `MeasuresRotationAboutTheViewingAxisAndIsSigned`, at a separation instead of at zero.
-  const Quat nearby = FromAzimuthElevation(3.0, 0.0);
-  const Quat rolled = Multiply(FromAxisAngle(Direction(nearby), 10.0 / kDegPerRad), nearby);
-  EXPECT_NEAR(RollBetween(rolled, nearby) * kDegPerRad, 10.0, 1e-6);
-
-  // **The two signed figures the declaration publishes**, which it first published positive. They
-  // are negative, and the sign is the whole of what "signed and in (-pi, pi]" promises — so leaving
-  // them unasserted is what let the declaration be wrong about them. Rolled about
-  // `Direction`, the actual viewing axis, rather than about body +Z, which is its negative and is
-  // how the wrong sign was measured in the first place.
-  const Quat awayRolled =
-      Multiply(FromAxisAngle(Direction(away), 30.0 / kDegPerRad), away);
-  EXPECT_NEAR(RollBetween(target, awayRolled) * kDegPerRad, -150.0, 1e-6);
-
-  //
-  // **The second of them is inert in its roll and the first is not**, which is worth stating beside
-  // them rather than leaving for the next reader to discover. Swept: the azimuth-90 arm reads
-  // exactly -90 for *every* roll in (0, 180) and +90 for every roll in (-180, 0), so `15.0` could
-  // be `3.0` or `179.0` and nothing moves — only the sign is load-bearing. At 90 degrees of
-  // separation the projection leaves exactly the ±Y component whatever the roll, which is the
-  // collapse the declaration describes three paragraphs above this figure. Its companion is
-  // genuinely responsive: 30 -> -150, 60 -> -120, 120 -> -60, 170 -> -10.
-  //
-  // Kept rather than replaced, because the figure it pins is one the declaration publishes and the
-  // sign is what was wrong about it. But an assertion that does not measure what it appears to
-  // measure is a trap for whoever edits it next, so it says so.
-  const Quat side = FromAzimuthElevation(90.0, 0.0);
-  const Quat sideRolled = Multiply(FromAxisAngle(Direction(side), 15.0 / kDegPerRad), side);
-  EXPECT_NEAR(RollBetween(target, sideRolled) * kDegPerRad, -90.0, 1e-6);
-  // And the same at a roll eleven times larger, so "the roll is not in the answer" is asserted
-  // rather than only stated: two rolls reading the same -90 is the collapse, in executable form.
-  // The *magnitude*, precisely — the answer is `sign(sin roll) * 90`, so this arm and the one above
-  // are the same assertion (a sign flip fails both, nothing fails one without the other) and what the
-  // pair pins is that the roll's size has left the answer entirely.
-  const Quat sideRolledFar = Multiply(FromAxisAngle(Direction(side), 170.0 / kDegPerRad), side);
-  EXPECT_NEAR(RollBetween(target, sideRolledFar) * kDegPerRad, -90.0, 1e-6)
-      << "at ninety degrees of separation the magnitude of the roll is not in the answer";
+  std::vector<Quat> places;
+  for (const double azimuth : {3.0, 45.0, 89.0, 90.0, 91.0, 135.0, 179.0}) {
+    places.push_back(FromAzimuthElevation(azimuth, 0.0));
+  }
+  for (const double elevation : {30.0, 89.0, -60.0}) {
+    places.push_back(FromAzimuthElevation(0.0, elevation));
+  }
+  for (const Quat& place : places) {
+    for (const double degrees : {0.0, 15.0, -40.0, 170.0}) {
+      const Quat rolled = Multiply(FromAxisAngle(Direction(place), degrees / kDegPerRad), place);
+      EXPECT_NEAR(RollBetween(rolled, target) * kDegPerRad, degrees, 1e-6)
+          << "rolled " << degrees << " looking along " << Direction(place).x << ", "
+          << Direction(place).y << ", " << Direction(place).z;
+    }
+  }
 }
 
-/**
- * The collapse guard, pinned by an input where removing it changes the answer.
- *
- * `IsOnlyMeaningfulWhileTheTwoLookTheSameWay` has an assertion claiming to pin "where the
- * projection actually collapses", and it does not: the whole suite passes with the guard made
- * unreachable. It was derived from the case in hand — a *level* phone at azimuth 90, where the
- * unguarded `atan2` of two zeros is zero and agrees with the guarded answer by luck.
- *
- * The guard is not redundant. When it fires, `flattened` is `Normalize`'s zero-vector fallback, so
- * both `atan2` operands are signed zeros and the sign of `x` decides between 0 and half a turn.
- * `x` is `-0.0` exactly when all three components of `here` are negative — over 2,000,000
- * constructed collapses that predicate agrees with "the guard changed the answer" 100.000% of the
- * time, at 12.548% against an analytic one in eight. Random orientations never reach it at all:
- * 4,000,000 random pairs produce zero collapses, so the input has to be built.
- *
- * What was missing was a *rolled* current. Both arms below read zero as committed and ±180 with the
- * guard unreachable, which is the difference the two arms in the other test cannot see.
- */
-TEST(RollBetween, TheCollapseGuardDecidesBetweenZeroAndAHalfTurn) {
+// A quaternion and its negative are one rotation, and a sensor may hand over either. The negative's
+// half-angle lands a half-turn away, so the doubled angle is a whole turn off until it is wrapped.
+TEST(RollBetween, ReadsTheSameRollFromEitherSignOfTheSameRotation) {
   const Quat target = FromAzimuthElevation(0.0, 0.0);
+  const Quat place = FromAzimuthElevation(60.0, 20.0);
+  for (const double degrees : {40.0, -40.0, 170.0}) {
+    const Quat rolled = Multiply(FromAxisAngle(Direction(place), degrees / kDegPerRad), place);
+    const Quat negated{-rolled.w, -rolled.x, -rolled.y, -rolled.z};
+    EXPECT_NEAR(RollBetween(negated, target), RollBetween(rolled, target), 1e-12)
+        << "rolled " << degrees;
+    EXPECT_NEAR(RollBetween(rolled, Quat{-target.w, -target.x, -target.y, -target.z}),
+                RollBetween(rolled, target), 1e-12)
+        << "rolled " << degrees;
+  }
+}
 
-  const Quat side = FromAzimuthElevation(90.0, 0.0);
-  const Quat rolledSide = Multiply(FromAxisAngle(Direction(side), 45.0 / kDegPerRad), side);
-  EXPECT_NEAR(RollBetween(rolledSide, target) * kDegPerRad, 0.0, 1e-6)
-      << "without the collapse guard this is -180";
+// Level is not zero apart away from the horizon: the shortest turn between views at different
+// azimuths tips the horizon on the way, by about the azimuth times the sine of the elevation. The
+// figure the declaration quotes, and the horizon where it is exactly zero.
+TEST(RollBetween, TwoLevelOrientationsAwayFromTheHorizonAreRolledApart) {
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(15.0, 30.0), FromAzimuthElevation(0.0, 30.0)) *
+                  kDegPerRad,
+              7.532, 1e-3);
+  EXPECT_NEAR(RollBetween(FromAzimuthElevation(15.0, 0.0), FromAzimuthElevation(0.0, 0.0)), 0.0,
+              1e-12);
+}
 
-  const Quat other = FromAzimuthElevation(-90.0, 0.0);
-  const Quat rolledOther = Multiply(FromAxisAngle(Direction(other), 180.0 / kDegPerRad), other);
-  EXPECT_NEAR(RollBetween(rolledOther, target) * kDegPerRad, 0.0, 1e-6)
-      << "without the collapse guard this is +180";
+// Asking the other way round is the inverse turn, so the roll is the same size and the other sign.
+TEST(RollBetween, IsAntisymmetric) {
+  const Quat a = Multiply(FromAxisAngle(Vec3{0.3, -0.8, 0.5}, 0.7), FromAzimuthElevation(37.0, -12.0));
+  const Quat b = Multiply(FromAxisAngle(Vec3{-0.2, 0.4, 0.9}, -1.9), FromAzimuthElevation(-81.0, 48.0));
+  const double forward = RollBetween(a, b);
+  ASSERT_GT(std::abs(forward), 0.1) << "a pair with no roll between them cannot show a sign";
+  EXPECT_NEAR(RollBetween(b, a), -forward, 1e-12);
+}
+
+// Looking exactly opposite ways, every axis perpendicular to the view is a shortest turn and each
+// leaves a different roll, so there is none to report — and zero is what is reported, as for a
+// level pair. Just short of it the turn is unique again and the roll comes back.
+TEST(RollBetween, IsZeroOnlyWhereTheTwoLookExactlyOppositeWays) {
+  const Quat target = FromAzimuthElevation(0.0, 0.0);
+  const Quat away = FromAzimuthElevation(180.0, 0.0);
+  for (const double degrees : {0.0, 30.0, -150.0}) {
+    const Quat rolled = Multiply(FromAxisAngle(Direction(away), degrees / kDegPerRad), away);
+    EXPECT_EQ(RollBetween(rolled, target), 0.0) << "rolled " << degrees;
+  }
+  const Quat nearly = FromAzimuthElevation(179.9, 0.0);
+  const Quat rolled = Multiply(FromAxisAngle(Direction(nearly), 30.0 / kDegPerRad), nearly);
+  EXPECT_NEAR(RollBetween(rolled, target) * kDegPerRad, 30.0, 1e-6);
+}
+
+TEST(RollBetween, ReadsZeroForWhatIsNotARotation) {
+  const Quat target = FromAzimuthElevation(10.0, 20.0);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(RollBetween(Quat{0, 0, 0, 0}, target), 0.0);
+  EXPECT_EQ(RollBetween(Quat{nan, 0, 0, 0}, target), 0.0);
+  EXPECT_EQ(RollBetween(target, Quat{nan, 0.1, 0.2, 0.3}), 0.0);
 }
 
 }  // namespace
