@@ -78,10 +78,11 @@ A `std::string_view` cannot be a data member of a contract type: it encodes fine
 decoded, since there is nothing owning the bytes. The generator refuses it.
 
 - **No frames in a contract.** Frames cross as `FrameRef` handles, and `IFrameStoreAccess::Pin` is
-  the only route to a frame's bytes, inside the core. One reduced image leaves —
-  `CandidatePreview` answers with a `FramePreview` — because the page has no frame store to
-  resolve a handle against, and because the rule is about cost: a cell's frames are 39 MB and its
-  previews are 384 KB (ADR 0038). Anything full-resolution still crosses as a handle.
+  the only route to a frame's bytes, inside the core. Two small images leave as `FramePreview`s —
+  `CandidatePreview`'s reduced candidate and `PanoramaPreview`'s finished preview — because the
+  page has no frame store to resolve a handle against, and because the rule is about cost: a
+  cell's frames are 39 MB and its previews are 384 KB (ADR 0038), and a preview panorama is at most
+  2048 wide (ADR 0071). Anything full-resolution still crosses as a handle.
 - **No exceptions.** Everything fallible returns `Result<T>` with a closed `StatusCode` enum, so a
   client can branch on `SensorPermissionDenied` specifically. Exceptions are disabled in the core,
   with one shipped translation unit excepted by name: the OpenCV-backed registration engine takes

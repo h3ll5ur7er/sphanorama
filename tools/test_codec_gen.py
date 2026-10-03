@@ -194,6 +194,14 @@ class MethodTableTest(unittest.TestCase):
         cpp = contract_gen.emit_cpp_facade(self.module)
         self.assertIn('default:', cpp)
 
+    def test_the_result_buffer_is_handed_over_rather_than_copied(self):
+        # A copy keeps the capacity of the largest answer ever assigned: one 8 MB panorama preview
+        # and the result holds 8 MB for the rest of the session. `Writer::Take` is pinned on its
+        # own by the wire tests.
+        cpp = contract_gen.emit_cpp_facade(self.module)
+        self.assertIn('g_result = std::move(out).Take();', cpp)
+        self.assertNotIn('out.bytes()', cpp)
+
     def test_the_typescript_proxy_exposes_each_interface(self):
         ts = contract_gen.emit_ts_facade(self.module)
         self.assertIn('createProjectManagerProxy', ts)

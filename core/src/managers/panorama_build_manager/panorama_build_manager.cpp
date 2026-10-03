@@ -393,9 +393,10 @@ Status PanoramaBuildManager::Discard(const FrameRef& frame) {
   auto residency = frames_.ResidencyOf(frame);
   if (residency.status.code == StatusCode::NotFound) return Status::Ok();
   if (!residency.ok()) return residency.status;
-  // The build's frames have handles nothing else was given, so every pin on one is an engine's that
-  // could not release it — a preview handed back unreleased, or a feature frame behind a refused
-  // `Release` the engine discarded — and the build is the only thing left that can name it.
+  // The build's frames have handles nothing else was given, so every pin on one was taken for the
+  // build and could not be let go — a preview handed back unreleased, a feature frame behind a
+  // refused `Release` the engine discarded, or the preview `PanoramaPreview` read for the page —
+  // and the build is the only thing left that can name it.
   // One pin per call that borrowed it: a feature frame is borrowed by every pair it is in. Each
   // release takes one, so this ends.
   while (residency.value == Residency::HeapPinned) {
@@ -476,6 +477,28 @@ Result<PanoramaRef> PanoramaBuildManager::Panorama(BuildId id) {
   panorama.height = build->preview->height;
   panorama.preview = *build->preview;
   return Ok(panorama);
+}
+
+Result<FramePreview> PanoramaBuildManager::PanoramaPreview(BuildId id) {
+  SPH_TRY(const PanoramaRef panorama, Panorama(id));
+  const FrameRef& frame = panorama.preview;
+  SPH_TRY(const std::span<uint8_t> bytes, frames_.Pin(frame));
+  // Row by row, since a frame's rows are `stride` apart and the page wants them packed.
+  const size_t row = static_cast<size_t>(frame.width) * 4;
+  const size_t rows = static_cast<size_t>(frame.height);
+  const size_t stride = static_cast<size_t>(frame.stride);
+  FramePreview preview;
+  preview.frame = frame.id;
+  preview.width = frame.width;
+  preview.height = frame.height;
+  preview.format = PixelFormat::RGBA8;
+  preview.pixels.resize(row * rows);
+  for (size_t y = 0; y < rows; ++y) {
+    const auto from = bytes.subspan(y * stride, row);
+    std::copy(from.begin(), from.end(), preview.pixels.begin() + static_cast<ptrdiff_t>(row * y));
+  }
+  if (Status released = frames_.Release(frame); !released.ok()) return released;
+  return Ok(std::move(preview));
 }
 
 Result<GhostReport> PanoramaBuildManager::Ghosts(BuildId id) {

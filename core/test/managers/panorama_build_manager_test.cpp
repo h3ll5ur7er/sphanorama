@@ -176,8 +176,9 @@ class ScriptedCompositionEngine final : public ICompositionEngine {
       for (const FrameRef& frame : frames) (void)store_.Pin(frame);
       return failure;
     }
-    auto answer = store_.Allocate(maxWidth, maxWidth / 2, PixelFormat::RGBA8);
+    auto answer = store_.Allocate(maxWidth + paddedBy, maxWidth / 2, PixelFormat::RGBA8);
     if (!answer.ok()) return answer.status;
+    answer.value.width = maxWidth;
     if (!failure.ok()) {
       // The contract's hardest refusal: the answer could not be taken back, so it comes back in
       // the value, pinned, for the caller to release and forget.
@@ -198,6 +199,9 @@ class ScriptedCompositionEngine final : public ICompositionEngine {
   Status failure;
   bool handBackPinned = false;
   bool leaveInputsPinned = false;
+  // Pixels past the end of each row: a `FrameRef` says where its rows start, and nothing promises a
+  // store will lay them end to end.
+  int32_t paddedBy = 0;
 
  private:
   IFrameStoreAccess& store_;
@@ -214,7 +218,13 @@ class ReluctantFrameStore final : public IFrameStoreAccess {
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
     return real_.Allocate(width, height, format);
   }
-  Result<std::span<uint8_t>> Pin(const FrameRef& frame) override { return real_.Pin(frame); }
+  Result<std::span<uint8_t>> Pin(const FrameRef& frame) override {
+    if (pinRefusals > 0) {
+      --pinRefusals;
+      return Err<std::span<uint8_t>>(StatusCode::Internal, "test", "will not fault it in this time");
+    }
+    return real_.Pin(frame);
+  }
   Status Release(const FrameRef& frame) override {
     if (releaseRefusals > 0) {
       --releaseRefusals;
@@ -250,6 +260,7 @@ class ReluctantFrameStore final : public IFrameStoreAccess {
   Result<uint64_t> TierGeneration() override { return real_.TierGeneration(); }
   Result<uint64_t> ContentHash(const FrameRef& frame) override { return real_.ContentHash(frame); }
 
+  int pinRefusals = 0;
   int releaseRefusals = 0;
   int residencyRefusals = 0;
   // Answered truthfully before `residencyRefusals` begin, so a refusal can be aimed at one read.
@@ -1327,6 +1338,116 @@ TEST_F(PanoramaBuildManagerTest, APanoramaWhoseTierCannotBeReadIsNotAGonePanoram
   EXPECT_TRUE(manager.Panorama(build.value).ok());
 }
 
+uint8_t Patterned(size_t i) { return static_cast<uint8_t>(i * 7 + (i >> 8) * 13 + 3); }
+
+// What the page draws: the preview's own pixels, row by row, copied out of the store — the page has
+// no store to resolve a handle against (ADR 0071).
+TEST_F(PanoramaBuildManagerTest, ThePageIsHandedThePanoramasPixels) {
+  CaptureRing(3);
+  BuildSpec small;
+  small.outputWidth = 64;
+  auto build = manager_.Start(kProject, small);
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  auto panorama = manager_.Panorama(build.value);
+  ASSERT_TRUE(panorama.ok());
+  const FrameRef& frame = panorama.value.preview;
+  {
+    auto bytes = store_.Pin(frame);
+    ASSERT_TRUE(bytes.ok());
+    // A row is 256 bytes, so the pattern changes with the row as well as along it: one that repeated
+    // every 256 bytes would be satisfied by every row copied from the first.
+    for (size_t i = 0; i < bytes.value.size(); ++i) bytes.value[i] = Patterned(i);
+    ASSERT_TRUE(store_.Release(frame).ok());
+  }
+
+  auto preview = manager_.PanoramaPreview(build.value);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+  EXPECT_EQ(preview.value.frame, frame.id);
+  EXPECT_EQ(preview.value.width, 64);
+  EXPECT_EQ(preview.value.height, 32);
+  EXPECT_EQ(preview.value.format, PixelFormat::RGBA8);
+  ASSERT_EQ(preview.value.pixels.size(), size_t{64} * 32 * 4);
+  for (size_t i = 0; i < preview.value.pixels.size(); ++i) {
+    ASSERT_EQ(preview.value.pixels[i], Patterned(i)) << "byte " << i;
+  }
+  // And nothing is left pinned: the build still holds the panorama, in the heap, for the next ask.
+  auto residency = store_.ResidencyOf(frame);
+  ASSERT_TRUE(residency.ok());
+  EXPECT_NE(residency.value, Residency::HeapPinned);
+  EXPECT_TRUE(manager_.PanoramaPreview(build.value).ok());
+}
+
+TEST_F(PanoramaBuildManagerTest, APreviewsRowsAreReadWhereTheFrameSaysTheyStart) {
+  CaptureRing(3);
+  composition_.paddedBy = 3;
+  BuildSpec small;
+  small.outputWidth = 64;
+  auto build = manager_.Start(kProject, small);
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  auto panorama = manager_.Panorama(build.value);
+  ASSERT_TRUE(panorama.ok());
+  const FrameRef& frame = panorama.value.preview;
+  const size_t stride = static_cast<size_t>(frame.stride);
+  ASSERT_EQ(stride, size_t{67} * 4);
+  {
+    auto bytes = store_.Pin(frame);
+    ASSERT_TRUE(bytes.ok());
+    for (size_t i = 0; i < bytes.value.size(); ++i) bytes.value[i] = Patterned(i);
+    ASSERT_TRUE(store_.Release(frame).ok());
+  }
+
+  auto preview = manager_.PanoramaPreview(build.value);
+  ASSERT_TRUE(preview.ok()) << preview.status.detail;
+  EXPECT_EQ(preview.value.width, 64);
+  const size_t row = size_t{64} * 4;
+  ASSERT_EQ(preview.value.pixels.size(), row * 32);
+  for (size_t y = 0; y < 32; ++y) {
+    for (size_t x = 0; x < row; ++x) {
+      ASSERT_EQ(preview.value.pixels[y * row + x], Patterned(y * stride + x)) << y << ", " << x;
+    }
+  }
+}
+
+// The same refusals `Panorama` gives, for the same reasons.
+TEST_F(PanoramaBuildManagerTest, OnlyACompleteBuildsPixelsAreHanded) {
+  EXPECT_EQ(manager_.PanoramaPreview(BuildId{7}).status.code, StatusCode::NotFound);
+  CaptureRing(3);
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  EXPECT_EQ(manager_.PanoramaPreview(build.value).status.code, StatusCode::FailedPrecondition);
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  ASSERT_TRUE(manager_.PanoramaPreview(build.value).ok());
+  ASSERT_TRUE(store_.Clear().ok());
+  EXPECT_EQ(manager_.PanoramaPreview(build.value).status.code, StatusCode::FailedPrecondition);
+}
+
+// A store that will not fault the panorama in, or let go of it, is answered with its own status. A
+// pin a refused release leaves is the build's to give back, and `Cancel` does.
+TEST_F(PanoramaBuildManagerTest, APanoramaTheStoreWillNotReadOrReleaseIsAnsweredWithItsStatus) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  const int64_t captured = HeapUsed();
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  ASSERT_EQ(RunToEnd(manager, build.value).back().stage, BuildStage::Complete);
+
+  reluctant.pinRefusals = 1;
+  const Status unread = manager.PanoramaPreview(build.value).status;
+  EXPECT_EQ(unread.code, StatusCode::Internal);
+  EXPECT_EQ(unread.detail, "will not fault it in this time");
+  reluctant.releaseRefusals = 1;
+  const Status unreleased = manager.PanoramaPreview(build.value).status;
+  EXPECT_EQ(unreleased.code, StatusCode::Internal);
+  EXPECT_EQ(unreleased.detail, "will not release it this time");
+  EXPECT_TRUE(manager.PanoramaPreview(build.value).ok());
+
+  ASSERT_TRUE(manager.Cancel(build.value).ok());
+  EXPECT_EQ(HeapUsed(), captured);
+}
+
 // `RenderPreview` hands its answer back pinned when the store would not release it, and the build
 // then releases and forgets it — on every retry, not once: a pin nothing retries is 8 MB that
 // `Cancel` can never give back, however willing the store becomes.
@@ -1349,6 +1470,27 @@ TEST_F(PanoramaBuildManagerTest, AHandedBackPreviewIsReleasedWhenTheStoreWillAga
   ASSERT_GT(HeapUsed(), before);
   EXPECT_TRUE(manager.Cancel(build.value).ok());
   EXPECT_EQ(HeapUsed(), before);
+}
+
+// A failed build can still hold a preview — one the store would not let it give back — and it is
+// not a panorama: it is whatever the compositor had drawn when it refused.
+TEST_F(PanoramaBuildManagerTest, AFailedBuildsLeftoverPreviewIsNotHandedToThePage) {
+  ReluctantFrameStore reluctant{store_};
+  PanoramaBuildManager manager{registration_, composition_, reluctant, projects_};
+  CaptureRing(3);
+  composition_.failure = Fail(StatusCode::Internal, "test", "would not take it back");
+  composition_.handBackPinned = true;
+  const int64_t before = HeapUsed();
+  auto build = manager.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  for (int step = 0; step < 6; ++step) ASSERT_TRUE(manager.Poll(build.value).ok());
+  reluctant.releaseRefusals = 1;
+  auto composed = manager.Poll(build.value);
+  ASSERT_TRUE(composed.ok());
+  ASSERT_EQ(composed.value.stage, BuildStage::Failed);
+  ASSERT_GT(HeapUsed(), before) << "the build gave the preview back, so it holds nothing to hand";
+
+  EXPECT_EQ(manager.PanoramaPreview(build.value).status.code, StatusCode::FailedPrecondition);
 }
 
 // A refusal from an engine that had already read the frame leaves it faulted in, and the want of

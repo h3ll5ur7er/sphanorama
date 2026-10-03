@@ -32,6 +32,7 @@ import { createCoverageRefresh } from './clients/capture/coverage-refresh';
 import {
   createReviewPanel, paintPreviewOnCanvas, type ReviewPanel,
 } from './clients/review/panel';
+import { captureNeedsCore, createBuildClient, yieldWhile } from './clients/panorama/build';
 
 const el = <T extends Element>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -87,6 +88,32 @@ const reviewElements = {
   stripHeading: el<HTMLElement>('strip-heading'),
   strip: el<HTMLElement>('strip'),
 };
+const buildElements = {
+  button: el<HTMLButtonElement>('build-button'),
+  status: el<HTMLElement>('build-status'),
+  progress: el<HTMLProgressElement>('build-progress'),
+  canvas: el<HTMLCanvasElement>('build-canvas'),
+};
+/**
+ * What a build is asked for. The widest preview the core will draw: 8 MB of RGBA, which a phone
+ * holds several times over while it crosses — three in the core's heap, then the worker's copy, the
+ * page's and the canvas's (ADR 0071). The other fields are the full render's and the core does not
+ * read them yet.
+ */
+const PREVIEW_SPEC = {
+  tier: 'Preview', projection: 'Equirectangular', outputWidth: 2048, ghostAware: false,
+} as const;
+
+/**
+ * What the one build client reads when it is pressed: the session's project, and whether the
+ * session's capture needs the core before the build's next call. Set by each `pump`, because the
+ * client is made once for the page — the core holds one build, so the guard against a second has to
+ * span sessions rather than be remade with each, and a session's client left polling under the next
+ * session's page would paint into it.
+ */
+let buildProject: ProjectId | null = null;
+let captureBusy: () => boolean = () => false;
+let builder: { build(): Promise<void> } | null = null;
 
 const camera = createCameraAccess(navigator.mediaDevices);
 // One canvas for the session: grabbing a frame means drawing the viewfinder into it and reading
@@ -757,6 +784,23 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       selection: (node) => core.project.getSelection(project, node),
     },
     paintPreviewOnCanvas);
+
+  // Beside the review panel and for the same reason: a build reads the project's capture, so there
+  // is nothing to build until there is a project. One client for the page, made by the first
+  // session with a project and handed each later session's project and capture as they start.
+  if (project !== null) {
+    buildProject = project;
+    captureBusy = () => captureNeedsCore({ stopped: loopStopped, arming, armed, firing });
+    if (builder === null) {
+      const client = createBuildClient(buildElements, {
+        start: () => core.panoramaBuild.start(buildProject as ProjectId, PREVIEW_SPEC),
+        poll: (build) => core.panoramaBuild.poll(build),
+        preview: (build) => core.panoramaBuild.panoramaPreview(build),
+      }, paintPreviewOnCanvas, yieldWhile(() => captureBusy()));
+      buildElements.button.onclick = () => { void client.build(); };
+      builder = client;
+    }
+  }
 
   /**
    * Re-reads coverage and redraws the map.

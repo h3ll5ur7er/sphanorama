@@ -12,10 +12,9 @@ namespace sphanorama {
 // since OpenCV 4.4, so it costs no new dependency and the reason it was once excluded is gone.
 //
 // It is a construction-time choice rather than a contract type, so whoever composes this engine
-// picks one and no caller above the engine layer learns that detectors exist. Today that is the
-// tests: the only composition root in the repository is the WASM runtime, which has OpenCV since
-// ADR 0069 and still holds the null engine unconditionally (ADR 0052). The native client that will choose a detector
-// in earnest is the one that runs the accuracy harness, and it does not exist yet.
+// picks one and no caller above the engine layer learns that detectors exist. The composition root,
+// `bridge/runtime.h`, picks ORB for the preview a phone builds, and says why (ADR 0071); the tests
+// pick each in turn.
 // `Count` is not a detector. It is here so the list below can be *checked* rather than remembered.
 //
 // The first version of this pair claimed that deriving the test parameters from one list meant "a

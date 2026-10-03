@@ -853,8 +853,8 @@ that has to be ordered.
   measured now** — the table further down is it — taken against a sensor prior perturbed three
   degrees, because the first harness handed the estimator the truth of each step and was therefore
   measuring itself (ADR 0057). It compiles
-  wherever OpenCV does, which includes the browser's build since ADR 0069 — though the browser's
-  runtime holds the null engine until something selects the real one — and all three
+  wherever OpenCV does, which includes the browser's build since ADR 0069 and its runtime since
+  ADR 0071, which selects ORB — and all three
   detectors share one feature cap — without it two of them are unbounded, which would make the
   comparison below meaningless as well as the memory unbounded.
 
@@ -882,10 +882,13 @@ that has to be ordered.
   pick where one was recorded — and each `Poll` does one step: a frame's features, a pair, the
   solve, the preview. Over the real engines, the photograph ring with every pose three degrees out
   builds to within 1.56 (ORB), 1.37 (AKAZE) and 1.23 (SIFT) bytes of the photograph, against 28.6
-  for the frames placed where the poses say. The browser's composition root hands it null engines
-  still, so there a build fails at its first step; selecting the real ones — a detector, a feature
-  cap and a preview width for a phone, and the 556 KB — is the next change, with the page that
-  starts a build and shows it. Tiles, ghosts and incremental rebuild answer `Unsupported`.
+  for the frames placed where the poses say. **And it builds in the browser** (ADR 0071): the
+  runtime selects the real engines with ORB — every detector registers to within a quarter of a
+  preview pixel, and ORB extracts three to six times faster — the module carries the 557 KB, and a
+  button under the review strip builds the capture, shows its progress, and draws the 2048-wide
+  preview `PanoramaPreview` hands across. How long a sphere takes on a phone, and the heap it
+  peaks at, are what a phone answers next. Tiles, ghosts and incremental rebuild answer
+  `Unsupported`.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
 
 Listed in dependency order, which is not build order: **the accuracy harness on synthetic datasets

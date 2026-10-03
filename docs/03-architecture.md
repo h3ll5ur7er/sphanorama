@@ -248,11 +248,13 @@ Two rules keep this from becoming a performance disaster:
   — transferred in as an `ArrayBuffer`, or copied straight into a heap view where a shared one is
   available — and thereafter referred to by handle. No *frame* is ever serialised by value.
 
-  There is one image that crosses outward, and the exception is measured rather than granted:
+  Two images cross outward, and each exception is measured rather than granted.
   `CandidatePreview` answers with a `FramePreview`, a copy reduced to a long edge the caller names
   and the contract bounds. The rule is a rule about cost — a cell's frames are 39 MB, its previews
-  are 384 KB — and reducing is what pays it. A handle cannot do this job in this direction at all,
-  because there is no frame store on the page to resolve one against (ADR 0038).
+  are 384 KB — and reducing is what pays it (ADR 0038). `PanoramaPreview` answers a finished
+  build's preview the same way, unreduced, because the build already drew it at the width the
+  page asked for, at most 2048 (ADR 0071). A handle cannot do either job in this direction at all,
+  because there is no frame store on the page to resolve one against.
 - **The boundary is generated, not hand-written.** One IDL produces the C++ facade, the TS client
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.

@@ -1104,6 +1104,7 @@ CPP_FACADE_PREAMBLE = """// GENERATED FILE — DO NOT EDIT. Produced by tools/co
 
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sphanorama/codec.h"
@@ -1219,7 +1220,7 @@ def emit_cpp_facade(module: Module) -> str:
     out.append("      break;")
     out.append("  }")
     out.append("")
-    out.append("  g_result = out.bytes();")
+    out.append("  g_result = std::move(out).Take();")
     out.append("  return static_cast<int32_t>(g_result.size());")
     out.append("}")
     out.append("")

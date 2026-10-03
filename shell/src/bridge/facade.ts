@@ -74,7 +74,7 @@ export function createFacadeCall(module: FacadeModule): FacadeCall {
       module.HEAPU8.set(args, pointer);
       const length = module._sph_facade_call(id, pointer, args.length);
       const at = module._sph_facade_result();
-      // A copy, not a view: the core reuses this buffer on the next call, and Emscripten may
+      // A copy, not a view: the core frees this buffer on the next call, and Emscripten may
       // replace the heap under us. Constructing from the subarray also lands the result in a
       // plain ArrayBuffer regardless of which build produced it.
       return new Uint8Array(module.HEAPU8.subarray(at, at + length));

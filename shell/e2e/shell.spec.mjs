@@ -150,7 +150,12 @@ function deviceOrientationLookingAt(target) {
  * The cell is read from the plan the core made and the candidates it holds, so calling this again
  * after a burst aims at a different cell rather than back at the one just filled.
  */
-async function aimAtACell(page) {
+// The first cell nothing was captured in, or with `offAxis` the one whose centre is nearest thirty
+// degrees off the horizon, a quarter turn round: where a frame turned about the vertical, flipped
+// either way, or drawn at the image's middle lands somewhere else. The first cell is a pole's, the
+// plan's first horizon cell looks straight down -Z, which is the middle of the image, and any cell
+// on the horizon is its own reflection top to bottom.
+async function aimAtACell(page, { offAxis = false } = {}) {
   // The listener has to be installed before an event can reach it, and it is installed several
   // worker round trips after `#stage` says the session started. Without this wait the dispatch
   // below lands in an empty room and the assertion that follows waits out its whole timeout.
@@ -158,18 +163,28 @@ async function aimAtACell(page) {
     timeout: 15000,
   });
 
-  const target = await page.evaluate(async () => {
+  const empty = await page.evaluate(async (all) => {
     const plan = await window.sphanoramaCore.captureSession.getPlan();
-    if (!plan.ok) return null;
+    if (!plan.ok) return [];
+    const found = [];
     for (const node of plan.value.nodes) {
       const got = await window.sphanoramaCore.captureSession.candidates(node.id);
       if (got.ok && got.value.length === 0) {
-        return { id: node.id, orientation: node.targetOrientation };
+        found.push({ id: node.id, orientation: node.targetOrientation });
+        if (!all) break;
       }
     }
-    return null;
-  });
-  expect(target, 'the plan has no cell left to aim at').not.toBeNull();
+    return found;
+  }, offAxis);
+  expect(empty, 'the plan has no cell left to aim at').not.toHaveLength(0);
+  const straying = (cell) => {
+    const looking = rotate(cell.orientation, { x: 0, y: 0, z: -1 });
+    const across = Math.hypot(looking.x, looking.z);
+    return Math.abs(Math.abs(looking.y) - 0.5) + (across > 0 ? 1 - Math.abs(looking.x) / across : 1);
+  };
+  const target = offAxis
+    ? empty.reduce((best, cell) => (straying(cell) < straying(best) ? cell : best))
+    : empty[0];
 
   const { alpha, beta, gamma } = deviceOrientationLookingAt(target.orientation);
   // Checked against the adapter's own conversion, not assumed. A sign error in the inverse would
@@ -187,7 +202,27 @@ async function aimAtACell(page) {
   await expect(page.locator('#guidance')).toContainText(/hold still/, { timeout: 15000 });
   // The angles come back with the cell so a caller can keep dispatching the same attitude — which
   // is what maturing a dwell takes, since it only advances on ticks a sample arrived on.
-  return { id: target.id, alpha, beta, gamma };
+  return { id: target.id, alpha, beta, gamma, orientation: target.orientation };
+}
+
+function rotate(q, v) {
+  // v + 2w(u x v) + 2 u x (u x v), for the unit quaternion (w, u).
+  const t = {
+    x: 2 * (q.y * v.z - q.z * v.y), y: 2 * (q.z * v.x - q.x * v.z), z: 2 * (q.x * v.y - q.y * v.x),
+  };
+  return {
+    x: v.x + q.w * t.x + (q.y * t.z - q.z * t.y),
+    y: v.y + q.w * t.y + (q.z * t.x - q.x * t.z),
+    z: v.z + q.w * t.z + (q.x * t.y - q.y * t.x),
+  };
+}
+
+function equirectPixelOf(direction, width, height) {
+  const longitude = Math.atan2(direction.x, -direction.z);
+  const latitude = Math.asin(Math.max(-1, Math.min(1, direction.y)));
+  const column = Math.floor((longitude / (2 * Math.PI) + 0.5) * width);
+  const row = Math.floor((0.5 - latitude / Math.PI) * height);
+  return { column: ((column % width) + width) % width, row: Math.min(height - 1, Math.max(0, row)) };
 }
 
 async function viewfinderIsLive(page) {
@@ -614,6 +649,76 @@ test('the review strip shows the frames, not just their scores', async ({ page }
       // colour, would not.
       expect(thumbnail.brightest - thumbnail.darkest).toBeGreaterThan(8);
     }
+  } finally {
+    await server.close();
+  }
+});
+
+test('a capture builds into a preview the page draws', async ({ page }) => {
+  // The whole of ADR 0071 in one place: the real engines in the browser's core, a build paced by
+  // the page's polls, and the panorama's pixels back across the worker onto a canvas. Every piece
+  // is tested against a fake somewhere else; this is the only place a captured frame becomes a
+  // panorama on screen, and the only check that would notice the runtime going back to the null
+  // engines, whose build fails at its first step.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    const aimed = await aimAtACell(page, { offAxis: true });
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, {
+      timeout: 15000,
+    });
+
+    await page.locator('#panel-toggle').click();
+    // Nothing is shown before there is something to show. Asserted on the page rather than on the
+    // attribute, because an author `display` beats `hidden` and the client's tests see only the
+    // attribute.
+    await expect(page.locator('#build-canvas')).toBeHidden();
+    await page.locator('#build-button').click();
+    await expect(page.locator('#build-status')).toContainText(/built/i, { timeout: 60000 });
+    const canvas = page.locator('#build-canvas[data-preview="ready"]');
+    await expect(canvas).toBeVisible();
+
+    // Where the cell's centre lands, and the point opposite it, by `utilities/equirect`'s
+    // convention: the camera looks down -Z, longitude 0 is -Z and grows toward +X, +Y is up.
+    const centre = equirectPixelOf(rotate(aimed.orientation, { x: 0, y: 0, z: -1 }), 2048, 1024);
+    const opposite = equirectPixelOf(rotate(aimed.orientation, { x: 0, y: 0, z: 1 }), 2048, 1024);
+    const beside = { column: (centre.column + 512) % 2048, row: centre.row };
+    const mirrored = { column: centre.column, row: 1023 - centre.row };
+    const drawn = await page.evaluate(({ centre: c, opposite: o, beside: b, mirrored: m }) => {
+      const target = document.getElementById('build-canvas');
+      const pixels = target.getContext('2d').getImageData(0, 0, target.width, target.height).data;
+      const isLit = (at) => pixels[at] !== 0 || pixels[at + 1] !== 0 || pixels[at + 2] !== 0;
+      let lit = 0;
+      for (let at = 0; at < pixels.length; at += 4) if (isLit(at)) lit += 1;
+      const litAt = ({ column, row }) => isLit((row * target.width + column) * 4);
+      return {
+        width: target.width, height: target.height, lit,
+        centreLit: litAt(c), oppositeLit: litAt(o), besideLit: litAt(b), mirroredLit: litAt(m),
+      };
+    }, { centre, opposite, beside, mirrored });
+    // The width the page asked for, and the equirectangular shape.
+    expect(drawn.width).toBe(2048);
+    expect(drawn.height).toBe(1024);
+    // One cell's frame: some of the sphere and not all of it. A canvas painted from a preview the
+    // core never drew would be dark throughout, and a frame smeared over the sphere lit throughout.
+    expect(drawn.lit).toBeGreaterThan(0);
+    expect(drawn.lit).toBeLessThan(drawn.width * drawn.height / 2);
+    // And placed: lit where the cell looks, dark behind it, a quarter turn beside it and in its
+    // reflection in the horizon. The count alone cannot see a frame flipped, turned, or blitted
+    // into a corner unprojected; this can. The build places the frame at the pose measured when
+    // the burst fired, which is inside the cell's acceptance cone and far inside the frame's
+    // half-width, so the centre is lit with room to spare. A quarter turn is past any lens's
+    // half-width and the sixty degrees to the reflection past its half-height, so both are dark.
+    expect(drawn.centreLit, `the cell's centre, ${JSON.stringify(centre)}`).toBe(true);
+    expect(drawn.oppositeLit, `opposite the cell, ${JSON.stringify(opposite)}`).toBe(false);
+    expect(drawn.besideLit, `a quarter turn beside it, ${JSON.stringify(beside)}`).toBe(false);
+    expect(drawn.mirroredLit, `its reflection in the horizon, ${JSON.stringify(mirrored)}`)
+      .toBe(false);
   } finally {
     await server.close();
   }
