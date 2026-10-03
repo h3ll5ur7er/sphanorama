@@ -35,8 +35,9 @@ export function describeAttitude(orientation: Quat): string {
   const aim = direction(orientation);
   const { azimuthDeg: azimuth, elevationDeg: elevation } = aimOfDirection(aim);
 
-  // Roll against the level cell that shares this direction, measured exactly as RollBetween
-  // measures it: from the target's horizontal +X axis to the camera's, about the viewing axis.
+  // Roll against the level cell that shares this direction: from that cell's horizontal +X axis to
+  // the camera's, about the viewing axis — which is what RollBetween reports for two orientations
+  // that look the same way, since no swing separates them.
   // At a pole the azimuth is arbitrary and so is the reference, but it is still perpendicular to
   // the aim, so the answer is a number rather than a NaN.
   const level: Vec3 = {
