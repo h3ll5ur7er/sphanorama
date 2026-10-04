@@ -173,35 +173,31 @@ double AngleBetweenDirections(const Vec3& a, const Vec3& b) {
   return std::acos(std::clamp(Dot(x, y), -1.0, 1.0));
 }
 
+namespace {
+// The squared cosine of half the swing below which the views count as opposite: a swing within
+// about two millionths of a radian of a half-turn. Exactly opposite views built from angles in
+// degrees land below 1e-30 and a tenth of a degree short of opposite near 1e-6, so the floor sits
+// between them with room either side.
+constexpr double kOppositeViews = 1e-12;
+}  // namespace
+
 double RollBetween(const Quat& current, const Quat& target) {
-  // The camera's own +X axis is perpendicular to where it looks by construction, so it needs no
-  // projection; the target's does, because the two are only exactly co-directional once the user
-  // has finished aiming.
-  const Vec3 axis = Direction(current);
-  const Vec3 here = Rotate(current, Vec3{1, 0, 0});
-  const Vec3 there = Rotate(target, Vec3{1, 0, 0});
-  const double along = Dot(there, axis);
-  const Vec3 flattened =
-      Normalize(Vec3{there.x - axis.x * along, there.y - axis.y * along, there.z - axis.z * along});
-  // **Not antipodal** — this said so, which was the third copy of a claim the declaration retracts
-  // and the test disproves. It fires when the *target's +X axis* lands on the current viewing axis,
-  // which is a fact about how the target is rolled and says nothing about whether roll is defined.
+  // The turn from the target to the current, in the target's own frame, where the view is -Z. Its
+  // part about -Z is the twist and the rest is the swing; the twist's half-angle is read straight
+  // off the scalar and the -Z component, whatever the swing, and either sign of the quaternion
+  // gives the same angle once wrapped.
   //
-  // Without it `flattened` is `Normalize`'s zero-vector fallback, so both `atan2` operands are a
-  // signed zero and the sign of one decides between 0 and half a turn. `x` is
-  // `Dot(flattened, here)` — a sum of three products of `+0.0` with a component of `here` — so it
-  // is `-0.0` exactly when all three components of `here` are negative, and `atan2(y, -0.0)` is
-  // ±pi. **That predicate is the whole mechanism**: over 2,000,000 constructed collapses it agrees
-  // with "the guard changed the answer" 100.000% of the time, at a rate of 12.548% against an
-  // analytic one in eight.
-  //
-  // The figure here was "4,307,507 of 32,000,000", which recorded no construction and so could not
-  // be re-derived — and the natural reading of it is wrong, because a collapse is measure zero
-  // under random orientations: 4,000,000 random pairs produce **none**. It has to be built, by
-  // putting the target's +X axis exactly on the current viewing axis. A rate quoted without the
-  // construction that produced it is not a measurement anybody else can check.
-  if (Dot(flattened, flattened) < 0.5) return 0.0;
-  return std::atan2(Dot(Cross(flattened, here), axis), Dot(flattened, here));
+  // Both are checked before either is normalised, because `Normalize` turns what is not a rotation
+  // into the identity, and a target that became the identity would be measured against as level.
+  if (!IsUsableRotation(current) || !IsUsableRotation(target)) return 0.0;
+  const Quat turn = Multiply(Conjugate(target), Normalize(current));
+  const double along = -turn.z;
+  // The squared cosine of half the swing: it vanishes as the two views turn opposite.
+  if (!(turn.w * turn.w + along * along > kOppositeViews)) return 0.0;
+  const double angle = 2.0 * std::atan2(along, turn.w);
+  if (angle > std::numbers::pi) return angle - 2.0 * std::numbers::pi;
+  if (angle <= -std::numbers::pi) return angle + 2.0 * std::numbers::pi;
+  return angle;
 }
 
 std::optional<std::string_view> PoseSampleDefect(const PoseSample& pose) {
