@@ -22,7 +22,7 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 
 // 66 degrees across the short edge of a 960x1280 portrait frame, so fx and fy differ (739 and 1372)
 // and a test that confuses the axes fails. Not the lens the app builds, which puts the angle on the
-// long edge: see `BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel`.
+// long edge: see `deriveFieldOfView` in `shell/src/access/capture-host.ts`.
 Intrinsics Phone() { return LensFromFieldOfView(66.0, 50.0, 960, 1280); }
 
 // A direction `degrees` off the forward axis, turned toward +X (right) when `axis` is 0 and
@@ -858,37 +858,44 @@ TEST(Unproject, BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMill
   // r * (1 + k1 r^2) peaks at r = 1 / sqrt(3), where it is 2 / (3 sqrt(3)).
   const double reach = 2.0 / (3.0 * std::sqrt(3.0));
 
-  for (const int axis : {0, 1}) {
-    const double edge = axis == 0 ? lens.cx + reach * lens.fx : lens.cy + reach * lens.fy;
+  // Out from the optical centre along both axes, both diagonals and back, so the miss is judged on
+  // pixels where it has two components as well as one: on an axis a max or a sum of the two would
+  // read the same as their length.
+  const double d = 1.0 / std::sqrt(2.0);
+  const Vec3 ways[] = {{1, 0, 0}, {0, 1, 0}, {-1, 0, 0}, {0, -1, 0}, {d, d, 0}, {-d, d, 0}};
+  for (const Vec3& way : ways) {
+    const double edge = reach * lens.fx;
     int answeredPastTheEdge = 0;
     for (const double side : {-1.0, 1.0}) {
       for (int decade = -12; decade <= 1; ++decade) {
         for (int step = 0; step < 10; ++step) {
           const double distance = std::pow(10.0, decade + step / 10.0);
           const double at = edge + side * distance;
-          const Pixel pixel = axis == 0 ? Pixel{at, lens.cy} : Pixel{lens.cx, at};
+          const Pixel pixel{lens.cx + way.x * at, lens.cy + way.y * at};
           const UnprojectedDirection back = Unproject(lens, pixel);
           // Loose enough that a pixel with a preimage is never refused for rounding, however close
           // to the fold it sits; and no answer for one further out than an answer may miss by. The
           // pair is also what holds `edge` to within about a millionth of a pixel of the real one.
           if (side < 0) {
-            ASSERT_TRUE(back.valid) << distance << " px inside the edge on axis " << axis;
+            ASSERT_TRUE(back.valid)
+                << distance << " px inside the edge toward " << way.x << "," << way.y;
           }
           if (side > 0 && distance >= 1e-6) {
-            EXPECT_FALSE(back.valid) << distance << " px past the edge on axis " << axis;
+            EXPECT_FALSE(back.valid)
+                << distance << " px past the edge toward " << way.x << "," << way.y;
           }
           if (!back.valid) continue;
           if (side > 0) ++answeredPastTheEdge;
           const ProjectedPixel there = Project(lens, back.direction);
           ASSERT_TRUE(there.valid);
           EXPECT_LT(std::hypot(there.pixel.x - pixel.x, there.pixel.y - pixel.y), 1e-6)
-              << side * distance << " px from the edge on axis " << axis;
+              << side * distance << " px from the edge toward " << way.x << "," << way.y;
         }
       }
     }
     // Or the sweep never reached the band the tolerance decides, and the solver answered every
     // assertion above on its own.
-    EXPECT_GT(answeredPastTheEdge, 0) << "axis " << axis;
+    EXPECT_GT(answeredPastTheEdge, 0) << "toward " << way.x << "," << way.y;
   }
 }
 

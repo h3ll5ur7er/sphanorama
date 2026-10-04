@@ -52,9 +52,12 @@ constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 // How far an unprojected direction may land from the pixel it came from when projected back, in
 // normalised image units — tight enough that a distortion which does not invert is caught, loose
-// enough that an ordinary one is never refused for rounding. It binds only near a fold, since an
-// undistorted lens inverts exactly; and in pixels it is the focal length times this, so it holds an
-// answer under a millionth of a pixel only while f is below 1000.
+// enough that an ordinary one is never refused for rounding. It binds only near a fold: a lens
+// without one round-trips within about 3e-14, over four orders under it (measured over every second
+// pixel: undistorted 1.7e-16, the five-term barrel 9.9e-15, the 115-degree ultra-wide 2.8e-14).
+// Each axis is judged in its own focal length, so in pixels it is fx times this across and fy
+// times this down, and it holds an answer under a millionth of a pixel only while both are below
+// 1000.
 constexpr double kInverseToleranceNormalised = 1e-9;
 
 // Brown-Conrady is inverted by damped Newton, which stops as soon as it has stopped moving.
