@@ -899,23 +899,26 @@ TEST(Unproject, BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMill
   }
 }
 
-TEST(Unproject, EachAxisIsHeldToTheToleranceInItsOwnFocalLength) {
-  // The square lens above cannot tell `fx` from `fy`, and the round trip is judged on both: swap
-  // them in the check and every test there still passes. `Phone()`'s two differ by nearly a factor
-  // of two, so on each axis an answer is given exactly as far past the edge as that axis's own
-  // focal length allows — 7.4e-7 px across, 1.37e-6 px down — and no further.
+TEST(Unproject, EveryDirectionIsHeldToTheToleranceInItsOwnFocalLengths) {
+  // The square lens above cannot tell `fx` from `fy`, and the round trip is judged on both. On
+  // `Phone()` they differ by nearly a factor of two, and the miss is measured in each axis's own
+  // focal length: 7.4e-7 px across, 1.37e-6 px down, and the ellipse between them elsewhere. A
+  // radial lens folds at the same normalised radius in every direction, so a step past it by a
+  // share of the tolerance is answered below one share and refused above, all the way round. Every
+  // 15 degrees rather than on the axes alone, because on an axis one component is zero and any way
+  // of combining the two reads the same: dividing by whichever axis's focal length is larger passes
+  // both axes and answers 1.46 shares at 30 degrees. The answered share pins the other side: a
+  // tolerance below 0.9e-9, or a norm stricter off the axes such as their sum, fails here too.
   Intrinsics lens = Phone();
   lens.k1 = -1.0;
   const double reach = 2.0 / (3.0 * std::sqrt(3.0));
-  for (const int axis : {0, 1}) {
-    const double f = axis == 0 ? lens.fx : lens.fy;
-    const double edge = axis == 0 ? lens.cx + reach * lens.fx : lens.cy + reach * lens.fy;
-    // Fractions of the tolerance, in this axis's pixels, either side of where it refuses.
-    for (const double share : {0.5, 0.8, 1.25, 2.0}) {
-      const double at = edge + share * 1e-9 * f;
-      const Pixel pixel = axis == 0 ? Pixel{at, lens.cy} : Pixel{lens.cx, at};
+  for (int degrees = 0; degrees < 360; degrees += 15) {
+    const double t = degrees / kDegPerRad;
+    for (const double share : {0.9, 1.1}) {
+      const double r = reach + share * 1e-9;
+      const Pixel pixel{lens.cx + lens.fx * std::cos(t) * r, lens.cy + lens.fy * std::sin(t) * r};
       EXPECT_EQ(Unproject(lens, pixel).valid, share < 1.0)
-          << share << " of the tolerance past the edge on axis " << axis;
+          << share << " of the tolerance past the edge at " << degrees << " degrees";
     }
   }
 }

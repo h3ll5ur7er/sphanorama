@@ -447,7 +447,8 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR
 
   struct Row { double shift; double expectedDeg; };
   // `-0.5` is 2.0037 times `+0.0` rather than twice it: the tangent of a growing offset is not
-  // quite linear in it.
+  // quite linear in it. `+0.5` is exact by construction — the fit is handed the correspondences it
+  // was built from — so, as in the first table, it checks the fit rather than measuring the lens.
   const Row rows[] = {{-0.50, 0.108482}, {0.00, 0.054141}, {0.50, 0.000000}};
   for (const Row& row : rows) {
     const double error = FitErrorDeg(lens, inA, inB, turn, row.shift);

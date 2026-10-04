@@ -292,5 +292,6 @@ Context's "a second fixture would be a second thing to keep true" was wrong when
 not overtaken: this file's own Consequences — "ADR 0060's precedent applies here" — answers it with
 the reason the first row is pinned, that two readers rebuilt the described rig and got two
 different tables. `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes`
-asserts the row now: the lens, the 1,488 correspondences and all three figures to 1e-6, and the
-1,470 correspondences and 0.027560° about `x` that the next paragraph of Context gives.
+asserts the row now: the lens, the 1,488 correspondences, the two figures to 1e-6 and the zero at
+`+0.5` — which, as in the first table, checks the fit rather than measuring the lens — and the 1,470
+correspondences and 0.027560° about `x` that the next paragraph of Context gives.
