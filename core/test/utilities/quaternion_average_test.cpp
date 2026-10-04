@@ -94,6 +94,44 @@ TEST(AverageQuaternions, TwoTurnsAboutOneAxisAverageToTheAngleBetweenThem) {
 }
 
 /**
+ * Two rotations average to their normalised sum, which pins how far the eigensolver goes.
+ *
+ * Two unit quaternions with a positive dot product have Markley's average in closed form —
+ * `Normalize(a + b)`, the eigenvector of `1 + a.b` — so the expected value is exact and the
+ * computed one is asked to land within 1e-14 of it. That holds to about 170 degrees apart; past it
+ * the conditioning, eps over `a.b`, decides the error rather than the solver, so no pair here goes
+ * further. Each pair is here for the mutation it catches, measured in the debug and the fused
+ * build: the first fails a stop loosened from 1e-30 to 1e-28 or anything looser (1e-29 passes), the
+ * second a sweep budget cut from 24 to 4 (5 passes). Compared component by component, because the
+ * angle between two quaternions this close is below what `acos` resolves.
+ */
+TEST(AverageQuaternions, TwoRotationsAnyDistanceApartAverageToTheirNormalisedSum) {
+  struct Pair { Vec3 axis; double deg; Vec3 turnAxis; double turnDeg; const char* catches; };
+  const Pair pairs[] = {
+      {{-1, 0, 3}, 40.0, {-2, -2, 1}, 170.0, "a stop of 1e-28 or looser, 8.4e-14 out"},
+      {{0, 1, 2}, 135.0, {-1, -1, 1}, 149.0, "a budget of four sweeps, 5.9e-9 out"},
+  };
+  for (const Pair& pair : pairs) {
+    const Quat a = FromAxisAngle(pair.axis, pair.deg / kDegPerRad);
+    const Quat b = Multiply(FromAxisAngle(pair.turnAxis, pair.turnDeg / kDegPerRad), a);
+    ASSERT_GT(a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z, 0.0)
+        << "the closed form needs the two on the same side";
+    const Quat expected = Normalize(Quat{a.w + b.w, a.x + b.x, a.y + b.y, a.z + b.z});
+
+    const std::vector<Quat> both{a, b};
+    const QuaternionAverage average = AverageQuaternions(both, {});
+    ASSERT_TRUE(average.valid);
+    const Quat& q = average.rotation;
+    const double side = q.w * expected.w + q.x * expected.x + q.y * expected.y + q.z * expected.z;
+    const double sign = side < 0 ? -1.0 : 1.0;
+    EXPECT_NEAR(q.w, sign * expected.w, 1e-14) << "the pair that catches " << pair.catches;
+    EXPECT_NEAR(q.x, sign * expected.x, 1e-14) << "the pair that catches " << pair.catches;
+    EXPECT_NEAR(q.y, sign * expected.y, 1e-14) << "the pair that catches " << pair.catches;
+    EXPECT_NEAR(q.z, sign * expected.z, 1e-14) << "the pair that catches " << pair.catches;
+  }
+}
+
+/**
  * A weight moves the answer, and moves it the amount the closed form says.
  *
  * The point of the weights is that a caller with unequal evidence can say so, and the assertion has

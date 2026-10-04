@@ -94,7 +94,7 @@ struct Incidence {
 AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
                                    std::span<const Quat> anchors, double anchorWeight) {
   AveragedRotations out;
-  if (!std::isfinite(anchorWeight) || anchorWeight < 0.0) return out;
+  if (!std::isfinite(anchorWeight) || anchorWeight < 0.0) return AveragedRotations{};
 
   // No separate empty check: with no anchors there is no usable anchor either, so the gate further
   // down refuses the same input for a reason that is actually about the problem. Nothing between
@@ -115,8 +115,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // Not reachable from any caller in this tree, and wasm32 cannot reach it at all — `size_t` is 32
   // bits there and this would need 64 GiB inside a 4 GiB space. It is one line, and the header
   // already promises `int32_t` indexing, so the promise may as well be the one that is enforced.
-  if (anchors.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
-  if (edges.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
+  constexpr size_t kMostIndexable = static_cast<size_t>(std::numeric_limits<int32_t>::max());
+  if (anchors.size() > kMostIndexable || edges.size() > kMostIndexable) return AveragedRotations{};
   const int32_t frames = static_cast<int32_t>(anchors.size());
 
   // The whole input is checked before any of it is used, so a refusal is decided by the input rather
@@ -153,11 +153,13 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   std::vector<Quat> rotation;
   rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {
-    if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) return out;
-    if (edge.from == edge.to) return out;
+    if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) {
+      return AveragedRotations{};
+    }
+    if (edge.from == edge.to) return AveragedRotations{};
     const std::optional<double> norm = UsableNorm(edge.rotation);
-    if (!norm) return out;
-    if (!std::isfinite(edge.weight) || edge.weight < 0.0) return out;
+    if (!norm) return AveragedRotations{};
+    if (!std::isfinite(edge.weight) || edge.weight < 0.0) return AveragedRotations{};
     rotation.push_back(Quat{edge.rotation.w / *norm, edge.rotation.x / *norm,
                             edge.rotation.y / *norm, edge.rotation.z / *norm});
   }
@@ -190,10 +192,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // at.
   //
   // Read off `anchorsUsed` rather than from a flag kept beside it, which is what stood here: the two
-  // were the same fact held twice, and the count was already written into `out` before the flag was
-  // read — so any gate added between them would have returned a positive `anchorsUsed` next to
-  // `valid == false`, and nothing reads a refused answer past `valid` to notice.
-  if (out.anchorsUsed == 0) return out;
+  // were the same fact held twice.
+  if (out.anchorsUsed == 0) return AveragedRotations{};
 
   // A weight of zero removes the edge from the solve without removing it from the caller's array
   // (ADR 0056). **Decided once, here, and recorded** — the error report below reads `believed` rather
@@ -231,6 +231,14 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       if (placed[static_cast<size_t>(other)] != 0) continue;
       // `rotation` is `conjugate(q[to]) * q[from]`, so `q[from] = q[to] * rotation` and
       // `q[to] = q[from] * conjugate(rotation)`.
+      //
+      // **No test pins the `Normalize` here, and none should pretend to.** Both factors are unit,
+      // and every frame this places has a believed edge, so the first sweep replaces it with an
+      // average of normalised predictions; no output's norm moves by more than 2.2e-16 without it.
+      // What dropping it does change is rounding, and rounding shows in two places only: which
+      // sweep the solve stops on, about `kSettledDeg` either way, and which side a half-turn tie
+      // falls on, which can move a frame tens of degrees. A test pinning this line would pin a coin
+      // flip. It stays because it costs nothing and keeps every product here one shape.
       const Quat& unit = rotation[static_cast<size_t>(touch.edge)];
       solved[static_cast<size_t>(other)] =
           touch.asTo ? Normalize(Multiply(solved[static_cast<size_t>(at)], unit))
@@ -320,16 +328,18 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       }
       if (predictions.empty()) continue;
 
-      // **No check on the answer, because this call cannot refuse.** `AverageQuaternions` turns down
-      // an empty set, a mismatched weight span, an input that is not a rotation, a negative or
-      // non-finite weight, or weights that are all zero. None is reachable from here: the empty case
-      // returns above, the spans are filled together, every prediction is either a `prior` — unit by the
-      // division above, on the norm its own gate tested — or a `Normalize` of a product of two unit
-      // rotations and so is one, and every weight pushed is either `anchorWeight` past its
-      // `> 0.0` test or an edge weight past the filter that built `incident`. A guard here would read
-      // as protection to the next person and could never fire, which this repository treats as worse
-      // than none.
+      // This call cannot refuse today. `AverageQuaternions` turns down an empty set, a mismatched
+      // weight span, an input that is not a rotation, a negative or non-finite weight, or weights
+      // that are all zero, and none is reachable from here: the empty case is skipped above, the
+      // spans are filled together, every prediction is either a `prior` — unit by the division
+      // above, on the norm its own gate tested — or a `Normalize` of a product of two unit
+      // rotations, and every weight pushed is either `anchorWeight` past its `> 0.0` test or an
+      // edge weight past the filter that built `incident`. Four facts upstream, so a refusal
+      // refuses the solve rather than being argued away: a refused average carries the identity,
+      // and stored as a frame it reads as one. Every refusal here is default-built, so `rotations`
+      // is empty and `anchorsUsed` zero whichever gate said no.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
+      if (!average.valid) return AveragedRotations{};
       if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
 
       largestMoveDeg = std::max(
@@ -358,9 +368,12 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
           offsets.push_back(Normalize(Multiply(prior[static_cast<size_t>(i)],
                                                Conjugate(solved[static_cast<size_t>(i)]))));
         }
-        // Cannot refuse, for the reasons the per-frame call above cannot: every piece holds an
-        // anchor, and every offset is a `Normalize` of a product of two unit rotations.
+        // Cannot refuse today either: every piece holds an anchor, so `offsets` is not empty, every
+        // offset is a `Normalize` of a product of two unit rotations, and no weights are passed.
+        // A refused gauge would turn nothing and add nothing to the move, which pushes the sweep
+        // toward `converged`; refused the same way as the per-frame call.
         const QuaternionAverage gauge = AverageQuaternions(offsets, {});
+        if (!gauge.valid) return AveragedRotations{};
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
         // eigensolver's scan order, and that is true of every frame in it.
         if (!gauge.isUnique) {
