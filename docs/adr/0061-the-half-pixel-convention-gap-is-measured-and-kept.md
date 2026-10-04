@@ -2,6 +2,13 @@
 
 **Status:** accepted
 
+> **The `synthetic-ring-4` row below is asserted now, and the reason Context gives for leaving it as
+> prose did not hold.** "A second fixture would be a second thing to keep true" was answered by the
+> reason the first row is pinned: two readers rebuilt the described rig and got two different
+> tables. `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes`
+> asserts the lens, the 1,488 correspondences and all three figures to 1e-6. The paragraph stands as
+> what was decided when this was written.
+
 ## Context
 
 `camera_model.h` puts the origin at the **top-left corner of the image**, so a pixel centre sits at

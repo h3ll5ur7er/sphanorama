@@ -840,6 +840,48 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
+TEST(Unproject, EveryAnswerProjectsBackToWithinAMillionthOfAPixel) {
+  // The round-trip tolerance pinned by what it lets through rather than by where it refuses.
+  // Approaching the last pixel with a preimage from outside, Newton settles on the fold and the
+  // round trip misses by the distance past it, so on this row the tolerance alone decides how far
+  // out an answer is still given and how wrong it may be. Offsets run from a trillionth of a pixel
+  // to sixty pixels either side, ten to a decade with one at a millionth exactly, so any tolerance
+  // above 1e-6 / fx — 1.36e-9 on this lens — fails here rather than at the next refusal test.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  // r * (1 + k1 r^2) peaks at r = 1 / sqrt(3), where it is 2 / (3 sqrt(3)).
+  const double edge = lens.cx + 2.0 / (3.0 * std::sqrt(3.0)) * lens.fx;
+
+  int answeredPastTheEdge = 0;
+  for (const double side : {-1.0, 1.0}) {
+    for (int decade = -12; decade <= 1; ++decade) {
+      for (int step = 0; step < 10; ++step) {
+        const double distance = std::pow(10.0, decade + step / 10.0);
+        const Pixel pixel{edge + side * distance, lens.cy};
+        const UnprojectedDirection back = Unproject(lens, pixel);
+        // Loose enough that a pixel with a preimage is never refused for rounding, however close
+        // to the fold it sits; and no answer for one further out than an answer may miss by. The
+        // pair is also what holds `edge` to within about a millionth of a pixel of the real one.
+        if (side < 0) {
+          ASSERT_TRUE(back.valid) << distance << " px inside the edge";
+        }
+        if (side > 0 && distance >= 1e-6) {
+          EXPECT_FALSE(back.valid) << distance << " px past the edge";
+        }
+        if (!back.valid) continue;
+        if (side > 0) ++answeredPastTheEdge;
+        const ProjectedPixel there = Project(lens, back.direction);
+        ASSERT_TRUE(there.valid);
+        EXPECT_LT(std::hypot(there.pixel.x - pixel.x, there.pixel.y - pixel.y), 1e-6)
+            << side * distance << " px from the edge";
+      }
+    }
+  }
+  // Or the sweep never reached the band the tolerance decides, and the solver answered every
+  // assertion above on its own.
+  EXPECT_GT(answeredPastTheEdge, 0);
+}
+
 // The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
 //
 // Measured on a frame rather than a grid because the frame is what the question is about: a
@@ -913,12 +955,11 @@ TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
   // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
   // 1.35e-3 relative margin between the last refused shell and the first accepted one.
   //
-  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
-  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, which
-  // predates this branch. This count only joins in at 1e-3. So the pair below pins
-  // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
-  // whole suite — 0.44 px of accepted round-trip error against a constant documented as under a
-  // millionth of a pixel.
+  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the
+  // constant deciding "refuses rather than answering approximately" — is caught from 1.36e-9 by
+  // `EveryAnswerProjectsBackToWithinAMillionthOfAPixel` and at 7e-4 by
+  // `APixelPastTheLastOneWithAPreimageIsRefused`. This count only joins in at 1e-3, so the pair
+  // below pins *where* the boundary is rather than what enforces it.
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
   EXPECT_EQ(RefusedCountOfFrame(folding), 48);

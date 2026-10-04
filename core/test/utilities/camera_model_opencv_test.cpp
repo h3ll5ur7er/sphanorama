@@ -17,9 +17,9 @@
 //     is a stronger statement than agreeing with their inverse, and it is the one that would have
 //     caught the round-three defect had it existed then.
 //
-// A third test joined them later and is neither: `TheHalfPixelShiftCostsTheAngleADR0061Publishes`
-// uses OpenCV for its SVD and asks nothing of OpenCV's camera model. It is here because that is
-// where the SVD is, and its own docblock says what it does and does not check. Its companion —
+// Two tests joined them later and are neither: `TheHalfPixelShiftCostsTheAngleADR0061Publishes` and
+// its second lens use OpenCV for an SVD and ask nothing of OpenCV's camera model. They are here
+// because that is where the SVD is, and the first one's docblock says what they do and do not check. Its companion —
 // which needs no OpenCV at all — lives in `camera_model_test.cpp` for the same reason.
 #include <gtest/gtest.h>
 
@@ -208,6 +208,49 @@ cv::Matx33d TurnAbout(const cv::Vec3d& axis, double degrees) {
 
 cv::Vec3d ToCv(const Vec3& v) { return cv::Vec3d(v.x, v.y, v.z); }
 
+// The correspondences, as pixel coordinates under the model's own corner convention: every pixel
+// centre of `lens` whose image after `about` lands inside the frame. Built once per turn: the shift
+// is applied to these, so every row of a table is fitted to the same set and a sweep is a property
+// of the shift rather than of five different samplings.
+void Correspond(const Intrinsics& lens, const cv::Matx33d& about, std::vector<Pixel>* a,
+                std::vector<Pixel>* b) {
+  for (int32_t y = 0; y < lens.height; ++y) {
+    for (int32_t x = 0; x < lens.width; ++x) {
+      const Pixel centre{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5};
+      const UnprojectedDirection ray = Unproject(lens, centre);
+      if (!ray.valid) continue;
+      // The same world point in the other frame, so this is where the second camera sees what
+      // the first saw at `centre`.
+      const cv::Vec3d turned = about.t() * ToCv(ray.direction);
+      const ProjectedPixel image = Project(lens, Vec3{turned[0], turned[1], turned[2]});
+      if (!image.valid) continue;
+      if (image.pixel.x < 0 || image.pixel.x > lens.width) continue;
+      if (image.pixel.y < 0 || image.pixel.y > lens.height) continue;
+      a->push_back(centre);
+      b->push_back(image.pixel);
+    }
+  }
+}
+
+// How far from `about` a Kabsch fit lands when both sides are read through the engine's convention
+// shifted by `shift`; negative when a shifted pixel has no ray.
+double FitErrorDeg(const Intrinsics& lens, const std::vector<Pixel>& a, const std::vector<Pixel>& b,
+                   const cv::Matx33d& about, double shift) {
+  std::vector<cv::Vec3d> from, to;
+  from.reserve(a.size());
+  to.reserve(b.size());
+  for (size_t at = 0; at < a.size(); ++at) {
+    const UnprojectedDirection ra =
+        Unproject(lens, Pixel{a[at].x - 0.5 + shift, a[at].y - 0.5 + shift});
+    const UnprojectedDirection rb =
+        Unproject(lens, Pixel{b[at].x - 0.5 + shift, b[at].y - 0.5 + shift});
+    if (!ra.valid || !rb.valid) return -1.0;
+    from.push_back(ToCv(ra.direction));
+    to.push_back(ToCv(rb.direction));
+  }
+  return AngleBetweenDeg(BestRotation(to, from), about);
+}
+
 /**
  * ADR 0061's shift table, asserted rather than left as prose.
  *
@@ -258,48 +301,8 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
 
   const cv::Matx33d turn = TurnAboutY(30.0);
 
-  // The correspondences, as pixel coordinates under the model's own corner convention. Built once
-  // per turn: the shift is applied to these, so every row of a table is fitted to the same set and
-  // a sweep is a property of the shift rather than of five different samplings.
-  const auto correspond = [&lens](const cv::Matx33d& about, std::vector<Pixel>* a,
-                                  std::vector<Pixel>* b) {
-    for (int32_t y = 0; y < lens.height; ++y) {
-      for (int32_t x = 0; x < lens.width; ++x) {
-        const Pixel centre{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5};
-        const UnprojectedDirection ray = Unproject(lens, centre);
-        if (!ray.valid) continue;
-        // The same world point in the other frame, so this is where the second camera sees what
-        // the first saw at `centre`.
-        const cv::Vec3d turned = about.t() * ToCv(ray.direction);
-        const ProjectedPixel image = Project(lens, Vec3{turned[0], turned[1], turned[2]});
-        if (!image.valid) continue;
-        if (image.pixel.x < 0 || image.pixel.x > lens.width) continue;
-        if (image.pixel.y < 0 || image.pixel.y > lens.height) continue;
-        a->push_back(centre);
-        b->push_back(image.pixel);
-      }
-    }
-  };
-
-  const auto fitErrorDeg = [&lens](const std::vector<Pixel>& a, const std::vector<Pixel>& b,
-                                   const cv::Matx33d& about, double shift) {
-    std::vector<cv::Vec3d> from, to;
-    from.reserve(a.size());
-    to.reserve(b.size());
-    for (size_t at = 0; at < a.size(); ++at) {
-      const UnprojectedDirection ra = Unproject(lens, Pixel{a[at].x - 0.5 + shift,
-                                                            a[at].y - 0.5 + shift});
-      const UnprojectedDirection rb = Unproject(lens, Pixel{b[at].x - 0.5 + shift,
-                                                            b[at].y - 0.5 + shift});
-      if (!ra.valid || !rb.valid) return -1.0;
-      from.push_back(ToCv(ra.direction));
-      to.push_back(ToCv(rb.direction));
-    }
-    return AngleBetweenDeg(BestRotation(to, from), about);
-  };
-
   std::vector<Pixel> inA, inB;
-  correspond(turn, &inA, &inB);
+  Correspond(lens, turn, &inA, &inB);
   // **This guards `fx`, the width and the turn — not `fy`.** The turn is about `+Y`, so the
   // vertical extent of the overlap is the whole frame and the two `image.pixel.y` bounds reject
   // nothing: setting `fy` to `fx`, or the vertical field of view to 66 degrees, leaves the count at
@@ -334,7 +337,7 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
 
   for (const Row& row : rows) {
     // `b` holds `turn.t() * a` by construction, so the rotation that carries **b onto a** is
-    // `turn` itself, and `fitErrorDeg` passes them in that order to recover it rather than its
+    // `turn` itself, and `FitErrorDeg` passes them in that order to recover it rather than its
     // inverse. The first draft had them the other way and failed by exactly 60 degrees, which is 30
     // twice — a fit wrong by the whole turn rather than by the shift.
     //
@@ -345,7 +348,7 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
     // `KabschRotation(from = frame A's bearings, to = frame B's)`, which carries the **first**
     // frame onto the second, and `PairwiseResult::relativeRotation` is `Conjugate(q[b]) * q[a]`,
     // which is what `registration_accuracy_test.cpp`'s `Chain` consumes.
-    const double error = fitErrorDeg(inA, inB, turn, row.shift);
+    const double error = FitErrorDeg(lens, inA, inB, turn, row.shift);
     ASSERT_GE(error, 0.0) << "a shifted pixel of a pinhole lens has no ray";
     EXPECT_NEAR(error, row.expectedDeg, 1e-5)
         << "shift " << row.shift << " fits the turn " << error << " degrees out";
@@ -380,16 +383,50 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // So the sweep is back, with its number.
   const cv::Matx33d tilted = TurnAbout(cv::Vec3d(1.0, 2.0, 3.0), 20.0);
   std::vector<Pixel> tiltedA, tiltedB;
-  correspond(tilted, &tiltedA, &tiltedB);
+  Correspond(lens, tilted, &tiltedA, &tiltedB);
   ASSERT_EQ(tiltedA.size(), 223602u) << "the tilted overlap is not the one these figures come from";
 
   // Exactly zero at the correction, which is the claim that does not depend on the axis, and a
   // specific figure at what the engine does today, which is the claim that does. 20 degrees about
   // `(1, 2, 3)`: three unequal components, so none of the three sign flips commutes with it.
-  EXPECT_NEAR(fitErrorDeg(tiltedA, tiltedB, tilted, 0.5), 0.0, 1e-5)
+  EXPECT_NEAR(FitErrorDeg(lens, tiltedA, tiltedB, tilted, 0.5), 0.0, 1e-5)
       << "the correction is not exact about a tilted axis";
-  EXPECT_NEAR(fitErrorDeg(tiltedA, tiltedB, tilted, 0.0), 0.021664, 1e-5)
+  EXPECT_NEAR(FitErrorDeg(lens, tiltedA, tiltedB, tilted, 0.0), 0.021664, 1e-5)
       << "the uncorrected shift costs a different angle about a tilted axis than it did";
+}
+
+/**
+ * ADR 0061's second lens, the committed `synthetic-ring-4`'s, pinned like the first.
+ *
+ * Two readers rebuilt the rig the first table describes and got two different tables, which is why
+ * that one is asserted; this row is a second description of the same rig and earns the same. It is
+ * also the one that shows the gap is an image-plane offset rather than an angle: a smaller lens
+ * pays more for the same half pixel.
+ */
+TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes) {
+  const Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 48, 36);
+  // The values `core/test/data/synthetic-ring-4/truth.json` carries, so this is that lens and not
+  // one rebuilt from a description of it.
+  ASSERT_NEAR(lens.fx, 36.956759, 1e-6);
+  ASSERT_NEAR(lens.fy, 38.601125, 1e-6);
+
+  // About `+Y`, which the ADR names because it decides the figures: about `+X` the same lens and
+  // angle give 1,470 correspondences and half the angle, since the frame is wider than it is tall.
+  const cv::Matx33d turn = TurnAboutY(7.0);
+  std::vector<Pixel> inA, inB;
+  Correspond(lens, turn, &inA, &inB);
+  ASSERT_EQ(inA.size(), 1488u) << "the overlap is not the one the ADR's figures were measured on";
+
+  struct Row { double shift; double expectedDeg; };
+  // `-0.5` is 2.0037 times `+0.0` rather than twice it: the tangent of a growing offset is not
+  // quite linear in it, and a lens this short shows it more than the accuracy lens does.
+  const Row rows[] = {{-0.50, 0.108482}, {0.00, 0.054141}, {0.50, 0.000000}};
+  for (const Row& row : rows) {
+    const double error = FitErrorDeg(lens, inA, inB, turn, row.shift);
+    ASSERT_GE(error, 0.0) << "a shifted pixel of a pinhole lens has no ray";
+    EXPECT_NEAR(error, row.expectedDeg, 1e-6)
+        << "shift " << row.shift << " fits the turn " << error << " degrees out";
+  }
 }
 
 }  // namespace
