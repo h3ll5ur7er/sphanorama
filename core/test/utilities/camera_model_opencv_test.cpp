@@ -275,10 +275,10 @@ double FitErrorDeg(const Intrinsics& lens, const std::vector<Pixel>& a, const st
  * produce a table with the right shape. The two lower rows move by less than the 1e-5 tolerance
  * here, so this test catches that mutation on three rows of five.
  *
- * **A mutation applied to the model itself it does not catch at all.** Mutating `Project` and
- * `Unproject` together to put image-up at camera-up leaves every row of this table unchanged, while
- * the two OpenCV agreement tests above fail. The reason is structural rather than a choice of axis,
- * and the body says why.
+ * **A mutation applied to the model itself the table does not catch at all.** Mutating `Project`
+ * and `Unproject` together to put image-up at camera-up leaves every row unchanged, while the two
+ * OpenCV agreement tests above fail and so does the tilted sweep at the end of this test. The
+ * reason is structural rather than a choice of axis, and the body says why.
  * `Unproject.ImageYRunsDownAndCameraYRunsUp` is what asserts the handedness.
  *
  * Linear in the shift and exactly zero at `+0.5`, which is the claim that matters — the gap is a
@@ -314,13 +314,12 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // ADR 0061's table, to the digit, at a tolerance of 1e-5 degrees.
   //
   // **That is sized against the rows and not against every error it has to reject, and the
-  // difference is measured rather than assumed.** Against a square lens — the mistake this table
-  // has actually made — the `+0.00` row lands at 0.010395, ten times the tolerance out. Against a
-  // reversed turn it lands 1.1e-5 out, which clears 1e-5 by ten per cent; and the `+0.25` and
-  // `+0.50` rows do not
-  // catch that one at all, because the thing being perturbed scales with the row. So the rows are
-  // not five independent checks of equal strength: the two large-shift rows carry the sensitivity
-  // and the two small ones are close to free.
+  // difference is measured rather than assumed.** Against a square lens the `+0.00` row lands at
+  // 0.010395, ten times the tolerance out. Against a reversed turn it lands 1.1e-5 out, which
+  // clears 1e-5 by ten per cent; and the `+0.25` and `+0.50` rows do not catch that one at all,
+  // because the thing being perturbed scales with the row. So the rows are not five independent
+  // checks of equal strength: the two large-shift rows carry the sensitivity and the two small ones
+  // are close to free.
   //
   // Not tightened, because the figures are published to six places and a tolerance below the sixth
   // would be asserting the platform's `acos` rather than the geometry.
@@ -330,7 +329,7 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   for (const Row& row : rows) {
     // `b` holds `turn.t() * a` by construction, so the rotation that carries **b onto a** is
     // `turn` itself, and `FitErrorDeg` passes them in that order to recover it rather than its
-    // inverse. The other way round the fit is out by exactly 60 degrees, the turn twice.
+    // inverse. The other way round the fit is out by the turn twice — 60 degrees, to within 0.004.
     //
     // **Which of the two the engine returns does not matter here.** `AngleBetweenDeg(R, turn)`
     // equals `AngleBetweenDeg(R.t(), turn.t())`, so the table is the same either way round. The

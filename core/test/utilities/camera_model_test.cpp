@@ -699,8 +699,8 @@ TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
   //
   // A pixel that is merely *hard* is the wrong witness for this, because a refusal of it is a
   // solver failing rather than a property of the lens. The one below it is that kind: (1010, 260)
-  // on a k1 = -0.9, p2 = 0.6 lens, slow for a fixed point, which Newton round-trips to 1.1e-13 px,
-  // so it is asserted answered.
+  // on a k1 = -0.9, p2 = 0.6 lens, which a fixed point never reaches — 246 px off after 5,000
+  // passes — and Newton round-trips to 1.1e-13 px, so it is asserted answered.
   Intrinsics lens = Phone();
   lens.k1 = -0.6;
   lens.k2 = 0.3;
@@ -709,7 +709,7 @@ TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
   ASSERT_TRUE(IsUsableLens(lens));
   EXPECT_FALSE(Unproject(lens, Pixel{348.0, 1452.0}).valid);
 
-  // The pixel two rounds of review spent on, now answered.
+  // A pixel only a fixed point cannot reach, answered.
   Intrinsics slow = Phone();
   slow.k1 = -0.9;
   slow.p2 = 0.6;
@@ -791,8 +791,9 @@ TEST(Unproject, ANearFoldPixelIsAnsweredRatherThanGivenUpOn) {
   // A pixel that exists, has exactly one preimage, and sits close enough to the fold that a
   // linearly converging inverse lands short of it. With k1 = -0.9 the fold is at r = 0.609, so a
   // direction at r = 0.55 is comfortably inside, but a fixed-point iteration's ratio approaches 1
-  // near the fold: 20 passes reach 89.6% of the invertible radius and this direction sits beyond
-  // that. Damped Newton answers it immediately, and this keeps any slower inverse from refusing it.
+  // near the fold: 20 passes reach 89.6% of the largest invertible pixel radius and this
+  // direction's pixel sits beyond that. Damped Newton answers it immediately, and this keeps any
+  // slower inverse from refusing it.
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   const double theta = std::atan(0.55);
@@ -1083,8 +1084,8 @@ TEST(Unproject, TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit) {
   EXPECT_NEAR(largest, 0.0805, 1e-4);
   EXPECT_NEAR(smallest, 0.0494, 1e-4);
   // One axis is not the answer, and this is the figure that was published as though it were. No
-  // assertion orders it against the diagonal: the two `EXPECT_NEAR`s above pin both into intervals
-  // 222 times their own width apart, so a third could not fail.
+  // assertion orders it against the centre's 0.0805: the two `EXPECT_NEAR`s pin them more than a
+  // hundred interval widths apart, so a third could not fail.
   EXPECT_NEAR(std::atan(0.5 / lens.fx) * kDegPerRad, 0.0581, 1e-4);
 }
 
