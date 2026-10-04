@@ -47,16 +47,18 @@ GaugeAlignment BestGaugeAlignment(const std::vector<Quat>& estimated,
     residuals.push_back(Residual(estimated[i], truth[i]));
   }
 
-  // **Unchecked, because this call cannot refuse**, for the same reason the eigenvector below it
-  // needs no usability check. `Residual` is a `Normalize` of a product, so every entry is a unit
-  // quaternion whatever the gate above let through; the set is non-empty because `estimated` is; and
-  // no weights are passed, so there are none to be negative or to sum to zero. That leaves
-  // `AverageQuaternions` no way to answer `valid == false` from here.
+  // This call cannot refuse today: `Residual` is a `Normalize` of a product, so every entry is a
+  // unit quaternion whatever the gate above let through; the set is non-empty because `estimated`
+  // is; and no weights are passed, so there are none to be negative or to sum to zero. Nothing
+  // depends on that staying true — its `valid` is passed on rather than asserted, so a gate added to
+  // `AverageQuaternions` later refuses a score instead of measuring it against an identity gauge.
+  // `rotation_averaging.cpp` asserts the same argument instead, because its answer is a thousand of
+  // these calls and has no one `valid` to pass on.
   const QuaternionAverage average = AverageQuaternions(residuals, {});
 
   out.rotation = average.rotation;
   out.isUnique = average.isUnique;
-  out.valid = true;
+  out.valid = average.valid;
   return out;
 }
 

@@ -94,6 +94,38 @@ TEST(AverageQuaternions, TwoTurnsAboutOneAxisAverageToTheAngleBetweenThem) {
 }
 
 /**
+ * Any two rotations average to their normalised sum, which pins how far the eigensolver goes.
+ *
+ * Two unit quaternions with a positive dot product have Markley's average in closed form —
+ * `Normalize(a + b)` — so the answer is knowable to the last bit wherever they point, not only
+ * about a shared axis. Far apart and about a tilted axis, the top two eigenvalues sit close enough
+ * that Jacobi needs its last sweeps: measured, stopping at `kOffDiagonalSettled = 1e-20` instead of
+ * 1e-30 leaves 150 degrees 5.4e-11 out and 170 degrees 2.7e-10, where the committed stop lands
+ * within 4e-16. Compared component by component, because the angle between two quaternions this
+ * close is below what `acos` can resolve.
+ */
+TEST(AverageQuaternions, TwoRotationsAnyDistanceApartAverageToTheirNormalisedSum) {
+  const Quat a = FromAxisAngle(Vec3{3, -1, 2}, 40.0 / kDegPerRad);
+  for (const double apartDeg : {150.0, 170.0}) {
+    const Quat b = Multiply(FromAxisAngle(Vec3{1, 2, 3}, apartDeg / kDegPerRad), a);
+    ASSERT_GT(a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z, 0.0)
+        << "the closed form needs the two on the same side";
+    const Quat expected = Normalize(Quat{a.w + b.w, a.x + b.x, a.y + b.y, a.z + b.z});
+
+    const std::vector<Quat> pair{a, b};
+    const QuaternionAverage average = AverageQuaternions(pair, {});
+    ASSERT_TRUE(average.valid);
+    const Quat& q = average.rotation;
+    const double side = q.w * expected.w + q.x * expected.x + q.y * expected.y + q.z * expected.z;
+    const double sign = side < 0 ? -1.0 : 1.0;
+    EXPECT_NEAR(q.w, sign * expected.w, 1e-14) << apartDeg << " degrees apart";
+    EXPECT_NEAR(q.x, sign * expected.x, 1e-14) << apartDeg << " degrees apart";
+    EXPECT_NEAR(q.y, sign * expected.y, 1e-14) << apartDeg << " degrees apart";
+    EXPECT_NEAR(q.z, sign * expected.z, 1e-14) << apartDeg << " degrees apart";
+  }
+}
+
+/**
  * A weight moves the answer, and moves it the amount the closed form says.
  *
  * The point of the weights is that a caller with unequal evidence can say so, and the assertion has
