@@ -923,6 +923,47 @@ TEST(Unproject, EveryDirectionIsHeldToTheToleranceInItsOwnFocalLengths) {
   }
 }
 
+TEST(Unproject, OnATangentialLensTheLastAnswerOnEveryRayIsHeldToTheTolerance) {
+  // On a radial lens every miss points along the pixel's own radius, so a check that measured only
+  // that part of the miss would pass both tests above. Tangential terms turn the miss off the
+  // radius. Here the fold is wherever it lands, so it is found rather than assumed: along each ray
+  // from the optical centre, bisect to the last pixel answered before one refused at the frame's
+  // edge, and ask how far that answer misses in each axis's own focal length.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  lens.p1 = 0.3;
+  lens.p2 = 0.3;
+  int raysWithAnEdge = 0;
+  for (int degrees = 0; degrees < 360; degrees += 15) {
+    const double t = degrees / kDegPerRad;
+    const double dx = std::cos(t), dy = std::sin(t);
+    // As far along the ray as the frame goes.
+    const double acrossToEdge = dx > 0 ? lens.width - lens.cx : lens.cx;
+    const double downToEdge = dy > 0 ? lens.height - lens.cy : lens.cy;
+    const double out = std::min(dx != 0.0 ? acrossToEdge / std::abs(dx) : 1e300,
+                                dy != 0.0 ? downToEdge / std::abs(dy) : 1e300);
+    const auto at = [&](double s) { return Pixel{lens.cx + dx * s, lens.cy + dy * s}; };
+    if (Unproject(lens, at(out)).valid) continue;
+    ++raysWithAnEdge;
+    double answered = 0.0, refused = out;
+    for (int i = 0; i < 80; ++i) {
+      const double middle = 0.5 * (answered + refused);
+      (Unproject(lens, at(middle)).valid ? answered : refused) = middle;
+    }
+    const Pixel pixel = at(answered);
+    const UnprojectedDirection back = Unproject(lens, pixel);
+    ASSERT_TRUE(back.valid) << degrees << " degrees";
+    const ProjectedPixel there = Project(lens, back.direction);
+    ASSERT_TRUE(there.valid) << degrees << " degrees";
+    const double miss =
+        std::hypot((there.pixel.x - pixel.x) / lens.fx, (there.pixel.y - pixel.y) / lens.fy);
+    EXPECT_LE(miss, 1e-9 * (1.0 + 1e-6))
+        << degrees << " degrees, at " << pixel.x << "," << pixel.y;
+  }
+  // Or the frame holds no fold on most rays and the loop above asserted nothing. 18 of 24 today.
+  EXPECT_GE(raysWithAnEdge, 12);
+}
+
 // The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
 //
 // Measured on a frame rather than a grid because the frame is what the question is about: a
