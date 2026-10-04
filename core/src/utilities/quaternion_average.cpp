@@ -10,7 +10,9 @@
 namespace sphanorama {
 namespace {
 
-// Cyclic Jacobi sweeps over the 4x4. Measured rather than chosen — see `DominantEigenvector`.
+// Cyclic Jacobi sweeps over the 4x4. Measured rather than chosen — see `DominantEigenvector`. A
+// budget of four fails
+// `AverageQuaternions.TwoRotationsAnyDistanceApartAverageToTheirNormalisedSum`.
 constexpr int kJacobiSweeps = 24;
 
 // The off-diagonal weight below which the matrix counts as diagonal. Entries are sums of weighted
@@ -21,7 +23,8 @@ constexpr int kJacobiSweeps = 24;
 //
 // That relative test is only well behaved while the trace is, which is why `AverageQuaternions`
 // divides by the heaviest weight before accumulating: an unscaled trace can reach an infinity, and
-// then everything is "settled" on the first pass.
+// then everything is "settled" on the first pass. Loosened to 1e-28 it stops early enough to fail
+// `AverageQuaternions.TwoRotationsAnyDistanceApartAverageToTheirNormalisedSum`.
 constexpr double kOffDiagonalSettled = 1e-30;
 
 // Relative separation below which the top two eigenvalues count as equal, so the maximiser is a

@@ -515,9 +515,10 @@ TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
  *
  * Three paragraphs of the header describe this and no test passed it until this one — the file used 0.01, 1e-4, 1e-6, 1000 and the refusals. It is not a cosmetic gap: the "this call
  * cannot refuse" argument in the sweep rests on `anchorWeight > 0.0` keeping a zero-weight anchor
- * out of the prediction list, and relaxing that comparison to `>=` puts every frame **180 degrees**
- * from its anchor with `valid` and `converged` both true, because a lone prediction at weight zero
- * is a matrix the averager cannot read.
+ * out of the prediction list, and relaxing that comparison to `>=` has every average refused,
+ * because a lone prediction at weight zero is a matrix the averager cannot read. The frames would
+ * sit on the identity a refusal carries — up to 177.5 degrees from their anchors — and the solve
+ * says `valid == false`, since each average's validity is folded into its own.
  *
  * What the case should do is recover the truth exactly: the anchors are three degrees out, they fix
  * the gauge by placing the frames, and the exact edges then decide everything else with nothing
@@ -591,7 +592,7 @@ TEST(AverageRotations, AnAnchorWeightOfZeroPlacesTheFramesAndIsNotConsultedAgain
   // the prediction list beside two edge predictions and the averager ignores a zero. With no edges
   // it would be the *only* prediction, and a lone prediction at weight zero is a set the averager
   // refuses, leaving the frame on whatever a refused answer carries. Relaxing the comparison to
-  // `>=` puts every frame 180 degrees from its anchor here, with `valid` and `converged` true.
+  // `>=` fails the `valid` assertion below.
   //
   // The right answer is the anchors, untouched: nothing was measured, so nothing should move.
   const AveragedRotations untouched = AverageRotations({}, anchors, 0.0);

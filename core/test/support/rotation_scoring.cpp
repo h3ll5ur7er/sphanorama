@@ -52,8 +52,6 @@ GaugeAlignment BestGaugeAlignment(const std::vector<Quat>& estimated,
   // is; and no weights are passed, so there are none to be negative or to sum to zero. Nothing
   // depends on that staying true — its `valid` is passed on rather than asserted, so a gate added to
   // `AverageQuaternions` later refuses a score instead of measuring it against an identity gauge.
-  // `rotation_averaging.cpp` asserts the same argument instead, because its answer is a thousand of
-  // these calls and has no one `valid` to pass on.
   const QuaternionAverage average = AverageQuaternions(residuals, {});
 
   out.rotation = average.rotation;
