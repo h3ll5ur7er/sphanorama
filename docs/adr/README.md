@@ -66,8 +66,9 @@ forward, one is *added* in one of three places, and the body below it is left al
   total. That last one is the newest lesson — it was added as commentary rather than as census, so
   "recompute all three" did not reach it, and it went stale in the same commit that wrote it.
 - **A foot note** at the end, under its own heading, when the correction has detail that would
-  swamp a banner. ADR 0052's `## Extended by ADR 0053` is the only one in the repository, and it
-  sits under that file's banner rather than instead of it: the banner points, the note explains.
+  swamp a banner. There are two: ADR 0052's `## Extended by ADR 0053`, which sits under that file's
+  banner rather than instead of it — the banner points, the note explains — and ADR 0061's, which
+  corrects a Context sentence and so has no banner (see below).
 
 **A banner covers the body's claims, not the Context's dated observations.** A *Context* sentence
 describes what the world looked like before the decision, and that is its whole job; bannering one

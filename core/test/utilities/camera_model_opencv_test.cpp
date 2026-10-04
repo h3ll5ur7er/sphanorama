@@ -19,8 +19,9 @@
 //
 // Two tests joined them later and are neither: `TheHalfPixelShiftCostsTheAngleADR0061Publishes` and
 // its second lens use OpenCV for an SVD and ask nothing of OpenCV's camera model. They are here
-// because that is where the SVD is, and the first one's docblock says what they do and do not check. Its companion —
-// which needs no OpenCV at all — lives in `camera_model_test.cpp` for the same reason.
+// because that is where the SVD is, and each docblock says what it does and does not check.
+// `Unproject.TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit`, which needs no OpenCV at all,
+// lives in `camera_model_test.cpp` for the same reason.
 #include <gtest/gtest.h>
 
 #include <opencv2/calib3d.hpp>
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <string>
 #include <vector>
 
 #include "utilities/camera_model.h"
@@ -399,19 +401,39 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
  * ADR 0061's second lens, the committed `synthetic-ring-4`'s, pinned like the first.
  *
  * Two readers rebuilt the rig the first table describes and got two different tables, which is why
- * that one is asserted; this row is a second description of the same rig and earns the same. It is
- * also the one that shows the gap is an image-plane offset rather than an angle: a smaller lens
- * pays more for the same half pixel.
+ * that one is asserted; this row is a second description of the same rig and earns the same.
+ *
+ * At 1e-6 rather than the first table's 1e-5, because that is the sixth place the ADR publishes
+ * these to: the tightest row, `-0.5` at 0.108481652, clears it by 3.5e-7.
  */
 TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes) {
-  const Intrinsics lens = LensFromFieldOfView(66.0, 50.0, 48, 36);
-  // The values `core/test/data/synthetic-ring-4/truth.json` carries, so this is that lens and not
-  // one rebuilt from a description of it.
+  // Read from the dataset rather than rebuilt from the ADR's description of it, so the test is
+  // about the lens that is committed; the description is then checked against it.
+  cv::FileStorage truth(std::string(SPHANORAMA_TEST_DATA_DIR) + "/synthetic-ring-4/truth.json",
+                        cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
+  ASSERT_TRUE(truth.isOpened());
+  const cv::FileNode stored = truth["intrinsics"];
+  Intrinsics lens;
+  lens.fx = static_cast<double>(stored["fx"]);
+  lens.fy = static_cast<double>(stored["fy"]);
+  lens.cx = static_cast<double>(stored["cx"]);
+  lens.cy = static_cast<double>(stored["cy"]);
+  lens.width = static_cast<int32_t>(static_cast<int>(stored["width"]));
+  lens.height = static_cast<int32_t>(static_cast<int>(stored["height"]));
+  for (const char* term : {"k1", "k2", "k3", "p1", "p2"}) {
+    ASSERT_EQ(static_cast<double>(stored[term]), 0.0) << term << ": the ADR's lens is undistorted";
+  }
+  const Intrinsics described = LensFromFieldOfView(66.0, 50.0, 48, 36);
+  ASSERT_EQ(lens.width, described.width);
+  ASSERT_EQ(lens.height, described.height);
+  ASSERT_NEAR(lens.fx, described.fx, 1e-9);
+  ASSERT_NEAR(lens.fy, described.fy, 1e-9);
+  ASSERT_EQ(lens.cx, described.cx);
+  ASSERT_EQ(lens.cy, described.cy);
   ASSERT_NEAR(lens.fx, 36.956759, 1e-6);
   ASSERT_NEAR(lens.fy, 38.601125, 1e-6);
 
-  // About `+Y`, which the ADR names because it decides the figures: about `+X` the same lens and
-  // angle give 1,470 correspondences and half the angle, since the frame is wider than it is tall.
+  // About `+Y`, which the ADR names because it decides the figures.
   const cv::Matx33d turn = TurnAboutY(7.0);
   std::vector<Pixel> inA, inB;
   Correspond(lens, turn, &inA, &inB);
@@ -419,7 +441,7 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR
 
   struct Row { double shift; double expectedDeg; };
   // `-0.5` is 2.0037 times `+0.0` rather than twice it: the tangent of a growing offset is not
-  // quite linear in it, and a lens this short shows it more than the accuracy lens does.
+  // quite linear in it.
   const Row rows[] = {{-0.50, 0.108482}, {0.00, 0.054141}, {0.50, 0.000000}};
   for (const Row& row : rows) {
     const double error = FitErrorDeg(lens, inA, inB, turn, row.shift);
@@ -427,6 +449,14 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR
     EXPECT_NEAR(error, row.expectedDeg, 1e-6)
         << "shift " << row.shift << " fits the turn " << error << " degrees out";
   }
+
+  // About `+X` the same lens and angle cost about half as much, since the frame is wider than it is
+  // tall — the ADR's reason for naming the axis, asserted rather than left beside the table.
+  const cv::Matx33d aboutX = TurnAbout(cv::Vec3d(1.0, 0.0, 0.0), 7.0);
+  std::vector<Pixel> xA, xB;
+  Correspond(lens, aboutX, &xA, &xB);
+  ASSERT_EQ(xA.size(), 1470u) << "the overlap about x is not the one the ADR quotes";
+  EXPECT_NEAR(FitErrorDeg(lens, xA, xB, aboutX, 0.0), 0.027560, 1e-6);
 }
 
 }  // namespace

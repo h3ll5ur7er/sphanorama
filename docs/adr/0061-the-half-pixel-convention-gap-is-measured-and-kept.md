@@ -2,13 +2,6 @@
 
 **Status:** accepted
 
-> **The `synthetic-ring-4` row below is asserted now, and the reason Context gives for leaving it as
-> prose did not hold.** "A second fixture would be a second thing to keep true" was answered by the
-> reason the first row is pinned: two readers rebuilt the described rig and got two different
-> tables. `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes`
-> asserts the lens, the 1,488 correspondences and all three figures to 1e-6. The paragraph stands as
-> what was decided when this was written.
-
 ## Context
 
 `camera_model.h` puts the origin at the **top-left corner of the image**, so a pixel centre sits at
@@ -292,3 +285,12 @@ measurement" is not a decision. The cost of leaving it was demonstrated: a revie
 the instrument to find out that the obvious fix breaks the build, which is a discovery the next
 person would have made the expensive way — by making the change and reading a red ORB as a
 regression in their own work.
+
+## Foot note: the `synthetic-ring-4` row is asserted
+
+Context's "a second fixture would be a second thing to keep true" was wrong when it was written,
+not overtaken: this file's own Consequences — "ADR 0060's precedent applies here" — answers it with
+the reason the first row is pinned, that two readers rebuilt the described rig and got two
+different tables. `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes`
+asserts the row now: the lens, the 1,488 correspondences and all three figures to 1e-6, and the
+1,470 correspondences and 0.027560° about `x` that the next paragraph of Context gives.
