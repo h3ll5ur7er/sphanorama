@@ -403,8 +403,9 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
  * Two readers rebuilt the rig the first table describes and got two different tables, which is why
  * that one is asserted; this row is a second description of the same rig and earns the same.
  *
- * At 1e-6 rather than the first table's 1e-5, because that is the sixth place the ADR publishes
- * these to: the tightest row, `-0.5` at 0.108481652, clears it by 3.5e-7.
+ * At 1e-6, the sixth place the ADR publishes to: the tightest row, `-0.5`, measures 0.108481652
+ * and so clears it by 6.5e-7. The first table's 1e-5 is looser than its figures need rather than a
+ * different requirement.
  */
 TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes) {
   // Read from the dataset rather than rebuilt from the ADR's description of it, so the test is
@@ -413,6 +414,11 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheCommittedLensTheAngleADR
                         cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
   ASSERT_TRUE(truth.isOpened());
   const cv::FileNode stored = truth["intrinsics"];
+  // A missing key reads as zero, which for a distortion term is the expected value.
+  for (const char* key :
+       {"fx", "fy", "cx", "cy", "width", "height", "k1", "k2", "k3", "p1", "p2"}) {
+    ASSERT_FALSE(stored[key].empty()) << "truth.json has no intrinsics." << key;
+  }
   Intrinsics lens;
   lens.fx = static_cast<double>(stored["fx"]);
   lens.fy = static_cast<double>(stored["fy"]);

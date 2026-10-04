@@ -52,9 +52,9 @@ constexpr double kRadToDeg = 180.0 / std::numbers::pi;
 
 // How far an unprojected direction may land from the pixel it came from when projected back, in
 // normalised image units — tight enough that a distortion which does not invert is caught, loose
-// enough that an ordinary one is never refused for rounding. In pixels it is the focal length times
-// this, so under a millionth of a pixel only below f = 1000: the browser's frames are, at 985.5
-// for 66 degrees across `GRAB_MAX_EDGE`'s 1280, and a long edge past 1299 at that angle is not.
+// enough that an ordinary one is never refused for rounding. It binds only near a fold, since an
+// undistorted lens inverts exactly; and in pixels it is the focal length times this, so it holds an
+// answer under a millionth of a pixel only while f is below 1000.
 constexpr double kInverseToleranceNormalised = 1e-9;
 
 // Brown-Conrady is inverted by damped Newton, which stops as soon as it has stopped moving.

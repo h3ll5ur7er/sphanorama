@@ -20,8 +20,9 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-// A 66-degree lens over a 960x1280 portrait frame — the shape the app assumes when a browser will
-// not say (see CaptureSessionManager), so the numbers in these tests are the ones it runs on.
+// 66 degrees across the short edge of a 960x1280 portrait frame, so fx and fy differ (739 and 1372)
+// and a test that confuses the axes fails. Not the lens the app builds, which puts the angle on the
+// long edge: see `BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel`.
 Intrinsics Phone() { return LensFromFieldOfView(66.0, 50.0, 960, 1280); }
 
 // A direction `degrees` off the forward axis, turned toward +X (right) when `axis` is 0 and
@@ -840,22 +841,19 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
-TEST(Unproject, EveryAnswerOnTheBrowsersLensProjectsBackToWithinAMillionthOfAPixel) {
+TEST(Unproject, BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel) {
   // The round-trip tolerance pinned by what it lets through rather than by where it refuses.
   // Approaching the last pixel with a preimage from outside, Newton settles on the fold and the
   // round trip misses by the distance past it, so there the tolerance alone decides how far out an
-  // answer is still given and how wrong it may be.
+  // answer is still given and how wrong it may be. `k1 = -1` is here to put a fold in the frame.
   //
-  // The tolerance is normalised, so in pixels it scales with the focal length, and the promise is
-  // made of the lens the browser builds: 66 degrees on the long edge of a frame `GRAB_MAX_EDGE`
-  // caps at 1280, with square pixels, so f = 985.5 on both axes and the tolerance is 9.86e-7 px.
-  // Offsets run from a trillionth of a pixel to about eighty, ten to a decade with one at a
-  // millionth exactly, so any tolerance above 1e-6 / f — 1.015e-9 — fails here.
-  const double shortEdgeDeg =
-      2.0 * std::atan(std::tan(33.0 / kDegPerRad) * 960.0 / 1280.0) * kDegPerRad;
-  Intrinsics lens = LensFromFieldOfView(shortEdgeDeg, 66.0, 960, 1280);
-  ASSERT_NEAR(lens.fx, 985.5136, 1e-4);
-  ASSERT_NEAR(lens.fy, lens.fx, 1e-9);
+  // The tolerance is normalised, so in pixels it scales with the focal length, and its comment
+  // promises a millionth of a pixel below f = 1000. Square, at f = 990, so the tolerance is 9.9e-7
+  // px on both axes. Offsets run from a trillionth of a pixel to about eighty, ten to a decade with
+  // one at a millionth exactly, so any tolerance above 1e-6 / f — 1.0101e-9 — fails here.
+  Intrinsics lens = Phone();
+  lens.fx = 990.0;
+  lens.fy = 990.0;
   lens.k1 = -1.0;
   // r * (1 + k1 r^2) peaks at r = 1 / sqrt(3), where it is 2 / (3 sqrt(3)).
   const double reach = 2.0 / (3.0 * std::sqrt(3.0));
@@ -891,6 +889,27 @@ TEST(Unproject, EveryAnswerOnTheBrowsersLensProjectsBackToWithinAMillionthOfAPix
     // Or the sweep never reached the band the tolerance decides, and the solver answered every
     // assertion above on its own.
     EXPECT_GT(answeredPastTheEdge, 0) << "axis " << axis;
+  }
+}
+
+TEST(Unproject, EachAxisIsHeldToTheToleranceInItsOwnFocalLength) {
+  // The square lens above cannot tell `fx` from `fy`, and the round trip is judged on both: swap
+  // them in the check and every test there still passes. `Phone()`'s two differ by nearly a factor
+  // of two, so on each axis an answer is given exactly as far past the edge as that axis's own
+  // focal length allows — 7.4e-7 px across, 1.37e-6 px down — and no further.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  const double reach = 2.0 / (3.0 * std::sqrt(3.0));
+  for (const int axis : {0, 1}) {
+    const double f = axis == 0 ? lens.fx : lens.fy;
+    const double edge = axis == 0 ? lens.cx + reach * lens.fx : lens.cy + reach * lens.fy;
+    // Fractions of the tolerance, in this axis's pixels, either side of where it refuses.
+    for (const double share : {0.5, 0.8, 1.25, 2.0}) {
+      const double at = edge + share * 1e-9 * f;
+      const Pixel pixel = axis == 0 ? Pixel{at, lens.cy} : Pixel{lens.cx, at};
+      EXPECT_EQ(Unproject(lens, pixel).valid, share < 1.0)
+          << share << " of the tolerance past the edge on axis " << axis;
+    }
   }
 }
 
@@ -968,10 +987,10 @@ TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
   // 1.35e-3 relative margin between the last refused shell and the first accepted one.
   //
   // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the
-  // constant deciding "refuses rather than answering approximately" — is caught above 1.015e-9 by
-  // `EveryAnswerOnTheBrowsersLensProjectsBackToWithinAMillionthOfAPixel` and at 7e-4 by
-  // `APixelPastTheLastOneWithAPreimageIsRefused`. This count only joins in at 1e-3, so the pair
-  // below pins *where* the boundary is rather than what enforces it.
+  // constant deciding "refuses rather than answering approximately" — is caught above 1.0101e-9
+  // by `BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel` and at
+  // 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`. This count only joins in at 1e-3, so the
+  // pair below pins *where* the boundary is rather than what enforces it.
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
   EXPECT_EQ(RefusedCountOfFrame(folding), 48);
