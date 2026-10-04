@@ -297,11 +297,6 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   std::vector<double> weights;
   std::vector<Quat> offsets;
   std::vector<char> everAmbiguous(static_cast<size_t>(frames), 0);
-  // Every average's `valid`, folded into the answer's rather than argued away. A refused average
-  // carries the identity, and stored as a frame it reads as one; a refused gauge turns nothing and
-  // adds nothing to the move, which pushes the sweep toward `converged`. Neither call can refuse
-  // today, but the answer is not allowed to depend on that.
-  bool everyAverageValid = true;
   for (int sweep = 1; sweep <= kMaxSweeps; ++sweep) {
     double largestMoveDeg = 0;
     for (int32_t i = 0; i < frames; ++i) {
@@ -335,13 +330,16 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
 
       // This call cannot refuse today. `AverageQuaternions` turns down an empty set, a mismatched
       // weight span, an input that is not a rotation, a negative or non-finite weight, or weights
-      // that are all zero, and none is reachable from here: the empty case returns above, the spans
-      // are filled together, every prediction is either a `prior` — unit by the division above,
-      // on the norm its own gate tested — or a `Normalize` of a product of two unit rotations, and
-      // every weight pushed is either `anchorWeight` past its `> 0.0` test or an edge weight past
-      // the filter that built `incident`. Four facts upstream, which is why `valid` is passed on.
+      // that are all zero, and none is reachable from here: the empty case is skipped above, the
+      // spans are filled together, every prediction is either a `prior` — unit by the division
+      // above, on the norm its own gate tested — or a `Normalize` of a product of two unit
+      // rotations, and every weight pushed is either `anchorWeight` past its `> 0.0` test or an
+      // edge weight past the filter that built `incident`. Four facts upstream, so a refusal
+      // refuses the solve rather than being argued away: a refused average carries the identity,
+      // and stored as a frame it reads as one. Default-built, like every other refusal here, so
+      // `rotations` is empty and `anchorsUsed` zero whichever gate said no.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
-      everyAverageValid = everyAverageValid && average.valid;
+      if (!average.valid) return AveragedRotations{};
       if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
 
       largestMoveDeg = std::max(
@@ -372,8 +370,10 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         }
         // Cannot refuse today either: every piece holds an anchor, so `offsets` is not empty, every
         // offset is a `Normalize` of a product of two unit rotations, and no weights are passed.
+        // A refused gauge would turn nothing and add nothing to the move, which pushes the sweep
+        // toward `converged`; refused the same way as the per-frame call.
         const QuaternionAverage gauge = AverageQuaternions(offsets, {});
-        everyAverageValid = everyAverageValid && gauge.valid;
+        if (!gauge.valid) return AveragedRotations{};
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
         // eigensolver's scan order, and that is true of every frame in it.
         if (!gauge.isUnique) {
@@ -446,7 +446,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   }
   out.pieces = static_cast<int32_t>(pieces.size());
   out.rotations = std::move(solved);
-  out.valid = everyAverageValid;
+  out.valid = true;
   return out;
 }
 
