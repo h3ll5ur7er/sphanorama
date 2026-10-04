@@ -256,15 +256,11 @@ double FitErrorDeg(const Intrinsics& lens, const std::vector<Pixel>& a, const st
 /**
  * ADR 0061's shift table, asserted rather than left as prose.
  *
- * **Why this test exists is a finding rather than a plan.** The ADR declined ADR 0060's rule —
- * assert a published figure from a test — on the ground that an ADR records what was believed at
- * the time and a test pinning it would be asserting history. A reviewer answered that the same is
- * true of everything 0060 pinned, and that a failing test is precisely the *trigger* to supersede
- * an ADR rather than a demand to edit one. The argument landed because of what happened next: the
- * ADR's first table was wrong, the retraction that replaced it was measured on a lens with square
- * pixels, and the accuracy dataset's lens has none — `fy` is 514.68 against `fx`'s 492.76, because
- * `LensFromFieldOfView` solves the two axes separately from two different angles. Nothing could
- * fail on either mistake. This is the mechanism that would have caught both.
+ * **Pinned because the rig is easy to rebuild wrongly and the table does not show it.** The
+ * accuracy dataset's lens is not square — `fy` is 514.68 against `fx`'s 492.76, because
+ * `LensFromFieldOfView` solves the two axes separately from two different angles — and the same
+ * sweep on a square lens puts the `+0.00` row at 0.010395 against 0.010498: wrong, and plausible.
+ * A failing test here is the trigger to supersede ADR 0061, not a demand to edit it.
  *
  * **What is measured.** Every pixel centre of a 640x480 frame whose image, after a 30-degree turn
  * about +Y, lands inside the frame — 160,000 of 307,200 — unprojected through the engine's
@@ -272,18 +268,17 @@ double FitErrorDeg(const Intrinsics& lens, const std::vector<Pixel>& a, const st
  * coordinates to `Unproject` unchanged, so a feature at the centre of pixel `i` arrives as `i`
  * where the model wants `i + 0.5`: the engine sits at `s = 0` and the correction is `s = +0.5`.
  *
- * **Cross-checked against a numpy reimplementation of the same geometry, which agrees to 1e-6 —
- * after that reimplementation was corrected.** It first built directions as `(x, y, +1)` where
- * `camera_model.cpp` builds `(x, -y, -1)`. That is a y flip *and* a z flip together, and it moved
- * the table by 0.209% at `-0.50` down to 0.052% at `+0.25`, leaving the linearity and the exact
- * zero intact — so a second implementation can get the handedness wrong and still produce a table
- * with the right shape. In absolute terms the two lower rows move by less than the 1e-5 tolerance
- * here, so this test would catch that mutation on three rows of five.
+ * **Cross-checked against a numpy reimplementation of the same geometry, which agrees to 1e-6.**
+ * Building directions as `(x, y, +1)` where `camera_model.cpp` builds `(x, -y, -1)` — a y flip and
+ * a z flip together — moves the table by 0.209% at `-0.50` down to 0.052% at `+0.25` and keeps the
+ * linearity and the exact zero, so a second implementation can get the handedness wrong and still
+ * produce a table with the right shape. The two lower rows move by less than the 1e-5 tolerance
+ * here, so this test catches that mutation on three rows of five.
  *
- * **A mutation applied to the model itself it would not catch at all.** Mutating `Project` and
- * `Unproject` together to put image-up at camera-up leaves every row of this table unchanged — a
- * reviewer did it, and the two OpenCV agreement tests above failed while this one passed. The
- * reason is structural rather than a choice of axis, and the body says why.
+ * **A mutation applied to the model itself it does not catch at all.** Mutating `Project` and
+ * `Unproject` together to put image-up at camera-up leaves every row of this table unchanged, while
+ * the two OpenCV agreement tests above fail. The reason is structural rather than a choice of axis,
+ * and the body says why.
  * `Unproject.ImageYRunsDownAndCameraYRunsUp` is what asserts the handedness.
  *
  * Linear in the shift and exactly zero at `+0.5`, which is the claim that matters — the gap is a
@@ -311,13 +306,8 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // exactly 160,000. It moves for `fx` — 159,150 at `fx x 1.01` and 160,844 at `x 0.99` — and for
   // a half-pixel shift in `cx` — 159,960 *down*, 160,036 *up*, and 159,962 if `cy` moves down with
   // it. The sign is named because it changes the answer, in the comment about unrecorded rig
-  // parameters. The one mistake this ADR's
-  // table has actually made is a square lens, and it walks straight past this line — which is why
-  // `fy` is asserted by name above.
-  //
-  // An earlier version of this comment said `156,164 at a one per cent change`. That count is real
-  // and it is `fx x 1.044`, a four per cent change — so the guard was being sold as four times
-  // tighter on the one axis it does guard.
+  // parameters. A square lens walks straight past this line, which is why `fy` is asserted by name
+  // above.
   ASSERT_EQ(inA.size(), 160000u) << "the overlap is not the one the ADR's figures were measured on";
 
   struct Row { double shift; double expectedDeg; };
@@ -326,8 +316,8 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // **That is sized against the rows and not against every error it has to reject, and the
   // difference is measured rather than assumed.** Against a square lens — the mistake this table
   // has actually made — the `+0.00` row lands at 0.010395, ten times the tolerance out. Against a
-  // reversed turn it lands 1.1e-5 out, which clears 1e-5 by ten per cent rather than by the four
-  // orders an earlier version of this comment claimed; and the `+0.25` and `+0.50` rows do not
+  // reversed turn it lands 1.1e-5 out, which clears 1e-5 by ten per cent; and the `+0.25` and
+  // `+0.50` rows do not
   // catch that one at all, because the thing being perturbed scales with the row. So the rows are
   // not five independent checks of equal strength: the two large-shift rows carry the sensitivity
   // and the two small ones are close to free.
@@ -340,16 +330,13 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   for (const Row& row : rows) {
     // `b` holds `turn.t() * a` by construction, so the rotation that carries **b onto a** is
     // `turn` itself, and `FitErrorDeg` passes them in that order to recover it rather than its
-    // inverse. The first draft had them the other way and failed by exactly 60 degrees, which is 30
-    // twice — a fit wrong by the whole turn rather than by the shift.
+    // inverse. The other way round the fit is out by exactly 60 degrees, the turn twice.
     //
-    // **Which of the two the engine returns does not matter here, and a previous version of this
-    // comment claimed it did and got it backwards.** `AngleBetweenDeg(R, turn)` equals
-    // `AngleBetweenDeg(R.t(), turn.t())`, so the table is the same either way round. For the
-    // record, since the wrong version is on a review thread: the engine calls
-    // `KabschRotation(from = frame A's bearings, to = frame B's)`, which carries the **first**
-    // frame onto the second, and `PairwiseResult::relativeRotation` is `Conjugate(q[b]) * q[a]`,
-    // which is what `registration_accuracy_test.cpp`'s `Chain` consumes.
+    // **Which of the two the engine returns does not matter here.** `AngleBetweenDeg(R, turn)`
+    // equals `AngleBetweenDeg(R.t(), turn.t())`, so the table is the same either way round. The
+    // engine calls `KabschRotation(from = frame A's bearings, to = frame B's)`, which carries the
+    // **first** frame onto the second, and `PairwiseResult::relativeRotation` is
+    // `Conjugate(q[b]) * q[a]`, which is what `registration_accuracy_test.cpp`'s `Chain` consumes.
     const double error = FitErrorDeg(lens, inA, inB, turn, row.shift);
     ASSERT_GE(error, 0.0) << "a shifted pixel of a pinhole lens has no ray";
     EXPECT_NEAR(error, row.expectedDeg, 1e-5)
@@ -367,22 +354,18 @@ TEST(CameraModelAgainstOpenCV, TheHalfPixelShiftCostsTheAngleADR0061Publishes) {
   // which is `pb` unmutated iff `M.inv() * turn.t() * M` is `turn.t()`. Measured against this
   // table:
   //
-  //   - a y-sign flip commutes with a turn about `+Y`, and every row is unchanged — a reviewer
-  //     demonstrated it, and it is why `Unproject.ImageYRunsDownAndCameraYRunsUp` exists;
+  //   - a y-sign flip commutes with a turn about `+Y`, and every row is unchanged — measured, and
+  //     why `Unproject.ImageYRunsDownAndCameraYRunsUp` exists;
   //   - an x mirror does not: `diag(-1,1,1) * Ry(30) * diag(-1,1,1)` is `Ry(-30)`, so the
   //     correspondences run the other way and three of five rows fail, at 0.020964 / 0.015727 /
   //     0.010487 — which is the reversed-turn family, the same numbers a negated `TurnAboutY`
   //     produces;
   //   - a z flip does not either, for the same reason.
   //
-  // **An earlier version of this paragraph said the cancellation held for any invertible `M`, and
-  // deleted a working test on the strength of it.** That version had added a second sweep about a
-  // tilted axis, run a y-flip against it, seen it pass, and concluded no axis could help. The sweep
-  // was fine; its assertion was `EXPECT_GT(error, 1e-3)` — a lower bound a moved value clears as
-  // easily as an unmoved one. With the figure asserted instead, the same sweep moves from 0.021664
-  // to 0.022093 under that flip, which is forty-three times this test's tolerance.
-  //
-  // So the sweep is back, with its number.
+  // So the sweep below is about a tilted axis, which commutes with none of the three: under the
+  // y flip its uncorrected figure moves from 0.021664 to 0.022093, forty-three times this test's
+  // tolerance. It is asserted as that figure, because a lower bound such as
+  // `EXPECT_GT(error, 1e-3)` is cleared by a moved value as easily as by an unmoved one.
   const cv::Matx33d tilted = TurnAbout(cv::Vec3d(1.0, 2.0, 3.0), 20.0);
   std::vector<Pixel> tiltedA, tiltedB;
   Correspond(lens, tilted, &tiltedA, &tiltedB);
