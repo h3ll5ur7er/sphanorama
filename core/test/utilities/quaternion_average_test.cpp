@@ -100,16 +100,15 @@ TEST(AverageQuaternions, TwoTurnsAboutOneAxisAverageToTheAngleBetweenThem) {
  * `Normalize(a + b)`, the eigenvector of `1 + a.b` — so the expected value is exact and the
  * computed one is asked to land within 1e-14 of it. That holds to about 170 degrees apart; past it
  * the conditioning, eps over `a.b`, decides the error rather than the solver, so no pair here goes
- * further. Each pair is here for the mutation it catches, measured: a stop loosened from 1e-30 to
- * 1e-28 or to 1e-25 or to 1e-20, or a sweep budget cut from 24 to 4. Compared component by
- * component, because the angle between two quaternions this close is below what `acos` resolves.
+ * further. Each pair is here for the mutation it catches, measured in the debug and the fused
+ * build: the first fails a stop loosened from 1e-30 to 1e-28 or anything looser (1e-29 passes), the
+ * second a sweep budget cut from 24 to 4 (5 passes). Compared component by component, because the
+ * angle between two quaternions this close is below what `acos` resolves.
  */
 TEST(AverageQuaternions, TwoRotationsAnyDistanceApartAverageToTheirNormalisedSum) {
   struct Pair { Vec3 axis; double deg; Vec3 turnAxis; double turnDeg; const char* catches; };
   const Pair pairs[] = {
-      {{-1, 0, 3}, 40.0, {-2, -2, 1}, 170.0, "a stop at 1e-28, 8.4e-14 out"},
-      {{-3, 3, 3}, 40.0, {3, 1, 1}, 150.0, "a stop at 1e-25, 6.8e-13 out"},
-      {{3, -1, 2}, 40.0, {1, 2, 3}, 150.0, "a stop at 1e-20, 5.4e-11 out"},
+      {{-1, 0, 3}, 40.0, {-2, -2, 1}, 170.0, "a stop of 1e-28 or looser, 8.4e-14 out"},
       {{0, 1, 2}, 135.0, {-1, -1, 1}, 149.0, "a budget of four sweeps, 5.9e-9 out"},
   };
   for (const Pair& pair : pairs) {
