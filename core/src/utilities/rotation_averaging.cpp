@@ -94,7 +94,7 @@ struct Incidence {
 AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
                                    std::span<const Quat> anchors, double anchorWeight) {
   AveragedRotations out;
-  if (!std::isfinite(anchorWeight) || anchorWeight < 0.0) return out;
+  if (!std::isfinite(anchorWeight) || anchorWeight < 0.0) return AveragedRotations{};
 
   // No separate empty check: with no anchors there is no usable anchor either, so the gate further
   // down refuses the same input for a reason that is actually about the problem. Nothing between
@@ -115,8 +115,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // Not reachable from any caller in this tree, and wasm32 cannot reach it at all — `size_t` is 32
   // bits there and this would need 64 GiB inside a 4 GiB space. It is one line, and the header
   // already promises `int32_t` indexing, so the promise may as well be the one that is enforced.
-  if (anchors.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
-  if (edges.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) return out;
+  constexpr size_t kMostIndexable = static_cast<size_t>(std::numeric_limits<int32_t>::max());
+  if (anchors.size() > kMostIndexable || edges.size() > kMostIndexable) return AveragedRotations{};
   const int32_t frames = static_cast<int32_t>(anchors.size());
 
   // The whole input is checked before any of it is used, so a refusal is decided by the input rather
@@ -153,11 +153,13 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   std::vector<Quat> rotation;
   rotation.reserve(edges.size());
   for (const RelativeRotation& edge : edges) {
-    if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) return out;
-    if (edge.from == edge.to) return out;
+    if (edge.from < 0 || edge.from >= frames || edge.to < 0 || edge.to >= frames) {
+      return AveragedRotations{};
+    }
+    if (edge.from == edge.to) return AveragedRotations{};
     const std::optional<double> norm = UsableNorm(edge.rotation);
-    if (!norm) return out;
-    if (!std::isfinite(edge.weight) || edge.weight < 0.0) return out;
+    if (!norm) return AveragedRotations{};
+    if (!std::isfinite(edge.weight) || edge.weight < 0.0) return AveragedRotations{};
     rotation.push_back(Quat{edge.rotation.w / *norm, edge.rotation.x / *norm,
                             edge.rotation.y / *norm, edge.rotation.z / *norm});
   }
@@ -190,10 +192,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // at.
   //
   // Read off `anchorsUsed` rather than from a flag kept beside it, which is what stood here: the two
-  // were the same fact held twice, and the count was already written into `out` before the flag was
-  // read — so any gate added between them would have returned a positive `anchorsUsed` next to
-  // `valid == false`, and nothing reads a refused answer past `valid` to notice.
-  if (out.anchorsUsed == 0) return out;
+  // were the same fact held twice.
+  if (out.anchorsUsed == 0) return AveragedRotations{};
 
   // A weight of zero removes the edge from the solve without removing it from the caller's array
   // (ADR 0056). **Decided once, here, and recorded** — the error report below reads `believed` rather
@@ -336,8 +336,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // rotations, and every weight pushed is either `anchorWeight` past its `> 0.0` test or an
       // edge weight past the filter that built `incident`. Four facts upstream, so a refusal
       // refuses the solve rather than being argued away: a refused average carries the identity,
-      // and stored as a frame it reads as one. Default-built, like every other refusal here, so
-      // `rotations` is empty and `anchorsUsed` zero whichever gate said no.
+      // and stored as a frame it reads as one. Every refusal here is default-built, so `rotations`
+      // is empty and `anchorsUsed` zero whichever gate said no.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
       if (!average.valid) return AveragedRotations{};
       if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
