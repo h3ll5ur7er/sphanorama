@@ -20,8 +20,9 @@ constexpr double kDegPerRad = 180.0 / std::numbers::pi;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-// A 66-degree lens over a 960x1280 portrait frame — the shape the app assumes when a browser will
-// not say (see CaptureSessionManager), so the numbers in these tests are the ones it runs on.
+// 66 degrees across the short edge of a 960x1280 portrait frame, so fx and fy differ (739 and 1372)
+// and a test that confuses the axes fails. Not the lens the app builds, which puts the angle on the
+// long edge: see `deriveFieldOfView` in `shell/src/access/capture-host.ts`.
 Intrinsics Phone() { return LensFromFieldOfView(66.0, 50.0, 960, 1280); }
 
 // A direction `degrees` off the forward axis, turned toward +X (right) when `axis` is 0 and
@@ -840,6 +841,129 @@ TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
   EXPECT_FALSE(Unproject(lens, Pixel{5000.0, lens.cy}).valid);
 }
 
+TEST(Unproject, BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel) {
+  // The round-trip tolerance pinned by what it lets through rather than by where it refuses.
+  // Approaching the last pixel with a preimage from outside, Newton settles on the fold and the
+  // round trip misses by the distance past it, so there the tolerance alone decides how far out an
+  // answer is still given and how wrong it may be. `k1 = -1` is here to put a fold in the frame.
+  //
+  // The tolerance is normalised, so in pixels it scales with the focal length, and its comment
+  // promises a millionth of a pixel below f = 1000. Square, at f = 990, so the tolerance is 9.9e-7
+  // px on both axes. Offsets run from a trillionth of a pixel to about eighty, ten to a decade with
+  // one at a millionth exactly, so any tolerance above 1e-6 / f — 1.0101e-9 — fails here.
+  Intrinsics lens = Phone();
+  lens.fx = 990.0;
+  lens.fy = 990.0;
+  lens.k1 = -1.0;
+  // r * (1 + k1 r^2) peaks at r = 1 / sqrt(3), where it is 2 / (3 sqrt(3)).
+  const double reach = 2.0 / (3.0 * std::sqrt(3.0));
+
+  // Out from the optical centre along both axes, both diagonals and back, so the miss is judged on
+  // pixels where it has two components as well as one: on an axis a max or a sum of the two would
+  // read the same as their length.
+  const double d = 1.0 / std::sqrt(2.0);
+  const Vec3 ways[] = {{1, 0, 0}, {0, 1, 0}, {-1, 0, 0}, {0, -1, 0}, {d, d, 0}, {-d, d, 0}};
+  for (const Vec3& way : ways) {
+    const double edge = reach * lens.fx;
+    int answeredPastTheEdge = 0;
+    for (const double side : {-1.0, 1.0}) {
+      for (int decade = -12; decade <= 1; ++decade) {
+        for (int step = 0; step < 10; ++step) {
+          const double distance = std::pow(10.0, decade + step / 10.0);
+          const double at = edge + side * distance;
+          const Pixel pixel{lens.cx + way.x * at, lens.cy + way.y * at};
+          const UnprojectedDirection back = Unproject(lens, pixel);
+          // Loose enough that a pixel with a preimage is never refused for rounding, however close
+          // to the fold it sits; and no answer for one further out than an answer may miss by. The
+          // pair is also what holds `edge` to within about a millionth of a pixel of the real one.
+          if (side < 0) {
+            ASSERT_TRUE(back.valid)
+                << distance << " px inside the edge toward " << way.x << "," << way.y;
+          }
+          if (side > 0 && distance >= 1e-6) {
+            EXPECT_FALSE(back.valid)
+                << distance << " px past the edge toward " << way.x << "," << way.y;
+          }
+          if (!back.valid) continue;
+          if (side > 0) ++answeredPastTheEdge;
+          const ProjectedPixel there = Project(lens, back.direction);
+          ASSERT_TRUE(there.valid);
+          EXPECT_LT(std::hypot(there.pixel.x - pixel.x, there.pixel.y - pixel.y), 1e-6)
+              << side * distance << " px from the edge toward " << way.x << "," << way.y;
+        }
+      }
+    }
+    // Or the sweep never reached the band the tolerance decides, and the solver answered every
+    // assertion above on its own.
+    EXPECT_GT(answeredPastTheEdge, 0) << "toward " << way.x << "," << way.y;
+  }
+}
+
+TEST(Unproject, EveryDirectionIsHeldToTheToleranceInItsOwnFocalLengths) {
+  // The square lens above cannot tell `fx` from `fy`, and the round trip is judged on both. On
+  // `Phone()` they differ by nearly a factor of two, and the miss is measured in each axis's own
+  // focal length: 7.4e-7 px across, 1.37e-6 px down, and the ellipse between them elsewhere. A
+  // radial lens folds at the same normalised radius in every direction, so a step past it by a
+  // share of the tolerance is answered below one share and refused above, all the way round. Every
+  // 15 degrees rather than on the axes alone, because on an axis one component is zero and any way
+  // of combining the two reads the same: dividing by whichever axis's focal length is larger passes
+  // both axes and answers 1.46 shares at 30 degrees. The answered share pins the other side: a
+  // tolerance below 0.9e-9, or a norm stricter off the axes such as their sum, fails here too.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  const double reach = 2.0 / (3.0 * std::sqrt(3.0));
+  for (int degrees = 0; degrees < 360; degrees += 15) {
+    const double t = degrees / kDegPerRad;
+    for (const double share : {0.9, 1.1}) {
+      const double r = reach + share * 1e-9;
+      const Pixel pixel{lens.cx + lens.fx * std::cos(t) * r, lens.cy + lens.fy * std::sin(t) * r};
+      EXPECT_EQ(Unproject(lens, pixel).valid, share < 1.0)
+          << share << " of the tolerance past the edge at " << degrees << " degrees";
+    }
+  }
+}
+
+TEST(Unproject, OnATangentialLensTheLastAnswerOnEveryRayIsHeldToTheTolerance) {
+  // On a radial lens every miss points along the pixel's own radius, so a check that measured only
+  // that part of the miss would pass both tests above. Tangential terms turn the miss off the
+  // radius. Here the fold is wherever it lands, so it is found rather than assumed: along each ray
+  // from the optical centre, bisect to the last pixel answered before one refused at the frame's
+  // edge, and ask how far that answer misses in each axis's own focal length.
+  Intrinsics lens = Phone();
+  lens.k1 = -1.0;
+  lens.p1 = 0.3;
+  lens.p2 = 0.3;
+  int raysWithAnEdge = 0;
+  for (int degrees = 0; degrees < 360; degrees += 15) {
+    const double t = degrees / kDegPerRad;
+    const double dx = std::cos(t), dy = std::sin(t);
+    // As far along the ray as the frame goes.
+    const double acrossToEdge = dx > 0 ? lens.width - lens.cx : lens.cx;
+    const double downToEdge = dy > 0 ? lens.height - lens.cy : lens.cy;
+    const double out = std::min(dx != 0.0 ? acrossToEdge / std::abs(dx) : 1e300,
+                                dy != 0.0 ? downToEdge / std::abs(dy) : 1e300);
+    const auto at = [&](double s) { return Pixel{lens.cx + dx * s, lens.cy + dy * s}; };
+    if (Unproject(lens, at(out)).valid) continue;
+    ++raysWithAnEdge;
+    double answered = 0.0, refused = out;
+    for (int i = 0; i < 80; ++i) {
+      const double middle = 0.5 * (answered + refused);
+      (Unproject(lens, at(middle)).valid ? answered : refused) = middle;
+    }
+    const Pixel pixel = at(answered);
+    const UnprojectedDirection back = Unproject(lens, pixel);
+    ASSERT_TRUE(back.valid) << degrees << " degrees";
+    const ProjectedPixel there = Project(lens, back.direction);
+    ASSERT_TRUE(there.valid) << degrees << " degrees";
+    const double miss =
+        std::hypot((there.pixel.x - pixel.x) / lens.fx, (there.pixel.y - pixel.y) / lens.fy);
+    EXPECT_LE(miss, 1e-9 * (1.0 + 1e-6))
+        << degrees << " degrees, at " << pixel.x << "," << pixel.y;
+  }
+  // Or the frame holds no fold on most rays and the loop above asserted nothing. 18 of 24 today.
+  EXPECT_GE(raysWithAnEdge, 12);
+}
+
 // The share of a frame's own pixels that `Unproject` refuses, sampled at every pixel centre.
 //
 // Measured on a frame rather than a grid because the frame is what the question is about: a
@@ -913,12 +1037,11 @@ TEST(Unproject, TheFoldReachesTheFrameBeforeItReachesAnyDatasetsLens) {
   // under ASan+UBSan, and pixel for pixel against the renderer's independent numpy solver, with a
   // 1.35e-3 relative margin between the last refused shell and the first accepted one.
   //
-  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the constant deciding "refuses rather than answering
-  // approximately" — is caught at 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`, which
-  // predates this branch. This count only joins in at 1e-3. So the pair below pins
-  // *where* the boundary is; what enforces it is pinned by the fold tests, and 6e-4 survives the
-  // whole suite — 0.44 px of accepted round-trip error against a constant documented as under a
-  // millionth of a pixel.
+  // **It is not the most sensitive assertion here.** Widening `kInverseToleranceNormalised` — the
+  // constant deciding "refuses rather than answering approximately" — is caught above 1.0101e-9
+  // by `BelowAThousandPixelFocalLengthEveryAnswerProjectsBackWithinAMillionthOfAPixel` and at
+  // 7e-4 by `APixelPastTheLastOneWithAPreimageIsRefused`. This count only joins in at 1e-3, so the
+  // pair below pins *where* the boundary is rather than what enforces it.
   Intrinsics folding = rendered;
   folding.k1 = -0.24;
   EXPECT_EQ(RefusedCountOfFrame(folding), 48);

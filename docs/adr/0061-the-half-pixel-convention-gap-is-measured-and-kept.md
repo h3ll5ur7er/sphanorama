@@ -285,3 +285,13 @@ measurement" is not a decision. The cost of leaving it was demonstrated: a revie
 the instrument to find out that the obvious fix breaks the build, which is a discovery the next
 person would have made the expensive way — by making the change and reading a red ORB as a
 regression in their own work.
+
+## Foot note: the `synthetic-ring-4` row is asserted
+
+Context's "a second fixture would be a second thing to keep true" was wrong when it was written,
+not overtaken: this file's own Consequences — "ADR 0060's precedent applies here" — answers it with
+the reason the first row is pinned, that two readers rebuilt the described rig and got two
+different tables. `CameraModelAgainstOpenCV.TheHalfPixelShiftCostsTheCommittedLensTheAngleADR0061Publishes`
+asserts the row now: the lens, the 1,488 correspondences, the two figures to 1e-6 and the zero at
+`+0.5` — which, as in the first table, checks the fit rather than measuring the lens — and the 1,470
+correspondences and 0.027560° about `x` that the next paragraph of Context gives.
