@@ -360,8 +360,10 @@ struct CaptureGuidance {
   // counter-clockwise looking along the view, and it wraps at a half-turn (ADR 0072). Within 5
   // degrees of `targetNode` it is measured against the cell, after the shortest turn onto it, so it
   // is the roll owed once the phone is aimed; beyond 15 it is the roll from level where the phone
-  // looks, so a level phone reads zero; between the two it blends. Unsteady only looking straight
-  // up or down away from the cell, where level has no meaning.
+  // looks, so a level phone reads zero; between the two it blends. Level fades out within 15
+  // degrees of straight up or down and is gone within 5, and a cell within 15 of either is measured
+  // against that alone — so one at the pole owes no roll. Unsteady only for a phone rolled most of
+  // a half-turn from level within 15 degrees of a pole.
   double rollErrorDeg = 0;
   double stability = 0;          // [0,1]
   GuidanceAction action = GuidanceAction::Seek;

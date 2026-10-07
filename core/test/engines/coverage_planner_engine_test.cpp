@@ -752,7 +752,12 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
   RingsCoveragePlannerEngine engine;
   const CapturePlan plan = Plan(Spec());
 
-  const Quat aimed = plan.nodes.front().targetOrientation;
+  // A cell on the horizon, because a cell at a pole owes no roll at all (ADR 0072).
+  const auto onTheHorizon = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto& n) {
+    return std::abs(Direction(n.targetOrientation).y) < 1e-12;
+  });
+  ASSERT_NE(onTheHorizon, plan.nodes.end());
+  const Quat aimed = onTheHorizon->targetOrientation;
   auto straight = engine.Locate(Aiming(aimed), plan, CoverageState{});
   ASSERT_TRUE(straight.ok());
 
@@ -819,39 +824,59 @@ TEST(NullCoveragePlanner, AlsoSeparatesRollFromAim) {
 
 // The roll guidance, which both engines give the same way (ADR 0072): within 5 degrees of the cell
 // it is the twist left after the shortest turn onto it, beyond 15 it is the roll from level where
-// the phone looks, and between the two it blends. Asserted at the engine for each, because the
-// utilities' own tests cannot see which argument a planner puts first or what it does with them.
+// the phone looks, and between the two it blends — except near a pole, where level fades out and a
+// cell is measured against it alone. Asserted at the engine for each, because the utilities' own
+// tests cannot see which argument a planner puts first or what it does with them.
 
-// One level cell thirty degrees up, which every roll test below is measured against.
-CapturePlan OneCellThirtyUp() {
+CapturePlan OneCellAt(double azimuthDeg, double elevationDeg) {
   CapturePlan plan;
   CoverageNode node;
   node.id = NodeId{1};
-  node.targetOrientation = FromAzimuthElevation(0.0, 30.0);
+  node.targetOrientation = FromAzimuthElevation(azimuthDeg, elevationDeg);
   node.acceptanceConeDeg = 5.0;
   plan.nodes.push_back(node);
   return plan;
 }
 
-double RollDeg(ICoveragePlannerEngine& engine, const Quat& phone) {
-  auto guidance = engine.Locate(Aiming(phone), OneCellThirtyUp(), CoverageState{});
+CapturePlan OneCellThirtyUp() { return OneCellAt(0.0, 30.0); }
+
+double RollDeg(ICoveragePlannerEngine& engine, const Quat& phone,
+               const CapturePlan& plan = OneCellThirtyUp()) {
+  auto guidance = engine.Locate(Aiming(phone), plan, CoverageState{});
   EXPECT_TRUE(guidance.ok());
   return guidance.value.rollErrorDeg;
+}
+
+// Turned about its own view, which is what rolling a phone is.
+Quat Rolled(const Quat& phone, double degrees) {
+  return Multiply(FromAxisAngle(Direction(phone), degrees / kRadToDeg), phone);
+}
+
+// A level phone on the cell's own ring, `separationDeg` from it.
+Quat LevelAlongTheRing(double elevationDeg, double separationDeg) {
+  const double c = std::cos(elevationDeg / kRadToDeg);
+  const double s = std::sin(elevationDeg / kRadToDeg);
+  const double cosAzimuth = (std::cos(separationDeg / kRadToDeg) - s * s) / (c * c);
+  return FromAzimuthElevation(std::acos(cosAzimuth) * kRadToDeg, elevationDeg);
 }
 
 TEST(CoveragePlanner, NearTheCellTheRollIsWhatIsLeftAfterTheShortestTurnOntoIt) {
   // Four degrees of azimuth off a cell thirty degrees up: inside the 5 where the cell is the
   // reference, and far enough off it that a level phone reads some roll, so an engine that swapped
-  // the arguments — or reported roll from level here — reads the wrong sign or nothing.
+  // the arguments — or reported roll from level here — reads the wrong sign or nothing. Rolled too,
+  // because the 5 is between where the phone and the cell look: a rolled phone measured by whole
+  // attitude is thirty degrees from the cell and would read level.
   NullCoveragePlannerEngine null;
   RingsCoveragePlannerEngine rings;
-  const Quat beside = FromAzimuthElevation(4.0, 30.0);
-  const double expected =
-      RollBetween(beside, OneCellThirtyUp().nodes.front().targetOrientation) * kRadToDeg;
-  ASSERT_GT(std::abs(expected), 1.0);
-  for (ICoveragePlannerEngine* engine : {static_cast<ICoveragePlannerEngine*>(&null),
-                                         static_cast<ICoveragePlannerEngine*>(&rings)}) {
-    EXPECT_NEAR(RollDeg(*engine, beside), expected, 1e-9);
+  const Quat target = OneCellThirtyUp().nodes.front().targetOrientation;
+  for (const double roll : {0.0, 30.0}) {
+    const Quat beside = Rolled(FromAzimuthElevation(4.0, 30.0), roll);
+    const double expected = RollBetween(beside, target) * kRadToDeg;
+    ASSERT_GT(std::abs(expected - roll), 1.0);
+    for (ICoveragePlannerEngine* engine : {static_cast<ICoveragePlannerEngine*>(&null),
+                                           static_cast<ICoveragePlannerEngine*>(&rings)}) {
+      EXPECT_NEAR(RollDeg(*engine, beside), expected, 1e-9) << roll;
+    }
   }
 }
 
@@ -867,16 +892,37 @@ TEST(CoveragePlanner, AwayFromTheCellALevelPhoneReadsLevel) {
                                  std::pair{90.0, 60.0}, std::pair{20.0, 40.0}}) {
       const Quat level = FromAzimuthElevation(az, el);
       EXPECT_NEAR(RollDeg(*engine, level), 0.0, 1e-9) << az << "," << el;
-      const Quat rolled = Multiply(FromAxisAngle(Direction(level), 25.0 / kRadToDeg), level);
-      EXPECT_NEAR(RollDeg(*engine, rolled), 25.0, 1e-6) << az << "," << el;
+      EXPECT_NEAR(RollDeg(*engine, Rolled(level, 25.0)), 25.0, 1e-6) << az << "," << el;
+    }
+  }
+}
+
+TEST(CoveragePlanner, BetweenFiveAndFifteenDegreesTheCellGivesWayToLevelInProportion) {
+  // A level phone reads zero from level, so across the band it reads the cell's twist scaled down
+  // linearly from all of it at 5 degrees to none at 15. On a cell sixty degrees up, where that
+  // twist is large enough for an edge moved by a tenth of a degree to show.
+  NullCoveragePlannerEngine null;
+  RingsCoveragePlannerEngine rings;
+  const CapturePlan plan = OneCellAt(0.0, 60.0);
+  const Quat target = plan.nodes.front().targetOrientation;
+  for (const double separation : {4.9, 5.1, 7.5, 10.0, 12.5, 14.9, 15.1}) {
+    const Quat phone = LevelAlongTheRing(60.0, separation);
+    ASSERT_NEAR(AngleBetweenDirections(Direction(phone), Direction(target)) * kRadToDeg,
+                separation, 1e-9);
+    const double againstCell = RollBetween(phone, target) * kRadToDeg;
+    ASSERT_GT(std::abs(againstCell), 5.0) << separation;
+    const double share = 1.0 - std::clamp((separation - 5.0) / 10.0, 0.0, 1.0);
+    for (ICoveragePlannerEngine* engine : {static_cast<ICoveragePlannerEngine*>(&null),
+                                           static_cast<ICoveragePlannerEngine*>(&rings)}) {
+      EXPECT_NEAR(RollDeg(*engine, phone, plan), share * againstCell, 1e-9) << separation;
     }
   }
 }
 
 TEST(CoveragePlanner, TheRollChangesSmoothlyAsThePhoneLeavesTheCell) {
-  // The two references disagree by up to 30 degrees within 15 of a cell this high and by up to half
-  // a turn further out, so switching between them would jump the horizon; the blend may not. A level
-  // phone walked from the cell to twenty degrees off it, in twentieth-of-a-degree steps.
+  // The two references disagree by up to 9 degrees within 15 of this cell and by up to half a turn
+  // further out, so switching between them would jump the horizon; the blend may not. A level phone
+  // walked from the cell to twenty degrees off it, in twentieth-of-a-degree steps.
   NullCoveragePlannerEngine engine;
   double previous = RollDeg(engine, FromAzimuthElevation(0.0, 30.0));
   double largestStep = 0.0;
@@ -886,15 +932,14 @@ TEST(CoveragePlanner, TheRollChangesSmoothlyAsThePhoneLeavesTheCell) {
     largestStep = std::max(largestStep, std::abs(roll - previous));
     previous = roll;
   }
-  EXPECT_LT(largestStep, 0.2);
+  EXPECT_LT(largestStep, 0.1);
 }
 
 TEST(CoveragePlanner, TheBlendTakesTheShortWayRoundAtAHalfTurnOfRoll) {
   // Rolled 176 degrees, 8.7 off the cell: the two references read -179.0 and 176.0, five degrees
   // apart as angles and 355 apart as numbers. The blend has to land in the five, not in the 355.
   NullCoveragePlannerEngine engine;
-  const Quat level = FromAzimuthElevation(10.0, 30.0);
-  const Quat phone = Multiply(FromAxisAngle(Direction(level), 176.0 / kRadToDeg), level);
+  const Quat phone = Rolled(FromAzimuthElevation(10.0, 30.0), 176.0);
   const double againstCell =
       RollBetween(phone, OneCellThirtyUp().nodes.front().targetOrientation) * kRadToDeg;
   const double fromLevel = RollFromLevel(phone) * kRadToDeg;
@@ -907,6 +952,88 @@ TEST(CoveragePlanner, TheBlendTakesTheShortWayRoundAtAHalfTurnOfRoll) {
       << roll << " is not between " << againstCell << " and " << fromLevel;
   EXPECT_GT(roll, -180.0);
   EXPECT_LE(roll, 180.0);
+}
+
+TEST(CoveragePlanner, NearAPoleLevelFadesFromAllOfItAtFifteenDegreesToNoneAtFive) {
+  // Level has no meaning looking straight up or down, and the roll from it spins faster the closer
+  // the phone gets. A phone rolled forty degrees, with the cell far below or above so only level is
+  // asked, reads all of it fifteen degrees from the pole, none of it within five, and a straight
+  // line between.
+  NullCoveragePlannerEngine null;
+  RingsCoveragePlannerEngine rings;
+  const CapturePlan plan = OneCellAt(0.0, 0.0);
+  for (const double sign : {1.0, -1.0}) {
+    for (const double fromPole : {0.0, 4.9, 5.1, 7.5, 10.0, 12.5, 14.9, 15.1}) {
+      const Quat phone = Rolled(FromAzimuthElevation(30.0, sign * (90.0 - fromPole)), 40.0);
+      const double expected = 40.0 * std::clamp((fromPole - 5.0) / 10.0, 0.0, 1.0);
+      for (ICoveragePlannerEngine* engine : {static_cast<ICoveragePlannerEngine*>(&null),
+                                             static_cast<ICoveragePlannerEngine*>(&rings)}) {
+        EXPECT_NEAR(RollDeg(*engine, phone, plan), expected, 1e-6) << sign << " " << fromPole;
+      }
+    }
+  }
+}
+
+TEST(CoveragePlanner, ACellWithinFifteenDegreesOfAPoleIsMeasuredAgainstLevelAlone) {
+  // Its own reference and level wind differently around the pole, so no blend between them is
+  // continuous there (ADR 0072). A level phone four degrees off the cell reads the cell's twist
+  // when the cell is 15.1 degrees from the pole and nothing when it is 14.9; and aimed straight up
+  // at a cell there, any roll reads zero, because there is no horizon left to owe.
+  NullCoveragePlannerEngine null;
+  RingsCoveragePlannerEngine rings;
+  for (ICoveragePlannerEngine* engine : {static_cast<ICoveragePlannerEngine*>(&null),
+                                         static_cast<ICoveragePlannerEngine*>(&rings)}) {
+    for (const double sign : {1.0, -1.0}) {
+      const CapturePlan outside = OneCellAt(0.0, sign * 74.9);
+      const Quat nearOutside = LevelAlongTheRing(sign * 74.9, 4.0);
+      const double twist =
+          RollBetween(nearOutside, outside.nodes.front().targetOrientation) * kRadToDeg;
+      ASSERT_GT(std::abs(twist), 5.0);
+      EXPECT_NEAR(RollDeg(*engine, nearOutside, outside), twist, 1e-9) << sign;
+
+      const CapturePlan inside = OneCellAt(0.0, sign * 75.1);
+      EXPECT_NEAR(RollDeg(*engine, LevelAlongTheRing(sign * 75.1, 4.0), inside), 0.0, 1e-9) << sign;
+
+      const CapturePlan pole = OneCellAt(0.0, sign * 90.0);
+      for (const double roll : {0.0, 30.0, 135.0}) {
+        EXPECT_NEAR(RollDeg(*engine, Rolled(pole.nodes.front().targetOrientation, roll), pole), 0.0,
+                    1e-9)
+            << sign << " " << roll;
+      }
+    }
+  }
+}
+
+TEST(CoveragePlanner, AroundThePoleCellsEveryPlanLaysTheRollIsSteady) {
+  // The planner covers the poles by default, with one cell at each. Against the cell's own
+  // reference a level phone ten degrees off it read +90 at one azimuth and -90 a twentieth of a
+  // degree further round. Phones level and rolled, circled at three distances from each pole cell.
+  RingsCoveragePlannerEngine rings;
+  const CapturePlan plan = Plan(Spec());
+  int poleCells = 0;
+  for (const auto& cell : plan.nodes) {
+    const double up = Direction(cell.targetOrientation).y;
+    if (std::abs(std::abs(up) - 1.0) > 1e-12) continue;
+    ++poleCells;
+    CapturePlan alone;
+    alone.nodes.push_back(cell);
+    for (const double fromPole : {6.0, 10.0, 14.0}) {
+      for (const double roll : {0.0, 30.0, -60.0}) {
+        const auto at = [&](int step) {
+          return Rolled(FromAzimuthElevation(0.05 * step, up * (90.0 - fromPole)), roll);
+        };
+        double previous = RollDeg(rings, at(0), alone);
+        double largestStep = 0.0;
+        for (int step = 1; step <= 7200; ++step) {
+          const double roll = RollDeg(rings, at(step), alone);
+          largestStep = std::max(largestStep, std::abs(std::remainder(roll - previous, 360.0)));
+          previous = roll;
+        }
+        EXPECT_LT(largestStep, 0.1) << up << " " << fromPole << " " << roll;
+      }
+    }
+  }
+  EXPECT_EQ(poleCells, 2);
 }
 
 TEST(NullCoveragePlanner, SaysTheSameFourThingsAboutAimAndCoverageTheRealOneDoes) {
