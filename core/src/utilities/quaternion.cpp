@@ -200,6 +200,18 @@ double RollBetween(const Quat& current, const Quat& target) {
   return angle;
 }
 
+double RollFromLevel(const Quat& current) {
+  if (!IsUsableRotation(current)) return 0.0;
+  // Level is the orientation `FromAzimuthElevation` builds for the same view: it has no roll by
+  // construction, so this is `RollBetween` against a target that looks exactly where the phone
+  // does and the swing between them is nothing.
+  constexpr double kRadToDeg = 180.0 / std::numbers::pi;
+  const Vec3 view = Direction(current);
+  const double elevationDeg = std::asin(std::clamp(view.y, -1.0, 1.0)) * kRadToDeg;
+  const double azimuthDeg = std::atan2(-view.x, -view.z) * kRadToDeg;
+  return RollBetween(current, FromAzimuthElevation(azimuthDeg, elevationDeg));
+}
+
 std::optional<std::string_view> PoseSampleDefect(const PoseSample& pose) {
   // Written so a NaN fails it: every comparison with one is false.
   if (!(pose.confidence >= 0.0 && pose.confidence <= 1.0)) return "a confidence outside [0, 1]";
