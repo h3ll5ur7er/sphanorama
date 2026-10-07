@@ -697,12 +697,10 @@ TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
   // stop at the same place. Only comparing the round trip against the input can tell, because
   // neither the fold test nor the Jacobian objects to where it landed.
   //
-  // Three earlier versions of this test used pixels that were merely *hard*: one needing 835
-  // fixed-point passes, one a fixed point could not approach, and this same pixel described with a
-  // residual of 1.6e+18 measured before the damping. Each of the first two was a false refusal
-  // dressed up as a property of the lens, and a reviewer caught each in turn; the third was a real
-  // refusal with a stale number attached. Newton solves the first two — (1010, 260) round-trips to
-  // 5.7e-14 px now — and this one is refused because there is genuinely nothing there.
+  // A pixel that is merely *hard* is the wrong witness for this, because a refusal of it is a
+  // solver failing rather than a property of the lens. The one below it is that kind: (1010, 260)
+  // on a k1 = -0.9, p2 = 0.6 lens, which a fixed point never reaches — 246 px off after 5,000
+  // passes — and Newton round-trips to 1.1e-13 px, so it is asserted answered.
   Intrinsics lens = Phone();
   lens.k1 = -0.6;
   lens.k2 = 0.3;
@@ -711,7 +709,7 @@ TEST(Unproject, APixelTheSolverCannotAccountForIsRefusedRatherThanAnswered) {
   ASSERT_TRUE(IsUsableLens(lens));
   EXPECT_FALSE(Unproject(lens, Pixel{348.0, 1452.0}).valid);
 
-  // The pixel two rounds of review spent on, now answered.
+  // A pixel only a fixed point cannot reach, answered.
   Intrinsics slow = Phone();
   slow.k1 = -0.9;
   slow.p2 = 0.6;
@@ -790,17 +788,12 @@ TEST(Unproject, EveryPixelOfAnUltraWideFrameIsSolved) {
 }
 
 TEST(Unproject, ANearFoldPixelIsAnsweredRatherThanGivenUpOn) {
-  // A pixel that exists, has exactly one preimage, and sits close enough to the fold that the old
-  // solver could not reach it. With k1 = -0.9 the fold is at r = 0.609, so a direction at r = 0.55
-  // is comfortably inside — but the fixed point converged linearly with a ratio approaching 1 near
-  // the fold, so a small budget landed short and the convergence check then refused a perfectly
-  // well defined pixel. Measured on that solver: 20 passes reached 89.6% of the invertible radius,
-  // 100 reached 99.6%, 500 reached 99.98%, and this direction sat in the band the first refuses.
-  //
-  // None of that is true of the solver any more, and the test is kept for the pixel rather than the
-  // story: damped Newton answers it immediately. The numbers above are why this test exists and are
-  // labelled as history, not as a description of what runs. It was called
-  // `ASlowInverseIsIteratedToTheEndRatherThanGivenUpOn` while the inverse was slow.
+  // A pixel that exists, has exactly one preimage, and sits close enough to the fold that a
+  // linearly converging inverse lands short of it. With k1 = -0.9 the fold is at r = 0.609, so a
+  // direction at r = 0.55 is comfortably inside, but a fixed-point iteration's ratio approaches 1
+  // near the fold: 20 passes reach 89.6% of the largest invertible pixel radius and this
+  // direction's pixel sits beyond that. Damped Newton answers it immediately, and this keeps any
+  // slower inverse from refusing it.
   Intrinsics lens = Phone();
   lens.k1 = -0.9;
   const double theta = std::atan(0.55);
@@ -813,20 +806,15 @@ TEST(Unproject, ANearFoldPixelIsAnsweredRatherThanGivenUpOn) {
 }
 
 TEST(Unproject, APixelPastTheLastOneWithAPreimageIsRefused) {
-  // A boundary test, and deliberately no longer claiming to be a fold test. With k1 = -1 the fold
-  // sits at r = 0.5774 and the largest *pixel* radius that still has a preimage is
-  // 0.5774 * (1 - 1/3) = 0.3849, i.e. x = cx + 0.3849 * fx = 764.49. Just inside answers; just
-  // outside must not, and that boundary is worth pinning whatever enforces it.
+  // A boundary test, not a fold test. With k1 = -1 the fold sits at r = 0.5774 and the largest
+  // *pixel* radius that still has a preimage is 0.5774 * (1 - 1/3) = 0.3849, i.e.
+  // x = cx + 0.3849 * fx = 764.49. Just inside answers; just outside must not, and that boundary is
+  // worth pinning whatever enforces it.
   //
-  // What enforces it is *not* the fold check, and it has not been the same thing twice. Under the
-  // fixed point, x = 765 diverged and the in-loop `radial > 0` guard fired at pass 58. Under damped
-  // Newton the backtracking finds nowhere both defined and closer, the loop stops where it stands,
-  // and the **round-trip tolerance** refuses — measured, along with x = 5000, which now goes the same
-  // way rather than dying on the first pass.
-  //
-  // Three rewrites of this test have only ever changed which guard says no. On a radial-only lens
-  // past the fold the solver never reaches its own fold refusal, so no choice of pixel makes this a
-  // fold test, which is why it stopped claiming to be one.
+  // What enforces it is the **round-trip tolerance**, not the fold check: past the fold the
+  // backtracking finds nowhere both defined and closer, the loop stops where it stands, and the
+  // round trip misses — measured at x = 765 and at x = 5000. On a radial-only lens past the fold
+  // the solver never reaches its own fold refusal, so no choice of pixel makes this a fold test.
   //
   // `Project`'s fold reasoning is pinned instead by `ARadiusPastTheFirstFold...` and
   // `ATangentialLensNeverAnswersWithTheOtherPreimage`, both of which fail when it is removed.
@@ -1095,20 +1083,18 @@ TEST(Unproject, TheHalfPixelOffsetMovesABearingFurtherThanItMovesAFit) {
   // sign that this is a translation in the image plane rather than a lens term.
   EXPECT_NEAR(largest, 0.0805, 1e-4);
   EXPECT_NEAR(smallest, 0.0494, 1e-4);
-  // One axis is not the answer, and this is the figure that was published as though it were. There
-  // used to be an `EXPECT_GT(largest, ...)` under this line asserting that the diagonal beats the
-  // axis; it could not fail, because the two `EXPECT_NEAR`s above pin both operands into intervals
-  // 222 times their own width apart. Two pinned numbers do not need a third assertion to be
-  // ordered, and one that cannot fail reads as coverage.
+  // One axis is not the answer, and this is the figure that was published as though it were. No
+  // assertion orders it against the centre's 0.0805: the two `EXPECT_NEAR`s pin them more than a
+  // hundred interval widths apart, so a third could not fail.
   EXPECT_NEAR(std::atan(0.5 / lens.fx) * kDegPerRad, 0.0581, 1e-4);
 }
 
 /**
  * Which way is up, asserted directly, because the sweep above cannot see it.
  *
- * **A reviewer flipped the model's y sign and every row of ADR 0061's shift table came back
- * unchanged.** `Project` and `Unproject` are mutated together, so the round trip still closes; what
- * changes is the handedness, and the shift table is fitted about a turn on `+Y`. A y-sign flip is
+ * **Flipping the model's y sign leaves every row of ADR 0061's shift table unchanged.** `Project`
+ * and `Unproject` are mutated together, so the round trip still closes; what changes is the
+ * handedness, and the shift table is fitted about a turn on `+Y`. A y-sign flip is
  * `diag(1, -1, 1)`, which commutes with a rotation about y, so the fitted rotation comes back
  * conjugated by something that leaves it alone. The one handedness a single-axis sweep is blind to
  * is the axis it turns about — and that is the axis the accuracy dataset's ring turns about, so it
