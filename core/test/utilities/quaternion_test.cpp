@@ -647,6 +647,37 @@ TEST(RollBetween, ReadsZeroForWhatIsNotARotation) {
   EXPECT_EQ(RollBetween(target, Quat{nan, 0.1, 0.2, 0.3}), 0.0);
 }
 
+// ------------------------------------------------------------------ roll from level
+
+TEST(RollFromLevel, ALevelOrientationReadsZeroWhereverItLooks) {
+  // The point of it: unlike `RollBetween` against some cell, nothing here depends on where else the
+  // phone might be asked to look, so a level phone reads level everywhere a level is defined.
+  for (double az = 0.0; az < 360.0; az += 30.0) {
+    for (double el = -85.0; el <= 85.0; el += 17.0) {
+      EXPECT_NEAR(RollFromLevel(FromAzimuthElevation(az, el)), 0.0, 1e-9) << az << "," << el;
+    }
+  }
+}
+
+TEST(RollFromLevel, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
+  // The same sign as `RollBetween`: positive is clockwise as the user, looking along the view, sees
+  // the phone turn — a right-handed turn about the view.
+  for (const double el : {-60.0, 0.0, 45.0, 89.0}) {
+    const Quat level = FromAzimuthElevation(40.0, el);
+    for (const double degrees : {30.0, -45.0, 170.0}) {
+      const Quat rolled = Multiply(FromAxisAngle(Direction(level), degrees / kDegPerRad), level);
+      EXPECT_NEAR(RollFromLevel(rolled) * kDegPerRad, degrees, 1e-6) << el << " up, " << degrees;
+      EXPECT_NEAR(RollFromLevel(rolled), RollBetween(rolled, level), 1e-9);
+    }
+  }
+}
+
+TEST(RollFromLevel, ReadsZeroForWhatIsNotARotation) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(RollFromLevel(Quat{0, 0, 0, 0}), 0.0);
+  EXPECT_EQ(RollFromLevel(Quat{nan, 0, 0, 0}), 0.0);
+}
+
 }  // namespace
 // No pose is spelled with `confidence` zero, and at zero the orientation is not read: an unset pose
 // and a gyroscope's unanchored one are both well-formed. Everything else outside [0, 1], and an

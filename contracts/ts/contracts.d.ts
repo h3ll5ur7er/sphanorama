@@ -319,11 +319,14 @@ export interface CaptureGuidance {
   targetNode: NodeId;
   angularErrorDeg: number;
   /**
-   * How far the phone is rolled against `targetNode` about its own view, in degrees and in
-   * (-180, 180]: positive is counter-clockwise looking along the view, and it wraps at a half-turn.
-   * Measured after the shortest turn from the cell's view to the phone's, so it is the roll owed
-   * once the phone is aimed — and a level phone off the horizon reads some roll against a level
-   * cell beside it, because that turn tips the horizon on the way.
+   * How far the phone is rolled about its own view, in degrees and in (-180, 180]: positive is
+   * clockwise as the user, looking along the view, sees the phone turn, and it wraps at a half-turn
+   * (ADR 0072). It is the roll from level where the phone looks, whichever cell is the target, so a
+   * level phone reads zero and, aimed at the centre of a cell at least 15 degrees from a pole, a
+   * phone reads the roll its frame will have. Within 15 degrees of straight up or down it fades,
+   * and within 5 it is zero, so a cell at a pole asks for none. Unsteady only for a phone turned a
+   * half-turn from level between 5 and 15 degrees from a pole: upside down, or pitched back past
+   * straight up or down.
    */
   rollErrorDeg: number;
   /** [0,1] */

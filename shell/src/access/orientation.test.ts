@@ -21,7 +21,8 @@ function look(q: Quat) {
 
 /**
  * The viewfinder's right edge, same frame. This is the axis roll is measured against — the core
- * compares it with the target cell's horizontal — so it is what a level horizon means.
+ * compares it with the horizontal of the level orientation looking the same way — so it is what a
+ * level horizon means.
  */
 function right(q: Quat) {
   const { w, x, y, z } = q;
