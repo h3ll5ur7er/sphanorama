@@ -1427,11 +1427,11 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
           : RETICLE_MAX_RADIUS;
         reticle.setAttribute('r', radius.toFixed(1));
         reticle.classList.toggle('locked', guidance.aimKnown && radius === RETICLE_LOCKED_RADIUS);
-        // The horizon shows the roll the *core* reported — against the cell near it, against
-        // level away from it (ADR 0072) — not the raw gamma from the sensor. Deriving it here would
-        // be the client deciding how level is level enough, which is the planner's call (V4) and
-        // used to be wrong anyway: roll was folded into the angular error until the engine started
-        // reporting it separately.
+        // The horizon shows the roll the *core* reported — from level where the phone looks,
+        // faded out near straight up or down (ADR 0072) — not the raw gamma from the sensor.
+        // Deriving it here would be the client deciding how level is level enough, which is the
+        // planner's call (V4) and used to be wrong anyway: roll was folded into the angular error
+        // until the engine started reporting it separately.
         // Same reasoning: a roll measured against an orientation nobody estimated is not a roll.
         horizonDeg = unwrapDegrees(horizonDeg, guidance.aimKnown ? -guidance.rollErrorDeg : 0);
         horizonGroup.setAttribute('transform', `rotate(${horizonDeg.toFixed(1)} 50 50)`);

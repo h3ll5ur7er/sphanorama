@@ -131,8 +131,8 @@ double AngleBetweenDirections(const Vec3& a, const Vec3& b);
 // **Continuous is not the same as steady near opposite.** No roll can be continuous over every
 // pair of views — the opposite point is where this one gives — so the roll changes fast around it:
 // a level phone circling the point behind a level cell reads two full turns of roll per circuit,
-// and ten degrees from behind it can read ninety. Asked about a cell near the phone, as guidance
-// asks, none of that is reached.
+// and ten degrees from behind it can read ninety. `RollFromLevel` asks about a target looking where
+// the phone looks, so it reaches none of that.
 //
 // Two *level* orientations are not always zero apart: the shortest turn between views at different
 // azimuths away from the horizon tips the horizon as it goes, so a level phone fifteen degrees of
