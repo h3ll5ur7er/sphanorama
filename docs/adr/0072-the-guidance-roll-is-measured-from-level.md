@@ -36,29 +36,40 @@ horizon to keep, and turning it about its view changes nothing a stitch needs.
 
 The fade is there because level has no meaning at a pole and the roll from it spins faster the
 closer the phone gets: at a fortieth of a degree from one, a twentieth of a degree of aim can turn
-it half a turn. Faded, a phone tipped over the zenith keeps a steady horizon.
+it half a turn. Faded, a phone rolled from level and tipped over the zenith keeps a steady
+horizon. One tipped over while level is a half-turn from level on the far side, which is the
+unsteady spot the Consequences name.
 
-Measured over 8 million steps of a twentieth of a degree, on random walks of the whole orientation
-over the whole sphere: for a phone within a quarter-turn of level the worst step is 0.48 degrees
-of roll and none is over 2. All 81 steps over 2 were a phone 179.7 degrees or more from level and
-between 5 and 15 degrees from a pole — upside down, or tipped back past straight up — where the
-faded reading crosses its half-turn. Because the target is not read, no change of target moves it.
+Two bounds follow from the rule, per step of s degrees. A step that does not carry the reading
+across its half-turn moves it by at most about s·√(81 + cot²15°) for a phone within a quarter-turn
+of level — 0.49 degrees at s = 0.05 — and by under one degree for any phone. A step can carry it
+across only from 180 − s / sin 5° degrees or more from level — 179.4 at s = 0.05 — and only between
+5 and 15 degrees from a pole: upside down, or tipped back past straight up. Both grow with s, and a
+phone turns more than a twentieth of a degree between ticks. Random walks of the whole orientation
+over the whole sphere agree: over 8 million steps of 0.05 degrees the worst step within a
+quarter-turn of level was 0.48, and the 81 steps over 2 were all crossings. Because the target is
+not read, no change of target moves it.
 
 ## Consequences
 
-- **A level phone reads level wherever it points**, near a cell or far from it, except within 15
-  degrees of a pole, where any phone reads less than its roll, and within 5, where it reads none.
+- **A level phone reads level wherever it points**, near a cell or far from it. A rolled phone
+  reads its roll, except within 15 degrees of a pole, where it reads less, and within 5, where it
+  reads none.
 - **Off the centre of a cell the reading is level, not the twist left after the shortest turn onto
   the cell.** Inside the 4-degree acceptance cone the two differ by up to 2.3 degrees on a ring
-  thirty up, 6.9 at sixty and 15.1 at seventy-five. A phone turned onto the cell by yaw and pitch
-  arrives level, so level is the reading that agrees with how it got there.
+  thirty up, 7.0 at sixty and 15.1 at seventy-five. A phone turned onto the cell by yaw and pitch
+  arrives level, so level is the reading that agrees with how it got there. On the ring at
+  seventy-five the cone reaches eleven degrees from the pole, into the fade, so there a rolled
+  phone reads less than level too: up to about 25 degrees short of its frame's twist rolled 45, and
+  nearly 40 rolled a quarter-turn.
 - **A cell at a pole asks for no roll**, and a cell nearer a pole than 15 degrees asks for a share.
   Before, a pole cell asked the user to turn the phone to whichever heading the planner happened to
   give it — up to a half-turn, for nothing.
 - **The unsteady spot moves rather than disappears.** Every roll defined over all orientations has
   one. This one is a phone turned a half-turn from level near a pole — upside down, or pitched back
   past straight up or down by 5 to 15 degrees, where the sign of the reading follows the sensor's
-  jitter. Before, it sat behind the target, which a capture reaches on every sphere.
+  jitter. Before, it sat behind the target. Neither is rare: a capture overshoots the zenith
+  cell as readily as it passes behind a target, and every default plan has a zenith cell.
 - **`rollErrorDeg` changes meaning.** The contract comment says so, and so do the shell's two
   comments that described it. Acceptance never read roll, so no capture decision moves; the shell
   draws the number and nothing more.
@@ -75,7 +86,8 @@ level phone ten degrees off the zenith cell flipped from +90 to -90 in a twentie
 Fading level near the poles and measuring cells near one against level alone repaired that, and the
 second round found what was left, all of it the blend reading the target: wherever the target
 changed between two missing cells less than thirty degrees apart the horizon jumped, 31 degrees for
-a level phone on the narrow-lens plan and up to 52 on others; the cells of the ring at exactly 75
+a level phone on the narrow-lens plan, and up to 52 on others for a phone within a quarter-turn of
+level; the cells of the ring at exactly 75
 took one rule or the other by the last bit of a sine; and near the 72- and 75-degree rings, phones
 rolled from about 95 degrees flipped. What the blend bought was the shortest-turn twist inside the
 cone, which the consequence above prices.

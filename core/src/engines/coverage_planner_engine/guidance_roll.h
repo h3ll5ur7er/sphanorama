@@ -10,8 +10,8 @@ namespace sphanorama {
 //
 // It is `RollFromLevel(current)`, faded out within 15 degrees of straight up or down and gone
 // within 5, where level has no meaning. It takes no target on purpose: a roll measured against the
-// target jumps wherever the target changes, which on a narrow lens is a few degrees from every
-// cell, and cells are level, so at a cell the two agree.
+// target jumps wherever the target changes, which on a narrow lens is ten degrees or so from every
+// cell; and cells are level, so at the centre of one at least 15 degrees from a pole the two agree.
 double GuidanceRollDeg(const Quat& current);
 
 }  // namespace sphanorama

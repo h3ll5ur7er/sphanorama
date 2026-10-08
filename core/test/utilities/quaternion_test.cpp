@@ -660,7 +660,8 @@ TEST(RollFromLevel, ALevelOrientationReadsZeroWhereverItLooks) {
 }
 
 TEST(RollFromLevel, MeasuresRotationAboutTheViewingAxisAndIsSigned) {
-  // The same sign as `RollBetween`: positive is counter-clockwise looking along the view.
+  // The same sign as `RollBetween`: positive is clockwise as the user, looking along the view, sees
+  // the phone turn — a right-handed turn about the view.
   for (const double el : {-60.0, 0.0, 45.0, 89.0}) {
     const Quat level = FromAzimuthElevation(40.0, el);
     for (const double degrees : {30.0, -45.0, 170.0}) {

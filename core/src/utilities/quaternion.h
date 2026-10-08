@@ -146,7 +146,7 @@ double RollBetween(const Quat& current, const Quat& target);
 //
 // Level is undefined looking straight up or down, and near there this is as unsteady as
 // `RollBetween` is near opposite views: a small turn of the view swings the azimuth, and the roll
-// with it. Zero for what is not a rotation.
+// with it. Zero for what is not a rotation, which is `RollBetween`'s answer to one.
 double RollFromLevel(const Quat& current);
 
 }  // namespace sphanorama

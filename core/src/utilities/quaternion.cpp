@@ -201,7 +201,6 @@ double RollBetween(const Quat& current, const Quat& target) {
 }
 
 double RollFromLevel(const Quat& current) {
-  if (!IsUsableRotation(current)) return 0.0;
   // Level is the orientation `FromAzimuthElevation` builds for the same view: it has no roll by
   // construction, so this is `RollBetween` against a target that looks exactly where the phone
   // does and the swing between them is nothing.

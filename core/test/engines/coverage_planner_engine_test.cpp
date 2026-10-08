@@ -773,9 +773,14 @@ TEST(CoveragePlanner, RollDoesNotCountAsBeingOffTarget) {
 }
 
 TEST(CoveragePlanner, ReportsNoRollWhenTheCameraIsUpright) {
+  // On the horizon, because at a pole every roll reads zero (ADR 0072), which would prove nothing.
   RingsCoveragePlannerEngine engine;
   const CapturePlan plan = Plan(Spec());
-  auto guidance = engine.Locate(Aiming(plan.nodes.front().targetOrientation), plan, CoverageState{});
+  const auto onTheHorizon = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto& n) {
+    return std::abs(Direction(n.targetOrientation).y) < 1e-12;
+  });
+  ASSERT_NE(onTheHorizon, plan.nodes.end());
+  auto guidance = engine.Locate(Aiming(onTheHorizon->targetOrientation), plan, CoverageState{});
   ASSERT_TRUE(guidance.ok());
   EXPECT_NEAR(guidance.value.rollErrorDeg, 0.0, 1e-9);
 }
@@ -851,7 +856,7 @@ Quat Rolled(const Quat& phone, double degrees) {
 TEST(CoveragePlanner, TheRollIsHowFarThePhoneIsFromLevelWhereverTheCellIs) {
   // Level reads zero and a phone rolled 25 degrees reads 25, on the cell, four degrees beside it,
   // and far from it. Four degrees off a cell sixty up is where the twist left after the shortest
-  // turn onto the cell is largest inside the cone — 6.9 degrees — so a planner still reporting
+  // turn onto the cell is largest inside the cone — 7.0 degrees — so a planner still reporting
   // that twist near the cell reads it there.
   NullCoveragePlannerEngine null;
   RingsCoveragePlannerEngine rings;
@@ -901,27 +906,29 @@ TEST(CoveragePlanner, TheRollDoesNotDependOnWhichCellIsTheTarget) {
 }
 
 TEST(CoveragePlanner, TheRollIsSteadyWhereTheTargetChangesCell) {
-  // What target independence buys, through `Locate`: a level phone turned along the ring between
-  // two cells of a narrow lens, every one of them missing, so the target changes as it goes. Under
-  // the cell-relative blend this read -15.7 and then +15.7 a twentieth of a degree later.
+  // What target independence buys, through `Locate`: a phone rolled thirty degrees, turned along
+  // the ring between cells of a narrow lens, every one of them missing, so the target changes as it
+  // goes. Rolled, because a level phone reads zero against any target and a reading scaled by the
+  // target would pass. Under the cell-relative blend a level phone read -15.7 and then +15.7 a
+  // twentieth of a degree later.
   RingsCoveragePlannerEngine rings;
   const CapturePlan plan = Plan(Spec(35.0, 26.0, 0.30));
   for (const double el : {-75.0, -50.0, 15.0, 70.0}) {
     std::set<uint64_t> targets;
-    double previous = 0.0;
-    double largestStep = 0.0;
+    double first = 0.0;
+    double largestDeparture = 0.0;
     for (int step = 0; step <= 7200; ++step) {
-      auto guidance =
-          rings.Locate(Aiming(FromAzimuthElevation(0.05 * step, el)), plan, CoverageState{});
+      const Quat phone = Rolled(FromAzimuthElevation(0.05 * step, el), 30.0);
+      auto guidance = rings.Locate(Aiming(phone), plan, CoverageState{});
       ASSERT_TRUE(guidance.ok());
       targets.insert(guidance.value.targetNode.value);
-      if (step > 0) {
-        largestStep = std::max(largestStep, std::abs(guidance.value.rollErrorDeg - previous));
-      }
-      previous = guidance.value.rollErrorDeg;
+      if (step == 0) first = guidance.value.rollErrorDeg;
+      largestDeparture =
+          std::max(largestDeparture, std::abs(guidance.value.rollErrorDeg - first));
     }
     EXPECT_GT(targets.size(), 3u) << el;
-    EXPECT_LT(largestStep, 1e-9) << el;
+    EXPECT_GT(std::abs(first), 25.0) << el;
+    EXPECT_LT(largestDeparture, 1e-9) << el;
   }
 }
 
