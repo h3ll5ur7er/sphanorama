@@ -9,6 +9,7 @@ add_library(sphanorama_core
   src/managers/capture_session_manager/capture_session_manager.cpp
   src/engines/composition_engine/nearest_centre_composition_engine.cpp
   src/engines/composition_engine/null_composition_engine.cpp
+  src/engines/coverage_planner_engine/guidance_roll.cpp
   src/engines/coverage_planner_engine/null_coverage_planner_engine.cpp
   src/engines/coverage_planner_engine/rings_coverage_planner_engine.cpp
   src/engines/frame_preview_engine/box_frame_preview_engine.cpp

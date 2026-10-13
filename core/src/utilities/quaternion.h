@@ -131,12 +131,22 @@ double AngleBetweenDirections(const Vec3& a, const Vec3& b);
 // **Continuous is not the same as steady near opposite.** No roll can be continuous over every
 // pair of views — the opposite point is where this one gives — so the roll changes fast around it:
 // a level phone circling the point behind a level cell reads two full turns of roll per circuit,
-// and ten degrees from behind it can read ninety. Asked about a cell near the phone, as guidance
-// asks, none of that is reached.
+// and ten degrees from behind it can read ninety. `RollFromLevel` asks about a target looking where
+// the phone looks, so it reaches none of that.
 //
 // Two *level* orientations are not always zero apart: the shortest turn between views at different
 // azimuths away from the horizon tips the horizon as it goes, so a level phone fifteen degrees of
 // azimuth from a level cell thirty degrees up reads about 7.5 degrees.
 double RollBetween(const Quat& current, const Quat& target);
+
+// How far `current` is rolled from level about its own view, in radians and with `RollBetween`'s
+// range and sign: the roll against the orientation that looks the same way with the horizon flat.
+// It depends on nothing but `current`, so a level phone reads zero wherever it points — which is
+// what `RollBetween` against a fixed target cannot do far from that target.
+//
+// Level is undefined looking straight up or down, and near there this is as unsteady as
+// `RollBetween` is near opposite views: a small turn of the view swings the azimuth, and the roll
+// with it. Zero for what is not a rotation, which is `RollBetween`'s answer to one.
+double RollFromLevel(const Quat& current);
 
 }  // namespace sphanorama

@@ -5,6 +5,7 @@
 #include <span>
 #include <cmath>
 
+#include "engines/coverage_planner_engine/guidance_roll.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -224,8 +225,7 @@ Result<CaptureGuidance> RingsCoveragePlannerEngine::Locate(const PoseSample& cur
   // it. Two searches ran and only one of them decided.
   guidance.angularErrorDeg =
       AngleBetweenDirections(looking, Direction(nearest->targetOrientation)) * kRadToDeg;
-  guidance.rollErrorDeg =
-      RollBetween(current.orientation, nearest->targetOrientation) * kRadToDeg;
+  guidance.rollErrorDeg = GuidanceRollDeg(current.orientation);
   // A finished sphere still names a cell and an error, because the fields are read either way —
   // but it says so, which nothing in this engine ever did before, so a completed capture went on
   // asking for whichever cell the phone happened to be nearest.
