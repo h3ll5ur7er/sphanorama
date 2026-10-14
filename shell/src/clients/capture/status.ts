@@ -9,6 +9,17 @@ import type { RuntimeCapabilities } from '../../bridge/core';
 import type { Result, Status } from '../../access/result';
 import type { LockReport } from '../../bridge/protocol';
 
+/**
+ * A page and a core from different updates: the core's URL does not change between deploys, so
+ * the first launch after one can pair this page with the core before it, and neither can read
+ * the other's motion. Nothing is wrong with the device, and the motion row beside this says so;
+ * reloading once the update has finished arriving is the whole remedy — a moment later, because
+ * until the new service worker has cached the new core it can serve the old one again (ADR 0074).
+ */
+export const CORE_FROM_ANOTHER_UPDATE =
+  'This page and the app behind it are from different updates. Wait a moment, then reload to '
+  + 'finish updating.';
+
 const MESSAGES: Partial<Record<Status['code'], string>> = {
   SensorPermissionDenied:
     'Camera or motion permission was declined. Allow access in your browser settings, then reload.',
@@ -23,6 +34,10 @@ const MESSAGES: Partial<Record<Status['code'], string>> = {
   // opens the camera, so by the time the decline is known the camera has been asked for too.
   // That is why the sentence names the permission first — for the reader who has just answered
   // two prompts, the actionable one is theirs.
+  //
+  // A third reaches it from a page older than this one, booted against a newer core that cannot
+  // read its motion (ADR 0074). The sentence names the wrong cause there and cannot be fixed from
+  // here, since it is the old page's copy that is read; this page says `CORE_FROM_ANOTHER_UPDATE`.
   SensorUnavailable:
     'Capture needs motion sensors, and this browser reports none. If you declined the motion '
     + 'permission, allow it in your browser settings and reload. Otherwise this device cannot '

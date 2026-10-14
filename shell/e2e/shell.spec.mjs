@@ -1972,6 +1972,21 @@ test('calls a manager through the generated facade', async ({ page }) => {
   }
 });
 
+test('the core tells the page which motion layout it reads', async ({ page }) => {
+  // What the page checks before it asks for a camera (ADR 0074): the shipped core's
+  // `kMotionSampleLayout`, through the worker's boot, against the page's MOTION_SAMPLE_LAYOUT. A
+  // constant moved on one side alone would refuse every capture, and only this run sees both.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const layout = await page.evaluate(() => window.sphanoramaCore.motionSampleLayout());
+    expect(layout).toBe(2);
+  } finally {
+    await server.close();
+  }
+});
+
 test('a manager failure crosses the boundary as a status, not a crash', async ({ page }) => {
   // A domain failure has to arrive as something the client can branch on. If it came back as a
   // trap the page would go blank with nothing to explain it.

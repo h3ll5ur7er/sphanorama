@@ -79,7 +79,11 @@ export type FromWorker =
   // cannot spill will hit a ceiling early, and the client has to be able to say so rather than
   // present it as a mysterious refusal (ADR 0020).
   /** `resident` says whether the tier is the resident pair: a page whose worker did not get it gives up the right. */
-  | { kind: 'booted'; seq: number; methods: string[]; spill: boolean; resident: boolean }
+  | {
+    kind: 'booted'; seq: number; methods: string[]; spill: boolean; resident: boolean;
+    /** Absent from a worker from before it was sent, which is a page from before it too. */
+    motionSampleLayout?: number | null;
+  }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }
   | { kind: 'flushed'; seq: number; persistError: string | null }

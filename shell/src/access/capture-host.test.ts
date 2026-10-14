@@ -6,8 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, MOTION_SAMPLE_LAYOUT, createCaptureHost,
-  deriveFieldOfView, flattenImuSamples, stopCameraStream,
+  MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, MOTION_SAMPLE_LAYOUT, coreReadsThisPagesMotion,
+  createCaptureHost, deriveFieldOfView, flattenImuSamples, stopCameraStream,
 } from './capture-host';
 
 describe('deriveFieldOfView', () => {
@@ -172,8 +172,8 @@ describe('capture host', () => {
 
   it('reports no motion to a core that reads another layout, so it refuses to begin', () => {
     // A core that cannot read this page's samples would otherwise start a capture whose motion
-    // never arrives: the camera open, the reticle parked, and nothing saying why. Asked before a
-    // camera is opened, "no motion" is the refusal a capture already has words for (ADR 0044).
+    // never arrives: the reticle parked, and nothing saying why. Refused at `Begin`, "no motion" is
+    // the refusal a capture already has words for (ADR 0044).
     const host = createCaptureHost();
     host.setMotion('OrientationOnly');
     expect(host.motionCapability()).toBe('None');
@@ -228,6 +228,14 @@ describe('the motion buffer the core drains', () => {
     expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT - 1)).toEqual([]);
     expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT + 1)).toEqual([]);
     expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+  });
+
+  it('tells the page before it asks for a camera whether the core can read its motion', () => {
+    // The core's own refusal comes at `Begin`, and the page opens the camera before that.
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT)).toBe(true);
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT - 1)).toBe(false);
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT + 1)).toBe(false);
+    expect(coreReadsThisPagesMotion(null)).toBe(false);
   });
 
   it('says which layout it writes, so a core can refuse a page that writes another', () => {

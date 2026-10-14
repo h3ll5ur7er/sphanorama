@@ -185,10 +185,12 @@ nothing there is laid out against a compass, and nothing there can creep either.
   after a deploy can pair a page with the core before it. Read at the other's stride, samples decode
   into plausible values rather than failing: in a mix of drain sizes, 36 of 636 came out as wrong
   attitudes, aimed up to 73.5° out. With the layout named, such a launch — every page and core from
-  before this one names none — refuses to begin a capture, as a phone with no motion sensor does
-  (ADR 0044), until a load brings the two together. That message names the wrong cause; a capture
-  that started and then had no motion would have named none. The unversioned core URL is the
-  general cause, and the facade's codec is exposed to it too; that is open (roadmap).
+  before this one names none — does not capture until a load brings the two together. A page from
+  now on learns the core's layout at boot and refuses before it asks for a camera, saying the
+  update is half-arrived. An older page on a newer core is refused by the core at `Begin`, after
+  that page has opened the camera, with ADR 0044's missing-sensor sentence: the wrong cause, named,
+  where a capture that started and then had no motion would have named none. The unversioned core
+  URL is the general cause, and the facade's codec is exposed to it too; that is open (roadmap).
 
 ## Rejected alternatives
 **Leave the page turn to the readings.** Three versions of PR #98 did, and each missed a case the

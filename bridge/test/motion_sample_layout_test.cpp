@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 #include <vector>
 
@@ -63,18 +64,19 @@ TEST(MotionSampleLayout, DropsASampleWhoseTimestampIsNoTimeAndKeepsTheRest) {
   EXPECT_EQ(out[1].timestampNs, static_cast<int64_t>(2 * kDoublesPerSample + 1));
 }
 
-TEST(MotionSampleLayout, ReadsAClearFlagAsClear) {
-  // Every slot above is non-zero, so every flag reads set whichever slot it is taken from. A
+TEST(MotionSampleLayout, ReadsEachFlagFromItsOwnSlot) {
+  // Every slot above is non-zero, so every flag reads set whichever slot it is taken from. Each
+  // flag cleared alone, so one read from another flag's slot cannot come out right either. A
   // zeroed rate read as a measurement is a swinging phone reported still (ADR 0025).
-  std::vector<double> flat = Distinct(1);
-  flat[1] = 0.0;
-  flat[8] = 0.0;
-  flat[12] = 0.0;
-  std::vector<ImuSample> out(1);
-  ASSERT_EQ(DecodeImuSamples(flat, out), 1u);
-  EXPECT_FALSE(out[0].hasAngularVelocity);
-  EXPECT_FALSE(out[0].hasMagnetometer);
-  EXPECT_FALSE(out[0].hasOrientation);
+  for (const size_t cleared : {size_t{1}, size_t{8}, size_t{12}}) {
+    std::vector<double> flat = Distinct(1);
+    flat[cleared] = 0.0;
+    std::vector<ImuSample> out(1);
+    ASSERT_EQ(DecodeImuSamples(flat, out), 1u);
+    EXPECT_EQ(out[0].hasAngularVelocity, cleared != 1) << "slot " << cleared;
+    EXPECT_EQ(out[0].hasMagnetometer, cleared != 8) << "slot " << cleared;
+    EXPECT_EQ(out[0].hasOrientation, cleared != 12) << "slot " << cleared;
+  }
 }
 
 TEST(MotionSampleLayout, DropsATimestampTooLargeForTheClockAsWellAsOneThatIsNoNumber) {
@@ -89,10 +91,14 @@ TEST(MotionSampleLayout, DropsATimestampTooLargeForTheClockAsWellAsOneThatIsNoNu
 TEST(MotionSampleLayout, DecodesNoMoreSamplesThanItWasHanded) {
   // The port hands a span with room for a whole drain and doubles for what the page returned. A
   // sample decoded from the room past them is one nobody measured — at screen angle 0, so in
-  // landscape it would turn the estimate back into portrait at the end of every drain.
-  const std::vector<double> flat = Distinct(1);
+  // landscape it would turn the estimate back into portrait at the end of every drain. Shaped as
+  // the port shapes it: a zeroed buffer with room for the drain, one sample at its head, and a
+  // span over that sample alone.
+  std::vector<double> room(8 * kDoublesPerSample, 0.0);
+  const std::vector<double> one = Distinct(1);
+  std::copy(one.begin(), one.end(), room.begin());
   std::vector<ImuSample> out(8);
-  EXPECT_EQ(DecodeImuSamples(flat, out), 1u);
+  EXPECT_EQ(DecodeImuSamples(std::span<const double>(room.data(), kDoublesPerSample), out), 1u);
 }
 
 TEST(MotionSampleLayout, NeverWritesPastTheSpanItWasGiven) {

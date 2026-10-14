@@ -11,6 +11,7 @@ function fakeModule(options: {
   fields?: string[];
   values?: Record<string, number>;
   probeStatus?: number;
+  motionSampleLayout?: number;
 } = {}): EmscriptenModule & { freed: number[]; allocated: number[] } {
   const fields = options.fields ?? ['simd', 'threads', 'sharedMemory', 'hardwareConcurrency'];
   const values = options.values ?? { simd: 1, threads: 0, sharedMemory: 0, hardwareConcurrency: 0 };
@@ -38,6 +39,8 @@ function fakeModule(options: {
       });
       return 0;
     },
+    ...(options.motionSampleLayout === undefined ? {}
+      : { _sph_motion_sample_layout: () => options.motionSampleLayout as number }),
     _malloc: (bytes: number) => {
       const pointer = next;
       next += bytes;
@@ -51,6 +54,17 @@ function fakeModule(options: {
     freed,
   };
 }
+
+describe('the motion layout the core reads', () => {
+  it('is what the core says, and nothing from a core too old to say', async () => {
+    // Asked at boot so the page can refuse a core from another deploy before it asks for a
+    // camera (ADR 0074). Every core before the layout was named exports nothing to ask.
+    const named = await loadCore(async () => fakeModule({ motionSampleLayout: 2 }));
+    expect(named.motionSampleLayout()).toBe(2);
+    const unnamed = await loadCore(async () => fakeModule());
+    expect(unnamed.motionSampleLayout()).toBeNull();
+  });
+});
 
 describe('loadCore', () => {
   it('reports the capabilities the module writes', async () => {

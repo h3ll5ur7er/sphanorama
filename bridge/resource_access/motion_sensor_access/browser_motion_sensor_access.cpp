@@ -15,9 +15,10 @@ constexpr const char* kComponent = "BrowserMotionSensorAccess";
 // Returned as an index into MotionCapability rather than a string: the enum's order is the
 // contract, and the generated codec encodes it the same way.
 //
-// None from a page that writes another motion layout, or names none: a capture asks this before it
-// opens a camera, so it refuses to begin with the words a missing sensor already has (ADR 0044)
-// rather than starting with motion that never arrives. The page answers the same to a core.
+// None from a page that writes another motion layout, or names none, so a capture refuses `Begin`
+// with the words a missing sensor already has (ADR 0044) rather than starting with motion that
+// never arrives. The page answers the same to a core. By `Begin` an older page has opened the
+// camera; a page that knows the layout refuses before that, from `sph_motion_sample_layout`.
 EM_JS(int32_t, host_motion_capability, (int32_t layout), {
   const host = Module.sphHost;
   if (!host || host.motionSampleLayout !== layout) return 0;
@@ -30,9 +31,8 @@ EM_JS(int32_t, host_motion_drain,
       (double* out, int32_t maxSamples, int32_t stride, int32_t layout), {
   const host = Module.sphHost;
   if (!host || !host.motionDrain) return 0;
-  // A page that does not write this layout gets nothing read from it, and a page from before the
-  // layout said which it was does not say at all.
-  if (host.motionSampleLayout !== layout) return 0;
+  // The layout is named so the page can refuse a core that reads another. This side's refusal is
+  // `host_motion_capability`'s: `Drain` runs only after `Start`, which asked the same host.
   const flat = host.motionDrain(maxSamples, layout);
   // Bounded here, before the write, rather than trusted from the host. `host_preview_copy` three
   // functions away takes exactly this view of exactly this question — "the two are read at

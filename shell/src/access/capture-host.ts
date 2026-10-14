@@ -62,6 +62,14 @@ export const MOTION_SAMPLE_DOUBLES = 18;
 export const MOTION_SAMPLE_LAYOUT = 2;
 
 /**
+ * Whether the core this page booted reads the motion this page writes. Asked before the camera
+ * is: the core's own refusal comes at `Begin`, by which time the page has opened one (ADR 0074).
+ */
+export function coreReadsThisPagesMotion(coreLayout: number | null): boolean {
+  return coreLayout === MOTION_SAMPLE_LAYOUT;
+}
+
+/**
  * The most samples kept while the core is not draining. A capture loop that stalls must not be
  * able to kill the tab, and an orientation from several seconds ago is worthless anyway — so the
  * oldest go first.
@@ -122,9 +130,10 @@ export interface CaptureHost {
   setPreviewFrame(frame: GrabbedFrame): void;
 
   /**
-   * "None" to a core that reads another layout, or names none: it asks before a capture opens a
-   * camera, so a core that could not read these samples refuses to begin, with the words a missing
-   * sensor already has (ADR 0044), rather than starting a capture whose motion never arrives.
+   * "None" to a core that reads another layout, or names none, so such a core refuses `Begin` with
+   * the words a missing sensor already has (ADR 0044) rather than starting a capture whose motion
+   * never arrives. A backstop: by then the page has opened the camera, and this page refuses
+   * before that, from the layout the core reported at boot (ADR 0074).
    */
   motionCapability(layout?: number): string;
   setMotion(capability: string): void;

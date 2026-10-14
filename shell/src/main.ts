@@ -13,11 +13,14 @@ import type {
 } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
-import { flattenImuSamples, stopCameraStream } from './access/capture-host';
+import {
+  coreReadsThisPagesMotion, flattenImuSamples, stopCameraStream,
+} from './access/capture-host';
 import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
 import {
-  describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
+  CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
+  formatCapabilities,
 } from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
@@ -330,6 +333,17 @@ let motionIsRunning = false;
 async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.disabled = true;
   resumeButton.disabled = true;
+
+  // A core from another update cannot read this page's motion, and its own refusal comes at
+  // `Begin`, after the camera below has been asked for and opened (ADR 0074). Synchronous, so it
+  // spends none of the activation the motion grant needs. Withdrawn rather than disabled, as for
+  // a device with no sensors: no press changes the answer, a reload does.
+  if (!coreReadsThisPagesMotion(core.motionSampleLayout())) {
+    stage.textContent = CORE_FROM_ANOTHER_UPDATE;
+    enableButton.hidden = true;
+    resumeButton.hidden = true;
+    return;
+  }
 
   // Before anything else, and before the camera in particular. A capture needs a motion sensor
   // and the core refuses without one (ADR 0044) — but the core's refusal comes back *after* this
