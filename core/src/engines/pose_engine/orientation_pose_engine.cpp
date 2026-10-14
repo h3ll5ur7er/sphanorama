@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <optional>
 
 #include "utilities/quaternion.h"
 
@@ -97,9 +98,14 @@ constexpr double kHeadingCorrectionSeconds = 10.0;
 // or the main thread the sensor events are delivered on — and not an interval anybody measured.
 constexpr double kLongestPredictionSeconds = 0.25;
 
-// The largest disagreement about gravity a reading is fused across; past it the reading is a
-// different frame (see where it is used). A real tilt the gyroscope missed is a few degrees.
+// The largest disagreement about gravity a reading is fused across; past it the reading is not a
+// measurement error (see where it is used). A real tilt the gyroscope missed is a few degrees.
 constexpr double kLargestTiltRadians = 30.0 * std::numbers::pi / 180.0;
+
+// How far from an exact quarter- or half-turn about the camera's axis a disagreement may be and
+// still be a page turn: the phone is near still when the platform turns the page, so the reading's
+// own error is most of it. A starting point, like the other two thresholds.
+constexpr double kPageTurnToleranceRadians = 10.0 * std::numbers::pi / 180.0;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -125,6 +131,19 @@ Quat Turned(const Quat& orientation, const Vec3& rate, double seconds) {
   const double magnitude = Magnitude(rate);
   if (magnitude <= 1e-9) return orientation;
   return Normalize(Multiply(orientation, FromAxisAngle(rate, magnitude * seconds)));
+}
+
+// The turn of the page a disagreement is, if it is one. Turning between portrait and landscape
+// steps the frame the attitude and the rates are reported in by a quarter- or half-turn about the
+// axis the camera looks down — the phone's Z — while the phone itself barely moves, so that shape
+// is what tells one apart. Not gravity: near a pole that axis is nearly the world's up, and a page
+// turn there moves gravity by less than kLargestTiltRadians.
+std::optional<Quat> PageTurn(const Quat& disagreement) {
+  for (const int quarters : {1, 2, 3}) {
+    const Quat turn = FromAxisAngle(Vec3{0.0, 0.0, 1.0}, quarters * std::numbers::pi / 2.0);
+    if (Magnitude(RotationBetween(turn, disagreement)) <= kPageTurnToleranceRadians) return turn;
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -171,20 +190,32 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // A rate is a measurement of an instant, and held across a gap nobody sampled it says nothing
     // about how the phone turned in it. A reading after one is a reading after a dropout.
     const bool spanned = seconds <= kLongestPredictionSeconds;
+    const bool fused = Attitude(sample) && fusing && predictable && spanned;
+    // Where the gyroscope says the device now points, when there is a prediction to make.
+    const Quat predicted =
+        fused ? Turned(state.pose.orientation, Subtract(sample.angularVelocity, state.gyroBias),
+                       seconds)
+              : state.pose.orientation;
 
-    if (Attitude(sample) && !(fusing && predictable && spanned)) {
+    // A page turn, recognised on every path a reading takes — fused, after the stall a relayout
+    // makes, or ahead of the rates — since the rates arrive in the turned frame whichever it is.
+    // The offset learned in the old frame is turned into the new one; left where it was, it
+    // points a quarter-turn wrong and is learned again over minutes.
+    const std::optional<Quat> page =
+        Attitude(sample) ? PageTurn(Multiply(Conjugate(predicted), Normalize(sample.orientation)))
+                         : std::nullopt;
+    if (page) state.gyroBias = Rotate(Conjugate(*page), state.gyroBias);
+
+    if (Attitude(sample) && (!fused || page)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
       state.absolute = true;
       state.anchored = true;
     } else if (Attitude(sample)) {
-      // Predict where the gyroscope says the device now points, then take part of the way back to
-      // where the reading says it does. The prediction carries the fast motion the reading is too
-      // slow and too noisy to follow; the reading anchors the slow drift the gyroscope cannot see
-      // in itself.
-      const Quat predicted =
-          Turned(state.pose.orientation, Subtract(sample.angularVelocity, state.gyroBias), seconds);
+      // From the prediction, take part of the way back to where the reading says the device
+      // points. The prediction carries the fast motion the reading is too slow and too noisy to
+      // follow; the reading anchors the slow drift the gyroscope cannot see in itself.
 
       // Split about the world's up rather than the phone's own vertical: pitched up, most of a
       // compass error lies along the axis the camera looks down.
@@ -203,18 +234,13 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const Vec3 tilt = RotationBetween(Quat{}, swing);
 
       // Gravity is the half of an attitude a platform measures well, so a reading whose gravity is
-      // tens of degrees from the prediction's is not a measurement error but a different frame —
-      // the page turned between portrait and landscape, which turns the frame a quarter-turn about
-      // the axis the camera looks down while the gyroscope reads still. Taken whole, like a
-      // reading after a gap; fused, the share of that turn leaning towards the world's up would be
-      // corrected at the heading's speed and the rest charged to the gyroscope.
-      //
-      // The rates arrive in that frame too, so the offset learned in the old one is turned into
-      // the new one; left where it was, it points a quarter-turn wrong and is learned again over
-      // minutes.
+      // tens of degrees from the prediction's is not a measurement error: a real turn faster than
+      // the rate held across a gap shorter than kLongestPredictionSeconds, or a reading broken
+      // outright. Taken whole, like a reading after a gap; fused, the share of it leaning towards
+      // the world's up would be corrected at the heading's speed and the rest charged to the
+      // gyroscope. The offset stays where it is, since the frame the rates arrive in did not turn.
       if (Magnitude(tilt) > kLargestTiltRadians) {
         state.pose.orientation = Normalize(sample.orientation);
-        state.gyroBias = Rotate(Conjugate(disagreement), state.gyroBias);
       } else {
         // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
         // sample of 10 ms and no more.

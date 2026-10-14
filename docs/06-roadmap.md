@@ -209,14 +209,13 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    yet confirmed by a log: the platform's attitude takes its heading from the magnetometer and can
    creep towards a bent field, and the filter followed whatever the reading did. So the
    disagreement is split about the world's up, as a twist and a swing: tilt is corrected over
-   0.1 s as before, heading over 10 s, and both are learned as the gyroscope's offset over 50 s; a
-   reading after a gap of more than a quarter of a second, or with gravity more than 30° out — the
-   page turned between portrait and landscape, which turns the learned offset with it — is taken
-   whole. A page turned with the phone pitched past about 70° is the exception, since its gravity
-   disagreement falls under the 30° threshold. Twenty degrees of creep across a two-second dwell
-   moves the estimate 1.91° rather than 19.99°; the cost is that a gyroscope offset takes minutes
-   to learn, and one about up shows by about two degrees at 0.005 rad/s, nearly nine at 0.02,
-   while it is learned.
+   0.1 s as before, heading over 10 s, and both are learned as the gyroscope's offset over 50 s. A
+   reading after a gap of more than a quarter of a second, or with gravity more than 30° out, is
+   taken whole, and so is a page turned between portrait and landscape — recognised as a quarter-
+   or half-turn about the camera's axis, which turns the learned offset with it. Twenty degrees of
+   creep across a two-second dwell moves the estimate 1.91° rather than 19.99°; the cost is that a
+   gyroscope offset takes minutes to learn, and one about up shows by about two degrees at
+   0.005 rad/s, nearly nine at 0.02, while it is learned.
 
    What is left on this line is the same phone again. Every number here is from tests. The heading
    now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as
@@ -239,8 +238,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   its rate was measured, and `Stability` judges each interval by the better signal available for
   it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
   still reticle moved on a phone, consistent with an indoor compass (ADR 0074). What is left on
-  this line is that phone again: none of its time constants, nor the gap and gravity thresholds,
-  is measured.
+  this line is that phone again: none of its time constants, nor the gap, gravity and page-turn
+  thresholds, is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native

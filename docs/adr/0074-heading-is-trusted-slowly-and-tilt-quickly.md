@@ -41,14 +41,19 @@ up, and the two parts are trusted at different speeds.**
   descends from a reading, the sample carries a measured rate, the reading is later than the last
   sample that measured anything and at most 0.25 s after it, and the reading's gravity is within
   30° of the prediction's. Otherwise it is taken whole. The first two predate this ADR (0024, 0025
-  and the engine's `absolute` gate). A rate measures an instant, and held
-  across a gap nobody sampled it says nothing about how the phone turned in it — a gap that long
-  is a stall: a hidden tab, a capture loop so far behind that the adapter's buffer dropped
-  samples, or the main thread the sensor events are delivered on. And gravity is what a platform
-  measures well, so a reading whose gravity is that far out is not a measurement error but a
-  different frame — the page turned between portrait and landscape, which turns the reported frame
-  a quarter-turn about the axis the camera looks down while the gyroscope reads still. The rates
-  arrive in that frame too, so the offset learned so far is turned into the new one with it.
+  and the engine's `absolute` gate). A rate measures an instant, and held across a gap nobody
+  sampled it says nothing about how the phone turned in it — a gap that long is a stall: a hidden
+  tab, a capture loop so far behind that the adapter's buffer dropped samples, or the main thread
+  the sensor events are delivered on. And gravity is what a platform measures well, so a reading
+  whose gravity is that far out is not a measurement error: a real turn faster than the rate held
+  across a gap shorter than the bound, or a reading broken outright.
+- **A page turn is taken whole, and turns the offset with it.** Turning between portrait and
+  landscape steps the frame the attitude and the rates are reported in by a quarter- or half-turn
+  about the axis the camera looks down, while the phone itself barely moves. A disagreement within
+  10° of one of those is taken as a page turn on every path a reading takes — fused, after a
+  stall, or ahead of the rates — and the offset learned so far is turned into the new frame. It
+  is recognised by its shape, not by gravity: near a pole the camera's axis is nearly the world's
+  up, and a page turn there moves gravity by less than 30°.
 - **Dead reckoning across a gap breaks the descent from a reading.** Across more than 0.25 s the
   estimate no longer descends from a reading, even where a still rate integrated to nothing, so
   the next reading is taken whole.
@@ -64,7 +69,7 @@ about where gravity points whatever the heading. A projection agrees for small d
 not for large ones: it carries part of a small tilt along with a large heading and turns the rest
 sideways, and the fast loop then charges the gyroscope for a tilt that is not there.
 
-Ten seconds, fifty, a quarter of a second and thirty degrees are starting points on the same
+Ten seconds, fifty, a quarter of a second, thirty degrees and ten are starting points on the same
 footing as ADR 0024's two, not measurements. Ten seconds was chosen against both ends of the
 failure: across a two-second dwell it lets through under a tenth of a creep, and a compass that
 jumps while readings keep arriving, or a gyroscope offset about up, is corrected at this speed, so
@@ -92,18 +97,19 @@ nothing there is laid out against a compass, and nothing there can creep either.
   the next reading 89.9° out at confidence 1; it is now taken whole too.
 - **A page turn keeps the offset.** Left in the old frame, an offset of 0.02 rad/s learned about the
   phone's X pointed a quarter-turn wrong after the turn, and standing at the heading's speed while
-  it was learned again took the estimate 8.7° out. Turned with the frame, it stays within 0.001°.
-  The turn is right only where the disagreement is a change of frame, which inside fusion — a
-  measured rate, no gap — is the one thing that puts gravity 30° out.
-- **A page turned near a pole is fused.** The gravity disagreement of a quarter-turn about the
-  viewing axis is under 30° once the phone is pitched past 68.5°, and of a half-turn past 75°;
-  there a page turn is mostly heading, which gravity cannot see, and is corrected at the heading's
-  speed. The aim is up to 27° out pitched 69°, and 30° for a half-turn at 75°; the orientation
-  itself is most of the turn out for seconds — 78° and 163° a second later, so a burst fired then
-  carries a roll prior that far off — and 0.012 to 0.025 rad/s of offset is taught that takes
-  minutes to unlearn. Pole cells are aimed there. This
-  relies on the platform not turning the page for a phone held nearly flat, which is not measured
-  here.
+  it was learned again took the estimate 8.7° out. Turned with the frame, it stays within 0.01°
+  level, pitched either way, at the zenith, after a 0.5 s stall and ahead of the rates. Turned
+  only where gravity was 30° out (PR #98's seventh version), it missed a turn after a stall or
+  without a rate — 8.7° again — and every page turn past 68.5° of pitch, which was fused: 78° out
+  a second later and 0.012 to 0.025 rad/s of offset taught. It also turned the offset for a real
+  turn the gyroscope missed, which by its shape now does not: 1.6° to 8.7° out against 0.02°.
+- **A turn that looks like a page turn is taken for one.** A real roll about the camera's axis of
+  a quarter- or half-turn, give or take 10°, made inside a gap the gyroscope did not see, or a
+  compass jump of that size about up with the phone near a pole, turns the offset that the
+  gyroscope did not change: the transient above, 8.7° at 0.02 rad/s and about 2° at a calibrated
+  gyroscope's 0.005. Neither is a thing a phone being aimed at a cell does, and nothing in a
+  sample tells them from a page turn. This relies on the platform turning the page only for a
+  phone that is nearly still, which is not measured here.
 - **A turn made during a shorter gap is not taken whole.** Under 0.25 s the gap is predicted across
   with the rate it ends on, and a turn the gyroscope did not see is corrected at the heading's
   speed: a 1 rad/s sweep that stops just as a gap ends stands 2.9° out through the dwell after a
