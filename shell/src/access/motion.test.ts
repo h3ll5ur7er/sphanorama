@@ -547,6 +547,8 @@ describe('which way up the page is', () => {
       .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 0));
     expect(drained.value[1].orientation)
       .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 90));
+    // And says which it used, so the core can carry what it holds into the new frame (ADR 0074).
+    expect(drained.value.map((sample) => sample.screenAngleDeg)).toEqual([0, 90]);
   });
 
   it('treats a platform with no Screen Orientation API as unrotated', async () => {
@@ -559,9 +561,11 @@ describe('which way up the page is', () => {
     listener({ alpha: 90, beta: 0, gamma: -90, timeStamp: 1 });
 
     const drained = await access.drain(8);
+    expect(drained.ok).toBe(true);
     if (drained.ok) {
       expect(drained.value[0].orientation)
         .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 0));
+      expect(drained.value[0].screenAngleDeg).toBe(0);
     }
   });
 });

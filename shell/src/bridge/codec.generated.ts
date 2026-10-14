@@ -71,6 +71,7 @@ export function encodeImuSample(out: Writer, value: C.ImuSample): void {
   out.bool(value.hasOrientation);
   encodeQuat(out, value.orientation);
   out.bool(value.hasAngularVelocity);
+  out.f64(value.screenAngleDeg);
 }
 
 export function decodeImuSample(input: Reader): C.ImuSample {
@@ -83,6 +84,7 @@ export function decodeImuSample(input: Reader): C.ImuSample {
     hasOrientation: input.bool(),
     orientation: decodeQuat(input),
     hasAngularVelocity: input.bool(),
+    screenAngleDeg: input.f64(),
   };
 }
 

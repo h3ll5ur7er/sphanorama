@@ -24,7 +24,7 @@ EM_JS(int32_t, host_motion_capability, (), {
 // The layout capture-host.ts writes. Both sides are pinned by a test; changing one without the
 // other decodes into plausible nonsense rather than failing, which is why the order is spelled
 // out in both places rather than being implied by a struct.
-constexpr size_t kDoublesPerSample = 17;
+constexpr size_t kDoublesPerSample = 18;
 
 EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples, int32_t stride), {
   const host = Module.sphHost;
@@ -113,6 +113,7 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
     sample.magneticField = Vec3{f[9], f[10], f[11]};
     sample.hasOrientation = f[12] != 0.0;
     sample.orientation = Quat{f[13], f[14], f[15], f[16]};
+    sample.screenAngleDeg = f[17];
     ++written;
   }
   // The attitude and the rate are *not* checked here, and that is deliberate rather than an

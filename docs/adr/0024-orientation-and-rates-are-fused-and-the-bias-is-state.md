@@ -1,7 +1,7 @@
 # ADR 0024 — The pose engine fuses attitude with rates, and the gyroscope's offset is session state
 
-**Status:** accepted; the offset's learning time, and heading's correction, amended by
-[0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md)
+**Status:** accepted; the offset's learning time, heading's correction, and which readings are
+fused, amended by [0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md)
 
 ## Context
 `OrientationPoseEngine` has had one rule since it was written: if a sample carries an absolute

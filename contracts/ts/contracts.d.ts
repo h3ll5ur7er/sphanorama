@@ -122,6 +122,15 @@ export interface ImuSample {
    * whose DeviceMotionEvent fires with a null rotationRate — which some desktops do.
    */
   hasAngularVelocity: boolean;
+  /**
+   * How far the page is turned under the device, in degrees: the angle the adapter converted this
+   * sample's attitude and rate with (ADR 0017). Both arrive converted, so nothing applies it. It is
+   * here for whatever carries state from one sample to the next: a page turn steps the frame both
+   * are reported in by the change in this angle, about the axis the camera looks down, and an
+   * estimate held in the old frame has to be carried into the new one (ADR 0074). A port with no
+   * screen leaves it at zero.
+   */
+  screenAngleDeg: number;
 }
 
 export interface PoseSample {
@@ -496,8 +505,14 @@ export interface PoseState {
    * It is here rather than inside the engine because it is session state, and an engine is
    * stateless per session (docs/03 §3.3 rule 4, ADR 0016). A bias kept in the engine would be
    * shared by every session in the process and would outlive the device being put down.
+   * In the frame the rates are reported in, which turns with the page: see `screenAngleDeg`.
    */
   gyroBias: Vec3;
+  /**
+   * The `ImuSample::screenAngleDeg` the orientation and offset above are expressed with. A sample
+   * reported with another angle carries both into its frame before anything is fused (ADR 0074).
+   */
+  screenAngleDeg: number;
 }
 
 export interface SelectionPolicy {

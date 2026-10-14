@@ -75,10 +75,8 @@ Quat FromAxisAngle(const Vec3& axis, double radians) {
   if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
 
   // The same guard the axis gets, for the reason the header now states beside this function's
-  // declaration. Not reachable from today's callers, checked rather than assumed:
-  // `OrientationPoseEngine::Turned` can only produce a non-finite angle from a non-finite rate,
-  // which the axis guard above already refuses, and `FromAzimuthElevation`'s trailing `Normalize`
-  // absorbs it.
+  // declaration. Reachable: `OrientationPoseEngine::Integrate` turns by the difference of two
+  // screen angles that arrive from the page as doubles, and two finite ones can differ by infinity.
   if (!std::isfinite(radians)) return Quat{};
 
   const double half = radians * 0.5;

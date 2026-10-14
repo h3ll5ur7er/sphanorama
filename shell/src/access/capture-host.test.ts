@@ -191,6 +191,7 @@ describe('the motion buffer the core drains', () => {
     magneticField: { x: 0, y: 0, z: 0 },
     hasOrientation: true,
     orientation: { w: 1, x: 0, y: 0, z: 0 },
+    screenAngleDeg: 270,
   });
 
   it('hands back every field in the order the core reads them', () => {
@@ -200,7 +201,7 @@ describe('the motion buffer the core drains', () => {
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples([sample(7)]));
     expect(host.motionDrain(4)).toEqual([
-      7, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0,
+      7, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0, 270,
     ]);
   });
 
@@ -272,7 +273,7 @@ describe('closing and resetting', () => {
       timestampNs: 1, hasAngularVelocity: false,
       angularVelocity: { x: 0, y: 0, z: 0 }, acceleration: { x: 0, y: 0, z: 0 },
       hasMagnetometer: false, magneticField: { x: 0, y: 0, z: 0 },
-      hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 },
+      hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 }, screenAngleDeg: 0,
     }]));
     host.resetMotion();
     expect(host.motionDrain(8)).toEqual([]);

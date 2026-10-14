@@ -157,6 +157,14 @@ struct ImuSample {
   // A platform that reports a fused attitude and no gyroscope leaves this false, and so does one
   // whose DeviceMotionEvent fires with a null rotationRate — which some desktops do.
   bool hasAngularVelocity = false;
+
+  // How far the page is turned under the device, in degrees: the angle the adapter converted this
+  // sample's attitude and rate with (ADR 0017). Both arrive converted, so nothing applies it. It is
+  // here for whatever carries state from one sample to the next: a page turn steps the frame both
+  // are reported in by the change in this angle, about the axis the camera looks down, and an
+  // estimate held in the old frame has to be carried into the new one (ADR 0074). A port with no
+  // screen leaves it at zero.
+  double screenAngleDeg = 0.0;
 };
 
 struct PoseSample {
@@ -523,7 +531,12 @@ struct PoseState {
   // It is here rather than inside the engine because it is session state, and an engine is
   // stateless per session (docs/03 §3.3 rule 4, ADR 0016). A bias kept in the engine would be
   // shared by every session in the process and would outlive the device being put down.
+  //
+  // In the frame the rates are reported in, which turns with the page: see `screenAngleDeg`.
   Vec3 gyroBias;
+  // The `ImuSample::screenAngleDeg` the orientation and offset above are expressed with. A sample
+  // reported with another angle carries both into its frame before anything is fused (ADR 0074).
+  double screenAngleDeg = 0.0;
 };
 
 struct SelectionPolicy {

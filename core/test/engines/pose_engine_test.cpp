@@ -402,7 +402,7 @@ TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorre
   // A still rate is the sample that says nothing about where the phone points and still starts
   // the clock, and an engine that took "a sample arrived" as "there is an estimate to predict
   // from" treats the *first real reading* after it as a correction to an identity nobody measured.
-  // A blank sample no longer reaches this, since it starts no clock (ADR 0074).
+  // A blank sample cannot reach this, since it starts no clock (ADR 0074).
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
   ASSERT_TRUE(initial.ok());
@@ -987,7 +987,7 @@ TEST(PoseEngine, TheEstimateStillArrivesWhereTheAttitudeSaysItIs) {
   // In tilt, which is corrected at the speed this asserts; the heading's own version is
   // `AHeadingTheCompassKeepsSayingIsReachedInTheEnd`. The first reading is level, because the
   // first is taken whole and a stream that opened at the target would arrive without correcting;
-  // and the step is inside the 30° past which a reading is a different frame and taken whole too.
+  // and the step is inside the 30° past which a reading is taken whole too.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   const Vec3 still{0.0, 0.0, 0.0};
@@ -1560,13 +1560,12 @@ TEST(PoseEngine, ASilentSampleDoesNotStartTheClock) {
 }
 
 TEST(PoseEngine, AReadingTensOfDegreesOutIsTakenWholeWithNothingCharged) {
-  // Two ways a reading lands tens of degrees from a prediction while the gyroscope reads still,
-  // and neither is a measurement error to be corrected slowly. A page turn steps the frame the
-  // attitude is reported in by a quarter- or half-turn about the camera's axis; a turn the
-  // gyroscope missed — forty degrees here — moves gravity by more than a real tilt error does.
-  // Fused, the share of either that leans towards the world's up would be corrected at the
-  // heading's speed — 48 degrees out a second later, pitched thirty degrees up — and the rest
-  // would teach the gyroscope an offset.
+  // A reading tens of degrees from a prediction while the gyroscope reads still is not a
+  // measurement error to be corrected slowly: a turn the gyroscope missed moves gravity by more
+  // than a real tilt error does. Fused, the share of it that leans towards the world's up would be
+  // corrected at the heading's speed — 48 degrees out a second later for a quarter-turn pitched
+  // thirty degrees up — and the rest would teach the gyroscope an offset. A page turn is a turn of
+  // the same shape that never reaches here: the sample says which frame it is in.
   struct Case {
     const char* what;
     double elevationDeg;
@@ -1595,12 +1594,10 @@ TEST(PoseEngine, AReadingTensOfDegreesOutIsTakenWholeWithNothingCharged) {
   }
 }
 
-// A still phone that has learned `bias` for five minutes holding `held`, then is handed readings
-// of `turned`. Its rates arrive in `rateFrame` — the turned frame for a page turn, the old one for
-// a turn the phone really made — and the first of them `lateNs` after the last, with or without a
-// rate. Returns the worst angle from `turned` over the following minute.
-double WorstAfterTurning(const Quat& held, const Quat& turned, const Quat& rateFrame,
-                         const Vec3& bias, int64_t lateNs, bool firstHasRate) {
+// A still phone that has learned `bias` for five minutes holding `held`, then turned to `turned`
+// unseen, inside a gap `lateNs` long. Returns the worst angle from `turned` over the minute after.
+double WorstAfterAMissedTurn(const Quat& held, const Quat& turned, const Vec3& bias,
+                             int64_t lateNs) {
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   int64_t t = 0;
@@ -1612,13 +1609,8 @@ double WorstAfterTurning(const Quat& held, const Quat& turned, const Quat& rateF
   }
   t += lateNs;
   ImuSample sample = StillWithReading(t, turned);
-  sample.angularVelocity = Rotate(Conjugate(rateFrame), bias);
-  ImuSample first = sample;
-  if (!firstHasRate) {
-    first.hasAngularVelocity = false;
-    first.angularVelocity = Vec3{};
-  }
-  state = engine.Integrate(state, std::vector<ImuSample>{first}).value;
+  sample.angularVelocity = bias;
+  state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
   double worst = AngleBetween(state.pose.orientation, turned) * kRadToDeg;
   for (int step = 0; step < 6'000; ++step) {
     t += 10'000'000;
@@ -1629,50 +1621,119 @@ double WorstAfterTurning(const Quat& held, const Quat& turned, const Quat& rateF
   return worst;
 }
 
-TEST(PoseEngine, ATurnedPageTurnsTheLearnedOffsetWithIt) {
-  // The gyroscope's rates arrive in the same frame as the attitude, so a page turn turns the
-  // offset the gyroscope reads as well. Left where it was, five minutes of learning point a
-  // quarter-turn wrong: 8.7 degrees out while it is learned again, at 0.02 rad/s.
-  //
-  // However the turned reading arrives — on time, after the stall a relayout makes, or before the
-  // rates resume — and however the phone is pitched: a page turn is a quarter- or half-turn about
-  // the axis the camera looks down, and that shape is what recognises it, not gravity, which
-  // barely sees one near a pole.
+TEST(PoseEngine, APageTurnChangesNothingButTheFrame) {
+  // Turning between portrait and landscape changes the frame the attitude and the rates are
+  // reported in, and nothing about the phone. So the same session reported both ways has to come
+  // out the same, one answer re-expressed in the other's frame, at every sample after the turn —
+  // whatever the filter was in the middle of. Recognised from the readings instead, a page turn
+  // was missed whenever the estimate lagged a creeping compass by more than the tolerance: the
+  // learned offset left a quarter-turn wrong, 8.7 degrees out at 0.02 rad/s, and near a pole the
+  // turn itself corrected at the heading's speed.
   struct Case {
     const char* what;
     double elevationDeg;
-    double turnDeg;
+    double screenDeg;
     int64_t lateNs;
-    bool firstHasRate;
+    bool turnHasRate;
   };
-  for (const Case& c : {Case{"level, on time", 0.0, 90.0, 10'000'000, true},
-                        Case{"pitched up, on time", 30.0, 90.0, 10'000'000, true},
-                        Case{"pitched down, back", -40.0, -90.0, 10'000'000, true},
-                        Case{"level, after a stall", 0.0, 90.0, 500'000'000, true},
-                        Case{"level, before the rates", 0.0, 90.0, 10'000'000, false},
-                        Case{"near the zenith", 75.0, 90.0, 10'000'000, true},
-                        Case{"at the zenith", 89.0, 90.0, 10'000'000, true},
-                        Case{"a half-turn, near the zenith", 80.0, 180.0, 10'000'000, true}}) {
+  for (const Case& c : {Case{"level", 0.0, 90.0, 10'000'000, true},
+                        Case{"pitched up, the other way", 30.0, -90.0, 10'000'000, true},
+                        Case{"pitched down, a half-turn", -69.0, 180.0, 10'000'000, true},
+                        Case{"near the zenith", 85.0, 270.0, 10'000'000, true},
+                        Case{"after a stall", 0.0, 90.0, 500'000'000, true},
+                        Case{"ahead of the rates", 30.0, 90.0, 10'000'000, false}}) {
     const Quat held = FromAzimuthElevation(0.0, c.elevationDeg);
-    const Quat page = FromAxisAngle(Vec3{0, 0, 1}, c.turnDeg / kRadToDeg);
-    for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.02, 0.0}}) {
-      EXPECT_LT(WorstAfterTurning(held, Multiply(held, page), page, bias, c.lateNs,
-                                  c.firstHasRate),
-                0.01)
-          << c.what << ", offset about " << (bias.x > 0.0 ? "X" : "Y");
+    const Vec3 bias{0.02, 0.01, -0.015};   // in the phone's own frame
+    // The same moment in a frame turned by `screenDeg`, as the adapter would report it.
+    const auto reported = [&](int64_t t, const Quat& reading, bool hasRate, double screenDeg) {
+      const Quat screen = FromAxisAngle(Vec3{0, 0, 1}, -screenDeg / kRadToDeg);
+      ImuSample sample = StillWithReading(t, Multiply(reading, screen));
+      sample.angularVelocity = hasRate ? Rotate(Conjugate(screen), bias) : Vec3{};
+      sample.hasAngularVelocity = hasRate;
+      sample.screenAngleDeg = screenDeg;
+      return sample;
+    };
+    OrientationPoseEngine engine;
+    PoseState unturned = Started(engine, MotionCapability::GyroAccel);
+    PoseState turned = unturned;
+    double worst = 0.0;
+    double worstOffset = 0.0;
+    int64_t t = 0;
+    // Half a minute of learning, two seconds of the compass creeping twenty degrees about up —
+    // which leaves the estimate most of that behind the reading — then the turn, and ten seconds.
+    for (int step = 0; step < 4'200; ++step) {
+      const double creep = std::clamp((step - 3'000) / 200.0, 0.0, 1.0) * 20.0;
+      const Quat reading = Multiply(FromAxisAngle(Vec3{0, 1, 0}, creep / kRadToDeg), held);
+      const bool turning = step == 3'200;
+      if (turning) t += c.lateNs - 10'000'000;
+      const bool hasRate = !(turning && !c.turnHasRate);
+      const double screenDeg = step >= 3'200 ? c.screenDeg : 0.0;
+      unturned =
+          engine.Integrate(unturned, std::vector<ImuSample>{reported(t, reading, hasRate, 0.0)})
+              .value;
+      turned =
+          engine.Integrate(turned, std::vector<ImuSample>{reported(t, reading, hasRate, screenDeg)})
+              .value;
+      if (step >= 3'200) {
+        const Quat screen = FromAxisAngle(Vec3{0, 0, 1}, -c.screenDeg / kRadToDeg);
+        worst = std::max(worst, AngleBetween(turned.pose.orientation,
+                                             Multiply(unturned.pose.orientation, screen)));
+        const Vec3 expected = Rotate(Conjugate(screen), unturned.gyroBias);
+        const Vec3 off{turned.gyroBias.x - expected.x, turned.gyroBias.y - expected.y,
+                       turned.gyroBias.z - expected.z};
+        worstOffset = std::max(worstOffset, std::sqrt(Dot(off, off)));
+      }
+      t += 10'000'000;
     }
+    EXPECT_LT(worst, 1e-6) << c.what;   // radians; about where AngleBetween stops resolving
+    EXPECT_LT(worstOffset, 1e-12) << c.what;
   }
 }
 
+TEST(PoseEngine, AScreenAngleThatIsNotANumberTurnsNothing) {
+  // The angle crosses from the page as a double like everything else. One that is not a number
+  // names no frame, so the estimate stays in the one it was in rather than turning by NaN.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  const Quat held = FromAzimuthElevation(30.0, 10.0);
+  for (int step = 0; step < 10; ++step) {
+    ImuSample sample = StillWithReading(step * 10'000'000, held);
+    sample.screenAngleDeg = 90.0;
+    state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+  }
+  ImuSample broken = Spinning(100'000'000, 0.0);
+  broken.screenAngleDeg = std::numeric_limits<double>::quiet_NaN();
+  state = engine.Integrate(state, std::vector<ImuSample>{broken}).value;
+  EXPECT_EQ(state.screenAngleDeg, 90.0);
+  EXPECT_LT(AngleBetween(state.pose.orientation, held), 1e-6);
+}
+
+TEST(PoseEngine, AnEnormousScreenAngleStillTurnsAboutTheCameraAxis) {
+  // Two finite angles from the page can still differ by infinity, and the turn by that difference
+  // is then `FromAxisAngle`'s to refuse: a turn by NaN would collapse onto the identity, an aim
+  // nobody pointed. Whatever the angles, a page turn is a turn about the axis the camera looks
+  // down, so where it looks cannot move.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  const Quat held = FromAzimuthElevation(30.0, 10.0);
+  ImuSample sample = StillWithReading(0, held);
+  sample.screenAngleDeg = 1e308;
+  state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+  ImuSample other = Spinning(10'000'000, 0.0);
+  other.screenAngleDeg = -1e308;
+  state = engine.Integrate(state, std::vector<ImuSample>{other}).value;
+  EXPECT_LT(AngleBetweenDirections(Direction(state.pose.orientation), Direction(held)), 1e-9);
+}
+
 TEST(PoseEngine, ATurnTheGyroscopeMissedDoesNotTurnTheOffset) {
-  // The other way gravity can be tens of degrees out inside fusion: a real turn faster than the
-  // prediction held across a gap shorter than the bound. The phone turned, not the frame its
-  // rates are reported in, so the offset it has learned is still right where it is.
+  // A real turn faster than the prediction held across a gap shorter than the bound puts gravity
+  // tens of degrees out inside fusion. The phone turned, not the frame its rates are reported in,
+  // so the offset it has learned is still right where it is.
   const Quat held = FromAzimuthElevation(0.0, 0.0);
   for (const double pitchDeg : {35.0, 45.0, 90.0}) {
     const Quat turned = Multiply(held, FromAxisAngle(Vec3{1, 0, 0}, pitchDeg / kRadToDeg));
     for (const Vec3& bias : {Vec3{0.0, 0.02, 0.0}, Vec3{0.0, 0.0, 0.02}}) {
-      EXPECT_LT(WorstAfterTurning(held, turned, Quat{}, bias, 200'000'000, true), 0.1)
+      EXPECT_LT(WorstAfterAMissedTurn(held, turned, bias, 200'000'000), 0.1)
           << pitchDeg << " degrees, offset about " << (bias.y > 0.0 ? "Y" : "Z");
     }
   }

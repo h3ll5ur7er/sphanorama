@@ -50,7 +50,7 @@ const NO_LOCKS: LockState = { exposure: false, whiteBalance: false, focus: false
  * job is to keep platform shapes out of the core. The C++ side reads the same order, and the two
  * are pinned together by a test on each side.
  */
-export const MOTION_SAMPLE_DOUBLES = 17;
+export const MOTION_SAMPLE_DOUBLES = 18;
 
 /**
  * The most samples kept while the core is not draining. A capture loop that stalls must not be
@@ -190,6 +190,7 @@ export function flattenImuSamples(samples: ImuSample[]): Float64Array {
       sample.magneticField.x, sample.magneticField.y, sample.magneticField.z,
       sample.hasOrientation ? 1 : 0,
       sample.orientation.w, sample.orientation.x, sample.orientation.y, sample.orientation.z,
+      sample.screenAngleDeg,
     ], index * MOTION_SAMPLE_DOUBLES);
   });
   return flat;

@@ -157,5 +157,6 @@ export function toImuSample(sample: OrientationSample): ImuSample {
     magneticField: zero,
     hasOrientation: true,
     orientation: sample.orientation,
+    screenAngleDeg: sample.screenAngleDeg,
   };
 }
