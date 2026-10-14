@@ -375,10 +375,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         const QuaternionAverage gauge = AverageQuaternions(offsets, {});
         if (!gauge.valid) return AveragedRotations{};
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
-        // eigensolver's scan order, and that is true of every frame in it.
-        if (!gauge.isUnique) {
-          for (const int32_t i : piece) everAmbiguous[static_cast<size_t>(i)] = 1;
-        }
+        // eigensolver's scan order, and that is true of every frame in it. One flag is enough —
+        // the pass after the sweeps names the whole piece of any frame flagged (ADR 0073).
+        if (!gauge.isUnique) everAmbiguous[static_cast<size_t>(piece.front())] = 1;
         largestMoveDeg = std::max(largestMoveDeg, AngleBetween(Quat{}, gauge.rotation) * kDegPerRad);
         for (const int32_t i : piece) {
           solved[static_cast<size_t>(i)] =
@@ -423,16 +422,28 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     out.maxEdgeErrorDeg = errors.back();
   }
 
+  // **A tie names its whole piece** (ADR 0073). A frame placed by a coin flip is averaged into its
+  // neighbours on every sweep after, so a frame that never tied itself can still sit wherever the
+  // coin left it — a ten-trillionth of a radian moved one 38.9 degrees in the graph a review found.
+  // Which of them depend on the choice cannot be read off the flags, and no edge or gauge reaches
+  // outside its own piece. So every frame in a tied piece is named.
+  for (const std::vector<int32_t>& piece : pieces) {
+    const bool tied = std::any_of(piece.begin(), piece.end(), [&](int32_t i) {
+      return everAmbiguous[static_cast<size_t>(i)] != 0;
+    });
+    if (!tied) continue;
+    for (const int32_t i : piece) everAmbiguous[static_cast<size_t>(i)] = 1;
+  }
+
   // Built from the flags at the end rather than appended to as they are set, which is what makes both
   // of the header's promises — each frame once, ascending — properties of this loop rather than of
   // the order sweeps happened to touch things in. Appending gave neither: a frame first flagged on a
   // later sweep landed after one flagged earlier with a lower index, and nothing deduplicated.
   //
   // The loop is covered rather than self-evident, which is a correction to what stood here. Skipping
-  // index 0, or running the range backwards, is a one-token change that leaves both promises false —
-  // so the fixtures below it include an ambiguous frame **at index zero** and a case with **two**
-  // ambiguous frames, neither of which the branch had while every fixture put its unanchored frame
-  // at index 1.
+  // index 0, stopping one short, or running the range backwards is a one-token change that leaves
+  // both promises false — so `AmbiguousNamesTheTiedPiecesAscendingAndNoOthers` names a piece
+  // holding frame zero, one holding the last frame, and one walked out of order.
   for (int32_t i = 0; i < frames; ++i) {
     if (everAmbiguous[static_cast<size_t>(i)] != 0) out.ambiguous.push_back(i);
   }

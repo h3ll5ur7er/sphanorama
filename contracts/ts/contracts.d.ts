@@ -739,8 +739,10 @@ export interface GlobalSolution {
   /** Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel. */
   priorOnlyFrames: FrameId[];
   /**
-   * Frames whose place was settled at some point by the solver's scan order rather than the
-   * evidence — pairs, or priors, a half turn apart.
+   * The frames of every piece where some place was settled by the solver's scan order rather than
+   * the evidence — pairs that cancel, or priors a half turn apart. The whole piece, because the
+   * rest of it is averaged against what the coin decided (ADR 0073). Only ties the arithmetic
+   * leaves exact are seen: a tie it splits can leave this empty, whatever the edge errors read.
    */
   ambiguousFrames: FrameId[];
   /** False when the solve ran out of sweeps; the rotations are the best it reached. */
