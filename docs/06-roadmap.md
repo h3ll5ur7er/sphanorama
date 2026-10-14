@@ -187,9 +187,10 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    sample carrying both an attitude and a rate it predicts forward with the gyroscope, corrects
    part of the way to the reading, and charges the rest to the gyroscope's zero offset — which it
    therefore learns without a stillness detector, and keeps in `PoseState` because an engine is
-   stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° of yaw into one second
-   of dead reckoning from a device that never moved; it is now under 0.2°, and a reading 3° out on
-   every sample comes out under 1.5°.
+   stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° into one second of dead
+   reckoning from a device that never moved; about a tilt axis it is now under 0.2°, and a reading
+   3° out on every sample comes out under 1.5°. An offset about the world's up is learned over
+   minutes rather than seconds, since only the compass can see it (ADR 0074).
 
    **And the rates are real now** (ADR 0025). The browser adapter listens for
    `DeviceMotionEvent.rotationRate`, converts it into the viewfinder's frame — inverting the
@@ -204,12 +205,14 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    gyroscope in the same sample read 3 rad/s.
 
    **And a device has met it** (ADR 0074). A Pixel 9 Pro XL saw the reticle keep moving with the
-   phone held still, in some directions only, which is an indoor compass and not a gyroscope. The
-   platform's attitude takes its heading from the magnetometer and creeps towards a bent field, and
-   the filter followed it. So the disagreement is split about the world's up: tilt is corrected
-   over 0.1 s and charged to the offset over 0.5 s as before, and heading is corrected over 10 s
-   and never charged. Twenty degrees of creep across a two-second dwell moves the estimate 1.88° rather than
-   19.99°.
+   phone held still, in some directions only. That is consistent with an indoor compass, though not
+   yet confirmed by a log: the platform's attitude takes its heading from the magnetometer and can
+   creep towards a bent field, and the filter followed whatever the reading did. So the
+   disagreement is split about the world's up, as a twist and a swing: tilt is corrected over 0.1 s
+   and charged to the offset over 0.5 s as before, and heading is corrected over 10 s and charged
+   over 50 s from at most 0.05 rad of disagreement. Twenty degrees of creep across a two-second
+   dwell moves the estimate 1.89° rather than 19.99°; the cost is that a gyroscope offset about up
+   takes minutes to learn, and shows by a couple of degrees while it is learned.
 
    What is left on this line is the same phone again. Every number here is from tests. The heading
    now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as
@@ -232,7 +235,7 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   its rate was measured, and `Stability` judges each interval by the better signal available for
   it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
   capture on a phone showed an indoor compass dragging a still reticle (ADR 0074). What is left on
-  this line is that phone again: none of the three time constants is measured.
+  this line is that phone again: none of the four time constants is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native

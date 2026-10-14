@@ -74,10 +74,23 @@ constexpr double kBiasSeconds = 0.5;
 // still watches the reticle creep. Gravity does not wander like that, so only the turn about the
 // world's up is trusted this slowly, and the gyroscope carries it in between (ADR 0074).
 //
-// A starting point on the same footing as the two above. Across the two-second dwell that fires a
-// burst it lets through under a tenth of a creep; it still brings a resumed capture back to the
-// compass within a minute.
+// The offset about up is learned too, because gravity cannot see it and on a phone that keeps its
+// tilt nothing else would: a proportional loop alone stood ten seconds' worth of the offset away
+// from a reading that was exactly right. Five times the correction time, as above, which keeps the
+// loop from overshooting, and slow enough that a creep teaches it almost nothing.
+//
+// Both are starting points on the same footing as the two above. Across the two-second dwell that
+// fires a burst the correction lets through under a tenth of a creep (ADR 0074).
 constexpr double kHeadingCorrectionSeconds = 10.0;
+constexpr double kHeadingBiasSeconds = 50.0;
+
+// The most heading disagreement an offset is learned from. An offset the gyroscope could plausibly
+// carry, 0.005 rad/s, stands ten seconds' worth away from the compass: this much. Anything larger
+// is the compass jumping rather than the gyroscope drifting, and learned at full weight it was
+// overshot by a tenth of the jump for most of a minute afterwards.
+constexpr double kHeadingEvidenceRadians = 0.05;
+
+Quat ShortWay(const Quat& q) { return q.w < 0.0 ? Quat{-q.w, -q.x, -q.y, -q.z} : q; }
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -86,10 +99,7 @@ constexpr double kHeadingCorrectionSeconds = 10.0;
 // Taken along the short way round: a quaternion and its negation are the same rotation, and the
 // arithmetic below would otherwise correct a one-degree error by turning 359 degrees.
 Vec3 RotationBetween(const Quat& from, const Quat& to) {
-  Quat error = Multiply(Conjugate(from), to);
-  if (error.w < 0.0) {
-    error = Quat{-error.w, -error.x, -error.y, -error.z};
-  }
+  const Quat error = ShortWay(Multiply(Conjugate(from), to));
   const double axis = std::sqrt(error.x * error.x + error.y * error.y + error.z * error.z);
   if (axis < 1e-12) return Vec3{0.0, 0.0, 0.0};   // no rotation, and no axis to name it about
   const double radians = 2.0 * std::atan2(axis, error.w);
@@ -160,32 +170,36 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // in itself.
       const Quat predicted =
           Turned(state.pose.orientation, Subtract(sample.angularVelocity, state.gyroBias), seconds);
-      const Vec3 disagreement = RotationBetween(predicted, Normalize(sample.orientation));
 
       // Split about the world's up rather than the phone's own vertical: pitched up, most of a
       // compass error lies along the axis the camera looks down.
+      //
+      // As a twist and a swing, not by projecting a rotation vector onto up. The two agree for
+      // small disagreements and part company for large ones: projected, a heading jump carries
+      // part of a small tilt with it and turns the rest sideways, and the fast loop chasing that
+      // charges the gyroscope for a tilt that is not there. The swing is exactly the disagreement
+      // about where gravity points, whatever the heading.
       const Vec3 up = Rotate(Conjugate(predicted), Vec3{0.0, 1.0, 0.0});
-      const Vec3 heading = Scaled(up, Dot(disagreement, up));
-      const Vec3 tilt = Subtract(disagreement, heading);
+      const Quat disagreement =
+          ShortWay(Multiply(Conjugate(predicted), Normalize(sample.orientation)));
+      const double along = Dot(Vec3{disagreement.x, disagreement.y, disagreement.z}, up);
+      const Quat twist = Normalize(Quat{disagreement.w, up.x * along, up.y * along, up.z * along});
+      const Quat swing = Multiply(Conjugate(twist), disagreement);
+      const Vec3 heading = RotationBetween(Quat{}, twist);
+      const Vec3 tilt = RotationBetween(Quat{}, swing);
 
       // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
       // sample of 10 ms and no more.
       const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
       const double headingShare = 1.0 - std::exp(-seconds / kHeadingCorrectionSeconds);
-      const Vec3 tiltStep = Scaled(tilt, share);
-      const Vec3 headingStep = Scaled(heading, headingShare);
       state.pose.orientation =
-          Turned(predicted,
-                 Vec3{tiltStep.x + headingStep.x, tiltStep.y + headingStep.y,
-                      tiltStep.z + headingStep.z},
-                 1.0);
+          Turned(Turned(predicted, heading, headingShare), tilt, share);
 
-      // The tilt part of the same disagreement, charged to the gyroscope — but first turned back
-      // into the *rate* error that must have produced it, which is what a zero offset is. Never
-      // the heading part: a compass creeping at ten degrees a second would be learned as a
-      // gyroscope reading ten degrees a second low, and the next dropout would turn a still phone
-      // at that rate. The offset about the world's up is learned whenever the phone turns it into
-      // a tilt, which is what holding a phone up to sweep a sphere does.
+      // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
+      // error that must have produced it, which is what a zero offset is. Each part over its own
+      // time: charged at the tilt's speed, a compass creeping at ten degrees a second would be
+      // learned as a gyroscope reading ten degrees a second low, and the next dropout would turn a
+      // still phone at that rate.
       //
       // `share` is what does that conversion, and getting it wrong is how this went badly wrong
       // once. A standing disagreement is the rate error multiplied by the window it accumulated
@@ -229,7 +243,14 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // a long gap charge at most the rate error it actually saw, which is what the paragraph
       // above has always said it does.
       const double charge = share / std::max(kBiasSeconds, seconds);
+      const double headingCharge = headingShare / std::max(kHeadingBiasSeconds, seconds);
       state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
+      const double headingAngle = std::sqrt(Dot(heading, heading));
+      const Vec3 evidence =
+          headingAngle > kHeadingEvidenceRadians
+              ? Scaled(heading, kHeadingEvidenceRadians / headingAngle)
+              : heading;
+      state.gyroBias = Subtract(state.gyroBias, Scaled(evidence, headingCharge));
       state.absolute = true;
       // Anchored here as well as in the branch above, because both are branches that fold in a
       // reading and that is what anchoring is.
