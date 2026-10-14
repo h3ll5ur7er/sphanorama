@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 #include "utilities/quaternion.h"
 
@@ -95,6 +96,10 @@ constexpr double kHeadingCorrectionSeconds = 10.0;
 // a stall — a hidden tab, or a capture loop so far behind that the adapter's buffer dropped
 // samples — and not an interval anybody measured.
 constexpr double kLongestPredictionSeconds = 0.25;
+
+// The largest disagreement about gravity a reading is fused across; past it the reading is a
+// different frame (see where it is used). A real tilt the gyroscope missed is a few degrees.
+constexpr double kLargestTiltRadians = 30.0 * std::numbers::pi / 180.0;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -197,29 +202,39 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const Vec3 heading = RotationBetween(Quat{}, twist);
       const Vec3 tilt = RotationBetween(Quat{}, swing);
 
-      // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
-      // sample of 10 ms and no more.
-      const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
-      const double headingShare = 1.0 - std::exp(-seconds / kHeadingCorrectionSeconds);
-      state.pose.orientation =
-          Turned(Turned(predicted, heading, headingShare), tilt, share);
+      // Gravity is the half of an attitude a platform measures well, so a reading whose gravity is
+      // tens of degrees from the prediction's is not a measurement error but a different frame —
+      // the page turned between portrait and landscape, which turns the frame a quarter-turn about
+      // the axis the camera looks down while the gyroscope reads still. Taken whole, like a
+      // reading after a gap; fused, the share of that turn leaning towards the world's up would be
+      // corrected at the heading's speed and the rest charged to the gyroscope.
+      if (Magnitude(tilt) > kLargestTiltRadians) {
+        state.pose.orientation = Normalize(sample.orientation);
+      } else {
+        // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
+        // sample of 10 ms and no more.
+        const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
+        const double headingShare = 1.0 - std::exp(-seconds / kHeadingCorrectionSeconds);
+        state.pose.orientation =
+            Turned(Turned(predicted, heading, headingShare), tilt, share);
 
-      // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
-      // error that must have produced it, which is what a zero offset is. `share` does that: a
-      // standing disagreement is the rate error times the window it accumulated over, and
-      // `seconds / share` is that window, so multiplying by `share` leaves a rate, and dividing by
-      // kBiasSeconds integrates it with one time constant however fast the samples arrive.
-      // Charging `seconds` instead is quadratic in the gap, and once ran a 0.02 rad/s offset to
-      // 10 rad/s at one-second gaps. A gap here is at most kLongestPredictionSeconds, so one
-      // observation moves the offset by at most half a percent of the rate error it saw.
-      //
-      // No stillness detector, and none needed: what accumulates is the part of the error that
-      // keeps pointing the same way. A device that is really turning produces a prediction the
-      // reading agrees with, so there is nothing to charge.
-      const double charge = share / kBiasSeconds;
-      const double headingCharge = headingShare / kBiasSeconds;
-      state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
-      state.gyroBias = Subtract(state.gyroBias, Scaled(heading, headingCharge));
+        // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
+        // error that must have produced it, which is what a zero offset is. `share` does that: a
+        // standing disagreement is the rate error times the window it accumulated over, and
+        // `seconds / share` is that window, so multiplying by `share` leaves a rate, and dividing
+        // by kBiasSeconds integrates it with one time constant however fast the samples arrive.
+        // Charging `seconds` instead is quadratic in the gap, and once ran a 0.02 rad/s offset to
+        // 10 rad/s at one-second gaps. A gap here is at most kLongestPredictionSeconds, so one
+        // observation moves the offset by at most half a percent of the rate error it saw.
+        //
+        // No stillness detector, and none needed: what accumulates is the part of the error that
+        // keeps pointing the same way. A device that is really turning produces a prediction the
+        // reading agrees with, so there is nothing to charge.
+        const double charge = share / kBiasSeconds;
+        const double headingCharge = headingShare / kBiasSeconds;
+        state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
+        state.gyroBias = Subtract(state.gyroBias, Scaled(heading, headingCharge));
+      }
       state.absolute = true;
       // Anchored here as well as in the branch above, because both are branches that fold in a
       // reading and that is what anchoring is.
@@ -261,7 +276,13 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // then fabricated a gap for its successor, so one stale sample in a 60 Hz stream handed the
     // following sample a window hundreds of times too long — and the bias learned over that window
     // is charged as though the device had really been turning for it.
-    state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
+    //
+    // And only for a sample that measured something. One that carries neither an attitude nor a
+    // rate says nothing about the interval before it, and timed from it, a reading after a gap
+    // would be predicted across the few milliseconds since rather than the gap itself.
+    if (Attitude(sample) || Measured(sample)) {
+      state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
+    }
     // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
     // anchored anything is `anchored`, set by the two branches above that fold in a reading.
     state.observed = true;

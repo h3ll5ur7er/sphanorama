@@ -44,7 +44,14 @@ up, and the two parts are trusted at different speeds.**
   dropout is. A rate is a measurement of an instant, and held across a gap nobody sampled it says
   nothing about how the phone turned in it. The adapter already refuses a rate 200 ms from its
   attitude; a longer gap is a stall — a hidden tab, or a capture loop so far behind that the
-  adapter's buffer dropped samples.
+  adapter's buffer dropped samples. The gap runs from the last sample that measured something: one
+  carrying neither an attitude nor a rate does not close it.
+- **A reading whose gravity is more than 30° from the prediction's is taken whole.** Gravity is the
+  half of an attitude a platform measures well, so a disagreement that size is not a measurement
+  error but a different frame — the page turned between portrait and landscape, which turns the
+  reported frame a quarter-turn about the axis the camera looks down while the gyroscope reads
+  still. Fused, the share of that turn leaning towards the world's up was corrected at the
+  heading's speed, 48° out pitched thirty degrees up, and the rest was charged to the offset.
 
 The split is about the **world's** up, mapped into the phone's frame, not about the phone's own
 vertical. Pitched up, most of a heading error lies along the axis the camera looks down, and
@@ -100,6 +107,14 @@ chosen against both ends of the failure:
   where every sample carries an attitude, is a dropout that does not happen.
 - **A turn made during a gap arrives whole.** A phone turned 90° during 2 s with no samples is on
   the reading the moment one arrives, and nothing is charged for it.
+- **A turn made during a shorter gap does not.** Under 0.25 s the gap is predicted across with the
+  rate it ends on, and a turn the gyroscope did not see is corrected at the heading's speed: a
+  1 rad/s sweep that stops just as a gap ends stands 2.9° out through the dwell after a 50 ms gap,
+  5.7° after 0.1 s and 14° after 0.25 s. The bound is not lower because a reading taken whole
+  brings the whole of a creep with it, and a phone's main thread stalls for a tenth of a second
+  often enough that a lower bound would take readings whole routinely.
+- **A turn of the page is taken in one sample.** A quarter-turn about the viewing axis, level or
+  pitched up, or a half-turn, puts the estimate on the reading at once with nothing charged.
 - **Settling.** A heading the compass holds 10° away is within 0.97° after a minute and 0.043°
   after three. After a jump of up to 175° beside a 2° tilt, gravity is right to within 0.004° a
   second later whatever the jump, and the heading settles to within 0.03° in five minutes.
