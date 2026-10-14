@@ -32,11 +32,18 @@ comes from the compass. Gravity cannot see that turn at all.
 **The disagreement between the gyroscope's prediction and the reading is split about the world's
 up, and the two parts are trusted at different speeds.**
 
-- **Tilt** is corrected over 0.1 s and charged to the gyroscope's offset over 0.5 s, as before.
+- **Tilt** is corrected over 0.1 s, as before.
 - **Heading** is corrected over 10 s, so between readings the gyroscope carries it.
-- **Heading is charged to the offset over 50 s**, five times its correction time as tilt's is,
-  from the same disagreement its correction follows. Gravity cannot see an offset about up, so on a
-  phone that keeps its tilt only the compass can teach it.
+- **Both are charged to the gyroscope's offset over 50 s**, each from the disagreement its own
+  correction follows. For heading that is five times its correction time, which keeps its loop
+  from ringing. For tilt it amends ADR 0024's 0.5 s (see the rejected alternatives): an offset
+  changes over minutes, and a browser never needed it learned faster, because every sample there
+  carries an attitude and the offset only ever spans the 16 ms between two. Gravity cannot see an
+  offset about up, so on a phone that keeps its tilt only the compass can teach that part.
+- **A reading after a gap of more than 0.25 s is taken whole**, as the first reading after a
+  dropout is. A rate is a measurement of an instant, and held across a gap nobody sampled it says
+  nothing about how the phone turned in it. The adapter already refuses a rate 200 ms from its
+  attitude; a longer gap is a stall — a hidden tab, a capture loop that fell behind.
 
 The split is about the **world's** up, mapped into the phone's frame, not about the phone's own
 vertical. Pitched up, most of a heading error lies along the axis the camera looks down, and
@@ -55,39 +62,53 @@ chosen against both ends of the failure:
 - across a two-second dwell it lets through under a tenth of a creep;
 - a compass that jumps while readings keep arriving, and a gyroscope offset about up, are both
   corrected at this speed, so slower leaves either standing longer;
-- a resumed capture starts on the compass, taking its first reading whole, and so does the first
-  reading after a dropout. Neither reaches this constant. What a resume needs from it is that the
-  first session's heading stayed near the compass, so that the second session's cells land on the
-  first's. This holds while the live source is `AbsoluteOrientationSensor`. The
-  `deviceorientation` fallback is relative on Chrome for Android, so nothing there is laid out
-  against a compass, and nothing there can creep either.
+- a resumed capture starts on the compass, taking its first reading whole, and so do the first
+  reading after a dropout and the first after a gap. None of them reaches this constant. What a
+  resume needs from it is that the first session's heading stayed near the compass, so that the
+  second session's cells land on the first's. This holds while the live source is
+  `AbsoluteOrientationSensor`. The `deviceorientation` fallback is relative on Chrome for Android,
+  so nothing there is laid out against a compass, and nothing there can creep either.
 
 ## Consequences
 - **Creep.** Twenty degrees of compass creep across a two-second dwell moves the estimate 1.91°,
   against 19.99° before, at every elevation tested (0°, 60°, −45°).
 - **Dropouts.** The creep teaches the offset almost nothing, so the dropout after it moves the
   estimate 0.038°, against 9.94° before.
-- **Only within uninterrupted fusion.** The first reading after a dropout, and any reading that
-  arrives without a measured rate, is taken as it stands, so a creep still in progress then arrives
-  whole: one rate-less sample after the creep above moves the estimate from 1.91° to 20° out. The
-  browser adapter drops a rate more than 200 ms from its attitude, so a late `devicemotion` event
-  does this. It is deliberate: without a rate there is nothing to tell a creep from a real turn,
-  and predicting no turn would make every such turn lag by ten seconds.
-- **Tilt is unchanged.** A 5° step in pitch, or in roll at level, is within 0.53° after half a
-  second, the same figure as before.
-- **Noise.** A reading 3° out on alternate samples comes out within 0.245° in tilt and 0.005° in
-  heading.
+- **Only within uninterrupted fusion.** The first reading after a dropout or a gap, and any reading
+  that arrives without a measured rate, is taken as it stands, so a creep still in progress then
+  arrives whole: one rate-less sample after the creep above moves the estimate from 1.91° to 20°
+  out. The browser adapter drops a rate more than 200 ms from its attitude, so a late `devicemotion`
+  event does this. It is deliberate: without a rate there is nothing to tell a creep from a real
+  turn, and predicting no turn would make every such turn lag by ten seconds.
+- **Tilt still follows in a tenth of a second.** A 5° step in pitch, or in roll at level, is
+  within 0.025° after half a second. It was 0.53° before, and past the reading: an offset learned
+  in half a second absorbed part of the step and overshot it.
+- **Noise.** A reading 3° out on alternate samples comes out within 0.248° in tilt and 0.005° in
+  heading. Tilt noise with no preferred direction, 3° rms on each horizontal axis, moves the
+  heading 0.18°.
+- **Tilt that goes round no longer turns the heading.** Turns about horizontal axes do not
+  commute, and an offset learned in half a second followed a tilt disagreement that goes round:
+  the offsets it learned, each at right angles to an up that was itself circling, added up along
+  the phone's vertical. With the heading trusted slowly that reached the reticle. Measured with the
+  offset learned over 0.5 s and over 50 s: a still phone whose reading's gravity circles 0.5°,
+  23.5° against 0.19° of heading; a real 2° sway with every reading exact and on time, 3.25°
+  against 0.057°; the same sway read 20 ms late, 12.6° against 0.25°.
+- **A tilt offset is learned over minutes too.** At 0.02 rad/s about a tilt axis the estimate
+  stands at most 0.11° out while it is learned, and it is learned within a quarter of a percent in
+  five minutes. A dropout before then drifts at whatever is not yet learned — which in a browser,
+  where every sample carries an attitude, is a dropout that does not happen.
+- **A turn made during a gap arrives whole.** A phone turned 90° during 2 s with no samples is on
+  the reading the moment one arrives, and nothing is charged for it.
 - **Settling.** A heading the compass holds 10° away is within 0.97° after a minute and 0.043°
-  after three. After a jump of up to 175° beside a 2° tilt, gravity is right to within 0.071° a
+  after three. After a jump of up to 175° beside a 2° tilt, gravity is right to within 0.004° a
   second later whatever the jump, and the heading settles to within 0.03° in five minutes.
 - **A jump is overshot once, by about a tenth.** Learned at five times its correction time, the
   offset keeps the loop from ringing but not from passing a step: 11.6% of the jump, at its worst
-  43 s later, so 20° after a 175° jump and 3.5° after a 30° one. The offset is learned from a
-  steady disagreement in the same way and is passed by at most 0.67%, at gaps near 50 s between
-  fused samples.
+  43 s later, so 20° after a 175° jump and 3.5° after a 30° one. A steady offset is learned from
+  one side and not passed, at any spacing of the samples a prediction is made across.
 - **An offset about up is learned slowly, and shows while it is.** At 0.005 rad/s the estimate
   peaks 2.2° out after about twenty seconds, is 1.1° out at a minute and 0.23° at two. At
-  0.02 rad/s it peaks at 8.7° and is within 0.93° at two minutes. ADR 0024 learned either within
+  0.02 rad/s it peaks at 8.7° and is within 0.93° at two minutes. ADR 0024 learned it within
   seconds. A sweep round the horizon does not speed this up, because turning about up leaves up
   where it was in the phone's frame.
 - **A roll is not purely a tilt.** At a phone pitched up, the share of a roll about the viewing axis
@@ -153,3 +174,14 @@ more than 0.005 rad/s, about ten minutes for a half-turn, which is the gate's fa
 **Split by projecting the rotation vector onto up.** Also PR #98's first version. After a
 175° jump beside a 2° tilt it planted 0.26 rad/s of offset along up and left a still phone 149°
 from a reading that never moved.
+
+**Keep learning the tilt's offset in half a second.** ADR 0024's figure, and everything it bought
+— an offset learned within seconds, for a dropout that a browser never produces — at the cost
+measured above: an offset that follows a tilt disagreement going round, and a heading turned by
+it. At 2 s it is still 5° of heading for the circling reading; at 5 s, 1.9°.
+
+**Blend heading and tilt as the attitude's own parts rather than the disagreement's.** Tried in
+PR #98's fourth version, on the theory that tilt corrections going round were what turned the
+heading. They were not: with the offset still learned in half a second the figures did not move,
+and with it learned over minutes the disagreement's twist and swing do as well. It stayed out
+because it was a second way of saying the same thing that no test could tell from the first.

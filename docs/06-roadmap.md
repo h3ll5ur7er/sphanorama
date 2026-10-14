@@ -189,8 +189,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    therefore learns without a stillness detector, and keeps in `PoseState` because an engine is
    stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° into one second of dead
    reckoning from a device that never moved; about a tilt axis it is now under 0.2°, and a reading
-   3° out on every sample comes out under 1.5°. An offset about the world's up is learned over
-   minutes rather than seconds, since only the compass can see it (ADR 0074).
+   3° out on every sample comes out under 1.5°. The offset is learned over minutes now rather than
+   seconds, and the part of it about the world's up only from the compass (ADR 0074).
 
    **And the rates are real now** (ADR 0025). The browser adapter listens for
    `DeviceMotionEvent.rotationRate`, converts it into the viewfinder's frame — inverting the
@@ -208,11 +208,12 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    phone held still, in some directions only. That is consistent with an indoor compass, though not
    yet confirmed by a log: the platform's attitude takes its heading from the magnetometer and can
    creep towards a bent field, and the filter followed whatever the reading did. So the
-   disagreement is split about the world's up, as a twist and a swing: tilt is corrected over 0.1 s
-   and charged to the offset over 0.5 s as before, and heading is corrected over 10 s and charged
-   over 50 s. Twenty degrees of creep across a two-second dwell moves the estimate 1.91° rather
-   than 19.99°; the cost is that a gyroscope offset about up takes minutes to learn, and shows by
-   about two degrees at 0.005 rad/s, nearly nine at 0.02, while it is learned.
+   disagreement is split about the world's up, as a twist and a swing: tilt is corrected over
+   0.1 s as before, heading over 10 s, and both are learned as the gyroscope's offset over 50 s; a
+   reading after a gap of more than a quarter of a second is taken whole. Twenty degrees of creep
+   across a two-second dwell moves the estimate 1.91° rather than 19.99°; the cost is that a
+   gyroscope offset takes minutes to learn, and one about up shows by about two degrees at
+   0.005 rad/s, nearly nine at 0.02, while it is learned.
 
    What is left on this line is the same phone again. Every number here is from tests. The heading
    now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as

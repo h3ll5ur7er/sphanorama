@@ -64,26 +64,35 @@ bool Attitude(const ImuSample& sample) {
 // against. What they were chosen against is the shape of the failure at either extreme: correct
 // faster and noise in the reading's tilt reaches the reticle, which then shivers on a target it is
 // already holding; correct slower and the estimate ignores a device that has genuinely turned.
-// Learn the offset faster and a real rotation is absorbed as one, so every turn after it lags;
-// slower and the drift this exists to remove is still there when the attitude drops out.
+//
+// The offset is learned over minutes, for tilt and heading alike, because a gyroscope's offset
+// changes over minutes and anything faster learns something else. Learned in half a second, it
+// follows a tilt disagreement that goes round — noise, or a sway read a little late — and the
+// offsets it learns, each at right angles to an up that is itself going round, add up along the
+// phone's vertical to one about up that the gyroscope does not have: 23.5° of heading from a
+// reading whose gravity circles half a degree (ADR 0074). Nothing in a browser needs the speed:
+// every sample there carries an attitude, so the offset only ever spans the 16 ms between two.
 constexpr double kCorrectionSeconds = 0.1;
-constexpr double kBiasSeconds = 0.5;
+constexpr double kBiasSeconds = 50.0;
 
 // Heading is the one part of a platform's attitude that can be wrong for seconds on end: its
 // fusion pulls towards a magnetic field that steel and wiring indoors have bent, and a phone held
 // still watches the reticle creep. Gravity does not wander like that, so only the turn about the
 // world's up is trusted this slowly, and the gyroscope carries it in between (ADR 0074).
 //
-// The offset about up is learned too, because gravity cannot see it and on a phone that keeps its
-// tilt nothing else would: a proportional loop alone stood ten seconds' worth of the offset away
-// from a reading that was exactly right. Five times the correction time, as above, which keeps the
-// loop from ringing — it overshoots a step once, by about a tenth — and slow enough that a creep
-// teaches it almost nothing.
+// The offset about up is learned from it too, because gravity cannot see it and on a phone that
+// keeps its tilt nothing else would. `kBiasSeconds` is five times this, which keeps the heading's
+// loop from ringing — it overshoots a step once, by about a tenth — and is slow enough that a creep
+// teaches the offset almost nothing.
 //
-// Both are starting points on the same footing as the two above. Across the two-second dwell that
-// fires a burst the correction lets through under a tenth of a creep (ADR 0074).
+// A starting point on the same footing as the two above. Across the two-second dwell that fires a
+// burst it lets through under a tenth of a creep (ADR 0074).
 constexpr double kHeadingCorrectionSeconds = 10.0;
-constexpr double kHeadingBiasSeconds = 50.0;
+
+// The longest gap a prediction is made across. A browser's sensors report every 16 ms or so, and
+// the adapter already refuses a rate more than 200 ms from its attitude; a gap longer than this is
+// a stall — a hidden tab, a capture loop that fell behind — and not an interval anybody measured.
+constexpr double kLongestPredictionSeconds = 0.25;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -152,8 +161,11 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     const bool predictable = state.absolute && elapsed;
     const double seconds =
         elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
+    // A rate is a measurement of an instant, and held across a gap nobody sampled it says nothing
+    // about how the phone turned in it. A reading after one is a reading after a dropout.
+    const bool spanned = seconds <= kLongestPredictionSeconds;
 
-    if (Attitude(sample) && !(fusing && predictable)) {
+    if (Attitude(sample) && !(fusing && predictable && spanned)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
@@ -191,56 +203,19 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
           Turned(Turned(predicted, heading, headingShare), tilt, share);
 
       // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
-      // error that must have produced it, which is what a zero offset is. Each part over its own
-      // time: charged at the tilt's speed, a compass creeping at ten degrees a second would be
-      // learned as a gyroscope reading ten degrees a second low, and the next dropout would turn a
-      // still phone at that rate.
+      // error that must have produced it, which is what a zero offset is. `share` does that: a
+      // standing disagreement is the rate error times the window it accumulated over, and
+      // `seconds / share` is that window, so multiplying by `share` leaves a rate, and dividing by
+      // kBiasSeconds integrates it with one time constant however fast the samples arrive.
+      // Charging `seconds` instead is quadratic in the gap, and once ran a 0.02 rad/s offset to
+      // 10 rad/s at one-second gaps. A gap here is at most kLongestPredictionSeconds, so one
+      // observation moves the offset by at most half a percent of the rate error it saw.
       //
-      // `share` is what does that conversion, and getting it wrong is how this went badly wrong
-      // once. A standing disagreement is the rate error multiplied by the window it accumulated
-      // over, and `seconds / share` is that window: it flattens out at the correction time for
-      // samples closer together than one, and equals the gap itself for samples further apart.
-      // So multiplying the disagreement by `share` divides out the window and leaves a rate,
-      // and dividing by kBiasSeconds makes that an integral with a fixed time constant however
-      // fast the samples arrive.
-      //
-      // Charging `seconds` instead — as this did — is quadratic in the gap, because the
-      // disagreement already grows with it. At 60 Hz the two are within 10% of each other and at
-      // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
-      // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
-      //
-      // A single observation may move the offset by at most the whole rate error it saw, so a
-      // steady tilt offset is approached from one side and never passed — whatever the capture
-      // loop does with its timestamps. That is a property of the expression below rather than of a
-      // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
-      // gap) and is under 1 at every gap, because past the time constant the denominator grows with
-      // `seconds` while `share` is already saturating at 1. The heading's slower loop carries its
-      // disagreement across samples and passes a steady offset by at most 0.67%, at gaps near
-      // 50 s; and a step in the reading is overshot once, by about a tenth (ADR 0074).
-      //
-      // It was a clamped expression until a reviewer removed the clamp and found the whole suite
-      // still green — including the ten-gap sweep written for exactly this invariant. The clamp had
-      // been load-bearing when the divisor was `kBiasSeconds` alone, where the factor really did
-      // pass 1; `std::max` took the job away from it and the comment went on crediting it. A guard
-      // that cannot fire reads as the thing keeping you safe, which is worse than no guard: the
-      // next person to change the divisor would trust it.
-      //
-      // No stillness detector, and none needed: what accumulates here is the part of the error
-      // that keeps pointing the same way. Noise does not, and cancels. A device that is really
-      // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      // Divided by the *window*, not by the time constant alone. `tilt * share` is the rate error
-      // (the disagreement with its accumulation window divided out); charging `share / kBiasSeconds`
-      // therefore steps the offset by that rate times `seconds / kBiasSeconds`, which grows with the
-      // gap — so the clamp below bounded the step by the whole *angle* of disagreement while its
-      // comment claimed the whole rate error. The two differ by exactly that window.
-      //
-      // Measured before the fix, a still device reporting 0.02 rad/s: sign flip at a 2 s gap, and
-      // −5.48 rad/s learned across twelve samples 10 s apart. `std::max` keeps the fast-sample
-      // behaviour identical — under one time constant the window is the time constant — and makes
-      // a long gap charge at most the rate error it actually saw, which is what the paragraph
-      // above has always said it does.
-      const double charge = share / std::max(kBiasSeconds, seconds);
-      const double headingCharge = headingShare / std::max(kHeadingBiasSeconds, seconds);
+      // No stillness detector, and none needed: what accumulates is the part of the error that
+      // keeps pointing the same way. A device that is really turning produces a prediction the
+      // reading agrees with, so there is nothing to charge.
+      const double charge = share / kBiasSeconds;
+      const double headingCharge = headingShare / kBiasSeconds;
       state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
       state.gyroBias = Subtract(state.gyroBias, Scaled(heading, headingCharge));
       state.absolute = true;

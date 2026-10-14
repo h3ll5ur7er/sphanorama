@@ -39,7 +39,7 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
 // A sample from a device that reports both: a fused attitude and the gyroscope underneath it.
 //
 // The offsets the tests below teach it are about the phone's X, which a level phone turns as a
-// tilt. An offset about the world's up is learned from the compass, over minutes (ADR 0074).
+// tilt. An offset about the world's up is learned from the compass instead (ADR 0074).
 ImuSample Fused(int64_t timestampNs, double azimuthDeg, double elevationDeg, const Vec3& rate) {
   ImuSample sample = Oriented(timestampNs, azimuthDeg, elevationDeg);
   sample.angularVelocity = rate;
@@ -830,10 +830,10 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
   const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
-  // Two seconds of a device held still: the attitude says so, the gyroscope disagrees by exactly
-  // its bias.
+  // Five minutes of a device held still, which is what an offset takes to learn (ADR 0074): the
+  // attitude says so, the gyroscope disagrees by exactly its bias.
   int64_t t = 0;
-  for (int step = 0; step < 200; ++step) {
+  for (int step = 0; step < 30'000; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
@@ -863,7 +863,7 @@ TEST(PoseEngine, ARateNobodyMeasuredIsNotIntegratedEither) {
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
   int64_t t = 0;
-  for (int step = 0; step < 200; ++step) {
+  for (int step = 0; step < 30'000; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
@@ -936,7 +936,7 @@ TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
   PoseState state = Started(engine, MotionCapability::GyroAccelMag);
 
   int64_t t = 0;
-  for (int step = 0; step < 200; ++step) {
+  for (int step = 0; step < 30'000; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
@@ -1027,9 +1027,9 @@ TEST(PoseEngine, RealRotationIsNotMistakenForBias) {
   // and the estimate then lags every future turn by what it learned. Here the gyroscope and the
   // attitude tell the same true story, so there is no error to attribute to anything.
   //
-  // A sweep in pitch as well as in yaw, because yaw is heading and its offset is learned four
-  // orders of magnitude more slowly (ADR 0074): a yaw sweep alone cannot fail when real turns are
-  // absorbed.
+  // In pitch as well as in yaw, which the offset is learned from by different loops. Over minutes,
+  // so two seconds of a turn absorbed is a few thousandths of a rad/s rather than a few
+  // hundredths; the gyroscope and the attitude agree here exactly, so the bound is close to none.
   for (const bool inPitch : {false, true}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
@@ -1049,7 +1049,7 @@ TEST(PoseEngine, RealRotationIsNotMistakenForBias) {
     const double learned = std::sqrt(state.gyroBias.x * state.gyroBias.x +
                                      state.gyroBias.y * state.gyroBias.y +
                                      state.gyroBias.z * state.gyroBias.z);
-    EXPECT_LT(learned, 0.02) << "a two-second " << (inPitch ? "pitch" : "yaw")
+    EXPECT_LT(learned, 1e-4) << "a two-second " << (inPitch ? "pitch" : "yaw")
                              << " sweep was absorbed as " << learned << " rad/s of bias";
   }
 }
@@ -1063,40 +1063,42 @@ TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
   //
   // The invariant is physical and holds for any gap: a still device reporting `b` cannot support
   // an offset estimate outside [0, b]. There is no more bias available than the rate observed.
+  // Swept across the gaps a prediction is made over and past them, where a reading is taken whole
+  // and nothing is charged; about a tilt axis and about up, which are learned by different loops.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.02, 0.0, 0.0};
-
-  // Swept rather than sampled, because "holds for any gap" was asserted at exactly one gap — and
-  // one second is the gap at which the recurrence factor happens to be zero, so it was the single
-  // value that could not show the divergence. At 2 s the learned offset changes sign; above it, it
-  // runs away.
-  for (const int64_t gapMs : {16, 100, 500, 1'000, 1'500, 2'000, 2'500, 3'000, 10'000, 30'000}) {
-    PoseState state = Started(engine, MotionCapability::GyroAccel);
-    int64_t t = 0;
-    for (int step = 0; step < 12; ++step) {
-      state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
-      t += gapMs * 1'000'000;
+  for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.005, 0.0}}) {
+    for (const int64_t gapMs : {16, 50, 100, 150, 200, 250, 500, 1'000, 10'000, 100'000}) {
+      PoseState state = Started(engine, MotionCapability::GyroAccel);
+      int64_t t = 0;
+      const int64_t steps = std::max<int64_t>(12, 600'000 / gapMs);
+      for (int64_t step = 0; step < steps; ++step) {
+        state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+        t += gapMs * 1'000'000;
+      }
+      const double learned = state.gyroBias.x + state.gyroBias.y;
+      const double truth = bias.x + bias.y;
+      EXPECT_GE(learned, 0.0) << "gap " << gapMs << " ms learned " << learned;
+      EXPECT_LE(learned, truth * 1.001) << "gap " << gapMs << " ms learned " << learned;
     }
-    EXPECT_GE(state.gyroBias.x, 0.0) << "gap " << gapMs << " ms learned " << state.gyroBias.x;
-    EXPECT_LE(state.gyroBias.x, bias.x * 1.001)
-        << "gap " << gapMs << " ms learned " << state.gyroBias.x;
   }
 }
 
-TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {
+TEST(PoseEngine, ABiasLearnedAcrossTheLongestGapStillHelpsTheDropoutItIsFor) {
   // The consequence the invariant above is protecting, stated as the thing a user would notice.
   // A runaway offset is not merely inaccurate: subtracted from the next dropout it drives the
   // estimate the other way, so dead reckoning ends up further from the truth than doing nothing
-  // at all would have been. Un-subtracted, one second of 0.02 rad/s is 1.15 degrees.
+  // at all would have been. Un-subtracted, one second of 0.02 rad/s is 1.15 degrees. At the
+  // longest gap a prediction is made across, so the window is as wide as it gets.
   OrientationPoseEngine engine;
   const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
   int64_t t = 0;
-  for (int step = 0; step < 6; ++step) {
+  for (int step = 0; step < 1'200; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
-    t += 1'000'000'000;
+    t += 250'000'000;
   }
+  ASSERT_GT(state.gyroBias.x, 0.019) << "the offset was never learned, so this proves nothing";
   const Quat settled = state.pose.orientation;
 
   ImuSample dropout;
@@ -1105,7 +1107,7 @@ TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {
   dropout.hasAngularVelocity = true;
   state = engine.Integrate(state, std::vector<ImuSample>{dropout}).value;
 
-  EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 1.15);
+  EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 0.2);
 }
 
 TEST(PoseEngine, TheBiasEstimateIsPartOfTheStateTheCallerThreadsBack) {
@@ -1121,7 +1123,7 @@ TEST(PoseEngine, TheBiasEstimateIsPartOfTheStateTheCallerThreadsBack) {
   const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = fresh;
   int64_t t = 0;
-  for (int step = 0; step < 200; ++step) {
+  for (int step = 0; step < 30'000; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
@@ -1221,9 +1223,9 @@ TEST(PoseEngine, ATiltStepIsFollowedWithinHalfASecond) {
       state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, step.to)}).value;
       t += 10'000'000;
     }
-    // The filter overshoots by 0.53° here, the gyroscope's offset having absorbed some of the
-    // step; a ten-second correction would leave 2.76°.
-    EXPECT_LT(AngleBetween(state.pose.orientation, step.to) * kRadToDeg, 1.0);
+    // The filter leaves 0.025° here; a correction three times slower would leave 0.4°, and a
+    // ten-second one nearly all five.
+    EXPECT_LT(AngleBetween(state.pose.orientation, step.to) * kRadToDeg, 0.1);
   }
 }
 
@@ -1273,11 +1275,15 @@ TEST(PoseEngine, AGyroscopeOffsetAboutUpIsLearnedFromTheCompassInTheEnd) {
 }
 
 TEST(PoseEngine, AHeadingJumpBesideASmallTiltIsClosedRatherThanCircled) {
-  // A rotation vector is not a sum of a twist and a swing: projected onto up, a large heading
-  // disagreement carries part of a small tilt with it and hands the rest back turned sideways.
-  // The fast loop then chases a tilt pointing the wrong way and charges the gyroscope for it, and
-  // once gravity agrees that charge lies along up, where only the heading's slow loop can see it.
-  for (const double jumpDeg : {30.0, 90.0, 150.0, 175.0}) {
+  // A heading jump must leave gravity alone. Split any other way than into the attitude's own
+  // twist and swing, a large jump carries part of a small tilt with it and turns the rest
+  // sideways; the fast loop chases a tilt pointing the wrong way and charges the gyroscope for it,
+  // and once gravity agrees that charge lies along up, where only the heading's slow loop sees it.
+  //
+  // So a second in, gravity is wherever it would have been with no jump at all, whatever the size
+  // of the jump; and the heading passes the reading once, by about a tenth, on its way there.
+  double gravityWithoutAJump = 0.0;
+  for (const double jumpDeg : {0.0, 30.0, 90.0, 150.0, 175.0}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
     state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
@@ -1286,26 +1292,37 @@ TEST(PoseEngine, AHeadingJumpBesideASmallTiltIsClosedRatherThanCircled) {
     const Quat held = FromAzimuthElevation(jumpDeg, 0.0);
     int64_t t = 10'000'000;
     double overshoot = 0.0;
+    int crossings = 0;
+    double previous = 0.0;
     for (int step = 0; step < 30'000; ++step) {
       state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, held)}).value;
       if (step == 100) {
-        // A second in, gravity has been put right whatever the heading is doing: the swing is
-        // the whole of the gravity disagreement at any jump, so the figure does not grow with it.
         const Vec3 estimatedUp = Rotate(Conjugate(state.pose.orientation), Vec3{0, 1, 0});
         const Vec3 readUp = Rotate(Conjugate(held), Vec3{0, 1, 0});
-        EXPECT_LT(AngleBetweenDirections(estimatedUp, readUp) * kRadToDeg, 0.1)
+        const double gravity = AngleBetweenDirections(estimatedUp, readUp) * kRadToDeg;
+        if (jumpDeg == 0.0) gravityWithoutAJump = gravity;
+        EXPECT_NEAR(gravity, gravityWithoutAJump, 1e-4)
             << "a second after a " << jumpDeg << " degree jump";
       }
-      if (step >= 4'000) {
-        overshoot = std::max(overshoot, AngleBetween(state.pose.orientation, held) * kRadToDeg);
+      // The heading still to go, signed: negative while short of the reading, positive past it.
+      // Gravity has settled by now, so the turn about up between the two is the heading's alone.
+      Quat between = Multiply(Conjugate(held), state.pose.orientation);
+      if (between.w < 0.0) between = Quat{-between.w, -between.x, -between.y, -between.z};
+      const double ahead = 2.0 * std::atan2(between.y, between.w) * kRadToDeg;
+      if (step >= 100) {
+        overshoot = std::max(overshoot, ahead);
+        if (std::abs(ahead) > 1e-6 && std::abs(previous) > 1e-6 && (ahead > 0) != (previous > 0)) {
+          ++crossings;
+        }
+        if (std::abs(ahead) > 1e-6) previous = ahead;
       }
       t += 10'000'000;
     }
+    if (jumpDeg == 0.0) continue;
     EXPECT_LT(AngleBetween(state.pose.orientation, held) * kRadToDeg, 0.5)
         << "after a " << jumpDeg << " degree jump";
-    // Past forty seconds what remains is what the jump taught the offset, and a loop whose offset
-    // is learned at five times its correction time passes a step once, by about a tenth of it.
     EXPECT_LT(overshoot, 0.13 * jumpDeg) << "after a " << jumpDeg << " degree jump";
+    EXPECT_EQ(crossings, 1) << "after a " << jumpDeg << " degree jump";
     const double learned = std::sqrt(state.gyroBias.x * state.gyroBias.x +
                                      state.gyroBias.y * state.gyroBias.y +
                                      state.gyroBias.z * state.gyroBias.z);
@@ -1332,24 +1349,158 @@ TEST(PoseEngine, ACompassThatErrsOneWayMoreOftenTeachesTheGyroscopeNothing) {
   EXPECT_LT(learned, 0.001);
 }
 
-TEST(PoseEngine, TheShareOfAnOffsetGravityCanSeeIsLearnedAtTheTiltsSpeed) {
+TEST(PoseEngine, AVerticalOffsetOnAPitchedPhoneIsLearnedWhole) {
   // Pitched up, an offset about the phone's own vertical is partly a turn about the world's up and
-  // partly a tilt. The tilt share is learned in seconds and only the rest waits on the compass; a
-  // phone that learned none of it about the vertical would carry the whole offset into a dropout
-  // about the wrong axis.
+  // partly a tilt — a quarter and three quarters at sixty degrees — and the two loops that learn
+  // them have to meet at the offset itself. One that learned only its own share would leave the
+  // rest to carry into a dropout, about an axis the gyroscope never turned about.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   const Quat pitched = FromAzimuthElevation(0.0, 60.0);
   int64_t t = 0;
-  for (int step = 0; step < 400; ++step) {
+  for (int step = 0; step < 30'000; ++step) {
     ImuSample sample = StillWithReading(t, pitched);
     sample.angularVelocity = Vec3{0.0, 0.02, 0.0};
     state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
     t += 10'000'000;
   }
-  // Up at sixty degrees is half along the phone's vertical, so a quarter of a vertical offset is
-  // heading and the tilt share carries the other three quarters along the vertical.
-  EXPECT_NEAR(state.gyroBias.y, 0.015, 0.002);
+  EXPECT_NEAR(state.gyroBias.x, 0.0, 0.0005);
+  EXPECT_NEAR(state.gyroBias.y, 0.02, 0.0005);
+  EXPECT_NEAR(state.gyroBias.z, 0.0, 0.0005);
+}
+
+// A phone tipped by `degrees` about a horizontal axis that has gone `turns` of the way round.
+Quat TippedAbout(double turns, double degrees) {
+  const double around = 2.0 * std::numbers::pi * turns;
+  return FromAxisAngle(Vec3{std::cos(around), 0.0, std::sin(around)}, degrees / kRadToDeg);
+}
+
+// The rate a gyroscope with no error reports for a phone moving along `path`, taken over an
+// interval far shorter than any sample gap.
+template <typename Path>
+Vec3 TrueRate(const Path& path, double seconds) {
+  constexpr double kStep = 1e-5;
+  Quat turned = Multiply(Conjugate(path(seconds - kStep / 2)), path(seconds + kStep / 2));
+  if (turned.w < 0.0) turned = Quat{-turned.w, -turned.x, -turned.y, -turned.z};
+  // Small enough that sin(θ/2) is θ/2 to well past the precision this needs.
+  return Vec3{2.0 * turned.x / kStep, 2.0 * turned.y / kStep, 2.0 * turned.z / kStep};
+}
+
+TEST(PoseEngine, TiltThatGoesRoundDoesNotTurnTheHeading) {
+  // Turns about horizontal axes do not commute: tip a phone forward, then sideways, then back,
+  // then the other way, and it has turned about the vertical. A tilt correction that goes round
+  // does the same, and the heading — trusted slowly — kept every degree of it and learned the
+  // rest as a gyroscope offset. Three ways a tilt goes round: a reading whose gravity circles on
+  // a still phone, a phone that really sways with readings exactly on time, and the same sway
+  // with readings a sample and a bit late.
+  struct Case {
+    const char* what;
+    double swayDeg;
+    double readingDeg;
+    double lateSeconds;
+  };
+  for (const Case& c : {Case{"a circling reading", 0.0, 0.5, 0.0},
+                        Case{"a real sway", 2.0, 0.0, 0.0},
+                        Case{"a real sway read late", 2.0, 0.0, 0.02}}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    const auto truth = [&](double seconds) { return TippedAbout(seconds, c.swayDeg); };
+    double worst = 0.0;
+    for (int step = 0; step < 12'000; ++step) {
+      const double seconds = step * 0.01;
+      ImuSample sample;
+      sample.timestampNs = static_cast<int64_t>(step) * 10'000'000;
+      sample.hasOrientation = true;
+      sample.orientation = Multiply(truth(seconds - c.lateSeconds),
+                                    TippedAbout(seconds, c.readingDeg));
+      sample.angularVelocity = TrueRate(truth, seconds);
+      sample.hasAngularVelocity = true;
+      state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+      if (step >= 6'000) {
+        worst = std::max(worst, AngleBetween(state.pose.orientation, truth(seconds)) * kRadToDeg);
+      }
+    }
+    EXPECT_LT(worst, std::max(c.swayDeg, c.readingDeg) * 0.5 + 0.5) << c.what;
+    EXPECT_LT(std::abs(state.gyroBias.y), 0.001) << c.what;
+  }
+}
+
+TEST(PoseEngine, NoiseInTheReadingsTiltDoesNotTurnTheHeading) {
+  // The same thing at random: tilt noise with no preferred direction still goes round, a little,
+  // at every sample.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  uint64_t seed = 12345;
+  const auto uniform = [&seed]() {
+    seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    return (static_cast<double>(seed >> 11) + 0.5) / 9007199254740992.0;
+  };
+  const auto gaussian = [&]() {
+    return std::sqrt(-2.0 * std::log(uniform())) * std::cos(2.0 * std::numbers::pi * uniform());
+  };
+  double worst = 0.0;
+  for (int step = 0; step < 12'000; ++step) {
+    const Vec3 noise{gaussian() * 3.0 / kRadToDeg, 0.0, gaussian() * 3.0 / kRadToDeg};
+    const double angle = std::sqrt(noise.x * noise.x + noise.z * noise.z);
+    const Quat reading = angle > 0.0 ? FromAxisAngle(noise, angle) : Quat{};
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
+                                        static_cast<int64_t>(step) * 10'000'000, reading)})
+                .value;
+    if (step >= 6'000) {
+      const Vec3 forward = Direction(state.pose.orientation);
+      worst = std::max(worst, std::abs(std::atan2(forward.x, -forward.z)) * kRadToDeg);
+    }
+  }
+  EXPECT_LT(worst, 0.5);
+  EXPECT_LT(std::abs(state.gyroBias.y), 0.001);
+}
+
+TEST(PoseEngine, AReadingAfterAGapInTheSamplesIsTakenAsItStands) {
+  // A gyroscope's rate is a measurement of an instant. Held across a gap nobody sampled, it says
+  // nothing about how the phone turned in it — and a turn made there and corrected at the
+  // heading's speed stood tens of degrees out for seconds afterwards, charged to the gyroscope
+  // as an offset it does not have. A gap is a dropout of both streams, and is treated as one.
+  for (const int64_t gapMs : {2'000, 50'000}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    int64_t t = 0;
+    for (int step = 0; step < 100; ++step) {
+      state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
+                                          t, FromAzimuthElevation(0.0, 0.0))})
+                  .value;
+      t += 10'000'000;
+    }
+    t += gapMs * 1'000'000;
+    const Quat turned = FromAzimuthElevation(90.0, 0.0);
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, turned)}).value;
+    EXPECT_LT(AngleBetween(state.pose.orientation, turned) * kRadToDeg, 0.01)
+        << "after a " << gapMs << " ms gap";
+    EXPECT_LT(std::abs(state.gyroBias.y), 1e-6) << "after a " << gapMs << " ms gap";
+  }
+}
+
+TEST(PoseEngine, OneLongGapAmongShortOnesDoesNotPassTheOffset) {
+  // The offset may move by at most the rate error it saw, but only a window that matches the
+  // samples either side of it keeps that true: fast samples and then one long gap passed the
+  // offset by a seventh. Sweeping the one gap across the range a capture loop can produce, about
+  // a tilt axis and about up.
+  for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.02, 0.0}}) {
+    for (const int64_t gapMs : {50, 150, 250, 300, 1'000, 10'000, 49'700, 100'000}) {
+      OrientationPoseEngine engine;
+      PoseState state = Started(engine, MotionCapability::GyroAccel);
+      int64_t t = 0;
+      double highest = 0.0;
+      for (int step = 0; step < 400; ++step) {
+        ImuSample sample = StillWithReading(t, Quat{});
+        sample.angularVelocity = bias;
+        state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+        highest = std::max(highest, (state.gyroBias.x + state.gyroBias.y) / 0.02);
+        t += step == 200 ? gapMs * 1'000'000 : 10'000'000;
+      }
+      EXPECT_LE(highest, 1.001) << "gap " << gapMs << " ms, offset about "
+                                << (bias.x > 0.0 ? "X" : "Y");
+    }
+  }
 }
 
 }  // namespace

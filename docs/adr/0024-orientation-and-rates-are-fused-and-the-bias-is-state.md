@@ -1,6 +1,6 @@
 # ADR 0024 — The pose engine fuses attitude with rates, and the gyroscope's offset is session state
 
-**Status:** accepted; heading's correction and the learning of its offset amended by
+**Status:** accepted; the offset's learning time, and heading's correction, amended by
 [0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md)
 
 ## Context
