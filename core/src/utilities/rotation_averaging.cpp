@@ -426,8 +426,8 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // **A tie names its whole piece** (ADR 0073). A frame placed by a coin flip is averaged into its
   // neighbours on every sweep after, so a frame that never tied itself can still sit wherever the
   // coin left it — a ten-trillionth of a radian moved one 38.9 degrees in the graph a review found.
-  // Which of them depend on the choice cannot be read off the flags, and no tie reaches outside its
-  // own piece, since nothing joins one piece to another. So every frame in a tied piece is named.
+  // Which of them depend on the choice cannot be read off the flags, and no edge or gauge reaches
+  // outside its own piece. So every frame in a tied piece is named.
   for (const std::vector<int32_t>& piece : pieces) {
     const bool tied = std::any_of(piece.begin(), piece.end(), [&](int32_t i) {
       return everAmbiguous[static_cast<size_t>(i)] != 0;
@@ -442,10 +442,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
   // later sweep landed after one flagged earlier with a lower index, and nothing deduplicated.
   //
   // The loop is covered rather than self-evident, which is a correction to what stood here. Skipping
-  // index 0, or running the range backwards, is a one-token change that leaves both promises false —
-  // so the fixtures below it include an ambiguous frame **at index zero** and a case with **two**
-  // ambiguous frames, neither of which the branch had while every fixture put its unanchored frame
-  // at index 1.
+  // index 0, stopping one short, or running the range backwards is a one-token change that leaves
+  // both promises false — so `AmbiguousNamesTheTiedPiecesAscendingAndNoOthers` names a piece
+  // holding frame zero, one holding the last frame, and one walked out of order.
   for (int32_t i = 0; i < frames; ++i) {
     if (everAmbiguous[static_cast<size_t>(i)] != 0) out.ambiguous.push_back(i);
   }

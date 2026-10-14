@@ -136,14 +136,22 @@ struct AveragedRotations {
 
   // The frames of every piece where some placement was settled **on any sweep** by the
   // eigensolver's scan order rather than by the evidence. Ascending, each frame named once.
-  // Reachable when everything speaking for a frame disagrees by a half turn — two neighbours
-  // pointing opposite ways, which in a capture means a registration that has gone badly wrong
-  // rather than one that is merely imprecise — or when a piece's anchors disagree by a half turn
-  // about where the whole piece sits.
+  // Reachable when the evidence for a frame cancels — two neighbours a half turn apart, or three a
+  // third of a turn apart about one axis — which in a capture means a registration that has gone
+  // badly wrong rather than one that is merely imprecise; or when a piece's anchors disagree by a
+  // half turn about where it sits, which leaves its edges in perfect agreement.
   //
   // **The whole piece, not the frame that tied** (ADR 0073). Its neighbours average a prediction
   // made from wherever the coin put it, so a frame that never tied can still sit where the choice
-  // left it, and nothing short of re-solving says which. No tie reaches another piece.
+  // left it. Which ones do is not read off the flags, so this names frames that never move — all of
+  // a capture, for one contradictory pair. No tie reaches another piece, beyond moving when the
+  // solve stops.
+  //
+  // **Only ties the arithmetic leaves exact are seen**: an average whose top two eigenvalues are
+  // within `AverageQuaternions`' threshold of each other. A neighbour joined to nothing else echoes
+  // a frame's own place back, and a neighbour updated earlier in the sweep can tilt it; either can
+  // split a tie in the evidence by far more than that, and the frame is then placed by the walk or
+  // the sweep order with nothing named. Every such case found reads `maxEdgeErrorDeg` at 180.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the

@@ -740,8 +740,10 @@ struct GlobalSolution {
   // Frames placed by their prior alone, because no accepted pair touches them: they rest on no pixel.
   std::vector<FrameId> priorOnlyFrames;
   // The frames of every piece where some place was settled by the solver's scan order rather than
-  // the evidence — pairs, or priors, a half turn apart. The whole piece, because the rest of it is
-  // averaged against the frame that tied (ADR 0073).
+  // the evidence — pairs that cancel, or priors a half turn apart. The whole piece, because the
+  // rest of it is averaged against what the coin decided (ADR 0073). Only ties the arithmetic
+  // leaves exact are seen: a tie it splits can leave this empty, and every case found of that read
+  // `maxEdgeErrorDeg` at 180.
   std::vector<FrameId> ambiguousFrames;
   // False when the solve ran out of sweeps; the rotations are the best it reached.
   bool converged = false;

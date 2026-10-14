@@ -1156,6 +1156,16 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguousWithItsPiece) {
   EXPECT_TRUE(solved.unplaced.empty()) << "frame 1 was reachable, so it is placed and merely unsure";
   EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 2}));
 
+  // **Two hops out as well as one.** A fourth frame with no anchor hangs off frame 2, so it touches
+  // no frame that tied: naming only a tied frame's neighbours leaves it out, though it is in the
+  // piece.
+  const std::vector<Quat> withTail{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0), Quat{0, 0, 0, 0}};
+  std::vector<RelativeRotation> tail = opposed;
+  tail.push_back(RelativeRotation{3, 2, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0});
+  const AveragedRotations reached = AverageRotations(tail, withTail, 1000.0);
+  ASSERT_TRUE(reached.valid);
+  EXPECT_EQ(reached.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
+
   // **And a frame that is unsure only partway through still names its piece**, which is the case
   // that decided "any sweep" over "the last". Three frames, the middle one unanchored, two believed
   // edges a half turn apart: it settles in three sweeps with the middle frame at the identity,
@@ -1260,6 +1270,14 @@ TEST(AverageRotations, AFrameThatInheritsATieThroughAnEdgeIsNamed) {
   ASSERT_TRUE(solved.valid);
   EXPECT_EQ(solved.unplaced, (std::vector<int32_t>{2, 3}));
   EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 4}));
+
+  // The premise, asserted: frame 4 does sit where the choice left it, so naming it is not a
+  // courtesy. Any turn of a degree or more under a ten-trillionth of a radian is that.
+  std::vector<RelativeRotation> nudged = edges;
+  nudged[0].rotation = Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, 1e-12), aboutZ));
+  const AveragedRotations moved = AverageRotations(nudged, anchors, 1.0);
+  ASSERT_TRUE(moved.valid);
+  EXPECT_GT(SeparationDeg(moved.rotations[4], solved.rotations[4]), 1.0);
 }
 
 /**
