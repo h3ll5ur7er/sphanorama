@@ -423,6 +423,19 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     out.maxEdgeErrorDeg = errors.back();
   }
 
+  // **A tie names its whole piece** (ADR 0073). A frame placed by a coin flip is averaged into its
+  // neighbours on every sweep after, so a frame that never tied itself can still sit wherever the
+  // coin left it — a ten-trillionth of a radian moved one 38.9 degrees in the graph a review found.
+  // Which of them depend on the choice cannot be read off the flags, and no tie reaches outside its
+  // own piece, since nothing joins one piece to another. So every frame in a tied piece is named.
+  for (const std::vector<int32_t>& piece : pieces) {
+    const bool tied = std::any_of(piece.begin(), piece.end(), [&](int32_t i) {
+      return everAmbiguous[static_cast<size_t>(i)] != 0;
+    });
+    if (!tied) continue;
+    for (const int32_t i : piece) everAmbiguous[static_cast<size_t>(i)] = 1;
+  }
+
   // Built from the flags at the end rather than appended to as they are set, which is what makes both
   // of the header's promises — each frame once, ascending — properties of this loop rather than of
   // the order sweeps happened to touch things in. Appending gave neither: a frame first flagged on a

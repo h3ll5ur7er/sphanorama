@@ -1131,7 +1131,8 @@ TEST(AverageRotations, TheMedianEdgeErrorIsAMedianOverErrorsThatDiffer) {
 }
 
 /**
- * A frame whose evidence cancels is named, not silently placed by the eigensolver's scan order.
+ * A frame whose evidence cancels is named, not silently placed by the eigensolver's scan order —
+ * and so is every frame in its piece.
  *
  * `AverageQuaternions` reports when the top two eigenvalues tie, which means every rotation in a
  * whole plane maximises the objective equally and the one returned is decided by the order the
@@ -1140,9 +1141,10 @@ TEST(AverageRotations, TheMedianEdgeErrorIsAMedianOverErrorsThatDiffer) {
  *
  * Reachable rather than theoretical: two neighbours predicting orientations a half turn apart is a
  * registration that has gone badly wrong, which is precisely when a caller wants to be told. Frame 1
- * here has no anchor and two edges saying it is at 0 and at 180 degrees.
+ * here has no anchor and two edges saying it is at 0 and at 180 degrees. Its neighbours average a
+ * prediction made from wherever the coin put it, so they are named with it (ADR 0073).
  */
-TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
+TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguousWithItsPiece) {
   const std::vector<Quat> anchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
   const std::vector<RelativeRotation> opposed{
       RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
@@ -1152,19 +1154,18 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   const AveragedRotations solved = AverageRotations(opposed, anchors, 1000.0);
   ASSERT_TRUE(solved.valid);
   EXPECT_TRUE(solved.unplaced.empty()) << "frame 1 was reachable, so it is placed and merely unsure";
-  ASSERT_EQ(solved.ambiguous.size(), 1u);
-  EXPECT_EQ(solved.ambiguous.front(), 1);
+  EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 2}));
 
-  // **And a frame that is unsure only partway through is still named**, which is the case that
-  // decided "any sweep" over "the last". Three frames, the middle one unanchored, two believed edges
-  // a half turn apart: it settles in three sweeps with the middle frame at the identity, exactly
-  // between two neighbours pointing opposite ways. On the final sweep its average has a single
-  // maximiser — so a per-sweep `clear()` reported nothing, and the frame whose placement was a coin
-  // flip came back looking like one the edges agreed on. Constructed after this file claimed the case was
-  // not constructible.
+  // **And a frame that is unsure only partway through still names its piece**, which is the case
+  // that decided "any sweep" over "the last". Three frames, the middle one unanchored, two believed
+  // edges a half turn apart: it settles in three sweeps with the middle frame at the identity,
+  // exactly between two neighbours pointing opposite ways. On the final sweep its average has a
+  // single maximiser — so a per-sweep `clear()` reported nothing, and the frame whose placement was
+  // a coin flip came back looking like one the edges agreed on. Constructed after this file claimed
+  // the case was not constructible.
   //
   // At an anchor weight of zero, because consulted, these two anchors disagree by a half turn about
-  // where the whole piece sits, and that names all three frames on every sweep — right, and
+  // where the whole piece sits, which would name all three frames on every sweep — right, and
   // `AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous`, but not transient.
   const std::vector<Quat> opposedAnchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(180.0)};
   const Quat halfTurn = TrueEdge(AboutY(0.0), AboutY(180.0));
@@ -1176,12 +1177,11 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_TRUE(partway.valid);
   EXPECT_TRUE(partway.converged);
   EXPECT_EQ(partway.sweeps, 3);
-  ASSERT_EQ(partway.ambiguous.size(), 1u);
-  EXPECT_EQ(partway.ambiguous.front(), 1);
+  EXPECT_EQ(partway.ambiguous, (std::vector<int32_t>{0, 1, 2}));
 
-  // The settling point the docblock describes, asserted rather than described — without it this arm
-  // could drift into a duplicate of the first and stay green, since both would report one ambiguous
-  // frame. Frame 1 at the identity between two neighbours a half turn apart is what makes this the
+  // The settling point the docblock describes, asserted rather than described — without it this
+  // arm could drift into a duplicate of the first and stay green, since both would name the same
+  // piece. Frame 1 at the identity between two neighbours a half turn apart is what makes this the
   // *transient* case: it is unsure on sweep one and not on sweep three.
   EXPECT_NEAR(SeparationDeg(partway.rotations[1], Quat{}), 0.0, kSameRotationDeg);
   EXPECT_NEAR(SeparationDeg(partway.rotations[0], AboutY(180.0)), 0.0, kSameRotationDeg);
@@ -1196,44 +1196,70 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguous) {
   ASSERT_TRUE(settled.valid);
   EXPECT_TRUE(settled.ambiguous.empty());
   EXPECT_NEAR(SeparationDeg(settled.rotations[1], AboutY(0.0)), 0.0, kSameRotationDeg);
+}
 
-  // **Frame zero, so the list is not built by a loop that could skip it.** Every other fixture here
-  // puts the ambiguous frame at index 1, which leaves a `for` loop that starts at 1 — or one that
-  // runs backwards — indistinguishable from the right one. The field exists to stop a coin-flipped
-  // frame reading as evidence-based, and frame zero is as able to be one as any other.
-  const std::vector<Quat> firstUnanchored{Quat{0, 0, 0, 0}, AboutY(0.0), AboutY(0.0)};
-  const std::vector<RelativeRotation> ontoZero{
-      RelativeRotation{1, 0, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
-      RelativeRotation{2, 0, TrueEdge(AboutY(0.0), AboutY(180.0)), 1.0},
-  };
-  const AveragedRotations atZero = AverageRotations(ontoZero, firstUnanchored, 1000.0);
-  ASSERT_TRUE(atZero.valid);
-  EXPECT_TRUE(atZero.unplaced.empty());
-  ASSERT_EQ(atZero.ambiguous.size(), 1u);
-  EXPECT_EQ(atZero.ambiguous.front(), 0);
-
-  // **Two ambiguous frames, so "ascending" says something.** A list of one is sorted however it is
-  // built, which made both of the header's promises about this field vacuous on every fixture the
-  // branch had. Two disjoint components, each with its own unanchored middle frame.
-  //
-  // **And the second one is the last frame**, which closes the other end of the same loop. With the
-  // ambiguous frames at 1 and 4 of six, a bound of `i < frames - 1` reaches both and the fixture
-  // cannot tell it from the right one — the mirror image of the index-zero case above, and left open
-  // by the round that closed that one. Putting it at index 5 costs nothing and makes the upper bound
-  // load-bearing.
-  const std::vector<Quat> twoPairs{AboutY(0.0),   Quat{0, 0, 0, 0}, AboutY(0.0),
-                                   AboutY(0.0),   AboutY(0.0),      Quat{0, 0, 0, 0}};
+/**
+ * The list names whole pieces, each frame once and ascending, and only the pieces a tie touched.
+ *
+ * Two pieces of three frames, so a tie in one leaves the other unnamed and the list has edges for a
+ * loop to get wrong. **Frame zero is in the first piece and frame five in the second**, so a loop
+ * that skips index zero, or stops one short, names the wrong set. And the first piece is walked
+ * 0, 3, 1 — its edges list frame 3 before frame 1 — so a list appended to in walk order rather than
+ * built from flags comes back out of order.
+ */
+TEST(AverageRotations, AmbiguousNamesTheTiedPiecesAscendingAndNoOthers) {
   const Quat agreeing = TrueEdge(AboutY(0.0), AboutY(0.0));
   const Quat opposing = TrueEdge(AboutY(0.0), AboutY(180.0));
-  const std::vector<RelativeRotation> both{
-      RelativeRotation{0, 1, agreeing, 1.0}, RelativeRotation{2, 1, opposing, 1.0},
-      RelativeRotation{3, 5, agreeing, 1.0}, RelativeRotation{4, 5, opposing, 1.0},
+  const std::vector<Quat> anchors{Quat{0, 0, 0, 0}, AboutY(0.0), AboutY(0.0),
+                                  AboutY(0.0),      AboutY(0.0), Quat{0, 0, 0, 0}};
+  // Frame 0 is told 0 and 180 by frames 3 and 1; frame 5 is told the same twice by 2 and 4.
+  const auto pieces = [&](const Quat& intoZero, const Quat& intoFive) {
+    return std::vector<RelativeRotation>{
+        RelativeRotation{3, 0, agreeing, 1.0}, RelativeRotation{1, 0, intoZero, 1.0},
+        RelativeRotation{2, 5, agreeing, 1.0}, RelativeRotation{4, 5, intoFive, 1.0}};
   };
-  const AveragedRotations pair = AverageRotations(both, twoPairs, 1000.0);
-  ASSERT_TRUE(pair.valid);
-  ASSERT_EQ(pair.ambiguous.size(), 2u);
-  EXPECT_EQ(pair.ambiguous[0], 1);
-  EXPECT_EQ(pair.ambiguous[1], 5) << "the list is not ascending, or the loop stops one short";
+
+  const AveragedRotations first = AverageRotations(pieces(opposing, agreeing), anchors, 1000.0);
+  ASSERT_TRUE(first.valid);
+  EXPECT_EQ(first.pieces, 2);
+  EXPECT_EQ(first.ambiguous, (std::vector<int32_t>{0, 1, 3}));
+
+  const AveragedRotations second = AverageRotations(pieces(agreeing, opposing), anchors, 1000.0);
+  ASSERT_TRUE(second.valid);
+  EXPECT_EQ(second.ambiguous, (std::vector<int32_t>{2, 4, 5}));
+
+  const AveragedRotations both = AverageRotations(pieces(opposing, opposing), anchors, 1000.0);
+  ASSERT_TRUE(both.valid);
+  EXPECT_EQ(both.ambiguous, (std::vector<int32_t>{0, 1, 2, 3, 4, 5}));
+}
+
+/**
+ * A frame that never ties itself but averages a prediction from one that did is named too.
+ *
+ * Found by a review of PR #94 in a five-frame graph, kept as it was found. Frame 1 is told 0 by
+ * frame 0 and a half turn by frame 4, and ties. Frame 4 does not: its two predictions, from frames
+ * 1 and 0 at weights 2 and 3, have a single maximiser — but one of them is made from wherever the
+ * coin put frame 1, so frame 4 sits where that choice left it, and a ten-trillionth of a radian on
+ * any edge moves it 38.9 degrees. Frames 2 and 3 are joined to each other and to no anchor, so they
+ * are unplaced and named there, not here.
+ */
+TEST(AverageRotations, AFrameThatInheritsATieThroughAnEdgeIsNamed) {
+  const Quat aboutZ = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi);
+  const Quat aboutDiagonal =
+      FromAxisAngle(Vec3{std::numbers::sqrt2 / 2, std::numbers::sqrt2 / 2, 0}, std::numbers::pi);
+  const std::vector<RelativeRotation> edges{
+      RelativeRotation{4, 1, aboutZ, 2.0},
+      RelativeRotation{4, 0, aboutDiagonal, 3.0},
+      RelativeRotation{1, 0, Quat{}, 2.0},
+      RelativeRotation{2, 3, aboutZ, 3.0},
+  };
+  std::vector<Quat> anchors(5, Quat{0, 0, 0, 0});
+  anchors[0] = Quat{};
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1.0);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_EQ(solved.unplaced, (std::vector<int32_t>{2, 3}));
+  EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 4}));
 }
 
 /**

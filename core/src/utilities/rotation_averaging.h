@@ -134,12 +134,16 @@ struct AveragedRotations {
   // and a run of those can strand a whole arc on its priors.
   std::vector<int32_t> priorOnly;
 
-  // Frames whose average had no single maximiser **on any sweep**, so where they sit was settled at
-  // some point by the eigensolver's scan order rather than by the evidence. Ascending, each frame
-  // named once. Reachable when everything speaking for a frame disagrees by a half turn — two
-  // neighbours pointing opposite ways, which in a capture means a registration that has gone badly
-  // wrong rather than one that is merely imprecise. Or when a piece's anchors disagree by a half
-  // turn about where the whole piece sits, which names every frame in it.
+  // The frames of every piece where some placement was settled **on any sweep** by the
+  // eigensolver's scan order rather than by the evidence. Ascending, each frame named once.
+  // Reachable when everything speaking for a frame disagrees by a half turn — two neighbours
+  // pointing opposite ways, which in a capture means a registration that has gone badly wrong
+  // rather than one that is merely imprecise — or when a piece's anchors disagree by a half turn
+  // about where the whole piece sits.
+  //
+  // **The whole piece, not the frame that tied** (ADR 0073). Its neighbours average a prediction
+  // made from wherever the coin put it, so a frame that never tied can still sit where the choice
+  // left it, and nothing short of re-solving says which. No tie reaches another piece.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the
