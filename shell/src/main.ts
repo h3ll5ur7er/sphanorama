@@ -1674,6 +1674,13 @@ async function main() {
     stage.textContent = resume === null
       ? 'core ready — enable the camera to continue'
       : 'core ready — resume the last capture, or enable the camera to start a new one';
+    // Known from the boot, so neither offer is made to a core that cannot read this page's motion:
+    // every press would be refused. `enable` asks again, since it is the one that opens a camera.
+    if (!coreReadsThisPagesMotion(core.motionSampleLayout())) {
+      stage.textContent = CORE_FROM_ANOTHER_UPDATE;
+      resumeButton.hidden = true;
+      enableButton.hidden = true;
+    }
     // Whether a session is already on its way up.
     //
     // Each of the three offers used to disable only itself, which answers "was this button pressed

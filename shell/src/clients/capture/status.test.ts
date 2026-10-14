@@ -35,8 +35,8 @@ describe('describeFailure', () => {
 
 describe('a page and a core from different updates', () => {
   it('says to reload, which is the cause, rather than blaming the sensors', () => {
-    // The sensors are fine and the row beside this says so; what is wrong is that the update
-    // is half-arrived (ADR 0074).
+    // Nothing is wrong with the sensors, which are not even consulted; what is wrong is that the
+    // update is half-arrived (ADR 0074).
     expect(CORE_FROM_ANOTHER_UPDATE).toMatch(/reload/i);
     expect(CORE_FROM_ANOTHER_UPDATE).not.toMatch(/sensor|permission/i);
   });

@@ -189,7 +189,10 @@ nothing there is laid out against a compass, and nothing there can creep either.
   now on learns the core's layout at boot and refuses before it asks for a camera, saying the
   update is half-arrived. An older page on a newer core is refused by the core at `Begin`, after
   that page has opened the camera, with ADR 0044's missing-sensor sentence: the wrong cause, named,
-  where a capture that started and then had no motion would have named none. The unversioned core
+  where a capture that started and then had no motion would have named none. The load that brings
+  them together is the one after the new service worker has cached the new core, which it now
+  fetches past the HTTP cache: through it, a worker installed within the old core's freshness
+  lifetime cached the old one, and every reload repeated the pairing. The unversioned core
   URL is the general cause, and the facade's codec is exposed to it too; that is open (roadmap).
 
 ## Rejected alternatives

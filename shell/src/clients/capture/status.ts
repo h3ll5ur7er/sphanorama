@@ -12,7 +12,7 @@ import type { LockReport } from '../../bridge/protocol';
 /**
  * A page and a core from different updates: the core's URL does not change between deploys, so
  * the first launch after one can pair this page with the core before it, and neither can read
- * the other's motion. Nothing is wrong with the device, and the motion row beside this says so;
+ * the other's motion. Nothing is wrong with the device, and the sensors are not consulted;
  * reloading once the update has finished arriving is the whole remedy — a moment later, because
  * until the new service worker has cached the new core it can serve the old one again (ADR 0074).
  */

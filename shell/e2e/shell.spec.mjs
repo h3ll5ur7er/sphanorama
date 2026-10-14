@@ -11,6 +11,7 @@ import { startServer } from '../../tools/static_server.mjs';
 import { GRAB_MAX_EDGE } from '../src/access/preview-frame.ts';
 import { PREVIEW_MAX_EDGE } from '../src/clients/review/panel.ts';
 import { quaternionFromDeviceOrientation } from '../src/access/orientation.ts';
+import { MOTION_SAMPLE_LAYOUT } from '../src/access/capture-host.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = resolve(repoRoot, 'dist');
@@ -1975,13 +1976,14 @@ test('calls a manager through the generated facade', async ({ page }) => {
 test('the core tells the page which motion layout it reads', async ({ page }) => {
   // What the page checks before it asks for a camera (ADR 0074): the shipped core's
   // `kMotionSampleLayout`, through the worker's boot, against the page's MOTION_SAMPLE_LAYOUT. A
-  // constant moved on one side alone would refuse every capture, and only this run sees both.
+  // constant moved on one side alone refuses every capture, which the tests that press `#enable`
+  // would also see; this one says why, and agrees with a bump made on both sides together.
   const server = await serve();
   try {
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     const layout = await page.evaluate(() => window.sphanoramaCore.motionSampleLayout());
-    expect(layout).toBe(2);
+    expect(layout).toBe(MOTION_SAMPLE_LAYOUT);
   } finally {
     await server.close();
   }
