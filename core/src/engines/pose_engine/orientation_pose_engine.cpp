@@ -148,12 +148,12 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // every platform reporting an attitude alone behaves exactly as it did before this existed.
     const bool fusing = Measured(sample);
     // Two questions, and they were one flag. `elapsed` is whether there is an interval to integrate
-    // a rate over — a clock, which the first sample of any stream sets whether or not it estimated
-    // anything. `predictable` is whether there is an *estimate* worth predicting forward and
-    // correcting back from, which is a stronger thing: dead reckoning can start from the identity,
-    // and a complementary filter cannot, because it would blend the first real reading with a guess
-    // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
-    // leaves the pose most of a turn from a reading it should simply have taken.
+    // a rate over — a clock, which the first measuring sample of a stream sets whether or not it
+    // estimated anything. `predictable` is whether there is an *estimate* worth predicting forward
+    // and correcting back from, which is a stronger thing: dead reckoning can start from the
+    // identity, and a complementary filter cannot, because it would blend the first real reading
+    // with a guess nobody measured. At a 16 ms gap the correction share is about 15%, so getting
+    // that wrong leaves the pose most of a turn from a reading it should simply have taken.
     const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
     // `absolute`, not "something moved it". A prediction is only worth blending against a reading
     // when it descends from a reading: dead reckoning moves the orientation too, so a stream
@@ -208,8 +208,13 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // the axis the camera looks down while the gyroscope reads still. Taken whole, like a
       // reading after a gap; fused, the share of that turn leaning towards the world's up would be
       // corrected at the heading's speed and the rest charged to the gyroscope.
+      //
+      // The rates arrive in that frame too, so the offset learned in the old one is turned into
+      // the new one; left where it was, it points a quarter-turn wrong and is learned again over
+      // minutes.
       if (Magnitude(tilt) > kLargestTiltRadians) {
         state.pose.orientation = Normalize(sample.orientation);
+        state.gyroBias = Rotate(Conjugate(disagreement), state.gyroBias);
       } else {
         // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
         // sample of 10 ms and no more.
@@ -270,6 +275,9 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
         // pose with the confidence of a measured one, and the drift would be invisible.
         state.absolute = false;
       }
+      // Across a gap the rate says nothing about the turn either, still or not, so the estimate
+      // stops descending from the reading before it whatever the rate integrated to.
+      if (!spanned) state.absolute = false;
     }
     // The clock only moves forward. A sample too old to have an interval of its own is too old to
     // become the interval for the next one: adopting its timestamp unconditionally refused it and
@@ -280,12 +288,12 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // And only for a sample that measured something. One that carries neither an attitude nor a
     // rate says nothing about the interval before it, and timed from it, a reading after a gap
     // would be predicted across the few milliseconds since rather than the gap itself.
+    // `observed` with it, or a silent first sample starts a clock it never set, and the first rate
+    // after it is integrated across its whole timestamp.
     if (Attitude(sample) || Measured(sample)) {
       state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
+      state.observed = true;
     }
-    // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
-    // anchored anything is `anchored`, set by the two branches above that fold in a reading.
-    state.observed = true;
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;

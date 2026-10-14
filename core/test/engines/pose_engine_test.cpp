@@ -38,8 +38,8 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
 
 // A sample from a device that reports both: a fused attitude and the gyroscope underneath it.
 //
-// The offsets the tests below teach it are about the phone's X, which a level phone turns as a
-// tilt. An offset about the world's up is learned from the compass instead (ADR 0074).
+// The offsets the tests below teach it are about the phone's X or Z, which a level phone turns as
+// a tilt. An offset about the world's up is learned from the compass instead (ADR 0074).
 ImuSample Fused(int64_t timestampNs, double azimuthDeg, double elevationDeg, const Vec3& rate) {
   ImuSample sample = Oriented(timestampNs, azimuthDeg, elevationDeg);
   sample.angularVelocity = rate;
@@ -203,9 +203,9 @@ TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
   EXPECT_FALSE(after.value.anchored) << "an empty sample estimates nothing";
   EXPECT_DOUBLE_EQ(after.value.pose.confidence, 0.0)
       << "confidence is derived from `estimated`, so it has to follow it down";
-  // `observed` is true, and that is right: a sample arrived, and the next one's elapsed time is
-  // measured from it. The two facts were one flag, which is the whole finding.
-  EXPECT_TRUE(after.value.observed);
+  // Nor did it start the clock: it measured nothing, so the next sample's interval is not measured
+  // from it (ADR 0074).
+  EXPECT_FALSE(after.value.observed);
   // And the orientation really did not move, which is what makes the flag the whole finding.
   EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
 
@@ -315,9 +315,8 @@ TEST(PoseEngine, ARateThatIsNotAMeasurementDoesNotTurnThePhone) {
   // sends the estimate to the plan's origin at confidence 0.5 with `anchored` intact, so a cell
   // that had just been refused at 90 degrees off arms from the same aim a tick later.
   //
-  // A rate nobody could have measured is not a rate, so it moves nothing. The sample still counts
-  // as arrived — the clock advanced and the next elapsed time is measured from it — which is the
-  // distinction `ASampleThatReportsNothingEstimatesNothing` established for the empty case.
+  // A rate nobody could have measured is not a rate, so it moves nothing — nor the clock, which
+  // only a sample that measured something sets (ADR 0074).
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
   for (const Vec3 rate : {Vec3{inf, 0, 0}, Vec3{0, nan, 0}, Vec3{-inf, inf, nan}}) {
@@ -400,9 +399,9 @@ TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorre
   // the correction share is `1 - exp(-dt/0.1)`, so at a 16 ms gap it moves about 15% of the way
   // and the pose sits most of a turn away from a reading it should simply have accepted.
   //
-  // The blank sample is what exposed it: it establishes the clock without estimating anything, and
-  // an engine that took "a sample arrived" as "there is an estimate to predict from" then treated
-  // the *first real reading* as a correction to an identity nobody had measured.
+  // The blank sample is what exposed it: it used to establish the clock without estimating
+  // anything, and an engine that took "a sample arrived" as "there is an estimate to predict from"
+  // then treated the *first real reading* as a correction to an identity nobody had measured.
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
   ASSERT_TRUE(initial.ok());
@@ -1488,10 +1487,11 @@ TEST(PoseEngine, AReadingAfterAGapInTheSamplesIsTakenAsItStands) {
 TEST(PoseEngine, OneLongGapAmongShortOnesDoesNotPassTheOffset) {
   // The offset may move by at most the rate error it saw, but only a window that matches the
   // samples either side of it keeps that true: fast samples and then one long gap would pass the
-  // offset by a seventh. Sweeping the one gap across the range a capture loop can produce, about
-  // a tilt axis and about up.
+  // offset by a seventh. Fused across, a gap charges the whole disagreement it accumulated at one
+  // kBiasSeconds'th, so only a gap near that long can pass the offset; shorter ones were in this
+  // sweep and could not fail with the gap rule deleted. About a tilt axis and about up.
   for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.02, 0.0}}) {
-    for (const int64_t gapMs : {50, 150, 250, 300, 1'000, 10'000, 49'700, 100'000}) {
+    for (const int64_t gapMs : {49'700, 100'000}) {
       OrientationPoseEngine engine;
       PoseState state = Started(engine, MotionCapability::GyroAccel);
       int64_t t = 0;
@@ -1514,22 +1514,50 @@ TEST(PoseEngine, OneLongGapAmongShortOnesDoesNotPassTheOffset) {
 TEST(PoseEngine, ASilentSampleDoesNotCloseAGap) {
   // A sample that carries neither an attitude nor a rate measured nothing, and the interval the
   // next reading is predicted across starts at the last one that did. Timed from the silent one
-  // instead, a turn made in the gap before it was corrected at the heading's speed again.
+  // instead, a turn made in the gap before it would be corrected at the heading's speed — 89.9
+  // degrees out on the reading after it. Silent by what it carries, not by its flags: an attitude
+  // that is not a rotation, or a rate that is not a number, measured nothing either.
+  ImuSample empty;
+  ImuSample brokenAttitude;
+  brokenAttitude.hasOrientation = true;
+  brokenAttitude.orientation = Quat{0.0, 0.0, 0.0, 0.0};
+  ImuSample brokenRate;
+  brokenRate.hasAngularVelocity = true;
+  brokenRate.angularVelocity = Vec3{std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+  for (ImuSample silent : {empty, brokenAttitude, brokenRate}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    int64_t t = 0;
+    for (int step = 0; step < 100; ++step) {
+      state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, Quat{})}).value;
+      t += 10'000'000;
+    }
+    t += 2'000'000'000;
+    silent.timestampNs = t;
+    state = engine.Integrate(state, std::vector<ImuSample>{silent}).value;
+    const Quat turned = FromAzimuthElevation(90.0, 0.0);
+    state =
+        engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t + 10'000'000, turned)})
+            .value;
+    EXPECT_LT(AngleBetween(state.pose.orientation, turned) * kRadToDeg, 0.01)
+        << (silent.hasOrientation ? "attitude" : silent.hasAngularVelocity ? "rate" : "empty");
+  }
+}
+
+TEST(PoseEngine, ASilentSampleDoesNotStartTheClock) {
+  // The same rule at the start of a stream. Had a silent first sample started the clock without
+  // setting it, the first rate after it would be integrated across its whole timestamp — a
+  // thousand seconds of turning, here, from a sample that has no interval at all.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
-  int64_t t = 0;
-  for (int step = 0; step < 100; ++step) {
-    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, Quat{})}).value;
-    t += 10'000'000;
-  }
-  t += 2'000'000'000;
+  const int64_t t = 1'000'000'000'000;
   ImuSample silent;
   silent.timestampNs = t;
   state = engine.Integrate(state, std::vector<ImuSample>{silent}).value;
-  const Quat turned = FromAzimuthElevation(90.0, 0.0);
-  state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t + 10'000'000, turned)})
-              .value;
-  EXPECT_LT(AngleBetween(state.pose.orientation, turned) * kRadToDeg, 0.01);
+  state = engine.Integrate(state, std::vector<ImuSample>{Spinning(t + 16'000'000, 0.5)}).value;
+  EXPECT_NEAR(AngleBetween(state.pose.orientation, Quat{}), 0.0, 1e-12);
+  state = engine.Integrate(state, std::vector<ImuSample>{Spinning(t + 32'000'000, 0.5)}).value;
+  EXPECT_NEAR(AngleBetween(state.pose.orientation, Quat{}), 0.5 * 0.016, 1e-9);
 }
 
 TEST(PoseEngine, AReadingWhoseGravityIsTensOfDegreesOutIsADifferentFrame) {
@@ -1537,8 +1565,9 @@ TEST(PoseEngine, AReadingWhoseGravityIsTensOfDegreesOutIsADifferentFrame) {
   // by a quarter-turn about the axis the camera looks down, while the gyroscope reads still.
   // Gravity is the half of an attitude a platform measures well, so a reading tens of degrees from
   // where the gyroscope says gravity is is not a measurement error but a different frame. Fused,
-  // the share of that turn which leans towards the world's up was corrected at the heading's speed
-  // — 43 degrees out, pitched thirty degrees up — and the rest taught the gyroscope an offset.
+  // the share of that turn which leans towards the world's up would be corrected at the heading's
+  // speed — 48 degrees out a second later, pitched thirty degrees up — and the rest would teach the
+  // gyroscope an offset.
   struct Case {
     const char* what;
     double elevationDeg;
@@ -1565,6 +1594,52 @@ TEST(PoseEngine, AReadingWhoseGravityIsTensOfDegreesOutIsADifferentFrame) {
     const double learned = std::sqrt(Dot(state.gyroBias, state.gyroBias));
     EXPECT_LT(learned, 1e-4) << c.what;
   }
+}
+
+TEST(PoseEngine, ATurnedPageTurnsTheLearnedOffsetWithIt) {
+  // The gyroscope's rates arrive in the same frame as the attitude, so a page turn turns the
+  // offset the gyroscope reads as well. Left where it was, five minutes of learning point a
+  // quarter-turn wrong: 8.7 degrees out while it is learned again, at 0.02 rad/s.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  const Vec3 bias{0.02, 0.0, 0.0};
+  int64_t t = 0;
+  for (int step = 0; step < 30'000; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
+    t += 10'000'000;
+  }
+  const Quat page = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2.0);
+  ImuSample turned = StillWithReading(t, page);
+  turned.angularVelocity = Rotate(Conjugate(page), bias);
+  double worst = 0.0;
+  for (int step = 0; step < 6'000; ++step) {
+    turned.timestampNs = t;
+    state = engine.Integrate(state, std::vector<ImuSample>{turned}).value;
+    worst = std::max(worst, AngleBetween(state.pose.orientation, page) * kRadToDeg);
+    t += 10'000'000;
+  }
+  EXPECT_LT(worst, 0.01);
+}
+
+TEST(PoseEngine, AStillRateAcrossAGapDoesNotCloseIt) {
+  // A rate is a measurement of an instant, so one that arrives after a gap says no more about how
+  // the phone turned in it than a silent sample does — measured still or not. Integrated, a still
+  // rate moves nothing, and the estimate kept descending from the reading before the gap: the
+  // next reading was corrected at the heading's speed, 89.9 degrees out at confidence 1.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  int64_t t = 0;
+  for (int step = 0; step < 100; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, Quat{})}).value;
+    t += 10'000'000;
+  }
+  t += 2'000'000'000;
+  state = engine.Integrate(state, std::vector<ImuSample>{Spinning(t, 0.0)}).value;
+  EXPECT_DOUBLE_EQ(state.pose.confidence, 0.5);
+  const Quat turned = FromAzimuthElevation(90.0, 0.0);
+  state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t + 10'000'000, turned)})
+              .value;
+  EXPECT_LT(AngleBetween(state.pose.orientation, turned) * kRadToDeg, 0.01);
 }
 
 }  // namespace

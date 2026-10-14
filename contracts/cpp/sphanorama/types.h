@@ -483,9 +483,10 @@ struct PoseState {
   PoseMode mode = PoseMode::Fused;
   MotionCapability capability = MotionCapability::None;
   PoseSample pose;
-  // Whether any sample has arrived at all. It is what the elapsed time between samples is measured
-  // from, so the first sample of a stream sets it whether or not it moved anything — a rate has no
-  // orientation in it until there is an interval to integrate it over.
+  // Whether a sample that measured something — an attitude or a rate — has arrived. It is what the
+  // elapsed time between samples is measured from, so the first such sample sets it whether or not
+  // it moved anything — a rate has no orientation in it until there is an interval to integrate it
+  // over. A sample that measured nothing sets neither this nor the clock (ADR 0074).
   //
   // It is *not* the answer to "is this orientation a measurement": that is `anchored` below, and
   // `PoseSample.confidence` is what callers should read. The two were one flag, and the first
