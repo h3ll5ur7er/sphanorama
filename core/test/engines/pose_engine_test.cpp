@@ -1,5 +1,5 @@
-// The pose engine (V5), as far as it goes today: absolute orientation passed through, gyro rates
-// integrated, stability from how fast the device is moving. Visual correction is Phase 2.
+// The pose engine (V5), as far as it goes today: absolute orientation fused with gyro rates, rates
+// alone integrated, stability from how fast the device is moving. Visual correction is Phase 2.
 //
 // A fused estimate's output is not knowable in advance, but these are: integrating nothing
 // changes nothing, integrating a known rate for a known time turns by a known angle, and an
@@ -39,7 +39,7 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
 // A sample from a device that reports both: a fused attitude and the gyroscope underneath it.
 //
 // The offsets the tests below teach it are about the phone's X, which a level phone turns as a
-// tilt. An offset about the world's up is not learned from the compass at all (ADR 0074).
+// tilt. An offset about the world's up is learned from the compass, over minutes (ADR 0074).
 ImuSample Fused(int64_t timestampNs, double azimuthDeg, double elevationDeg, const Vec3& rate) {
   ImuSample sample = Oriented(timestampNs, azimuthDeg, elevationDeg);
   sample.angularVelocity = rate;
@@ -1027,8 +1027,9 @@ TEST(PoseEngine, RealRotationIsNotMistakenForBias) {
   // and the estimate then lags every future turn by what it learned. Here the gyroscope and the
   // attitude tell the same true story, so there is no error to attribute to anything.
   //
-  // A sweep in pitch as well as in yaw, because yaw is heading and its offset is learned fifty
-  // times more slowly (ADR 0074): a yaw sweep alone no longer fails when real turns are absorbed.
+  // A sweep in pitch as well as in yaw, because yaw is heading and its offset is learned four
+  // orders of magnitude more slowly (ADR 0074): a yaw sweep alone cannot fail when real turns are
+  // absorbed.
   for (const bool inPitch : {false, true}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
@@ -1220,8 +1221,8 @@ TEST(PoseEngine, TiltIsStillCorrectedAsFastAsBefore) {
       state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, step.to)}).value;
       t += 10'000'000;
     }
-    // The filter leaves 0.53° here, the gyroscope's offset briefly absorbing some of the step; a
-    // ten-second correction would leave 2.76°.
+    // The filter overshoots by 0.53° here, the gyroscope's offset having absorbed some of the
+    // step; a ten-second correction would leave 2.76°.
     EXPECT_LT(AngleBetween(state.pose.orientation, step.to) * kRadToDeg, 1.0);
   }
 }
@@ -1245,11 +1246,11 @@ TEST(PoseEngine, AHeadingTheCompassKeepsSayingIsReachedInTheEnd) {
 }
 
 TEST(PoseEngine, AGyroscopeOffsetAboutUpIsLearnedFromTheCompassInTheEnd) {
-  // What not charging the heading at all cost. An offset about up is invisible to gravity, so on
-  // a phone that keeps its tilt only the compass can see it — and with nothing learning it, a
-  // proportional loop leaves the estimate standing ten seconds' worth of the offset away from a
-  // reading that is exactly right: 11.4 degrees at this offset. A sweep round the horizon does not
-  // help, because turning about up leaves up where it was in the phone's frame.
+  // An offset about up is invisible to gravity, so on a phone that keeps its tilt only the compass
+  // can see it — and with nothing learning it, a proportional loop leaves the estimate ten seconds'
+  // worth of the offset away from a reading that is exactly right: 11.4 degrees at this offset. A
+  // sweep round the horizon does not help, because turning about up leaves up where it was in the
+  // phone's frame.
   for (const double sweepRadPerSec : {0.0, 0.5}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
@@ -1275,8 +1276,7 @@ TEST(PoseEngine, AHeadingJumpBesideASmallTiltIsClosedRatherThanCircled) {
   // A rotation vector is not a sum of a twist and a swing: projected onto up, a large heading
   // disagreement carries part of a small tilt with it and hands the rest back turned sideways.
   // The fast loop then chases a tilt pointing the wrong way and charges the gyroscope for it, and
-  // once gravity agrees that charge lies along up — where it once stood unlearned and walked a
-  // still phone 149 degrees from a reading that never moved.
+  // once gravity agrees that charge lies along up, where only the heading's slow loop can see it.
   for (const double jumpDeg : {30.0, 90.0, 150.0, 175.0}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
@@ -1288,6 +1288,14 @@ TEST(PoseEngine, AHeadingJumpBesideASmallTiltIsClosedRatherThanCircled) {
     double overshoot = 0.0;
     for (int step = 0; step < 30'000; ++step) {
       state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, held)}).value;
+      if (step == 100) {
+        // A second in, gravity has been put right whatever the heading is doing: the swing is
+        // the whole of the gravity disagreement at any jump, so the figure does not grow with it.
+        const Vec3 estimatedUp = Rotate(Conjugate(state.pose.orientation), Vec3{0, 1, 0});
+        const Vec3 readUp = Rotate(Conjugate(held), Vec3{0, 1, 0});
+        EXPECT_LT(AngleBetweenDirections(estimatedUp, readUp) * kRadToDeg, 0.1)
+            << "a second after a " << jumpDeg << " degree jump";
+      }
       if (step >= 4'000) {
         overshoot = std::max(overshoot, AngleBetween(state.pose.orientation, held) * kRadToDeg);
       }
@@ -1295,14 +1303,53 @@ TEST(PoseEngine, AHeadingJumpBesideASmallTiltIsClosedRatherThanCircled) {
     }
     EXPECT_LT(AngleBetween(state.pose.orientation, held) * kRadToDeg, 0.5)
         << "after a " << jumpDeg << " degree jump";
-    // Past forty seconds a jump is history, and what remains is what it taught the offset. Learned
-    // at full weight, a 175-degree jump left the phone twenty degrees out a minute later.
-    EXPECT_LT(overshoot, 2.5) << "after a " << jumpDeg << " degree jump";
+    // Past forty seconds what remains is what the jump taught the offset, and a loop whose offset
+    // is learned at five times its correction time passes a step once, by about a tenth of it.
+    EXPECT_LT(overshoot, 0.13 * jumpDeg) << "after a " << jumpDeg << " degree jump";
     const double learned = std::sqrt(state.gyroBias.x * state.gyroBias.x +
                                      state.gyroBias.y * state.gyroBias.y +
                                      state.gyroBias.z * state.gyroBias.z);
     EXPECT_LT(learned, 0.002) << "after a " << jumpDeg << " degree jump";
   }
+}
+
+TEST(PoseEngine, ACompassThatErrsOneWayMoreOftenTeachesTheGyroscopeNothing) {
+  // The heading's offset follows the same disagreement its correction does. Learning from a
+  // clipped version of it would settle the two in different places whenever the readings are
+  // lopsided — the correction at their mean, the learning nearer their median — and an offset
+  // nobody has would make up the difference: 0.0072 rad/s here, from a gyroscope that reads zero.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  int64_t t = 0;
+  for (int step = 0; step < 12'000; ++step) {
+    const Quat reading = FromAzimuthElevation(step % 10 == 9 ? 50.0 : 0.0, 0.0);
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, reading)}).value;
+    t += 10'000'000;
+  }
+  const double learned = std::sqrt(state.gyroBias.x * state.gyroBias.x +
+                                   state.gyroBias.y * state.gyroBias.y +
+                                   state.gyroBias.z * state.gyroBias.z);
+  EXPECT_LT(learned, 0.001);
+}
+
+TEST(PoseEngine, TheShareOfAnOffsetGravityCanSeeIsLearnedAtTheTiltsSpeed) {
+  // Pitched up, an offset about the phone's own vertical is partly a turn about the world's up and
+  // partly a tilt. The tilt share is learned in seconds and only the rest waits on the compass; a
+  // phone that learned none of it about the vertical would carry the whole offset into a dropout
+  // about the wrong axis.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  const Quat pitched = FromAzimuthElevation(0.0, 60.0);
+  int64_t t = 0;
+  for (int step = 0; step < 400; ++step) {
+    ImuSample sample = StillWithReading(t, pitched);
+    sample.angularVelocity = Vec3{0.0, 0.02, 0.0};
+    state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+    t += 10'000'000;
+  }
+  // Up at sixty degrees is three quarters along the phone's vertical, so the tilt share of a
+  // vertical offset is three quarters of it there.
+  EXPECT_NEAR(state.gyroBias.y, 0.015, 0.002);
 }
 
 }  // namespace

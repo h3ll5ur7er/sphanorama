@@ -34,10 +34,9 @@ up, and the two parts are trusted at different speeds.**
 
 - **Tilt** is corrected over 0.1 s and charged to the gyroscope's offset over 0.5 s, as before.
 - **Heading** is corrected over 10 s, so between readings the gyroscope carries it.
-- **Heading is charged to the offset over 50 s**, five times its correction time as tilt's is, and
-  from at most 0.05 rad of disagreement. That cap is what an offset of 0.005 rad/s, the most a
-  calibrated gyroscope plausibly carries, stands away from the compass at ten seconds' correction.
-  A larger disagreement is the compass jumping, not the gyroscope drifting.
+- **Heading is charged to the offset over 50 s**, five times its correction time as tilt's is,
+  from the same disagreement its correction follows. Gravity cannot see an offset about up, so on a
+  phone that keeps its tilt only the compass can teach it.
 
 The split is about the **world's** up, mapped into the phone's frame, not about the phone's own
 vertical. Pitched up, most of a heading error lies along the axis the camera looks down, and
@@ -64,22 +63,31 @@ chosen against both ends of the failure:
   against a compass, and nothing there can creep either.
 
 ## Consequences
-- **Creep.** Twenty degrees of compass creep across a two-second dwell moves the estimate 1.89°,
+- **Creep.** Twenty degrees of compass creep across a two-second dwell moves the estimate 1.91°,
   against 19.99° before, at every elevation tested (0°, 60°, −45°).
 - **Dropouts.** The creep teaches the offset almost nothing, so the dropout after it moves the
-  estimate 0.011°, against 9.94° before.
-- **Only within uninterrupted fusion.** A creep still in progress when a dropout ends arrives
-  whole, because the first reading after a dropout is taken as it stands.
+  estimate 0.038°, against 9.94° before.
+- **Only within uninterrupted fusion.** The first reading after a dropout, and any reading that
+  arrives without a measured rate, is taken as it stands, so a creep still in progress then arrives
+  whole: one rate-less sample after the creep above moves the estimate from 1.91° to 20° out. The
+  browser adapter drops a rate more than 200 ms from its attitude, so a late `devicemotion` event
+  does this. It is deliberate: without a rate there is nothing to tell a creep from a real turn,
+  and predicting no turn would make every such turn lag by ten seconds.
 - **Tilt is unchanged.** A 5° step in pitch, or in roll at level, is within 0.53° after half a
   second, the same figure as before.
 - **Noise.** A reading 3° out on alternate samples comes out within 0.245° in tilt and 0.005° in
   heading.
-- **Settling.** A heading the compass holds 10° away is within 0.67° after a minute and 0.031°
-  after three. A jump of up to 175° beside a 2° tilt settles to within 0.005° in five minutes, and
-  is never more than 1.8° out after the first forty seconds.
+- **Settling.** A heading the compass holds 10° away is within 0.97° after a minute and 0.043°
+  after three. After a jump of up to 175° beside a 2° tilt, gravity is right to within 0.071° a
+  second later whatever the jump, and the heading settles to within 0.03° in five minutes.
+- **A jump is overshot once, by about a tenth.** Learned at five times its correction time, the
+  offset keeps the loop from ringing but not from passing a step: 11.6% of the jump, at its worst
+  43 s later, so 20° after a 175° jump and 3.5° after a 30° one. The offset is learned from a
+  steady disagreement in the same way and is passed by at most 0.65%, at gaps near 49 s between
+  fused samples.
 - **An offset about up is learned slowly, and shows while it is.** At 0.005 rad/s the estimate
   peaks 2.2° out after about twenty seconds, is 1.1° out at a minute and 0.23° at two. At
-  0.02 rad/s, past the cap, it peaks at 9.8° and takes five minutes. ADR 0024 learned either within
+  0.02 rad/s it peaks at 8.7° and is within 0.93° at two minutes. ADR 0024 learned either within
   seconds. A sweep round the horizon does not speed this up, because turning about up leaves up
   where it was in the phone's frame.
 - **A roll is not purely a tilt.** At a phone pitched up, the share of a roll about the viewing axis
@@ -92,9 +100,9 @@ chosen against both ends of the failure:
   as a heading that lags or overshoots a turn and then drifts back over ten seconds. The conversion
   is tested against the specification but has not met a device, and this is the first thing that
   would show if it is wrong.
-- **The cap assumes a calibrated gyroscope.** On Android the gyroscope behind `rotationRate` is
-  meant to be the platform's drift-compensated one. That is not measured here; an offset well past
-  0.005 rad/s is learned, but slowly.
+- **The offsets this was sized for are those of a calibrated gyroscope.** On Android the
+  gyroscope behind `rotationRate` is meant to be the platform's drift-compensated one, a few
+  thousandths of a rad/s at most. That is not measured here.
 - **Platforms without rates are unaffected.** An `OrientationOnly` stream takes every reading
   whole, so the creep reaches the reticle there exactly as before. Only a gyroscope can tell a creep
   from a turn.
@@ -129,9 +137,15 @@ integral the heading loop is proportional only, so a gyroscope offset about up s
 worth away from readings that were exactly right: 11.4° at 0.02 rad/s, never learned while the
 phone kept its tilt, a sweep round the horizon included.
 
-**Learn it from the whole disagreement.** Without the cap, a compass jump is learned as an offset
-and overshot by about a tenth of the jump for most of a minute: up to 20° out from forty seconds on
-after a 175° jump.
+**Learn the offset from a capped disagreement.** This branch's second version learned the heading's
+offset from at most 0.05 rad, on the argument that a larger disagreement is the compass jumping
+rather than the gyroscope drifting. It cut a jump's overshoot from 20° to 1.8°. But a clipped
+input in the learning and an unclipped one in the correction settle in different places whenever
+the readings are lopsided — the correction at their mean, the learning nearer their median — and an
+offset makes up the difference: a still phone whose compass read 50° on one sample in ten learned
+0.0072 rad/s from a gyroscope that read zero, which turns it 0.4° in every second of the next
+dropout. Uncapped, the same readings teach 0.00015. Jumps are rare and are overshot by a tenth;
+a compass whose errors are not symmetric is not unusual, and is the case this has to be right in.
 
 **Split by projecting the rotation vector onto up.** Also this branch's first version. After a
 175° jump beside a 2° tilt it planted 0.26 rad/s of offset along up and left a still phone 149°

@@ -210,8 +210,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    creep towards a bent field, and the filter followed whatever the reading did. So the
    disagreement is split about the world's up, as a twist and a swing: tilt is corrected over 0.1 s
    and charged to the offset over 0.5 s as before, and heading is corrected over 10 s and charged
-   over 50 s from at most 0.05 rad of disagreement. Twenty degrees of creep across a two-second
-   dwell moves the estimate 1.89° rather than 19.99°; the cost is that a gyroscope offset about up
+   over 50 s. Twenty degrees of creep across a two-second dwell moves the estimate 1.91° rather
+   than 19.99°; the cost is that a gyroscope offset about up
    takes minutes to learn, and shows by a couple of degrees while it is learned.
 
    What is left on this line is the same phone again. Every number here is from tests. The heading

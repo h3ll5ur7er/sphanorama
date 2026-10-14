@@ -77,20 +77,13 @@ constexpr double kBiasSeconds = 0.5;
 // The offset about up is learned too, because gravity cannot see it and on a phone that keeps its
 // tilt nothing else would: a proportional loop alone stood ten seconds' worth of the offset away
 // from a reading that was exactly right. Five times the correction time, as above, which keeps the
-// loop from overshooting, and slow enough that a creep teaches it almost nothing.
+// loop from ringing — it overshoots a step once, by about a tenth — and slow enough that a creep
+// teaches it almost nothing.
 //
 // Both are starting points on the same footing as the two above. Across the two-second dwell that
 // fires a burst the correction lets through under a tenth of a creep (ADR 0074).
 constexpr double kHeadingCorrectionSeconds = 10.0;
 constexpr double kHeadingBiasSeconds = 50.0;
-
-// The most heading disagreement an offset is learned from. An offset the gyroscope could plausibly
-// carry, 0.005 rad/s, stands ten seconds' worth away from the compass: this much. Anything larger
-// is the compass jumping rather than the gyroscope drifting, and learned at full weight it was
-// overshot by a tenth of the jump for most of a minute afterwards.
-constexpr double kHeadingEvidenceRadians = 0.05;
-
-Quat ShortWay(const Quat& q) { return q.w < 0.0 ? Quat{-q.w, -q.x, -q.y, -q.z} : q; }
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -99,7 +92,10 @@ Quat ShortWay(const Quat& q) { return q.w < 0.0 ? Quat{-q.w, -q.x, -q.y, -q.z} :
 // Taken along the short way round: a quaternion and its negation are the same rotation, and the
 // arithmetic below would otherwise correct a one-degree error by turning 359 degrees.
 Vec3 RotationBetween(const Quat& from, const Quat& to) {
-  const Quat error = ShortWay(Multiply(Conjugate(from), to));
+  Quat error = Multiply(Conjugate(from), to);
+  if (error.w < 0.0) {
+    error = Quat{-error.w, -error.x, -error.y, -error.z};
+  }
   const double axis = std::sqrt(error.x * error.x + error.y * error.y + error.z * error.z);
   if (axis < 1e-12) return Vec3{0.0, 0.0, 0.0};   // no rotation, and no axis to name it about
   const double radians = 2.0 * std::atan2(axis, error.w);
@@ -180,8 +176,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // charges the gyroscope for a tilt that is not there. The swing is exactly the disagreement
       // about where gravity points, whatever the heading.
       const Vec3 up = Rotate(Conjugate(predicted), Vec3{0.0, 1.0, 0.0});
-      const Quat disagreement =
-          ShortWay(Multiply(Conjugate(predicted), Normalize(sample.orientation)));
+      const Quat disagreement = Multiply(Conjugate(predicted), Normalize(sample.orientation));
       const double along = Dot(Vec3{disagreement.x, disagreement.y, disagreement.z}, up);
       const Quat twist = Normalize(Quat{disagreement.w, up.x * along, up.y * along, up.z * along});
       const Quat swing = Multiply(Conjugate(twist), disagreement);
@@ -214,12 +209,14 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
       // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
       //
-      // A single observation may move the offset by at most the whole rate error it saw, so the
-      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the capture
+      // A single observation may move the offset by at most the whole rate error it saw, so a
+      // steady tilt offset is approached from one side and never passed — whatever the capture
       // loop does with its timestamps. That is a property of the expression below rather than of a
       // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
       // gap) and is under 1 at every gap, because past the time constant the denominator grows with
-      // `seconds` while `share` is already saturating at 1.
+      // `seconds` while `share` is already saturating at 1. The heading's slower loop carries its
+      // disagreement across samples and passes a steady offset by at most 0.65%, at gaps near
+      // 49 s; and a step in the reading is overshot once, by about a tenth (ADR 0074).
       //
       // It was a clamped expression until a reviewer removed the clamp and found the whole suite
       // still green — including the ten-gap sweep written for exactly this invariant. The clamp had
@@ -245,12 +242,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       const double charge = share / std::max(kBiasSeconds, seconds);
       const double headingCharge = headingShare / std::max(kHeadingBiasSeconds, seconds);
       state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
-      const double headingAngle = std::sqrt(Dot(heading, heading));
-      const Vec3 evidence =
-          headingAngle > kHeadingEvidenceRadians
-              ? Scaled(heading, kHeadingEvidenceRadians / headingAngle)
-              : heading;
-      state.gyroBias = Subtract(state.gyroBias, Scaled(evidence, headingCharge));
+      state.gyroBias = Subtract(state.gyroBias, Scaled(heading, headingCharge));
       state.absolute = true;
       // Anchored here as well as in the branch above, because both are branches that fold in a
       // reading and that is what anchoring is.
