@@ -38,9 +38,10 @@ up, and the two parts are trusted at different speeds.**
   correction follows: five times the heading's correction time, which keeps its loop from ringing.
   For tilt this amends ADR 0024's 0.5 s; the rejected alternatives say why.
 - **A reading is fused only when there is a prediction worth fusing it with**: the estimate
-  descends from a reading, the sample carries a measured rate, the last sample that measured
-  anything is at most 0.25 s back, and the reading's gravity is within 30° of the prediction's.
-  Otherwise it is taken whole. The first two are ADR 0024's. A rate measures an instant, and held
+  descends from a reading, the sample carries a measured rate, the reading is later than the last
+  sample that measured anything and at most 0.25 s after it, and the reading's gravity is within
+  30° of the prediction's. Otherwise it is taken whole. The first two predate this ADR (0024, 0025
+  and the engine's `absolute` gate). A rate measures an instant, and held
   across a gap nobody sampled it says nothing about how the phone turned in it — a gap that long
   is a stall: a hidden tab, a capture loop so far behind that the adapter's buffer dropped
   samples, or the main thread the sensor events are delivered on. And gravity is what a platform
@@ -48,8 +49,8 @@ up, and the two parts are trusted at different speeds.**
   different frame — the page turned between portrait and landscape, which turns the reported frame
   a quarter-turn about the axis the camera looks down while the gyroscope reads still. The rates
   arrive in that frame too, so the offset learned so far is turned into the new one with it.
-- **A rate after a gap does not close it.** Dead reckoning across more than 0.25 s leaves the
-  estimate no longer descending from a reading, even where a still rate integrated to nothing, so
+- **Dead reckoning across a gap breaks the descent from a reading.** Across more than 0.25 s the
+  estimate no longer descends from a reading, even where a still rate integrated to nothing, so
   the next reading is taken whole.
 
 The split is about the **world's** up, mapped into the phone's frame, not about the phone's own
@@ -85,9 +86,10 @@ nothing there is laid out against a compass, and nothing there can creep either.
   worth trusting there is nothing to tell a creep from a real turn, and predicting no turn would
   make every such turn lag by ten seconds. What taking whole buys: a phone turned 90° during a
   2 s gap, or a page turned a quarter-turn level or pitched 30° up, or a half-turn, is on the
-  reading in one sample with nothing charged. Fused, the pitched quarter-turn stood 48° out a
-  second later and taught the offset 0.026 rad/s. A rate-only sample reading still after a 2 s
-  gap used to leave the next reading 89.9° out at confidence 1; it is now taken whole too.
+  reading in one sample with nothing charged. Fused under the split, the pitched quarter-turn stood
+  48° out a second later and taught the offset 0.026 rad/s. With the split but before the rule on
+  dead reckoning (PR #98's sixth version), a rate-only sample reading still after a 2 s gap left
+  the next reading 89.9° out at confidence 1; it is now taken whole too.
 - **A page turn keeps the offset.** Left in the old frame, an offset of 0.02 rad/s learned about the
   phone's X pointed a quarter-turn wrong after the turn, and standing at the heading's speed while
   it was learned again took the estimate 8.7° out. Turned with the frame, it stays within 0.001°.
@@ -96,7 +98,10 @@ nothing there is laid out against a compass, and nothing there can creep either.
 - **A page turned near a pole is fused.** The gravity disagreement of a quarter-turn about the
   viewing axis is under 30° once the phone is pitched past 68.5°, and of a half-turn past 75°;
   there a page turn is mostly heading, which gravity cannot see, and is corrected at the heading's
-  speed — up to 27° out pitched 69°, 30° for a half-turn at 75°. Pole cells are aimed there. This
+  speed. The aim is up to 27° out pitched 69°, and 30° for a half-turn at 75°; the orientation
+  itself is most of the turn out for seconds — 78° and 163° a second later, so a burst fired then
+  carries a roll prior that far off — and 0.012 to 0.025 rad/s of offset is taught that takes
+  minutes to unlearn. Pole cells are aimed there. This
   relies on the platform not turning the page for a phone held nearly flat, which is not measured
   here.
 - **A turn made during a shorter gap is not taken whole.** Under 0.25 s the gap is predicted across

@@ -93,8 +93,8 @@ constexpr double kHeadingCorrectionSeconds = 10.0;
 
 // The longest gap a prediction is made across. A browser's sensors report every 16 ms or so, and
 // the adapter already refuses a rate more than 200 ms from its attitude; a gap longer than this is
-// a stall — a hidden tab, or a capture loop so far behind that the adapter's buffer dropped
-// samples — and not an interval anybody measured.
+// a stall — a hidden tab, a capture loop so far behind that the adapter's buffer dropped samples,
+// or the main thread the sensor events are delivered on — and not an interval anybody measured.
 constexpr double kLongestPredictionSeconds = 0.25;
 
 // The largest disagreement about gravity a reading is fused across; past it the reading is a

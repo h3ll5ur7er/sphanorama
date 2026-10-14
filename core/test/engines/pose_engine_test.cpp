@@ -206,7 +206,7 @@ TEST(PoseEngine, ASampleThatReportsNothingEstimatesNothing) {
   // Nor did it start the clock: it measured nothing, so the next sample's interval is not measured
   // from it (ADR 0074).
   EXPECT_FALSE(after.value.observed);
-  // And the orientation really did not move, which is what makes the flag the whole finding.
+  // And the orientation really did not move.
   EXPECT_NEAR(AngleBetween(after.value.pose.orientation, Quat{}), 0.0, 1e-15);
 
   // A real reading after it still lands, so this refuses an empty sample rather than the stream.
@@ -399,15 +399,15 @@ TEST(PoseEngine, ASampleThatSaidNothingDoesNotMakeTheNextReadingSomethingToCorre
   // the correction share is `1 - exp(-dt/0.1)`, so at a 16 ms gap it moves about 15% of the way
   // and the pose sits most of a turn away from a reading it should simply have accepted.
   //
-  // The blank sample is what exposed it: it used to establish the clock without estimating
-  // anything, and an engine that took "a sample arrived" as "there is an estimate to predict from"
-  // then treated the *first real reading* as a correction to an identity nobody had measured.
+  // A still rate is the sample that says nothing about where the phone points and still starts
+  // the clock, and an engine that took "a sample arrived" as "there is an estimate to predict
+  // from" treats the *first real reading* after it as a correction to an identity nobody measured.
+  // A blank sample no longer reaches this, since it starts no clock (ADR 0074).
   OrientationPoseEngine engine;
   auto initial = engine.Initial(PoseMode::Fused, MotionCapability::GyroAccel);
   ASSERT_TRUE(initial.ok());
 
-  ImuSample nothing;
-  nothing.timestampNs = 1'000'000;
+  const ImuSample nothing = Spinning(1'000'000, 0.0);
 
   auto quiet = engine.Integrate(initial.value, std::span<const ImuSample>(&nothing, 1));
   ASSERT_TRUE(quiet.ok());
@@ -1486,10 +1486,9 @@ TEST(PoseEngine, AReadingAfterAGapInTheSamplesIsTakenAsItStands) {
 
 TEST(PoseEngine, OneLongGapAmongShortOnesDoesNotPassTheOffset) {
   // The offset may move by at most the rate error it saw, but only a window that matches the
-  // samples either side of it keeps that true: fast samples and then one long gap would pass the
-  // offset by a seventh. Fused across, a gap charges the whole disagreement it accumulated at one
-  // kBiasSeconds'th, so only a gap near that long can pass the offset; shorter ones were in this
-  // sweep and could not fail with the gap rule deleted. About a tilt axis and about up.
+  // samples either side of it keeps that true. Fused across, a gap charges the whole disagreement
+  // it accumulated at one kBiasSeconds'th, so only a gap near that long can pass the offset — by
+  // a sixth at twice kBiasSeconds — and only such gaps are swept. About a tilt axis and about up.
   for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.02, 0.0}}) {
     for (const int64_t gapMs : {49'700, 100'000}) {
       OrientationPoseEngine engine;
@@ -1624,8 +1623,8 @@ TEST(PoseEngine, ATurnedPageTurnsTheLearnedOffsetWithIt) {
 TEST(PoseEngine, AStillRateAcrossAGapDoesNotCloseIt) {
   // A rate is a measurement of an instant, so one that arrives after a gap says no more about how
   // the phone turned in it than a silent sample does — measured still or not. Integrated, a still
-  // rate moves nothing, and the estimate kept descending from the reading before the gap: the
-  // next reading was corrected at the heading's speed, 89.9 degrees out at confidence 1.
+  // rate moves nothing, and were the estimate still to descend from the reading before the gap,
+  // the next reading would be corrected at the heading's speed: 89.9 degrees out at confidence 1.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   int64_t t = 0;

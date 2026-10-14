@@ -483,8 +483,10 @@ export interface PoseState {
    */
   anchored: boolean;
   /**
-   * Whether the pose came from an absolute reading rather than from integrating rates. Confidence
-   * is derived from this, so it has to survive between calls.
+   * Whether the pose descends from an absolute reading with nothing unmeasured since, so that a
+   * prediction from it is worth fusing a reading against. Dead reckoning clears it, and so does a
+   * gap even where a still rate moved nothing (ADR 0074). Confidence is derived from this — 1.0
+   * with it, 0.5 for an anchored pose without it — so it has to survive between calls.
    */
   absolute: boolean;
   /**
