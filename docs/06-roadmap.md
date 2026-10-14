@@ -820,6 +820,12 @@ core. That is one port's guard, not a fix. The fix is a core URL that changes wi
 hashed name or a build id in the query, so the page and the core it loads can only come from the
 same deploy.
 
+The core is itself two files, and the fix has to cover the pair. Round 12 found that a new worker
+claiming the page between the glue's import and its fetch of the wasm hands the old glue the new
+wasm; most likely a `LinkError` and "the core failed to load", which a reload clears. The layout
+check vouches for the wasm, whose export it reads, and says nothing about the glue that loaded it.
+The window is narrow, the mechanism predates PR #98, and the same versioned URL closes it.
+
 ---
 
 ## Phase 2 — Stitching

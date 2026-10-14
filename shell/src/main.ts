@@ -334,17 +334,6 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   enableButton.disabled = true;
   resumeButton.disabled = true;
 
-  // A core from another update cannot read this page's motion, and its own refusal comes at
-  // `Begin`, after the camera below has been asked for and opened (ADR 0074). Synchronous, so it
-  // spends none of the activation the motion grant needs. Withdrawn rather than disabled, as for
-  // a device with no sensors: no press changes the answer, a reload does.
-  if (!coreReadsThisPagesMotion(core.motionSampleLayout())) {
-    stage.textContent = CORE_FROM_ANOTHER_UPDATE;
-    enableButton.hidden = true;
-    resumeButton.hidden = true;
-    return;
-  }
-
   // Before anything else, and before the camera in particular. A capture needs a motion sensor
   // and the core refuses without one (ADR 0044) — but the core's refusal comes back *after* this
   // function has already called `getUserMedia`, which is the prompt. A user with no sensors would
@@ -1674,8 +1663,11 @@ async function main() {
     stage.textContent = resume === null
       ? 'core ready — enable the camera to continue'
       : 'core ready — resume the last capture, or enable the camera to start a new one';
-    // Known from the boot, so neither offer is made to a core that cannot read this page's motion:
-    // every press would be refused. `enable` asks again, since it is the one that opens a camera.
+    // Known from the boot, so neither offer is made to a core that cannot read this page's motion.
+    // Its own refusal would come at `Begin`, after `enable` has asked for and opened a camera
+    // (ADR 0074). Withdrawn rather than disabled, as for a device with no sensors: no press changes
+    // the answer, a reload does. Asked only here, since the answer is fixed at boot and `#enable`
+    // is still disabled from the markup until after this line.
     if (!coreReadsThisPagesMotion(core.motionSampleLayout())) {
       stage.textContent = CORE_FROM_ANOTHER_UPDATE;
       resumeButton.hidden = true;
