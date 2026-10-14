@@ -37,8 +37,9 @@ ImuSample Spinning(int64_t timestampNs, double yawRateRadPerSec) {
 }
 
 // A sample from a device that reports both: a fused attitude and the gyroscope underneath it.
-// Nothing produces one today — the browser adapter reports OrientationOnly and no rates — which
-// is exactly why the engine's behaviour on them has to be decided before one arrives.
+//
+// The offsets the tests below teach it are about the phone's X, which a level phone turns as a
+// tilt. An offset about the world's up is not learned from the compass at all (ADR 0074).
 ImuSample Fused(int64_t timestampNs, double azimuthDeg, double elevationDeg, const Vec3& rate) {
   ImuSample sample = Oriented(timestampNs, azimuthDeg, elevationDeg);
   sample.angularVelocity = rate;
@@ -826,7 +827,7 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
   // arriving the error is observable, so the engine can learn the offset and keep subtracting it
   // through the stretch where nothing corrects it.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
   // Two seconds of a device held still: the attitude says so, the gyroscope disagrees by exactly
@@ -848,7 +849,7 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
     t += 10'000'000;
   }
 
-  // Un-subtracted, one second of 0.02 rad/s is 1.15 degrees of yaw from a device that never moved.
+  // Un-subtracted, one second of 0.02 rad/s is 1.15 degrees from a device that never moved.
   EXPECT_LT(AngleBetween(state.pose.orientation, settled) * kRadToDeg, 0.2);
 }
 
@@ -858,7 +859,7 @@ TEST(PoseEngine, ARateNobodyMeasuredIsNotIntegratedEither) {
   // a learned offset from it and integrating the result turns "nothing was reported" into a
   // rotation backwards at the offset's own rate.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
   int64_t t = 0;
@@ -866,7 +867,7 @@ TEST(PoseEngine, ARateNobodyMeasuredIsNotIntegratedEither) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
-  ASSERT_GT(state.gyroBias.y, 0.01) << "the offset was never learned, so this proves nothing";
+  ASSERT_GT(state.gyroBias.x, 0.01) << "the offset was never learned, so this proves nothing";
   const Quat settled = state.pose.orientation;
 
   ImuSample silent;   // no attitude, no measured rate: a sample that reports nothing at all
@@ -897,17 +898,17 @@ TEST(PoseEngine, ARateNobodyMeasuredIsNotFusedAgainst) {
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   ImuSample unmeasured = Oriented(0, 0.0, 0.0);
-  unmeasured.angularVelocity = Vec3{0.0, 1.0, 0.0};   // present in the struct, never measured
+  unmeasured.angularVelocity = Vec3{1.0, 0.0, 0.0};   // present in the struct, never measured
   state = engine.Integrate(state, std::vector<ImuSample>{unmeasured}).value;
 
   ImuSample later = Oriented(100'000'000, 30.0, 0.0);
-  later.angularVelocity = Vec3{0.0, 1.0, 0.0};
+  later.angularVelocity = Vec3{1.0, 0.0, 0.0};
   state = engine.Integrate(state, std::vector<ImuSample>{later}).value;
 
   // Taken as it stands, exactly as an OrientationOnly stream is.
   EXPECT_LT(AngleBetween(state.pose.orientation, FromAzimuthElevation(30.0, 0.0)) * kRadToDeg,
             1e-6);
-  EXPECT_EQ(state.gyroBias.y, 0.0);
+  EXPECT_EQ(state.gyroBias.x, 0.0);
 }
 
 TEST(PoseEngine, ASwingingPhoneIsUnstableEvenWhenTheSampleAlsoCarriesAnAttitude) {
@@ -931,7 +932,7 @@ TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
   // half. Testing the capability for one exact value quietly excluded it, which would have given
   // the best hardware the worst behaviour.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccelMag);
 
   int64_t t = 0;
@@ -939,32 +940,40 @@ TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
-  EXPECT_GT(state.gyroBias.y, 0.01);
+  EXPECT_GT(state.gyroBias.x, 0.01);
 }
 
 TEST(PoseEngine, AJumpyAbsoluteReadingComesOutSmootherThanItWentIn) {
   // What fusion buys on a still device. An indoor magnetometer wanders by degrees between
   // samples; the gyroscope says the device has not moved. Preferring the attitude hands that
   // noise straight to the reticle, which then shivers around a target it is already on.
-  OrientationPoseEngine engine;
-  PoseState state = Started(engine, MotionCapability::GyroAccel);
-  const Vec3 still{0.0, 0.0, 0.0};
+  //
+  // In tilt and in heading both, since they are now corrected at different speeds. The first
+  // reading is the truth, because the first is taken whole, and a heading that started three
+  // degrees out would measure how slowly it is pulled back rather than how little it shivers.
+  for (const bool inHeading : {false, true}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    const Vec3 still{0.0, 0.0, 0.0};
 
-  int64_t t = 0;
-  double worst = 0.0;
-  for (int step = 0; step < 60; ++step) {
-    // Deterministic rather than random: the property under test is that the output swings less
-    // than the input, and a fixed alternation states the input swing exactly.
-    const double noiseDeg = (step % 2 == 0) ? 3.0 : -3.0;
-    state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, noiseDeg, 0.0, still)}).value;
-    if (step > 20) {   // past the settling, which is not what this measures
-      worst = std::max(worst, AngleBetween(state.pose.orientation,
-                                           FromAzimuthElevation(0.0, 0.0)) * kRadToDeg);
+    int64_t t = 0;
+    double worst = 0.0;
+    for (int step = 0; step < 60; ++step) {
+      // Deterministic rather than random: the property under test is that the output swings less
+      // than the input, and a fixed alternation states the input swing exactly.
+      const double noiseDeg = step == 0 ? 0.0 : (step % 2 == 0) ? 3.0 : -3.0;
+      const ImuSample sample = inHeading ? Fused(t, noiseDeg, 0.0, still)
+                                         : Fused(t, 0.0, noiseDeg, still);
+      state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
+      if (step > 20) {   // past the settling, which is not what this measures
+        worst = std::max(worst, AngleBetween(state.pose.orientation,
+                                             FromAzimuthElevation(0.0, 0.0)) * kRadToDeg);
+      }
+      t += 16'000'000;
     }
-    t += 16'000'000;
+    // The readings themselves are 3 degrees out every single sample.
+    EXPECT_LT(worst, 1.5) << (inHeading ? "in heading" : "in tilt");
   }
-  // The readings themselves are 3 degrees out every single sample.
-  EXPECT_LT(worst, 1.5);
 }
 
 TEST(PoseEngine, TheEstimateStillArrivesWhereTheAttitudeSaysItIs) {
@@ -1042,7 +1051,7 @@ TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
   // The invariant is physical and holds for any gap: a still device reporting `b` cannot support
   // an offset estimate outside [0, b]. There is no more bias available than the rate observed.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
 
   // Swept rather than sampled, because "holds for any gap" was asserted at exactly one gap — and
   // one second is the gap at which the recurrence factor happens to be zero, so it was the single
@@ -1055,9 +1064,9 @@ TEST(PoseEngine, ALongGapBetweenFusedSamplesDoesNotRunTheBiasAway) {
       state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
       t += gapMs * 1'000'000;
     }
-    EXPECT_GE(state.gyroBias.y, 0.0) << "gap " << gapMs << " ms learned " << state.gyroBias.y;
-    EXPECT_LE(state.gyroBias.y, bias.y * 1.001)
-        << "gap " << gapMs << " ms learned " << state.gyroBias.y;
+    EXPECT_GE(state.gyroBias.x, 0.0) << "gap " << gapMs << " ms learned " << state.gyroBias.x;
+    EXPECT_LE(state.gyroBias.x, bias.x * 1.001)
+        << "gap " << gapMs << " ms learned " << state.gyroBias.x;
   }
 }
 
@@ -1067,7 +1076,7 @@ TEST(PoseEngine, ABiasLearnedAcrossAGapStillHelpsTheDropoutItIsFor) {
   // estimate the other way, so dead reckoning ends up further from the truth than doing nothing
   // at all would have been. Un-subtracted, one second of 0.02 rad/s is 1.15 degrees.
   OrientationPoseEngine engine;
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = Started(engine, MotionCapability::GyroAccel);
 
   int64_t t = 0;
@@ -1093,19 +1102,137 @@ TEST(PoseEngine, TheBiasEstimateIsPartOfTheStateTheCallerThreadsBack) {
   OrientationPoseEngine engine;
   PoseState fresh = Started(engine, MotionCapability::GyroAccel);
   EXPECT_EQ(fresh.gyroBias.x, 0.0);
-  EXPECT_EQ(fresh.gyroBias.y, 0.0);
+  EXPECT_EQ(fresh.gyroBias.x, 0.0);
   EXPECT_EQ(fresh.gyroBias.z, 0.0);
 
-  const Vec3 bias{0.0, 0.02, 0.0};
+  const Vec3 bias{0.02, 0.0, 0.0};
   PoseState state = fresh;
   int64_t t = 0;
   for (int step = 0; step < 200; ++step) {
     state = engine.Integrate(state, std::vector<ImuSample>{Fused(t, 0.0, 0.0, bias)}).value;
     t += 10'000'000;
   }
-  EXPECT_GT(state.gyroBias.y, 0.01);
+  EXPECT_GT(state.gyroBias.x, 0.01);
   // And the prior it was folded from is untouched, which is what "pure" means here.
-  EXPECT_EQ(fresh.gyroBias.y, 0.0);
+  EXPECT_EQ(fresh.gyroBias.x, 0.0);
+}
+
+// The heading an indoor compass reports is the one part of an absolute attitude that can be
+// wrong for seconds at a time: the platform's own fusion pulls it towards a magnetic field that
+// steel and wiring have bent, so a phone held still sees the reticle creep (ADR 0074). Gravity
+// does not do that, which is why tilt and heading are corrected at different speeds.
+Quat ReadingTurnedBy(double headingDeg, double azimuthDeg, double elevationDeg) {
+  return Multiply(FromAxisAngle(Vec3{0, 1, 0}, headingDeg / kRadToDeg),
+                  FromAzimuthElevation(azimuthDeg, elevationDeg));
+}
+
+ImuSample StillWithReading(int64_t timestampNs, const Quat& reading) {
+  ImuSample sample;
+  sample.timestampNs = timestampNs;
+  sample.hasOrientation = true;
+  sample.orientation = reading;
+  sample.angularVelocity = Vec3{0.0, 0.0, 0.0};
+  sample.hasAngularVelocity = true;
+  return sample;
+}
+
+TEST(PoseEngine, ACompassThatCreepsWhileTheGyroscopeSaysStillDoesNotDragTheEstimate) {
+  // The field report: in some directions the reticle kept moving with the phone held still. A
+  // two-second dwell is what fires a burst (ADR 0043), so that is the window measured here, and
+  // twenty degrees of creep across it is a bent field rather than an unusual one.
+  //
+  // Swept over elevation because heading is a turn about the world's up, not about the phone's
+  // own vertical: pitched sixty degrees up, most of a compass error lies along the axis the camera
+  // looks down, and splitting the correction by the phone's axes would let that part through.
+  for (const double elevationDeg : {0.0, 60.0, -45.0}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    const Quat truth = FromAzimuthElevation(0.0, elevationDeg);
+    int64_t t = 0;
+    for (int step = 0; step <= 200; ++step) {
+      const double creepDeg = 20.0 * step / 200.0;
+      state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
+                                          t, ReadingTurnedBy(creepDeg, 0.0, elevationDeg))})
+                  .value;
+      t += 10'000'000;
+    }
+    EXPECT_LT(AngleBetween(state.pose.orientation, truth) * kRadToDeg, 3.0)
+        << "at elevation " << elevationDeg;
+  }
+}
+
+TEST(PoseEngine, ACreepingCompassIsNotLearnedAsTheGyroscopesOffset) {
+  // The other route the creep takes to the reticle. Charged to the offset, a compass turning at
+  // ten degrees a second is a gyroscope that reads ten degrees a second too low — and the next
+  // dropout then turns a still phone at that rate, with nothing left to correct it.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  int64_t t = 0;
+  for (int step = 0; step <= 200; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
+                                        t, ReadingTurnedBy(20.0 * step / 200.0, 0.0, 0.0))})
+                .value;
+    t += 10'000'000;
+  }
+  const Quat before = state.pose.orientation;
+  for (int step = 0; step < 100; ++step) {
+    ImuSample still;
+    still.timestampNs = t;
+    still.angularVelocity = Vec3{0.0, 0.0, 0.0};
+    still.hasAngularVelocity = true;
+    state = engine.Integrate(state, std::vector<ImuSample>{still}).value;
+    t += 10'000'000;
+  }
+  EXPECT_LT(AngleBetween(state.pose.orientation, before) * kRadToDeg, 0.1);
+}
+
+TEST(PoseEngine, TiltIsStillCorrectedAsFastAsBefore) {
+  // What must not be given up for the heading. Gravity is the half of an attitude a platform
+  // measures well, and a reticle that took ten seconds to notice the phone tipping would be the
+  // lag ADR 0024 set its correction time to avoid. Pitch from an attitude that is neither level
+  // nor facing the reference direction, and roll from a level one.
+  //
+  // Level, because a roll is only a tilt there. Pitched up, the axis the camera looks down leans
+  // towards the world's up, and that share of a roll is a turn gravity cannot see — the compass
+  // decides it, slowly, which a pitched roll in this list once demonstrated by failing.
+  struct Step {
+    Quat from;
+    Quat to;
+  };
+  const Quat level = FromAzimuthElevation(30.0, 0.0);
+  for (const Step& step :
+       {Step{FromAzimuthElevation(30.0, 40.0), FromAzimuthElevation(30.0, 45.0)},
+        Step{level, Multiply(level, FromAxisAngle(Vec3{0, 0, 1}, 5.0 / kRadToDeg))}}) {
+    OrientationPoseEngine engine;
+    PoseState state = Started(engine, MotionCapability::GyroAccel);
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(0, step.from)}).value;
+    int64_t t = 10'000'000;
+    for (int sample = 0; sample < 50; ++sample) {
+      state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, step.to)}).value;
+      t += 10'000'000;
+    }
+    // Today's filter leaves about half a degree here, the gyroscope's offset briefly absorbing
+    // some of the step; a ten-second correction would leave nearly five.
+    EXPECT_LT(AngleBetween(state.pose.orientation, step.to) * kRadToDeg, 1.0);
+  }
+}
+
+TEST(PoseEngine, AHeadingTheCompassKeepsSayingIsReachedInTheEnd) {
+  // Slow is not never. A resumed capture is laid out against the compass, so a heading that the
+  // gyroscope has walked away from during a dropout has to come back to it, and a reading that
+  // holds still for a minute is not a disturbance.
+  OrientationPoseEngine engine;
+  PoseState state = Started(engine, MotionCapability::GyroAccel);
+  state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(
+                                      0, FromAzimuthElevation(0.0, 0.0))})
+              .value;
+  const Quat held = FromAzimuthElevation(10.0, 0.0);
+  int64_t t = 20'000'000;
+  for (int step = 0; step < 3000; ++step) {
+    state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, held)}).value;
+    t += 20'000'000;
+  }
+  EXPECT_LT(AngleBetween(state.pose.orientation, held) * kRadToDeg, 0.5);
 }
 
 }  // namespace

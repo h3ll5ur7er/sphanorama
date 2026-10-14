@@ -19,6 +19,8 @@ double Magnitude(const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z *
 
 Vec3 Subtract(const Vec3& a, const Vec3& b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
 
+Vec3 Scaled(const Vec3& v, double s) { return Vec3{v.x * s, v.y * s, v.z * s}; }
+
 // Whether this sample's rate is a measurement rather than a zeroed field nobody filled in.
 //
 // Asked of the sample rather than of the session's capability. A capability is a claim about the
@@ -66,6 +68,16 @@ bool Attitude(const ImuSample& sample) {
 // the drift this exists to remove is still there when the attitude drops out.
 constexpr double kCorrectionSeconds = 0.1;
 constexpr double kBiasSeconds = 0.5;
+
+// Heading is the one part of a platform's attitude that can be wrong for seconds on end: its
+// fusion pulls towards a magnetic field that steel and wiring indoors have bent, and a phone held
+// still watches the reticle creep. Gravity does not wander like that, so only the turn about the
+// world's up is trusted this slowly, and the gyroscope carries it in between (ADR 0074).
+//
+// A starting point on the same footing as the two above. Across the two-second dwell that fires a
+// burst it lets through under a tenth of a creep; it still brings a resumed capture back to the
+// compass within a minute.
+constexpr double kHeadingCorrectionSeconds = 10.0;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -148,15 +160,32 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // in itself.
       const Quat predicted =
           Turned(state.pose.orientation, Subtract(sample.angularVelocity, state.gyroBias), seconds);
-      const Vec3 error = RotationBetween(predicted, Normalize(sample.orientation));
+      const Vec3 disagreement = RotationBetween(predicted, Normalize(sample.orientation));
+
+      // Split about the world's up rather than the phone's own vertical: pitched up, most of a
+      // compass error lies along the axis the camera looks down.
+      const Vec3 up = Rotate(Conjugate(predicted), Vec3{0.0, 1.0, 0.0});
+      const Vec3 heading = Scaled(up, Dot(disagreement, up));
+      const Vec3 tilt = Subtract(disagreement, heading);
 
       // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
       // sample of 10 ms and no more.
       const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
-      state.pose.orientation = Turned(predicted, error, share);
+      const double headingShare = 1.0 - std::exp(-seconds / kHeadingCorrectionSeconds);
+      const Vec3 tiltStep = Scaled(tilt, share);
+      const Vec3 headingStep = Scaled(heading, headingShare);
+      state.pose.orientation =
+          Turned(predicted,
+                 Vec3{tiltStep.x + headingStep.x, tiltStep.y + headingStep.y,
+                      tiltStep.z + headingStep.z},
+                 1.0);
 
-      // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
-      // error that must have produced it, which is what a zero offset is.
+      // The tilt part of the same disagreement, charged to the gyroscope — but first turned back
+      // into the *rate* error that must have produced it, which is what a zero offset is. Never
+      // the heading part: a compass creeping at ten degrees a second would be learned as a
+      // gyroscope reading ten degrees a second low, and the next dropout would turn a still phone
+      // at that rate. The offset about the world's up is learned whenever the phone turns it into
+      // a tilt, which is what holding a phone up to sweep a sphere does.
       //
       // `share` is what does that conversion, and getting it wrong is how this went badly wrong
       // once. A standing disagreement is the rate error multiplied by the window it accumulated
@@ -188,7 +217,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // No stillness detector, and none needed: what accumulates here is the part of the error
       // that keeps pointing the same way. Noise does not, and cancels. A device that is really
       // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      // Divided by the *window*, not by the time constant alone. `error * share` is the rate error
+      // Divided by the *window*, not by the time constant alone. `tilt * share` is the rate error
       // (the disagreement with its accumulation window divided out); charging `share / kBiasSeconds`
       // therefore steps the offset by that rate times `seconds / kBiasSeconds`, which grows with the
       // gap — so the clamp below bounded the step by the whole *angle* of disagreement while its
@@ -200,8 +229,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // a long gap charge at most the rate error it actually saw, which is what the paragraph
       // above has always said it does.
       const double charge = share / std::max(kBiasSeconds, seconds);
-      state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
-                                                      error.z * charge});
+      state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
       state.absolute = true;
       // Anchored here as well as in the branch above, because both are branches that fold in a
       // reading and that is what anchoring is.

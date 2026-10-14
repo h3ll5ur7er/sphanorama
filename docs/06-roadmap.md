@@ -203,8 +203,17 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    so reported a phone swung between two matching attitudes as perfectly still while the
    gyroscope in the same sample read 3 rad/s.
 
-   What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
-   to correct, 0.5 s to learn an offset — have never met a real phone.
+   **And a device has met it** (ADR 0074). A Pixel 9 Pro XL saw the reticle keep moving with the
+   phone held still, in some directions only, which is an indoor compass and not a gyroscope. The
+   platform's attitude takes its heading from the magnetometer and creeps towards a bent field, and
+   the filter followed it. So the disagreement is split about the world's up: tilt is corrected
+   over 0.1 s and charged to the offset over 0.5 s as before, and heading is corrected over 10 s
+   and never charged. Twenty degrees of creep across a two-second dwell moves the estimate 1.88° rather than
+   19.99°.
+
+   What is left on this line is the same phone again. Every number here is from tests. The heading
+   now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as
+   a heading that lags a turn and drifts back.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (deferred until Phase 2
    registration needed it in a browser, and built then — ADR 0069) and the `bench/` CLI, which Phase 2's
    accuracy harness is the first thing to actually need. (This said Phase 1's, from before the
@@ -221,8 +230,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 - `PoseEngine`: complementary fusion, gyro bias handling and stability gating are **done** (ADR
   0024, ADR 0025). The browser adapts `DeviceMotionEvent.rotationRate`, each sample says whether
   its rate was measured, and `Stability` judges each interval by the better signal available for
-  it. What is left on this line is a device: the correction and offset time constants have never
-  met one.
+  it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
+  capture on a phone showed an indoor compass dragging a still reticle (ADR 0074). What is left on
+  this line is that phone again: none of the three time constants is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
