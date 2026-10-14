@@ -50,7 +50,8 @@ function fakeWorker() {
 describe('the core\'s motion layout', () => {
   it('reaches the page from the worker\'s boot, unknown from a worker too old to send it',
      async () => {
-    for (const motionSampleLayout of [2, null]) {
+    // Not this page's own layout, which a worker that answered it whenever one was sent would pass.
+    for (const motionSampleLayout of [7, null]) {
       const w = fakeWorker();
       const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
       await Promise.resolve();

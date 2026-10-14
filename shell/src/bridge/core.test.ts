@@ -58,9 +58,10 @@ function fakeModule(options: {
 describe('the motion layout the core reads', () => {
   it('is what the core says, and nothing from a core too old to say', async () => {
     // Asked at boot so the page can refuse a core from another deploy before it asks for a
-    // camera (ADR 0074). Every core before the layout was named exports nothing to ask.
-    const named = await loadCore(async () => fakeModule({ motionSampleLayout: 2 }));
-    expect(named.motionSampleLayout()).toBe(2);
+    // camera (ADR 0074). Every core before the layout was named exports nothing to ask. Not this
+    // page's own layout, which a runtime that answered it whenever the export exists would pass.
+    const named = await loadCore(async () => fakeModule({ motionSampleLayout: 7 }));
+    expect(named.motionSampleLayout()).toBe(7);
     const unnamed = await loadCore(async () => fakeModule());
     expect(unnamed.motionSampleLayout()).toBeNull();
   });

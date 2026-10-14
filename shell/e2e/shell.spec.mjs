@@ -1989,6 +1989,87 @@ test('the core tells the page which motion layout it reads', async ({ page }) =>
   }
 });
 
+// Counts camera requests from the next navigation on, since a refusal that comes after the prompt
+// is the failure the page's check exists to prevent.
+function countCameraRequests() {
+  window.__cameraAsked = 0;
+  const media = navigator.mediaDevices;
+  const real = media.getUserMedia.bind(media);
+  media.getUserMedia = (constraints) => {
+    window.__cameraAsked += 1;
+    return real(constraints);
+  };
+}
+
+for (const reported of [MOTION_SAMPLE_LAYOUT + 1, null]) {
+  test(`a core that reports motion layout ${reported} is refused on the press, before the camera`,
+    async ({ page }) => {
+    // The shipped core always matches the page, so the skew is made by answering for it.
+    // `window.sphanoramaCore` is the object `enable` holds, and it is patched after the boot has
+    // already asked, so this reaches the check in `enable` rather than the one at boot. `null` is
+    // every core from before the layout was named.
+    await page.addInitScript(countCameraRequests);
+    const server = await serve();
+    try {
+      await page.goto(server.appUrl);
+      await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+      await expect(page.locator('#enable')).toBeVisible();
+      await page.evaluate((layout) => {
+        window.sphanoramaCore.motionSampleLayout = () => layout;
+      }, reported);
+      await page.locator('#enable').click();
+
+      await expect(page.locator('#stage')).toContainText('different updates');
+      await expect(page.locator('#enable')).toBeHidden();
+      expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test('a core from another update is refused at boot, and a stored capture is not offered',
+  async ({ page }) => {
+  // The boot half of the same check, with a capture stored so that `#resume` would be offered if
+  // the check were not there: on a page with nothing stored it ships hidden and proves nothing.
+  // The core is answered for as the page assigns it, which is after the boot asked the real core
+  // for its capabilities but before the page decides what to offer.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance'))
+      .toContainText(/captured|cell done/i, { timeout: 15000 });
+    await page.evaluate(() => window.sphanoramaHost.flush());
+
+    await page.addInitScript(countCameraRequests);
+    await page.addInitScript((layout) => {
+      let core;
+      Object.defineProperty(window, 'sphanoramaCore', {
+        configurable: true,
+        get: () => core,
+        set: (value) => {
+          value.motionSampleLayout = () => layout;
+          core = value;
+        },
+      });
+    }, MOTION_SAMPLE_LAYOUT + 1);
+    await page.reload();
+
+    await expect(page.locator('#stage')).toContainText('different updates', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeHidden();
+    await expect(page.locator('#enable')).toBeHidden();
+    expect(await page.evaluate(() => window.__cameraAsked)).toBe(0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('a manager failure crosses the boundary as a status, not a crash', async ({ page }) => {
   // A domain failure has to arrive as something the client can branch on. If it came back as a
   // trap the page would go blank with nothing to explain it.

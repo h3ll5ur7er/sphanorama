@@ -34,11 +34,14 @@ describe('describeFailure', () => {
 });
 
 describe('a page and a core from different updates', () => {
-  it('says to reload, which is the cause, rather than blaming the sensors', () => {
-    // Nothing is wrong with the sensors, which are not even consulted; what is wrong is that the
-    // update is half-arrived (ADR 0074).
+  it('blames the update rather than the device, and says to wait before reloading', () => {
+    // Nothing is wrong with the device, whose sensors are not even consulted; what is wrong is
+    // that the update is half-arrived (ADR 0074). Waiting matters: a reload before the new worker
+    // has cached the core can pair the two again.
+    expect(CORE_FROM_ANOTHER_UPDATE).toMatch(/update/i);
+    expect(CORE_FROM_ANOTHER_UPDATE).toMatch(/wait|moment/i);
     expect(CORE_FROM_ANOTHER_UPDATE).toMatch(/reload/i);
-    expect(CORE_FROM_ANOTHER_UPDATE).not.toMatch(/sensor|permission/i);
+    expect(CORE_FROM_ANOTHER_UPDATE).not.toMatch(/device|sensor|permission/i);
   });
 });
 
