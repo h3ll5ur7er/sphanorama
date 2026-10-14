@@ -375,10 +375,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         const QuaternionAverage gauge = AverageQuaternions(offsets, {});
         if (!gauge.valid) return AveragedRotations{};
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
-        // eigensolver's scan order, and that is true of every frame in it.
-        if (!gauge.isUnique) {
-          for (const int32_t i : piece) everAmbiguous[static_cast<size_t>(i)] = 1;
-        }
+        // eigensolver's scan order, and that is true of every frame in it. One flag is enough —
+        // the pass after the sweeps names the whole piece of any frame flagged (ADR 0073).
+        if (!gauge.isUnique) everAmbiguous[static_cast<size_t>(piece.front())] = 1;
         largestMoveDeg = std::max(largestMoveDeg, AngleBetween(Quat{}, gauge.rotation) * kDegPerRad);
         for (const int32_t i : piece) {
           solved[static_cast<size_t>(i)] =

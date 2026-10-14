@@ -1156,15 +1156,20 @@ TEST(AverageRotations, AFrameWhoseEvidenceCancelsIsNamedAmbiguousWithItsPiece) {
   EXPECT_TRUE(solved.unplaced.empty()) << "frame 1 was reachable, so it is placed and merely unsure";
   EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 2}));
 
-  // **Two hops out as well as one.** A fourth frame with no anchor hangs off frame 2, so it touches
-  // no frame that tied: naming only a tied frame's neighbours leaves it out, though it is in the
-  // piece.
-  const std::vector<Quat> withTail{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0), Quat{0, 0, 0, 0}};
+  // **The whole piece, however far out.** A tail of four frames with no anchor hangs off frame 2,
+  // reaching five hops from the frame that tied: naming only what lies within a few hops of a tie
+  // leaves its far end out, though all of it is in the piece. No fixture can rule out every
+  // distance; this rules out the ones a frame's neighbours, or theirs, would give.
+  std::vector<Quat> withTail{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
   std::vector<RelativeRotation> tail = opposed;
-  tail.push_back(RelativeRotation{3, 2, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0});
+  for (int32_t next = 3; next <= 6; ++next) {
+    withTail.push_back(Quat{0, 0, 0, 0});
+    const int32_t onto = next == 3 ? 2 : next - 1;
+    tail.push_back(RelativeRotation{next, onto, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0});
+  }
   const AveragedRotations reached = AverageRotations(tail, withTail, 1000.0);
   ASSERT_TRUE(reached.valid);
-  EXPECT_EQ(reached.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
+  EXPECT_EQ(reached.ambiguous, (std::vector<int32_t>{0, 1, 2, 3, 4, 5, 6}));
 
   // **And a frame that is unsure only partway through still names its piece**, which is the case
   // that decided "any sweep" over "the last". Three frames, the middle one unanchored, two believed
@@ -1249,9 +1254,9 @@ TEST(AverageRotations, AmbiguousNamesTheTiedPiecesAscendingAndNoOthers) {
  * Found by a review of PR #94 in a five-frame graph, kept as it was found. Frame 1 is told 0 by
  * frame 0 and a half turn by frame 4, and ties. Frame 4 does not: its two predictions, from frames
  * 1 and 0 at weights 2 and 3, have a single maximiser — but one of them is made from wherever the
- * coin put frame 1, so frame 4 sits where that choice left it, and a ten-trillionth of a radian on
- * any edge moves it 38.9 degrees. Frames 2 and 3 are joined to each other and to no anchor, so they
- * are unplaced and named there, not here.
+ * coin put frame 1, so frame 4 sits where that choice left it: a ten-trillionth of a radian about X
+ * or Y on any of the first three edges moves it 38.9 degrees. Frames 2 and 3 are joined to each
+ * other and to no anchor, so they are unplaced and named there, not here.
  */
 TEST(AverageRotations, AFrameThatInheritsATieThroughAnEdgeIsNamed) {
   const Quat aboutZ = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi);
@@ -1272,7 +1277,7 @@ TEST(AverageRotations, AFrameThatInheritsATieThroughAnEdgeIsNamed) {
   EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 4}));
 
   // The premise, asserted: frame 4 does sit where the choice left it, so naming it is not a
-  // courtesy. Any turn of a degree or more under a ten-trillionth of a radian is that.
+  // courtesy. Any turn of a degree or more under a trillionth of a radian is that.
   std::vector<RelativeRotation> nudged = edges;
   nudged[0].rotation = Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, 1e-12), aboutZ));
   const AveragedRotations moved = AverageRotations(nudged, anchors, 1.0);

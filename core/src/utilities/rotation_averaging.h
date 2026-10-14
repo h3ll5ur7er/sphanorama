@@ -139,19 +139,19 @@ struct AveragedRotations {
   // Reachable when the evidence for a frame cancels — two neighbours a half turn apart, or three a
   // third of a turn apart about one axis — which in a capture means a registration that has gone
   // badly wrong rather than one that is merely imprecise; or when a piece's anchors disagree by a
-  // half turn about where it sits, which leaves its edges in perfect agreement.
+  // half turn about where it sits and weigh too little to bend its edges.
   //
   // **The whole piece, not the frame that tied** (ADR 0073). Its neighbours average a prediction
   // made from wherever the coin put it, so a frame that never tied can still sit where the choice
   // left it. Which ones do is not read off the flags, so this names frames that never move — all of
-  // a capture, for one contradictory pair. No tie reaches another piece, beyond moving when the
-  // solve stops.
+  // a capture, for one contradictory pair. No edge or gauge reaches another piece; a tie can only
+  // change when the solve stops, and so how far each other piece is from its own fixed point.
   //
   // **Only ties the arithmetic leaves exact are seen**: an average whose top two eigenvalues are
   // within `AverageQuaternions`' threshold of each other. A neighbour joined to nothing else echoes
   // a frame's own place back, and a neighbour updated earlier in the sweep can tilt it; either can
   // split a tie in the evidence by far more than that, and the frame is then placed by the walk or
-  // the sweep order with nothing named. Every such case found reads `maxEdgeErrorDeg` at 180.
+  // the sweep order with nothing named — and with any edge error, a fraction of a degree included.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the
