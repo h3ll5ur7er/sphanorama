@@ -2,7 +2,7 @@
 
 **Status:** accepted; the flat sample's layout extended by
 [0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md), which adds the screen angle and has
-each side name its stride to the other
+each side name the layout's version to the other
 **Refines:** [ADR 0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md)
 
 ## Context

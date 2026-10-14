@@ -14,20 +14,26 @@ constexpr const char* kComponent = "BrowserMotionSensorAccess";
 
 // Returned as an index into MotionCapability rather than a string: the enum's order is the
 // contract, and the generated codec encodes it the same way.
-EM_JS(int32_t, host_motion_capability, (), {
-  if (!Module.sphHost) return 0;
+//
+// None from a page that writes another motion layout, or names none: a capture asks this before it
+// opens a camera, so it refuses to begin with the words a missing sensor already has (ADR 0044)
+// rather than starting with motion that never arrives. The page answers the same to a core.
+EM_JS(int32_t, host_motion_capability, (int32_t layout), {
+  const host = Module.sphHost;
+  if (!host || host.motionSampleLayout !== layout) return 0;
   const order = ['None', 'OrientationOnly', 'GyroAccel', 'GyroAccelMag'];
-  const index = order.indexOf(Module.sphHost.motionCapability());
+  const index = order.indexOf(host.motionCapability(layout));
   return index < 0 ? 0 : index;
 });
 
-EM_JS(int32_t, host_motion_drain, (double* out, int32_t maxSamples, int32_t stride), {
+EM_JS(int32_t, host_motion_drain,
+      (double* out, int32_t maxSamples, int32_t stride, int32_t layout), {
   const host = Module.sphHost;
   if (!host || !host.motionDrain) return 0;
   // A page that does not write this layout gets nothing read from it, and a page from before the
   // layout said which it was does not say at all.
-  if (host.motionSampleDoubles !== stride) return 0;
-  const flat = host.motionDrain(maxSamples, stride);
+  if (host.motionSampleLayout !== layout) return 0;
+  const flat = host.motionDrain(maxSamples, layout);
   // Bounded here, before the write, rather than trusted from the host. `host_preview_copy` three
   // functions away takes exactly this view of exactly this question — "the two are read at
   // different moments, and a frame swapped in between would write past the end of the span" — and
@@ -53,7 +59,7 @@ EM_JS(void, host_motion_reset, (), {
 }  // namespace
 
 Result<MotionCapability> BrowserMotionSensorAccess::Capabilities() {
-  return Ok(static_cast<MotionCapability>(host_motion_capability()));
+  return Ok(static_cast<MotionCapability>(host_motion_capability(kMotionSampleLayout)));
 }
 
 Status BrowserMotionSensorAccess::Start(int32_t requestedHz) {
@@ -62,7 +68,7 @@ Status BrowserMotionSensorAccess::Start(int32_t requestedHz) {
   }
   // The page started the sensor before it began a session; there is nothing to start here except
   // to record that a session is now entitled to drain.
-  if (host_motion_capability() == 0) {
+  if (host_motion_capability(kMotionSampleLayout) == 0) {
     return Fail(StatusCode::SensorUnavailable, kComponent, "the page reports no motion sensors");
   }
   running_ = true;
@@ -79,8 +85,9 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
   // them straight into the caller's span. Eighteen EM_JS calls per sample at 60Hz would cost more
   // in boundary crossings than the samples are worth.
   std::vector<double> flat(out.size() * kDoublesPerSample);
-  const int32_t count = host_motion_drain(flat.data(), static_cast<int32_t>(out.size()),
-                                          static_cast<int32_t>(kDoublesPerSample));
+  const int32_t count =
+      host_motion_drain(flat.data(), static_cast<int32_t>(out.size()),
+                        static_cast<int32_t>(kDoublesPerSample), kMotionSampleLayout);
   if (count <= 0) return Ok(0);
 
   const auto taken = std::min(static_cast<size_t>(count), out.size());

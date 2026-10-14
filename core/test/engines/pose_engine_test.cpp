@@ -783,6 +783,26 @@ TEST(PoseEngine, APageTurnIsNotASwing) {
   auto stability = engine.Stability(held);
   ASSERT_TRUE(stability.ok());
   EXPECT_NEAR(stability.value, 1.0, 1e-6);
+
+  // And a phone that really swings across the turn scores what the same swing scores unturned,
+  // rather than being let off because the turn fell in the same gap.
+  std::vector<ImuSample> swung;
+  std::vector<ImuSample> swungTurned;
+  for (int step = 0; step < 4; ++step) {
+    const double azimuthDeg = step >= 2 ? 42.0 + 1.0 * 0.016 * kRadToDeg : 42.0;
+    ImuSample sample = Oriented(step * 16'000'000, azimuthDeg, 10.0);
+    swung.push_back(sample);
+    if (step >= 2) {
+      sample.orientation = Multiply(sample.orientation, page);
+      sample.screenAngleDeg = 90.0;
+    }
+    swungTurned.push_back(sample);
+  }
+  auto unturned = engine.Stability(swung);
+  auto turned = engine.Stability(swungTurned);
+  ASSERT_TRUE(unturned.ok() && turned.ok());
+  EXPECT_LT(unturned.value, 0.9);
+  EXPECT_NEAR(turned.value, unturned.value, 1e-6);
 }
 
 TEST(PoseEngine, OneOrientationIsNotEnoughToJudgeMotion) {
@@ -1672,7 +1692,7 @@ TEST(PoseEngine, APageTurnChangesNothingButTheFrame) {
         Case{"after a stall", 0.0, 90.0, 3'200, 500'000'000, true, true, 1},
         Case{"ahead of the rates", 30.0, 90.0, 3'200, kOnTime, false, true, 1},
         Case{"on a sample with a rate and no attitude", 0.0, 90.0, 3'200, kOnTime, true, false, 1},
-        Case{"in the middle of a batch", 30.0, 270.0, 3'201, kOnTime, true, true, 3},
+        Case{"in the middle of a batch", 30.0, 270.0, 3'202, kOnTime, true, true, 3},
         Case{"opening in landscape, near the zenith", 85.0, 90.0, 0, kOnTime, true, true, 1},
         Case{"opening in landscape, in a batch", 30.0, -90.0, 0, kOnTime, true, true, 4}}) {
     const Quat held = FromAzimuthElevation(0.0, c.elevationDeg);

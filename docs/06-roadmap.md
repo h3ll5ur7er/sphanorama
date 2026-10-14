@@ -813,10 +813,11 @@ the page, can run the new page against the previous deploy's core. Nothing acros
 which build either side is: the facade's codec would decode a reordered field into plausible
 values exactly as the flat motion port did when its stride changed (ADR 0074).
 
-The motion port now refuses a mismatched stride, so a skewed launch there has no motion until the
-next load — which on screen is the frozen reticle the section above describes. That is one port's
-guard, not a fix. The fix is a core URL that changes with the build, a hashed name or a build id
-in the query, so the page and the core it loads can only come from the same deploy.
+The motion port now names its layout's version on both sides, and a skewed launch refuses to begin
+a capture with the message a phone with no motion sensor gets (ADR 0044) — the wrong cause, named,
+until a load brings page and core together. That is one port's guard, not a fix. The fix is a core
+URL that changes with the build, a hashed name or a build id in the query, so the page and the
+core it loads can only come from the same deploy.
 
 ---
 

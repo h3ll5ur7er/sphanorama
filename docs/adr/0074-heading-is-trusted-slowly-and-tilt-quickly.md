@@ -58,8 +58,10 @@ up, and the two parts are trusted at different speeds.**
   angle it converted both halves with (`ImuSample::screenAngleDeg`), and `PoseState` records the
   angle its estimate and offset are in. Where they differ, both are carried into the sample's
   frame before anything is compared with it, and the filter carries on. And because the page and
-  the core are fetched and cached separately, each side of the browser port now names the stride it
-  writes or reads, and reads nothing from one that names another or none. This amends
+  the core are fetched and cached separately, each side of the browser port now names the version
+  of the flat layout it writes or reads — bumped on any change to its order, units or sense, not
+  only its length — and to one that names another or none answers that there is no motion sensor
+  and hands over no samples. This amends
   [ADR 0017](0017-the-motion-port-reports-the-viewfinders-attitude.md), which kept the screen out
   of the contract: the conversion stays in the adapter, but whatever carries state from one sample
   to the next has to know which frame each one is in.
@@ -182,10 +184,11 @@ nothing there is laid out against a compass, and nothing there can creep either.
   change between deploys, and the service worker answers it from the cache — so the first launch
   after a deploy can pair a page with the core before it. Read at the other's stride, samples decode
   into plausible values rather than failing: in a mix of drain sizes, 36 of 636 came out as wrong
-  attitudes, aimed up to 73.5° out. With the stride named, such a launch — every page and core from
-  before this one names none — has no motion until the next load, rather than wrong motion. The
-  unversioned core URL is the general cause, and the facade's codec is exposed to it too; that is
-  open (roadmap).
+  attitudes, aimed up to 73.5° out. With the layout named, such a launch — every page and core from
+  before this one names none — refuses to begin a capture, as a phone with no motion sensor does
+  (ADR 0044), until a load brings the two together. That message names the wrong cause; a capture
+  that started and then had no motion would have named none. The unversioned core URL is the
+  general cause, and the facade's codec is exposed to it too; that is open (roadmap).
 
 ## Rejected alternatives
 **Leave the page turn to the readings.** Three versions of PR #98 did, and each missed a case the

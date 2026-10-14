@@ -48,10 +48,18 @@ const NO_LOCKS: LockState = { exposure: false, whiteBalance: false, focus: false
  * Flat doubles rather than the generated codec: the codec exists for the facade, and reaching for
  * it inside a resource-access port would put a second marshalling path in the layer whose whole
  * job is to keep platform shapes out of the core. The C++ side reads the same order. Each side
- * names its stride to the other and refuses a mismatch, because the two are fetched and cached
+ * names its layout to the other and refuses a mismatch, because the two are fetched and cached
  * separately.
  */
 export const MOTION_SAMPLE_DOUBLES = 18;
+
+/**
+ * Which layout that is. Bumped on any change to the order, units or sense of a field, not only its
+ * length — a reordering that keeps eighteen doubles decodes as quietly wrong as a stride that does
+ * not. 2 is the first layout to say which it is, with the screen angle at the end; every page and
+ * core before it names none, and the two refuse each other.
+ */
+export const MOTION_SAMPLE_LAYOUT = 2;
 
 /**
  * The most samples kept while the core is not draining. A capture loop that stalls must not be
@@ -113,22 +121,27 @@ export interface CaptureHost {
   /** Replaces whatever was there. Latest, not next: see the note on the field. */
   setPreviewFrame(frame: GrabbedFrame): void;
 
-  motionCapability(): string;
+  /**
+   * "None" to a core that reads another layout, or names none: it asks before a capture opens a
+   * camera, so a core that could not read these samples refuses to begin, with the words a missing
+   * sensor already has (ADR 0044), rather than starting a capture whose motion never arrives.
+   */
+  motionCapability(layout?: number): string;
   setMotion(capability: string): void;
 
   /** Flat doubles, as `flattenImuSamples` produces them. Nothing here awaits anything. */
   pushMotion(doubles: ArrayLike<number>): void;
   /**
-   * Called synchronously from C++, through IMotionSensorAccess::Drain, with the stride it reads.
+   * Called synchronously from C++, through IMotionSensorAccess::Drain, with the layout it reads.
    *
-   * Empty for any other stride, and the samples stay. The page and the core are fetched and cached
+   * Empty for any other layout, and the samples stay. The page and the core are fetched and cached
    * separately, so the first launch after a deploy can pair this page with the core before it, and
-   * read at the wrong stride a sample decodes as a plausible attitude rather than failing. A core
-   * that names no stride predates the check, and with it this layout.
+   * read in another layout a sample decodes into plausible values rather than failing. A core that
+   * names no layout predates the check, and with it this layout.
    */
-  motionDrain(maxSamples: number, stride?: number): number[];
-  /** The stride this page writes, which a core checks before it reads anything. */
-  readonly motionSampleDoubles: number;
+  motionDrain(maxSamples: number, layout?: number): number[];
+  /** The layout this page writes, which a core checks before it reads anything. */
+  readonly motionSampleLayout: number;
   /** Called from C++ on Stop: samples from a finished session must not seed the next one. */
   resetMotion(): void;
 
@@ -189,8 +202,7 @@ export function flattenImuSamples(samples: ImuSample[]): Float64Array {
   samples.forEach((sample, index) => {
     // Each optional group is preceded by the flag that says whether it was measured, so a reader
     // cannot take a zero for a reading. The order is the wire format: it is spelled out again in
-    // browser_motion_sensor_access.cpp, and changing one side alone decodes into plausible
-    // nonsense rather than failing.
+    // motion_sample_layout.cpp, and any change to it bumps MOTION_SAMPLE_LAYOUT on both sides.
     flat.set([
       sample.timestampNs,
       sample.hasAngularVelocity ? 1 : 0,
@@ -325,7 +337,7 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
       preview = frame.bytes.length === frame.width * frame.height * 4 ? frame : null;
     },
 
-    motionCapability: () => motion,
+    motionCapability: (layout?: number) => (layout === MOTION_SAMPLE_LAYOUT ? motion : 'None'),
     setMotion(capability: string) {
       motion = capability;
     },
@@ -336,12 +348,12 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
       if (buffered.length > ceiling) buffered = buffered.slice(buffered.length - ceiling);
     },
 
-    motionDrain(maxSamples: number, stride?: number): number[] {
-      if (stride !== MOTION_SAMPLE_DOUBLES) return [];
+    motionDrain(maxSamples: number, layout?: number): number[] {
+      if (layout !== MOTION_SAMPLE_LAYOUT) return [];
       return buffered.splice(0, Math.max(0, maxSamples) * MOTION_SAMPLE_DOUBLES);
     },
 
-    motionSampleDoubles: MOTION_SAMPLE_DOUBLES,
+    motionSampleLayout: MOTION_SAMPLE_LAYOUT,
 
     resetMotion() {
       buffered = [];
