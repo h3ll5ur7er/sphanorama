@@ -37,13 +37,14 @@ up, and the two parts are trusted at different speeds.**
 - **Both are charged to the gyroscope's offset over 50 s**, each from the disagreement its own
   correction follows. For heading that is five times its correction time, which keeps its loop
   from ringing. For tilt it amends ADR 0024's 0.5 s (see the rejected alternatives): an offset
-  changes over minutes, and a browser never needed it learned faster, because every sample there
-  carries an attitude and the offset only ever spans the 16 ms between two. Gravity cannot see an
+  changes over minutes, and tilt never needed it learned faster: an offset not yet learned stands
+  only a correction time's worth away, a tenth of a degree at 0.02 rad/s. Gravity cannot see an
   offset about up, so on a phone that keeps its tilt only the compass can teach that part.
 - **A reading after a gap of more than 0.25 s is taken whole**, as the first reading after a
   dropout is. A rate is a measurement of an instant, and held across a gap nobody sampled it says
   nothing about how the phone turned in it. The adapter already refuses a rate 200 ms from its
-  attitude; a longer gap is a stall — a hidden tab, a capture loop that fell behind.
+  attitude; a longer gap is a stall — a hidden tab, or a capture loop so far behind that the
+  adapter's buffer dropped samples.
 
 The split is about the **world's** up, mapped into the phone's frame, not about the phone's own
 vertical. Pitched up, most of a heading error lies along the axis the camera looks down, and
@@ -180,8 +181,9 @@ from a reading that never moved.
 measured above: an offset that follows a tilt disagreement going round, and a heading turned by
 it. At 2 s it is still 5° of heading for the circling reading; at 5 s, 1.9°.
 
-**Blend heading and tilt as the attitude's own parts rather than the disagreement's.** Tried in
-PR #98's fourth version, on the theory that tilt corrections going round were what turned the
-heading. They were not: with the offset still learned in half a second the figures did not move,
-and with it learned over minutes the disagreement's twist and swing do as well. It stayed out
-because it was a second way of saying the same thing that no test could tell from the first.
+**Blend heading and tilt as the attitude's own parts rather than the disagreement's.** Tried while
+writing PR #98's fifth version and not committed, on the theory that tilt corrections going round
+were what turned the heading. They were not: with the offset still learned in half a second the
+figures did not move, and with it learned over minutes the disagreement's twist and swing do as
+well. It stayed out because it was a second way of saying the same thing that no test could tell
+from the first.

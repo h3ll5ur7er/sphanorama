@@ -823,7 +823,7 @@ TEST(PoseEngine, AnOrientationOnlyStreamIsUnchangedByFusion) {
 TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut) {
   // The one that matters. A gyroscope at rest does not read zero, and integrating that offset is
   // how dead reckoning walks away from the truth — 0.02 rad/s is a bit over a degree a second,
-  // and a magnetometer dropout of a second or two is ordinary indoors. While attitudes are
+  // and a native platform can lose its attitude for a second or two. While attitudes are
   // arriving the error is observable, so the engine can learn the offset and keep subtracting it
   // through the stretch where nothing corrects it.
   OrientationPoseEngine engine;
@@ -839,7 +839,8 @@ TEST(PoseEngine, ALearnedGyroBiasStopsDriftingTheEstimateWhenTheAttitudeDropsOut
   }
   const Quat settled = state.pose.orientation;
 
-  // Then the attitude stops arriving for a second, which is the only time the bias can hurt.
+  // Then the attitude stops arriving for a second, which is where an unlearned offset shows
+  // fastest.
   for (int step = 0; step < 100; ++step) {
     ImuSample rateOnly;
     rateOnly.timestampNs = t;
@@ -1174,9 +1175,9 @@ TEST(PoseEngine, ACompassThatCreepsWhileTheGyroscopeSaysStillDoesNotDragTheEstim
 }
 
 TEST(PoseEngine, ACreepingCompassTeachesTheGyroscopesOffsetAlmostNothing) {
-  // The other route the creep takes to the reticle. Charged at the tilt's speed, a compass turning
-  // at ten degrees a second is a gyroscope that reads ten degrees a second too low — and the next
-  // dropout then turns a still phone at that rate, with nothing left to correct it.
+  // The other route the creep takes to the reticle. Charged in half a second, as ADR 0024 did, a
+  // compass turning at ten degrees a second is a gyroscope that reads ten degrees a second too low
+  // — and the next dropout then turns a still phone at that rate, with nothing left to correct it.
   OrientationPoseEngine engine;
   PoseState state = Started(engine, MotionCapability::GyroAccel);
   int64_t t = 0;
@@ -1223,7 +1224,7 @@ TEST(PoseEngine, ATiltStepIsFollowedWithinHalfASecond) {
       state = engine.Integrate(state, std::vector<ImuSample>{StillWithReading(t, step.to)}).value;
       t += 10'000'000;
     }
-    // The filter leaves 0.025° here; a correction three times slower would leave 0.4°, and a
+    // The filter leaves 0.025° here; a correction three times slower would leave 0.93°, and a
     // ten-second one nearly all five.
     EXPECT_LT(AngleBetween(state.pose.orientation, step.to) * kRadToDeg, 0.1);
   }
@@ -1387,12 +1388,13 @@ Vec3 TrueRate(const Path& path, double seconds) {
 }
 
 TEST(PoseEngine, TiltThatGoesRoundDoesNotTurnTheHeading) {
-  // Turns about horizontal axes do not commute: tip a phone forward, then sideways, then back,
-  // then the other way, and it has turned about the vertical. A tilt correction that goes round
-  // does the same, and the heading — trusted slowly — kept every degree of it and learned the
-  // rest as a gyroscope offset. Three ways a tilt goes round: a reading whose gravity circles on
-  // a still phone, a phone that really sways with readings exactly on time, and the same sway
-  // with readings a sample and a bit late.
+  // Turns about horizontal axes do not commute: tip a phone forward, then sideways, then back, then
+  // the other way, and it has turned about the vertical. An offset learned in half a second follows
+  // a tilt disagreement that goes round, each charge at right angles to an up that is itself going
+  // round, so the charges add up along the phone's vertical — and the heading, trusted slowly,
+  // keeps what they turn. Three ways a tilt goes round: a reading whose gravity circles on a still
+  // phone, a phone that really sways with readings exactly on time, and the same sway with readings
+  // a sample and a bit late.
   struct Case {
     const char* what;
     double swayDeg;
@@ -1457,9 +1459,9 @@ TEST(PoseEngine, NoiseInTheReadingsTiltDoesNotTurnTheHeading) {
 
 TEST(PoseEngine, AReadingAfterAGapInTheSamplesIsTakenAsItStands) {
   // A gyroscope's rate is a measurement of an instant. Held across a gap nobody sampled, it says
-  // nothing about how the phone turned in it — and a turn made there and corrected at the
-  // heading's speed stood tens of degrees out for seconds afterwards, charged to the gyroscope
-  // as an offset it does not have. A gap is a dropout of both streams, and is treated as one.
+  // nothing about how the phone turned in it — and a turn made there and corrected at the heading's
+  // speed would stand tens of degrees out for seconds afterwards, charged to the gyroscope as an
+  // offset it does not have. A gap is a dropout of both streams, and is treated as one.
   for (const int64_t gapMs : {2'000, 50'000}) {
     OrientationPoseEngine engine;
     PoseState state = Started(engine, MotionCapability::GyroAccel);
@@ -1481,7 +1483,7 @@ TEST(PoseEngine, AReadingAfterAGapInTheSamplesIsTakenAsItStands) {
 
 TEST(PoseEngine, OneLongGapAmongShortOnesDoesNotPassTheOffset) {
   // The offset may move by at most the rate error it saw, but only a window that matches the
-  // samples either side of it keeps that true: fast samples and then one long gap passed the
+  // samples either side of it keeps that true: fast samples and then one long gap would pass the
   // offset by a seventh. Sweeping the one gap across the range a capture loop can produce, about
   // a tilt axis and about up.
   for (const Vec3& bias : {Vec3{0.02, 0.0, 0.0}, Vec3{0.0, 0.02, 0.0}}) {

@@ -70,8 +70,9 @@ bool Attitude(const ImuSample& sample) {
 // follows a tilt disagreement that goes round — noise, or a sway read a little late — and the
 // offsets it learns, each at right angles to an up that is itself going round, add up along the
 // phone's vertical to one about up that the gyroscope does not have: 23.5° of heading from a
-// reading whose gravity circles half a degree (ADR 0074). Nothing in a browser needs the speed:
-// every sample there carries an attitude, so the offset only ever spans the 16 ms between two.
+// reading whose gravity circles half a degree (ADR 0074). Tilt has no need of the speed: an
+// offset not yet learned stands only a correction time's worth away, a tenth of a degree at
+// 0.02 rad/s.
 constexpr double kCorrectionSeconds = 0.1;
 constexpr double kBiasSeconds = 50.0;
 
@@ -91,7 +92,8 @@ constexpr double kHeadingCorrectionSeconds = 10.0;
 
 // The longest gap a prediction is made across. A browser's sensors report every 16 ms or so, and
 // the adapter already refuses a rate more than 200 ms from its attitude; a gap longer than this is
-// a stall — a hidden tab, a capture loop that fell behind — and not an interval anybody measured.
+// a stall — a hidden tab, or a capture loop so far behind that the adapter's buffer dropped
+// samples — and not an interval anybody measured.
 constexpr double kLongestPredictionSeconds = 0.25;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
@@ -233,9 +235,8 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // zero: the contract's word for "nothing estimated this".
       state.anchored = true;
     } else if (elapsed && fusing) {
-      // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
-      // correcting the estimate, so an offset left in the rate integrates straight into the
-      // answer.
+      // Dead reckoning, where nothing corrects the offset at all: an offset left in the rate
+      // integrates straight into the answer.
       //
       // Gated on a measured rate, and the gate is not decorative: a sample with
       // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so

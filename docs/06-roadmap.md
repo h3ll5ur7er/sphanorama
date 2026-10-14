@@ -188,9 +188,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    part of the way to the reading, and charges the rest to the gyroscope's zero offset — which it
    therefore learns without a stillness detector, and keeps in `PoseState` because an engine is
    stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° into one second of dead
-   reckoning from a device that never moved; about a tilt axis it is now under 0.2°, and a reading
-   3° out on every sample comes out under 1.5°. The offset is learned over minutes now rather than
-   seconds, and the part of it about the world's up only from the compass (ADR 0074).
+   reckoning from a device that never moved; once learned, which now takes a couple of minutes,
+   it is under 0.2°, and a reading 3° out on every sample comes out under 1.5°. The part of the
+   offset about the world's up is learned only from the compass (ADR 0074).
 
    **And the rates are real now** (ADR 0025). The browser adapter listens for
    `DeviceMotionEvent.rotationRate`, converts it into the viewfinder's frame — inverting the
@@ -236,7 +236,7 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   its rate was measured, and `Stability` judges each interval by the better signal available for
   it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
   still reticle moved on a phone, consistent with an indoor compass (ADR 0074). What is left on
-  this line is that phone again: none of the four time constants is measured.
+  this line is that phone again: none of its time constants, nor the gap threshold, is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
