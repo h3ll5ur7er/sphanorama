@@ -1,6 +1,7 @@
 # ADR 0025 — A sample says whether its rate was measured, and the capability stops deciding
 
-**Status:** accepted
+**Status:** accepted; the flat sample's layout extended by
+[0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md), which adds the screen angle
 **Refines:** [ADR 0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md)
 
 ## Context

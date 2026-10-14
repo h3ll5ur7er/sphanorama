@@ -47,8 +47,8 @@ const NO_LOCKS: LockState = { exposure: false, whiteBalance: false, focus: false
  *
  * Flat doubles rather than the generated codec: the codec exists for the facade, and reaching for
  * it inside a resource-access port would put a second marshalling path in the layer whose whole
- * job is to keep platform shapes out of the core. The C++ side reads the same order, and the two
- * are pinned together by a test on each side.
+ * job is to keep platform shapes out of the core. The C++ side reads the same order. Each side
+ * names its stride to the other and refuses a mismatch, because the two are deployed separately.
  */
 export const MOTION_SAMPLE_DOUBLES = 18;
 
@@ -117,8 +117,17 @@ export interface CaptureHost {
 
   /** Flat doubles, as `flattenImuSamples` produces them. Nothing here awaits anything. */
   pushMotion(doubles: ArrayLike<number>): void;
-  /** Called synchronously from C++, through IMotionSensorAccess::Drain. */
-  motionDrain(maxSamples: number): number[];
+  /**
+   * Called synchronously from C++, through IMotionSensorAccess::Drain, with the stride it reads.
+   *
+   * Empty for any other stride, and the samples stay. The page and the core are fetched and cached
+   * separately, so the first launch after a deploy can pair this page with the core before it, and
+   * read at the wrong stride a sample decodes as a plausible attitude rather than failing. A core
+   * that names no stride predates the check, and with it this layout.
+   */
+  motionDrain(maxSamples: number, stride?: number): number[];
+  /** The stride this page writes, which a core checks before it reads anything. */
+  readonly motionSampleDoubles: number;
   /** Called from C++ on Stop: samples from a finished session must not seed the next one. */
   resetMotion(): void;
 
@@ -326,9 +335,12 @@ export function createCaptureHost(options: CaptureHostOptions = {}): CaptureHost
       if (buffered.length > ceiling) buffered = buffered.slice(buffered.length - ceiling);
     },
 
-    motionDrain(maxSamples: number): number[] {
+    motionDrain(maxSamples: number, stride?: number): number[] {
+      if (stride !== MOTION_SAMPLE_DOUBLES) return [];
       return buffered.splice(0, Math.max(0, maxSamples) * MOTION_SAMPLE_DOUBLES);
     },
+
+    motionSampleDoubles: MOTION_SAMPLE_DOUBLES,
 
     resetMotion() {
       buffered = [];

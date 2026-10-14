@@ -765,6 +765,26 @@ TEST(PoseEngine, APhoneHeldStillIsStableFromOrientationsAlone) {
   EXPECT_NEAR(stability.value, 1.0, 1e-6);
 }
 
+TEST(PoseEngine, APageTurnIsNotASwing) {
+  // Across a page turn two attitudes of a still phone are a quarter-turn apart, because the frame
+  // they are reported in turned and the phone did not. Compared as they stand, that is ninety
+  // degrees in a sixtieth of a second and a still phone scored 0.
+  OrientationPoseEngine engine;
+  const Quat page = FromAxisAngle(Vec3{0, 0, 1}, -90.0 / kRadToDeg);
+  std::vector<ImuSample> held;
+  for (int step = 0; step < 4; ++step) {
+    ImuSample sample = Oriented(step * 16'000'000, 42.0, 10.0);
+    if (step >= 2) {
+      sample.orientation = Multiply(sample.orientation, page);
+      sample.screenAngleDeg = 90.0;
+    }
+    held.push_back(sample);
+  }
+  auto stability = engine.Stability(held);
+  ASSERT_TRUE(stability.ok());
+  EXPECT_NEAR(stability.value, 1.0, 1e-6);
+}
+
 TEST(PoseEngine, OneOrientationIsNotEnoughToJudgeMotion) {
   // A single attitude says where the phone is, not whether it is moving. Reporting "perfectly
   // still" from it would let a burst fire mid-swing on the very first frame after a dropout.
@@ -1625,37 +1645,55 @@ TEST(PoseEngine, APageTurnChangesNothingButTheFrame) {
   // Turning between portrait and landscape changes the frame the attitude and the rates are
   // reported in, and nothing about the phone. So the same session reported both ways has to come
   // out the same, one answer re-expressed in the other's frame, at every sample after the turn —
-  // whatever the filter was in the middle of. Recognised from the readings instead, a page turn
-  // was missed whenever the estimate lagged a creeping compass by more than the tolerance: the
-  // learned offset left a quarter-turn wrong, 8.7 degrees out at 0.02 rad/s, and near a pole the
-  // turn itself corrected at the heading's speed.
+  // whatever the filter was in the middle of. Left to be recognised from the readings, a page
+  // turn would be missed whenever the estimate lagged a creeping compass, which it does on
+  // purpose: the learned offset left a quarter-turn wrong, 8.7 degrees out at 0.02 rad/s, and
+  // near a pole the turn itself corrected at the heading's speed (ADR 0074).
+  //
+  // On whichever sample reports it — one carrying a rate and no attitude too — and wherever it
+  // falls in the batch the manager hands over, including the very first sample of a session that
+  // opens in landscape.
   struct Case {
     const char* what;
     double elevationDeg;
     double screenDeg;
+    int turnStep;
     int64_t lateNs;
     bool turnHasRate;
+    bool turnHasAttitude;
+    int batch;
   };
-  for (const Case& c : {Case{"level", 0.0, 90.0, 10'000'000, true},
-                        Case{"pitched up, the other way", 30.0, -90.0, 10'000'000, true},
-                        Case{"pitched down, a half-turn", -69.0, 180.0, 10'000'000, true},
-                        Case{"near the zenith", 85.0, 270.0, 10'000'000, true},
-                        Case{"after a stall", 0.0, 90.0, 500'000'000, true},
-                        Case{"ahead of the rates", 30.0, 90.0, 10'000'000, false}}) {
+  constexpr int64_t kOnTime = 10'000'000;
+  for (const Case& c :
+       {Case{"level", 0.0, 90.0, 3'200, kOnTime, true, true, 1},
+        Case{"pitched up, the other way", 30.0, -90.0, 3'200, kOnTime, true, true, 1},
+        Case{"pitched down, a half-turn", -69.0, 180.0, 3'200, kOnTime, true, true, 1},
+        Case{"near the zenith", 85.0, 270.0, 3'200, kOnTime, true, true, 1},
+        Case{"after a stall", 0.0, 90.0, 3'200, 500'000'000, true, true, 1},
+        Case{"ahead of the rates", 30.0, 90.0, 3'200, kOnTime, false, true, 1},
+        Case{"on a sample with a rate and no attitude", 0.0, 90.0, 3'200, kOnTime, true, false, 1},
+        Case{"in the middle of a batch", 30.0, 270.0, 3'201, kOnTime, true, true, 3},
+        Case{"opening in landscape, near the zenith", 85.0, 90.0, 0, kOnTime, true, true, 1},
+        Case{"opening in landscape, in a batch", 30.0, -90.0, 0, kOnTime, true, true, 4}}) {
     const Quat held = FromAzimuthElevation(0.0, c.elevationDeg);
     const Vec3 bias{0.02, 0.01, -0.015};   // in the phone's own frame
     // The same moment in a frame turned by `screenDeg`, as the adapter would report it.
-    const auto reported = [&](int64_t t, const Quat& reading, bool hasRate, double screenDeg) {
+    const auto reported = [&](int64_t t, const Quat& reading, bool hasRate, bool hasAttitude,
+                              double screenDeg) {
       const Quat screen = FromAxisAngle(Vec3{0, 0, 1}, -screenDeg / kRadToDeg);
       ImuSample sample = StillWithReading(t, Multiply(reading, screen));
+      sample.hasOrientation = hasAttitude;
       sample.angularVelocity = hasRate ? Rotate(Conjugate(screen), bias) : Vec3{};
       sample.hasAngularVelocity = hasRate;
       sample.screenAngleDeg = screenDeg;
       return sample;
     };
+    const Quat screen = FromAxisAngle(Vec3{0, 0, 1}, -c.screenDeg / kRadToDeg);
     OrientationPoseEngine engine;
     PoseState unturned = Started(engine, MotionCapability::GyroAccel);
     PoseState turned = unturned;
+    std::vector<ImuSample> unturnedBatch;
+    std::vector<ImuSample> turnedBatch;
     double worst = 0.0;
     double worstOffset = 0.0;
     int64_t t = 0;
@@ -1664,28 +1702,29 @@ TEST(PoseEngine, APageTurnChangesNothingButTheFrame) {
     for (int step = 0; step < 4'200; ++step) {
       const double creep = std::clamp((step - 3'000) / 200.0, 0.0, 1.0) * 20.0;
       const Quat reading = Multiply(FromAxisAngle(Vec3{0, 1, 0}, creep / kRadToDeg), held);
-      const bool turning = step == 3'200;
-      if (turning) t += c.lateNs - 10'000'000;
+      const bool turning = step == c.turnStep;
+      if (turning && step > 0) t += c.lateNs - kOnTime;
       const bool hasRate = !(turning && !c.turnHasRate);
-      const double screenDeg = step >= 3'200 ? c.screenDeg : 0.0;
-      unturned =
-          engine.Integrate(unturned, std::vector<ImuSample>{reported(t, reading, hasRate, 0.0)})
-              .value;
-      turned =
-          engine.Integrate(turned, std::vector<ImuSample>{reported(t, reading, hasRate, screenDeg)})
-              .value;
-      if (step >= 3'200) {
-        const Quat screen = FromAxisAngle(Vec3{0, 0, 1}, -c.screenDeg / kRadToDeg);
-        worst = std::max(worst, AngleBetween(turned.pose.orientation,
-                                             Multiply(unturned.pose.orientation, screen)));
-        const Vec3 expected = Rotate(Conjugate(screen), unturned.gyroBias);
-        const Vec3 off{turned.gyroBias.x - expected.x, turned.gyroBias.y - expected.y,
-                       turned.gyroBias.z - expected.z};
-        worstOffset = std::max(worstOffset, std::sqrt(Dot(off, off)));
-      }
-      t += 10'000'000;
+      const bool hasAttitude = !(turning && !c.turnHasAttitude);
+      const double screenDeg = step >= c.turnStep ? c.screenDeg : 0.0;
+      unturnedBatch.push_back(reported(t, reading, hasRate, hasAttitude, 0.0));
+      turnedBatch.push_back(reported(t, reading, hasRate, hasAttitude, screenDeg));
+      t += kOnTime;
+      if (static_cast<int>(turnedBatch.size()) < c.batch) continue;
+      unturned = engine.Integrate(unturned, unturnedBatch).value;
+      turned = engine.Integrate(turned, turnedBatch).value;
+      unturnedBatch.clear();
+      turnedBatch.clear();
+      if (step < c.turnStep) continue;
+      worst = std::max(worst, AngleBetween(turned.pose.orientation,
+                                           Multiply(unturned.pose.orientation, screen)));
+      const Vec3 expected = Rotate(Conjugate(screen), unturned.gyroBias);
+      const Vec3 off{turned.gyroBias.x - expected.x, turned.gyroBias.y - expected.y,
+                     turned.gyroBias.z - expected.z};
+      worstOffset = std::max(worstOffset, std::sqrt(Dot(off, off)));
     }
-    EXPECT_LT(worst, 1e-6) << c.what;   // radians; about where AngleBetween stops resolving
+    // Radians. `AngleBetween` resolves to about 3e-8 here; a page turn missed is a tenth or more.
+    EXPECT_LT(worst, 1e-6) << c.what;
     EXPECT_LT(worstOffset, 1e-12) << c.what;
   }
 }
@@ -1709,8 +1748,8 @@ TEST(PoseEngine, AScreenAngleThatIsNotANumberTurnsNothing) {
 }
 
 TEST(PoseEngine, AnEnormousScreenAngleStillTurnsAboutTheCameraAxis) {
-  // Two finite angles from the page can still differ by infinity, and the turn by that difference
-  // is then `FromAxisAngle`'s to refuse: a turn by NaN would collapse onto the identity, an aim
+  // A finite angle from the page can still overflow the turn by its difference, which is then
+  // `FromAxisAngle`'s to refuse: a turn by NaN would collapse onto the identity, an aim
   // nobody pointed. Whatever the angles, a page turn is a turn about the axis the camera looks
   // down, so where it looks cannot move.
   OrientationPoseEngine engine;

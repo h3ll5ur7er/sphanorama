@@ -28,6 +28,11 @@ An attitude is two measurements with different failures. Its tilt comes from gra
 accelerometer measures well and nothing indoors bends. Its heading, the turn about the world's up,
 comes from the compass. Gravity cannot see that turn at all.
 
+Trusting the two at different speeds makes the filter carry more from one sample to the next — an
+estimate that lags the reading on purpose, and an offset learned over minutes — and both are held
+in the frame the attitude and the rates are reported in. That frame is the viewfinder's, and it
+turns when the page does (ADR 0017): a filter that keeps state has to know when.
+
 ## Decision
 **The disagreement between the gyroscope's prediction and the reading is split about the world's
 up, and the two parts are trusted at different speeds.**
@@ -101,10 +106,14 @@ nothing there is laid out against a compass, and nothing there can creep either.
 - **A page turn changes nothing but the frame.** The same session reported with and without a
   page turn part-way through comes out the same, one answer re-expressed in the other's frame, to
   the precision of the arithmetic: level, pitched either way, at the zenith, after a stall, ahead
-  of the rates, and in the middle of a creep. A creep in progress is not taken whole by it.
+  of the rates, and in the middle of a creep. A creep in progress is not taken whole by it. And
+  `Stability`, which differentiates attitudes where no rate was measured, compares them in one
+  frame: across a page turn a still phone's attitudes are a quarter-turn apart, and it scored 0.
 - **The adapter's angle is believed.** A port that reports no screen leaves it at zero and turns
   nothing; one whose angle is not a number keeps the frame it had. One that reports a wrong angle
-  turns the offset wrong, and nothing in the readings would say so.
+  turns the offset wrong, and nothing in the readings would say so. Below about 68.5° of pitch the
+  gravity rule puts the estimate back on the reading; past it the wrong turn is mostly heading, and
+  is corrected at the heading's speed — 78° to 81° out a second later.
 - **A turn made during a shorter gap is not taken whole.** Under 0.25 s the gap is predicted across
   with the rate it ends on, and a turn the gyroscope did not see is corrected at the heading's
   speed: a 1 rad/s sweep that stops just as a gap ends stands 2.9° out through the dwell after a
@@ -164,11 +173,15 @@ nothing there is laid out against a compass, and nothing there can creep either.
   comment in the contract says so.
 - **The contract changes.** `ImuSample` and `PoseState` each carry a screen angle, the browser
   port's flat sample grows from seventeen doubles to eighteen, and `PoseState::gyroBias` says which
-  frame it is in.
+  frame it is in. The page and the core are fetched and cached separately, so the first launch
+  after a deploy can pair a page with the core before it; read at the other's stride, every sample
+  decoded as a plausible attitude and aimed 73.5° out at worst. So each side now names its stride
+  to the other and reads nothing from one that names another or none, which is every page and core
+  from before this one: such a launch has no motion until the next load, rather than wrong motion.
 
 ## Rejected alternatives
-**Recognise a page turn from the readings.** Three versions of PR #98 did, and each missed a case
-the next one found:
+**Leave the page turn to the readings.** Three versions of PR #98 did, and each missed a case the
+next one found:
 
 - **Not at all.** Taken whole as a reading 30° out, the turn left the learned offset in the old
   frame, pointing a quarter-turn wrong: 8.7° out at 0.02 rad/s while it was learned again.

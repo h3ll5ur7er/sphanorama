@@ -1,7 +1,8 @@
 # The C++ side of the WASM boundary. Builds natively too — that is not a curiosity, it is how
 # the capability probe and (later) the facade's marshalling get tested without a browser.
 set(SPHANORAMA_BRIDGE_SOURCES capabilities.cpp facade.generated.cpp heap_budget.cpp module.cpp
-                              runtime.cpp)
+                              runtime.cpp
+                              resource_access/motion_sensor_access/motion_sample_layout.cpp)
 if(EMSCRIPTEN)
   # Browser-backed ports: resource-access code that needs Emscripten, which is why it lives here
   # rather than in core/ (tools/no_browser_check.py enforces that split).

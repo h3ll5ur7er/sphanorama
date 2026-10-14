@@ -75,8 +75,8 @@ Quat FromAxisAngle(const Vec3& axis, double radians) {
   if (!std::isfinite(length) || !(length > 1e-12)) return Quat{};
 
   // The same guard the axis gets, for the reason the header now states beside this function's
-  // declaration. Reachable: `OrientationPoseEngine::Integrate` turns by the difference of two
-  // screen angles that arrive from the page as doubles, and two finite ones can differ by infinity.
+  // declaration. Reachable: `OrientationPoseEngine` turns by the difference of two screen angles
+  // that arrive from the page as doubles, and one finite angle is enough to overflow that.
   if (!std::isfinite(radians)) return Quat{};
 
   const double half = radians * 0.5;

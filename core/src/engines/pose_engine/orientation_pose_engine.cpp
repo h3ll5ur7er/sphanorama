@@ -127,6 +127,15 @@ Quat Turned(const Quat& orientation, const Vec3& rate, double seconds) {
   return Normalize(Multiply(orientation, FromAxisAngle(rate, magnitude * seconds)));
 }
 
+// What carries an attitude reported with screen angle `fromDeg` into the frame of one reported
+// with `toDeg`: a page turn steps that frame about the axis the camera looks down by the change
+// in angle, and the adapter's attitude is the device's turned by -angle (ADR 0017, ADR 0074).
+// None where either angle is not a number, since such an angle names no frame.
+Quat FrameTurn(double fromDeg, double toDeg) {
+  if (!std::isfinite(fromDeg) || !std::isfinite(toDeg)) return Quat{};
+  return FromAxisAngle(Vec3{0.0, 0.0, 1.0}, (fromDeg - toDeg) * std::numbers::pi / 180.0);
+}
+
 }  // namespace
 
 Result<PoseState> OrientationPoseEngine::Initial(PoseMode mode, MotionCapability capability) {
@@ -148,9 +157,7 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // points a quarter-turn wrong and is learned again over minutes; recognised from the readings
     // instead, a page turn is missed whenever the estimate lags a creeping compass (ADR 0074).
     if (std::isfinite(sample.screenAngleDeg) && sample.screenAngleDeg != state.screenAngleDeg) {
-      const Quat turn = FromAxisAngle(
-          Vec3{0.0, 0.0, 1.0},
-          (state.screenAngleDeg - sample.screenAngleDeg) * std::numbers::pi / 180.0);
+      const Quat turn = FrameTurn(state.screenAngleDeg, sample.screenAngleDeg);
       state.pose.orientation = Normalize(Multiply(state.pose.orientation, turn));
       state.gyroBias = Rotate(Conjugate(turn), state.gyroBias);
       state.screenAngleDeg = sample.screenAngleDeg;
@@ -338,8 +345,7 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   // The distinction is not academic. A browser with no gyroscope adapted reports an attitude and
   // no rates, so every sample it produces carries a zeroed angularVelocity standing in for "not
   // measured" — and reading those zeros as a measurement reported a phone mid-swing as perfectly
-  // still. Stability is what gates firing a burst, so that is the one direction this must not be
-  // wrong in.
+  // still, which is the one direction this must not be wrong in.
   //
   // `hasAngularVelocity` is what tells the two apart. It used to be `hasOrientation`, on the
   // reasoning that a sample carrying an attitude came from a platform reporting no rates — true
@@ -367,7 +373,10 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
                sample.timestampNs > previous->timestampNs) {
       const double seconds =
           static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
-      peak = std::max(peak, AngleBetween(previous->orientation, sample.orientation) / seconds);
+      // In one frame first: across a page turn a still phone's attitudes are a quarter-turn apart.
+      const Quat before = Multiply(previous->orientation,
+                                   FrameTurn(previous->screenAngleDeg, sample.screenAngleDeg));
+      peak = std::max(peak, AngleBetween(before, sample.orientation) / seconds);
       measured = true;
     }
     // Whatever carried an attitude is what the next gap is measured from, whether or not its own

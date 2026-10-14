@@ -114,7 +114,7 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0022](0022-a-lock-is-confirmed-before-a-burst-and-released-after-it.md) | A camera lock is applied and confirmed by the page before arming; taking one reads that state, releasing one is posted |
 | [0023](0023-a-committed-cell-is-cooled-by-the-session.md) | A committed cell's frames are cooled by the capture session; the store owns the tier and the refusal |
 | [0024](0024-orientation-and-rates-are-fused-and-the-bias-is-state.md) | The pose engine fuses an attitude with gyroscope rates when both arrive, and `PoseState` carries the learned gyro offset |
-| [0025](0025-a-sample-says-whether-its-rate-was-measured.md) | `ImuSample` says whether its rate was measured; the browser adapts `rotationRate` and the capability stops deciding |
+| [0025](0025-a-sample-says-whether-its-rate-was-measured.md) | `ImuSample` says whether its rate was measured; the browser adapts `rotationRate` and the capability stops deciding — its flat layout **extended by [0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md)**, which adds the screen angle |
 | [0026](0026-candidates-come-back-ranked.md) | `Candidates(node)` hands a cell back ranked best-first, so a review client can name the automatic pick without deciding what best means |
 | [0027](0027-guidance-aims-at-what-is-missing.md) | `Locate` takes the coverage state and says `SphereDone` when nothing is left — its targeting rule partly superseded by 0041 |
 | [0028](0028-markers-are-drawn-in-the-box-the-video-is-painted-in.md) | The overlay's markers are drawn in the video's own box and mapped through the `object-fit: cover` crop, and the panel folds out of the picture while a capture runs |
