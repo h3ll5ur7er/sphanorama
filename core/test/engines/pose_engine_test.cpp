@@ -768,7 +768,7 @@ TEST(PoseEngine, APhoneHeldStillIsStableFromOrientationsAlone) {
 TEST(PoseEngine, APageTurnIsNotASwing) {
   // Across a page turn two attitudes of a still phone are a quarter-turn apart, because the frame
   // they are reported in turned and the phone did not. Compared as they stand, that is ninety
-  // degrees in a sixtieth of a second and a still phone scored 0.
+  // degrees in a sixtieth of a second, and a still phone would score 0.
   OrientationPoseEngine engine;
   const Quat page = FromAxisAngle(Vec3{0, 0, 1}, -90.0 / kRadToDeg);
   std::vector<ImuSample> held;
@@ -1723,7 +1723,8 @@ TEST(PoseEngine, APageTurnChangesNothingButTheFrame) {
                      turned.gyroBias.z - expected.z};
       worstOffset = std::max(worstOffset, std::sqrt(Dot(off, off)));
     }
-    // Radians. `AngleBetween` resolves to about 3e-8 here; a page turn missed is a tenth or more.
+    // Radians. `AngleBetween` resolves to about 3e-8 here; a page turn missed is several hundredths
+    // or more.
     EXPECT_LT(worst, 1e-6) << c.what;
     EXPECT_LT(worstOffset, 1e-12) << c.what;
   }

@@ -41,7 +41,9 @@ self.addEventListener('fetch', (event) => {
 
     // A navigation goes to the network first. The precached entries are versioned with the cache
     // name so they are never stale, but this is the request that decides whether a user who has
-    // the app open sees this deploy or the last one.
+    // the app open sees this deploy or the last one — for the page. The core's URL is the same in
+    // every deploy, so until this worker is replaced it can still answer the new page's import of
+    // the core from the old cache (docs/06-roadmap.md, "The core's URL does not change").
     if (request.mode === 'navigate') {
       try {
         const response = await fetch(request);

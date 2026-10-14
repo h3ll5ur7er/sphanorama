@@ -57,7 +57,9 @@ up, and the two parts are trusted at different speeds.**
   looks down, and nothing about the phone. The adapter now reports with each sample the screen
   angle it converted both halves with (`ImuSample::screenAngleDeg`), and `PoseState` records the
   angle its estimate and offset are in. Where they differ, both are carried into the sample's
-  frame before anything is compared with it, and the filter carries on. This amends
+  frame before anything is compared with it, and the filter carries on. And because the page and
+  the core are fetched and cached separately, each side of the browser port now names the stride it
+  writes or reads, and reads nothing from one that names another or none. This amends
   [ADR 0017](0017-the-motion-port-reports-the-viewfinders-attitude.md), which kept the screen out
   of the contract: the conversion stays in the adapter, but whatever carries state from one sample
   to the next has to know which frame each one is in.
@@ -108,12 +110,15 @@ nothing there is laid out against a compass, and nothing there can creep either.
   the precision of the arithmetic: level, pitched either way, at the zenith, after a stall, ahead
   of the rates, and in the middle of a creep. A creep in progress is not taken whole by it. And
   `Stability`, which differentiates attitudes where no rate was measured, compares them in one
-  frame: across a page turn a still phone's attitudes are a quarter-turn apart, and it scored 0.
+  frame: across a page turn a still phone's attitudes are a quarter-turn apart, which scored 0
+  before.
 - **The adapter's angle is believed.** A port that reports no screen leaves it at zero and turns
-  nothing; one whose angle is not a number keeps the frame it had. One that reports a wrong angle
-  turns the offset wrong, and nothing in the readings would say so. Below about 68.5° of pitch the
-  gravity rule puts the estimate back on the reading; past it the wrong turn is mostly heading, and
-  is corrected at the heading's speed — 78° to 81° out a second later.
+  nothing; one whose angle is not finite keeps the frame it had, and one too large to turn by is
+  adopted without a turn. One that reports a wrong angle turns the offset wrong, and nothing in the
+  readings would say so. The estimate is put back on the reading by the gravity rule below about
+  68.5° of pitch for a quarter-turn wrong, and 75° for a half-turn; past that the wrong turn is
+  mostly heading, and is corrected at the heading's speed — 78° to 81° out a second later for a
+  quarter-turn, 162° for a half-turn.
 - **A turn made during a shorter gap is not taken whole.** Under 0.25 s the gap is predicted across
   with the rate it ends on, and a turn the gyroscope did not see is corrected at the heading's
   speed: a 1 rad/s sweep that stops just as a gap ends stands 2.9° out through the dwell after a
@@ -173,11 +178,14 @@ nothing there is laid out against a compass, and nothing there can creep either.
   comment in the contract says so.
 - **The contract changes.** `ImuSample` and `PoseState` each carry a screen angle, the browser
   port's flat sample grows from seventeen doubles to eighteen, and `PoseState::gyroBias` says which
-  frame it is in. The page and the core are fetched and cached separately, so the first launch
-  after a deploy can pair a page with the core before it; read at the other's stride, every sample
-  decoded as a plausible attitude and aimed 73.5° out at worst. So each side now names its stride
-  to the other and reads nothing from one that names another or none, which is every page and core
-  from before this one: such a launch has no motion until the next load, rather than wrong motion.
+  frame it is in. The page and the core are fetched and cached separately — the core's URL does not
+  change between deploys, and the service worker answers it from the cache — so the first launch
+  after a deploy can pair a page with the core before it. Read at the other's stride, samples decode
+  into plausible values rather than failing: in a mix of drain sizes, 36 of 636 came out as wrong
+  attitudes, aimed up to 73.5° out. With the stride named, such a launch — every page and core from
+  before this one names none — has no motion until the next load, rather than wrong motion. The
+  unversioned core URL is the general cause, and the facade's codec is exposed to it too; that is
+  open (roadmap).
 
 ## Rejected alternatives
 **Leave the page turn to the readings.** Three versions of PR #98 did, and each missed a case the

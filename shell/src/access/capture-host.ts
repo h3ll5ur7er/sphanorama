@@ -48,7 +48,8 @@ const NO_LOCKS: LockState = { exposure: false, whiteBalance: false, focus: false
  * Flat doubles rather than the generated codec: the codec exists for the facade, and reaching for
  * it inside a resource-access port would put a second marshalling path in the layer whose whole
  * job is to keep platform shapes out of the core. The C++ side reads the same order. Each side
- * names its stride to the other and refuses a mismatch, because the two are deployed separately.
+ * names its stride to the other and refuses a mismatch, because the two are fetched and cached
+ * separately.
  */
 export const MOTION_SAMPLE_DOUBLES = 18;
 

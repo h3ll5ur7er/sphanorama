@@ -234,7 +234,7 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
 - `CoveragePlannerEngine`: ring/geodesic tessellation from lens FoV, acceptance cones, coverage
   and hole evaluation.
-- `PoseEngine`: complementary fusion, gyro bias handling and stability gating are **done** (ADR
+- `PoseEngine`: complementary fusion, gyro bias handling and stability estimation are **done** (ADR
   0024, ADR 0025). The browser adapts `DeviceMotionEvent.rotationRate`, each sample says whether
   its rate was measured, and `Stability` judges each interval by the better signal available for
   it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
@@ -803,6 +803,20 @@ has gone wrong.
 
 Worth doing before the surface grows: every message added between now and then is another pair
 that has to be ordered.
+
+### The core's URL does not change between deploys
+
+Found by PR #98's round-8 boundary lens. The page and worker chunks are content-hashed, but the
+core is always `core/sphanorama-core.{js,wasm}`, and the service worker answers anything but a
+navigation from its cache. So the first launch after a deploy, while the old worker still controls
+the page, can run the new page against the previous deploy's core. Nothing across that seam says
+which build either side is: the facade's codec would decode a reordered field into plausible
+values exactly as the flat motion port did when its stride changed (ADR 0074).
+
+The motion port now refuses a mismatched stride, so a skewed launch there has no motion until the
+next load — which on screen is the frozen reticle the section above describes. That is one port's
+guard, not a fix. The fix is a core URL that changes with the build, a hashed name or a build id
+in the query, so the page and the core it loads can only come from the same deploy.
 
 ---
 

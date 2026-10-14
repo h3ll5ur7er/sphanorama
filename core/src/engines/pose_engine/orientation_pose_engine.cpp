@@ -130,7 +130,7 @@ Quat Turned(const Quat& orientation, const Vec3& rate, double seconds) {
 // What carries an attitude reported with screen angle `fromDeg` into the frame of one reported
 // with `toDeg`: a page turn steps that frame about the axis the camera looks down by the change
 // in angle, and the adapter's attitude is the device's turned by -angle (ADR 0017, ADR 0074).
-// None where either angle is not a number, since such an angle names no frame.
+// None where either angle is not finite, since such an angle names no frame.
 Quat FrameTurn(double fromDeg, double toDeg) {
   if (!std::isfinite(fromDeg) || !std::isfinite(toDeg)) return Quat{};
   return FromAxisAngle(Vec3{0.0, 0.0, 1.0}, (fromDeg - toDeg) * std::numbers::pi / 180.0);
@@ -335,7 +335,7 @@ Result<PoseSample> OrientationPoseEngine::Correct(const FrameRef&, const FrameRe
 
 Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> samples) {
   if (samples.empty()) {
-    // Not "perfectly still": reporting stability for a dropout would let a burst fire blind.
+    // Not "perfectly still": a dropout says nothing about whether the device is moving.
     return Err<double>(StatusCode::FailedPrecondition, kComponent,
                        "no samples to judge stability from");
   }
@@ -345,7 +345,8 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   // The distinction is not academic. A browser with no gyroscope adapted reports an attitude and
   // no rates, so every sample it produces carries a zeroed angularVelocity standing in for "not
   // measured" — and reading those zeros as a measurement reported a phone mid-swing as perfectly
-  // still, which is the one direction this must not be wrong in.
+  // still. Nothing fires on this today; it is the signal a burst would be held back by, and still
+  // is the direction such a gate could not afford it to be wrong in.
   //
   // `hasAngularVelocity` is what tells the two apart. It used to be `hasOrientation`, on the
   // reasoning that a sample carrying an attitude came from a platform reporting no rates — true
@@ -385,8 +386,8 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   }
 
   if (!measured) {
-    // One attitude says where the phone is, not whether it is moving. Answering "perfectly still"
-    // from it would let a burst fire mid-swing on the first frame after a dropout.
+    // One attitude says where the phone is, not whether it is moving, and "perfectly still" from it
+    // would be an answer nobody measured.
     return Err<double>(StatusCode::FailedPrecondition, kComponent,
                        "a single sample cannot show whether the device is moving");
   }

@@ -9,19 +9,15 @@ namespace sphanorama::bridge {
 
 size_t DecodeImuSamples(std::span<const double> flat, std::span<ImuSample> out) {
   const size_t taken = std::min(flat.size() / kDoublesPerSample, out.size());
-  // Two indices, because the host's read is destructive. `motionDrain` splices what it returns out
-  // of its own buffer, so by the time this loop runs the page has already let go of all `taken`
-  // samples: whatever is skipped here is not left behind for the next drain, it is gone. An early
-  // return therefore threw away up to sixty-three good samples to refuse one bad one, and reported
-  // a count the host's own position no longer agreed with. `written` compacts instead.
+  // Two indices: the host's read is destructive, so a sample skipped here is gone rather than left
+  // for the next drain, and an early return would throw away every good sample after a bad one.
   size_t written = 0;
   for (size_t i = 0; i < taken; ++i) {
     const double* f = flat.data() + i * kDoublesPerSample;
     ImuSample& sample = out[written];
     // Checked before the cast, not after — by the time a non-finite or out-of-range double has
     // been converted to `int64_t` the behaviour is already undefined, which is the same sentence
-    // `runtime.cpp` and `browser_project_store_access.cpp` carry over the same kind of line. This
-    // was the third door in `bridge/` and the only one that did not ask.
+    // `runtime.cpp` and `browser_project_store_access.cpp` carry over the same kind of line.
     //
     // Dropped rather than clamped or zeroed: a timestamp is what `OrientationPoseEngine::Integrate`
     // measures its window with, so a made-up one is a made-up rotation. `Drain` reports how many

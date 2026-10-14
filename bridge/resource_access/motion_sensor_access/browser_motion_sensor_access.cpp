@@ -83,8 +83,6 @@ Result<int32_t> BrowserMotionSensorAccess::Drain(std::span<ImuSample> out) {
                                           static_cast<int32_t>(kDoublesPerSample));
   if (count <= 0) return Ok(0);
 
-  // Destructive on the page's side: `motionDrain` has already let go of every sample it returned,
-  // so what the decoder drops is gone rather than left for the next drain.
   const auto taken = std::min(static_cast<size_t>(count), out.size());
   return Ok(static_cast<int32_t>(
       DecodeImuSamples(std::span<const double>(flat.data(), taken * kDoublesPerSample), out)));

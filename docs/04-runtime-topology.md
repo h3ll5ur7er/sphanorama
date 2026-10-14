@@ -204,7 +204,9 @@ Wire encoding is a **binary codec generated from that same parse** — `contract
 and `shell/src/bridge/codec.generated.ts` — over hand-written primitives in `wire.h` / `wire.ts`
 (ADR [0013](adr/0013-generated-binary-codec.md)). A golden payload asserted by both the C++ and the
 TypeScript suite pins the two halves to each other, so a disagreement about field order fails a
-test rather than decoding into plausible nonsense.
+test rather than decoding into plausible nonsense — within one build. The core's URL does not
+change between deploys, so a page and the core before it can meet on a phone, and nothing at that
+seam would notice (`docs/06-roadmap.md`, "The core's URL does not change between deploys").
 
 Dispatch on top of the codec is generated too: `bridge/facade.generated.cpp` decodes arguments,
 calls the manager the composition root holds, and encodes the `Result`; `shell/src/bridge/facade.generated.ts`

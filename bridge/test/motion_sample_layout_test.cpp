@@ -1,6 +1,6 @@
-// The browser motion port's flat layout, read natively. The port itself needs Emscripten, so the
-// only thing that ever read these doubles was a browser whose screen angle is always 0 and whose
-// samples never carry a rate — which decodes the same whether a field is read or not.
+// The browser motion port's flat layout, read natively. The port needs Emscripten, and the browser
+// suite's screen angle is always 0 and its samples carry no rate, so a field read from the wrong
+// slot decodes the same there as the right one.
 
 #include "resource_access/motion_sensor_access/motion_sample_layout.h"
 

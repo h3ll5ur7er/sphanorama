@@ -207,8 +207,8 @@ describe('the motion buffer the core drains', () => {
 
   it('hands nothing to a core that reads another layout, and keeps the samples', () => {
     // The page and the core are fetched separately and cached separately, so the first launch
-    // after a deploy can pair a new page with the core before it. Read at the wrong stride, every
-    // sample after the first is a misaligned run of doubles that decodes as a plausible attitude.
+    // after a deploy can pair a new page with the core before it. Read at the wrong stride, samples
+    // decode into plausible values rather than failing, wrong attitudes among them.
     // A core that names no stride is one from before the layout said which it was.
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples([sample(1), sample(2)]));
