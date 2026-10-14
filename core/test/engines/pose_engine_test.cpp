@@ -944,11 +944,11 @@ TEST(PoseEngine, AGyroscopeCountsWhateverElseTheDeviceHasBesideIt) {
 }
 
 TEST(PoseEngine, AJumpyAbsoluteReadingComesOutSmootherThanItWentIn) {
-  // What fusion buys on a still device. An indoor magnetometer wanders by degrees between
+  // What fusion buys on a still device. A platform's attitude wanders by degrees between
   // samples; the gyroscope says the device has not moved. Preferring the attitude hands that
   // noise straight to the reticle, which then shivers around a target it is already on.
   //
-  // In tilt and in heading both, since they are now corrected at different speeds. The first
+  // In tilt and in heading both, since they are corrected at different speeds. The first
   // reading is the truth, because the first is taken whole, and a heading that started three
   // degrees out would measure how slowly it is pulled back rather than how little it shivers.
   for (const bool inHeading : {false, true}) {
@@ -1196,7 +1196,7 @@ TEST(PoseEngine, ACreepingCompassTeachesTheGyroscopesOffsetAlmostNothing) {
   EXPECT_LT(AngleBetween(state.pose.orientation, before) * kRadToDeg, 0.1);
 }
 
-TEST(PoseEngine, TiltIsStillCorrectedAsFastAsBefore) {
+TEST(PoseEngine, ATiltStepIsFollowedWithinHalfASecond) {
   // What must not be given up for the heading. Gravity is the half of an attitude a platform
   // measures well, and a reticle that took ten seconds to notice the phone tipping would be the
   // lag ADR 0024 set its correction time to avoid. Pitch from an attitude that is neither level
@@ -1347,8 +1347,8 @@ TEST(PoseEngine, TheShareOfAnOffsetGravityCanSeeIsLearnedAtTheTiltsSpeed) {
     state = engine.Integrate(state, std::vector<ImuSample>{sample}).value;
     t += 10'000'000;
   }
-  // Up at sixty degrees is three quarters along the phone's vertical, so the tilt share of a
-  // vertical offset is three quarters of it there.
+  // Up at sixty degrees is half along the phone's vertical, so a quarter of a vertical offset is
+  // heading and the tilt share carries the other three quarters along the vertical.
   EXPECT_NEAR(state.gyroBias.y, 0.015, 0.002);
 }
 

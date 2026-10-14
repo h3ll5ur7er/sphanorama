@@ -83,7 +83,7 @@ chosen against both ends of the failure:
 - **A jump is overshot once, by about a tenth.** Learned at five times its correction time, the
   offset keeps the loop from ringing but not from passing a step: 11.6% of the jump, at its worst
   43 s later, so 20° after a 175° jump and 3.5° after a 30° one. The offset is learned from a
-  steady disagreement in the same way and is passed by at most 0.65%, at gaps near 49 s between
+  steady disagreement in the same way and is passed by at most 0.67%, at gaps near 50 s between
   fused samples.
 - **An offset about up is learned slowly, and shows while it is.** At 0.005 rad/s the estimate
   peaks 2.2° out after about twenty seconds, is 1.1° out at a minute and 0.23° at two. At
@@ -94,15 +94,16 @@ chosen against both ends of the failure:
   that leans towards the world's up is a turn gravity cannot see. The compass corrects that share
   slowly, and the gyroscope follows it meanwhile. At the zenith the whole of a roll is heading. A
   test of a pitched roll failed while this was written for exactly this reason, which is why the
-  roll case in `TiltIsStillCorrectedAsFastAsBefore` is level.
+  roll case in `ATiltStepIsFollowedWithinHalfASecond` is level.
 - **Heading now rests on the gyroscope's rates.** Before, an axis or unit mistake in
   `angularVelocityFromRotationRate` was corrected away within a tenth of a second. Now it would show
   as a heading that lags or overshoots a turn and then drifts back over ten seconds. The conversion
   is tested against the specification but has not met a device, and this is the first thing that
   would show if it is wrong.
-- **The offsets this was sized for are those of a calibrated gyroscope.** On Android the
-  gyroscope behind `rotationRate` is meant to be the platform's drift-compensated one, a few
-  thousandths of a rad/s at most. That is not measured here.
+- **The transient is tolerable only for a calibrated gyroscope.** On Android the gyroscope behind
+  `rotationRate` is meant to be the platform's drift-compensated one, a few thousandths of a rad/s
+  at most; an uncalibrated one would show the 0.02 rad/s figure above. That is not measured
+  here.
 - **Platforms without rates are unaffected.** An `OrientationOnly` stream takes every reading
   whole, so the creep reaches the reticle there exactly as before. Only a gyroscope can tell a creep
   from a turn.
@@ -131,13 +132,13 @@ reticle's error is the gate. Worse, a session anchored in a bent field holds its
 against every true reading afterwards, because every true reading is outside the gate. A slow
 correction degrades in proportion and always converges.
 
-**Never learn the heading's offset.** This branch's first version did it, on the argument that the
+**Never learn the heading's offset.** PR #98's first version did it, on the argument that the
 compass's error is the larger one and the offset it can teach is mostly its own creep. Without an
 integral the heading loop is proportional only, so a gyroscope offset about up stood ten seconds'
 worth away from readings that were exactly right: 11.4° at 0.02 rad/s, never learned while the
 phone kept its tilt, a sweep round the horizon included.
 
-**Learn the offset from a capped disagreement.** This branch's second version learned the heading's
+**Learn the offset from a capped disagreement.** PR #98's second version learned the heading's
 offset from at most 0.05 rad, on the argument that a larger disagreement is the compass jumping
 rather than the gyroscope drifting. It cut a jump's overshoot from 20° to 1.8°. But a clipped
 input in the learning and an unclipped one in the correction settle in different places whenever
@@ -146,7 +147,9 @@ offset makes up the difference: a still phone whose compass read 50° on one sam
 0.0072 rad/s from a gyroscope that read zero, which turns it 0.4° in every second of the next
 dropout. Uncapped, the same readings teach 0.00015. Jumps are rare and are overshot by a tenth;
 a compass whose errors are not symmetric is not unusual, and is the case this has to be right in.
+Capping the correction too would make the two agree, but a heading mismatch would then close at no
+more than 0.005 rad/s, about ten minutes for a half-turn, which is the gate's failure made slow.
 
-**Split by projecting the rotation vector onto up.** Also this branch's first version. After a
+**Split by projecting the rotation vector onto up.** Also PR #98's first version. After a
 175° jump beside a 2° tilt it planted 0.26 rad/s of offset along up and left a still phone 149°
 from a reading that never moved.

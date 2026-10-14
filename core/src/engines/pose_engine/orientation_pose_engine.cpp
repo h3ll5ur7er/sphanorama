@@ -62,10 +62,10 @@ bool Attitude(const ImuSample& sample) {
 // The values are starting points rather than measurements, the same standing as
 // kUnusableRateRadPerSec above, and they become config keys once there are real captures to tune
 // against. What they were chosen against is the shape of the failure at either extreme: correct
-// faster and magnetometer noise reaches the reticle, which then shivers on a target it is already
-// holding; correct slower and the estimate ignores a device that has genuinely turned. Learn the
-// offset faster and a real rotation is absorbed as one, so every turn after it lags; slower and
-// the drift this exists to remove is still there when the attitude drops out.
+// faster and noise in the reading's tilt reaches the reticle, which then shivers on a target it is
+// already holding; correct slower and the estimate ignores a device that has genuinely turned.
+// Learn the offset faster and a real rotation is absorbed as one, so every turn after it lags;
+// slower and the drift this exists to remove is still there when the attitude drops out.
 constexpr double kCorrectionSeconds = 0.1;
 constexpr double kBiasSeconds = 0.5;
 
@@ -215,8 +215,8 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
       // gap) and is under 1 at every gap, because past the time constant the denominator grows with
       // `seconds` while `share` is already saturating at 1. The heading's slower loop carries its
-      // disagreement across samples and passes a steady offset by at most 0.65%, at gaps near
-      // 49 s; and a step in the reading is overshot once, by about a tenth (ADR 0074).
+      // disagreement across samples and passes a steady offset by at most 0.67%, at gaps near
+      // 50 s; and a step in the reading is overshot once, by about a tenth (ADR 0074).
       //
       // It was a clamped expression until a reviewer removed the clamp and found the whole suite
       // still green — including the ten-gap sweep written for exactly this invariant. The clamp had

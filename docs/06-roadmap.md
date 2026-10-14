@@ -211,8 +211,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    disagreement is split about the world's up, as a twist and a swing: tilt is corrected over 0.1 s
    and charged to the offset over 0.5 s as before, and heading is corrected over 10 s and charged
    over 50 s. Twenty degrees of creep across a two-second dwell moves the estimate 1.91° rather
-   than 19.99°; the cost is that a gyroscope offset about up
-   takes minutes to learn, and shows by a couple of degrees while it is learned.
+   than 19.99°; the cost is that a gyroscope offset about up takes minutes to learn, and shows by
+   about two degrees at 0.005 rad/s, nearly nine at 0.02, while it is learned.
 
    What is left on this line is the same phone again. Every number here is from tests. The heading
    now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as
@@ -234,7 +234,7 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   0024, ADR 0025). The browser adapts `DeviceMotionEvent.rotationRate`, each sample says whether
   its rate was measured, and `Stability` judges each interval by the better signal available for
   it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
-  capture on a phone showed an indoor compass dragging a still reticle (ADR 0074). What is left on
+  still reticle moved on a phone, consistent with an indoor compass (ADR 0074). What is left on
   this line is that phone again: none of the four time constants is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
