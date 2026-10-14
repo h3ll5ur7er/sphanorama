@@ -11,6 +11,7 @@ import { startServer } from '../../tools/static_server.mjs';
 import { GRAB_MAX_EDGE } from '../src/access/preview-frame.ts';
 import { PREVIEW_MAX_EDGE } from '../src/clients/review/panel.ts';
 import { quaternionFromDeviceOrientation } from '../src/access/orientation.ts';
+import { MOTION_SAMPLE_LAYOUT } from '../src/access/capture-host.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = resolve(repoRoot, 'dist');
@@ -1967,6 +1968,83 @@ test('calls a manager through the generated facade', async ({ page }) => {
     // not a pipeline that is not built.
     await expect(page.locator('#facade')).toContainText(/\d+ methods · \d+ projects/,
                                                         { timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
+test('the core tells the page which motion layout it reads', async ({ page }) => {
+  // What the page checks before it asks for a camera (ADR 0074): the shipped core's
+  // `kMotionSampleLayout`, through the worker's boot, against the page's MOTION_SAMPLE_LAYOUT. A
+  // constant moved on one side alone refuses every capture, which the tests that press `#enable`
+  // would also see; this one says why, and agrees with a bump made on both sides together.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const layout = await page.evaluate(() => window.sphanoramaCore.motionSampleLayout());
+    expect(layout).toBe(MOTION_SAMPLE_LAYOUT);
+  } finally {
+    await server.close();
+  }
+});
+
+// Answers for the core as the page assigns it, which is after the boot asked the real core for its
+// capabilities and before the page decides what to offer. The shipped core always matches the
+// page, so this is how a skew is made; `window.sphanoramaCore` is the object the page holds.
+function answerForTheCore(layout) {
+  let core;
+  Object.defineProperty(window, 'sphanoramaCore', {
+    configurable: true,
+    get: () => core,
+    set: (value) => {
+      value.motionSampleLayout = () => layout;
+      core = value;
+    },
+  });
+}
+
+for (const reported of [MOTION_SAMPLE_LAYOUT + 1, null]) {
+  test(`a core that reports motion layout ${reported} is refused at boot, with nothing offered`,
+    async ({ page }) => {
+    // `#enable` is visible from first paint, so hiding it is something the check has to do, and
+    // hidden is what keeps the camera from being asked for. `null` is every core from before the
+    // layout was named.
+    await page.addInitScript(answerForTheCore, reported);
+    const server = await serve();
+    try {
+      await page.goto(server.appUrl);
+      await expect(page.locator('#stage')).toContainText('different updates', { timeout: 15000 });
+      await expect(page.locator('#enable')).toBeHidden();
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test('a core from another update is refused at boot, and a stored capture is not offered',
+  async ({ page }) => {
+  // The same check with a capture stored, so that `#resume` would be offered if the check were not
+  // there: on a page with nothing stored it ships hidden and proves nothing.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance'))
+      .toContainText(/captured|cell done/i, { timeout: 15000 });
+    await page.evaluate(() => window.sphanoramaHost.flush());
+
+    await page.addInitScript(answerForTheCore, MOTION_SAMPLE_LAYOUT + 1);
+    await page.reload();
+
+    await expect(page.locator('#stage')).toContainText('different updates', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeHidden();
+    await expect(page.locator('#enable')).toBeHidden();
   } finally {
     await server.close();
   }
@@ -3935,6 +4013,11 @@ test('a redeploy does not evict a cache that is still current', async ({ page })
     expect(source).not.toContain('__PRECACHE__');
     // And the core is on the precache list, not just the HTML.
     expect(source).toContain('sphanorama-core.wasm');
+    // And the scope root, which is where the app is launched (`start_url` is `./`) and is a
+    // different URL from `index.html`. Off the list, a launch's navigation reads the HTTP cache,
+    // which can still hold the previous deploy's page beside this deploy's core (ADR 0074).
+    const precache = JSON.parse(source.match(/const PRECACHE = (\[[^\]]*\]);/)[1]);
+    expect(precache).toContain(new URL(server.appUrl).pathname);
   } finally {
     await server.close();
   }

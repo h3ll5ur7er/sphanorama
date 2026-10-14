@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 #include "utilities/quaternion.h"
 
@@ -18,6 +19,8 @@ constexpr double kUnusableRateRadPerSec = 2.0;
 double Magnitude(const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 
 Vec3 Subtract(const Vec3& a, const Vec3& b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
+
+Vec3 Scaled(const Vec3& v, double s) { return Vec3{v.x * s, v.y * s, v.z * s}; }
 
 // Whether this sample's rate is a measurement rather than a zeroed field nobody filled in.
 //
@@ -60,12 +63,43 @@ bool Attitude(const ImuSample& sample) {
 // The values are starting points rather than measurements, the same standing as
 // kUnusableRateRadPerSec above, and they become config keys once there are real captures to tune
 // against. What they were chosen against is the shape of the failure at either extreme: correct
-// faster and magnetometer noise reaches the reticle, which then shivers on a target it is already
-// holding; correct slower and the estimate ignores a device that has genuinely turned. Learn the
-// offset faster and a real rotation is absorbed as one, so every turn after it lags; slower and
-// the drift this exists to remove is still there when the attitude drops out.
+// faster and noise in the reading's tilt reaches the reticle, which then shivers on a target it is
+// already holding; correct slower and the estimate ignores a device that has genuinely turned.
+//
+// The offset is learned over minutes, for tilt and heading alike, because a gyroscope's offset
+// changes over minutes and anything faster learns something else. Learned in half a second, it
+// follows a tilt disagreement that goes round — noise, or a sway read a little late — and the
+// offsets it learns, each at right angles to an up that is itself going round, add up along the
+// phone's vertical to one about up that the gyroscope does not have: 23.5° of heading from a
+// reading whose gravity circles half a degree (ADR 0074). Tilt has no need of the speed: an
+// offset not yet learned stands only a correction time's worth away, a tenth of a degree at
+// 0.02 rad/s.
 constexpr double kCorrectionSeconds = 0.1;
-constexpr double kBiasSeconds = 0.5;
+constexpr double kBiasSeconds = 50.0;
+
+// Heading is the one part of a platform's attitude that can be wrong for seconds on end: its
+// fusion pulls towards a magnetic field that steel and wiring indoors have bent, and a phone held
+// still watches the reticle creep. Gravity does not wander like that, so only the turn about the
+// world's up is trusted this slowly, and the gyroscope carries it in between (ADR 0074).
+//
+// The offset about up is learned from it too, because gravity cannot see it and on a phone that
+// keeps its tilt nothing else would. `kBiasSeconds` is five times this, which keeps the heading's
+// loop from ringing — it overshoots a step once, by about a tenth — and is slow enough that a creep
+// teaches the offset almost nothing.
+//
+// A starting point on the same footing as the two above. Across the two-second dwell that fires a
+// burst it lets through under a tenth of a creep (ADR 0074).
+constexpr double kHeadingCorrectionSeconds = 10.0;
+
+// The longest gap a prediction is made across. A browser's sensors report every 16 ms or so, and
+// the adapter already refuses a rate more than 200 ms from its attitude; a gap longer than this is
+// a stall — a hidden tab, a capture loop so far behind that the adapter's buffer dropped samples,
+// or the main thread the sensor events are delivered on — and not an interval anybody measured.
+constexpr double kLongestPredictionSeconds = 0.25;
+
+// The largest disagreement about gravity a reading is fused across; past it the reading is not a
+// measurement error (see where it is used). A tilt error in a reading is a few degrees.
+constexpr double kLargestTiltRadians = 30.0 * std::numbers::pi / 180.0;
 
 // The rotation from `from` to `to` as an axis-angle vector in `from`'s own frame, which is the
 // frame the gyroscope's rates are already in — so the disagreement can be subtracted from a rate
@@ -93,6 +127,15 @@ Quat Turned(const Quat& orientation, const Vec3& rate, double seconds) {
   return Normalize(Multiply(orientation, FromAxisAngle(rate, magnitude * seconds)));
 }
 
+// What carries an attitude reported with screen angle `fromDeg` into the frame of one reported
+// with `toDeg`: a page turn steps that frame about the axis the camera looks down by the change
+// in angle, and the adapter's attitude is the device's turned by -angle (ADR 0017, ADR 0074).
+// None where either angle is not finite, since such an angle names no frame.
+Quat FrameTurn(double fromDeg, double toDeg) {
+  if (!std::isfinite(fromDeg) || !std::isfinite(toDeg)) return Quat{};
+  return FromAxisAngle(Vec3{0.0, 0.0, 1.0}, (fromDeg - toDeg) * std::numbers::pi / 180.0);
+}
+
 }  // namespace
 
 Result<PoseState> OrientationPoseEngine::Initial(PoseMode mode, MotionCapability capability) {
@@ -107,6 +150,19 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
   PoseState state = prior;
 
   for (const ImuSample& sample : samples) {
+    // A page turn steps the frame the attitude and the rates are reported in, about the axis the
+    // camera looks down, and changes nothing about the phone. So the estimate and the offset are
+    // carried into the sample's frame before anything is compared with it, and the filter carries
+    // on as though nothing had happened — because nothing did. Left in the old frame, the offset
+    // points a quarter-turn wrong and is learned again over minutes; recognised from the readings
+    // instead, a page turn is missed whenever the estimate lags a creeping compass (ADR 0074).
+    if (std::isfinite(sample.screenAngleDeg) && sample.screenAngleDeg != state.screenAngleDeg) {
+      const Quat turn = FrameTurn(state.screenAngleDeg, sample.screenAngleDeg);
+      state.pose.orientation = Normalize(Multiply(state.pose.orientation, turn));
+      state.gyroBias = Rotate(Conjugate(turn), state.gyroBias);
+      state.screenAngleDeg = sample.screenAngleDeg;
+    }
+
     // Whether there is a gyroscope reading worth fusing this attitude with. Per sample rather
     // than per session: a stream can carry rates on some samples and not others, and a zeroed
     // angularVelocity means "not measured" wherever nothing filled it in. Blending a reading with
@@ -114,12 +170,12 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     // every platform reporting an attitude alone behaves exactly as it did before this existed.
     const bool fusing = Measured(sample);
     // Two questions, and they were one flag. `elapsed` is whether there is an interval to integrate
-    // a rate over — a clock, which the first sample of any stream sets whether or not it estimated
-    // anything. `predictable` is whether there is an *estimate* worth predicting forward and
-    // correcting back from, which is a stronger thing: dead reckoning can start from the identity,
-    // and a complementary filter cannot, because it would blend the first real reading with a guess
-    // nobody measured. At a 16 ms gap the correction share is about 15%, so getting that wrong
-    // leaves the pose most of a turn from a reading it should simply have taken.
+    // a rate over — a clock, which the first measuring sample of a stream sets whether or not it
+    // estimated anything. `predictable` is whether there is an *estimate* worth predicting forward
+    // and correcting back from, which is a stronger thing: dead reckoning can start from the
+    // identity, and a complementary filter cannot, because it would blend the first real reading
+    // with a guess nobody measured. At a 16 ms gap the correction share is about 15%, so getting
+    // that wrong leaves the pose most of a turn from a reading it should simply have taken.
     const bool elapsed = state.observed && sample.timestampNs > state.pose.timestampNs;
     // `absolute`, not "something moved it". A prediction is only worth blending against a reading
     // when it descends from a reading: dead reckoning moves the orientation too, so a stream
@@ -134,8 +190,11 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
     const bool predictable = state.absolute && elapsed;
     const double seconds =
         elapsed ? static_cast<double>(sample.timestampNs - state.pose.timestampNs) * 1e-9 : 0.0;
+    // A rate is a measurement of an instant, and held across a gap nobody sampled it says nothing
+    // about how the phone turned in it. A reading after one is a reading after a dropout.
+    const bool spanned = seconds <= kLongestPredictionSeconds;
 
-    if (Attitude(sample) && !(fusing && predictable)) {
+    if (Attitude(sample) && !(fusing && predictable && spanned)) {
       // Ground truth, taken as it stands. With no gyroscope there is nothing to disagree with it,
       // and on the first sample there is no elapsed time to have predicted anything over.
       state.pose.orientation = Normalize(sample.orientation);
@@ -148,60 +207,56 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // in itself.
       const Quat predicted =
           Turned(state.pose.orientation, Subtract(sample.angularVelocity, state.gyroBias), seconds);
-      const Vec3 error = RotationBetween(predicted, Normalize(sample.orientation));
 
-      // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
-      // sample of 10 ms and no more.
-      const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
-      state.pose.orientation = Turned(predicted, error, share);
+      // Split about the world's up rather than the phone's own vertical: pitched up, most of a
+      // compass error lies along the axis the camera looks down.
+      //
+      // As a twist and a swing, not by projecting a rotation vector onto up. The two agree for
+      // small disagreements and part company for large ones: projected, a heading jump carries
+      // part of a small tilt with it and turns the rest sideways, and the fast loop chasing that
+      // charges the gyroscope for a tilt that is not there. The swing is exactly the disagreement
+      // about where gravity points, whatever the heading.
+      const Vec3 up = Rotate(Conjugate(predicted), Vec3{0.0, 1.0, 0.0});
+      const Quat disagreement = Multiply(Conjugate(predicted), Normalize(sample.orientation));
+      const double along = Dot(Vec3{disagreement.x, disagreement.y, disagreement.z}, up);
+      const Quat twist = Normalize(Quat{disagreement.w, up.x * along, up.y * along, up.z * along});
+      const Quat swing = Multiply(Conjugate(twist), disagreement);
+      const Vec3 heading = RotationBetween(Quat{}, twist);
+      const Vec3 tilt = RotationBetween(Quat{}, swing);
 
-      // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
-      // error that must have produced it, which is what a zero offset is.
-      //
-      // `share` is what does that conversion, and getting it wrong is how this went badly wrong
-      // once. A standing disagreement is the rate error multiplied by the window it accumulated
-      // over, and `seconds / share` is that window: it flattens out at the correction time for
-      // samples closer together than one, and equals the gap itself for samples further apart.
-      // So multiplying the disagreement by `share` divides out the window and leaves a rate,
-      // and dividing by kBiasSeconds makes that an integral with a fixed time constant however
-      // fast the samples arrive.
-      //
-      // Charging `seconds` instead — as this did — is quadratic in the gap, because the
-      // disagreement already grows with it. At 60 Hz the two are within 10% of each other and at
-      // one second apart the loop diverges: a 0.02 rad/s offset was learned as 10 rad/s over six
-      // samples, and the dropout it was meant to protect drifted 90 degrees instead of one.
-      //
-      // A single observation may move the offset by at most the whole rate error it saw, so the
-      // estimate cannot overshoot the truth and cannot oscillate around it — whatever the capture
-      // loop does with its timestamps. That is a property of the expression below rather than of a
-      // guard on it: the factor `share / max(kBiasSeconds, seconds)` peaks at 0.9933 (near a 0.28 s
-      // gap) and is under 1 at every gap, because past the time constant the denominator grows with
-      // `seconds` while `share` is already saturating at 1.
-      //
-      // It was a clamped expression until a reviewer removed the clamp and found the whole suite
-      // still green — including the ten-gap sweep written for exactly this invariant. The clamp had
-      // been load-bearing when the divisor was `kBiasSeconds` alone, where the factor really did
-      // pass 1; `std::max` took the job away from it and the comment went on crediting it. A guard
-      // that cannot fire reads as the thing keeping you safe, which is worse than no guard: the
-      // next person to change the divisor would trust it.
-      //
-      // No stillness detector, and none needed: what accumulates here is the part of the error
-      // that keeps pointing the same way. Noise does not, and cancels. A device that is really
-      // turning produces a prediction the reading agrees with, so there is nothing to charge.
-      // Divided by the *window*, not by the time constant alone. `error * share` is the rate error
-      // (the disagreement with its accumulation window divided out); charging `share / kBiasSeconds`
-      // therefore steps the offset by that rate times `seconds / kBiasSeconds`, which grows with the
-      // gap — so the clamp below bounded the step by the whole *angle* of disagreement while its
-      // comment claimed the whole rate error. The two differ by exactly that window.
-      //
-      // Measured before the fix, a still device reporting 0.02 rad/s: sign flip at a 2 s gap, and
-      // −5.48 rad/s learned across twelve samples 10 s apart. `std::max` keeps the fast-sample
-      // behaviour identical — under one time constant the window is the time constant — and makes
-      // a long gap charge at most the rate error it actually saw, which is what the paragraph
-      // above has always said it does.
-      const double charge = share / std::max(kBiasSeconds, seconds);
-      state.gyroBias = Subtract(state.gyroBias, Vec3{error.x * charge, error.y * charge,
-                                                      error.z * charge});
+      // Gravity is the half of an attitude a platform measures well, so a reading whose gravity is
+      // tens of degrees from the prediction's is not a measurement error: a real turn faster than
+      // the rate held across a gap shorter than kLongestPredictionSeconds, or a reading broken
+      // outright. Taken whole, like a reading after a gap; fused, the share of it leaning towards
+      // the world's up would be corrected at the heading's speed and the rest charged to the
+      // gyroscope. The offset stays where it is, since the frame the rates arrive in did not turn.
+      if (Magnitude(tilt) > kLargestTiltRadians) {
+        state.pose.orientation = Normalize(sample.orientation);
+      } else {
+        // Exponential rather than a fixed share, so that ten samples of 1 ms correct as much as one
+        // sample of 10 ms and no more.
+        const double share = 1.0 - std::exp(-seconds / kCorrectionSeconds);
+        const double headingShare = 1.0 - std::exp(-seconds / kHeadingCorrectionSeconds);
+        state.pose.orientation =
+            Turned(Turned(predicted, heading, headingShare), tilt, share);
+
+        // The same disagreement, charged to the gyroscope — but first turned back into the *rate*
+        // error that must have produced it, which is what a zero offset is. `share` does that: a
+        // standing disagreement is the rate error times the window it accumulated over, and
+        // `seconds / share` is that window, so multiplying by `share` leaves a rate, and dividing
+        // by kBiasSeconds integrates it with one time constant however fast the samples arrive.
+        // Charging `seconds` instead is quadratic in the gap, and once ran a 0.02 rad/s offset to
+        // 10 rad/s at one-second gaps. A gap here is at most kLongestPredictionSeconds, so one
+        // observation moves the offset by at most half a percent of the rate error it saw.
+        //
+        // No stillness detector, and none needed: what accumulates is the part of the error that
+        // keeps pointing the same way. A device that is really turning produces a prediction the
+        // reading agrees with, so there is nothing to charge.
+        const double charge = share / kBiasSeconds;
+        const double headingCharge = headingShare / kBiasSeconds;
+        state.gyroBias = Subtract(state.gyroBias, Scaled(tilt, charge));
+        state.gyroBias = Subtract(state.gyroBias, Scaled(heading, headingCharge));
+      }
       state.absolute = true;
       // Anchored here as well as in the branch above, because both are branches that fold in a
       // reading and that is what anchoring is.
@@ -217,9 +272,8 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
       // zero: the contract's word for "nothing estimated this".
       state.anchored = true;
     } else if (elapsed && fusing) {
-      // Dead reckoning, and the only stretch where the bias above earns its keep: nothing is
-      // correcting the estimate, so an offset left in the rate integrates straight into the
-      // answer.
+      // Dead reckoning, where nothing corrects the offset at all: an offset left in the rate
+      // integrates straight into the answer.
       //
       // Gated on a measured rate, and the gate is not decorative: a sample with
       // neither an attitude nor a measured rate carries a zero-filled `angularVelocity`, so
@@ -238,16 +292,25 @@ Result<PoseState> OrientationPoseEngine::Integrate(const PoseState& prior,
         // pose with the confidence of a measured one, and the drift would be invisible.
         state.absolute = false;
       }
+      // Across a gap the rate says nothing about the turn either, still or not, so the estimate
+      // stops descending from the reading before it whatever the rate integrated to.
+      if (!spanned) state.absolute = false;
     }
     // The clock only moves forward. A sample too old to have an interval of its own is too old to
     // become the interval for the next one: adopting its timestamp unconditionally refused it and
     // then fabricated a gap for its successor, so one stale sample in a 60 Hz stream handed the
     // following sample a window hundreds of times too long — and the bias learned over that window
     // is charged as though the device had really been turning for it.
-    state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
-    // A sample arrived, which is what the next one's elapsed time is measured from. Whether it
-    // anchored anything is `anchored`, set by the two branches above that fold in a reading.
-    state.observed = true;
+    //
+    // And only for a sample that measured something. One that carries neither an attitude nor a
+    // rate says nothing about the interval before it, and timed from it, a reading after a gap
+    // would be predicted across the few milliseconds since rather than the gap itself.
+    // `observed` with it, or a silent first sample starts a clock it never set, and the first rate
+    // after it is integrated across its whole timestamp.
+    if (Attitude(sample) || Measured(sample)) {
+      state.pose.timestampNs = std::max(state.pose.timestampNs, sample.timestampNs);
+      state.observed = true;
+    }
   }
 
   if (!samples.empty()) state.pose.angularVelocity = samples.back().angularVelocity;
@@ -272,7 +335,7 @@ Result<PoseSample> OrientationPoseEngine::Correct(const FrameRef&, const FrameRe
 
 Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> samples) {
   if (samples.empty()) {
-    // Not "perfectly still": reporting stability for a dropout would let a burst fire blind.
+    // Not "perfectly still": a dropout says nothing about whether the device is moving.
     return Err<double>(StatusCode::FailedPrecondition, kComponent,
                        "no samples to judge stability from");
   }
@@ -282,8 +345,8 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   // The distinction is not academic. A browser with no gyroscope adapted reports an attitude and
   // no rates, so every sample it produces carries a zeroed angularVelocity standing in for "not
   // measured" — and reading those zeros as a measurement reported a phone mid-swing as perfectly
-  // still. Stability is what gates firing a burst, so that is the one direction this must not be
-  // wrong in.
+  // still. Nothing fires on this today; it is the signal a burst would be held back by, and still
+  // is the direction such a gate could not afford it to be wrong in.
   //
   // `hasAngularVelocity` is what tells the two apart. It used to be `hasOrientation`, on the
   // reasoning that a sample carrying an attitude came from a platform reporting no rates — true
@@ -311,7 +374,10 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
                sample.timestampNs > previous->timestampNs) {
       const double seconds =
           static_cast<double>(sample.timestampNs - previous->timestampNs) * 1e-9;
-      peak = std::max(peak, AngleBetween(previous->orientation, sample.orientation) / seconds);
+      // In one frame first: across a page turn a still phone's attitudes are a quarter-turn apart.
+      const Quat before = Multiply(previous->orientation,
+                                   FrameTurn(previous->screenAngleDeg, sample.screenAngleDeg));
+      peak = std::max(peak, AngleBetween(before, sample.orientation) / seconds);
       measured = true;
     }
     // Whatever carried an attitude is what the next gap is measured from, whether or not its own
@@ -320,8 +386,8 @@ Result<double> OrientationPoseEngine::Stability(std::span<const ImuSample> sampl
   }
 
   if (!measured) {
-    // One attitude says where the phone is, not whether it is moving. Answering "perfectly still"
-    // from it would let a burst fire mid-swing on the first frame after a dropout.
+    // One attitude says where the phone is, not whether it is moving, and "perfectly still" from it
+    // would be an answer nobody measured.
     return Err<double>(StatusCode::FailedPrecondition, kComponent,
                        "a single sample cannot show whether the device is moving");
   }

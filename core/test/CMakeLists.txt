@@ -55,6 +55,7 @@ add_executable(sphanorama_tests
   ${CMAKE_SOURCE_DIR}/bridge/test/capabilities_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/heap_budget_test.cpp
   ${CMAKE_SOURCE_DIR}/bridge/test/facade_test.cpp
+  ${CMAKE_SOURCE_DIR}/bridge/test/motion_sample_layout_test.cpp
   resource_access/camera_access_contract_test.cpp
   resource_access/codec_and_export_test.cpp
   resource_access/frame_store_access_contract_test.cpp

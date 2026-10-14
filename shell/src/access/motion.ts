@@ -52,6 +52,11 @@ export interface OrientationSample {
    * becomes `hasAngularVelocity` on the contract's ImuSample (ADR 0025).
    */
   angularVelocity?: Vec3;
+  /**
+   * The screen angle both halves were converted with. Nothing applies it again; the core needs
+   * it to notice that a page turn changed the frame under the estimate it carries (ADR 0074).
+   */
+  screenAngleDeg: number;
 }
 
 export interface MotionSensorAccess {
@@ -152,9 +157,10 @@ export function createMotionSensorAccess(host: MotionWindow): MotionSensorAccess
       latestRate.alpha, latestRate.beta, latestRate.gamma, screenAngleDeg);
   }
 
-  function push(sample: OrientationSample, screenAngleDeg: number) {
+  function push(sample: Omit<OrientationSample, 'screenAngleDeg'>, screenAngleDeg: number) {
     const rate = rateFor(sample.timestampNs, screenAngleDeg);
-    buffered.push(rate ? { ...sample, angularVelocity: rate } : sample);
+    buffered.push(rate ? { ...sample, angularVelocity: rate, screenAngleDeg }
+      : { ...sample, screenAngleDeg });
     if (buffered.length > MAX_BUFFERED_SAMPLES) {
       buffered = buffered.slice(-MAX_BUFFERED_SAMPLES);
     }

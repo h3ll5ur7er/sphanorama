@@ -125,7 +125,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     }
     case 3: {  // CaptureSessionManager.onMotion
       std::vector<ImuSample> samples;
-      { const size_t count = in.GetCount(115);
+      { const size_t count = in.GetCount(123);
     samples.clear();
     samples.resize(count);
     for (auto& item : samples) { (void)codec::Decode(in, item); } }

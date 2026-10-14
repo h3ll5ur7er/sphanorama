@@ -170,8 +170,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
   tier.settle(booted.resident);
   const methodNames = booted.methods;
 
+  const motionSampleLayout = booted.motionSampleLayout ?? null;
   const runtime: CoreRuntime = {
     methods: () => methodNames,
+    motionSampleLayout: () => motionSampleLayout,
 
     async capabilities(host: HostState): Promise<RuntimeCapabilities> {
       const answer = await ask({

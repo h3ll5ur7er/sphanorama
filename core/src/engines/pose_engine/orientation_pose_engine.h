@@ -6,10 +6,11 @@ namespace sphanorama {
 
 // V5, as far as it goes today.
 //
-// Two sources, and absolute wins. A platform that reports a fused orientation — which is what the
-// browser does — has already solved the hard part, and re-deriving one from rates would add drift
-// to a value that arrived correct. Where only rates are available they are integrated, which
-// drifts, and an absolute reading resets that drift the moment one arrives.
+// Two sources, each trusted for what it measures well. The gyroscope says how the phone turned; the
+// platform's attitude says where it ended up. Where both arrive they are fused (ADR 0024), with the
+// attitude's tilt trusted quickly, since it comes from gravity, and its heading slowly, since it
+// comes from a compass that indoors creeps (ADR 0074). An attitude alone is taken as it stands, and
+// rates alone are integrated, which drifts.
 //
 // Stateless, like every engine: the carried-over estimate arrives as a PoseState and leaves as a
 // new one, so the same batch of samples always folds into the same answer and a recorded session

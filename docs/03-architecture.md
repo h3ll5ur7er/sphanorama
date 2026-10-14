@@ -288,7 +288,10 @@ The frame is the **viewfinder's**, not the chassis'. Every platform reading desc
 user is holding, and the browser re-orients the page inside it; the adapter folds
 `screen.orientation.angle` in so that +X means "the right edge of the picture" (ADR 0017). Roll is
 measured from that axis, so getting it wrong is a level horizon drawn on end in landscape and
-nothing else — which is why it survived a phase.
+nothing else — which is why it survived a phase. The conversion stays the adapter's, but the
+viewfinder's frame turns when the page does, so each sample also says which angle it was
+converted with (`ImuSample::screenAngleDeg`): the pose engine carries what it has learned from
+sample to sample, and has to carry it into the new frame (ADR 0074).
 
 ## 3.6 Use-case walkthroughs
 

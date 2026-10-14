@@ -1,7 +1,8 @@
 # The C++ side of the WASM boundary. Builds natively too — that is not a curiosity, it is how
 # the capability probe and (later) the facade's marshalling get tested without a browser.
 set(SPHANORAMA_BRIDGE_SOURCES capabilities.cpp facade.generated.cpp heap_budget.cpp module.cpp
-                              runtime.cpp)
+                              runtime.cpp
+                              resource_access/motion_sensor_access/motion_sample_layout.cpp)
 if(EMSCRIPTEN)
   # Browser-backed ports: resource-access code that needs Emscripten, which is why it lives here
   # rather than in core/ (tools/no_browser_check.py enforces that split).
@@ -37,7 +38,7 @@ if(EMSCRIPTEN)
     -sALLOW_MEMORY_GROWTH=1
     -sENVIRONMENT=web,worker
     -sFILESYSTEM=0
-    -sEXPORTED_FUNCTIONS=_sph_probe_runtime,_sph_probe_field_count,_sph_probe_field_name,_sph_facade_call,_sph_facade_method_count,_sph_facade_method_name,_sph_facade_result,_malloc,_free
+    -sEXPORTED_FUNCTIONS=_sph_probe_runtime,_sph_motion_sample_layout,_sph_probe_field_count,_sph_probe_field_name,_sph_facade_call,_sph_facade_method_count,_sph_facade_method_name,_sph_facade_result,_malloc,_free
     # stringToUTF8/lengthBytesUTF8 are used by the ports' EM_JS bodies to hand a string
     # back to C++; without them the port fails the first time a document exists.
     -sEXPORTED_RUNTIME_METHODS=HEAP32,HEAPU8,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8

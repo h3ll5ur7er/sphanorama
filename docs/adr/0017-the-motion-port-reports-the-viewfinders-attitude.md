@@ -1,6 +1,7 @@
 # ADR 0017 — The motion port reports the viewfinder's attitude, as a quaternion
 
-**Status:** accepted
+**Status:** accepted; amended by [0074](0074-heading-is-trusted-slowly-and-tilt-quickly.md), which
+reports the screen angle with each sample
 
 ## Context
 Phase 0 was deployed and held in a hand, which found two things in the same place.

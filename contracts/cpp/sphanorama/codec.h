@@ -115,6 +115,7 @@ inline void Encode(Writer& out, const ImuSample& value) {
   out.PutBool(value.hasOrientation);
   Encode(out, value.orientation);
   out.PutBool(value.hasAngularVelocity);
+  out.PutF64(static_cast<double>(value.screenAngleDeg));
 }
 
 inline bool Decode(Reader& in, ImuSample& value) {
@@ -126,6 +127,7 @@ inline bool Decode(Reader& in, ImuSample& value) {
   value.hasOrientation = in.GetBool();
   if (!Decode(in, value.orientation)) return false;
   value.hasAngularVelocity = in.GetBool();
+  value.screenAngleDeg = static_cast<decltype(value.screenAngleDeg)>(in.GetF64());
   return in.ok();
 }
 

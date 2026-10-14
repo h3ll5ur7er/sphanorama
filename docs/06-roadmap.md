@@ -187,9 +187,10 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    sample carrying both an attitude and a rate it predicts forward with the gyroscope, corrects
    part of the way to the reading, and charges the rest to the gyroscope's zero offset — which it
    therefore learns without a stillness detector, and keeps in `PoseState` because an engine is
-   stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° of yaw into one second
-   of dead reckoning from a device that never moved; it is now under 0.2°, and a reading 3° out on
-   every sample comes out under 1.5°.
+   stateless per session (ADR 0024). A 0.02 rad/s offset used to put 1.15° into one second of dead
+   reckoning from a device that never moved; once learned, which now takes a couple of minutes,
+   it is under 0.2°, and a reading 3° out on every sample comes out under 1.5°. The part of the
+   offset about the world's up is learned only from the compass (ADR 0074).
 
    **And the rates are real now** (ADR 0025). The browser adapter listens for
    `DeviceMotionEvent.rotationRate`, converts it into the viewfinder's frame — inverting the
@@ -203,8 +204,23 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
    so reported a phone swung between two matching attitudes as perfectly still while the
    gyroscope in the same sample read 3 rad/s.
 
-   What is left on this line is a device. Every number here is from tests, and the gains — 0.1 s
-   to correct, 0.5 s to learn an offset — have never met a real phone.
+   **And a device has met it** (ADR 0074). A Pixel 9 Pro XL saw the reticle keep moving with the
+   phone held still, in some directions only. That is consistent with an indoor compass, though not
+   yet confirmed by a log: the platform's attitude takes its heading from the magnetometer and can
+   creep towards a bent field, and the filter followed whatever the reading did. So the
+   disagreement is split about the world's up, as a twist and a swing: tilt is corrected over
+   0.1 s as before, heading over 10 s, and both are learned as the gyroscope's offset over 50 s. A
+   reading after a gap of more than a quarter of a second, or with gravity more than 30° out, is
+   taken whole. A page turned between portrait and landscape changes only the frame: the adapter
+   reports the screen angle with each sample, and the engine carries its estimate and its learned
+   offset into the new one. Twenty degrees of
+   creep across a two-second dwell moves the estimate 1.91° rather than 19.99°; the cost is that a
+   gyroscope offset takes minutes to learn, and one about up shows by about two degrees at
+   0.005 rad/s, nearly nine at 0.02, while it is learned.
+
+   What is left on this line is the same phone again. Every number here is from tests. The heading
+   now rests on the gyroscope's rates, so a mistake in their conversion would show there first, as
+   a heading that lags a turn and drifts back.
 4. Deferred with reasons, not forgotten: the trimmed OpenCV **WASM** build (deferred until Phase 2
    registration needed it in a browser, and built then — ADR 0069) and the `bench/` CLI, which Phase 2's
    accuracy harness is the first thing to actually need. (This said Phase 1's, from before the
@@ -218,11 +234,13 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
 
 - `CoveragePlannerEngine`: ring/geodesic tessellation from lens FoV, acceptance cones, coverage
   and hole evaluation.
-- `PoseEngine`: complementary fusion, gyro bias handling and stability gating are **done** (ADR
+- `PoseEngine`: complementary fusion, gyro bias handling and stability estimation are **done** (ADR
   0024, ADR 0025). The browser adapts `DeviceMotionEvent.rotationRate`, each sample says whether
   its rate was measured, and `Stability` judges each interval by the better signal available for
-  it. What is left on this line is a device: the correction and offset time constants have never
-  met one.
+  it. Heading is trusted from the compass over 10 s and tilt from gravity over 0.1 s, because a
+  still reticle moved on a phone, consistent with an indoor compass (ADR 0074). What is left on
+  this line is that phone again: none of its time constants, nor the gap and gravity thresholds,
+  is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
@@ -785,6 +803,28 @@ has gone wrong.
 
 Worth doing before the surface grows: every message added between now and then is another pair
 that has to be ordered.
+
+### The core's URL does not change between deploys
+
+Found by PR #98's round-8 boundary lens. The page and worker chunks are content-hashed, but the
+core is always `core/sphanorama-core.{js,wasm}`, and the service worker answers anything but a
+navigation from its cache. So the first launch after a deploy, while the old worker still controls
+the page, can run the new page against the previous deploy's core. Nothing across that seam says
+which build either side is: the facade's codec would decode a reordered field into plausible
+values exactly as the flat motion port did when its stride changed (ADR 0074).
+
+The motion port now names its layout's version on both sides, and a skewed launch does not
+capture until a load brings page and core together: a new page says the update is half-arrived
+before it asks for a camera, and an old page gets ADR 0044's missing-sensor sentence from the
+core. That is one port's guard, not a fix. The fix is a core URL that changes with the build, a
+hashed name or a build id in the query, so the page and the core it loads can only come from the
+same deploy.
+
+The core is itself two files, and the fix has to cover the pair. Round 12 found that a new worker
+claiming the page between the glue's import and its fetch of the wasm hands the old glue the new
+wasm; most likely a `LinkError` and "the core failed to load", which a reload clears. The layout
+check vouches for the wasm, whose export it reads, and says nothing about the glue that loaded it.
+The window is narrow, the mechanism predates PR #98, and the same versioned URL closes it.
 
 ---
 

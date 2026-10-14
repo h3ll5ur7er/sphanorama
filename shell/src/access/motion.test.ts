@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMotionSensorAccess } from './motion';
-import { quaternionFromDeviceOrientation } from './orientation';
+import { quaternionFromDeviceOrientation, quaternionFromSensorReading } from './orientation';
 
 interface FakeWindow {
   DeviceOrientationEvent?: unknown;
@@ -547,6 +547,8 @@ describe('which way up the page is', () => {
       .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 0));
     expect(drained.value[1].orientation)
       .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 90));
+    // And says which it used, so the core can carry what it holds into the new frame (ADR 0074).
+    expect(drained.value.map((sample) => sample.screenAngleDeg)).toEqual([0, 90]);
   });
 
   it('treats a platform with no Screen Orientation API as unrotated', async () => {
@@ -559,9 +561,11 @@ describe('which way up the page is', () => {
     listener({ alpha: 90, beta: 0, gamma: -90, timeStamp: 1 });
 
     const drained = await access.drain(8);
+    expect(drained.ok).toBe(true);
     if (drained.ok) {
       expect(drained.value[0].orientation)
         .toEqual(quaternionFromDeviceOrientation(...LANDSCAPE_LEVEL, 0));
+      expect(drained.value[0].screenAngleDeg).toBe(0);
     }
   });
 });
@@ -709,6 +713,37 @@ describe('rates, where the platform measures them', () => {
     expect(sample.angularVelocity).toBeDefined();
     expect(sample.angularVelocity?.x).toBeCloseTo(0, 6);
     expect(Math.abs(sample.angularVelocity?.y ?? 0)).toBeCloseTo(Math.PI / 2, 6);
+    expect((sample as { screenAngleDeg?: number }).screenAngleDeg).toBe(90);
+  });
+
+  it('says which way up the page was on the sensor path too, rates and all', async () => {
+    // The path a phone with a gyroscope takes: the quaternion sensor for the attitude, and
+    // devicemotion for the rate attached to it. The angle each sample names is the one both halves
+    // were converted with, read at that sample — the core carries its estimate across the change.
+    let angle = 0;
+    const { sensor, ctor } = fakeSensor();
+    const host = fakeWindow({
+      AbsoluteOrientationSensor: ctor,
+      screen: { orientation: { get angle() { return angle; } } },
+    });
+    const access = createMotionSensorAccess(host as never);
+    await access.start(60);
+    const motion = listenerFor(host, 'devicemotion');
+    expect(motion).toBeDefined();
+
+    motion?.({ timeStamp: 1, rotationRate: { alpha: 0, beta: 90, gamma: 0 } } as unknown as Event);
+    sensor.emitReading(landscapeReading, 2);
+    angle = 90;
+    motion?.({ timeStamp: 3, rotationRate: { alpha: 0, beta: 90, gamma: 0 } } as unknown as Event);
+    sensor.emitReading(landscapeReading, 4);
+
+    const drained = await access.drain(8);
+    expect(drained.ok).toBe(true);
+    if (!drained.ok) return;
+    expect(drained.value.map((sample) => sample.screenAngleDeg)).toEqual([0, 90]);
+    expect(drained.value.every((sample) => sample.angularVelocity !== undefined)).toBe(true);
+    expect(drained.value[1].orientation)
+      .toEqual(quaternionFromSensorReading(landscapeReading, 90));
   });
 
   it('forgets a rate when the platform stops reporting one', async () => {
