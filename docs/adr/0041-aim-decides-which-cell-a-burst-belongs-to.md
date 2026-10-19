@@ -12,6 +12,10 @@
 > and the button it gated was deleted by 0044. What survives of that half is its intent, in the
 > core: `HoldStill` is still exactly the condition a burst arms on, and it is the manager that
 > checks it now rather than a client that anticipates it.
+>
+> **Extended by [ADR 0075](0075-a-burst-frame-is-taken-only-on-its-cell.md).** The aim is asked of
+> every frame of a burst, not only at the arm: a frame that falls due with the camera outside the
+> cell's cone drops the burst.
 
 ## Context
 

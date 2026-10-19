@@ -65,8 +65,10 @@ export function describeGuidance(guidance: CaptureGuidance, coverage: CoverageSt
   switch (guidance.action) {
     case 'SphereDone':
       return `sphere complete · ${progress}`;
+    // The tick a burst was dropped because the camera left the cell (ADR 0075). Nothing was
+    // kept, and the dwell fires the next burst, not a press.
     case 'TooFast':
-      return `slow down · ${progress}`;
+      return `${cell} · moved while capturing, hold still on it again · ${progress}`;
     case 'HoldStill':
       return `${cell} · hold still · ${progress}`;
     case 'Firing':

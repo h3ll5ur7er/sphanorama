@@ -1874,7 +1874,9 @@ TEST_F(CaptureSession, RefusesANegativeSettle) {
 
 TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   // A burst that retargeted itself because the user drifted off the cell mid-flight would end up
-  // with candidates from two cells in one set, which is a ghost nobody could explain later.
+  // with candidates from two cells in one set, which is a ghost nobody could explain later. A drift
+  // drops the burst when its next frame falls due (ADR 0075); until then, which is every tick this
+  // test makes, the burst is still the armed cell's and guidance names it.
   //
   // This one needs the real tessellation. The null planner makes a one-cell plan, where "the cell
   // being fired at" and "the nearest cell" are the same answer and the assertion cannot fail —
@@ -1927,6 +1929,132 @@ TEST_F(CaptureSession, GuidanceTargetsTheArmedCellWhileFiring) {
   ASSERT_TRUE(firing.ok()) << firing.status.detail;
   EXPECT_EQ(firing.value.targetNode.value, armedAt.value);
   EXPECT_EQ(firing.value.action, GuidanceAction::Firing);
+}
+
+// A rings-planned session for the tests about where a burst's frames were aimed, with the cell
+// the camera starts on. The fixture's null planner has one cell at identity that every direction
+// is inside, so nothing can leave it.
+struct AimedSession {
+  RingsCoveragePlannerEngine rings;
+  AimablePoseEngine aiming;
+  std::unique_ptr<CaptureSessionManager> manager;
+  CoverageNode home;
+};
+
+std::unique_ptr<AimedSession> BeginAimed(IFrameQualityEngine& quality,
+                                         IFramePreviewEngine& preview, ICameraAccess& camera,
+                                         IMotionSensorAccess& sensor, IFrameStoreAccess& store,
+                                         IProjectStoreAccess& projects, IClock& clock) {
+  auto session = std::make_unique<AimedSession>();
+  session->manager = std::make_unique<CaptureSessionManager>(
+      session->rings, session->aiming, quality, preview, camera, sensor, store, projects, clock);
+  CapturePlanSpec spec;
+  spec.horizontalFovDeg = 66.0;
+  spec.verticalFovDeg = 50.0;
+  spec.overlapTarget = 0.30;
+  spec.acceptanceConeDeg = 5.0;
+  spec.coverPoles = true;
+  const auto begun = session->manager->Begin(kProject, spec);
+  EXPECT_TRUE(begun.ok()) << begun.status.detail;
+  const NodeId start = AimedNode(*session->manager);
+  for (const CoverageNode& node : session->manager->GetPlan().value.nodes) {
+    if (node.id.value == start.value) session->home = node;
+  }
+  return session;
+}
+
+// `degrees` off `from`, turned about the camera's own vertical axis.
+Quat TurnedBy(const Quat& from, double degrees) {
+  return Multiply(from, FromAxisAngle(Vec3{0.0, 1.0, 0.0}, degrees * std::numbers::pi / 180.0));
+}
+
+TEST_F(CaptureSession, ABurstWhoseCameraLeavesTheCellIsDroppedRatherThanFiledThere) {
+  // `ArmBurst` refuses a cell the camera is not aimed at, because a burst records whatever the
+  // camera sees and the cell is only a name to file it under (ADR 0041). The same is true of every
+  // frame after the first, and nothing asked it of them: a phone that turned during the half
+  // second a burst takes filed what it turned to under the cell it left, and the build placed those
+  // frames where they really looked, which leaves the cell's own direction to whatever overlaps it.
+  // A field capture had gaps, and turning during the burst widened them (ADR 0075).
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  const int64_t before = store->Budget().value.heapUsedBytes;
+
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  clock.AdvanceMs(burst.settleMs);
+  const Result<CaptureGuidance> first = real.OnMotion({});
+  ASSERT_TRUE(first.ok()) << first.status.detail;
+  ASSERT_EQ(first.value.action, GuidanceAction::Firing) << "one frame taken on the cell";
+  ASSERT_EQ(camera->FramesTaken(), 1);
+
+  // Just outside the cell's five-degree cone, and the turn is seen on a tick no frame is due on, so
+  // the burst is still open when the next frame falls due.
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, 6.0));
+  ASSERT_EQ(camera->FramesTaken(), 1);
+  clock.AdvanceMs(burst.intervalMs);
+  const Result<CaptureGuidance> left = real.OnMotion({});
+
+  // Answered rather than failed: a phone that moved is the user's to correct, and a failed tick
+  // reads on the page as guidance having stopped working.
+  ASSERT_TRUE(left.ok()) << left.status.detail;
+  EXPECT_EQ(left.value.action, GuidanceAction::TooFast);
+  EXPECT_EQ(left.value.targetNode.value, session->home.id.value) << "named for the cell it left";
+  EXPECT_EQ(camera->FramesTaken(), 1) << "no frame is taken off the cell";
+  // Kept whole or not at all, as every other way a burst ends early: the frame taken on the cell
+  // goes too, neither in the cell nor in the store, and the locks come back.
+  EXPECT_TRUE(real.Candidates(session->home.id).value.empty());
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
+  EXPECT_FALSE(camera->ExposureLocked());
+
+  // Over: the next tick is guidance again, and the cell is still wanted.
+  const Result<CaptureGuidance> after = real.OnMotion({});
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_EQ(after.value.action, GuidanceAction::Seek);
+  TurnTo(real, session->aiming, session->home.targetOrientation);
+  EXPECT_EQ(AimedNode(real).value, session->home.id.value);
+  EXPECT_TRUE(FireBurstOn(real, clock, session->home.id, burst).ok());
+  EXPECT_EQ(real.Candidates(session->home.id).value.size(), 3u);
+}
+
+TEST_F(CaptureSession, ABurstWhoseCameraWandersInsideTheCellIsKept) {
+  // The other side of the rule, so it cannot be met by dropping every burst whose pose moved at
+  // all: a hand holding a phone still is not still, and the cone is how far it may wander.
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  clock.AdvanceMs(burst.settleMs);
+  // Turned on the tick that takes each frame, so every frame is taken where the test says.
+  const ImuSample sample{};
+  for (const double off : {0.0, 4.0, -4.0}) {
+    session->aiming.LookAt(TurnedBy(session->home.targetOrientation, off));
+    const Result<CaptureGuidance> tick = real.OnMotion(std::span<const ImuSample>(&sample, 1));
+    ASSERT_TRUE(tick.ok()) << tick.status.detail;
+    EXPECT_NE(tick.value.action, GuidanceAction::TooFast) << off;
+    clock.AdvanceMs(burst.intervalMs);
+  }
+  EXPECT_EQ(camera->FramesTaken(), 3);
+  EXPECT_EQ(real.Candidates(session->home.id).value.size(), 3u);
+}
+
+TEST_F(CaptureSession, ABurstWhoseFirstFrameWouldBeOffTheCellTakesNone) {
+  // The settle is part of the burst: a phone that turns away while the camera converges on its
+  // locks is off the cell when the first frame falls due, and that frame is no more the cell's
+  // than any later one.
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  BurstSpec burst;
+  burst.frameCount = 2;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, -12.0));
+  clock.AdvanceMs(burst.settleMs);
+  const Result<CaptureGuidance> due = real.OnMotion({});
+  ASSERT_TRUE(due.ok()) << due.status.detail;
+  EXPECT_EQ(due.value.action, GuidanceAction::TooFast);
+  EXPECT_EQ(camera->FramesTaken(), 0);
 }
 
 TEST_F(CaptureSession, ACameraThatStopsProducingFramesAbandonsTheBurstRatherThanHoldingTheLock) {

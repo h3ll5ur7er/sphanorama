@@ -661,8 +661,10 @@ Result<CaptureGuidance> CaptureSessionManager::OnMotion(std::span<const ImuSampl
     // user drifted would end up with candidates from two cells in one set.
     guidance.targetNode = burst_node_;
     // AdvanceBurst abandons the burst itself on the way out, so this needs no guard of its own.
-    SPH_TRY(const bool completed, AdvanceBurst());
-    guidance.action = completed ? GuidanceAction::CellDone : GuidanceAction::Firing;
+    SPH_TRY(const BurstTick advanced, AdvanceBurst());
+    guidance.action = advanced == BurstTick::Filled    ? GuidanceAction::CellDone
+                      : advanced == BurstTick::Dropped ? GuidanceAction::TooFast
+                                                       : GuidanceAction::Firing;
   }
 
   // The dwell, last, so it sees the action a burst in flight has already overwritten (ADR 0043).
@@ -966,6 +968,8 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
 
   firing_ = true;
   burst_node_ = node;
+  burst_aim_ = aimed->targetOrientation;
+  burst_cone_deg_ = aimed->acceptanceConeDeg;
   burst_spec_ = burst;
   pending_.clear();
   // The burst does not start when it is armed: the locks applied a line ago are what the camera
@@ -1154,17 +1158,28 @@ void CaptureSessionManager::Trim(std::vector<Candidate>& cell, size_t judged) {
   cell.swap(kept);
 }
 
-Result<bool> CaptureSessionManager::AdvanceBurst() {
+Result<CaptureSessionManager::BurstTick> CaptureSessionManager::AdvanceBurst() {
   const int64_t now = clock_.MonotonicNs();
   // One deadline for both waits, because from here they are the same question: the settle set it
   // when the burst was armed, every frame since has set it one interval ahead.
-  if (now < next_frame_ns_) return Ok(false);   // not due yet; the burst keeps waiting
+  if (now < next_frame_ns_) return Ok(BurstTick::Filling);   // not due yet; the burst keeps waiting
 
   // `ArmBurst` checked the pose it armed on; this is the one that breaks mid-burst, which would
   // file every later frame as a candidate no `Refine` could use. Same code as at the arm (ADR 0065).
   if (const std::optional<std::string_view> defect = PoseSampleDefect(pose_state_.pose)) {
     return Abandon(Fail(StatusCode::FailedPrecondition, kComponent,
                         "the pose engine reported a pose with " + std::string(*defect)));
+  }
+
+  // And the condition the arm checked, asked of every frame rather than of the first: a burst
+  // records whatever the camera sees, so a frame taken off the cell is a good picture filed in the
+  // wrong place (ADR 0041). The build places it where it really looked, which leaves the cell's own
+  // direction to whatever overlaps it — a capture whose phone turned during the burst had gaps
+  // (ADR 0075). Dropped whole, as every early end of a burst is, and answered rather than failed:
+  // the user moved, and a failed tick reads on the page as guidance having stopped working.
+  if (!OnArmedCell()) {
+    if (Status released = Disarm(true); !released.ok()) return released;
+    return Ok(BurstTick::Dropped);
   }
 
   auto frame = camera_.PeekPreviewFrame();
@@ -1204,7 +1219,9 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   candidate.quality = scored.value;
   pending_.push_back(candidate);
 
-  if (static_cast<int32_t>(pending_.size()) < burst_spec_.frameCount) return Ok(false);
+  if (static_cast<int32_t>(pending_.size()) < burst_spec_.frameCount) {
+    return Ok(BurstTick::Filling);
+  }
 
   // The burst is full, so it becomes evidence: appended to the cell and ranked as one set. Until
   // this line the frames are not in the cell at all, which is what keeps Coverage from reporting
@@ -1242,7 +1259,17 @@ Result<bool> CaptureSessionManager::AdvanceBurst() {
   // unlock fails the cell is still captured and the caller is told anyway, because a camera left
   // locked is not something to discover later.
   if (auto unlocked = Disarm(false); !unlocked.ok()) return unlocked;
-  return Ok(true);
+  return Ok(BurstTick::Filled);
+}
+
+bool CaptureSessionManager::OnArmedCell() const {
+  // The arm's condition, read the same way. The cone and the cell's direction were checked usable
+  // when it armed, and `AdvanceBurst` has just checked the pose for defects, so the plain
+  // comparison is the whole question (see `ArmBurst`). Confidence is not asked again: the arm
+  // required a measured pose, and zero means nothing has *ever* anchored one.
+  const double offBy = AngleBetweenDirections(Direction(pose_state_.pose.orientation),
+                                              Direction(burst_aim_)) * kRadToDeg;
+  return !(offBy > burst_cone_deg_);
 }
 
 Result<FrameVerdict> CaptureSessionManager::OfferFrame(NodeId node, const FrameRef& frame,

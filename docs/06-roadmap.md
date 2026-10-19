@@ -242,6 +242,10 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   this line is that phone again: none of its time constants, nor the gap and gravity thresholds,
   is measured.
 - `CaptureSessionManager`: full reticle → hold-still → burst → accept loop; per-cell candidate sets.
+  Every frame of a burst is taken on the cell it was armed at, since a field capture's gaps widened
+  when the phone turned during one (ADR 0075). The plan was measured first and was not the cause:
+  it covers the sphere for a level phone anywhere in the cone, or rolled up to 30 degrees on the
+  cell. Its lens is still the page's 66 degree guess, and below about 54 it leaves gaps.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
   tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`

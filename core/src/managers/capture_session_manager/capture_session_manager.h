@@ -96,9 +96,12 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // ones it drops — but never a frame the caller offered, and never one past `judged`, the length
   // of the prefix `Reorder` says the ranking actually named (ADR 0037).
   void Trim(std::vector<Candidate>& cell, size_t judged);
-  // Takes at most one frame for the armed burst. Reports whether the burst finished on this tick,
-  // so OnMotion can say CellDone exactly once.
-  Result<bool> AdvanceBurst();
+  // What one tick did to the armed burst, so OnMotion can say CellDone, and TooFast, exactly once.
+  enum class BurstTick { Filling, Filled, Dropped };
+  // Takes at most one frame for the armed burst, and only while the camera is on the armed cell.
+  Result<BurstTick> AdvanceBurst();
+  // Whether the camera is still inside the armed cell's cone, where the arm required it to be.
+  bool OnArmedCell() const;
   // Puts the camera back and forgets a burst in progress. Every path out of a burst goes through
   // here — completion, failure, retake, end of session — because a burst that leaves the exposure
   // locked is a viewfinder the user cannot fix by pointing somewhere else.
@@ -165,6 +168,11 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // pose does: a manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4).
   bool firing_ = false;
   NodeId burst_node_;
+  // The armed cell's direction and cone, kept from the arm rather than looked up per frame: the
+  // plan does not change during a session, and a lookup would need an answer for a cell that is
+  // not there, which nothing can reach.
+  Quat burst_aim_{};
+  double burst_cone_deg_ = 0.0;
   BurstSpec burst_spec_;
   // The frames this burst has taken, held apart from the cell until the whole burst ranks.
   //
