@@ -53,6 +53,7 @@ async function boot(seq: number, coreUrl: string, access: ResidentAccess): Promi
 
   scope.postMessage({
     kind: 'booted', seq, methods: runtime.methods(), spill: spill !== null, resident: stores.resident,
+    motionSampleLayout: runtime.motionSampleLayout(),
   });
 }
 

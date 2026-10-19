@@ -122,6 +122,17 @@ export interface ImuSample {
    * whose DeviceMotionEvent fires with a null rotationRate — which some desktops do.
    */
   hasAngularVelocity: boolean;
+  /**
+   * How far the page is turned under the device, in degrees: the angle the adapter converted this
+   * sample's attitude and rate with — the attitude is the device's turned by minus this angle
+   * about +Z, the axis out of the display and the one the camera looks along, and the rate is the
+   * device's turned by plus it (ADR 0017 for the attitude, ADR 0025 for the rate). Both arrive
+   * converted, so nothing applies the angle
+   * again. What is used is its change: a page turn steps the frame both are reported in, and
+   * whatever carries state from one sample to the next has to carry it into the new frame
+   * (ADR 0074). A port with no screen leaves it at zero.
+   */
+  screenAngleDeg: number;
 }
 
 export interface PoseSample {
@@ -455,9 +466,10 @@ export interface PoseState {
   capability: MotionCapability;
   pose: PoseSample;
   /**
-   * Whether any sample has arrived at all. It is what the elapsed time between samples is measured
-   * from, so the first sample of a stream sets it whether or not it moved anything — a rate has no
-   * orientation in it until there is an interval to integrate it over.
+   * Whether a sample that measured something — an attitude or a rate — has arrived. It is what the
+   * elapsed time between samples is measured from, so the first such sample sets it whether or not
+   * it moved anything — a rate has no orientation in it until there is an interval to integrate it
+   * over. A sample that measured nothing sets neither this nor the clock (ADR 0074).
    * It is *not* the answer to "is this orientation a measurement": that is `anchored` below, and
    * `PoseSample.confidence` is what callers should read. The two were one flag, and the first
    * rate-only sample of a stream then reported an integrated pose before anything was integrated.
@@ -482,8 +494,10 @@ export interface PoseState {
    */
   anchored: boolean;
   /**
-   * Whether the pose came from an absolute reading rather than from integrating rates. Confidence
-   * is derived from this, so it has to survive between calls.
+   * Whether the pose descends from an absolute reading with nothing unmeasured since, so that a
+   * prediction from it is worth fusing a reading against. Dead reckoning clears it, and so does a
+   * gap even where a still rate moved nothing (ADR 0074). Confidence is derived from this — 1.0
+   * with it, 0.5 for an anchored pose without it — so it has to survive between calls.
    */
   absolute: boolean;
   /**
@@ -493,8 +507,16 @@ export interface PoseState {
    * It is here rather than inside the engine because it is session state, and an engine is
    * stateless per session (docs/03 §3.3 rule 4, ADR 0016). A bias kept in the engine would be
    * shared by every session in the process and would outlive the device being put down.
+   * In the frame the rates are reported in, which turns with the page: see `screenAngleDeg`.
    */
   gyroBias: Vec3;
+  /**
+   * The `ImuSample::screenAngleDeg` the orientation and offset above are expressed with. A sample
+   * reported with another finite angle carries both into its frame before it is used, unless the
+   * difference is too large to turn by, when the angle is adopted and nothing turns; a non-finite
+   * angle carries nothing (ADR 0074).
+   */
+  screenAngleDeg: number;
 }
 
 export interface SelectionPolicy {

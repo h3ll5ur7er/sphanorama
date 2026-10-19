@@ -13,11 +13,14 @@ import type {
 } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
-import { flattenImuSamples, stopCameraStream } from './access/capture-host';
+import {
+  coreReadsThisPagesMotion, flattenImuSamples, stopCameraStream,
+} from './access/capture-host';
 import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/preview-frame';
 import { toImuSample } from './access/orientation';
 import {
-  describeFailure, describeGuidanceFailure, describeLocks, formatCapabilities,
+  CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
+  formatCapabilities,
 } from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
@@ -1660,6 +1663,16 @@ async function main() {
     stage.textContent = resume === null
       ? 'core ready — enable the camera to continue'
       : 'core ready — resume the last capture, or enable the camera to start a new one';
+    // Known from the boot, so neither offer is made to a core that cannot read this page's motion.
+    // Its own refusal would come at `Begin`, after `enable` has asked for and opened a camera
+    // (ADR 0074). Withdrawn rather than disabled, as for a device with no sensors: no press changes
+    // the answer, a reload does. Asked only here, since the answer is fixed at boot and `#enable`
+    // is still disabled from the markup until after this line.
+    if (!coreReadsThisPagesMotion(core.motionSampleLayout())) {
+      stage.textContent = CORE_FROM_ANOTHER_UPDATE;
+      resumeButton.hidden = true;
+      enableButton.hidden = true;
+    }
     // Whether a session is already on its way up.
     //
     // Each of the three offers used to disable only itself, which answers "was this button pressed

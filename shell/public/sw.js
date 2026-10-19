@@ -19,7 +19,12 @@ self.addEventListener('install', (event) => {
   // The first visit is not controlled by this worker, so its requests never reach the fetch
   // handler below. If install does not fetch the shell itself, going offline after that visit
   // finds an empty cache — which is how a PWA advertises offline support and does not have it.
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)));
+  //
+  // From the network, past the HTTP cache. The core's URL is the same in every deploy, so a worker
+  // installing within the previous core's freshness lifetime would otherwise store that core
+  // under this build's name, and every reload would pair the new page with it again (ADR 0074).
+  event.waitUntil(caches.open(CACHE).then((cache) =>
+    cache.addAll(PRECACHE.map((url) => new Request(url, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', (event) => {
@@ -41,7 +46,9 @@ self.addEventListener('fetch', (event) => {
 
     // A navigation goes to the network first. The precached entries are versioned with the cache
     // name so they are never stale, but this is the request that decides whether a user who has
-    // the app open sees this deploy or the last one.
+    // the app open sees this deploy or the last one — for the page. The core's URL is the same in
+    // every deploy, so until this worker is replaced it can still answer the new page's import of
+    // the core from the old cache (docs/06-roadmap.md, "The core's URL does not change").
     if (request.mode === 'navigate') {
       try {
         const response = await fetch(request);

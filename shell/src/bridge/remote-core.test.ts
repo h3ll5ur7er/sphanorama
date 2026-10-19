@@ -47,6 +47,24 @@ function fakeWorker() {
   return { worker, sent, reply, raise, seqOf, boot, wasTerminated: () => terminated };
 }
 
+describe('the core\'s motion layout', () => {
+  it('reaches the page from the worker\'s boot, unknown from a worker too old to send it',
+     async () => {
+    // Not this page's own layout, which a worker that answered it whenever one was sent would pass.
+    for (const motionSampleLayout of [7, null]) {
+      const w = fakeWorker();
+      const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
+      await Promise.resolve();
+      w.reply({
+        kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: true,
+        motionSampleLayout,
+      });
+      const { remote } = await connecting;
+      expect(remote.motionSampleLayout()).toBe(motionSampleLayout);
+    }
+  });
+});
+
 describe('connecting', () => {
   it('passes the core URL across, because only the page knows the base path', async () => {
     const w = fakeWorker();

@@ -6,8 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, createCaptureHost, deriveFieldOfView,
-  flattenImuSamples, stopCameraStream,
+  MOTION_BUFFER_LIMIT, MOTION_SAMPLE_DOUBLES, MOTION_SAMPLE_LAYOUT, coreReadsThisPagesMotion,
+  createCaptureHost, deriveFieldOfView, flattenImuSamples, stopCameraStream,
 } from './capture-host';
 
 describe('deriveFieldOfView', () => {
@@ -167,7 +167,19 @@ describe('capture host', () => {
 
   it('reports motion as absent until the page starts it', () => {
     const host = createCaptureHost();
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT)).toBe('None');
+  });
+
+  it('reports no motion to a core that reads another layout, so it refuses to begin', () => {
+    // A core that cannot read this page's samples would otherwise start a capture whose motion
+    // never arrives: the reticle parked, and nothing saying why. Refused at `Begin`, "no motion" is
+    // the refusal a capture already has words for (ADR 0044).
+    const host = createCaptureHost();
+    host.setMotion('OrientationOnly');
     expect(host.motionCapability()).toBe('None');
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT - 1)).toBe('None');
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT + 1)).toBe('None');
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT)).toBe('OrientationOnly');
   });
 
   it('reports the motion capability the page negotiated', () => {
@@ -175,9 +187,9 @@ describe('capture host', () => {
     // "started and there is nothing there".
     const host = createCaptureHost();
     host.setMotion('OrientationOnly');
-    expect(host.motionCapability()).toBe('OrientationOnly');
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT)).toBe('OrientationOnly');
     host.setMotion('None');
-    expect(host.motionCapability()).toBe('None');
+    expect(host.motionCapability(MOTION_SAMPLE_LAYOUT)).toBe('None');
   });
 });
 
@@ -191,6 +203,7 @@ describe('the motion buffer the core drains', () => {
     magneticField: { x: 0, y: 0, z: 0 },
     hasOrientation: true,
     orientation: { w: 1, x: 0, y: 0, z: 0 },
+    screenAngleDeg: 270,
   });
 
   it('hands back every field in the order the core reads them', () => {
@@ -199,23 +212,48 @@ describe('the motion buffer the core drains', () => {
     // resource access is exactly what the port pattern is meant to avoid.
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples([sample(7)]));
-    expect(host.motionDrain(4)).toEqual([
-      7, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0,
+    expect(host.motionDrain(4, MOTION_SAMPLE_LAYOUT)).toEqual([
+      7, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 1, 1, 0, 0, 0, 270,
     ]);
+  });
+
+  it('hands nothing to a core that reads another layout, and keeps the samples', () => {
+    // The page and the core are fetched separately and cached separately, so the first launch
+    // after a deploy can pair a new page with the core before it. Read in another layout, samples
+    // decode into plausible values rather than failing, wrong attitudes among them. A core that
+    // names no layout is one from before the layout said which it was.
+    const host = createCaptureHost();
+    host.pushMotion(flattenImuSamples([sample(1), sample(2)]));
+    expect(host.motionDrain(8)).toEqual([]);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT - 1)).toEqual([]);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT + 1)).toEqual([]);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+  });
+
+  it('tells the page before it asks for a camera whether the core can read its motion', () => {
+    // The core's own refusal comes at `Begin`, and the page opens the camera before that.
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT)).toBe(true);
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT - 1)).toBe(false);
+    expect(coreReadsThisPagesMotion(MOTION_SAMPLE_LAYOUT + 1)).toBe(false);
+    expect(coreReadsThisPagesMotion(null)).toBe(false);
+  });
+
+  it('says which layout it writes, so a core can refuse a page that writes another', () => {
+    expect(createCaptureHost().motionSampleLayout).toBe(MOTION_SAMPLE_LAYOUT);
   });
 
   it('drains what it hands over, so the core never integrates a sample twice', () => {
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples([sample(1), sample(2)]));
-    expect(host.motionDrain(8)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
-    expect(host.motionDrain(8)).toEqual([]);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toEqual([]);
   });
 
   it('respects the batch the core asked for and keeps the rest', () => {
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples([sample(1), sample(2), sample(3)]));
-    expect(host.motionDrain(2)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
-    expect(host.motionDrain(8)).toHaveLength(1 * MOTION_SAMPLE_DOUBLES);
+    expect(host.motionDrain(2, MOTION_SAMPLE_LAYOUT)).toHaveLength(2 * MOTION_SAMPLE_DOUBLES);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toHaveLength(1 * MOTION_SAMPLE_DOUBLES);
   });
 
   it('drops the oldest rather than growing without bound', () => {
@@ -224,7 +262,7 @@ describe('the motion buffer the core drains', () => {
     const host = createCaptureHost();
     host.pushMotion(flattenImuSamples(
       Array.from({ length: MOTION_BUFFER_LIMIT + 10 }, (_u, i) => sample(i))));
-    const drained = host.motionDrain(MOTION_BUFFER_LIMIT + 10);
+    const drained = host.motionDrain(MOTION_BUFFER_LIMIT + 10, MOTION_SAMPLE_LAYOUT);
     expect(drained).toHaveLength(MOTION_BUFFER_LIMIT * MOTION_SAMPLE_DOUBLES);
     expect(drained[0]).toBe(10);   // the first ten were dropped, not the last ten
   });
@@ -272,10 +310,10 @@ describe('closing and resetting', () => {
       timestampNs: 1, hasAngularVelocity: false,
       angularVelocity: { x: 0, y: 0, z: 0 }, acceleration: { x: 0, y: 0, z: 0 },
       hasMagnetometer: false, magneticField: { x: 0, y: 0, z: 0 },
-      hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 },
+      hasOrientation: true, orientation: { w: 1, x: 0, y: 0, z: 0 }, screenAngleDeg: 0,
     }]));
     host.resetMotion();
-    expect(host.motionDrain(8)).toEqual([]);
+    expect(host.motionDrain(8, MOTION_SAMPLE_LAYOUT)).toEqual([]);
   });
 });
 

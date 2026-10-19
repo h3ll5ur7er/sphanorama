@@ -19,6 +19,8 @@ export interface EmscriptenModule extends FacadeModule {
   _sph_probe_field_count(): number;
   _sph_probe_field_name(index: number): number;
   _sph_probe_runtime(concurrency: number, crossOriginIsolated: number, out: number): number;
+  /** Absent on every core from before the motion layout was named (ADR 0074). */
+  _sph_motion_sample_layout?(): number;
   _malloc(bytes: number): number;
   _free(pointer: number): void;
 }
@@ -48,6 +50,11 @@ export interface HostState {
  */
 export interface CoreRuntime {
   methods(): string[];
+  /**
+   * The motion layout the core reads, or null from a core too old to say. Asked at boot so the
+   * page can refuse a core from another deploy before it asks for a camera (ADR 0074).
+   */
+  motionSampleLayout(): number | null;
   capabilities(host: HostState): Promise<RuntimeCapabilities>;
   call: FacadeCall;
 }
@@ -94,8 +101,12 @@ export async function loadCoreRuntime(factory: ModuleFactory): Promise<CoreRunti
     { length: module._sph_facade_method_count() },
     (_unused, id) => module.UTF8ToString(module._sph_facade_method_name(id)));
 
+  const motionSampleLayout = typeof module._sph_motion_sample_layout === 'function'
+    ? module._sph_motion_sample_layout() : null;
+
   return {
     methods: () => methodNames,
+    motionSampleLayout: () => motionSampleLayout,
     call,
 
     async capabilities(host: HostState): Promise<RuntimeCapabilities> {

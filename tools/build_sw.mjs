@@ -50,7 +50,12 @@ for (const name of files) {
 }
 const buildId = digest.digest('hex').slice(0, 16);
 
-const urls = files.map((name) => `${base}${name}`.replace(/\/{2,}/g, '/'));
+// And the scope root, which is not a file but is where the app is launched (`start_url` is `./`).
+// Install fetches the list past the HTTP cache, which refreshes that cache too; a root left off it
+// is navigated to through an HTTP cache that can still hold the previous deploy's page, beside
+// this deploy's core (ADR 0074).
+const urls = [base, ...files.map((name) => `${base}${name}`)]
+  .map((url) => url.replace(/\/{2,}/g, '/'));
 
 const source = await readFile(join(dist, 'sw.js'), 'utf8');
 for (const placeholder of ['__BUILD_ID__', '__PRECACHE__']) {

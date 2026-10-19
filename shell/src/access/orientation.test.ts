@@ -188,15 +188,26 @@ describe('toImuSample', () => {
     // The flag is what tells PoseEngine it may use the orientation instead of integrating rates
     // it does not have. Without it the browser's samples would be silently ignored.
     const orientation = quaternionFromDeviceOrientation(0, 90, 0, 0);
-    const sample = toImuSample({ timestampNs: 1234, orientation });
+    const sample = toImuSample({ timestampNs: 1234, orientation, screenAngleDeg: 0 });
     expect(sample.hasOrientation).toBe(true);
     expect(sample.timestampNs).toBe(1234);
     looksAt(sample.orientation, 0, 0, -1);
   });
 
+  it('says which way up the page was, which is the frame both halves are in', () => {
+    // Converted already, so the core applies nothing; it needs the angle to notice the frame
+    // change and carry its estimate across (ADR 0074).
+    const sample = toImuSample({
+      timestampNs: 0, orientation: quaternionFromDeviceOrientation(10, 20, 30, 90),
+      screenAngleDeg: 90,
+    });
+    expect(sample.screenAngleDeg).toBe(90);
+  });
+
   it('reports no rates and no magnetometer rather than inventing zeros that read as measured', () => {
     const sample = toImuSample({
       timestampNs: 0, orientation: quaternionFromDeviceOrientation(10, 20, 30, 0),
+      screenAngleDeg: 0,
     });
     expect(sample.hasMagnetometer).toBe(false);
     expect(sample.angularVelocity).toEqual({ x: 0, y: 0, z: 0 });
@@ -208,6 +219,7 @@ describe('toImuSample', () => {
     const sample = toImuSample({
       timestampNs: 0,
       orientation: quaternionFromDeviceOrientation(0, 0, 0, 0),
+      screenAngleDeg: 0,
       angularVelocity: { x: 0.1, y: 0.2, z: 0.3 },
     });
     expect(sample.hasAngularVelocity).toBe(true);
@@ -220,6 +232,7 @@ describe('toImuSample', () => {
     const sample = toImuSample({
       timestampNs: 0,
       orientation: quaternionFromDeviceOrientation(0, 0, 0, 0),
+      screenAngleDeg: 0,
       angularVelocity: { x: 0, y: 0, z: 0 },
     });
     expect(sample.hasAngularVelocity).toBe(true);

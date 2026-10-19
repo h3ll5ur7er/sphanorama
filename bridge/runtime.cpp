@@ -1,5 +1,8 @@
 #include "runtime.h"
 
+#include "export.h"
+#include "resource_access/motion_sensor_access/motion_sample_layout.h"
+
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/em_js.h>
 #include <emscripten/heap.h>
@@ -62,3 +65,11 @@ Runtime& Runtime::Instance() {
 }
 
 }  // namespace sphanorama::bridge
+
+// The motion layout this core reads, asked by the worker at boot. The core's own refusal of a page
+// that writes another comes at `Begin`, and the page has opened the camera by then; told here, the
+// page refuses before it asks for one (ADR 0074). A core from before this export has none to ask.
+// Here rather than beside the probe because only the composition root may name a port's layout.
+extern "C" SPH_EXPORT int32_t sph_motion_sample_layout() {
+  return sphanorama::bridge::kMotionSampleLayout;
+}
