@@ -25,8 +25,9 @@ class ICoveragePlannerEngine {
   // both comparisons, so one caller reads it as inside and another as outside; zero and negatives
   // put the camera outside a cell it is pointed exactly at.
   //
-  // Both callers guard it anyway, which is not redundancy but the arrangement `Locate` describes
-  // below — one guard for what the user sees, one for what the frames depend on.
+  // That rule is about the spec handed in; this states none for the cells handed back. `Locate`
+  // guards a cell's cone anyway, since it is handed a plan rather than one it laid, and the
+  // capture session holds every cell to the session document's rule before keeping it (ADR 0077).
   virtual Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics& lens) = 0;
 
   // Which cell should the user go to from here, and how far off are they?

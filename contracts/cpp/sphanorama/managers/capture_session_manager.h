@@ -33,9 +33,11 @@ class ICaptureSessionManager {
   // project store cannot read refuses this with the store's status, camera closed.
   //
   // `InvalidArgument` for a spec a resume would not take, and then `Internal` for a plan whose
-  // cells a resume could not read: none, a target that is not a unit rotation, a cone outside the
-  // spec's, or one id twice. Either would be written down at the first checkpoint as a document
-  // nothing resumes or builds from, so both refuse before the tier is emptied (ADR 0077).
+  // cells a resume could not read: no cells, or one under an identity no counter issues, on a ring
+  // below zero, aimed by something other than a unit rotation, with a cone that is not a positive
+  // angle under a right angle and inside the spec's, or under another cell's identity. Either would
+  // be written down at the first checkpoint as a document nothing resumes or builds from, so both
+  // refuse before the tier is emptied (ADR 0077).
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -120,10 +122,9 @@ class ICaptureSessionManager {
   // the tick that fired. The detail names the pose engine, since the user cannot fix it.
   //
   // A cell's cone and target are not checked here, and used to be. `ICoveragePlannerEngine::Plan`
-  // forbids a cone or a target that is not a measurement, and the manager does not assume every
-  // implementation keeps that: `Begin` and `Resume` refuse such a plan, so every cell this call
-  // can be asked about has a positive cone no wider than the capture's and a unit target
-  // (ADR 0077).
+  // states no rule for the cells it lays; `Begin` and `Resume` hold them to the session document's,
+  // so every cell this call can be asked about has a positive cone under a right angle and no
+  // wider than the capture's, and a unit target (ADR 0077).
   //
   // **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
   // stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor

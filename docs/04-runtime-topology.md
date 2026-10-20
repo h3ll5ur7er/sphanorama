@@ -125,7 +125,8 @@ Everything except pixel payloads lives in `IProjectStoreAccess` (IndexedDB). Pix
 after the browser killed the tab" is a metadata read plus lazy pixel faulting, not a restore.
 
 That is what `ICaptureSessionManager::Resume` does: it reads the session document, takes the plan
-the document carries cell for cell (ADR 0077), and hands every frame the document names back to the
+the document carries cell for cell (ADR 0077) or, for a document from before that, replans from its
+spec and lens, and hands every frame the document names back to the
 store through `Adopt`, which registers it as spilled so the first `Pin` faults it in (ADR 0029).
 The document is written on the way out of every burst rather than at `End`, because a tab the
 browser killed never reached `End`. The bytes those frames name survive with them: the OPFS tier

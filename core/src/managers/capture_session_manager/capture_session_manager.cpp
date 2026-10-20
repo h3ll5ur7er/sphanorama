@@ -313,11 +313,11 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
                           std::string("this capture would be planned from ") + *defect);
   }
-  // Then the cells, against the spec just held. Cells the decoder would refuse — none at all, a
-  // target that is not a rotation, a cone that is not inside the capture's — are a sphere whose
+  // Then the cells, against the spec just held. Cells the decoder would refuse are a sphere whose
   // document no resume or build could read from its first checkpoint (ADR 0077). `Internal`,
-  // since the caller's spec passed: the planner broke its contract. This and the replan in
-  // `Resume` are the only ways cells reach `plan_`, which is why `ArmBurst` does not re-ask.
+  // since the caller's spec passed and `Plan` was handed a usable one. Cells reach `plan_` here,
+  // from a stored document and from a replan, and all three ask `PlanDefect`, which is why
+  // `ArmBurst` does not.
   if (auto defect = PlanDefect(plan.value.nodes, resolved)) {
     (void)camera_.Close();
     return Err<SessionId>(StatusCode::Internal, kComponent,
@@ -918,8 +918,10 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
 
   // `offBy > cone` is enough because of what a cell had to be to get into `plan_`, not because of
   // anything about the arithmetic. Cells reach it from `Begin`, the replan in `Resume` and the
-  // decoder, and all three refuse a cone that is not a positive angle inside the capture's own and
-  // a target that is not a unit rotation (`PlanDefect`, ADR 0077). This used to ask both questions
+  // decoder, and all three refuse a cone that is not a positive angle under a right angle and
+  // inside the capture's own, and a target that is not a unit rotation (`PlanDefect`, ADR 0077).
+  // The right angle is `PlanDefect`'s own, not borrowed from `SpecDefect`, so it holds whatever
+  // order the two are asked in and for a caller that asks only one. This used to ask both questions
   // again: an infinite cone satisfies the comparison legitimately, and a degenerate target measures
   // as dead on from every aim, so neither shows up here as wrong arithmetic. Holding cells to the
   // decoder's rule on the way in left those guards nothing to refuse. The pose is a rotation by

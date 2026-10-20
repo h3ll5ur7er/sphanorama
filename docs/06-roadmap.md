@@ -345,7 +345,8 @@ a debugger attached to a phone, which is not a thing a maintainer does after a c
 What is left, and what has landed since:
 
 - **Reload and resume — done, and wired to a button.** The core reads a session document written at
-  every committed cell, takes the plan that document carries cell for cell (ADR 0077), and hands the
+  every committed cell, takes the plan that document carries cell for cell (ADR 0077; one from
+  before that is replanned from its spec and lens), and hands the
   frames it names back to the store through `IFrameStoreAccess::Adopt`, so a restored candidate can
   still be pinned (ADR 0029). Underneath it the OPFS tier survives a reload too: a fixed preferred
   name and a sibling index carrying the frame-to-offset map, with a tier of its own for any session

@@ -26,8 +26,10 @@ sphere they are capturing, and only the second is what the candidates were filed
 - **Version 3** of the document writes one `cell` line per node: its id, ring, target orientation
   to 17 significant digits, and acceptance cone. A resumed plan is the begun one bit for bit.
 - **A cell is checked as it is read**, since no planner vouches for it: an identity a counter could
-  issue, a ring index not below zero, a target that is a unit quaternion, a cone above zero and no
-  wider than the spec's, and one cell per id. The page draws a cell from its target without
+  issue, a ring index not below zero, a target that is a unit quaternion, a cone above zero, under
+  a right angle and no wider than the spec's, and one cell per id. The right angle is the cell's
+  own bound: nothing beside the decoder holds the spec to a rule, and a cell as wide as a spec of
+  1e300 accepts a camera aimed anywhere. The page draws a cell from its target without
   normalising it, and a cone wider than was asked for arms a burst on a cell the camera is nowhere
   near. A version-3 document with no cells is refused, since no plan has none.
 - **The stored spec is checked without a planner**: a field of view a lens has, an overlap short of
@@ -45,12 +47,12 @@ sphere they are capturing, and only the second is what the candidates were filed
   read whatever planner is wired in: one looser than the rule began captures that could not be
   resumed. After the planner, whose own refusal says more, and before the tier is emptied.
 - **A planner's cells are held to the decoder's rule wherever they are kept**, at `Begin` and on a
-  version-2 replan: no cells, a target that is not a unit rotation, a cone outside the capture's,
-  or two cells under one id. Nothing forbids a planner to lay any of those, and the first
-  checkpoint would write a document no resume or build could read, or, on a replan, overwrite one
-  that could be read. One function, `PlanDefect`, answers for the decoder and for both. At `Begin`
-  it runs after the spec rule, since a spec the caller should not have asked for is the caller's
-  `InvalidArgument` before it is the planner's `Internal`; on a replan it is `Unsupported`.
+  version-2 replan. `ICoveragePlannerEngine::Plan` states no rule for the cells it lays, and cells
+  the decoder would refuse are a document no resume or build could read from the first checkpoint
+  on, or, on a replan, one that overwrites a document that could be read. One function,
+  `PlanDefect`, answers for the decoder and for both. At `Begin` it runs after the spec rule, since
+  a spec the caller should not have asked for is the caller's `InvalidArgument` before it is the
+  planner's `Internal`; on a replan it is `Unsupported`.
 - **Version 2 is still read, and replanned** from its spec and lens as every resume was. Refusing
   it would strand every capture in flight when this build arrives, and most of those replan
   correctly: every one begun since ADR 0076 shipped, and on the page's lens every one begun since
