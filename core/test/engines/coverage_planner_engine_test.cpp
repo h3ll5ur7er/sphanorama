@@ -239,8 +239,8 @@ TEST(CoveragePlanner, ABandClosesTheHorizonWhereverInItsConeAFrameIsTaken) {
 TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
   // Without the caps a band answers for the elevations its rings aim at, and only those, so that
   // is what is asked: the spread of directions up to its outermost ring, and the horizon. And it
-  // has to reach: its outermost ring lies within one vertical step of the highest a ring may aim
-  // with its frame still below the pole, or a band of only the horizon would answer for nothing.
+  // has to reach: the next ring out, at the band's own spacing, would aim past the highest a ring
+  // may with its frame still below the pole, or a band of only the horizon would answer for nothing.
   // At no overlap as well, which is where the check decides the spacing rather than the overlap.
   std::vector<CapturePlanSpec> lenses = PhoneLenses();
   for (CapturePlanSpec lens : PhoneLenses()) {
@@ -254,9 +254,16 @@ TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
     for (const CoverageNode& node : plan.nodes) {
       highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
     }
-    const double reachDeg = 90.0 - lens.verticalFovDeg / 2.0 -
-                            lens.verticalFovDeg * (1.0 - lens.overlapTarget);
-    EXPECT_GE(std::asin(highest) * kRadToDeg, reachDeg)
+    // The next ring out, at the band's own spacing, would have crossed the limit. A band of one
+    // ring has no spacing of its own, but it is never wider than the overlap's.
+    const double limitDeg = 90.0 - lens.verticalFovDeg / 2.0;
+    const double highestDeg = std::asin(highest) * kRadToDeg;
+    double spacingDeg = lens.verticalFovDeg * (1.0 - lens.overlapTarget);
+    for (const CoverageNode& node : plan.nodes) {
+      const double elevationDeg = std::asin(Direction(node.targetOrientation).y) * kRadToDeg;
+      if (elevationDeg > 1e-9) spacingDeg = std::min(spacingDeg, elevationDeg);
+    }
+    EXPECT_GT(highestDeg + spacingDeg, limitDeg - 1e-9)
         << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << " at " << lens.overlapTarget;
     std::vector<Vec3> band;
     for (const Vec3& direction : SphereSamples(5000)) {
@@ -265,6 +272,21 @@ TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
     EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(lens.acceptanceConeDeg), band), 0)
         << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << ", " << plan.nodes.size()
         << " cells";
+  }
+}
+
+TEST(CoveragePlanner, ABandWhoseLimitIsTheHorizonKeepsIt) {
+  // A full 180 degree field leaves a band only its horizon ring. Counted from a pole, these ring
+  // counts put that ring a few ulps above the horizon, the ring was dropped, the empty plan
+  // failed its check and was laid again tighter than asked; a review found these (ADR 0076).
+  for (const int halfRings : {39, 78, 156, 161, 169, 175}) {
+    const double step = 90.0 / (halfRings - 0.3);
+    CapturePlanSpec lens = Spec(180.0, 180.0, 1.0 - step / 180.0);
+    lens.acceptanceConeDeg = 1.0;
+    lens.coverPoles = false;
+    const CapturePlan plan = Plan(lens);
+    const double asked = std::ceil(360.0 / (180.0 * (1.0 - lens.overlapTarget)));
+    EXPECT_EQ(plan.nodes.size(), static_cast<size_t>(asked)) << halfRings << " half rings";
   }
 }
 
@@ -292,13 +314,19 @@ TEST(CoveragePlanner, RefusesAConeThatWouldNeedMoreCellsThanACaptureCouldHold) {
 }
 
 TEST(CoveragePlanner, TheBoundIsOnTheCellsLaid) {
-  // A long lens near the bound. Compared with a grid of full circles instead, half again the cells
-  // it lays, this was refused, and so was every plan above about 1300 cells (ADR 0076).
-  const Result<CapturePlan> plan =
-      RingsCoveragePlannerEngine{}.Plan(UprightSpec(19.0, 4.0 / 3.0), Intrinsics{});
+  // Two long lenses either side of the bound: one whose plan is exactly 2000 cells, and one that
+  // needs 2001. Compared with a grid of full circles instead, half again the cells a plan lays,
+  // the first was refused, and so was every plan above about 1300 cells (ADR 0076).
+  RingsCoveragePlannerEngine planner;
+  const Result<CapturePlan> plan = planner.Plan(UprightSpec(20.7, 1.5), Intrinsics{});
   ASSERT_TRUE(plan.ok()) << plan.status.detail;
-  EXPECT_GT(plan.value.nodes.size(), 1900u);
-  EXPECT_LE(plan.value.nodes.size(), 2000u);
+  EXPECT_EQ(plan.value.nodes.size(), 2000u);
+
+  CapturePlanSpec oneMore = UprightSpec(20.7, 1.5, true);
+  oneMore.overlapTarget = 0.0;
+  const Result<CapturePlan> refused = planner.Plan(oneMore, Intrinsics{});
+  EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(refused.status.detail.find("more cells"), std::string::npos) << refused.status.detail;
 }
 
 TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
@@ -311,8 +339,8 @@ TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
   const Result<CapturePlan> plan = planner.Plan(spec, Intrinsics{});
   EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
   EXPECT_NE(plan.status.detail.find("too wide"), std::string::npos) << plan.status.detail;
-  // And from the other side: 3.5 degrees plans, near the widest cone this lens plans at all.
-  spec.acceptanceConeDeg = 3.5;
+  // And from the other side: 4.4 degrees plans, the widest cone this lens plans at all.
+  spec.acceptanceConeDeg = 4.4;
   EXPECT_TRUE(planner.Plan(spec, Intrinsics{}).ok()) << "a cone that leaves room still plans";
 }
 
@@ -980,6 +1008,14 @@ TEST(RingsCoveragePlanner, RefusesALensSoNarrowThePlanCouldNotBeHeld) {
   spec = Spec();
   spec.horizontalFovDeg = 1e-300;
   EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+
+  // Both of those are refused first now as too narrow for their cone (ADR 0076), so the ring
+  // count is reached by a step that is fine for another reason: an overlap a hair short of one.
+  spec = Spec();
+  spec.overlapTarget = 1.0 - 1e-12;
+  const Result<CapturePlan> plan = engine.Plan(spec, Intrinsics{});
+  EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(plan.status.detail.find("more cells"), std::string::npos) << plan.status.detail;
 }
 
 

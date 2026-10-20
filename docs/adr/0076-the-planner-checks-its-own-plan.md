@@ -60,18 +60,25 @@ sampling at 5000 directions passes between. A test asks those three at 20,000.
 - Lenses that left holes cost cells now. 16:9 held upright at 66 degrees goes from 39 cells to 64,
   3:2 at 43.5 degrees from 80 to 111, and 4:3 at 30 degrees from 169 to 254. Shrinking the two
   steps in turn rather than together was tried, and saved less than 1%.
-- Planning takes about 5 milliseconds for the page's lens at `-O2` and 10 for a 30 degree lens,
-  since a cell is asked only about directions within its frame's half-diagonal and cone. Over long
-  edges from 10 to 120 degrees in four shapes either way round, at 30% overlap and none, the slowest
-  took 52. A wider cone costs more: at the page's lens the slowest of every cone it plans, up to
-  22.9 degrees, took 307 milliseconds for 1746 cells, and the slowest refusal, just past that, 190.
-  Planning happens once, at `Begin` or `Resume`.
+- Planning takes about 5 milliseconds for the page's lens at `-O2`, and about as long for a 30
+  degree lens. Each direction is asked of the cells nearest it first, nearest ring and then nearest
+  in azimuth, and of a cell only if it lies within that frame's half-diagonal and cone. At the
+  page's lens held upright, every cone it plans, up to 22.8 degrees and 1946 cells, plans within 20
+  milliseconds, and every cone past that is refused within 20 as well. Over a grid of 4032 specs and
+  4000 random ones (lenses from 3 to 180 degrees, cones up to the line, overlap up to 0.9, with and
+  without the caps) the slowest took 106 milliseconds: a 172 degree lens at no overlap. In the
+  browser's build, run under node, it took 305. Planning happens once, at `Begin` or `Resume`.
 - The cell bound was a hundred thousand when this was first written, and a review found a cone a
   third of a degree short of the refusal planned sixty thousand cells in 15 seconds natively and
   over a minute in the browser. At 2000, cones that near the line are refused within 20
   milliseconds, with a detail that names the cone. The bound counts the cells laid: a first version
   compared it with a grid of full circles, half again as many, and refused every plan above about
   1300.
+- The bound limits cells, not work. Asked in the order they were laid, a wide cone left nearly every
+  cell near enough, and a direction walked half the plan before one covered it: a review found specs
+  the bound allows taking over three seconds in the browser's build. Asking nearest first lays the
+  same plans, identical over the 4032 specs above, and took the slowest the review found, 180 by
+  101.25 degrees with a 48 degree cone, from 3158 milliseconds in that build to 54.
 - Completeness is at the resolution checked, with the degree as its margin. The tests check plans at
   a denser and offset sampling: 5000 directions, 24 aims and pole frames turned in steps of ten
   degrees, the aims and turns a third of a step from any the planner asks, over long edges from 45

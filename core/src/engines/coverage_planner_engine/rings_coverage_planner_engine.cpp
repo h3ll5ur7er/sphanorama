@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <vector>
@@ -57,7 +58,10 @@ std::optional<std::vector<CoverageNode>> LayRings(const CapturePlanSpec& spec,
   std::vector<CoverageNode> nodes;
   uint64_t nextId = 1;
   for (int ring = 0; ring < ringCount; ++ring) {
-    const double elevation = -90.0 + elevationStep * ring;
+    // Counted from the horizon, so the horizon is exactly 0 and the rings either side of it are
+    // exact mirrors. Counted from a pole, the horizon came out a few ulps off, and a band whose
+    // limit was the horizon itself lost it.
+    const double elevation = elevationStep * (ring - halfRings);
     if (std::abs(elevation) > elevationLimit) continue;
 
     // A ring's circumference shrinks by cos(elevation), so the azimuth step widens to keep the
@@ -153,17 +157,55 @@ bool CompleteInTheWorstCase(const std::vector<CoverageNode>& nodes, const Captur
     directions.push_back(Vec3{std::sin(azimuth), 0.0, -std::cos(azimuth)});
   }
 
+  // Cells are asked nearest first: the ring nearest in elevation, then outward, and in each ring
+  // the cell nearest in azimuth, then outward. Which cell covers a direction does not change the
+  // answer, only how soon it is found. In the order they were laid, a wide cone left nearly every
+  // cell near enough, and a direction walked half the plan before one covered it: seconds in the
+  // browser for a plan the bound allows (ADR 0076).
+  struct Ring {
+    double elevation;
+    size_t first;
+    size_t count;
+  };
+  std::vector<Ring> rings;
+  for (size_t n = 0; n < nodes.size(); ++n) {
+    if (rings.empty() || nodes[n].ringIndex != nodes[rings.back().first].ringIndex) {
+      rings.push_back(Ring{std::asin(std::clamp(aimedAt[n].y, -1.0, 1.0)), n, 0});
+    }
+    ++rings.back().count;
+  }
+  const auto covers = [&](size_t n, const Vec3& direction) {
+    const Vec3& at = aimedAt[n];
+    if (at.x * direction.x + at.y * direction.y + at.z * direction.z < nearEnough) return false;
+    const std::vector<Quat>& taken = std::abs(at.y) > 1.0 - 1e-9 ? atAPole : aims;
+    return std::all_of(taken.begin(), taken.end(), [&](const Quat& aim) {
+      return Images(Multiply(nodes[n].targetOrientation, aim), direction, halfWidth, halfHeight);
+    });
+  };
+  const auto coveredInRing = [&](const Ring& ring, const Vec3& direction) {
+    const double azimuth = std::atan2(-direction.x, -direction.z) / (2.0 * std::numbers::pi);
+    const auto count = static_cast<long>(ring.count);
+    const long nearest = std::lround(azimuth * static_cast<double>(count));
+    for (long step = 0; step < count; ++step) {
+      const long offset = step % 2 == 1 ? (step + 1) / 2 : -(step / 2);
+      const long cell = ((nearest + offset) % count + count) % count;
+      if (covers(ring.first + static_cast<size_t>(cell), direction)) return true;
+    }
+    return false;
+  };
+
   for (const Vec3& direction : directions) {
+    const double elevation = std::asin(std::clamp(direction.y, -1.0, 1.0));
+    auto above = std::lower_bound(rings.begin(), rings.end(), elevation,
+                                  [](const Ring& ring, double e) { return ring.elevation < e; });
+    auto below = above;
     bool safe = false;
-    for (size_t n = 0; n < nodes.size() && !safe; ++n) {
-      const Vec3& at = aimedAt[n];
-      if (at.x * direction.x + at.y * direction.y + at.z * direction.z < nearEnough) continue;
-      const CoverageNode& node = nodes[n];
-      const bool pole = std::abs(at.y) > 1.0 - 1e-9;
-      const std::vector<Quat>& taken = pole ? atAPole : aims;
-      safe = std::all_of(taken.begin(), taken.end(), [&](const Quat& aim) {
-        return Images(Multiply(node.targetOrientation, aim), direction, halfWidth, halfHeight);
-      });
+    while (!safe && (below != rings.begin() || above != rings.end())) {
+      const bool takeAbove =
+          below == rings.begin() ||
+          (above != rings.end() &&
+           above->elevation - elevation <= elevation - std::prev(below)->elevation);
+      safe = coveredInRing(takeAbove ? *above++ : *--below, direction);
     }
     if (!safe) return false;
   }
