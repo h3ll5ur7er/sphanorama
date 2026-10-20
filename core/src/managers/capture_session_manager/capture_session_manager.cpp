@@ -346,16 +346,16 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   auto initialPose = StartTracking(resolved.motion);
   if (!initialPose.ok()) return initialPose.status;
 
+  // The spec asked for, whatever the planner handed back with its cells: the contract does not
+  // promise it unchanged, and it is what the page sizes its overlay from and what is written down
+  // with the cells, so it is kept once (ADR 0077).
+  plan.value.spec = resolved;
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{next_session_++};
   next_candidate_ = next.value;
   candidates_.clear();
   burst_owned_.clear();
-  // Kept because it is what the plan was made from, and written down with the plan's cells: node
-  // ids are indices into a particular tessellation, so a sphere replanned from another lens, or by
-  // another build's planner, files every restored candidate under a different cell (ADR 0077).
-  resolved_spec_ = resolved;
   lens_ = lens;
   pose_state_ = initialPose.value;
   active_ = true;
@@ -474,9 +474,9 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // nothing here needs a camera, so everything that can refuse this does before the indicator
   // lights.
   //
-  // Every refusal of the document's own bytes below is `Unsupported`, as the decoder's is: a resume
-  // pressed again would be refused again, and the page offers to try again on anything else. The
-  // planner is a pure function, so its refusal of a stored spec is one of those too.
+  // Every refusal of the document's own bytes below is `Unsupported`, as the decoder's is: the
+  // core's word for "this build cannot act on these bytes", since a resume pressed again would be
+  // refused again. The planner is a pure function, so its refusal of a stored spec is one of those.
   //
   // The spec is held to the resume's rule on either path. The page reads it back to size its
   // overlay, no planner runs where the cells are stored, and one that does may be looser than the
@@ -493,6 +493,7 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                             "this build's planner cannot plan this project's session: "
                                 + plan.status.detail);
     }
+    plan.value.spec = stored.spec;
   } else {
     plan.value.spec = stored.spec;
     plan.value.nodes = stored.nodes;
@@ -567,8 +568,8 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   //
   // No planner reads `motion` today (`docs/03-architecture.md` says so, and says it has never
   // been true that one does), so the overwrite was harmless in this build. It would not have
-  // stayed harmless, and a defect that waits for a feature is the expensive kind.
-  resolved_spec_ = stored.spec;
+  // stayed harmless, and a defect that waits for a feature is the expensive kind. It is the plan's
+  // own spec, set from the document on both paths above.
   lens_ = stored.lens;
   candidates_.clear();
   burst_owned_.clear();
@@ -621,7 +622,7 @@ void CaptureSessionManager::Checkpoint() const {
   stored.generation = generation.value;
   stored.session = session_.value;
   stored.nextCandidate = next_candidate_;
-  stored.spec = resolved_spec_;
+  stored.spec = plan_.spec;
   stored.lens = lens_;
   stored.nodes = plan_.nodes;
   for (const Candidate& candidate : AllCandidates()) {

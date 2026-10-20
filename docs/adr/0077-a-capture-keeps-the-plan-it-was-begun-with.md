@@ -36,8 +36,11 @@ sphere they are capturing, and only the second is what the candidates were filed
   accepted. The page sizes its overlay from this spec. A version-2 document is held to the rule
   too, and to its planner.
 - **Every refusal of a stored document's own bytes is `Unsupported`**, a planner's refusal of a
-  version-2 spec and an empty replan among them, since the planner is a pure function: pressed
-  again, the resume would be refused again, and the page offers to try again on anything else.
+  version-2 spec and an empty replan among them, since the planner is a pure function: the core's
+  word for "this build cannot act on these bytes", since pressed again the resume would be refused
+  again. What the page does with it is the page's (`resume.ts`).
+- **The plan carries the spec it was asked for**, whatever a planner hands back with its cells,
+  so the spec the page reads and the spec written beside the cells are one copy.
 - **`Begin` holds the spec it plans from to the same rule**, so that what it writes a resume can
   read whatever planner is wired in: one looser than the rule began captures that could not be
   resumed. After the planner, whose own refusal says more, and before the tier is emptied.
