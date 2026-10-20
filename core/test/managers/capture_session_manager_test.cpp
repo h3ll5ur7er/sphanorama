@@ -5316,22 +5316,39 @@ TEST_F(ResumedSession, AVersionTwoDocumentThePlannerRefusesIsKeptForABuildThatCa
   ASSERT_EQ(older.rfind(stamp, 0), 0u);
   older.replace(0, stamp.size(), "sphanorama-session 2");
 
-  // Fields: tag, strategy, horizontal, vertical, overlap, cone. 24.5 on 66 by 50 is inside half the
-  // narrower field, so only the planner's own degree of margin refuses it.
-  for (const auto& [field, value] :
-       std::vector<std::pair<size_t, std::string>>{{2, "0"}, {4, "5"}, {5, "24.5"}}) {
-    ASSERT_TRUE(projects
-                    ->WriteDocument(kProject, kSessionDocumentKey,
-                                    SetField(older, "spec", field, value))
-                    .ok());
+  // Fields: tag, strategy, horizontal, vertical, overlap, cone. Each names what refuses it: the
+  // resume's rule, which a version-2 spec is held to as well, or the planner. 24.5 on 66 by 50 is
+  // inside half the narrower field, so only the rings planner's own degree of margin refuses it.
+  // Asked of the rings planner and of the fixture's null one, which plans anything with a cone,
+  // so that the rule and not the planner is what refuses the rule's edits.
+  struct Edit {
+    ICoveragePlannerEngine* planner;
+    size_t field;
+    std::string value;
+    std::string refusedBy;
+  };
+  const std::vector<Edit> edits = {{&rings, 2, "0", "carries"},
+                                   {&rings, 4, "5", "carries"},
+                                   {&rings, 5, "24.5", "planner cannot plan"},
+                                   {&planner, 2, "0", "carries"},
+                                   {&planner, 5, "25", "carries"}};
+  for (const Edit& edit : edits) {
+    const std::string edited = SetField(older, "spec", edit.field, edit.value);
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, edited).ok());
     auto store_with_sink = NewStore();
     FakeCameraAccess camera(store_with_sink);
-    CaptureSessionManager resumed(rings, pose, quality, preview, camera, *sensor,
+    CaptureSessionManager resumed(*edit.planner, pose, quality, preview, camera, *sensor,
                                   *store_with_sink, *projects, clock);
     const Result<SessionId> refused = resumed.Resume(kProject);
-    EXPECT_EQ(refused.status.code, StatusCode::Unsupported)
-        << "field " << field << " = " << value << ": " << refused.status.detail;
-    EXPECT_EQ(camera.Opens(), 0) << "field " << field << " = " << value;
+    const std::string which = "field " + std::to_string(edit.field) + " = " + edit.value;
+    EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << which << ": " << refused.status.detail;
+    EXPECT_NE(refused.status.detail.find(edit.refusedBy), std::string::npos)
+        << which << ": " << refused.status.detail;
+    EXPECT_EQ(camera.Opens(), 0) << which;
+    // Kept, for a build that can: the document is as it was written.
+    auto kept = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(kept.ok()) << which;
+    EXPECT_EQ(kept.value, edited) << which;
   }
 }
 
