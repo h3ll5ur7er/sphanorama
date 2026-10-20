@@ -238,14 +238,26 @@ TEST(CoveragePlanner, ABandClosesTheHorizonWhereverInItsConeAFrameIsTaken) {
 
 TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
   // Without the caps a band answers for the elevations its rings aim at, and only those, so that
-  // is what is asked: the spread of directions up to its outermost ring, and the horizon.
+  // is what is asked: the spread of directions up to its outermost ring, and the horizon. And it
+  // has to reach: its outermost ring lies within one vertical step of the highest a ring may aim
+  // with its frame still below the pole, or a band of only the horizon would answer for nothing.
+  // At no overlap as well, which is where the check decides the spacing rather than the overlap.
+  std::vector<CapturePlanSpec> lenses = PhoneLenses();
   for (CapturePlanSpec lens : PhoneLenses()) {
+    lens.overlapTarget = 0.0;
+    lenses.push_back(lens);
+  }
+  for (CapturePlanSpec lens : lenses) {
     lens.coverPoles = false;
     const CapturePlan plan = Plan(lens);
     double highest = 0.0;
     for (const CoverageNode& node : plan.nodes) {
       highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
     }
+    const double reachDeg = 90.0 - lens.verticalFovDeg / 2.0 -
+                            lens.verticalFovDeg * (1.0 - lens.overlapTarget);
+    EXPECT_GE(std::asin(highest) * kRadToDeg, reachDeg)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << " at " << lens.overlapTarget;
     std::vector<Vec3> band;
     for (const Vec3& direction : SphereSamples(5000)) {
       if (std::abs(direction.y) <= highest) band.push_back(direction);
@@ -275,6 +287,18 @@ TEST(CoveragePlanner, RefusesAConeThatWouldNeedMoreCellsThanACaptureCouldHold) {
   const Result<CapturePlan> plan = planner.Plan(lens, Intrinsics{});
   EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
   EXPECT_NE(plan.status.detail.find("cone"), std::string::npos) << plan.status.detail;
+  // Refused by the bound, not by the line: 24.6 is short of too wide for this lens.
+  EXPECT_NE(plan.status.detail.find("more cells"), std::string::npos) << plan.status.detail;
+}
+
+TEST(CoveragePlanner, TheBoundIsOnTheCellsLaid) {
+  // A long lens near the bound. Compared with a grid of full circles instead, half again the cells
+  // it lays, this was refused, and so was every plan above about 1300 cells (ADR 0076).
+  const Result<CapturePlan> plan =
+      RingsCoveragePlannerEngine{}.Plan(UprightSpec(19.0, 4.0 / 3.0), Intrinsics{});
+  ASSERT_TRUE(plan.ok()) << plan.status.detail;
+  EXPECT_GT(plan.value.nodes.size(), 1900u);
+  EXPECT_LE(plan.value.nodes.size(), 2000u);
 }
 
 TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
@@ -287,7 +311,8 @@ TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
   const Result<CapturePlan> plan = planner.Plan(spec, Intrinsics{});
   EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
   EXPECT_NE(plan.status.detail.find("too wide"), std::string::npos) << plan.status.detail;
-  spec.acceptanceConeDeg = 2.0;
+  // And from the other side: 3.5 degrees plans, near the widest cone this lens plans at all.
+  spec.acceptanceConeDeg = 3.5;
   EXPECT_TRUE(planner.Plan(spec, Intrinsics{}).ok()) << "a cone that leaves room still plans";
 }
 

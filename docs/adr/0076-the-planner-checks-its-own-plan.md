@@ -62,21 +62,23 @@ sampling at 5000 directions passes between. A test asks those three at 20,000.
   steps in turn rather than together was tried, and saved less than 1%.
 - Planning takes about 5 milliseconds for the page's lens at `-O2` and 10 for a 30 degree lens,
   since a cell is asked only about directions within its frame's half-diagonal and cone. Over long
-  edges from 20 to 120 degrees in four shapes either way round, at 30% overlap and none, the slowest
-  took 42. A wider cone costs more: at the page's lens the slowest of every cone it plans, up to
-  22.3 degrees, took 217 milliseconds for 1261 cells. Planning happens once, at `Begin` or
-  `Resume`.
+  edges from 10 to 120 degrees in four shapes either way round, at 30% overlap and none, the slowest
+  took 52. A wider cone costs more: at the page's lens the slowest of every cone it plans, up to
+  22.9 degrees, took 307 milliseconds for 1746 cells, and the slowest refusal, just past that, 190.
+  Planning happens once, at `Begin` or `Resume`.
 - The cell bound was a hundred thousand when this was first written, and a review found a cone a
   third of a degree short of the refusal planned sixty thousand cells in 15 seconds natively and
-  over a minute in the browser. At 2000, cones that near the line are refused within about 10
-  milliseconds, with a detail that names the cone.
+  over a minute in the browser. At 2000, cones that near the line are refused within 20
+  milliseconds, with a detail that names the cone. The bound counts the cells laid: a first version
+  compared it with a grid of full circles, half again as many, and refused every plan above about
+  1300.
 - Completeness is at the resolution checked, with the degree as its margin. The tests check plans at
   a denser and offset sampling: 5000 directions, 24 aims and pole frames turned in steps of ten
   degrees, the aims and turns a third of a step from any the planner asks, over long edges from 45
   to 85 degrees in three shapes and both orientations, and the three lenses above at 20,000
   directions and every five degrees of heading. A review's model at 20,000 directions, from 20 to 85
   degrees in four shapes either way round, found nothing open at 30% overlap. Asked the test's way
-  at 20,000 directions, every pole frame turned in steps of five degrees, the 1647 plans laid from
+  at 20,000 directions, every pole frame turned in steps of five degrees, the 1671 plans laid from
   20 to 90 degrees in four shapes either way round, at overlaps of none, 10% and 30%, leave nothing
   open.
 - The caps and zero overlap are closed at that resolution, which ADR 0075's consequences recorded
@@ -89,7 +91,7 @@ sampling at 5000 directions passes between. A test asks those three at 20,000.
   this ADR, as it was not by ADR 0075. Making a resumed capture keep its plan is open.
 - `LaysNoMoreCellsThanItNeeds` pins the page's 32 and 38 cells and holds 16:9 to 64, so a
   shrink coarser than the check needs fails a test rather than costing cells unseen.
-- The planner's own tests take about 18 seconds in a debug build, where they took one.
+- The planner's own tests take about 23 seconds in a debug build, where they took one.
 
 ## Rejected alternatives
 

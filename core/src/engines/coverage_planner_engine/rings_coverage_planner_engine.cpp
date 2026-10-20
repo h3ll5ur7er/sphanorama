@@ -38,9 +38,11 @@ std::optional<std::vector<CoverageNode>> LayRings(const CapturePlanSpec& spec,
   // Rings are laid symmetrically about the horizon and reach the poles, so that a sphere is
   // covered rather than a band. An odd count keeps one ring exactly on the horizon, which is
   // where most of the interesting content is and where the user starts.
+  //
+  // Every ring holds a cell, so more rings than the bound is refused before any count is made an
+  // int; each ring's own count is refused below in the same way, as a double.
   const double halfRingsWanted = std::ceil(90.0 / verticalStep);
-  const double approximateCells = (2.0 * halfRingsWanted + 1.0) * (360.0 / horizontalStep + 1.0);
-  if (!std::isfinite(approximateCells) || approximateCells > kMaxCells) return std::nullopt;
+  if (!(2.0 * halfRingsWanted + 1.0 <= kMaxCells)) return std::nullopt;
 
   const int halfRings = static_cast<int>(halfRingsWanted);
   const int ringCount = 2 * halfRings + 1;
@@ -67,8 +69,11 @@ std::optional<std::vector<CoverageNode>> LayRings(const CapturePlanSpec& spec,
     const bool pole = ring == 0 || ring == ringCount - 1;
     const double widest = std::max(std::abs(elevation) - elevationStep / 2.0, 0.0);
     const double cosine = std::max(std::cos(widest * kDegToRad), kPolarCosineFloor);
-    const int cells =
-        pole ? 1 : std::max(1, static_cast<int>(std::ceil(360.0 * cosine / horizontalStep)));
+    const double cellsWanted =
+        pole ? 1.0 : std::max(1.0, std::ceil(360.0 * cosine / horizontalStep));
+    // The cells laid, not an estimate of them: a grid of full circles counted half again as many.
+    if (!(static_cast<double>(nodes.size()) + cellsWanted <= kMaxCells)) return std::nullopt;
+    const int cells = static_cast<int>(cellsWanted);
 
     for (int cell = 0; cell < cells; ++cell) {
       CoverageNode node;
@@ -95,8 +100,9 @@ bool Images(const Quat& aim, const Vec3& direction, double halfWidth, double hal
 // guidance asks for no roll there (ADR 0072). For one direction this is the worst case exactly,
 // since each cell's frame is taken once and independently.
 //
-// Asked at 4000 directions and 16 aims around the cone, of a frame a degree smaller than the lens
-// on every side. Asked of the frame itself, a denser check found directions between the samples
+// Asked at 4000 directions spread over the sphere and 720 on the horizon, with 16 aims around the
+// cone and, at a pole, each of those at 12 headings, of a frame a degree smaller than the lens on
+// every side. Asked of the frame itself, a denser check found directions between the samples
 // that no frame covered; a degree is what a real frame spends covering the directions and aims
 // between the ones asked (ADR 0076).
 bool CompleteInTheWorstCase(const std::vector<CoverageNode>& nodes, const CapturePlanSpec& spec) {
@@ -123,7 +129,7 @@ bool CompleteInTheWorstCase(const std::vector<CoverageNode>& nodes, const Captur
   // rectangles are asked only of cells that near: one cheap product instead of seventeen frames.
   const double reach =
       std::atan(std::hypot(halfWidth, halfHeight)) + spec.acceptanceConeDeg * kDegToRad;
-  const double nearEnough = std::cos(std::min(reach, std::numbers::pi));
+  const double nearEnough = std::cos(reach);
   std::vector<Vec3> aimedAt;
   aimedAt.reserve(nodes.size());
   for (const CoverageNode& node : nodes) aimedAt.push_back(Direction(node.targetOrientation));
