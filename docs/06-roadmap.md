@@ -45,8 +45,8 @@ bench"; it does compile natively — that is what every test run does — but th
 client for it to compile *as*, and saying so implied one existed.)
 
 *Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
-tells the core what it got, and the core plans a real tessellation for it — 32 cells across 7
-rings for a typical phone.
+tells the core what it got, and the core plans a real tessellation for it — 32 cells across 5
+rings for a typical phone held upright.
 
 One caveat worth stating plainly, because "planned for your lens" overstates it: the browser does
 not report field of view at all. The plan is sized from the camera's **real resolution and aspect

@@ -21,12 +21,13 @@ constexpr double kDegToRad = std::numbers::pi / 180.0;
 // cosine, so this only reaches the ring beside a pole, and only for a lens of a few degrees.
 constexpr double kPolarCosineFloor = 0.08;
 
-// A lens narrow enough to need more cells than this is not a capture anyone completes — at one
-// second a cell it is over a day of holding a phone still. The bound exists so the counts below
-// stay inside int, since converting an out-of-range double to int is undefined behaviour and
-// arrives here as a plan rather than as a diagnosable failure. It is also what ends the search in
-// `Plan`: a lens whose rings never close runs out of cells rather than out of time.
-constexpr double kMaxCells = 100000.0;
+// A plan needing more cells than this is not a capture anyone completes: at a two-second dwell it
+// is over an hour of holding a phone still. The bound keeps the counts below inside int, since
+// converting an out-of-range double to int is undefined behaviour and arrives here as a plan rather
+// than as a diagnosable failure. And it is what ends the search in `Plan` in a bounded time: it was
+// a hundred thousand, and a cone just short of too wide for its lens laid and checked sixty
+// thousand cells for a minute in the browser before answering (ADR 0076).
+constexpr double kMaxCells = 2000.0;
 
 // How much smaller than the lens, on every side, the frame `CompleteInTheWorstCase` asks about is.
 constexpr double kMarginDeg = 1.0;
@@ -90,12 +91,9 @@ bool Images(const Quat& aim, const Vec3& direction, double halfWidth, double hal
 }
 
 // Whether every direction the plan answers for is inside some cell's frame however that frame is
-// taken: anywhere on its cone's edge or at its centre. For one direction this is the worst case
-// exactly, since each cell's frame is taken once and independently.
-//
-// A frame at a pole is taken at any heading too, since guidance asks for no roll there (ADR 0072),
-// and that is not asked here: the margin and the aims round the cone already close it, for every
-// lens the tests sweep and the 1010 a wider sweep tried (ADR 0076). The tests ask it.
+// taken: anywhere on its cone's edge or at its centre, and at a pole at any heading as well, since
+// guidance asks for no roll there (ADR 0072). For one direction this is the worst case exactly,
+// since each cell's frame is taken once and independently.
 //
 // Asked at 4000 directions and 16 aims around the cone, of a frame a degree smaller than the lens
 // on every side. Asked of the frame itself, a denser check found directions between the samples
@@ -108,25 +106,59 @@ bool CompleteInTheWorstCase(const std::vector<CoverageNode>& nodes, const Captur
     aims.push_back(FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
                                  spec.acceptanceConeDeg * kDegToRad));
   }
+  std::vector<Quat> atAPole;
+  for (int heading = 0; heading < 180; heading += 15) {
+    for (const Quat& aim : aims) {
+      atAPole.push_back(Multiply(FromAxisAngle(Vec3{0.0, 0.0, 1.0}, heading * kDegToRad), aim));
+    }
+  }
   double highest = 0.0;
   for (const CoverageNode& node : nodes) {
     highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
   }
   const double halfWidth = std::tan((spec.horizontalFovDeg * 0.5 - kMarginDeg) * kDegToRad);
   const double halfHeight = std::tan((spec.verticalFovDeg * 0.5 - kMarginDeg) * kDegToRad);
+
+  // A cell can only cover what is within its frame's half-diagonal of where it is aimed, so the
+  // rectangles are asked only of cells that near: one cheap product instead of seventeen frames.
+  const double reach =
+      std::atan(std::hypot(halfWidth, halfHeight)) + spec.acceptanceConeDeg * kDegToRad;
+  const double nearEnough = std::cos(std::min(reach, std::numbers::pi));
+  std::vector<Vec3> aimedAt;
+  aimedAt.reserve(nodes.size());
+  for (const CoverageNode& node : nodes) aimedAt.push_back(Direction(node.targetOrientation));
+
+  // Spread over the sphere, and the horizon besides: a band left with only its horizon ring answers
+  // for nothing else, and no point of the spread lands on it.
   constexpr int kDirections = 4000;
+  constexpr int kOnTheHorizon = 720;
+  std::vector<Vec3> directions;
+  directions.reserve(kDirections + kOnTheHorizon);
   const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
   for (int i = 0; i < kDirections; ++i) {
     const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / kDirections;
     // A band answers only for the elevations its rings aim at; the caps are not its to cover.
     if (std::abs(y) > highest) continue;
     const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
-    const Vec3 direction{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius};
-    const bool safe = std::any_of(nodes.begin(), nodes.end(), [&](const CoverageNode& node) {
-      return std::all_of(aims.begin(), aims.end(), [&](const Quat& aim) {
+    directions.push_back(Vec3{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius});
+  }
+  for (int i = 0; i < kOnTheHorizon; ++i) {
+    const double azimuth = 2.0 * std::numbers::pi * (i + 0.5) / kOnTheHorizon;
+    directions.push_back(Vec3{std::sin(azimuth), 0.0, -std::cos(azimuth)});
+  }
+
+  for (const Vec3& direction : directions) {
+    bool safe = false;
+    for (size_t n = 0; n < nodes.size() && !safe; ++n) {
+      const Vec3& at = aimedAt[n];
+      if (at.x * direction.x + at.y * direction.y + at.z * direction.z < nearEnough) continue;
+      const CoverageNode& node = nodes[n];
+      const bool pole = std::abs(at.y) > 1.0 - 1e-9;
+      const std::vector<Quat>& taken = pole ? atAPole : aims;
+      safe = std::all_of(taken.begin(), taken.end(), [&](const Quat& aim) {
         return Images(Multiply(node.targetOrientation, aim), direction, halfWidth, halfHeight);
       });
-    });
+    }
     if (!safe) return false;
   }
   return true;
@@ -189,8 +221,8 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
   // to its short edge, and the page's own lens was complete by rounding. Each was found by a lens a
   // fraction of a degree from the ones that passed (ADR 0075, ADR 0076). So the plan is laid,
   // asked whether any frame its cones accept could leave a hole, and laid tighter until none
-  // could. Rules for each of the three ways were tried first, and the check alone lays the same
-  // number of cells. The page's lens is complete as first laid.
+  // could. Rules for each of the three ways were tried first, and the check alone lays about as
+  // many cells, fewer in fact. The page's lens is complete as first laid.
   CapturePlan plan;
   plan.spec = spec;
   for (;;) {
@@ -198,8 +230,8 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
         LayRings(spec, verticalStep, horizontalStep);
     if (!nodes) {
       return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                              "this lens and overlap would need more cells than a session can "
-                              "hold");
+                              "this lens, overlap and cone would need more cells than a capture "
+                              "could hold");
     }
     if (CompleteInTheWorstCase(*nodes, spec)) {
       plan.nodes = std::move(*nodes);

@@ -130,10 +130,12 @@ std::vector<CapturePlanSpec> PhoneLenses() {
 }
 
 // The cone's edge, all the way round, and its centre.
+// A third of a step round, because at half a step every third aim fell on one of the planner's own
+// sixteen, and a check that asks where the planner asked agrees with it for free there.
 std::vector<Quat> AimsInTheCone(double coneDeg) {
   std::vector<Quat> aims{Quat{}};
   for (int step = 0; step < 24; ++step) {
-    const double around = 2.0 * std::numbers::pi * (step + 0.5) / 24.0;
+    const double around = 2.0 * std::numbers::pi * (step + 1.0 / 3.0) / 24.0;
     aims.push_back(
         FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0}, coneDeg / kRadToDeg));
   }
@@ -145,16 +147,18 @@ std::vector<Quat> AimsInTheCone(double coneDeg) {
 // a direction is a hole in some capture whenever every cell has a variant that misses it.
 //
 // A frame at a pole is taken at any heading as well, since nothing there asks for one: guidance
-// stops correcting roll within five degrees of straight up or down (ADR 0072).
-int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants) {
+// stops correcting roll within five degrees of straight up or down (ADR 0072). Offset by a third of
+// a step, which lands on none of the planner's headings, every fifteen degrees, at any step.
+int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants,
+                            const std::vector<Vec3>& directions, int headingStepDeg = 10) {
   std::vector<Quat> atAPole;
-  for (int heading = 5; heading < 180; heading += 10) {
+  for (double heading = headingStepDeg / 3.0; heading < 180.0; heading += headingStepDeg) {
     for (const Quat& variant : variants) {
       atAPole.push_back(Multiply(FromAxisAngle(Vec3{0.0, 0.0, 1.0}, heading / kRadToDeg), variant));
     }
   }
   int uncovered = 0;
-  for (const Vec3& direction : SphereSamples(5000)) {
+  for (const Vec3& direction : directions) {
     const bool safe = std::any_of(plan.nodes.begin(), plan.nodes.end(), [&](const auto& node) {
       const bool pole = std::abs(Direction(node.targetOrientation).y) > 1.0 - 1e-9;
       const std::vector<Quat>& taken = pole ? atAPole : variants;
@@ -166,6 +170,11 @@ int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& va
     if (!safe) ++uncovered;
   }
   return uncovered;
+}
+
+int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants,
+                            int directions = 5000, int headingStepDeg = 10) {
+  return UncoveredInTheWorstCase(plan, variants, SphereSamples(directions), headingStepDeg);
 }
 
 TEST(CoveragePlanner, StaysCompleteWhereverInsideItsConeAFrameIsTaken) {
@@ -194,6 +203,80 @@ TEST(CoveragePlanner, StaysCompleteWithNoOverlapAtAll) {
   }
 }
 
+TEST(CoveragePlanner, TheCapsCloseForAPoleFrameAtAnyHeadingWithNoOverlap) {
+  // A pole frame is taken at any heading, and with no overlap its short edge is where the cap
+  // opens: a review found these lenses, held sideways, leaving directions at 66 degrees open that
+  // the sweeps above sample between. Asked here at 20,000 directions and every five degrees of
+  // heading.
+  for (const auto& [longEdge, aspect] : {std::pair{70.0, 4.0 / 3.0}, std::pair{76.0, 3.0 / 2.0},
+                                         std::pair{76.5, 3.0 / 2.0}}) {
+    CapturePlanSpec lens = UprightSpec(longEdge, aspect, true);
+    lens.overlapTarget = 0.0;
+    const CapturePlan plan = Plan(lens);
+    EXPECT_EQ(
+        UncoveredInTheWorstCase(plan, AimsInTheCone(plan.spec.acceptanceConeDeg), 20000, 5), 0)
+        << longEdge << " degrees at " << aspect << ", " << plan.nodes.size() << " cells";
+  }
+}
+
+TEST(CoveragePlanner, ABandClosesTheHorizonWhereverInItsConeAFrameIsTaken) {
+  // A band answers for the elevations its rings aim at. With only the horizon ring left that is the
+  // horizon itself, which no sample spread over the sphere lands on, and a check of nothing passed:
+  // a review found this band leaving a thirtieth of the horizon open.
+  CapturePlanSpec lens = Spec(77.5, 110.0, 0.0);
+  lens.acceptanceConeDeg = 4.0;
+  lens.coverPoles = false;
+  const CapturePlan plan = Plan(lens);
+  std::vector<Vec3> horizon;
+  for (int tenth = 0; tenth < 3600; ++tenth) {
+    const double azimuth = tenth / 10.0 / kRadToDeg;
+    horizon.push_back(Vec3{std::sin(azimuth), 0.0, -std::cos(azimuth)});
+  }
+  EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(lens.acceptanceConeDeg), horizon), 0)
+      << plan.nodes.size() << " cells";
+}
+
+TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
+  // Without the caps a band answers for the elevations its rings aim at, and only those, so that
+  // is what is asked: the spread of directions up to its outermost ring, and the horizon.
+  for (CapturePlanSpec lens : PhoneLenses()) {
+    lens.coverPoles = false;
+    const CapturePlan plan = Plan(lens);
+    double highest = 0.0;
+    for (const CoverageNode& node : plan.nodes) {
+      highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
+    }
+    std::vector<Vec3> band;
+    for (const Vec3& direction : SphereSamples(5000)) {
+      if (std::abs(direction.y) <= highest) band.push_back(direction);
+    }
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(lens.acceptanceConeDeg), band), 0)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << ", " << plan.nodes.size()
+        << " cells";
+  }
+}
+
+TEST(CoveragePlanner, LaysNoMoreCellsThanItNeeds) {
+  // The check makes a plan complete; this keeps it from being complete by being dense. The page's
+  // lens is complete as first laid, and a lens the first lay left holes in is tightened in small
+  // steps: a coarser search laid 154 cells where 64 do (ADR 0076).
+  EXPECT_EQ(Plan(ThePagesSpec()).nodes.size(), 32u);
+  EXPECT_EQ(Plan(UprightSpec(66.0, 4.0 / 3.0, true)).nodes.size(), 38u);
+  EXPECT_LE(Plan(UprightSpec(66.0, 16.0 / 9.0)).nodes.size(), 64u);
+}
+
+TEST(CoveragePlanner, RefusesAConeThatWouldNeedMoreCellsThanACaptureCouldHold) {
+  // Short of being too wide to plan at all, a cone that is most of the frame needs tens of
+  // thousands of cells, and laying and checking them took a minute in the browser before refusing
+  // or answering (ADR 0076). Refused, quickly, and for the cone.
+  CapturePlanSpec lens = ThePagesSpec();
+  lens.acceptanceConeDeg = 24.6;
+  RingsCoveragePlannerEngine planner;
+  const Result<CapturePlan> plan = planner.Plan(lens, Intrinsics{});
+  EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(plan.status.detail.find("cone"), std::string::npos) << plan.status.detail;
+}
+
 TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
   // A frame aimed at the edge of a cone half as wide as itself does not see its own cell's centre,
   // so no spacing closes the sphere and a plan would be a promise it cannot keep. The planner
@@ -203,8 +286,8 @@ TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
   spec.acceptanceConeDeg = 6.5;
   const Result<CapturePlan> plan = planner.Plan(spec, Intrinsics{});
   EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
-  EXPECT_NE(plan.status.detail.find("cone"), std::string::npos) << plan.status.detail;
-  spec.acceptanceConeDeg = 4.0;
+  EXPECT_NE(plan.status.detail.find("too wide"), std::string::npos) << plan.status.detail;
+  spec.acceptanceConeDeg = 2.0;
   EXPECT_TRUE(planner.Plan(spec, Intrinsics{}).ok()) << "a cone that leaves room still plans";
 }
 
@@ -228,7 +311,7 @@ TEST(CoveragePlanner, TheFrameTestedIsTheRectangleACameraImages) {
 TEST(CoveragePlanner, StaysCompleteForAFrameRolledUpToTwentyFiveDegrees) {
   // The second place: a phone rolled about its view turns its frame's corners away from where the
   // plan put them. Twenty-five degrees either way costs nothing on the cell's centre at the page's
-  // lens. These 4000 directions see nothing at thirty either, but a model with 20,000 finds one
+  // lens. These 5000 directions see nothing at thirty either, but a model with 20,000 finds one
   // there (ADR 0075), so this asks only what is known to hold.
   const CapturePlan plan = Plan(ThePagesSpec());
   std::vector<Quat> rolls;

@@ -12,10 +12,10 @@ every claim of completeness rested on chosen lenses, each of which passed while 
 a degree away did not.
 
 A sweep of the real planner made the third point general. With pole frames taken at any heading,
-since guidance asks for no roll within five degrees of a pole (ADR 0072), and frames anywhere in a 4
-degree cone at 30% overlap, 29 of 141 long edges from 20 to 90 degrees failed on 4:3, 35 on 3:2 and
-47 on 16:9. Most were narrow lenses, where a cone of 4 degrees on each side of a shared edge eats an
-overlap of 30%. The rest were the caps.
+since guidance asks for no roll within five degrees of a pole (ADR 0072), and every frame anywhere
+in a 4 degree cone at 30% overlap, 31 of 141 long edges from 20 to 90 degrees failed on 4:3, 40 on
+3:2 and 60 on 16:9. Most were narrow lenses, where a cone of 4 degrees on each side of a shared edge
+eats an overlap of 30%. The rest were the caps.
 
 Rules for each failure were tried next: steps capped at the field less two and a half cones, and
 rings added until a pole frame's short half-edge reached halfway to the next ring. They cleared
@@ -27,26 +27,31 @@ counts round, so a margin tuned until a sweep is clean is complete by rounding a
 
 **`RingsCoveragePlannerEngine::Plan` checks the plan it lays, and lays it tighter until the check
 passes.**
-- **The check.** For each of 4000 directions spread evenly over the sphere, the question is
-  whether some cell's frame covers it whether that frame is aimed at the cell's centre or at any of
-  16 points around its cone's edge. For one direction this is the worst case exactly, since each
-  cell's frame is taken once.
+- **The check.** For each of 4000 directions spread evenly over the sphere, and 720 on the
+  horizon, the question is whether some cell's frame covers it whether that frame is aimed at the
+  cell's centre or at any of 16 points around its cone's edge. For one direction this is the worst
+  case exactly, since each cell's frame is taken once. A plan without its caps answers only for
+  the directions no higher than its highest ring, and the horizon is asked outright because a band
+  left with only its horizon ring would otherwise be asked about nothing: no point of the spread
+  lands on it.
 - **The frame it asks about is a degree smaller than the lens on every side.** Asked of the lens
   itself, plans complete at the 4000 directions left two in 5000 open at another sampling. The
   degree is what a real frame spends covering the directions and aims between the ones asked.
-- **When the check fails,** both steps shrink by 5% and the rings are laid again. The bound on cells
-  a session can hold ends the search, so a lens that never closes is refused rather than hung on.
+- **When the check fails,** both steps shrink by 5% and the rings are laid again. A plan of more
+  than 2000 cells, over an hour at a two-second dwell, ends the search, so a lens or cone that
+  never closes is refused in a bounded time rather than hung on.
 - **A cone too wide for its lens is refused**: one at least half the narrower field, less the
   degree. A frame aimed at its edge would not see its own cell's centre, and no spacing closes a
   sphere of those.
 
 The steps start where ADR 0075 left them: the overlap's, with each ring spaced where its band is
-widest. The rules tried above are not kept. Over 102 phone lenses, with pole headings asked as
-well, the check alone laid 5207 cells and the check with the rules 5217.
+widest. The rules tried above are not kept: over 102 phone lenses the check alone lays 5207 cells,
+and the check with the rules 5217.
 
-Pole frames at any heading are not part of the check. The degree and the aims round the cone
-already close the caps: the engine without that question passed the tests, which do ask it, and
-1010 combinations of lens and orientation in a wider sweep.
+Pole frames are asked at any heading, every 15 degrees. A first version of this ADR left them out,
+because no lens its tests swept needed them; a review found three that do, held sideways at zero
+overlap, where a pole frame turned to its short edge leaves directions at 66 degrees open that
+sampling at 5000 directions passes between. A test asks those three at 20,000.
 
 ## Consequences
 
@@ -55,15 +60,35 @@ already close the caps: the engine without that question passed the tests, which
 - Lenses that left holes cost cells now. 16:9 held upright at 66 degrees goes from 39 cells to 64,
   3:2 at 43.5 degrees from 80 to 111, and 4:3 at 30 degrees from 169 to 254. Shrinking the two
   steps in turn rather than together was tried, and saved less than 1%.
-- Planning takes about 5 milliseconds for the page's lens at `-O2`, and 37 for a 30 degree lens.
-  It happens once, at `Begin` or `Resume`.
+- Planning takes about 5 milliseconds for the page's lens at `-O2` and 10 for a 30 degree lens,
+  since a cell is asked only about directions within its frame's half-diagonal and cone. Over long
+  edges from 20 to 120 degrees in four shapes either way round, at 30% overlap and none, the slowest
+  took 42. A wider cone costs more: at the page's lens the slowest of every cone it plans, up to
+  22.3 degrees, took 217 milliseconds for 1261 cells. Planning happens once, at `Begin` or
+  `Resume`.
+- The cell bound was a hundred thousand when this was first written, and a review found a cone a
+  third of a degree short of the refusal planned sixty thousand cells in 15 seconds natively and
+  over a minute in the browser. At 2000, cones that near the line are refused within about 10
+  milliseconds, with a detail that names the cone.
 - Completeness is at the resolution checked, with the degree as its margin. The tests check plans at
   a denser and offset sampling: 5000 directions, 24 aims and pole frames turned in steps of ten
-  degrees, over long edges from 45 to 85 degrees in three shapes and both orientations. A model at
-  20,000 directions found nothing open for 4:3, 3:2, 16:9 or square frames, upright, sideways or at
-  zero overlap.
-- The caps and zero overlap are closed, which ADR 0075's consequences recorded as open. Roll at the
-  cone's edge is still not part of the check, so ADR 0075's roll figures stand.
+  degrees, the aims and turns a third of a step from any the planner asks, over long edges from 45
+  to 85 degrees in three shapes and both orientations, and the three lenses above at 20,000
+  directions and every five degrees of heading. A review's model at 20,000 directions, from 20 to 85
+  degrees in four shapes either way round, found nothing open at 30% overlap. Asked the test's way
+  at 20,000 directions, every pole frame turned in steps of five degrees, the 1647 plans laid from
+  20 to 90 degrees in four shapes either way round, at overlaps of none, 10% and 30%, leave nothing
+  open.
+- The caps and zero overlap are closed at that resolution, which ADR 0075's consequences recorded
+  as open. Roll at the cone's edge is still not part of the check, so ADR 0075's roll figures
+  stand.
+- A capture saved before a plan changes and resumed after it is filed under the new plan. `Resume`
+  remakes the plan from the stored spec (ADR 0029) and checks only that each stored cell id still
+  exists, so where a lens's plan changed, its ids now name other cells: for 16:9 held upright at 66
+  degrees, 38 of 39 point more than 4 degrees from where they did. The page's lens is unchanged by
+  this ADR, as it was not by ADR 0075. Making a resumed capture keep its plan is open.
+- `LaysNoMoreCellsThanItNeeds` pins the page's 32 and 38 cells and holds 16:9 to 64, so a
+  shrink coarser than the check needs fails a test rather than costing cells unseen.
 - The planner's own tests take about 18 seconds in a debug build, where they took one.
 
 ## Rejected alternatives

@@ -118,7 +118,7 @@ one direction.
   cone: held upright, 16:9 from 64.3 to 65.5 degrees and 3:2 from 42.9 to 44.5, and at the page's 66
   degrees any stream wider than 16:9. A review swept long edges from 20 to 90 degrees: 1182 lenses
   failed spaced at the rings' centres and 670 at the widest edge. It predates this ADR and is open,
-  with the lenses zero overlap leaves holes for. (Closed by ADR 0076.)
+  with the lenses zero overlap leaves holes for.
 - How much of the field report this explains is unmeasured. Gaps a capture leaves for any reason are
   still invisible while capturing; finding them from where frames really landed is separate work.
 - `CaptureSessionManager::OnMotion` and `GuidanceAction` say what `TooFast` means, and UC-1 in

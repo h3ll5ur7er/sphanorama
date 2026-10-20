@@ -16,9 +16,9 @@ namespace sphanorama {
 // shrinks as it climbs; spacing it uniformly in azimuth would put hundreds of redundant cells at
 // the poles and leave the equator short.
 //
-// Every plan is checked before it is returned: a frame aimed anywhere in its cell's cone has to
-// leave no direction uncovered, and a plan that does is laid tighter until it does not (ADR 0076).
-// So `Plan` also refuses a cone too wide for its lens, which no spacing could close.
+// Every plan is checked before it is returned: it is laid tighter until, at 4000 directions, every
+// direction lies inside some cell's frame wherever in its cone that frame is aimed (ADR 0076). So
+// `Plan` also refuses a cone too wide for its lens, which no spacing could close.
 class RingsCoveragePlannerEngine final : public ICoveragePlannerEngine {
  public:
   Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override;
