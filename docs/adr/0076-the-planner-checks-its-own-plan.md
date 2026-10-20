@@ -79,6 +79,13 @@ sampling at 5000 directions passes between. A test asks those three at 20,000.
   the bound allows taking over three seconds in the browser's build. Asking nearest first lays the
   same plans, identical over the 4032 specs above, and took the slowest the review found, 180 by
   101.25 degrees with a 48 degree cone, from 3158 milliseconds in that build to 54.
+- Rings are counted from the horizon rather than from a pole, so the horizon is exactly 0 and the
+  two sides are mirrors. Counted from a pole, a band whose limit was the horizon lost its horizon
+  ring by an ulp and was laid tighter than asked. The change moves cells by ulps on about a tenth of
+  specs, and a band whose limit lands exactly on a ring now keeps that ring more often: 170 by 144
+  degrees at an overlap of 0.982, for one, keeps its ring at 18 degrees and lays 1746 cells where it
+  laid 1633. Which way a ring exactly on the limit goes is still decided by rounding, the same way
+  on both sides.
 - Completeness is at the resolution checked, with the degree as its margin. The tests check plans at
   a denser and offset sampling: 5000 directions, 24 aims and pole frames turned in steps of ten
   degrees, the aims and turns a third of a step from any the planner asks, over long edges from 45
