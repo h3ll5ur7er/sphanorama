@@ -295,15 +295,6 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
 
   resolved.motion = motion;
 
-  // The rule a resume will hold the stored spec to, held here too, so that what this writes that
-  // resume can read whatever planner is wired in: one looser than it began captures nothing could
-  // resume (ADR 0077).
-  if (auto defect = SpecDefect(resolved)) {
-    (void)camera_.Close();
-    return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
-                          std::string("this capture would be planned from ") + *defect);
-  }
-
   // Everything from here can fail with the camera already open, because the lens has to be read
   // before the plan can be made. Returning without closing it leaves the indicator lit for a
   // session that never started — which the user reads, correctly, as the app watching them.
@@ -318,6 +309,15 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   if (plan.value.nodes.empty()) {
     (void)camera_.Close();
     return Err<SessionId>(StatusCode::Internal, kComponent, "the planner laid no cells");
+  }
+  // The rule a resume will hold the stored spec to, held here too, so that what this writes that
+  // resume can read whatever planner is wired in: one looser than it began captures nothing could
+  // resume (ADR 0077). After the planner, whose own refusal says more, and before the tier is
+  // emptied.
+  if (auto defect = SpecDefect(resolved)) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
+                          std::string("this capture would be planned from ") + *defect);
   }
   // From where the last capture in this tab left off, so this one's identities stay distinct from
   // those the page was already handed.
@@ -473,27 +473,35 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // predates the cells and is replanned from its spec and lens, as every resume was. Either way
   // nothing here needs a camera, so everything that can refuse this does before the indicator
   // lights.
+  //
+  // Every refusal of the document's own bytes below is `Unsupported`, as the decoder's is: a resume
+  // pressed again would be refused again, and the page offers to try again on anything else. The
+  // planner is a pure function, so its refusal of a stored spec is one of those too.
+  //
+  // The spec is held to the resume's rule on either path. The page reads it back to size its
+  // overlay, no planner runs where the cells are stored, and one that does may be looser than the
+  // rule; asked without one, since a later planner may refuse what an earlier one accepted.
+  if (auto defect = SpecDefect(stored.spec)) {
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          std::string("this project's session document carries ") + *defect);
+  }
   Result<CapturePlan> plan = Ok(CapturePlan{});
   if (stored.nodes.empty()) {
     plan = planner_.Plan(stored.spec, stored.lens);
-    if (!plan.ok()) return plan.status;
-  } else {
-    // The planner was what refused a spec that is not a lens, and none runs here; the page reads
-    // this spec back to size its overlay. Asked without one, since a later planner may refuse what
-    // the one that laid these cells accepted.
-    // `Unsupported`, as for a cell no plan was laid with: this is the document's own bytes, and a
-    // resume pressed again would be refused again.
-    if (auto defect = SpecDefect(stored.spec)) {
+    if (!plan.ok()) {
       return Err<SessionId>(StatusCode::Unsupported, kComponent,
-                            std::string("this project's session document carries ") + *defect);
+                            "this build's planner cannot plan this project's session: "
+                                + plan.status.detail);
     }
+  } else {
     plan.value.spec = stored.spec;
     plan.value.nodes = stored.nodes;
   }
   // Only a replan can be empty, since the decoder refuses a document that lost its cells; checked
   // here as `Begin` checks it, or the next checkpoint would write one.
   if (plan.value.nodes.empty()) {
-    return Err<SessionId>(StatusCode::Internal, kComponent, "the planner laid no cells");
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          "this build's planner laid no cells for this project's session");
   }
 
   // Every candidate has to name a cell of this plan. The decoder checks each cell and each

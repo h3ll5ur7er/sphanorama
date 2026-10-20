@@ -33,11 +33,14 @@ sphere they are capturing, and only the second is what the candidates were filed
 - **The stored spec is checked without a planner**: a field of view a lens has, an overlap short of
   one, and a cone narrower than half the frame. The planner was what refused a spec that is not a
   lens, none runs on this path, and a later one might refuse what the one that laid the cells
-  accepted. The page sizes its overlay from this spec. A refusal is `Unsupported`, like a cell's,
-  since the page offers to try again on anything else and this would refuse again.
+  accepted. The page sizes its overlay from this spec. A version-2 document is held to the rule
+  too, and to its planner.
+- **Every refusal of a stored document's own bytes is `Unsupported`**, a planner's refusal of a
+  version-2 spec and an empty replan among them, since the planner is a pure function: pressed
+  again, the resume would be refused again, and the page offers to try again on anything else.
 - **`Begin` holds the spec it plans from to the same rule**, so that what it writes a resume can
   read whatever planner is wired in: one looser than the rule began captures that could not be
-  resumed.
+  resumed. After the planner, whose own refusal says more, and before the tier is emptied.
 - **A plan of no cells is refused**, by `Begin` and by a version-2 replan alike: nothing forbids a
   planner to return one, and its document is one the decoder would refuse.
 - **Version 2 is still read, and replanned** from its spec and lens as every resume was. Refusing

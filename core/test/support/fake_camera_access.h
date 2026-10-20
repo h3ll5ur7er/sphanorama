@@ -38,9 +38,10 @@ class FakeCameraAccess final : public ICameraAccess {
    */
   int Opens() const { return opens_; }
   bool ExposureLocked() const { return exposure_locked_; }
-  // The contract's read, and the one tests use. It was a non-virtual `const&` accessor before
-  // `ICameraAccess` grew `Capabilities()` (ADR 0045); one name, one answer, so a test cannot read
-  // something the manager cannot.
+  // The contract's read, and the one tests read the camera through. It was a non-virtual `const&`
+  // accessor before `ICameraAccess` grew `Capabilities()` (ADR 0045), so a test cannot read
+  // something the manager cannot; `Configured()` below is for setting a camera up, not for reading
+  // what it is doing, which a held exposure lock changes.
   Result<CameraCapabilities> Capabilities() override {
     // Not open is not the same fact as cannot open, and conflating them is how a fake hides a
     // defect: this answered `Ok` with 32x24 for a camera nobody had opened *and* for one it had
