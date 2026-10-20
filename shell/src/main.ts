@@ -392,9 +392,9 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
   // phone that is not a preference between two crops: the sensor is 4:3 and the widescreen video
   // mode is made by throwing away the top and bottom of it, so asking for the taller frame asks
   // for more of the picture. What it buys is cells. Vertical field of view is what sets the ring
-  // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — measured through
-  // the whole app, 44 cells planned rather than 32, a third more of the sphere to shoot for a
-  // frame that sees less of it.
+  // count, and 66 degrees across at 16:9 is 40 degrees tall against 52 at 4:3 — 50 cells planned
+  // rather than 38 (44 against 32 when it was measured through the whole app, before ADR 0075),
+  // a third more of the sphere to shoot for a frame that sees less of it.
   // The motion grant was started at the top of this function, before the sensor check and before
   // this camera request, and is awaited after both. iOS grants motion only during a transient
   // user activation, and the camera prompt is exactly the kind of await that spends one — so

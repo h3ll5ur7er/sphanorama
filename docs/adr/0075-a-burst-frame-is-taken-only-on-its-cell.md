@@ -18,23 +18,25 @@ frames where they really looked, and the cell's own direction was left to whatev
 
 **The plan was complete for the page's lens by rounding.** The page plans for 66 degrees on the long
 edge of a 4:3 frame held upright, with 30% overlap and a 4 degree cone, and a burst is armed
-anywhere inside that cone. Each ring was spaced by its circumference at its centre. The rings at 45
-degrees needed 7.002 cells and were given 8, and with 8 a level frame anywhere in the cone covered
-the sphere. With 7 it did not. A tenth of a degree more lens, or a 3:2 stream, gave 7.
+anywhere inside that cone. Each ring was spaced by its circumference at its centre. The two rings at
+45 degrees needed 7.002 cells each and were given 8, and with 8 a level frame anywhere in the cone
+covered the sphere. A tenth of a degree more lens gave 7, which did not, and a 3:2 stream's narrower
+frames did not close the ring with 8.
 
 The figures come from a model of the planner checked against 20,000 directions spread evenly over
 the sphere, counting a direction covered when it falls inside the rectangle a camera images. The
 worst case is exact for one direction: each cell's frame is taken once and independently, so a
-direction is a hole in some capture whenever every cell has a frame that misses it. "Level" means
-level against gravity.
+direction is a hole in some capture whenever every cell has a frame that misses it. Aims are 360
+points around the cone's edge, and a worst case over sampled aims only rises with more of them.
+"Level" means level against gravity.
 
 | Plan spaced at the ring's centre (28 cells for the page) | Directions a capture could miss |
 | --- | --- |
 | The page's lens, anywhere in the 4 degree cone | none |
 | 66.1 degrees on 4:3 (26 cells), anywhere in the cone | 0.30% |
-| 66 degrees on 3:2 (29 cells), anywhere in the cone | 0.29% |
-| Planned for 66, frames really 63 degrees, anywhere in the cone | 0.07% |
-| Planned for 66, frames really 54 degrees, anywhere in the cone | 7.7% |
+| 66 degrees on 3:2 (29 cells), anywhere in the cone | 0.31% |
+| Planned for 66, frames really 63 degrees, anywhere in the cone | 0.09% |
+| Planned for 66, frames really 54 degrees, anywhere in the cone | 7.9% |
 
 Frames taken at random rather than at the worst choice did no better at 54 degrees: every one of
 twenty trials missed something. An earlier version of this ADR said the plan held down to 54
@@ -76,8 +78,8 @@ plan grows from 28 cells to 32 held upright, and from 32 to 38 held sideways.
 | --- | --- |
 | 60, 66, 66.1, 67 or 70 degrees on 4:3, or 66 on 3:2 or 16:9, anywhere in the cone | none |
 | Planned for 66, frames really 58 degrees, anywhere in the cone | none |
-| Planned for 66, frames really 56 degrees, anywhere in the cone | 0.79% |
-| The page's lens with no overlap at all | none |
+| Planned for 66, frames really 56 degrees, anywhere in the cone | 0.88% |
+| The page's lens with no overlap at all, on the cell's centre | none |
 | The page's lens on the cell's centre, rolled up to 25 degrees | none |
 | The page's lens on the cell's centre, rolled any amount | 0.69% |
 | Anywhere in the cone, rolled up to 10 degrees | none |
@@ -88,11 +90,16 @@ plan grows from 28 cells to 32 held upright, and from 32 to 38 held sideways.
 The first, fourth and fifth rows are tests against the planner itself, over the lenses the first
 names except 70, which is where the model's numbers stop being a model. The tests tilt each frame in
 its cell's own frame rather than keeping it level, which leaves it up to 4 degrees off level; both
-give none on those rows. The fourth closes the hole an overlap of zero left.
+give none on those rows. The fourth holds for the page's lens and the old test lens and is not
+general: across 276 lenses a review swept, 62 still leave holes at zero overlap with every frame on
+its cell's centre, against 179 spaced at the centre and none at 30% overlap. In the cone at zero
+overlap the page's lens misses 7.15%.
 
-Roll is not bounded. Frames taken at random, rolled any amount anywhere in the cone, missed 0.004%
-on average and 0.05% in the worst of twenty trials, and up to 30 degrees of roll they missed
-nothing. The worst case needs every cell rolled the wrong way for one direction.
+Roll is not bounded. Frames taken at random, rolled any amount anywhere in the cone, missed between
+0.001% and 0.008% on average in five batches of twenty trials, and between 0.01% and 0.06% in each
+batch's worst trial; a review's batches reached 0.12%. Up to 30 degrees of roll, misses were rare: 4
+trials of a review's 1,000 missed 0.01%. The worst case needs every cell rolled the wrong way for
+one direction.
 
 ## Consequences
 
@@ -101,9 +108,16 @@ nothing. The worst case needs every cell rolled the wrong way for one direction.
   4 degrees for half a second cannot capture that cell at all.
 - Four more cells to hold still on, held upright, and six more held sideways.
 - A phone rolled at the cone's edge can still leave a hole, up to a tenth of the sphere in the worst
-  case and nothing like it in practice, and nothing reports it. A lens narrower than about 57
+  case and nothing like it in practice, and nothing reports it. A lens narrower than about 58
   degrees opens gaps, and the page still assumes 66: the lens a capture fits (ADR 0066, ADR 0067) is
   not yet fed back into the next plan.
+- The caps beside the poles are still not closed for every lens. Rings are laid as though the single
+  frame at a pole reached half its vertical field in every direction, and across its short edge it
+  reaches less, so some lenses near the ones tried leave holes at 73 to 75 degrees for frames in the
+  cone: held upright, 16:9 from 64.3 to 65.5 degrees and 3:2 from 42.9 to 44.5, and at the page's 66
+  degrees any stream wider than 16:9. A review swept long edges from 20 to 90 degrees: 1182 lenses
+  failed spaced at the rings' centres and 670 at the widest edge. It predates this ADR and is open,
+  with the lenses zero overlap leaves holes for.
 - How much of the field report this explains is unmeasured. Gaps a capture leaves for any reason are
   still invisible while capturing; finding them from where frames really landed is separate work.
 - `CaptureSessionManager::OnMotion` and `GuidanceAction` say what `TooFast` means, and UC-1 in
@@ -113,7 +127,8 @@ nothing. The worst case needs every cell rolled the wrong way for one direction.
 
 **Plan for the worst case at any roll.** Shrinking each field of view by part of the cone before
 spacing the rings at their centres took 45 cells for the page's lens, where the widest edge takes
-32, for a worst case that random frames reached in a twentieth of a percent of the sphere at most.
+32, for a worst case random frames came nowhere near: the worst trial any batch recorded missed a
+tenth of a percent.
 
 **Bound roll at the arm.** It closes the worst case and asks the user to level the phone on every
 cell, including the ones where it costs nothing.

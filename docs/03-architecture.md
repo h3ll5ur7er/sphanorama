@@ -314,7 +314,7 @@ sequenceDiagram
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
   M-->>U: Guidance{node, error, "hold still", heldFraction}
-  Note over M: the dwell runs while the cell is held; about two seconds of ticks that carried samples
+  Note over M: the dwell runs while the cell is held, about two seconds of ticks with samples
   M-->>U: Guidance{node, "fire"}
   Note over U: nobody presses anything (ADR 0043). The client applies and confirms the locks first (ADR 0022)
   U->>M: ArmBurst(node, burst)

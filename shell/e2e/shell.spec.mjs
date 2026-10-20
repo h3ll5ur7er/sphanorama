@@ -3003,6 +3003,10 @@ test('a burst the phone turns away from keeps nothing, and the cell is still wan
     const aimed = await aimAtACell(page, { offAxis: true });
     await viewfinderIsLive(page);
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    // Past the settle, so the burst has a frame to keep and "keeps nothing" can fail, and short of
+    // its end: five frames cannot be taken in less than the settle and four intervals, 470 ms of
+    // the core's clock (`main.ts`), so a slow runner only delays the first frame.
+    await page.waitForTimeout(300);
     // Twenty degrees of heading, seventeen of aim at thirty degrees up, well outside the cell's
     // cone. A reading with no fresh rate is taken whole (ADR 0074), so the pose is there on the
     // next tick.

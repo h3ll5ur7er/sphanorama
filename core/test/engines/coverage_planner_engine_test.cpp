@@ -154,8 +154,10 @@ TEST(CoveragePlanner, StaysCompleteWhereverInsideItsConeAFrameIsTaken) {
 }
 
 TEST(CoveragePlanner, StaysCompleteWithNoOverlapAtAll) {
-  // An overlap of zero is one the planner accepts, so it is one the plan has to be complete at.
-  // Frames that abut leave nothing to register by, which is the caller's trade; holes are not.
+  // An overlap of zero is one the planner accepts. Spaced at the rings' centres, these two lenses
+  // left holes there even with every frame on its cell's centre; spaced at the widest edge they do
+  // not. Not every lens is complete at zero overlap, and in the cone neither of these is
+  // (ADR 0075).
   for (const CapturePlanSpec& lens : {Spec(66.0, 50.0, 0.0), UprightSpec(66.0, 4.0 / 3.0)}) {
     CapturePlanSpec spec = lens;
     spec.overlapTarget = 0.0;
@@ -184,7 +186,8 @@ TEST(CoveragePlanner, TheFrameTestedIsTheRectangleACameraImages) {
 TEST(CoveragePlanner, StaysCompleteForAFrameRolledUpToTwentyFiveDegrees) {
   // The second place: a phone rolled about its view turns its frame's corners away from where the
   // plan put them. Twenty-five degrees either way costs nothing on the cell's centre at the page's
-  // lens; thirty starts to (ADR 0075).
+  // lens. These 4000 directions see nothing at thirty either, but a model with 20,000 finds one
+  // there (ADR 0075), so this asks only what is known to hold.
   const CapturePlan plan = Plan(ThePagesSpec());
   std::vector<Quat> rolls;
   for (int degrees = -25; degrees <= 25; degrees += 5) {
