@@ -48,10 +48,10 @@ here, and several of them are load-bearing for features:
 - Every direction on the sphere falls inside at least one cell's **field of view**, for a frame
   aimed anywhere in its cell's cone — and tested over a spread of lenses rather than taken as
   following from the spacing, since a plan complete for one lens by rounding was not for the next
-  (ADR 0075). (Not the acceptance cone, which is how close you have to aim,
-  not what the frame captures. Writing the test is what showed the difference: an acceptance cone
-  of 4° against a cell spacing of 46° would have made the invariant unsatisfiable and the claim
-  meaningless.)
+  (ADR 0075). The planner now checks its own plan as well (ADR 0076). (Not the acceptance cone,
+  which is how close you have to aim, not what the frame captures. Writing the test is what showed
+  the difference: an acceptance cone of 4° against a cell spacing of 46° would have made the
+  invariant unsatisfiable and the claim meaningless.)
 - Registering a frame against itself yields identity rotation with all points as inliers.
 - Blending a single frame yields that frame.
 - Exposure compensation over frames with equal exposure is a no-op.

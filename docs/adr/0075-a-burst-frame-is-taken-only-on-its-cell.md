@@ -1,6 +1,7 @@
 # 0075 — A burst's frames are taken only on its cell, and a ring closes where it is widest
 
-**Status:** accepted
+**Status:** accepted; amended by [0076](0076-the-planner-checks-its-own-plan.md), which closes the
+caps beside the poles and zero overlap that the consequences below leave open
 
 ## Context
 

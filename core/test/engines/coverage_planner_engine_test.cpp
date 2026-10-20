@@ -100,11 +100,13 @@ TEST(CoveragePlanner, EveryDirectionOnTheSphereIsInsideSomeCell) {
 }
 
 // A lens as the page derives it: `longEdgeDeg` on the long edge of a frame `aspect` long by 1
-// short, held upright (`deriveFieldOfView`), with 30% overlap and a 4 degree cone (`main.ts`).
-CapturePlanSpec UprightSpec(double longEdgeDeg, double aspect) {
+// short, held upright (`deriveFieldOfView`), or sideways, with 30% overlap and a 4 degree cone
+// (`main.ts`).
+CapturePlanSpec UprightSpec(double longEdgeDeg, double aspect, bool sideways = false) {
   const double shortEdge =
       2.0 * std::atan(std::tan(longEdgeDeg / 2.0 / kRadToDeg) / aspect) * kRadToDeg;
-  CapturePlanSpec spec = Spec(shortEdge, longEdgeDeg, 0.30);
+  CapturePlanSpec spec =
+      sideways ? Spec(longEdgeDeg, shortEdge, 0.30) : Spec(shortEdge, longEdgeDeg, 0.30);
   spec.acceptanceConeDeg = 4.0;
   return spec;
 }
@@ -112,14 +114,55 @@ CapturePlanSpec UprightSpec(double longEdgeDeg, double aspect) {
 // The plan the page makes: its assumed 66 degrees on a 4:3 frame.
 CapturePlanSpec ThePagesSpec() { return UprightSpec(66.0, 4.0 / 3.0); }
 
+// Every lens a phone's main camera could plausibly report, upright and sideways: long edges from
+// 45 to 85 degrees on the three shapes a browser hands back. The plan used to be checked on chosen
+// lenses, and each one passed while a lens a tenth of a degree away did not (ADR 0076).
+std::vector<CapturePlanSpec> PhoneLenses() {
+  std::vector<CapturePlanSpec> lenses;
+  for (const double aspect : {4.0 / 3.0, 3.0 / 2.0, 16.0 / 9.0}) {
+    for (double longEdge = 45.0; longEdge <= 85.0; longEdge += 2.5) {
+      for (const bool sideways : {false, true}) {
+        lenses.push_back(UprightSpec(longEdge, aspect, sideways));
+      }
+    }
+  }
+  return lenses;
+}
+
+// The cone's edge, all the way round, and its centre.
+// A third of a step round, because at half a step every third aim fell on one of the planner's own
+// sixteen, and a check that asks where the planner asked agrees with it for free there.
+std::vector<Quat> AimsInTheCone(double coneDeg) {
+  std::vector<Quat> aims{Quat{}};
+  for (int step = 0; step < 24; ++step) {
+    const double around = 2.0 * std::numbers::pi * (step + 1.0 / 3.0) / 24.0;
+    aims.push_back(
+        FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0}, coneDeg / kRadToDeg));
+  }
+  return aims;
+}
+
 // Directions no single cell covers whichever of `variants` its frame is taken at. For one
 // direction this is the worst case exactly: each cell's frame is taken once and independently, so
 // a direction is a hole in some capture whenever every cell has a variant that misses it.
-int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants) {
+//
+// A frame at a pole is taken at any heading as well, since nothing there asks for one: guidance
+// stops correcting roll within five degrees of straight up or down (ADR 0072). Offset by a third of
+// a step, which lands on none of the planner's headings, every fifteen degrees, at any step.
+int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants,
+                            const std::vector<Vec3>& directions, int headingStepDeg = 10) {
+  std::vector<Quat> atAPole;
+  for (double heading = headingStepDeg / 3.0; heading < 180.0; heading += headingStepDeg) {
+    for (const Quat& variant : variants) {
+      atAPole.push_back(Multiply(FromAxisAngle(Vec3{0.0, 0.0, 1.0}, heading / kRadToDeg), variant));
+    }
+  }
   int uncovered = 0;
-  for (const Vec3& direction : SphereSamples(4000)) {
+  for (const Vec3& direction : directions) {
     const bool safe = std::any_of(plan.nodes.begin(), plan.nodes.end(), [&](const auto& node) {
-      return std::all_of(variants.begin(), variants.end(), [&](const Quat& variant) {
+      const bool pole = std::abs(Direction(node.targetOrientation).y) > 1.0 - 1e-9;
+      const std::vector<Quat>& taken = pole ? atAPole : variants;
+      return std::all_of(taken.begin(), taken.end(), [&](const Quat& variant) {
         return InsideFieldOfView(Multiply(node.targetOrientation, variant), direction,
                                  plan.spec.horizontalFovDeg, plan.spec.verticalFovDeg);
       });
@@ -129,41 +172,192 @@ int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& va
   return uncovered;
 }
 
+int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants,
+                            int directions = 5000, int headingStepDeg = 10) {
+  return UncoveredInTheWorstCase(plan, variants, SphereSamples(directions), headingStepDeg);
+}
+
 TEST(CoveragePlanner, StaysCompleteWhereverInsideItsConeAFrameIsTaken) {
   // A burst is armed anywhere inside a cell's cone, and every frame of it is taken there
   // (ADR 0075), so the plan is only complete if it is complete for frames off the cell's centre.
-  // A field capture had gaps. The page's own lens passed this when rings were spaced at their
-  // centres, but only because one ring needed 7.002 cells and was rounded up to 8: a tenth of a
-  // degree wider, or a 3:2 stream, and it did not. So it is asked of lenses either side.
-  const struct {
-    double longEdgeDeg;
-    double aspect;
-  } lenses[] = {{66.0, 4.0 / 3.0}, {66.1, 4.0 / 3.0}, {67.0, 4.0 / 3.0},
-                {60.0, 4.0 / 3.0}, {66.0, 3.0 / 2.0}, {66.0, 16.0 / 9.0}};
-  for (const auto& [longEdgeDeg, aspect] : lenses) {
-    const CapturePlan plan = Plan(UprightSpec(longEdgeDeg, aspect));
-    std::vector<Quat> aims{Quat{}};
-    for (int step = 0; step < 16; ++step) {
-      const double around = 2.0 * std::numbers::pi * step / 16.0;
-      aims.push_back(FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
-                                   plan.spec.acceptanceConeDeg / kRadToDeg));
-    }
-    EXPECT_EQ(UncoveredInTheWorstCase(plan, aims), 0)
-        << longEdgeDeg << " degrees at " << aspect << ", " << plan.nodes.size() << " cells";
+  // Spaced only by the overlap, it was not: the cone ate the overlap on narrow lenses, the caps
+  // beside the poles opened for a pole frame turned to its short edge, and the page's own lens
+  // passed by rounding (ADR 0076).
+  for (const CapturePlanSpec& lens : PhoneLenses()) {
+    const CapturePlan plan = Plan(lens);
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(plan.spec.acceptanceConeDeg)), 0)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << ", " << plan.nodes.size()
+        << " cells";
   }
 }
 
 TEST(CoveragePlanner, StaysCompleteWithNoOverlapAtAll) {
-  // An overlap of zero is one the planner accepts. Spaced at the rings' centres, these two lenses
-  // left holes there even with every frame on its cell's centre; spaced at the widest edge they do
-  // not. Not every lens is complete at zero overlap, and in the cone neither of these is
-  // (ADR 0075).
-  for (const CapturePlanSpec& lens : {Spec(66.0, 50.0, 0.0), UprightSpec(66.0, 4.0 / 3.0)}) {
-    CapturePlanSpec spec = lens;
-    spec.overlapTarget = 0.0;
-    const CapturePlan plan = Plan(spec);
-    EXPECT_EQ(UncoveredInTheWorstCase(plan, {Quat{}}), 0) << plan.nodes.size() << " cells";
+  // An overlap of zero is one the planner accepts, so it is one the plan has to be complete at.
+  // Frames that abut leave nothing to register by, which is the caller's trade; holes are not.
+  for (CapturePlanSpec lens : PhoneLenses()) {
+    lens.overlapTarget = 0.0;
+    const CapturePlan plan = Plan(lens);
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(plan.spec.acceptanceConeDeg)), 0)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << ", " << plan.nodes.size()
+        << " cells";
   }
+}
+
+TEST(CoveragePlanner, TheCapsCloseForAPoleFrameAtAnyHeadingWithNoOverlap) {
+  // A pole frame is taken at any heading, and with no overlap its short edge is where the cap
+  // opens: a review found these lenses, held sideways, leaving directions at 66 degrees open that
+  // the sweeps above sample between. Asked here at 20,000 directions and every five degrees of
+  // heading.
+  for (const auto& [longEdge, aspect] : {std::pair{70.0, 4.0 / 3.0}, std::pair{76.0, 3.0 / 2.0},
+                                         std::pair{76.5, 3.0 / 2.0}}) {
+    CapturePlanSpec lens = UprightSpec(longEdge, aspect, true);
+    lens.overlapTarget = 0.0;
+    const CapturePlan plan = Plan(lens);
+    EXPECT_EQ(
+        UncoveredInTheWorstCase(plan, AimsInTheCone(plan.spec.acceptanceConeDeg), 20000, 5), 0)
+        << longEdge << " degrees at " << aspect << ", " << plan.nodes.size() << " cells";
+  }
+}
+
+TEST(CoveragePlanner, ABandClosesTheHorizonWhereverInItsConeAFrameIsTaken) {
+  // A band answers for the elevations its rings aim at. With only the horizon ring left that is the
+  // horizon itself, which no sample spread over the sphere lands on, and a check of nothing passed:
+  // a review found this band leaving a thirtieth of the horizon open.
+  CapturePlanSpec lens = Spec(77.5, 110.0, 0.0);
+  lens.acceptanceConeDeg = 4.0;
+  lens.coverPoles = false;
+  const CapturePlan plan = Plan(lens);
+  std::vector<Vec3> horizon;
+  for (int tenth = 0; tenth < 3600; ++tenth) {
+    const double azimuth = tenth / 10.0 / kRadToDeg;
+    horizon.push_back(Vec3{std::sin(azimuth), 0.0, -std::cos(azimuth)});
+  }
+  EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(lens.acceptanceConeDeg), horizon), 0)
+      << plan.nodes.size() << " cells";
+}
+
+TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
+  // Without the caps a band answers for the elevations its rings aim at, and only those, so that
+  // is what is asked: the spread of directions up to its outermost ring, and the horizon. And it
+  // has to reach: the next ring out, at the band's own spacing, would aim past the highest a ring
+  // may with its frame still below the pole, or a band of only the horizon would answer for
+  // nothing.
+  // At no overlap as well, which is where the check decides the spacing rather than the overlap.
+  std::vector<CapturePlanSpec> lenses = PhoneLenses();
+  for (CapturePlanSpec lens : PhoneLenses()) {
+    lens.overlapTarget = 0.0;
+    lenses.push_back(lens);
+  }
+  for (CapturePlanSpec lens : lenses) {
+    lens.coverPoles = false;
+    const CapturePlan plan = Plan(lens);
+    double highest = 0.0;
+    for (const CoverageNode& node : plan.nodes) {
+      highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
+    }
+    // The next ring out, at the band's own spacing, would have crossed the limit. A band of one
+    // ring has no spacing of its own, but it is never wider than the overlap's.
+    const double limitDeg = 90.0 - lens.verticalFovDeg / 2.0;
+    const double highestDeg = std::asin(highest) * kRadToDeg;
+    double spacingDeg = lens.verticalFovDeg * (1.0 - lens.overlapTarget);
+    for (const CoverageNode& node : plan.nodes) {
+      const double elevationDeg = std::asin(Direction(node.targetOrientation).y) * kRadToDeg;
+      if (elevationDeg > 1e-9) spacingDeg = std::min(spacingDeg, elevationDeg);
+    }
+    EXPECT_GT(highestDeg + spacingDeg, limitDeg - 1e-9)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << " at " << lens.overlapTarget;
+    std::vector<Vec3> band;
+    for (const Vec3& direction : SphereSamples(5000)) {
+      if (std::abs(direction.y) <= highest) band.push_back(direction);
+    }
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, AimsInTheCone(lens.acceptanceConeDeg), band), 0)
+        << lens.horizontalFovDeg << " by " << lens.verticalFovDeg << ", " << plan.nodes.size()
+        << " cells";
+  }
+}
+
+TEST(CoveragePlanner, ABandWhoseLimitIsTheHorizonKeepsIt) {
+  // A full 180 degree field leaves a band only its horizon ring. Counted from a pole, these ring
+  // counts put that ring a few ulps above the horizon, the ring was dropped, the empty plan
+  // failed its check and was laid again tighter than asked; a review found these (ADR 0076).
+  for (const int halfRings : {39, 78, 156, 161, 169, 175}) {
+    const double step = 90.0 / (halfRings - 0.3);
+    CapturePlanSpec lens = Spec(180.0, 180.0, 1.0 - step / 180.0);
+    lens.acceptanceConeDeg = 1.0;
+    lens.coverPoles = false;
+    const CapturePlan plan = Plan(lens);
+    const double asked = std::ceil(360.0 / (180.0 * (1.0 - lens.overlapTarget)));
+    EXPECT_EQ(plan.nodes.size(), static_cast<size_t>(asked)) << halfRings << " half rings";
+  }
+}
+
+TEST(CoveragePlanner, LaysNoMoreCellsThanItNeeds) {
+  // The check makes a plan complete; this keeps it from being complete by being dense. The page's
+  // lens is complete as first laid, and a lens the first lay left holes in is tightened in small
+  // steps: a coarser search laid 154 cells where 64 do (ADR 0076).
+  EXPECT_EQ(Plan(ThePagesSpec()).nodes.size(), 32u);
+  EXPECT_EQ(Plan(UprightSpec(66.0, 4.0 / 3.0, true)).nodes.size(), 38u);
+  EXPECT_LE(Plan(UprightSpec(66.0, 16.0 / 9.0)).nodes.size(), 64u);
+}
+
+TEST(CoveragePlanner, RefusesAConeThatWouldNeedMoreCellsThanACaptureCouldHold) {
+  // Short of being too wide to plan at all, a cone that is most of the frame needs tens of
+  // thousands of cells, and laying and checking them took a minute in the browser before refusing
+  // or answering (ADR 0076). Refused, quickly, and for the cone.
+  CapturePlanSpec lens = ThePagesSpec();
+  lens.acceptanceConeDeg = 24.6;
+  RingsCoveragePlannerEngine planner;
+  const Result<CapturePlan> plan = planner.Plan(lens, Intrinsics{});
+  EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(plan.status.detail.find("cone"), std::string::npos) << plan.status.detail;
+  // Refused by the bound, not by the line: 24.6 is short of too wide for this lens.
+  EXPECT_NE(plan.status.detail.find("more cells"), std::string::npos) << plan.status.detail;
+}
+
+TEST(CoveragePlanner, ADirectionIsCalledOpenOnlyOnceEveryCellNearItWasAsked) {
+  // The check asks the cells nearest a direction first, and the cells it fails to ask can only make
+  // it stricter, so a plan laid tighter than it needs to be still passes every completeness test.
+  // These are plans where the covering cell is not the nearest: asking one side of each ring
+  // only, or the nearest two cells, or skipping cells that are near enough, lays more of them.
+  const auto cells = [](CapturePlanSpec lens, double coneDeg) {
+    lens.acceptanceConeDeg = coneDeg;
+    return Plan(lens).nodes.size();
+  };
+  EXPECT_EQ(cells(UprightSpec(27.5, 16.0 / 9.0, true), 4.0), 793u);
+  EXPECT_EQ(cells(Spec(180.0, 101.25, 0.0), 43.0), 143u);
+  EXPECT_EQ(cells(Spec(180.0, 101.25, 0.0), 47.0), 862u);
+  EXPECT_EQ(cells(Spec(93.9, 110.0, 0.0), 1.0), 7u);
+}
+
+TEST(CoveragePlanner, TheBoundIsOnTheCellsLaid) {
+  // Two long lenses either side of the bound: one whose plan is exactly 2000 cells, and one that
+  // needs 2001. Compared with a grid of full circles instead, half again the cells a plan lays,
+  // the first was refused, and so was every plan above about 1300 cells (ADR 0076).
+  RingsCoveragePlannerEngine planner;
+  const Result<CapturePlan> plan = planner.Plan(UprightSpec(20.7, 1.5), Intrinsics{});
+  ASSERT_TRUE(plan.ok()) << plan.status.detail;
+  EXPECT_EQ(plan.value.nodes.size(), 2000u);
+
+  CapturePlanSpec oneMore = UprightSpec(20.7, 1.5, true);
+  oneMore.overlapTarget = 0.0;
+  const Result<CapturePlan> refused = planner.Plan(oneMore, Intrinsics{});
+  EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(refused.status.detail.find("more cells"), std::string::npos) << refused.status.detail;
+}
+
+TEST(CoveragePlanner, RefusesAConeTooWideForItsLens) {
+  // A frame aimed at the edge of a cone half as wide as itself does not see its own cell's centre,
+  // so no spacing closes the sphere and a plan would be a promise it cannot keep. The planner
+  // checks a frame a degree smaller than the lens, so its line is a degree inside that.
+  RingsCoveragePlannerEngine planner;
+  CapturePlanSpec spec = Spec(20.0, 15.0, 0.30);
+  spec.acceptanceConeDeg = 6.5;
+  const Result<CapturePlan> plan = planner.Plan(spec, Intrinsics{});
+  EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(plan.status.detail.find("too wide"), std::string::npos) << plan.status.detail;
+  // And from the other side: 4.4 degrees plans, the widest cone this lens plans at all.
+  spec.acceptanceConeDeg = 4.4;
+  EXPECT_TRUE(planner.Plan(spec, Intrinsics{}).ok()) << "a cone that leaves room still plans";
 }
 
 TEST(CoveragePlanner, TheFrameTestedIsTheRectangleACameraImages) {
@@ -186,7 +380,7 @@ TEST(CoveragePlanner, TheFrameTestedIsTheRectangleACameraImages) {
 TEST(CoveragePlanner, StaysCompleteForAFrameRolledUpToTwentyFiveDegrees) {
   // The second place: a phone rolled about its view turns its frame's corners away from where the
   // plan put them. Twenty-five degrees either way costs nothing on the cell's centre at the page's
-  // lens. These 4000 directions see nothing at thirty either, but a model with 20,000 finds one
+  // lens. These 5000 directions see nothing at thirty either, but a model with 20,000 finds one
   // there (ADR 0075), so this asks only what is known to hold.
   const CapturePlan plan = Plan(ThePagesSpec());
   std::vector<Quat> rolls;
@@ -830,6 +1024,14 @@ TEST(RingsCoveragePlanner, RefusesALensSoNarrowThePlanCouldNotBeHeld) {
   spec = Spec();
   spec.horizontalFovDeg = 1e-300;
   EXPECT_EQ(engine.Plan(spec, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+
+  // Both of those are refused first now as too narrow for their cone (ADR 0076), so the ring
+  // count is reached by a step that is fine for another reason: an overlap a hair short of one.
+  spec = Spec();
+  spec.overlapTarget = 1.0 - 1e-12;
+  const Result<CapturePlan> plan = engine.Plan(spec, Intrinsics{});
+  EXPECT_EQ(plan.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(plan.status.detail.find("more cells"), std::string::npos) << plan.status.detail;
 }
 
 

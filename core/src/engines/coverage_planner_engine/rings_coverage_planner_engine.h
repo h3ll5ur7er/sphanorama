@@ -15,6 +15,10 @@ namespace sphanorama {
 // Azimuth spacing widens with elevation by 1/cos(elevation), because a ring's circumference
 // shrinks as it climbs; spacing it uniformly in azimuth would put hundreds of redundant cells at
 // the poles and leave the equator short.
+//
+// Every plan is checked before it is returned: it is laid tighter until, at the directions it
+// samples, every direction lies inside some cell's frame wherever in its cone that frame is aimed
+// (ADR 0076). So `Plan` also refuses a cone too wide for its lens, which no spacing could close.
 class RingsCoveragePlannerEngine final : public ICoveragePlannerEngine {
  public:
   Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override;

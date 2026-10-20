@@ -45,8 +45,8 @@ bench"; it does compile natively — that is what every test run does — but th
 client for it to compile *as*, and saying so implied one existed.)
 
 *Where this stands:* the exit criterion is met. The PWA loads the WASM core, opens the camera,
-tells the core what it got, and the core plans a real tessellation for it — 32 cells across 7
-rings for a typical phone.
+tells the core what it got, and the core plans a real tessellation for it — 32 cells across 5
+rings for a typical phone held upright.
 
 One caveat worth stating plainly, because "planned for your lens" overstates it: the browser does
 not report field of view at all. The plan is sized from the camera's **real resolution and aspect
@@ -246,8 +246,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   when the phone turned during one (ADR 0075). The plan's rings are spaced where their bands are
   widest, because spaced at their centres it covered the sphere for frames anywhere in the cone
   only by rounding. Its lens is still the page's 66 degree guess, and below about 58 it leaves
-  gaps; feeding the fitted lens (ADR 0067) into the next plan is not done. Nor is closing the caps
-  beside the poles for every lens, which some leave holes in (ADR 0075).
+  gaps; feeding the fitted lens (ADR 0067) into the next plan is not done. The planner checks each
+  plan it lays for frames anywhere in their cones and lays it tighter until it passes, which closed
+  the caps beside the poles and zero overlap (ADR 0076).
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
   tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`
