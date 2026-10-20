@@ -4,6 +4,7 @@
 #include <cmath>
 #include <array>
 #include <numbers>
+#include <optional>
 #include <string>
 
 #include "utilities/quaternion.h"
@@ -12,6 +13,25 @@
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+
+// What makes a stored spec one a plan could have been laid from, asked without a planner: a field
+// of view a lens has, an overlap short of a step of nothing, and a cone narrower than half the
+// frame, past which a frame aimed at its edge misses its own cell. The rings planner refuses each.
+// Written to refuse a NaN, though none is read from a document.
+std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
+  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg <= 180.0
+        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg <= 180.0)) {
+    return "a field of view that is not a lens";
+  }
+  if (!(spec.overlapTarget >= 0.0 && spec.overlapTarget < 1.0)) {
+    return "an overlap outside [0, 1)";
+  }
+  if (!(spec.acceptanceConeDeg > 0.0
+        && spec.acceptanceConeDeg < std::min(spec.horizontalFovDeg, spec.verticalFovDeg) / 2.0)) {
+    return "an acceptance cone no frame could be taken in";
+  }
+  return std::nullopt;
+}
 
 // The first identity from `next` on that no recorded pick names. Picks outlive the counter that
 // issued them — a new tab's counter restarts at 1, and a pick an earlier build's door recorded, or
@@ -284,6 +304,12 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
+  // A plan of no cells is a sphere nothing can be captured into, and its document would be refused
+  // as one that lost its cells, so nothing could resume, build or pick in it (ADR 0077).
+  if (plan.value.nodes.empty()) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::Internal, kComponent, "the planner laid no cells");
+  }
   // From where the last capture in this tab left off, so this one's identities stay distinct from
   // those the page was already handed.
   auto next = PastEveryPick(projects_, project, plan.value, next_candidate_);
@@ -443,13 +469,21 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     plan = planner_.Plan(stored.spec, stored.lens);
     if (!plan.ok()) return plan.status;
   } else {
+    // The planner was what refused a spec that is not a lens, and none runs here; the page reads
+    // this spec back to size its overlay. Asked without one, since a later planner may refuse what
+    // the one that laid these cells accepted.
+    if (auto defect = SpecDefect(stored.spec)) {
+      return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
+                            std::string("this project's session document carries ") + *defect);
+    }
     plan.value.spec = stored.spec;
     plan.value.nodes = stored.nodes;
   }
 
-  // Every candidate has to name a cell of this plan. It should be unreachable — the plan is made
-  // from the spec the document carries — but a document naming a node the sphere does not have
-  // would put candidates somewhere `Coverage` counts and nothing can ever aim at.
+  // Every candidate has to name a cell of this plan. The decoder checks each cell and each
+  // candidate but not one against the other, so this is where an edited or torn document naming a
+  // cell its own cells do not include is refused (ADR 0077); one naming a node the sphere does not
+  // have would put candidates somewhere `Coverage` counts and nothing can ever aim at.
   for (const Candidate& candidate : stored.candidates) {
     const bool known = std::any_of(plan.value.nodes.begin(), plan.value.nodes.end(),
                                    [&candidate](const CoverageNode& planned) {

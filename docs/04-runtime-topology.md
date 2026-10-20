@@ -138,7 +138,7 @@ every session while the tier does not, so a new capture — which empties the ti
 therefore holds a token for the capture in it, minted whenever it is emptied and kept in the same
 index as the offsets; the document records what the tier said when its frames were written, and a
 `Resume` that reads a different one refuses rather than adopting somebody else's pixels
-(ADR 0035). What is not wired up yet is the page's own resume flow.
+(ADR 0035).
 
 ## 4.4 The build graph
 

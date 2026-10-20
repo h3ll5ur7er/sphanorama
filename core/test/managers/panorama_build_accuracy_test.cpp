@@ -119,7 +119,7 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
       CoverageNode cell;
       cell.id = candidate.node;
       cell.targetOrientation = poses[i];
-      cell.acceptanceConeDeg = 5.0;
+      cell.acceptanceConeDeg = document.spec.acceptanceConeDeg;
       document.nodes.push_back(cell);
     }
     document.nextCandidate = frames_.size() + 1;

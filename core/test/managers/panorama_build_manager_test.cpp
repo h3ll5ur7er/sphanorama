@@ -350,7 +350,7 @@ class PanoramaBuildManagerTest : public ::testing::Test {
       CoverageNode cell;
       cell.id = NodeId{id};
       cell.targetOrientation = FromAzimuthElevation(30.0 * static_cast<double>(id - 1), 0.0);
-      cell.acceptanceConeDeg = 5.0;
+      cell.acceptanceConeDeg = document.spec.acceptanceConeDeg;
       document.nodes.push_back(cell);
     }
   }

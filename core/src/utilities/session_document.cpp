@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <iomanip>
 #include <set>
 #include <sstream>
@@ -155,11 +156,13 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
                >> node.targetOrientation.z >> node.acceptanceConeDeg)) {
         return false;
       }
-      // Finite already: neither standard library reads "nan", "inf" or an overflowing exponent
-      // into a double, so the read above has refused those.
+      // A unit quaternion, as every planner writes one: the page draws a cell from its target
+      // without normalising it, so a scaled one is drawn tens of degrees from where the core aims.
+      // The cone is written to refuse a NaN, though no standard library reads one from text.
       if (!IssuableIdentity(node.id.value) || node.ringIndex < 0
-          || !IsUsableRotation(node.targetOrientation) || node.acceptanceConeDeg <= 0.0
-          || !cellIds.insert(node.id.value).second) {
+          || !IsUsableRotation(node.targetOrientation)
+          || std::abs(Norm(node.targetOrientation) - 1.0) > 1e-9
+          || !(node.acceptanceConeDeg > 0.0) || !cellIds.insert(node.id.value).second) {
         return false;
       }
       if (!exhausted(in)) return false;
@@ -216,6 +219,12 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
   // No plan has no cells, so a version-3 document without them lost them.
   if (version == kSessionVersion && out.nodes.empty()) return false;
+  // Nor does a planner lay a cell that accepts a frame further off than the capture asked for:
+  // both copy the spec's cone into every cell. One wider would arm a burst on a cell the camera is
+  // nowhere near.
+  for (const CoverageNode& node : out.nodes) {
+    if (!(node.acceptanceConeDeg <= out.spec.acceptanceConeDeg)) return false;
+  }
 
   // The candidates win where the two disagree, for the same reason the spill index's slots beat
   // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
