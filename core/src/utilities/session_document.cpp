@@ -110,7 +110,6 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   };
 
   bool sawSession = false, sawLens = false, sawSpec = false, sawTier = false;
-  std::set<uint64_t> cellIds;
   while (std::getline(lines, line)) {
     if (line.empty()) continue;
     std::istringstream in(line);
@@ -148,21 +147,11 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       if (!exhausted(in)) return false;
       sawSpec = true;
     } else if (tag == "cell" && version == kSessionVersion) {
-      // Acted on with no planner to vouch for it: guidance aims at it and coverage counts it. So it
-      // has to be a cell some planner could have laid, and one id names one cell.
+      // Read here and judged with the rest of the plan below, by the rule a writer is held to too.
       CoverageNode node;
       if (!(in >> node.id.value >> node.ringIndex >> node.targetOrientation.w
                >> node.targetOrientation.x >> node.targetOrientation.y
                >> node.targetOrientation.z >> node.acceptanceConeDeg)) {
-        return false;
-      }
-      // A unit quaternion, as every planner writes one: the page draws a cell from its target
-      // without normalising it, so a scaled one is drawn tens of degrees from where the core aims.
-      // The cone is written to refuse a NaN, though no standard library reads one from text.
-      if (!IssuableIdentity(node.id.value) || node.ringIndex < 0
-          || !IsUsableRotation(node.targetOrientation)
-          || std::abs(Norm(node.targetOrientation) - 1.0) > 1e-9
-          || !(node.acceptanceConeDeg > 0.0) || !cellIds.insert(node.id.value).second) {
         return false;
       }
       if (!exhausted(in)) return false;
@@ -217,14 +206,9 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   // belongs to is exactly the document this build must not act on, and a missing line reading as
   // zero would make it look like one written on a host with no tier at all.
   if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
-  // No plan has no cells, so a version-3 document without them lost them.
-  if (version == kSessionVersion && out.nodes.empty()) return false;
-  // Nor does a planner lay a cell that accepts a frame further off than the capture asked for:
-  // both copy the spec's cone into every cell. One wider would arm a burst on a cell the camera is
-  // nowhere near.
-  for (const CoverageNode& node : out.nodes) {
-    if (!(node.acceptanceConeDeg <= out.spec.acceptanceConeDeg)) return false;
-  }
+  // A version-3 document's cells are acted on with no planner to vouch for them, so they have to be
+  // a plan a resume could take; one with none lost them.
+  if (version == kSessionVersion && PlanDefect(out.nodes, out.spec)) return false;
 
   // The candidates win where the two disagree, for the same reason the spill index's slots beat
   // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
@@ -236,6 +220,29 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
     out.nextCandidate = std::max(out.nextCandidate, candidate.id.value + 1);
   }
   return true;
+}
+
+std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
+                                      const CapturePlanSpec& spec) {
+  if (nodes.empty()) return "no cells";
+  std::set<uint64_t> ids;
+  for (const CoverageNode& node : nodes) {
+    if (!IssuableIdentity(node.id.value)) return "a cell under an identity no counter issues";
+    if (node.ringIndex < 0) return "a cell on a ring below zero";
+    // A unit quaternion, as the planners write one: the page draws a cell from its target without
+    // normalising it, so a scaled one is drawn tens of degrees from where the core aims.
+    if (!IsUsableRotation(node.targetOrientation)
+        || std::abs(Norm(node.targetOrientation) - 1.0) > 1e-9) {
+      return "a cell whose target is not a unit rotation";
+    }
+    // No wider than the capture asked for: a wider cone arms a burst on a cell the camera is
+    // nowhere near. Written to refuse a NaN, though no standard library reads one from text.
+    if (!(node.acceptanceConeDeg > 0.0 && node.acceptanceConeDeg <= spec.acceptanceConeDeg)) {
+      return "a cell whose cone is not inside the capture's";
+    }
+    if (!ids.insert(node.id.value).second) return "two cells under one identity";
+  }
+  return std::nullopt;
 }
 
 std::string SelectionDocumentKey(NodeId node) {

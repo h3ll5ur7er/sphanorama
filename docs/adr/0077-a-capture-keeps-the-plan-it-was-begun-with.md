@@ -44,8 +44,13 @@ sphere they are capturing, and only the second is what the candidates were filed
 - **`Begin` holds the spec it plans from to the same rule**, so that what it writes a resume can
   read whatever planner is wired in: one looser than the rule began captures that could not be
   resumed. After the planner, whose own refusal says more, and before the tier is emptied.
-- **A plan of no cells is refused**, by `Begin` and by a version-2 replan alike: nothing forbids a
-  planner to return one, and its document is one the decoder would refuse.
+- **A planner's cells are held to the decoder's rule wherever they are kept**, at `Begin` and on a
+  version-2 replan: no cells, a target that is not a unit rotation, a cone outside the capture's,
+  or two cells under one id. Nothing forbids a planner to lay any of those, and the first
+  checkpoint would write a document no resume or build could read, or, on a replan, overwrite one
+  that could be read. One function, `PlanDefect`, answers for the decoder and for both. At `Begin`
+  it runs after the spec rule, since a spec the caller should not have asked for is the caller's
+  `InvalidArgument` before it is the planner's `Internal`; on a replan it is `Unsupported`.
 - **Version 2 is still read, and replanned** from its spec and lens as every resume was. Refusing
   it would strand every capture in flight when this build arrives, and most of those replan
   correctly: every one begun since ADR 0076 shipped, and on the page's lens every one begun since
@@ -71,6 +76,9 @@ replanned from, and the record of what was asked for.
   new document version, the way the tier line was (ADR 0035).
 - `DecodeSessionDocument` now starts from an empty document whatever it is handed, since a cell or
   candidate left from an earlier read would make a document that lost its cells look whole.
+- `ArmBurst` no longer checks a cell's cone and target. Every cell reaches the plan through
+  `PlanDefect`, so the two guards there had nothing left to refuse, and the planner that does not
+  validate its cells, which drove them, now drives `Begin` instead.
 
 ## Rejected alternatives
 

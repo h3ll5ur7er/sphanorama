@@ -304,12 +304,6 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
-  // A plan of no cells is a sphere nothing can be captured into, and its document would be refused
-  // as one that lost its cells, so nothing could resume, build or pick in it (ADR 0077).
-  if (plan.value.nodes.empty()) {
-    (void)camera_.Close();
-    return Err<SessionId>(StatusCode::Internal, kComponent, "the planner laid no cells");
-  }
   // The rule a resume will hold the stored spec to, held here too, so that what this writes that
   // resume can read whatever planner is wired in: one looser than it began captures nothing could
   // resume (ADR 0077). After the planner, whose own refusal says more, and before the tier is
@@ -318,6 +312,16 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
                           std::string("this capture would be planned from ") + *defect);
+  }
+  // Then the cells, against the spec just held. Cells the decoder would refuse — none at all, a
+  // target that is not a rotation, a cone that is not inside the capture's — are a sphere whose
+  // document no resume or build could read from its first checkpoint (ADR 0077). `Internal`,
+  // since the caller's spec passed: the planner broke its contract. This and the replan in
+  // `Resume` are the only ways cells reach `plan_`, which is why `ArmBurst` does not re-ask.
+  if (auto defect = PlanDefect(plan.value.nodes, resolved)) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::Internal, kComponent,
+                          std::string("the planner laid a plan no resume could read: ") + *defect);
   }
   // From where the last capture in this tab left off, so this one's identities stay distinct from
   // those the page was already handed.
@@ -493,16 +497,19 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                             "this build's planner cannot plan this project's session: "
                                 + plan.status.detail);
     }
-    plan.value.spec = stored.spec;
   } else {
-    plan.value.spec = stored.spec;
     plan.value.nodes = stored.nodes;
   }
-  // Only a replan can be empty, since the decoder refuses a document that lost its cells; checked
-  // here as `Begin` checks it, or the next checkpoint would write one.
-  if (plan.value.nodes.empty()) {
+  // Once, after both branches: the stored spec is what this capture is, whichever way its cells
+  // came, and two copies of this line let one path drift to the device it resumed on.
+  plan.value.spec = stored.spec;
+  // Held to the rule `Begin` holds a plan to, or the next checkpoint would overwrite a document
+  // that could be read with one that could not. Only a replan can fail it: the decoder held stored
+  // cells to it already.
+  if (auto defect = PlanDefect(plan.value.nodes, stored.spec)) {
     return Err<SessionId>(StatusCode::Unsupported, kComponent,
-                          "this build's planner laid no cells for this project's session");
+                          std::string("this build's planner laid a plan no resume could read: ")
+                              + *defect);
   }
 
   // Every candidate has to name a cell of this plan. The decoder checks each cell and each
@@ -909,58 +916,15 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
 
-  // Two refusals, because they have two causes and a caller reading the detail deserves to know
-  // which: an unusable cone is a broken plan, and being outside a usable one is a user who needs
-  // to turn the phone.
-  //
-  // Infinity is why the cone is checked separately rather than folded into the comparison below.
-  // A NaN cone makes that comparison false and the `!(<=)` form already refuses it; an infinite
-  // one satisfies it *legitimately* — every direction really is inside an infinite cone — so no
-  // arithmetic is wrong and every cell is armable from anywhere, which is ADR 0041's failure
-  // reached through the arithmetic rather than through the rule. What is being enforced here is
-  // that a cone is a measurement, and neither of those is one: a statement about the value, not
-  // about the comparison, which is why it cannot be a spelling of one.
-  //
-  // Both shipped planners refuse a non-finite cone at `Begin`, so nothing in this build delivers
-  // one here — which is an argument for the check rather than against it. The cone arrives from
-  // an engine behind a contract, and a manager does not get to assume every implementation of
-  // that contract validates its own output; the two that exist disagreed about this class of
-  // input twice while this branch was being reviewed. An earlier version of this comment argued
-  // the point from the null planner's weaker guard, and the commit that wrote it had already
-  // strengthened that guard — so the reason was untrue as it was written down.
-  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both lines with a planner that
-  // does not validate, so they are exercised rather than merely justified.
-  if (!std::isfinite(aimed->acceptanceConeDeg) || aimed->acceptanceConeDeg <= 0.0) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this cell's acceptance cone is not a usable measurement");
-  }
-  // And the cell has to point somewhere, which is the same sentence about the node's other number.
-  // `AngleBetweenDirections` answers a degenerate direction with `0.0`, and `0.0` is also what a
-  // camera aimed exactly at the cell measures — so a target that is not a rotation is *dead on*
-  // from every direction, through a cone that is itself perfectly valid. The cone check above
-  // cannot see it, and neither can the comparison below, because nothing about the arithmetic is
-  // wrong: the answer really is zero. `IsUsableRotation` is the question the sentinel cannot be
-  // asked afterwards.
-  if (!IsUsableRotation(aimed->targetOrientation)) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this cell does not point anywhere a camera could be aimed");
-  }
-  // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
-  // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
-  // target by the check directly above, and the pose by `PoseSampleDefect` further up — not by the
-  // shipped engine, which keeps a rotation a rotation without making one. Two usable rotations give two usable directions and an angle in `[0, π]`, so
-  // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
-  //
-  // An earlier version of this comment credited
-  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` instead. That test
-  // states a true guarantee and is not what holds it — a reviewer deleted the degeneracy guard it
-  // was written for and the test stayed green, because `Normalize(Vec3)` catches the same inputs
-  // one line earlier. Citing a test by name is a claim that it would fail, and this one would not.
-  //
-  // This line carried the NaN-proof spelling and a comment claiming a test drove it. No test did:
-  // the cone check above absorbs the only non-finite input the suite can deliver, and no caller
-  // can produce a non-finite `offBy` at all. An unreachable guard reads as a checked case and is
-  // one more thing to keep true, so it is the guarantee that is pinned now instead of the shape.
+  // `offBy > cone` is enough because of what a cell had to be to get into `plan_`, not because of
+  // anything about the arithmetic. Cells reach it from `Begin`, the replan in `Resume` and the
+  // decoder, and all three refuse a cone that is not a positive angle inside the capture's own and
+  // a target that is not a unit rotation (`PlanDefect`, ADR 0077). This used to ask both questions
+  // again: an infinite cone satisfies the comparison legitimately, and a degenerate target measures
+  // as dead on from every aim, so neither shows up here as wrong arithmetic. Holding cells to the
+  // decoder's rule on the way in left those guards nothing to refuse. The pose is a rotation by
+  // `PoseSampleDefect` above, and two rotations give an angle in `[0, π]`, so the naive comparison
+  // and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
   if (offBy > aimed->acceptanceConeDeg) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");
