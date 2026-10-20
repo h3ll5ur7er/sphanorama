@@ -4655,6 +4655,135 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   }
 }
 
+// The rings planner with every cell turned about the vertical: the same ids, in other directions.
+// What a later build's planner looks like to a capture begun under this one, which is how ADR 0076
+// moved a 16:9 lens's cells while every stored id still named one of them.
+class TurnedCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  explicit TurnedCoveragePlannerEngine(ICoveragePlannerEngine& inner) : inner_(inner) {}
+
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    auto plan = inner_.Plan(spec, lens);
+    if (!plan.ok()) return plan;
+    const Quat turn = FromAxisAngle(Vec3{0.0, 1.0, 0.0}, 0.2);
+    for (CoverageNode& node : plan.value.nodes) {
+      node.targetOrientation = Multiply(turn, node.targetOrientation);
+    }
+    return plan;
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+
+ private:
+  ICoveragePlannerEngine& inner_;
+};
+
+// The cell straight ahead, which is the only one this fixture's camera can arm: it looks nowhere
+// else.
+NodeId CellAhead(const CapturePlan& plan) {
+  return std::max_element(plan.nodes.begin(), plan.nodes.end(),
+                          [](const CoverageNode& a, const CoverageNode& b) {
+                            return -Direction(a.targetOrientation).z
+                                   < -Direction(b.targetOrientation).z;
+                          })
+      ->id;
+}
+
+TEST_F(ResumedSession, KeepsThePlanItWasBegunWithWhenThePlannerHasSinceChanged) {
+  // Node ids name cells of one tessellation, and the planner that made it is not the planner a
+  // later build ships. Replanned from the stored spec, every candidate was filed under whichever
+  // cell now holds its id, and the cells actually shot read as holes (ADR 0077).
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const CapturePlan planned = first.GetPlan().value;
+  // Not the first cell, so its id says something about where it is in the plan.
+  const NodeId shot = CellAhead(planned);
+  ASSERT_NE(shot.value, planned.nodes.front().id.value);
+  ASSERT_TRUE(FireBurstOn(first, clock, shot, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  TurnedCoveragePlannerEngine turned(rings);
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(turned, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+
+  const CapturePlan resumed = second.GetPlan().value;
+  ASSERT_EQ(resumed.nodes.size(), planned.nodes.size());
+  for (size_t i = 0; i < planned.nodes.size(); ++i) {
+    const CoverageNode& was = planned.nodes[i];
+    const CoverageNode& is = resumed.nodes[i];
+    EXPECT_EQ(is.id.value, was.id.value) << "cell " << i;
+    EXPECT_EQ(is.ringIndex, was.ringIndex) << "cell " << i;
+    EXPECT_EQ(is.acceptanceConeDeg, was.acceptanceConeDeg) << "cell " << i;
+    // Bit for bit: a direction that moved in its last place on every resume would drift.
+    EXPECT_EQ(is.targetOrientation.w, was.targetOrientation.w) << "cell " << i;
+    EXPECT_EQ(is.targetOrientation.x, was.targetOrientation.x) << "cell " << i;
+    EXPECT_EQ(is.targetOrientation.y, was.targetOrientation.y) << "cell " << i;
+    EXPECT_EQ(is.targetOrientation.z, was.targetOrientation.z) << "cell " << i;
+  }
+  EXPECT_FALSE(second.Candidates(shot).value.empty());
+}
+
+TEST_F(ResumedSession, ADocumentFromBeforePlansWereStoredIsReplanned) {
+  // Version 2 carries the spec and not the cells. Refusing it would strand every capture in flight
+  // when this build arrives, the page's own lens among them, whose plan the planner lays the same
+  // as it did; so it is replanned, as every resume was before (ADR 0077).
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const CapturePlan planned = first.GetPlan().value;
+  ASSERT_TRUE(FireBurstOn(first, clock, CellAhead(planned), BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  int cells = 0;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) == 0) {
+      ++cells;
+      continue;
+    }
+    older += line + "\n";
+  }
+  ASSERT_EQ(cells, static_cast<int>(planned.nodes.size()));
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+
+  TurnedCoveragePlannerEngine turned(rings);
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(turned, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  // Replanned by the planner in front of it, which is the turned one: the only plan it has.
+  const CapturePlan replanned = second.GetPlan().value;
+  ASSERT_EQ(replanned.nodes.size(), planned.nodes.size());
+  EXPECT_NE(replanned.nodes[1].targetOrientation.w, planned.nodes[1].targetOrientation.w);
+}
+
 // A store that takes a stated number of frames back and then refuses, and that can be told to
 // refuse a clear outright. Everything else is the real store's: what is under test is what the
 // *manager* does with a refusal partway through, and a hand-written stub would have had to
@@ -4863,10 +4992,10 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
 
   auto written = projects->ReadDocument(kProject, "session");
   ASSERT_TRUE(written.ok());
-  const std::string stamp = "sphanorama-session 2";
+  const std::string stamp = "sphanorama-session 3";
   std::string newer = written.value;
   ASSERT_EQ(newer.rfind(stamp, 0), 0u);
-  newer.replace(0, stamp.size(), "sphanorama-session 3");
+  newer.replace(0, stamp.size(), "sphanorama-session 4");
   ASSERT_TRUE(projects->WriteDocument(kProject, "session", newer).ok());
 
   auto store_with_sink = NewStore();
@@ -4900,6 +5029,58 @@ std::string SetField(const std::string& document, const std::string& tag, size_t
     out += line + "\n";
   }
   return out;
+}
+
+TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
+  // A stored cell is acted on without a planner to vouch for it: guidance aims at it, coverage
+  // counts it. Each of these is a cell no planner lays, and a document carrying one was edited.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  ASSERT_FALSE(document.nodes.empty());
+
+  // Fields: tag, id, ring, w, x, y, z, cone.
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 1, "0"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 2, "-1"), document));
+  std::string unrotated = written.value;
+  for (size_t field = 3; field <= 6; ++field) unrotated = SetField(unrotated, "cell", field, "0");
+  EXPECT_FALSE(DecodeSessionDocument(unrotated, document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 3, "nan"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "0"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "inf"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "nan"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1e400"), document));
+
+  // Cells under a version that never had them: the version says what shape the rest is.
+  std::string mislabelled = written.value;
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(mislabelled.rfind(stamp, 0), 0u);
+  mislabelled.replace(0, stamp.size(), "sphanorama-session 2");
+  EXPECT_FALSE(DecodeSessionDocument(mislabelled, document));
+
+  // Two cells under one id, which coverage would count as one and guidance aim at as two.
+  std::string twice = written.value;
+  const size_t at = twice.find("\ncell ");
+  ASSERT_NE(at, std::string::npos);
+  const size_t end = twice.find('\n', at + 1);
+  twice += twice.substr(at + 1, end - at);
+  EXPECT_FALSE(DecodeSessionDocument(twice, document));
+
+  // And a version-3 document with no cells at all, which no plan is.
+  std::istringstream lines(written.value);
+  std::string bare;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) bare += line + "\n";
+  }
+  EXPECT_FALSE(DecodeSessionDocument(bare, document));
 }
 
 TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -10,7 +11,10 @@
 
 namespace sphanorama {
 namespace {
-constexpr int kSessionVersion = 2;
+constexpr int kSessionVersion = 3;
+// Still read, and replanned on resume: it predates the cell lines, and refusing it would strand
+// every capture in flight when the build that writes them arrives (ADR 0077).
+constexpr int kPlanlessVersion = 2;
 
 // Every double round-trips: 17 significant digits is what IEEE-754 needs to come back bit for
 // bit, and a pose that drifts in the last place on every reload would be a slow corruption of the
@@ -48,6 +52,13 @@ std::string EncodeSessionDocument(const SessionDocument& stored) {
       << ' ' << (stored.spec.coverPoles ? 1 : 0)
       << ' ' << static_cast<int>(stored.spec.motion) << '\n';
 
+  for (const CoverageNode& node : stored.nodes) {
+    out << "cell " << node.id.value << ' ' << node.ringIndex
+        << ' ' << Digits(node.targetOrientation.w) << ' ' << Digits(node.targetOrientation.x)
+        << ' ' << Digits(node.targetOrientation.y) << ' ' << Digits(node.targetOrientation.z)
+        << ' ' << Digits(node.acceptanceConeDeg) << '\n';
+  }
+
   for (const Candidate& candidate : stored.candidates) {
     const FrameRef& frame = candidate.frame;
     const PoseSample& pose = candidate.pose;
@@ -71,15 +82,19 @@ std::string EncodeSessionDocument(const SessionDocument& stored) {
 }
 
 bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
+  // From nothing, whatever the caller handed in: a cell or candidate left over from an earlier read
+  // would be read as this document's, and would make one that lost its cells look whole.
+  out = SessionDocument{};
   std::istringstream lines(text);
   std::string line;
 
   if (!std::getline(lines, line)) return false;
+  int version = 0;
   {
     std::istringstream header(line);
     std::string tag;
-    int version = 0;
-    if (!(header >> tag >> version) || tag != "sphanorama-session" || version != kSessionVersion) {
+    if (!(header >> tag >> version) || tag != "sphanorama-session"
+        || (version != kSessionVersion && version != kPlanlessVersion)) {
       return false;
     }
   }
@@ -94,6 +109,7 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   };
 
   bool sawSession = false, sawLens = false, sawSpec = false, sawTier = false;
+  std::set<uint64_t> cellIds;
   while (std::getline(lines, line)) {
     if (line.empty()) continue;
     std::istringstream in(line);
@@ -130,6 +146,24 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       out.spec.coverPoles = coverPoles != 0;
       if (!exhausted(in)) return false;
       sawSpec = true;
+    } else if (tag == "cell" && version == kSessionVersion) {
+      // Acted on with no planner to vouch for it: guidance aims at it and coverage counts it. So it
+      // has to be a cell some planner could have laid, and one id names one cell.
+      CoverageNode node;
+      if (!(in >> node.id.value >> node.ringIndex >> node.targetOrientation.w
+               >> node.targetOrientation.x >> node.targetOrientation.y
+               >> node.targetOrientation.z >> node.acceptanceConeDeg)) {
+        return false;
+      }
+      // Finite already: neither standard library reads "nan", "inf" or an overflowing exponent
+      // into a double, so the read above has refused those.
+      if (!IssuableIdentity(node.id.value) || node.ringIndex < 0
+          || !IsUsableRotation(node.targetOrientation) || node.acceptanceConeDeg <= 0.0
+          || !cellIds.insert(node.id.value).second) {
+        return false;
+      }
+      if (!exhausted(in)) return false;
+      out.nodes.push_back(node);
     } else if (tag == "candidate") {
       Candidate candidate;
       int corrected = 0;
@@ -180,6 +214,8 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   // belongs to is exactly the document this build must not act on, and a missing line reading as
   // zero would make it look like one written on a host with no tier at all.
   if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
+  // No plan has no cells, so a version-3 document without them lost them.
+  if (version == kSessionVersion && out.nodes.empty()) return false;
 
   // The candidates win where the two disagree, for the same reason the spill index's slots beat
   // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen

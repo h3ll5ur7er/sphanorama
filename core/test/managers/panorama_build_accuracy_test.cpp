@@ -114,6 +114,13 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
       candidate.pose.orientation = poses[i];
       candidate.pose.confidence = 1.0;
       document.candidates.push_back(candidate);
+      // The cell each frame was taken for, where it was taken: a capture writes its plan down
+      // beside its candidates (ADR 0077), and the build reads none of it.
+      CoverageNode cell;
+      cell.id = candidate.node;
+      cell.targetOrientation = poses[i];
+      cell.acceptanceConeDeg = 5.0;
+      document.nodes.push_back(cell);
     }
     document.nextCandidate = frames_.size() + 1;
     ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,

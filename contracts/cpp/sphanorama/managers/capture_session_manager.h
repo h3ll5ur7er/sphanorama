@@ -42,7 +42,9 @@ class ICaptureSessionManager {
   //
   // The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
   // particular sphere, so replanning from whatever lens is in front of the phone now would file
-  // every restored candidate under a different cell.
+  // every restored candidate under a different cell — and so would replanning from the stored lens
+  // with a later build's planner, which is why the document carries the cells themselves
+  // (ADR 0077).
   //
   // The motion capability is not stored, and this reads the live one: a document says which
   // sphere is being captured, never what the device it comes back on can sense. So this is

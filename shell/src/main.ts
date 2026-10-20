@@ -541,9 +541,9 @@ async function enable(core: SphanoramaCore, resume: ProjectId | null) {
  * documents through the project store, and a capture with nowhere to be saved is a demo.
  *
  * With `resume` set the project already exists and so does its session: the manager reads what it
- * wrote, replans from the spec and lens the document carries, and hands the frames it names back
- * to the store (ADR 0029). Nothing is created, and in particular no `begin` — that would empty
- * the spill tier holding the very frames the resume is reaching for (ADR 0034).
+ * wrote, takes the plan the document carries cell for cell (ADR 0077), and hands the frames it
+ * names back to the store (ADR 0029). Nothing is created, and in particular no `begin` — that would
+ * empty the spill tier holding the very frames the resume is reaching for (ADR 0034).
  */
 async function beginSession(core: SphanoramaCore, motionRunning: boolean,
                             resume: ProjectId | null) {

@@ -28,6 +28,10 @@ namespace sphanorama {
 // the right outcome rather than a cost of it: a document written before this build is precisely
 // one that cannot say which capture its frames belong to, and reading it would mean assuming the
 // answer this field exists to stop assuming (ADR 0035).
+//
+// Version 3 added the plan's cells, and version 2 is still read, the other way from the tier line.
+// A version-2 document can be replanned from its spec and lens, which is what every resume did, and
+// refusing it would strand every capture in flight when this build arrived (ADR 0077).
 inline constexpr const char* kSessionDocumentKey = "session";
 
 struct SessionDocument {
@@ -40,6 +44,11 @@ struct SessionDocument {
   uint64_t generation = 0;
   CapturePlanSpec spec;
   Intrinsics lens;
+  // The plan the candidates below were captured against, cell for cell. Node ids name cells of one
+  // tessellation and the planner that laid it is not the one a later build ships, so a resume
+  // takes these as they stand rather than replanning from the spec (ADR 0077). Empty only in a
+  // version-2 document, which predates them and is replanned.
+  std::vector<CoverageNode> nodes;
   // Each cell's candidates best first, in the order the ranking left them — a build takes the first
   // whose pose was measured as the cell's frame where nobody picked (ADR 0070) — and rewritten after
   // every burst, discarding retake and offer, so a write that succeeded names no frame the capture has since let go of.

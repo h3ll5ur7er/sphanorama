@@ -463,9 +463,10 @@ it establishes the motion capability first — a device reporting none is turned
 `getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
 (ADR 0044) — then opens the camera, pushes the lens to the host, and calls
 `CaptureSessionManager.Resume(project)`
-instead of `Create` plus `Begin` — the manager reads the document it wrote, replans from the spec
-and lens that document carries, and hands the frames it names back to the store, so the cells
-already captured keep counting (ADR 0029).
+instead of `Create` plus `Begin` — the manager reads the document it wrote, takes the plan that
+document carries cell for cell rather than laying it again, since a later build's planner lays a
+different sphere from the same spec (ADR 0077), and hands the frames it names back to the store, so
+the cells already captured keep counting (ADR 0029).
 
 A client sequencing two managers, and the boundary is what keeps it honest: the first call answers
 whether to offer, the second is the only thing that hands back a session. A refusal from the second

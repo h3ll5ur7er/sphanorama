@@ -334,8 +334,25 @@ class PanoramaBuildManagerTest : public ::testing::Test {
     // The camera's largest size, which is not the size the frames were grabbed at.
     document_.lens.width = 4000;
     document_.lens.height = 3000;
+    LayCells(document_);
     ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
                                         EncodeSessionDocument(document_)).ok());
+  }
+
+  // The plan a capture writes down beside its candidates (ADR 0077): a cell under every id a
+  // candidate names, where `CaptureRing` aims it, and one at least, since no plan has none. A
+  // build reads none of it; a document without it is one a build refuses.
+  static void LayCells(SessionDocument& document) {
+    std::set<uint64_t> ids{1};
+    for (const Candidate& candidate : document.candidates) ids.insert(candidate.node.value);
+    document.nodes.clear();
+    for (const uint64_t id : ids) {
+      CoverageNode cell;
+      cell.id = NodeId{id};
+      cell.targetOrientation = FromAzimuthElevation(30.0 * static_cast<double>(id - 1), 0.0);
+      cell.acceptanceConeDeg = 5.0;
+      document.nodes.push_back(cell);
+    }
   }
 
   int64_t HeapUsed() {
@@ -415,6 +432,7 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesAStoreWithNoSpillTier) {
   document_.spec.verticalFovDeg = kVerticalFovDeg;
   document_.session = 1;
   document_.nextCandidate = 2;
+  LayCells(document_);
   ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
                                       EncodeSessionDocument(document_)).ok());
   EXPECT_EQ(manager.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
@@ -447,7 +465,7 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesAProjectWithNoCapture) {
 TEST_F(PanoramaBuildManagerTest, StartRefusesADocumentItCannotRead) {
   CaptureRing(3);
   ASSERT_TRUE(
-      projects_.WriteDocument(kProject, kSessionDocumentKey, "sphanorama-session 3\n").ok());
+      projects_.WriteDocument(kProject, kSessionDocumentKey, "sphanorama-session 4\n").ok());
   EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::Unsupported);
 }
 

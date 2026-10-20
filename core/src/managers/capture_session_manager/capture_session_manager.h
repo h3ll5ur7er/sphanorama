@@ -135,7 +135,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
   // The plan spec as it was resolved when the session began, kept because it is what the plan was
-  // made from. A resumed session replans from this rather than from the camera in front of it.
+  // made from. Written down beside the plan's cells, and what a document from before those were
+  // stored is replanned from, rather than from the camera in front of it (ADR 0077).
   CapturePlanSpec resolved_spec_;
   Intrinsics lens_;
 

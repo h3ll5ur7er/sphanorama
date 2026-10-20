@@ -317,9 +317,9 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   next_candidate_ = next.value;
   candidates_.clear();
   burst_owned_.clear();
-  // Kept because it is what the plan was made from, and a resume has to make the same one: node
-  // ids are indices into a particular tessellation, so a sphere replanned from another lens files
-  // every restored candidate under a different cell.
+  // Kept because it is what the plan was made from, and written down with the plan's cells: node
+  // ids are indices into a particular tessellation, so a sphere replanned from another lens, or by
+  // another build's planner, files every restored candidate under a different cell (ADR 0077).
   resolved_spec_ = resolved;
   lens_ = lens;
   pose_state_ = initialPose.value;
@@ -431,12 +431,21 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                           "longer holds");
   }
 
-  // From the document, not from the camera. This is the whole reason the spec is stored — and it
-  // is also why nothing here needs a camera yet. `Begin` opens one before it plans because the
-  // lens is an input to its tessellation; a resume has the lens in front of it already, so
-  // everything that can refuse this gets to refuse it before the indicator lights.
-  auto plan = planner_.Plan(stored.spec, stored.lens);
-  if (!plan.ok()) return plan.status;
+  // From the document, not from the camera, and not from the planner either where the document says
+  // what the plan was. Node ids name cells of one tessellation, and the planner that laid it is not
+  // the one a later build ships: replanned from the spec, a capture begun before a planner change
+  // filed every candidate under whichever cell now held its id (ADR 0077). A version-2 document
+  // predates the cells and is replanned from its spec and lens, as every resume was. Either way
+  // nothing here needs a camera, so everything that can refuse this does before the indicator
+  // lights.
+  Result<CapturePlan> plan = Ok(CapturePlan{});
+  if (stored.nodes.empty()) {
+    plan = planner_.Plan(stored.spec, stored.lens);
+    if (!plan.ok()) return plan.status;
+  } else {
+    plan.value.spec = stored.spec;
+    plan.value.nodes = stored.nodes;
+  }
 
   // Every candidate has to name a cell of this plan. It should be unreachable — the plan is made
   // from the spec the document carries — but a document naming a node the sphere does not have
@@ -491,11 +500,12 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // The stored spec, whole, including `motion` — and that last part was briefly "fixed" and is
   // deliberately back. A review round called the stored capability stale, since `Resume` decides
   // on the live one; the answer is that it is not a record of this device, it is an input the
-  // sphere was planned with. `Resume` replans from exactly these bytes, so overwriting a field of
-  // them with something the phone in hand reports makes the tessellation device-dependent — and
-  // node ids are indices into a particular tessellation, so the next resume on a different phone
-  // would file every restored candidate under a different cell. That is the failure this whole
-  // line exists to prevent, seeded one field at a time.
+  // sphere was planned with. A document from before the plan's cells were stored is replanned from
+  // exactly these bytes (ADR 0077), so overwriting a field of them with something the phone in
+  // hand reports made the tessellation device-dependent — and node ids are indices into a
+  // particular tessellation, so the next resume on a different phone would file every restored
+  // candidate under a different cell. That is the failure this whole line exists to prevent, seeded
+  // one field at a time.
   //
   // No planner reads `motion` today (`docs/03-architecture.md` says so, and says it has never
   // been true that one does), so the overwrite was harmless in this build. It would not have
@@ -555,6 +565,7 @@ void CaptureSessionManager::Checkpoint() const {
   stored.nextCandidate = next_candidate_;
   stored.spec = resolved_spec_;
   stored.lens = lens_;
+  stored.nodes = plan_.nodes;
   for (const Candidate& candidate : AllCandidates()) {
     if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
   }
