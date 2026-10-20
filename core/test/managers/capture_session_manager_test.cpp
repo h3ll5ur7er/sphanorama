@@ -16,6 +16,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
@@ -2482,7 +2483,7 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
   // spelling and the whole suite stayed green.
   for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min(),
                            std::numeric_limits<double>::quiet_NaN()}) {
-    CameraCapabilities absurd = camera->Capabilities().value;
+    CameraCapabilities absurd = camera->Configured();
     absurd.maxBurstFps = fps;
     camera->SetCapabilities(absurd);
     Begin();
@@ -2537,7 +2538,7 @@ TEST_F(CaptureSession, ArmingReReadsTheCamerasRateRatherThanTrustingWhatOpenSaid
   // that re-asks paces it at 2.
   Begin();
 
-  CameraCapabilities slowed = camera->Capabilities().value;
+  CameraCapabilities slowed = camera->Configured();
   slowed.maxBurstFps = 2.0;             // 500 ms a frame
   camera->SetCapabilities(slowed);
 
@@ -2572,7 +2573,7 @@ TEST_F(CaptureSession, ARefreshThatSaysNothingDoesNotTakeAwayARateTheSessionHad)
   // maps a missing or non-finite `frameRate` to `0.0` and answers `Ok`.
   Begin();
 
-  CameraCapabilities silent = camera->Capabilities().value;
+  CameraCapabilities silent = camera->Configured();
   silent.maxBurstFps = 0.0;
   camera->SetCapabilities(silent);
 
@@ -2825,7 +2826,7 @@ TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
   // maxBurstFps is 0 when the platform will not report one, and 0 has to mean "no floor here"
   // rather than a guess. A default invented in the manager would slow every burst on the browsers
   // that decline to answer, which is most of them.
-  CameraCapabilities silent = camera->Capabilities().value;
+  CameraCapabilities silent = camera->Configured();
   silent.maxBurstFps = 0;
   camera->SetCapabilities(silent);
   Begin();
@@ -4642,7 +4643,7 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   // A different lens on the way back — a much wider field of view, which is the input the
   // tessellation is actually made from. A Resume that replanned from the camera in front of it
   // would come back with a coarser sphere and hand every restored candidate to another cell.
-  CameraCapabilities wider = second_camera.Capabilities().value;
+  CameraCapabilities wider = second_camera.Configured();
   wider.horizontalFovDeg = 110.0;
   wider.verticalFovDeg = 90.0;
   second_camera.SetCapabilities(wider);
@@ -5128,8 +5129,8 @@ TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
 
 TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
   // A resume that takes the stored cells runs no planner, and the planner was what refused a spec
-  // that is not a lens; the page reads the spec back to size its overlay (ADR 0077). Refused as the
-  // planner would, and before the camera, and the document is kept.
+  // that is not a lens; the page reads the spec back to size its overlay (ADR 0077). Refused before
+  // the camera, and the document is kept.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
@@ -5152,7 +5153,9 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
     FakeCameraAccess camera(store_with_sink);
     CaptureSessionManager resumed(planner, pose, quality, preview, camera, *sensor,
                                   *store_with_sink, *projects, clock);
-    EXPECT_EQ(resumed.Resume(kProject).status.code, StatusCode::InvalidArgument)
+    // `Unsupported`, as for a cell no plan was laid with: pressing resume again would refuse again,
+    // and the page offers "try again" on anything else.
+    EXPECT_EQ(resumed.Resume(kProject).status.code, StatusCode::Unsupported)
         << "field " << field << " = " << value;
     EXPECT_EQ(camera.Opens(), 0) << "field " << field << " = " << value;
     EXPECT_TRUE(projects->ReadDocument(kProject, kSessionDocumentKey).ok());
@@ -5187,6 +5190,65 @@ class EmptyCoveragePlannerEngine final : public ICoveragePlannerEngine {
     return Ok(std::vector<NodeId>{});
   }
 };
+
+TEST_F(ResumedSession, ABeginWhoseSpecNoResumeWouldTakeIsRefused) {
+  // The same rule on the way in, whatever planner is wired in: a planner looser than it began a
+  // capture and saved a document the same build would never resume. The fixture's null planner
+  // plans anything with a cone, and the field of view comes from the camera.
+  const std::vector<std::tuple<double, double, double>> lenses = {
+      {0.0, 0.0, 5.0}, {200.0, 150.0, 5.0}, {15.0, 15.0, 10.0}};
+  for (const auto& [h, v, cone] : lenses) {
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CameraCapabilities lens = camera.Configured();
+    lens.horizontalFovDeg = h;
+    lens.verticalFovDeg = v;
+    camera.SetCapabilities(lens);
+    CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    CapturePlanSpec spec = Spec();
+    spec.acceptanceConeDeg = cone;
+    EXPECT_EQ(manager.Begin(kProject, spec).status.code, StatusCode::InvalidArgument)
+        << h << " by " << v << ", cone " << cone;
+    EXPECT_FALSE(camera.IsOpen()) << h << " by " << v << ", cone " << cone;
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok());
+  }
+}
+
+TEST_F(ResumedSession, AVersionTwoDocumentReplannedIntoNoCellsIsRefused) {
+  // The version-2 path plans, and a plan of no cells would be checkpointed as a document the
+  // decoder refuses, turning one that was readable into one that is not. Refused as `Begin` refuses
+  // it, and the document is left as it was.
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+
+  EmptyCoveragePlannerEngine empty;
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(empty, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  EXPECT_FALSE(second.Resume(kProject).ok());
+  EXPECT_EQ(second_camera.Opens(), 0);
+  auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, older);
+}
 
 TEST_F(ResumedSession, ABeginWhosePlannerLaysNoCellsIsRefused) {
   // No planner shipped lays an empty plan, and nothing in the contract forbids one. Begun, it

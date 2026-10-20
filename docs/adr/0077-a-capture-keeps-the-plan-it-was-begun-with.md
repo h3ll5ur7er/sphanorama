@@ -33,9 +33,13 @@ sphere they are capturing, and only the second is what the candidates were filed
 - **The stored spec is checked without a planner**: a field of view a lens has, an overlap short of
   one, and a cone narrower than half the frame. The planner was what refused a spec that is not a
   lens, none runs on this path, and a later one might refuse what the one that laid the cells
-  accepted. The page sizes its overlay from this spec.
-- **`Begin` refuses a plan of no cells**, which nothing forbids a planner to return and whose
-  document the decoder would refuse.
+  accepted. The page sizes its overlay from this spec. A refusal is `Unsupported`, like a cell's,
+  since the page offers to try again on anything else and this would refuse again.
+- **`Begin` holds the spec it plans from to the same rule**, so that what it writes a resume can
+  read whatever planner is wired in: one looser than the rule began captures that could not be
+  resumed.
+- **A plan of no cells is refused**, by `Begin` and by a version-2 replan alike: nothing forbids a
+  planner to return one, and its document is one the decoder would refuse.
 - **Version 2 is still read, and replanned** from its spec and lens as every resume was. Refusing
   it would strand every capture in flight when this build arrives, and most of those replan
   correctly: every one begun since ADR 0076 shipped, and on the page's lens every one begun since

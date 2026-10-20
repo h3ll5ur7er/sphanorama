@@ -59,6 +59,10 @@ class FakeCameraAccess final : public ICameraAccess {
     return Ok(WhatItIsDoing());
   }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
+  // What `SetCapabilities` last set, open or not: the starting point for a test that changes one
+  // field. `Capabilities()` refuses a closed camera, and the default struct its refusal carries has
+  // a field of view of zero, which a test reading it before `Begin` handed on unawares.
+  CameraCapabilities Configured() const { return capabilities_; }
   /**
    * Where this camera's fills start, so two of them can produce frames a test can tell apart.
    * Every instance counts from 1 otherwise, which is right — a fresh camera in a fresh process is

@@ -295,6 +295,15 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
 
   resolved.motion = motion;
 
+  // The rule a resume will hold the stored spec to, held here too, so that what this writes that
+  // resume can read whatever planner is wired in: one looser than it began captures nothing could
+  // resume (ADR 0077).
+  if (auto defect = SpecDefect(resolved)) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
+                          std::string("this capture would be planned from ") + *defect);
+  }
+
   // Everything from here can fail with the camera already open, because the lens has to be read
   // before the plan can be made. Returning without closing it leaves the indicator lit for a
   // session that never started — which the user reads, correctly, as the app watching them.
@@ -472,12 +481,19 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
     // The planner was what refused a spec that is not a lens, and none runs here; the page reads
     // this spec back to size its overlay. Asked without one, since a later planner may refuse what
     // the one that laid these cells accepted.
+    // `Unsupported`, as for a cell no plan was laid with: this is the document's own bytes, and a
+    // resume pressed again would be refused again.
     if (auto defect = SpecDefect(stored.spec)) {
-      return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
+      return Err<SessionId>(StatusCode::Unsupported, kComponent,
                             std::string("this project's session document carries ") + *defect);
     }
     plan.value.spec = stored.spec;
     plan.value.nodes = stored.nodes;
+  }
+  // Only a replan can be empty, since the decoder refuses a document that lost its cells; checked
+  // here as `Begin` checks it, or the next checkpoint would write one.
+  if (plan.value.nodes.empty()) {
+    return Err<SessionId>(StatusCode::Internal, kComponent, "the planner laid no cells");
   }
 
   // Every candidate has to name a cell of this plan. The decoder checks each cell and each
