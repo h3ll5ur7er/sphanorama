@@ -240,7 +240,8 @@ TEST(CoveragePlanner, ABandIsCompleteBetweenItsOuterRings) {
   // Without the caps a band answers for the elevations its rings aim at, and only those, so that
   // is what is asked: the spread of directions up to its outermost ring, and the horizon. And it
   // has to reach: the next ring out, at the band's own spacing, would aim past the highest a ring
-  // may with its frame still below the pole, or a band of only the horizon would answer for nothing.
+  // may with its frame still below the pole, or a band of only the horizon would answer for
+  // nothing.
   // At no overlap as well, which is where the check decides the spacing rather than the overlap.
   std::vector<CapturePlanSpec> lenses = PhoneLenses();
   for (CapturePlanSpec lens : PhoneLenses()) {
