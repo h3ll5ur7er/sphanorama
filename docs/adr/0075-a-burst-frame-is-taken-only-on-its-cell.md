@@ -1,6 +1,7 @@
 # 0075 — A burst's frames are taken only on its cell, and a ring closes where it is widest
 
-**Status:** accepted
+**Status:** accepted; amended by [0076](0076-the-planner-checks-its-own-plan.md), which closes the
+caps beside the poles and zero overlap that the consequences below leave open
 
 ## Context
 
@@ -117,7 +118,7 @@ one direction.
   cone: held upright, 16:9 from 64.3 to 65.5 degrees and 3:2 from 42.9 to 44.5, and at the page's 66
   degrees any stream wider than 16:9. A review swept long edges from 20 to 90 degrees: 1182 lenses
   failed spaced at the rings' centres and 670 at the widest edge. It predates this ADR and is open,
-  with the lenses zero overlap leaves holes for.
+  with the lenses zero overlap leaves holes for. (Closed by ADR 0076.)
 - How much of the field report this explains is unmeasured. Gaps a capture leaves for any reason are
   still invisible while capturing; finding them from where frames really landed is separate work.
 - `CaptureSessionManager::OnMotion` and `GuidanceAction` say what `TooFast` means, and UC-1 in

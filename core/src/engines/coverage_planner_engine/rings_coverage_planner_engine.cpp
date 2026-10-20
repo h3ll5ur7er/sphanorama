@@ -1,9 +1,11 @@
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 
 #include <algorithm>
-#include <numbers>
-#include <span>
 #include <cmath>
+#include <numbers>
+#include <optional>
+#include <span>
+#include <vector>
 
 #include "engines/coverage_planner_engine/guidance_roll.h"
 #include "utilities/quaternion.h"
@@ -18,6 +20,117 @@ constexpr double kDegToRad = std::numbers::pi / 180.0;
 // Below this the 1/cos(elevation) widening runs away. The pole itself is one cell whatever the
 // cosine, so this only reaches the ring beside a pole, and only for a lens of a few degrees.
 constexpr double kPolarCosineFloor = 0.08;
+
+// A lens narrow enough to need more cells than this is not a capture anyone completes — at one
+// second a cell it is over a day of holding a phone still. The bound exists so the counts below
+// stay inside int, since converting an out-of-range double to int is undefined behaviour and
+// arrives here as a plan rather than as a diagnosable failure. It is also what ends the search in
+// `Plan`: a lens whose rings never close runs out of cells rather than out of time.
+constexpr double kMaxCells = 100000.0;
+
+// How much smaller than the lens, on every side, the frame `CompleteInTheWorstCase` asks about is.
+constexpr double kMarginDeg = 1.0;
+
+// Rings at these steps, or nothing if they would need more cells than a session can hold.
+std::optional<std::vector<CoverageNode>> LayRings(const CapturePlanSpec& spec,
+                                                  double verticalStep, double horizontalStep) {
+  // Rings are laid symmetrically about the horizon and reach the poles, so that a sphere is
+  // covered rather than a band. An odd count keeps one ring exactly on the horizon, which is
+  // where most of the interesting content is and where the user starts.
+  const double halfRingsWanted = std::ceil(90.0 / verticalStep);
+  const double approximateCells = (2.0 * halfRingsWanted + 1.0) * (360.0 / horizontalStep + 1.0);
+  if (!std::isfinite(approximateCells) || approximateCells > kMaxCells) return std::nullopt;
+
+  const int halfRings = static_cast<int>(halfRingsWanted);
+  const int ringCount = 2 * halfRings + 1;
+  const double elevationStep = 180.0 / (ringCount - 1);
+
+  // Without the caps the plan covers a band around the horizon instead of a sphere. The limit is
+  // the highest elevation a cell can aim at and still have its whole field of view below the
+  // pole — dropping every ring above that, rather than just the two pole cells, is what makes
+  // "no caps" mean a band rather than a sphere with two holes in it.
+  const double elevationLimit = spec.coverPoles ? 90.0 : 90.0 - spec.verticalFovDeg / 2.0;
+
+  std::vector<CoverageNode> nodes;
+  uint64_t nextId = 1;
+  for (int ring = 0; ring < ringCount; ++ring) {
+    const double elevation = -90.0 + elevationStep * ring;
+    if (std::abs(elevation) > elevationLimit) continue;
+
+    // A ring's circumference shrinks by cos(elevation), so the azimuth step widens to keep the
+    // on-sphere spacing constant. Without this the poles collect hundreds of redundant cells.
+    //
+    // Measured where the ring's band is widest, which is its edge nearer the horizon, rather than
+    // at its centre: the band's frames have to close the circle there too (ADR 0075). A ring at a
+    // pole is one cell, which looks at every azimuth at once.
+    const bool pole = ring == 0 || ring == ringCount - 1;
+    const double widest = std::max(std::abs(elevation) - elevationStep / 2.0, 0.0);
+    const double cosine = std::max(std::cos(widest * kDegToRad), kPolarCosineFloor);
+    const int cells =
+        pole ? 1 : std::max(1, static_cast<int>(std::ceil(360.0 * cosine / horizontalStep)));
+
+    for (int cell = 0; cell < cells; ++cell) {
+      CoverageNode node;
+      node.id = NodeId{nextId++};
+      node.targetOrientation = FromAzimuthElevation(360.0 * cell / cells, elevation);
+      node.acceptanceConeDeg = spec.acceptanceConeDeg;
+      node.ringIndex = ring;
+      nodes.push_back(node);
+    }
+  }
+  return nodes;
+}
+
+// Whether a direction falls inside the rectangle a camera at `aim` images.
+bool Images(const Quat& aim, const Vec3& direction, double halfWidth, double halfHeight) {
+  const Vec3 local = Rotate(Conjugate(aim), direction);
+  const double depth = -local.z;
+  return depth > 0.0 && std::abs(local.x) <= halfWidth * depth &&
+         std::abs(local.y) <= halfHeight * depth;
+}
+
+// Whether every direction the plan answers for is inside some cell's frame however that frame is
+// taken: anywhere on its cone's edge or at its centre. For one direction this is the worst case
+// exactly, since each cell's frame is taken once and independently.
+//
+// A frame at a pole is taken at any heading too, since guidance asks for no roll there (ADR 0072),
+// and that is not asked here: the margin and the aims round the cone already close it, for every
+// lens the tests sweep and the 1010 a wider sweep tried (ADR 0076). The tests ask it.
+//
+// Asked at 4000 directions and 16 aims around the cone, of a frame a degree smaller than the lens
+// on every side. Asked of the frame itself, a denser check found directions between the samples
+// that no frame covered; a degree is what a real frame spends covering the directions and aims
+// between the ones asked (ADR 0076).
+bool CompleteInTheWorstCase(const std::vector<CoverageNode>& nodes, const CapturePlanSpec& spec) {
+  std::vector<Quat> aims{Quat{}};
+  for (int step = 0; step < 16; ++step) {
+    const double around = 2.0 * std::numbers::pi * step / 16.0;
+    aims.push_back(FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
+                                 spec.acceptanceConeDeg * kDegToRad));
+  }
+  double highest = 0.0;
+  for (const CoverageNode& node : nodes) {
+    highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
+  }
+  const double halfWidth = std::tan((spec.horizontalFovDeg * 0.5 - kMarginDeg) * kDegToRad);
+  const double halfHeight = std::tan((spec.verticalFovDeg * 0.5 - kMarginDeg) * kDegToRad);
+  constexpr int kDirections = 4000;
+  const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
+  for (int i = 0; i < kDirections; ++i) {
+    const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / kDirections;
+    // A band answers only for the elevations its rings aim at; the caps are not its to cover.
+    if (std::abs(y) > highest) continue;
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    const Vec3 direction{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius};
+    const bool safe = std::any_of(nodes.begin(), nodes.end(), [&](const CoverageNode& node) {
+      return std::all_of(aims.begin(), aims.end(), [&](const Quat& aim) {
+        return Images(Multiply(node.targetOrientation, aim), direction, halfWidth, halfHeight);
+      });
+    });
+    if (!safe) return false;
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -58,66 +171,42 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
                             "acceptance cone must be positive");
   }
 
-  const double advance = 1.0 - spec.overlapTarget;
-  const double verticalStep = spec.verticalFovDeg * advance;
-  const double horizontalStep = spec.horizontalFovDeg * advance;
-
-  // A lens narrow enough to need more cells than this is not a capture anyone completes — at one
-  // second a cell it is over a day of holding a phone still. The bound exists so the counts below
-  // stay inside int, since converting an out-of-range double to int is undefined behaviour and
-  // arrives here as a plan rather than as a diagnosable failure.
-  constexpr double kMaxCells = 100000.0;
-  const double approximateRings = 180.0 / verticalStep + 1.0;
-  const double approximateCells = approximateRings * (360.0 / horizontalStep + 1.0);
-  if (!std::isfinite(approximateCells) || approximateCells > kMaxCells) {
+  // A frame is taken anywhere in its cell's cone (ADR 0075). One aimed at the edge of a cone half
+  // as wide as the frame does not see the cell's own centre, and no spacing makes a sphere of
+  // those complete; nor, below, can the frame the check asks about, which is a margin smaller.
+  if (spec.acceptanceConeDeg + kMarginDeg >=
+      std::min(spec.horizontalFovDeg, spec.verticalFovDeg) / 2.0) {
     return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                            "this lens and overlap would need more cells than a session can hold");
+                            "the acceptance cone is too wide for this lens: a frame aimed at its "
+                            "edge would not see the cell's own centre");
   }
+  const double advance = 1.0 - spec.overlapTarget;
+  double verticalStep = spec.verticalFovDeg * advance;
+  double horizontalStep = spec.horizontalFovDeg * advance;
 
-  // Rings are laid symmetrically about the horizon and reach the poles, so that a sphere is
-  // covered rather than a band. An odd count keeps one ring exactly on the horizon, which is
-  // where most of the interesting content is and where the user starts.
-  const int halfRings = static_cast<int>(std::ceil(90.0 / verticalStep));
-  const int ringCount = 2 * halfRings + 1;
-  const double elevationStep = 180.0 / (ringCount - 1);
-
+  // Checked rather than trusted. Spaced by the overlap alone the plan left holes three ways: the
+  // cone ate the overlap on narrow lenses, the caps beside the poles opened for a pole frame turned
+  // to its short edge, and the page's own lens was complete by rounding. Each was found by a lens a
+  // fraction of a degree from the ones that passed (ADR 0075, ADR 0076). So the plan is laid,
+  // asked whether any frame its cones accept could leave a hole, and laid tighter until none
+  // could. Rules for each of the three ways were tried first, and the check alone lays the same
+  // number of cells. The page's lens is complete as first laid.
   CapturePlan plan;
   plan.spec = spec;
-  uint64_t nextId = 1;
-
-  // Without the caps the plan covers a band around the horizon instead of a sphere. The limit is
-  // the highest elevation a cell can aim at and still have its whole field of view below the
-  // pole — dropping every ring above that, rather than just the two pole cells, is what makes
-  // "no caps" mean a band rather than a sphere with two holes in it.
-  const double elevationLimit = spec.coverPoles ? 90.0 : 90.0 - spec.verticalFovDeg / 2.0;
-
-  for (int ring = 0; ring < ringCount; ++ring) {
-    const double elevation = -90.0 + elevationStep * ring;
-    if (std::abs(elevation) > elevationLimit) continue;
-
-    // A ring's circumference shrinks by cos(elevation), so the azimuth step widens to keep the
-    // on-sphere spacing constant. Without this the poles collect hundreds of redundant cells.
-    //
-    // Measured where the ring's band is widest, which is its edge nearer the horizon, rather than
-    // at its centre: the band's frames have to close the circle there too. Spaced at the centre,
-    // the plan was complete for the page's lens only because the rings at 45 degrees needed 7.002
-    // cells and were rounded up, and a tenth of a degree more lens left gaps (ADR 0075). A ring at
-    // a pole is one cell, which looks at every azimuth at once.
-    const bool pole = ring == 0 || ring == ringCount - 1;
-    const double widest = std::max(std::abs(elevation) - elevationStep / 2.0, 0.0);
-    const double cosine = std::max(std::cos(widest * kDegToRad), kPolarCosineFloor);
-    const int cells =
-        pole ? 1 : std::max(1, static_cast<int>(std::ceil(360.0 * cosine / horizontalStep)));
-
-    for (int cell = 0; cell < cells; ++cell) {
-      CoverageNode node;
-      node.id = NodeId{nextId++};
-      node.targetOrientation =
-          FromAzimuthElevation(360.0 * cell / cells, elevation);
-      node.acceptanceConeDeg = spec.acceptanceConeDeg;
-      node.ringIndex = ring;
-      plan.nodes.push_back(node);
+  for (;;) {
+    std::optional<std::vector<CoverageNode>> nodes =
+        LayRings(spec, verticalStep, horizontalStep);
+    if (!nodes) {
+      return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                              "this lens and overlap would need more cells than a session can "
+                              "hold");
     }
+    if (CompleteInTheWorstCase(*nodes, spec)) {
+      plan.nodes = std::move(*nodes);
+      break;
+    }
+    verticalStep *= 0.95;
+    horizontalStep *= 0.95;
   }
 
   return Ok(std::move(plan));

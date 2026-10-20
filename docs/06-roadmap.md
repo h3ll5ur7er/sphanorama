@@ -246,8 +246,9 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   when the phone turned during one (ADR 0075). The plan's rings are spaced where their bands are
   widest, because spaced at their centres it covered the sphere for frames anywhere in the cone
   only by rounding. Its lens is still the page's 66 degree guess, and below about 58 it leaves
-  gaps; feeding the fitted lens (ADR 0067) into the next plan is not done. Nor is closing the caps
-  beside the poles for every lens, which some leave holes in (ADR 0075).
+  gaps; feeding the fitted lens (ADR 0067) into the next plan is not done. The planner checks each
+  plan it lays for frames anywhere in their cones and lays it tighter until it passes, which closed
+  the caps beside the poles and zero overlap (ADR 0076).
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
   tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`
