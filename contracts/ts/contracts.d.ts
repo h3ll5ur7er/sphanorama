@@ -322,6 +322,11 @@ export interface BurstSpec {
  * `CellDone` has to re-read it on a failed tick too. `AlreadyCaptured` is a *level*: the camera is resting inside the cone of a cell that
  * already holds a capture, and it is true on every tick the phone stays there. They were briefly
  * the same value, which turned a once-per-cell refresh into one per animation frame.
+ * `TooFast` is an edge too: the tick a burst was dropped because the camera left the cell it was
+ * armed at before the burst was full (ADR 0075). Nothing the burst took is kept, and the cell is
+ * still wanted, so the dwell starts again once the camera is back on it. Unless that tick fails,
+ * as `CellDone`'s can: a track that refuses to drop its locks returns that failure instead, and
+ * the burst is dropped all the same.
  * Appended rather than inserted: the wire carries the index.
  */
 export type GuidanceAction = 'Seek' | 'HoldStill' | 'Firing' | 'CellDone' | 'SphereDone' | 'TooFast' | 'AlreadyCaptured' | 'Fire';
@@ -1029,7 +1034,9 @@ export interface CaptureSessionManager {
    * synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
    * full and `CellDone` on the tick that fills it — or `TooFast` on the tick a frame falls due
    * with the camera outside the armed cell's cone, which ends the burst as a failing tick does
-   * but answers rather than fails, since the user moved and can fix it (ADR 0075). The cone is
+   * but answers rather than fails, since the user moved and can fix it (ADR 0075). Unless the
+   * camera refuses to drop its locks: that fails the tick, as it does on the tick that fills a
+   * burst, and the burst is gone all the same. The cone is
    * the one the arm checked, asked of every frame because a burst files whatever the camera sees
    * under the cell it was armed at. A failing tick ends an armed burst, keeps
    * nothing it took and releases its locks — among them `FailedPrecondition` when, on a tick that

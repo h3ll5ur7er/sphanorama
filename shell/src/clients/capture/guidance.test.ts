@@ -131,14 +131,14 @@ describe('describeGuidance', () => {
       .toContain('12° off');
   });
 
-  it('says the burst was lost to moving, for which cell, and how to get it back', () => {
-    // The core drops a burst whose camera leaves the cell before it is full (ADR 0075), and the
-    // cell is still wanted. The line names it, says why nothing was captured, and says what fires
-    // the next one, since a press does not.
+  it('says the burst was lost to moving, and names no cell', () => {
+    // The core drops a burst whose camera leaves the cell before it is full (ADR 0075). The line is
+    // held on screen past the tick it is true on, by which time guidance may name another cell, so
+    // it says what happened and nothing about where to go.
     const text = describeGuidance(guidance({ action: 'TooFast' }), coverage());
-    expect(text).toContain('cell 7');
-    expect(text).toMatch(/moved/);
-    expect(text).toMatch(/hold still/);
+    expect(text).toMatch(/moved while capturing/);
+    expect(text).toMatch(/nothing kept/);
+    expect(text).not.toContain('cell');
     expect(text).toContain('5/32');
   });
 

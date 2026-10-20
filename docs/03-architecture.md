@@ -325,16 +325,15 @@ sequenceDiagram
   Note over M,C: ticks pass and no frame is taken for burst.settleMs, while the camera converges
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)
-    alt the camera is still inside the cell's cone
-      M->>C: PeekPreviewFrame()
-      C-->>M: FrameRef
-      M->>Q: Score(frame, pose, nodeContext)
-      Q-->>M: QualityScore
-      M-->>U: Guidance{node, "firing"}
-    else it has left it (ADR 0075)
+    break the camera has left the cell's cone (ADR 0075)
       M->>C: SetLocks(released)
       M-->>U: Guidance{node, "too fast"}, nothing kept, and the dwell runs again
     end
+    M->>C: PeekPreviewFrame()
+    C-->>M: FrameRef
+    M->>Q: Score(frame, pose, nodeContext)
+    Q-->>M: QualityScore
+    M-->>U: Guidance{node, "firing"}
   end
   M->>Q: Rank(candidates, policy)
   Q-->>M: ranking

@@ -344,6 +344,12 @@ struct BurstSpec {
 // already holds a capture, and it is true on every tick the phone stays there. They were briefly
 // the same value, which turned a once-per-cell refresh into one per animation frame.
 //
+// `TooFast` is an edge too: the tick a burst was dropped because the camera left the cell it was
+// armed at before the burst was full (ADR 0075). Nothing the burst took is kept, and the cell is
+// still wanted, so the dwell starts again once the camera is back on it. Unless that tick fails,
+// as `CellDone`'s can: a track that refuses to drop its locks returns that failure instead, and
+// the burst is dropped all the same.
+//
 // Appended rather than inserted: the wire carries the index.
 enum class GuidanceAction : uint8_t {
   Seek, HoldStill, Firing, CellDone, SphereDone, TooFast, AlreadyCaptured, Fire
@@ -362,10 +368,6 @@ enum class GuidanceAction : uint8_t {
 // starts changes the action, so no second `Fire` follows one that took.
 //
 // Appended, because the wire carries this enum as an index (ADR 0043).
-//
-// `TooFast` is an edge too: the tick a burst was dropped because the camera left the cell it was
-// armed at before the burst was full (ADR 0075). Nothing the burst took is kept, and the cell is
-// still wanted, so the dwell starts again once the camera is back on it.
 
 struct CaptureGuidance {
   NodeId targetNode;

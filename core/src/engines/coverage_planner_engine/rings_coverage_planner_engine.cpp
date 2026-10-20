@@ -97,8 +97,17 @@ Result<CapturePlan> RingsCoveragePlannerEngine::Plan(const CapturePlanSpec& spec
 
     // A ring's circumference shrinks by cos(elevation), so the azimuth step widens to keep the
     // on-sphere spacing constant. Without this the poles collect hundreds of redundant cells.
-    const double cosine = std::max(std::cos(elevation * kDegToRad), kPolarCosineFloor);
-    const int cells = std::max(1, static_cast<int>(std::ceil(360.0 * cosine / horizontalStep)));
+    //
+    // Measured where the ring's band is widest, which is its edge nearer the horizon, rather than
+    // at its centre: the band's frames have to close the circle there too. Spaced at the centre,
+    // the plan was complete for the page's lens only because one ring needed 7.002 cells and was
+    // rounded up, and a tenth of a degree more lens left gaps (ADR 0075). A ring at a pole is one
+    // cell, which looks at every azimuth at once.
+    const bool pole = ring == 0 || ring == ringCount - 1;
+    const double widest = std::max(std::abs(elevation) - elevationStep / 2.0, 0.0);
+    const double cosine = std::max(std::cos(widest * kDegToRad), kPolarCosineFloor);
+    const int cells =
+        pole ? 1 : std::max(1, static_cast<int>(std::ceil(360.0 * cosine / horizontalStep)));
 
     for (int cell = 0; cell < cells; ++cell) {
       CoverageNode node;

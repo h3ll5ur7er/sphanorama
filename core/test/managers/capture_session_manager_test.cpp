@@ -1991,7 +1991,7 @@ TEST_F(CaptureSession, ABurstWhoseCameraLeavesTheCellIsDroppedRatherThanFiledThe
 
   // Just outside the cell's five-degree cone, and the turn is seen on a tick no frame is due on, so
   // the burst is still open when the next frame falls due.
-  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, 6.0));
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, 5.5));
   ASSERT_EQ(camera->FramesTaken(), 1);
   clock.AdvanceMs(burst.intervalMs);
   const Result<CaptureGuidance> left = real.OnMotion({});
@@ -2018,6 +2018,36 @@ TEST_F(CaptureSession, ABurstWhoseCameraLeavesTheCellIsDroppedRatherThanFiledThe
   EXPECT_EQ(real.Candidates(session->home.id).value.size(), 3u);
 }
 
+TEST_F(CaptureSession, ADroppedBurstWhoseLocksAreRefusedFailsTheTickAndKeepsNothing) {
+  // The camera left locked wins over the edge, as it does on the tick a burst fills: a caller told
+  // only that the burst was dropped would have no reason to look at the locks. What the edge would
+  // have carried is still true, so a caller has nothing to undo either way.
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  const int64_t before = store->Budget().value.heapUsedBytes;
+  BurstSpec burst;
+  burst.frameCount = 3;
+  burst.lockExposure = true;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  clock.AdvanceMs(burst.settleMs);
+  ASSERT_EQ(real.OnMotion({}).value.action, GuidanceAction::Firing);
+
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, 6.0));
+  camera->FailUnlock(true);
+  clock.AdvanceMs(burst.intervalMs);
+  const Result<CaptureGuidance> left = real.OnMotion({});
+  EXPECT_FALSE(left.ok()) << "answered TooFast over a camera still locked";
+  EXPECT_NE(left.status.detail.find("lock"), std::string::npos) << left.status.detail;
+  EXPECT_TRUE(real.Candidates(session->home.id).value.empty());
+  EXPECT_EQ(store->Budget().value.heapUsedBytes, before);
+
+  // Over all the same: the next tick is guidance, not another attempt at a burst that is gone.
+  camera->FailUnlock(false);
+  const Result<CaptureGuidance> after = real.OnMotion({});
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_EQ(after.value.action, GuidanceAction::Seek);
+}
+
 TEST_F(CaptureSession, ABurstWhoseCameraWandersInsideTheCellIsKept) {
   // The other side of the rule, so it cannot be met by dropping every burst whose pose moved at
   // all: a hand holding a phone still is not still, and the cone is how far it may wander.
@@ -2038,6 +2068,61 @@ TEST_F(CaptureSession, ABurstWhoseCameraWandersInsideTheCellIsKept) {
   }
   EXPECT_EQ(camera->FramesTaken(), 3);
   EXPECT_EQ(real.Candidates(session->home.id).value.size(), 3u);
+}
+
+TEST_F(CaptureSession, ABurstWhoseCameraTurnsOntoAnotherCellIsDropped) {
+  // Inside a cell is not enough: the frame is filed under the armed one. A turn onto a neighbour
+  // lands inside *its* cone, which a check asking "is the camera in a cell" would accept.
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  // Kept, because `neighbour` points into it for the rest of the test.
+  const CapturePlan plan = real.GetPlan().value;
+  const CoverageNode* neighbour = nullptr;
+  double nearest = 0.0;
+  for (const CoverageNode& node : plan.nodes) {
+    if (node.id.value == session->home.id.value) continue;
+    const double apart = AngleBetweenDirections(Direction(node.targetOrientation),
+                                                Direction(session->home.targetOrientation));
+    if (neighbour == nullptr || apart < nearest) {
+      neighbour = &node;
+      nearest = apart;
+    }
+  }
+  ASSERT_NE(neighbour, nullptr);
+  // Dead on the neighbour, so inside its cone, and outside home's: guidance names the armed cell
+  // while a burst is in flight, so it cannot be asked which cell the camera is in.
+  ASSERT_GT(nearest * 180.0 / std::numbers::pi, session->home.acceptanceConeDeg);
+  BurstSpec burst;
+  burst.frameCount = 3;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  TurnTo(real, session->aiming, neighbour->targetOrientation);
+  clock.AdvanceMs(burst.settleMs);
+  const Result<CaptureGuidance> due = real.OnMotion({});
+  ASSERT_TRUE(due.ok()) << due.status.detail;
+  EXPECT_EQ(due.value.action, GuidanceAction::TooFast);
+  EXPECT_EQ(camera->FramesTaken(), 0);
+}
+
+TEST_F(CaptureSession, ABurstArmedOffTheCellsCentreIsJudgedFromTheCell) {
+  // The cone is about the cell, not about where the arm happened to find the camera: armed four
+  // degrees to one side, a frame four degrees to the other is eight from the arm and four from the
+  // cell, and it is the cell's.
+  const auto session = BeginAimed(quality, preview, *camera, *sensor, *store, *projects, clock);
+  CaptureSessionManager& real = *session->manager;
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, 4.0));
+  BurstSpec burst;
+  burst.frameCount = 2;
+  ASSERT_TRUE(real.ArmBurst(session->home.id, burst).ok());
+  TurnTo(real, session->aiming, TurnedBy(session->home.targetOrientation, -4.0));
+  ASSERT_EQ(camera->FramesTaken(), 0);
+  clock.AdvanceMs(burst.settleMs);
+  for (int32_t frame = 0; frame < burst.frameCount; ++frame) {
+    const Result<CaptureGuidance> tick = real.OnMotion({});
+    ASSERT_TRUE(tick.ok()) << tick.status.detail;
+    EXPECT_NE(tick.value.action, GuidanceAction::TooFast) << "on frame " << frame;
+    clock.AdvanceMs(burst.intervalMs);
+  }
+  EXPECT_EQ(real.Candidates(session->home.id).value.size(), 2u);
 }
 
 TEST_F(CaptureSession, ABurstWhoseFirstFrameWouldBeOffTheCellTakesNone) {

@@ -73,7 +73,9 @@ class ICaptureSessionManager {
   // synchronous port cannot wait for (ADR 0018). Guidance reports `Firing` until the burst is
   // full and `CellDone` on the tick that fills it — or `TooFast` on the tick a frame falls due
   // with the camera outside the armed cell's cone, which ends the burst as a failing tick does
-  // but answers rather than fails, since the user moved and can fix it (ADR 0075). The cone is
+  // but answers rather than fails, since the user moved and can fix it (ADR 0075). Unless the
+  // camera refuses to drop its locks: that fails the tick, as it does on the tick that fills a
+  // burst, and the burst is gone all the same. The cone is
   // the one the arm checked, asked of every frame because a burst files whatever the camera sees
   // under the cell it was armed at. A failing tick ends an armed burst, keeps
   // nothing it took and releases its locks — among them `FailedPrecondition` when, on a tick that
