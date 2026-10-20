@@ -314,7 +314,7 @@ sequenceDiagram
   M->>V: Locate(pose, plan)
   V-->>M: nodeId, angular error
   M-->>U: Guidance{node, error, "hold still", heldFraction}
-  Note over M: the dwell runs while the cell is held; about two seconds of ticks that carried samples
+  Note over M: the dwell runs while the cell is held, about two seconds of ticks with samples
   M-->>U: Guidance{node, "fire"}
   Note over U: nobody presses anything (ADR 0043). The client applies and confirms the locks first (ADR 0022)
   U->>M: ArmBurst(node, burst)
@@ -325,6 +325,10 @@ sequenceDiagram
   Note over M,C: ticks pass and no frame is taken for burst.settleMs, while the camera converges
   loop one frame per tick, no faster than burst.intervalMs
     U->>M: OnMotion(imu batch)
+    break the camera has left the cell's cone (ADR 0075)
+      M->>C: SetLocks(released)
+      M-->>U: Guidance{node, "too fast"}, nothing kept, and the dwell runs again
+    end
     M->>C: PeekPreviewFrame()
     C-->>M: FrameRef
     M->>Q: Score(frame, pose, nodeContext)
@@ -347,6 +351,10 @@ including the first `settleMs` of them, during which no frame is taken at all. A
 lock makes a camera re-converge, and `PeekPreviewFrame` borrows the latest preview frame, so a
 frame taken immediately is one from mid-refocus: on a Pixel that holds the lock it scored a
 hundredth of what its siblings did (ADR 0032).
+
+Each frame is taken on the condition the burst was armed on, the camera inside the cell's cone,
+because a burst files whatever the camera sees under the cell it was armed at. A frame that falls
+due with the camera outside it drops the burst instead (ADR 0075).
 
 Note what the manager does *not* do: it does not decide what "best" means (V6), nor where a
 reticle sits (V4), nor how bytes are stored (V11). It decides *when* to ask each of them — and the

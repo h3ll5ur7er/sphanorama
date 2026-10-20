@@ -62,13 +62,18 @@ std::vector<Vec3> SphereSamples(int count) {
   return points;
 }
 
-/** True when `direction` falls inside the rectangular field of view centred on `cell`. */
+/** True when `direction` falls inside the frame a camera at `cell` images. */
 bool InsideFieldOfView(const Quat& cell, const Vec3& direction, double hFovDeg, double vFovDeg) {
-  // Bring the direction into the cell's own frame, where forward is -Z.
+  // Bring the direction into the cell's own frame, where forward is -Z, and ask the image plane.
+  // A frame is a rectangle there, which is narrower at its corners than a box of yaw and pitch
+  // angles: this read the box, and so credited each frame with corners no camera images.
   const Vec3 local = Rotate(Conjugate(cell), direction);
-  const double yaw = std::atan2(local.x, -local.z) * kRadToDeg;
-  const double pitch = std::asin(std::clamp(local.y, -1.0, 1.0)) * kRadToDeg;
-  return std::abs(yaw) <= hFovDeg * 0.5 + 1e-9 && std::abs(pitch) <= vFovDeg * 0.5 + 1e-9;
+  const double depth = -local.z;
+  if (!(depth > 0.0)) return false;
+  const double halfWidth = std::tan(hFovDeg * 0.5 / kRadToDeg);
+  const double halfHeight = std::tan(vFovDeg * 0.5 / kRadToDeg);
+  return std::abs(local.x) <= halfWidth * depth + 1e-9 &&
+         std::abs(local.y) <= halfHeight * depth + 1e-9;
 }
 
 bool CoveredByAnyCell(const CapturePlan& plan, const Vec3& direction) {
@@ -92,6 +97,103 @@ TEST(CoveragePlanner, EveryDirectionOnTheSphereIsInsideSomeCell) {
     if (!CoveredByAnyCell(plan, direction)) ++uncovered;
   }
   EXPECT_EQ(uncovered, 0) << "of 4000 sampled directions, with " << plan.nodes.size() << " cells";
+}
+
+// A lens as the page derives it: `longEdgeDeg` on the long edge of a frame `aspect` long by 1
+// short, held upright (`deriveFieldOfView`), with 30% overlap and a 4 degree cone (`main.ts`).
+CapturePlanSpec UprightSpec(double longEdgeDeg, double aspect) {
+  const double shortEdge =
+      2.0 * std::atan(std::tan(longEdgeDeg / 2.0 / kRadToDeg) / aspect) * kRadToDeg;
+  CapturePlanSpec spec = Spec(shortEdge, longEdgeDeg, 0.30);
+  spec.acceptanceConeDeg = 4.0;
+  return spec;
+}
+
+// The plan the page makes: its assumed 66 degrees on a 4:3 frame.
+CapturePlanSpec ThePagesSpec() { return UprightSpec(66.0, 4.0 / 3.0); }
+
+// Directions no single cell covers whichever of `variants` its frame is taken at. For one
+// direction this is the worst case exactly: each cell's frame is taken once and independently, so
+// a direction is a hole in some capture whenever every cell has a variant that misses it.
+int UncoveredInTheWorstCase(const CapturePlan& plan, const std::vector<Quat>& variants) {
+  int uncovered = 0;
+  for (const Vec3& direction : SphereSamples(4000)) {
+    const bool safe = std::any_of(plan.nodes.begin(), plan.nodes.end(), [&](const auto& node) {
+      return std::all_of(variants.begin(), variants.end(), [&](const Quat& variant) {
+        return InsideFieldOfView(Multiply(node.targetOrientation, variant), direction,
+                                 plan.spec.horizontalFovDeg, plan.spec.verticalFovDeg);
+      });
+    });
+    if (!safe) ++uncovered;
+  }
+  return uncovered;
+}
+
+TEST(CoveragePlanner, StaysCompleteWhereverInsideItsConeAFrameIsTaken) {
+  // A burst is armed anywhere inside a cell's cone, and every frame of it is taken there
+  // (ADR 0075), so the plan is only complete if it is complete for frames off the cell's centre.
+  // A field capture had gaps. The page's own lens passed this when rings were spaced at their
+  // centres, but only because one ring needed 7.002 cells and was rounded up to 8: a tenth of a
+  // degree wider, or a 3:2 stream, and it did not. So it is asked of lenses either side.
+  const struct {
+    double longEdgeDeg;
+    double aspect;
+  } lenses[] = {{66.0, 4.0 / 3.0}, {66.1, 4.0 / 3.0}, {67.0, 4.0 / 3.0},
+                {60.0, 4.0 / 3.0}, {66.0, 3.0 / 2.0}, {66.0, 16.0 / 9.0}};
+  for (const auto& [longEdgeDeg, aspect] : lenses) {
+    const CapturePlan plan = Plan(UprightSpec(longEdgeDeg, aspect));
+    std::vector<Quat> aims{Quat{}};
+    for (int step = 0; step < 16; ++step) {
+      const double around = 2.0 * std::numbers::pi * step / 16.0;
+      aims.push_back(FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
+                                   plan.spec.acceptanceConeDeg / kRadToDeg));
+    }
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, aims), 0)
+        << longEdgeDeg << " degrees at " << aspect << ", " << plan.nodes.size() << " cells";
+  }
+}
+
+TEST(CoveragePlanner, StaysCompleteWithNoOverlapAtAll) {
+  // An overlap of zero is one the planner accepts. Spaced at the rings' centres, these two lenses
+  // left holes there even with every frame on its cell's centre; spaced at the widest edge they do
+  // not. Not every lens is complete at zero overlap, and in the cone neither of these is
+  // (ADR 0075).
+  for (const CapturePlanSpec& lens : {Spec(66.0, 50.0, 0.0), UprightSpec(66.0, 4.0 / 3.0)}) {
+    CapturePlanSpec spec = lens;
+    spec.overlapTarget = 0.0;
+    const CapturePlan plan = Plan(spec);
+    EXPECT_EQ(UncoveredInTheWorstCase(plan, {Quat{}}), 0) << plan.nodes.size() << " cells";
+  }
+}
+
+TEST(CoveragePlanner, TheFrameTestedIsTheRectangleACameraImages) {
+  // The tests above are only as true as this helper. A camera images a rectangle in its image
+  // plane, so the corner where the edges' angles meet is outside the frame and the corner of the
+  // rectangle is inside; a box of yaw and pitch angles answers both the other way round.
+  const double h = 50.0;
+  const double v = 40.0;
+  const auto from = [](double yaw, double pitch) {
+    return Vec3{std::sin(yaw / kRadToDeg) * std::cos(pitch / kRadToDeg),
+                std::sin(pitch / kRadToDeg),
+                -std::cos(yaw / kRadToDeg) * std::cos(pitch / kRadToDeg)};
+  };
+  EXPECT_FALSE(InsideFieldOfView(Quat{}, from(h / 2.0 - 0.1, v / 2.0 - 0.1), h, v));
+  const Vec3 corner{std::tan(h / 2.0 / kRadToDeg) * 0.999, std::tan(v / 2.0 / kRadToDeg) * 0.999,
+                    -1.0};
+  EXPECT_TRUE(InsideFieldOfView(Quat{}, Normalize(corner), h, v));
+}
+
+TEST(CoveragePlanner, StaysCompleteForAFrameRolledUpToTwentyFiveDegrees) {
+  // The second place: a phone rolled about its view turns its frame's corners away from where the
+  // plan put them. Twenty-five degrees either way costs nothing on the cell's centre at the page's
+  // lens. These 4000 directions see nothing at thirty either, but a model with 20,000 finds one
+  // there (ADR 0075), so this asks only what is known to hold.
+  const CapturePlan plan = Plan(ThePagesSpec());
+  std::vector<Quat> rolls;
+  for (int degrees = -25; degrees <= 25; degrees += 5) {
+    rolls.push_back(FromAxisAngle(Vec3{0.0, 0.0, 1.0}, degrees / kRadToDeg));
+  }
+  EXPECT_EQ(UncoveredInTheWorstCase(plan, rolls), 0) << plan.nodes.size() << " cells";
 }
 
 TEST(CoveragePlanner, StaysCompleteForANarrowLens) {

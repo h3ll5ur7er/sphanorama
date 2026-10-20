@@ -45,8 +45,10 @@ You may not know the output, but you know the **invariant**. These are the ones 
 here, and several of them are load-bearing for features:
 
 - A quaternion round-tripped through a rotation matrix comes back unchanged.
-- Every direction on the sphere falls inside at least one cell's **field of view** — the coverage
-  plan is complete by construction. (Not the acceptance cone, which is how close you have to aim,
+- Every direction on the sphere falls inside at least one cell's **field of view**, for a frame
+  aimed anywhere in its cell's cone — and tested over a spread of lenses rather than taken as
+  following from the spacing, since a plan complete for one lens by rounding was not for the next
+  (ADR 0075). (Not the acceptance cone, which is how close you have to aim,
   not what the frame captures. Writing the test is what showed the difference: an acceptance cone
   of 4° against a cell spacing of 46° would have made the invariant unsatisfiable and the claim
   meaningless.)

@@ -2988,6 +2988,50 @@ test('a phone with no motion sensors is told what is required and what is missin
   }
 });
 
+test('a burst the phone turns away from keeps nothing, and the cell is still wanted',
+  async ({ page }) => {
+  // Every frame of a burst is taken only with the camera on the cell it was armed at (ADR 0075).
+  // Unit tests pin the core's answer and the sentence; this is the page receiving the edge it had
+  // never been sent before, from a turn made while the burst waits out its settle.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    // Off the poles, where a turn of heading is a turn of aim rather than of roll.
+    const aimed = await aimAtACell(page, { offAxis: true });
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    // Past the settle, so the burst has a frame to keep and "keeps nothing" can fail, and short of
+    // its end: five frames cannot be taken in less than the settle and four intervals, 470 ms of
+    // the core's clock (`main.ts`), so a slow runner only delays the first frame.
+    await page.waitForTimeout(300);
+    // Twenty degrees of heading, seventeen of aim at thirty degrees up, well outside the cell's
+    // cone. A reading with no fresh rate is taken whole (ADR 0074), so the pose is there on the
+    // next tick.
+    await page.evaluate(({ alpha, beta, gamma }) => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation',
+        { alpha: alpha + 20, beta, gamma }));
+    }, aimed);
+    await expect(page.locator('#guidance')).toContainText(/moved while capturing/,
+      { timeout: 15000 });
+    const kept = await page.evaluate(async (id) => {
+      const got = await window.sphanoramaCore.captureSession.candidates(id);
+      return got.ok ? got.value.length : -1;
+    }, aimed.id);
+    expect(kept).toBe(0);
+    // And the cell is still the one to shoot: aimed back at it, guidance holds still on it again.
+    await page.evaluate(({ alpha, beta, gamma }) => {
+      window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { alpha, beta, gamma }));
+    }, aimed);
+    await expect(page.locator('#guidance')).toContainText(`cell ${aimed.id} · hold still`,
+      { timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
 test('a stored capture is offered back and then withdrawn on a device that cannot place frames',
   async ({ page }) => {
   // The resume half of ADR 0044, and the case that made the first version of the page's guard

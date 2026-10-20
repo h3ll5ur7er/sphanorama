@@ -131,10 +131,15 @@ describe('describeGuidance', () => {
       .toContain('12° off');
   });
 
-  it('reports too-fast motion instead of an aim the user cannot act on', () => {
-    // Angular error is meaningless while the phone is whipping around; telling the user to slow
-    // down is the only instruction that helps.
-    expect(describeGuidance(guidance({ action: 'TooFast' }), coverage())).toContain('slow down');
+  it('says the burst was lost to moving, and names no cell', () => {
+    // The core drops a burst whose camera leaves the cell before it is full (ADR 0075). The line is
+    // held on screen past the tick it is true on, by which time guidance may name another cell, so
+    // it says what happened and nothing about where to go.
+    const text = describeGuidance(guidance({ action: 'TooFast' }), coverage());
+    expect(text).toMatch(/moved while capturing/);
+    expect(text).toMatch(/nothing kept/);
+    expect(text).not.toContain('cell');
+    expect(text).toContain('5/32');
   });
 
   it('announces a finished sphere without a cell number', () => {
