@@ -314,6 +314,21 @@ TEST(CoveragePlanner, RefusesAConeThatWouldNeedMoreCellsThanACaptureCouldHold) {
   EXPECT_NE(plan.status.detail.find("more cells"), std::string::npos) << plan.status.detail;
 }
 
+TEST(CoveragePlanner, ADirectionIsCalledOpenOnlyOnceEveryCellNearItWasAsked) {
+  // The check asks the cells nearest a direction first, and the cells it fails to ask can only make
+  // it stricter, so a plan laid tighter than it needs to be still passes every completeness test.
+  // These are plans where the covering cell is not the nearest: asking one side of each ring
+  // only, or the nearest two cells, or skipping cells that are near enough, lays more of them.
+  const auto cells = [](CapturePlanSpec lens, double coneDeg) {
+    lens.acceptanceConeDeg = coneDeg;
+    return Plan(lens).nodes.size();
+  };
+  EXPECT_EQ(cells(UprightSpec(27.5, 16.0 / 9.0, true), 4.0), 793u);
+  EXPECT_EQ(cells(Spec(180.0, 101.25, 0.0), 43.0), 143u);
+  EXPECT_EQ(cells(Spec(180.0, 101.25, 0.0), 47.0), 862u);
+  EXPECT_EQ(cells(Spec(93.9, 110.0, 0.0), 1.0), 7u);
+}
+
 TEST(CoveragePlanner, TheBoundIsOnTheCellsLaid) {
   // Two long lenses either side of the bound: one whose plan is exactly 2000 cells, and one that
   // needs 2001. Compared with a grid of full circles instead, half again the cells a plan lays,

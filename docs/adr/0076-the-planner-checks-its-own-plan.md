@@ -78,7 +78,11 @@ sampling at 5000 directions passes between. A test asks those three at 20,000.
   cell near enough, and a direction walked half the plan before one covered it: a review found specs
   the bound allows taking over three seconds in the browser's build. Asking nearest first lays the
   same plans, identical over the 4032 specs above, and took the slowest the review found, 180 by
-  101.25 degrees with a 48 degree cone, from 3158 milliseconds in that build to 54.
+  101.25 degrees with a 48 degree cone, from 3158 milliseconds in that build to 54. That speed is
+  measured, not tested: the laid order put back passes every test, about twenty times slower on the
+  specs it matters for, and a wall-clock ceiling on a shared runner under a sanitizer would fail for
+  reasons of its own. What is tested is that the order changes no answer, by cell counts at plans
+  whose covering cell is not the nearest.
 - Rings are counted from the horizon rather than from a pole, so the horizon is exactly 0 and the
   two sides are mirrors. Counted from a pole, a band whose limit was the horizon lost its horizon
   ring by an ulp and was laid tighter than asked. The change moves cells by ulps on about a tenth of
