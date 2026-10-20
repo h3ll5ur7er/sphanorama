@@ -5084,23 +5084,34 @@ TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "nan"), document));
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1e400"), document));
   // A cone wider than the one asked for, which no planner lays: it would arm a burst on a cell the
-  // camera is nowhere near.
+  // camera is nowhere near. The spec's is 5; a hair past it is as wide as 1e300 for this rule.
   EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1e300"), document));
-  // Narrower is a cell a planner could lay.
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "5.0000000001"), document));
+  // The spec's own, and narrower, are cells a planner could lay.
+  EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "cell", 7, "5"), document));
   EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1"), document));
   // A target that is a rotation only once normalised, which the page draws without normalising.
+  // Within a rounding of unit is what a planner writes — the rings planner lays cells 2.2e-16 off
+  // on some lenses — and a millionth either way is not.
   {
     SessionDocument read;
     ASSERT_TRUE(DecodeSessionDocument(written.value, read));
     const Quat target = read.nodes.front().targetOrientation;
-    std::string doubled = written.value;
-    const double parts[] = {target.w, target.x, target.y, target.z};
-    for (size_t field = 3; field <= 6; ++field) {
-      std::ostringstream twice;
-      twice << std::setprecision(17) << 2.0 * parts[field - 3];
-      doubled = SetField(doubled, "cell", field, twice.str());
-    }
-    EXPECT_FALSE(DecodeSessionDocument(doubled, document));
+    const auto scaled = [&](double factor) {
+      std::string text = written.value;
+      const double parts[] = {target.w, target.x, target.y, target.z};
+      for (size_t field = 3; field <= 6; ++field) {
+        std::ostringstream digits;
+        digits << std::setprecision(17) << factor * parts[field - 3];
+        text = SetField(text, "cell", field, digits.str());
+      }
+      return text;
+    };
+    EXPECT_FALSE(DecodeSessionDocument(scaled(2.0), document));
+    EXPECT_FALSE(DecodeSessionDocument(scaled(1.0 + 1e-6), document));
+    EXPECT_FALSE(DecodeSessionDocument(scaled(1.0 - 1e-6), document));
+    EXPECT_TRUE(DecodeSessionDocument(scaled(1.0 + 1e-12), document));
+    EXPECT_TRUE(DecodeSessionDocument(scaled(1.0 - 1e-12), document));
   }
 
   // Cells under a version that never had them: the version says what shape the rest is.
@@ -5141,10 +5152,14 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
   auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
   ASSERT_TRUE(written.ok());
 
-  // Fields: tag, strategy, horizontal, vertical, overlap, cone, poles, motion.
-  const std::vector<std::pair<size_t, std::string>> edits = {
-      {2, "0"}, {3, "-30"}, {2, "200"}, {4, "5"}, {4, "-0.5"}, {5, "1e300"}};
-  for (const auto& [field, value] : edits) {
+  // Fields: tag, strategy, horizontal, vertical, overlap, cone, poles, motion. Each names the clause
+  // it is refused by, since a field of view of nothing also leaves no cone room. The camera's lens
+  // is 66 by 50, so a cone of 25 is half the narrower field.
+  const std::vector<std::tuple<size_t, std::string, std::string>> edits = {
+      {2, "0", "field of view"},  {3, "-30", "field of view"}, {2, "200", "field of view"},
+      {3, "200", "field of view"}, {4, "5", "overlap"},       {4, "-0.5", "overlap"},
+      {5, "1e300", "cone"},        {5, "25", "cone"}};
+  for (const auto& [field, value, clause] : edits) {
     ASSERT_TRUE(projects
                     ->WriteDocument(kProject, kSessionDocumentKey,
                                     SetField(written.value, "spec", field, value))
@@ -5155,19 +5170,27 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
                                   *store_with_sink, *projects, clock);
     // `Unsupported`, as for a cell no plan was laid with: pressing resume again would refuse again,
     // and the page offers "try again" on anything else.
-    EXPECT_EQ(resumed.Resume(kProject).status.code, StatusCode::Unsupported)
-        << "field " << field << " = " << value;
+    const Result<SessionId> refused = resumed.Resume(kProject);
+    EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << "field " << field << " = " << value;
+    EXPECT_NE(refused.status.detail.find(clause), std::string::npos)
+        << "field " << field << " = " << value << ": " << refused.status.detail;
     EXPECT_EQ(camera.Opens(), 0) << "field " << field << " = " << value;
     EXPECT_TRUE(projects->ReadDocument(kProject, kSessionDocumentKey).ok());
   }
 
-  // The unedited document still resumes, so what refused each of those was the edit.
-  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, written.value).ok());
-  auto store_with_sink = NewStore();
-  FakeCameraAccess camera(store_with_sink);
-  CaptureSessionManager resumed(planner, pose, quality, preview, camera, *sensor, *store_with_sink,
-                                *projects, clock);
-  EXPECT_TRUE(resumed.Resume(kProject).ok());
+  // The unedited document still resumes, so what refused each of those was the edit; and so does
+  // one whose cone is just inside half the narrower field, so the line is where it says it is.
+  for (const std::string& text :
+       {written.value, SetField(written.value, "spec", 5, "24.9")}) {
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, text).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager resumed(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    auto back = resumed.Resume(kProject);
+    EXPECT_TRUE(back.ok()) << back.status.detail;
+    ASSERT_TRUE(resumed.End().ok());
+  }
 }
 
 // Plans nothing, and says it planned.
