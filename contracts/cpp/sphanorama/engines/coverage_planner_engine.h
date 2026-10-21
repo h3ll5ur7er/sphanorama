@@ -25,8 +25,9 @@ class ICoveragePlannerEngine {
   // both comparisons, so one caller reads it as inside and another as outside; zero and negatives
   // put the camera outside a cell it is pointed exactly at.
   //
-  // Both callers guard it anyway, which is not redundancy but the arrangement `Locate` describes
-  // below — one guard for what the user sees, one for what the frames depend on.
+  // That rule is about the spec handed in; this states none for the cells handed back. `Locate`
+  // guards a cell's cone anyway, since it is handed a plan rather than one it laid, and the
+  // capture session holds every cell to the session document's rule before keeping it (ADR 0077).
   virtual Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics& lens) = 0;
 
   // Which cell should the user go to from here, and how far off are they?
@@ -74,8 +75,9 @@ class ICoveragePlannerEngine {
   // frames depend on.
   //
   // Two guards only work while they agree, and the same applies to the acceptance cone: **a cell
-  // whose cone is not a finite positive number is one no camera is inside**, which is the answer
-  // `ArmBurst` gives. They disagreed about it for one round, and the cost was not a wrong reticle:
+  // whose cone is not a finite positive number is one no camera is inside**. The manager now
+  // refuses to begin on such a cell at all (ADR 0077); `ArmBurst` used to refuse to arm one, and
+  // the two disagreed about it for one round. The cost was not a wrong reticle:
   // guidance said `HoldStill` on a cell ninety degrees away, the dwell matured, `Fire` went out,
   // `ArmBurst` refused the same cone as unusable, the dwell restarted, and it repeated — with no
   // shutter left to escape it since ADR 0044.

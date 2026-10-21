@@ -1,5 +1,8 @@
 # ADR 0029 — A session is resumed by the manager that owns one, and its frames are adopted back
 
+**Status:** accepted; amended by [0077](0077-a-capture-keeps-the-plan-it-was-begun-with.md), which
+stores the plan's cells rather than replanning from the spec
+
 ## Context
 
 Phase 1's exit criterion says a full capture "survives a tab reload and resumes". Nothing in the

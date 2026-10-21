@@ -1,6 +1,8 @@
 # 0076 — The planner checks its own plan
 
-**Status:** accepted; amends [0075](0075-a-burst-frame-is-taken-only-on-its-cell.md)
+**Status:** accepted; amends [0075](0075-a-burst-frame-is-taken-only-on-its-cell.md); amended by
+[0077](0077-a-capture-keeps-the-plan-it-was-begun-with.md), which makes a resumed capture keep its
+plan
 
 ## Context
 

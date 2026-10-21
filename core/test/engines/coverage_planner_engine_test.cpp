@@ -574,7 +574,7 @@ TEST(CoveragePlanner, ACellWhoseConeIsNotAMeasurementIsNeverTheOneBeingHeld) {
   // never reaches the `|| cone <= 0.0` clause: a reviewer deleted that clause from both engines
   // and all 529 tests stayed green. Zero and the negatives are refused by `angle > cone` when the
   // aim is wrong and only bite when it is exactly right — which is the arrangement that produces
-  // the loop, since a cone of zero is where `Locate` says `HoldStill` and `ArmBurst` refuses.
+  // the loop, since a cone of zero was where `Locate` said `HoldStill` and `ArmBurst` refused.
   //
   // Built by hand rather than planned, because both `Plan`s now refuse such a spec — which is the
   // point of the two guards, and also why nothing else in the suite can reach these lines.

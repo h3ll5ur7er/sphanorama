@@ -29,8 +29,8 @@ describe('reticleRadius', () => {
   it('does not close on a cell whose cone is not a measurement', () => {
     // The sixth copy of one rule, and the one the user actually looks at. `ICoveragePlannerEngine`
     // requires an acceptance cone to be finite and positive; both engines' `Plan` refuse otherwise,
-    // both `Locate`s skip such a cell, and `ArmBurst` refuses it. This function is the page's own
-    // reading of the same number, and it had no usability rule at all.
+    // both `Locate`s skip such a cell, and the capture session refuses to keep one. This function
+    // is the page's own reading of the same number, and it had no usability rule at all.
     //
     // What that looked like: on an `inf` or `NaN` cone `!(90 > cone)` is false, so the ring drew
     // fully closed and took the `locked` class, ninety degrees off target, while the core said

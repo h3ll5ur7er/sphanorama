@@ -4,6 +4,7 @@
 #include <cmath>
 #include <array>
 #include <numbers>
+#include <optional>
 #include <string>
 
 #include "utilities/quaternion.h"
@@ -12,6 +13,29 @@
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
+
+// What makes a stored spec one a plan could have been laid from, asked without a planner: a field
+// of view a lens has, an overlap short of a step of nothing, and a cone narrower than half the
+// frame, past which a frame aimed at its edge misses its own cell. The rings planner refuses each.
+// Written to refuse a NaN, though none is read from a document.
+//
+// Short of 180 rather than up to it, which is the camera model's line and not the planner's: at
+// 180 a rectilinear lens has stopped existing, and the build reads this spec through
+// `LensFromFieldOfView`, which refuses it. Up to it began captures that could never be built.
+std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
+  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg < 180.0
+        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg < 180.0)) {
+    return "a field of view that is not a lens";
+  }
+  if (!(spec.overlapTarget >= 0.0 && spec.overlapTarget < 1.0)) {
+    return "an overlap outside [0, 1)";
+  }
+  if (!(spec.acceptanceConeDeg > 0.0
+        && spec.acceptanceConeDeg < std::min(spec.horizontalFovDeg, spec.verticalFovDeg) / 2.0)) {
+    return "an acceptance cone no frame could be taken in";
+  }
+  return std::nullopt;
+}
 
 // The first identity from `next` on that no recorded pick names. Picks outlive the counter that
 // issued them — a new tab's counter restarts at 1, and a pick an earlier build's door recorded, or
@@ -284,6 +308,25 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
     (void)camera_.Close();
     return plan.status;
   }
+  // The rule a resume will hold the stored spec to, held here too, so that what this writes that
+  // resume can read whatever planner is wired in: one looser than it began captures nothing could
+  // resume (ADR 0077). After the planner, whose own refusal says more, and before the tier is
+  // emptied.
+  if (auto defect = SpecDefect(resolved)) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::InvalidArgument, kComponent,
+                          std::string("this capture would be planned from ") + *defect);
+  }
+  // Then the cells, against the spec just held. Cells the decoder would refuse are a sphere whose
+  // document no resume or build could read from its first checkpoint (ADR 0077). `Internal`,
+  // since the caller's spec passed and `Plan` was handed a usable one. Cells reach `plan_` here,
+  // from a stored document and from a replan, and all three ask `PlanDefect`, which is why
+  // `ArmBurst` does not.
+  if (auto defect = PlanDefect(plan.value.nodes, resolved)) {
+    (void)camera_.Close();
+    return Err<SessionId>(StatusCode::Internal, kComponent,
+                          std::string("the planner laid a plan no resume could read: ") + *defect);
+  }
   // From where the last capture in this tab left off, so this one's identities stay distinct from
   // those the page was already handed.
   auto next = PastEveryPick(projects_, project, plan.value, next_candidate_);
@@ -311,16 +354,16 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   auto initialPose = StartTracking(resolved.motion);
   if (!initialPose.ok()) return initialPose.status;
 
+  // The spec asked for, whatever the planner handed back with its cells: the contract does not
+  // promise it unchanged, and it is what the page sizes its overlay from and what is written down
+  // with the cells, so it is kept once (ADR 0077).
+  plan.value.spec = resolved;
   plan_ = std::move(plan.value);
   project_ = project;
   session_ = SessionId{next_session_++};
   next_candidate_ = next.value;
   candidates_.clear();
   burst_owned_.clear();
-  // Kept because it is what the plan was made from, and a resume has to make the same one: node
-  // ids are indices into a particular tessellation, so a sphere replanned from another lens files
-  // every restored candidate under a different cell.
-  resolved_spec_ = resolved;
   lens_ = lens;
   pose_state_ = initialPose.value;
   active_ = true;
@@ -431,16 +474,52 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                           "longer holds");
   }
 
-  // From the document, not from the camera. This is the whole reason the spec is stored — and it
-  // is also why nothing here needs a camera yet. `Begin` opens one before it plans because the
-  // lens is an input to its tessellation; a resume has the lens in front of it already, so
-  // everything that can refuse this gets to refuse it before the indicator lights.
-  auto plan = planner_.Plan(stored.spec, stored.lens);
-  if (!plan.ok()) return plan.status;
+  // From the document, not from the camera, and not from the planner either where the document says
+  // what the plan was. Node ids name cells of one tessellation, and the planner that laid it is not
+  // the one a later build ships: replanned from the spec, a capture begun before a planner change
+  // filed every candidate under whichever cell now held its id (ADR 0077). A version-2 document
+  // predates the cells and is replanned from its spec and lens, as every resume was. Either way
+  // nothing here needs a camera, so everything that can refuse this does before the indicator
+  // lights.
+  //
+  // Every refusal of the document's own bytes below is `Unsupported`, as the decoder's is: the
+  // core's word for "this build cannot act on these bytes", since a resume pressed again would be
+  // refused again. The planner is a pure function, so its refusal of a stored spec is one of those.
+  //
+  // The spec is held to the resume's rule on either path. The page reads it back to size its
+  // overlay, no planner runs where the cells are stored, and one that does may be looser than the
+  // rule; asked without one, since a later planner may refuse what an earlier one accepted.
+  if (auto defect = SpecDefect(stored.spec)) {
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          std::string("this project's session document carries ") + *defect);
+  }
+  Result<CapturePlan> plan = Ok(CapturePlan{});
+  if (stored.nodes.empty()) {
+    plan = planner_.Plan(stored.spec, stored.lens);
+    if (!plan.ok()) {
+      return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                            "this build's planner cannot plan this project's session: "
+                                + plan.status.detail);
+    }
+  } else {
+    plan.value.nodes = stored.nodes;
+  }
+  // Once, after both branches: the stored spec is what this capture is, whichever way its cells
+  // came, and two copies of this line let one path drift to the device it resumed on.
+  plan.value.spec = stored.spec;
+  // Held to the rule `Begin` holds a plan to, or the next checkpoint would overwrite a document
+  // that could be read with one that could not. Only a replan can fail it: the decoder held stored
+  // cells to it already.
+  if (auto defect = PlanDefect(plan.value.nodes, stored.spec)) {
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          std::string("this build's planner laid a plan no resume could read: ")
+                              + *defect);
+  }
 
-  // Every candidate has to name a cell of this plan. It should be unreachable — the plan is made
-  // from the spec the document carries — but a document naming a node the sphere does not have
-  // would put candidates somewhere `Coverage` counts and nothing can ever aim at.
+  // Every candidate has to name a cell of this plan. The decoder checks each cell and each
+  // candidate but not one against the other, so this is where an edited or torn document naming a
+  // cell its own cells do not include is refused (ADR 0077); one naming a node the sphere does not
+  // have would put candidates somewhere `Coverage` counts and nothing can ever aim at.
   for (const Candidate& candidate : stored.candidates) {
     const bool known = std::any_of(plan.value.nodes.begin(), plan.value.nodes.end(),
                                    [&candidate](const CoverageNode& planned) {
@@ -491,16 +570,17 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   // The stored spec, whole, including `motion` — and that last part was briefly "fixed" and is
   // deliberately back. A review round called the stored capability stale, since `Resume` decides
   // on the live one; the answer is that it is not a record of this device, it is an input the
-  // sphere was planned with. `Resume` replans from exactly these bytes, so overwriting a field of
-  // them with something the phone in hand reports makes the tessellation device-dependent — and
-  // node ids are indices into a particular tessellation, so the next resume on a different phone
-  // would file every restored candidate under a different cell. That is the failure this whole
-  // line exists to prevent, seeded one field at a time.
+  // sphere was planned with. A document from before the plan's cells were stored is replanned from
+  // exactly these bytes (ADR 0077), so overwriting a field of them with something the phone in
+  // hand reports made the tessellation device-dependent — and node ids are indices into a
+  // particular tessellation, so the next resume on a different phone would file every restored
+  // candidate under a different cell. That is the failure this whole line exists to prevent, seeded
+  // one field at a time.
   //
   // No planner reads `motion` today (`docs/03-architecture.md` says so, and says it has never
   // been true that one does), so the overwrite was harmless in this build. It would not have
-  // stayed harmless, and a defect that waits for a feature is the expensive kind.
-  resolved_spec_ = stored.spec;
+  // stayed harmless, and a defect that waits for a feature is the expensive kind. It is the plan's
+  // own spec, set from the document on both paths above.
   lens_ = stored.lens;
   candidates_.clear();
   burst_owned_.clear();
@@ -553,8 +633,9 @@ void CaptureSessionManager::Checkpoint() const {
   stored.generation = generation.value;
   stored.session = session_.value;
   stored.nextCandidate = next_candidate_;
-  stored.spec = resolved_spec_;
+  stored.spec = plan_.spec;
   stored.lens = lens_;
+  stored.nodes = plan_.nodes;
   for (const Candidate& candidate : AllCandidates()) {
     if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
   }
@@ -839,58 +920,17 @@ Status CaptureSessionManager::ArmBurst(NodeId node, const BurstSpec& burst) {
       AngleBetweenDirections(Direction(pose_state_.pose.orientation),
                              Direction(aimed->targetOrientation)) * kRadToDeg;
 
-  // Two refusals, because they have two causes and a caller reading the detail deserves to know
-  // which: an unusable cone is a broken plan, and being outside a usable one is a user who needs
-  // to turn the phone.
-  //
-  // Infinity is why the cone is checked separately rather than folded into the comparison below.
-  // A NaN cone makes that comparison false and the `!(<=)` form already refuses it; an infinite
-  // one satisfies it *legitimately* — every direction really is inside an infinite cone — so no
-  // arithmetic is wrong and every cell is armable from anywhere, which is ADR 0041's failure
-  // reached through the arithmetic rather than through the rule. What is being enforced here is
-  // that a cone is a measurement, and neither of those is one: a statement about the value, not
-  // about the comparison, which is why it cannot be a spelling of one.
-  //
-  // Both shipped planners refuse a non-finite cone at `Begin`, so nothing in this build delivers
-  // one here — which is an argument for the check rather than against it. The cone arrives from
-  // an engine behind a contract, and a manager does not get to assume every implementation of
-  // that contract validates its own output; the two that exist disagreed about this class of
-  // input twice while this branch was being reviewed. An earlier version of this comment argued
-  // the point from the null planner's weaker guard, and the commit that wrote it had already
-  // strengthened that guard — so the reason was untrue as it was written down.
-  // `ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed` drives both lines with a planner that
-  // does not validate, so they are exercised rather than merely justified.
-  if (!std::isfinite(aimed->acceptanceConeDeg) || aimed->acceptanceConeDeg <= 0.0) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this cell's acceptance cone is not a usable measurement");
-  }
-  // And the cell has to point somewhere, which is the same sentence about the node's other number.
-  // `AngleBetweenDirections` answers a degenerate direction with `0.0`, and `0.0` is also what a
-  // camera aimed exactly at the cell measures — so a target that is not a rotation is *dead on*
-  // from every direction, through a cone that is itself perfectly valid. The cone check above
-  // cannot see it, and neither can the comparison below, because nothing about the arithmetic is
-  // wrong: the answer really is zero. `IsUsableRotation` is the question the sentinel cannot be
-  // asked afterwards.
-  if (!IsUsableRotation(aimed->targetOrientation)) {
-    return Fail(StatusCode::FailedPrecondition, kComponent,
-                "this cell does not point anywhere a camera could be aimed");
-  }
-  // `offBy > cone` is enough, and it is enough because of the two lines above rather than because
-  // of anything about the arithmetic. Both of its arguments are now known to be rotations: the
-  // target by the check directly above, and the pose by `PoseSampleDefect` further up — not by the
-  // shipped engine, which keeps a rotation a rotation without making one. Two usable rotations give two usable directions and an angle in `[0, π]`, so
-  // the naive comparison and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
-  //
-  // An earlier version of this comment credited
-  // `AngleBetweenDirections.EveryDegenerateQuaternionStillMeasuresAFiniteAngle` instead. That test
-  // states a true guarantee and is not what holds it — a reviewer deleted the degeneracy guard it
-  // was written for and the test stayed green, because `Normalize(Vec3)` catches the same inputs
-  // one line earlier. Citing a test by name is a claim that it would fail, and this one would not.
-  //
-  // This line carried the NaN-proof spelling and a comment claiming a test drove it. No test did:
-  // the cone check above absorbs the only non-finite input the suite can deliver, and no caller
-  // can produce a non-finite `offBy` at all. An unreachable guard reads as a checked case and is
-  // one more thing to keep true, so it is the guarantee that is pinned now instead of the shape.
+  // `offBy > cone` is enough because of what a cell had to be to get into `plan_`, not because of
+  // anything about the arithmetic. Cells reach it from `Begin`, the replan in `Resume` and the
+  // decoder, and all three refuse a cone that is not a positive angle under a right angle and
+  // inside the capture's own, and a target that is not a unit rotation (`PlanDefect`, ADR 0077).
+  // The right angle is `PlanDefect`'s own, not borrowed from `SpecDefect`, so it holds whatever
+  // order the two are asked in and for a caller that asks only one. This used to ask both questions
+  // again: an infinite cone satisfies the comparison legitimately, and a degenerate target measures
+  // as dead on from every aim, so neither shows up here as wrong arithmetic. Holding cells to the
+  // decoder's rule on the way in left those guards nothing to refuse. The pose is a rotation by
+  // `PoseSampleDefect` above, and two rotations give an angle in `[0, π]`, so the naive comparison
+  // and the NaN-proof `!(offBy <= cone)` agree on every value either can take.
   if (offBy > aimed->acceptanceConeDeg) {
     return Fail(StatusCode::FailedPrecondition, kComponent,
                 "the camera is not aimed at that cell");

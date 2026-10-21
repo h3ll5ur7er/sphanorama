@@ -28,6 +28,10 @@ namespace sphanorama {
 // the right outcome rather than a cost of it: a document written before this build is precisely
 // one that cannot say which capture its frames belong to, and reading it would mean assuming the
 // answer this field exists to stop assuming (ADR 0035).
+//
+// Version 3 added the plan's cells, and version 2 is still read, the other way from the tier line.
+// A version-2 document can be replanned from its spec and lens, which is what every resume did, and
+// refusing it would strand every capture in flight when this build arrived (ADR 0077).
 inline constexpr const char* kSessionDocumentKey = "session";
 
 struct SessionDocument {
@@ -40,6 +44,11 @@ struct SessionDocument {
   uint64_t generation = 0;
   CapturePlanSpec spec;
   Intrinsics lens;
+  // The plan the candidates below were captured against, cell for cell. Node ids name cells of one
+  // tessellation and the planner that laid it is not the one a later build ships, so a resume
+  // takes these as they stand rather than replanning from the spec (ADR 0077). Empty only in a
+  // version-2 document, which predates them and is replanned.
+  std::vector<CoverageNode> nodes;
   // Each cell's candidates best first, in the order the ranking left them — a build takes the first
   // whose pose was measured as the cell's frame where nobody picked (ADR 0070) — and rewritten after
   // every burst, discarding retake and offer, so a write that succeeded names no frame the capture has since let go of.
@@ -66,6 +75,15 @@ inline bool IssuableIdentity(uint64_t id) { return id != 0 && id < (uint64_t{1} 
 inline bool IdentityWithHeadroom(uint64_t id) { return id != 0 && id < (uint64_t{1} << 52); }
 
 std::string EncodeSessionDocument(const SessionDocument& stored);
+
+// What makes cells a plan a resume could take: some cells, each under an identity a counter issues,
+// on a ring, aimed by a unit rotation, with a cone under a right angle and inside the capture's,
+// and one cell per identity.
+// Asked by the decoder of a document's cells, and by `CaptureSessionManager` of a planner's before
+// it keeps them, so that what is written down is what can be read back whatever planner is wired in
+// (ADR 0077). The contract lets a planner lay any of these; only a document needs them all.
+std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
+                                      const CapturePlanSpec& spec);
 
 // All or nothing. A line this does not understand fails the whole read, because the alternative
 // is a session that comes back missing the cells whose lines were malformed — and a coverage map
