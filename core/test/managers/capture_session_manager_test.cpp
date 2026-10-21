@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -5133,7 +5134,7 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
       {2, "0", "field of view"},  {3, "-30", "field of view"}, {2, "200", "field of view"},
       {3, "200", "field of view"}, {2, "180.0001", "field of view"},
       {3, "180.0001", "field of view"}, {2, "180", "field of view"},
-      {3, "180", "field of view"},      {4, "5", "overlap"},
+      {3, "180", "field of view"},      {3, "0", "field of view"},  {4, "5", "overlap"},
       {4, "1", "overlap"},         {4, "-0.5", "overlap"},      {5, "1e300", "cone"},
       {5, "25", "cone"}};
   for (const auto& [field, value, clause] : edits) {
@@ -5514,21 +5515,34 @@ TEST_F(ResumedSession, ABeginsSpecIsJudgedBeforeItsCells) {
   EXPECT_NE(refused.status.detail.find("this capture would be planned from"), std::string::npos)
       << refused.status.detail;
 
-  // And a cone too narrow rather than too wide, which only a planner that does not check the cone
-  // it is asked for lets reach the rule: the fixture's null planner refuses one first.
-  for (const double cone : {0.0, -1.0}) {
+  // And a cone too narrow rather than too wide, and a NaN in each field the rule reads, which only
+  // a planner that does not check the spec it is asked for lets reach the rule: the fixture's null
+  // planner refuses a narrow cone first, and the rings planner a NaN. A NaN that passed would begin
+  // a capture whose document no resume reads, or be reported as the planner's fault.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<std::pair<std::string, std::function<void(CapturePlanSpec&)>>> edits = {
+      {"cone 0", [](CapturePlanSpec& s) { s.acceptanceConeDeg = 0.0; }},
+      {"cone -1", [](CapturePlanSpec& s) { s.acceptanceConeDeg = -1.0; }},
+      {"cone NaN", [nan](CapturePlanSpec& s) { s.acceptanceConeDeg = nan; }},
+      {"horizontal NaN", [nan](CapturePlanSpec& s) { s.horizontalFovDeg = nan; }},
+      {"vertical NaN", [nan](CapturePlanSpec& s) { s.verticalFovDeg = nan; }},
+      {"overlap NaN", [nan](CapturePlanSpec& s) { s.overlapTarget = nan; }}};
+  for (const auto& [which, edit] : edits) {
     CarelessCoveragePlannerEngine careless(5.0);
     auto other_store = NewStore();
     FakeCameraAccess other_camera(other_store);
     CaptureSessionManager loose(careless, pose, quality, preview, other_camera, *sensor,
                                 *other_store, *projects, clock);
-    CapturePlanSpec narrow = Spec();
-    narrow.acceptanceConeDeg = cone;
-    const Result<SessionId> narrowed = loose.Begin(kProject, narrow);
-    EXPECT_EQ(narrowed.status.code, StatusCode::InvalidArgument)
-        << "cone " << cone << ": " << narrowed.status.detail;
-    EXPECT_NE(narrowed.status.detail.find("planned from an acceptance cone"), std::string::npos)
-        << narrowed.status.detail;
+    CapturePlanSpec asked = Spec();
+    asked.horizontalFovDeg = 66.0;
+    asked.verticalFovDeg = 50.0;
+    edit(asked);
+    const Result<SessionId> refused = loose.Begin(kProject, asked);
+    EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument)
+        << which << ": " << refused.status.detail;
+    EXPECT_NE(refused.status.detail.find("this capture would be planned from"), std::string::npos)
+        << which << ": " << refused.status.detail;
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok()) << which;
   }
 }
 
