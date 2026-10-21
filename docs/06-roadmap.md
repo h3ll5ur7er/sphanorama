@@ -346,26 +346,37 @@ What is left, and what has landed since:
 
 - **Reload and resume — done, and wired to a button.** The core reads a session document written at
   every committed cell, takes the plan that document carries cell for cell (ADR 0077; one from
-  before that is replanned from its spec and lens), and hands the
-  frames it names back to the store through `IFrameStoreAccess::Adopt`, so a restored candidate can
-  still be pinned (ADR 0029). Underneath it the OPFS tier survives a reload too: a fixed preferred
-  name and a sibling index carrying the frame-to-offset map, with a tier of its own for any session
-  that cannot take that pair, which is the property ADR 0020 added (ADR 0030). `Begin` empties the
-  tier and `Resume` does not (ADR 0034), so a new capture no longer issues identities the tier is
-  already holding frames under and abandoned spheres stop accumulating on disk; and the tier says
-  which capture is in it, so a document from another project is refused rather than resumed against
-  somebody else's pixels (ADR 0035). And the page now knows: `ProjectSummary` carries `hasSession`,
-  filled from the project's session document by the listing the page already makes at load, so a
-  capture that was interrupted is offered back rather than discovered by attempting one — a
-  successful `Resume` opens the camera, so probing would have started a capture nobody asked for
-  (ADR 0036). A resume the core refuses says why and leaves a new capture one press away. An
-  end-to-end test captures a cell in a real browser, reloads the tab, presses resume and finds the
-  cell and its five candidates still there. Scope, decided with the maintainer rather than assumed:
-  in practice there is never more than one unfinished sphere, because resuming means standing in the
-  same spot again — so the page offers the newest project that has a session, and only that one. The
-  case worth building for is "a call came in mid-capture", not "come back to it tomorrow" — so no
-  `navigator.storage.persist()`, and the tier is cleared when a *new* session begins rather than at
-  worker startup, which is what lets a reload find its frames still there.
+  before that is replanned from its spec and lens), and hands the frames it names back to the store
+  through `IFrameStoreAccess::Adopt`, so a restored candidate can still be pinned (ADR 0029).
+  Underneath it the OPFS tier survives a reload too: a fixed preferred name and a sibling index
+  carrying the frame-to-offset map, with a tier of its own for any session that cannot take that
+  pair, which is the property ADR 0020 added (ADR 0030). `Begin` empties the tier and `Resume` does
+  not (ADR 0034), so a new capture no longer issues identities the tier is already holding frames
+  under and abandoned spheres stop accumulating on disk; and the tier says which capture is in it,
+  so a document from another project is refused rather than resumed against somebody else's pixels
+  (ADR 0035). And the page now knows: `ProjectSummary` carries `hasSession`, filled from the
+  project's session document by the listing the page already makes at load, so a capture that was
+  interrupted is offered back rather than discovered by attempting one — a successful `Resume` opens
+  the camera, so probing would have started a capture nobody asked for (ADR 0036). A resume the core
+  refuses says why and leaves a new capture one press away. An end-to-end test captures a cell in a
+  real browser, reloads the tab, presses resume and finds the cell and its five candidates still
+  there. Scope, decided with the maintainer rather than assumed: in practice there is never more
+  than one unfinished sphere, because resuming means standing in the same spot again — so the page
+  offers the newest project that has a session, and only that one. The case worth building for is "a
+  call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
+  and the tier is cleared when a *new* session begins rather than at worker startup, which is what
+  lets a reload find its frames still there.
+- **A capture whose phone was turned partway through — open.** `Begin` takes the field-of-view
+  pair from the camera as the phone is held then, and the page names the wide angle onto whichever
+  axis is long at that moment; the spec keeps that pair for the life of the capture, and since
+  ADR 0077 across every resume too. The frames follow the phone as each burst is grabbed, and the
+  build pairs the stored angles with the frames' own size. So bursts taken both ways round are
+  refused by `PanoramaBuildManager::Start` as "not all one size", after the capture has been written
+  down as complete, and a capture taken wholly the other way round builds with pixels about 1.9
+  times non-square, which the single focal scale `Refine` fits (ADR 0066) cannot correct. Nothing
+  compares a frame's shape with the spec's. Found in review of the PR that made the spec the only
+  record of it; what to do (lock the orientation, store the angles against the sensor's long and
+  short edges, or swap them per frame) is undecided.
 - **A tier generation, so another project's document cannot outlive its pixels — done.** The gap
   ADR 0034 left open was narrow and silent: `Begin` empties the tier and the new capture reissues
   identities from 1, so a session document belonging to a *different* project named frames that
