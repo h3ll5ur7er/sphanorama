@@ -28,12 +28,14 @@ sphere they are capturing, and only the second is what the candidates were filed
 - **A cell is checked as it is read**, since no planner vouches for it: an identity a counter could
   issue, a ring index not below zero, a target that is a unit quaternion, a cone above zero, under
   a right angle and no wider than the spec's, and one cell per id. The right angle is the cell's
-  own bound: nothing beside the decoder holds the spec to a rule, and a cell as wide as a spec of
-  1e300 accepts a camera aimed anywhere. The page draws a cell from its target without
+  own bound, so that the rule is true of cells by themselves: the decoder holds the spec to no
+  rule, and a cell as wide as a spec of 1e300 accepts a camera aimed anywhere. On every path into
+  a capture's plan the spec rule below bounds the cone more tightly. The page draws a cell from its target without
   normalising it, and a cone wider than was asked for arms a burst on a cell the camera is nowhere
   near. A version-3 document with no cells is refused, since no plan has none.
-- **The stored spec is checked without a planner**: a field of view a lens has, an overlap short of
-  one, and a cone narrower than half the frame. The planner was what refused a spec that is not a
+- **The stored spec is checked without a planner**: a field of view a lens has, short of 180
+  degrees as the camera model the build reads it through requires, an overlap short of one, and a
+  cone narrower than half the frame. The planner was what refused a spec that is not a
   lens, none runs on this path, and a later one might refuse what the one that laid the cells
   accepted. The page sizes its overlay from this spec. A version-2 document is held to the rule
   too, and to its planner.

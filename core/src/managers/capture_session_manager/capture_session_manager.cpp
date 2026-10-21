@@ -18,9 +18,13 @@ constexpr const char* kComponent = "CaptureSessionManager";
 // of view a lens has, an overlap short of a step of nothing, and a cone narrower than half the
 // frame, past which a frame aimed at its edge misses its own cell. The rings planner refuses each.
 // Written to refuse a NaN, though none is read from a document.
+//
+// Short of 180 rather than up to it, which is the camera model's line and not the planner's: at
+// 180 a rectilinear lens has stopped existing, and the build reads this spec through
+// `LensFromFieldOfView`, which refuses it. Up to it began captures that could never be built.
 std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
-  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg <= 180.0
-        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg <= 180.0)) {
+  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg < 180.0
+        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg < 180.0)) {
     return "a field of view that is not a lens";
   }
   if (!(spec.overlapTarget >= 0.0 && spec.overlapTarget < 1.0)) {

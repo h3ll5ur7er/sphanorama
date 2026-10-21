@@ -5132,7 +5132,8 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
   const std::vector<std::tuple<size_t, std::string, std::string>> edits = {
       {2, "0", "field of view"},  {3, "-30", "field of view"}, {2, "200", "field of view"},
       {3, "200", "field of view"}, {2, "180.0001", "field of view"},
-      {3, "180.0001", "field of view"},                         {4, "5", "overlap"},
+      {3, "180.0001", "field of view"}, {2, "180", "field of view"},
+      {3, "180", "field of view"},      {4, "5", "overlap"},
       {4, "1", "overlap"},         {4, "-0.5", "overlap"},      {5, "1e300", "cone"},
       {5, "25", "cone"}};
   for (const auto& [field, value, clause] : edits) {
@@ -5156,11 +5157,13 @@ TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
 
   // The unedited document still resumes, so what refused each of those was the edit; and so does
   // each just inside a line, so the lines are where they say they are: a cone inside half the
-  // narrower field, no overlap and nearly all of it, and a field of view of exactly 180.
+  // narrower field, no overlap and nearly all of it, and a field of view just short of 180, which
+  // is where a rectilinear lens stops and so where the build's camera model stops taking one.
   for (const std::string& text :
        {written.value, SetField(written.value, "spec", 5, "24.9"),
         SetField(written.value, "spec", 4, "0"), SetField(written.value, "spec", 4, "0.999"),
-        SetField(written.value, "spec", 2, "180"), SetField(written.value, "spec", 3, "180")}) {
+        SetField(written.value, "spec", 2, "179.9"),
+        SetField(written.value, "spec", 3, "179.9")}) {
     ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, text).ok());
     auto store_with_sink = NewStore();
     FakeCameraAccess camera(store_with_sink);
@@ -5198,7 +5201,7 @@ TEST_F(ResumedSession, ABeginWhoseSpecNoResumeWouldTakeIsRefused) {
   // capture and saved a document the same build would never resume. The fixture's null planner
   // plans anything with a cone, and the field of view comes from the camera.
   const std::vector<std::tuple<double, double, double>> lenses = {
-      {0.0, 0.0, 5.0}, {200.0, 150.0, 5.0}, {15.0, 15.0, 10.0}};
+      {0.0, 0.0, 5.0}, {200.0, 150.0, 5.0}, {180.0, 180.0, 5.0}, {15.0, 15.0, 10.0}};
   for (const auto& [h, v, cone] : lenses) {
     auto store_with_sink = NewStore();
     // Refused before the tier is emptied, too: a refusal after it would have destroyed whatever
@@ -5530,7 +5533,10 @@ TEST_F(ResumedSession, ABeginsSpecIsJudgedBeforeItsCells) {
 }
 
 // Every way a planner's cell can be one no session document holds, each clause of `PlanDefect`
-// at least once, so that a caller asking something narrower is caught on its own path.
+// that a caller can reach at least once, so that a caller asking something narrower is caught on
+// its own path. Not the right angle: both callers hold the spec's cone under half a field short of
+// 180 first, and a cell is no wider than the spec's, so that clause is pinned where it can decide,
+// in `APlansCellsAreMeasurementsWhateverItsSpecSays` and the decoder's test.
 //
 // Five cones, which is the class rather than a member of it: `NaN` loses every comparison, `inf`
 // wins them, `0.0` used to arm whenever the aim was exact, and `-inf` and `-5.0` used to be refused

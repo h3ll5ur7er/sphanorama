@@ -236,9 +236,11 @@ std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
       return "a cell whose target is not a unit rotation";
     }
     // No wider than the capture asked for: a wider cone arms a burst on a cell the camera is
-    // nowhere near. And under a right angle whatever the spec says, since nothing here holds the
-    // spec to a rule, and a cone as wide as a spec of 1e300 accepts a camera aimed anywhere; this
-    // is all `ArmBurst` has. Written to refuse a NaN, though no standard library reads one.
+    // nowhere near. And under a right angle whatever the spec says, so that this is true of a cell
+    // by itself: nothing here holds the spec to a rule, and a cone as wide as a spec of 1e300
+    // accepts a camera aimed anywhere. The manager holds the spec to a tighter bound on every path
+    // into its plan; this is for a caller that asks nothing else. Written to refuse a NaN, though
+    // no standard library reads one.
     if (!(node.acceptanceConeDeg > 0.0 && node.acceptanceConeDeg < 90.0
           && node.acceptanceConeDeg <= spec.acceptanceConeDeg)) {
       return "a cell whose cone is not inside the capture's";
