@@ -57,6 +57,11 @@ class Projects : public ::testing::Test {
     SessionDocument stored;
     stored.session = 1;
     stored.nextCandidate = next;
+    // A plan has a cell at least, and a document without one is refused (ADR 0077).
+    CoverageNode cell;
+    cell.id = NodeId{1};
+    cell.acceptanceConeDeg = stored.spec.acceptanceConeDeg;
+    stored.nodes.push_back(cell);
     const std::string text = EncodeSessionDocument(stored);
     SessionDocument decoded;
     EXPECT_TRUE(DecodeSessionDocument(text, decoded));

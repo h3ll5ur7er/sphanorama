@@ -134,9 +134,6 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4, ADR 0016).
   PoseState pose_state_;
   std::map<uint64_t, std::vector<Candidate>> candidates_;
-  // The plan spec as it was resolved when the session began, kept because it is what the plan was
-  // made from. A resumed session replans from this rather than from the camera in front of it.
-  CapturePlanSpec resolved_spec_;
   Intrinsics lens_;
 
   // Which candidates this manager's own bursts produced, by id.

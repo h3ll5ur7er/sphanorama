@@ -38,9 +38,10 @@ class FakeCameraAccess final : public ICameraAccess {
    */
   int Opens() const { return opens_; }
   bool ExposureLocked() const { return exposure_locked_; }
-  // The contract's read, and the one tests use. It was a non-virtual `const&` accessor before
-  // `ICameraAccess` grew `Capabilities()` (ADR 0045); one name, one answer, so a test cannot read
-  // something the manager cannot.
+  // The contract's read, and the one tests read the camera through. It was a non-virtual `const&`
+  // accessor before `ICameraAccess` grew `Capabilities()` (ADR 0045), so a test cannot read
+  // something the manager cannot; `Configured()` below is for setting a camera up, not for reading
+  // what it is doing, which a held exposure lock changes.
   Result<CameraCapabilities> Capabilities() override {
     // Not open is not the same fact as cannot open, and conflating them is how a fake hides a
     // defect: this answered `Ok` with 32x24 for a camera nobody had opened *and* for one it had
@@ -59,6 +60,10 @@ class FakeCameraAccess final : public ICameraAccess {
     return Ok(WhatItIsDoing());
   }
   void SetCapabilities(const CameraCapabilities& caps) { capabilities_ = caps; }
+  // What `SetCapabilities` last set, open or not: the starting point for a test that changes one
+  // field. `Capabilities()` refuses a closed camera, and the default struct its refusal carries has
+  // a field of view of zero, which a test reading it before `Begin` handed on unawares.
+  CameraCapabilities Configured() const { return capabilities_; }
   /**
    * Where this camera's fills start, so two of them can produce frames a test can tell apart.
    * Every instance counts from 1 otherwise, which is right — a fresh camera in a fresh process is

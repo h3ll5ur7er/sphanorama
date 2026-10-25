@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -15,6 +17,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
@@ -388,10 +391,9 @@ TEST_F(CaptureSession, ACameraThatRefusesToOpenIsWhatBeginReports) {
   EXPECT_EQ(camera->Opens(), 1) << "the camera was never asked, so this proves nothing about it";
 }
 
-// A planner that hands out a cone nothing can be measured against, which both shipped ones now
-// refuse to produce. It exists because `ArmBurst`'s guard is otherwise unreachable — and a guard
-// at a contract boundary that no implementation currently trips is exactly the one worth having
-// and the hardest to keep honest.
+// A planner that hands out cells nothing can be measured against, which both shipped ones refuse
+// to produce. A manager does not get to assume every implementation of a contract validates its
+// own output, so `Begin` is driven with one that does not.
 class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
  public:
   explicit CarelessCoveragePlannerEngine(double cone) : cone_(cone) {}
@@ -399,10 +401,12 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
   Result<CapturePlan> Plan(const CapturePlanSpec&, const Intrinsics&) override {
     CapturePlan plan;
     CoverageNode node;
-    node.id = NodeId{1};
+    node.id = id_;
+    node.ringIndex = ring_;
     node.targetOrientation = target_;
     node.acceptanceConeDeg = cone_;
     plan.nodes.push_back(node);
+    if (twice_) plan.nodes.push_back(node);
     return Ok(std::move(plan));
   }
   Result<CaptureGuidance> Locate(const PoseSample&, const CapturePlan& plan,
@@ -432,10 +436,19 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
   // one of them was reachable. `AngleBetweenDirections` answers a degenerate direction with `0.0`,
   // so a cell pointing nowhere is inside an ordinary cone from every direction.
   void PointNowhere(const Quat& target) { target_ = target; }
+  // And the identity and ring, which a document needs as much as a cone and nothing else reads.
+  void FileAs(NodeId id, int32_t ring) {
+    id_ = id;
+    ring_ = ring;
+  }
+  void LayTwice() { twice_ = true; }
 
  private:
   double cone_;
   Quat target_{};
+  NodeId id_{1};
+  int32_t ring_ = 0;
+  bool twice_ = false;
 };
 
 TEST_F(CaptureSession, TheHeldFractionIsTheManagersAnswerRatherThanWhateverThePlannerLeftThere) {
@@ -463,96 +476,6 @@ TEST_F(CaptureSession, TheHeldFractionIsTheManagersAnswerRatherThanWhateverThePl
       << "the planner's 7.0 reached the client, so the ring is drawn from a number the manager "
          "never decided";
   ASSERT_TRUE(manager.End().ok());
-}
-
-TEST_F(CaptureSession, ACellWhosePlannerGaveItAnUnusableConeCannotBeArmed) {
-  // The manager's own arithmetic, against an engine that does not validate. Both shipped planners
-  // refuse such a cone at `Begin` now, so this guard is unreachable through them — and that is why
-  // it is worth a test rather than a deletion: the cone crosses a contract, and the two
-  // implementations of that contract disagreed about this class of input twice in one review.
-  //
-  // Five cones, which is the class rather than a member of it. `inf` makes `offBy <= cone` true
-  // *legitimately* — every direction really is inside an infinite cone — which is the worst of
-  // them, because no arithmetic is wrong. `NaN` loses both comparisons. `0.0` is finite and
-  // positive-adjacent and used to arm whenever the aim was exact, since `0 <= 0`. `-inf` and
-  // `-5.0` are refused by the naive comparison, but as *bad aim* rather than as a broken plan,
-  // which tells the user to turn a phone that is already pointed correctly.
-  //
-  // **Aimed at the cell, not away from it**, which is the whole shape of this test. It used to aim
-  // 180 degrees away and compare only `StatusCode` — and `ArmBurst` answers `FailedPrecondition`
-  // for a bad aim too, so it passed unchanged when a reviewer replaced the unusable cones with an
-  // ordinary 5 and 10 degrees. A test named for a broken plan was asserting that the camera was
-  // pointed the wrong way. Aiming *at* the cell leaves the cone as the only thing that can refuse,
-  // and the detail string says which refusal it was.
-  const double inf = std::numeric_limits<double>::infinity();
-  for (const double cone : {std::numeric_limits<double>::quiet_NaN(), inf, -inf, 0.0, -5.0}) {
-    CarelessCoveragePlannerEngine careless(cone);
-    CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
-                                  *projects, clock);
-    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << "cone " << cone;
-
-    pose.LookAt(manager.GetPlan().value.nodes.front().targetOrientation);
-    ImuSample sample;
-    sample.hasOrientation = true;
-    sample.timestampNs = clock.MonotonicNs();
-    ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
-
-    BurstSpec burst;
-    burst.frameCount = 2;
-    const Status armed = manager.ArmBurst(manager.GetPlan().value.nodes.front().id, burst);
-    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition)
-        << "a burst was armed against a cone of " << cone << ", so every cell is armable from "
-           "anywhere";
-    EXPECT_NE(armed.detail.find("not a usable measurement"), std::string::npos)
-        << "refused for a cone of " << cone << ", but as \"" << armed.detail
-        << "\" — a broken plan reported as a user who needs to turn the phone";
-    ASSERT_TRUE(manager.End().ok());
-  }
-}
-
-TEST_F(CaptureSession, ACellThatPointsNowhereCannotBeArmedFromAnywhere) {
-  // The manager's half of `ACellPointingNowhereIsNeverTheOneBeingHeld`. Both guards exist for one
-  // fact and they have to agree, which is the arrangement `ICoveragePlannerEngine`'s header
-  // describes — and the acceptance cone is not the only number in a node that can stop being a
-  // measurement.
-  //
-  // `offBy` is `AngleBetweenDirections(where the camera looks, where the cell is)`, and that
-  // function answers `0.0` for a degenerate direction. So a node whose `targetOrientation` is a
-  // zero or NaN quaternion measures as *exactly* on target, from any aim, through a cone that is
-  // itself perfectly valid — and every guard in `ArmBurst` is satisfied.
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  for (const Quat broken : {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0},
-                            Quat{std::numeric_limits<double>::infinity(), 0, 0, 0}}) {
-    CarelessCoveragePlannerEngine careless(5.0);
-    careless.PointNowhere(broken);
-    CaptureSessionManager manager(careless, pose, quality, preview, *camera, *sensor, *store,
-                                  *projects, clock);
-    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok());
-
-    // A real, measured aim, pointed at the identity. Nothing about the *pose* is degenerate — and
-    // the direction matters, which it did not when this was written.
-    //
-    // It aimed 37 degrees away, and that stopped testing anything on this branch: hardening
-    // `Normalize(Quat)` made `Direction(Quat{0,0,0,0})` answer `(0,0,-1)` — an ordinary direction —
-    // where it used to answer the degenerate `0.0` this test is named for. So the cone refused the
-    // arm at 37 degrees and the `IsUsableRotation` guard could be deleted with the suite green. A
-    // reviewer instrumented it: the refusal read "the camera is not aimed at that cell".
-    //
-    // Aiming at the identity puts the camera exactly where a degenerate target now resolves to, so
-    // `offBy` is 0.0 again and the only thing that can refuse this burst is the guard under test.
-    pose.LookAt(Quat{});
-    ImuSample sample;
-    sample.hasOrientation = true;
-    sample.timestampNs = clock.MonotonicNs();
-    ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
-
-    BurstSpec burst;
-    burst.frameCount = 2;
-    const Status armed = manager.ArmBurst(manager.GetPlan().value.nodes.front().id, burst);
-    EXPECT_EQ(armed.code, StatusCode::FailedPrecondition)
-        << "a burst was armed against a cell that points nowhere, from an aim that agrees with it";
-    ASSERT_TRUE(manager.End().ok());
-  }
 }
 
 TEST_F(CaptureSession, TheCellAtTheUnmeasuredIdentityIsRefusedToo) {
@@ -2481,7 +2404,7 @@ TEST_F(CaptureSession, ACameraClaimingAnAbsurdlySlowRateDoesNotProduceAnUnrepres
   // spelling and the whole suite stayed green.
   for (const double fps : {1e-10, 1e-300, std::numeric_limits<double>::denorm_min(),
                            std::numeric_limits<double>::quiet_NaN()}) {
-    CameraCapabilities absurd = camera->Capabilities().value;
+    CameraCapabilities absurd = camera->Configured();
     absurd.maxBurstFps = fps;
     camera->SetCapabilities(absurd);
     Begin();
@@ -2536,7 +2459,7 @@ TEST_F(CaptureSession, ArmingReReadsTheCamerasRateRatherThanTrustingWhatOpenSaid
   // that re-asks paces it at 2.
   Begin();
 
-  CameraCapabilities slowed = camera->Capabilities().value;
+  CameraCapabilities slowed = camera->Configured();
   slowed.maxBurstFps = 2.0;             // 500 ms a frame
   camera->SetCapabilities(slowed);
 
@@ -2571,7 +2494,7 @@ TEST_F(CaptureSession, ARefreshThatSaysNothingDoesNotTakeAwayARateTheSessionHad)
   // maps a missing or non-finite `frameRate` to `0.0` and answers `Ok`.
   Begin();
 
-  CameraCapabilities silent = camera->Capabilities().value;
+  CameraCapabilities silent = camera->Configured();
   silent.maxBurstFps = 0.0;
   camera->SetCapabilities(silent);
 
@@ -2824,7 +2747,7 @@ TEST_F(CaptureSession, ACameraThatWillNotSayItsRateLeavesTheSpecInCharge) {
   // maxBurstFps is 0 when the platform will not report one, and 0 has to mean "no floor here"
   // rather than a guess. A default invented in the manager would slow every burst on the browsers
   // that decline to answer, which is most of them.
-  CameraCapabilities silent = camera->Capabilities().value;
+  CameraCapabilities silent = camera->Configured();
   silent.maxBurstFps = 0;
   camera->SetCapabilities(silent);
   Begin();
@@ -4157,14 +4080,16 @@ TEST_F(ResumedSession, AResumeOnADeviceWithNoMotionSensorIsRefusedWithoutTouchin
   EXPECT_TRUE(third.Resume(kProject).ok());
 }
 
-TEST_F(ResumedSession, AResumeCheckpointsTheSphereItReplannedRatherThanTheDeviceItCameBackOn) {
-  // `CapturePlanSpec.motion` is filled from the live capability at `Begin` and stored, and a
-  // review round called the stored value stale because `Resume` decides on the live one instead.
-  // A fix that put the live capability back into `resolved_spec_` was written, and reverted once
-  // it became clear what it meant: `Resume` replans from exactly these bytes, so a spec field that
-  // follows the device makes the tessellation follow the device — and node ids are indices into a
+TEST_F(ResumedSession, AResumeCheckpointsTheSpecItWasPlannedFromRatherThanTheDeviceItCameBackOn) {
+  // `CapturePlanSpec.motion` is filled from the live capability at `Begin` and stored, and a review
+  // round called the stored value stale because `Resume` decides on the live one instead. A fix
+  // that put the live capability back into the session's spec was written, and reverted once it
+  // became clear what it meant: a resume replanned from exactly these bytes, so a spec field that
+  // follows the device made the tessellation follow the device — and node ids are indices into a
   // tessellation, so the resume after that would file every restored candidate under a different
-  // cell. The field is not a record of this phone; it is an input the sphere was planned with.
+  // cell. The field is not a record of this phone; it is an input the sphere was planned with. A
+  // resume takes the stored cells now and replans only a version-2 document (ADR 0077), but the
+  // spec is still the record of what was asked for, and a version-2 document is replanned from it.
   //
   // Both versions passed all 511 tests, which is why this exists. Nothing reads `motion` back
   // today (`docs/03-architecture.md` says no planner does), so behaviour cannot tell them apart —
@@ -4198,7 +4123,7 @@ TEST_F(ResumedSession, AResumeCheckpointsTheSphereItReplannedRatherThanTheDevice
       << "the fixture expects the capability its sensor reports";
 
   // Back on a device that senses more than the one it started on, and it captures another cell —
-  // so `Checkpoint` runs and rewrites the document from `resolved_spec_`.
+  // so `Checkpoint` runs and rewrites the document from the plan's spec.
   FakeMotionSensorAccess richer(MotionCapability::GyroAccelMag);
   FakeCameraAccess second_camera(store_with_sink);
   CaptureSessionManager second(planner, pose, quality, preview, second_camera, richer,
@@ -4210,7 +4135,30 @@ TEST_F(ResumedSession, AResumeCheckpointsTheSphereItReplannedRatherThanTheDevice
 
   EXPECT_EQ(storedMotion(), begun)
       << "the document now records the phone that resumed the capture rather than the sphere that "
-         "was planned, so the next resume would replan from a different spec";
+         "was planned";
+
+  // And from a version-2 document, which is replanned and then written back as version 3 with the
+  // spec it carried: once upgraded, nothing replans it, so a device leaking in here stays.
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+  FakeCameraAccess third_camera(store_with_sink);
+  CaptureSessionManager third(planner, pose, quality, preview, third_camera, richer,
+                              *store_with_sink, *projects, clock);
+  ASSERT_TRUE(third.Resume(kProject).ok());
+  ASSERT_TRUE(third.End().ok());
+  auto upgraded = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(upgraded.ok());
+  ASSERT_EQ(upgraded.value.rfind(stamp, 0), 0u) << "the version-2 document was not written back";
+  EXPECT_EQ(storedMotion(), begun) << "replanned from a version-2 document";
 }
 
 TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
@@ -4619,9 +4567,10 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   // Node ids are indices into a tessellation, so a resumed session that replanned from whatever
   // the camera reports today would hand every restored candidate to a different cell if the
   // phone came back in another orientation. The plan the candidates were captured against is
-  // part of the session, and it is stored rather than recomputed from the lens.
-  // The real tessellation, not the null one: what is under test is that the plan came from the
-  // stored field of view, and a planner that ignores the field of view cannot tell the two apart.
+  // part of the session, and it is stored rather than recomputed from the lens: as the plan's own
+  // cells, since ADR 0077, and before that as the field of view it was replanned from.
+  // The real tessellation, not the null one: a planner that ignores the field of view lays the same
+  // plan from either lens, and could not tell the two apart.
   RingsCoveragePlannerEngine rings;
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
@@ -4638,7 +4587,7 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
   // A different lens on the way back — a much wider field of view, which is the input the
   // tessellation is actually made from. A Resume that replanned from the camera in front of it
   // would come back with a coarser sphere and hand every restored candidate to another cell.
-  CameraCapabilities wider = second_camera.Capabilities().value;
+  CameraCapabilities wider = second_camera.Configured();
   wider.horizontalFovDeg = 110.0;
   wider.verticalFovDeg = 90.0;
   second_camera.SetCapabilities(wider);
@@ -4653,6 +4602,155 @@ TEST_F(ResumedSession, ComesBackToTheSamePlanTheSessionWasCapturedAgainst) {
     EXPECT_EQ(plan.value.nodes[i].id.value, planned.nodes[i].id.value) << "node " << i;
     EXPECT_DOUBLE_EQ(plan.value.nodes[i].acceptanceConeDeg, planned.nodes[i].acceptanceConeDeg);
   }
+}
+
+// The rings planner with every cell turned about the vertical: the same ids, in other directions.
+// What a later build's planner looks like to a capture begun under this one, which is how ADR 0076
+// moved a 16:9 lens's cells while every stored id still named one of them.
+class TurnedCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  explicit TurnedCoveragePlannerEngine(ICoveragePlannerEngine& inner) : inner_(inner) {}
+
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    auto plan = inner_.Plan(spec, lens);
+    if (!plan.ok()) return plan;
+    const Quat turn = FromAxisAngle(Vec3{0.0, 1.0, 0.0}, 0.2);
+    for (CoverageNode& node : plan.value.nodes) {
+      node.targetOrientation = Multiply(turn, node.targetOrientation);
+    }
+    return plan;
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+
+ private:
+  ICoveragePlannerEngine& inner_;
+};
+
+// The cell straight ahead, which is the only one this fixture's camera can arm: it looks nowhere
+// else.
+NodeId CellAhead(const CapturePlan& plan) {
+  return std::max_element(plan.nodes.begin(), plan.nodes.end(),
+                          [](const CoverageNode& a, const CoverageNode& b) {
+                            return -Direction(a.targetOrientation).z
+                                   < -Direction(b.targetOrientation).z;
+                          })
+      ->id;
+}
+
+TEST_F(ResumedSession, KeepsThePlanItWasBegunWithWhenThePlannerHasSinceChanged) {
+  // Node ids name cells of one tessellation, and the planner that made it is not the planner a
+  // later build ships. Replanned from the stored spec, every candidate was filed under whichever
+  // cell now holds its id, and the cells actually shot read as holes (ADR 0077).
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const CapturePlan planned = first.GetPlan().value;
+  // Not the first cell, so its id says something about where it is in the plan.
+  const NodeId shot = CellAhead(planned);
+  ASSERT_NE(shot.value, planned.nodes.front().id.value);
+  ASSERT_TRUE(FireBurstOn(first, clock, shot, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  const auto expectTheBegunPlan = [&](const CapturePlan& resumed, const char* when) {
+    // The spec too, which the page reads the lens from: it is the one part of a resumed plan no
+    // planner made, so nothing else would put it there.
+    EXPECT_EQ(resumed.spec.horizontalFovDeg, planned.spec.horizontalFovDeg) << when;
+    EXPECT_EQ(resumed.spec.verticalFovDeg, planned.spec.verticalFovDeg) << when;
+    EXPECT_EQ(resumed.spec.overlapTarget, planned.spec.overlapTarget) << when;
+    EXPECT_EQ(resumed.spec.acceptanceConeDeg, planned.spec.acceptanceConeDeg) << when;
+    EXPECT_EQ(resumed.spec.coverPoles, planned.spec.coverPoles) << when;
+    ASSERT_EQ(resumed.nodes.size(), planned.nodes.size()) << when;
+    for (size_t i = 0; i < planned.nodes.size(); ++i) {
+      const CoverageNode& was = planned.nodes[i];
+      const CoverageNode& is = resumed.nodes[i];
+      EXPECT_EQ(is.id.value, was.id.value) << when << ", cell " << i;
+      EXPECT_EQ(is.ringIndex, was.ringIndex) << when << ", cell " << i;
+      EXPECT_EQ(is.acceptanceConeDeg, was.acceptanceConeDeg) << when << ", cell " << i;
+      // Bit for bit: a direction that moved in its last place on every resume would drift.
+      EXPECT_EQ(is.targetOrientation.w, was.targetOrientation.w) << when << ", cell " << i;
+      EXPECT_EQ(is.targetOrientation.x, was.targetOrientation.x) << when << ", cell " << i;
+      EXPECT_EQ(is.targetOrientation.y, was.targetOrientation.y) << when << ", cell " << i;
+      EXPECT_EQ(is.targetOrientation.z, was.targetOrientation.z) << when << ", cell " << i;
+    }
+  };
+
+  TurnedCoveragePlannerEngine turned(rings);
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(turned, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  expectTheBegunPlan(second.GetPlan().value, "resumed");
+  EXPECT_FALSE(second.Candidates(shot).value.empty());
+
+  // And again after the resumed session has written the document itself: a checkpoint that wrote
+  // down what the planner in front of it lays would bring the misfiling back one resume later.
+  ASSERT_TRUE(FireBurstOn(second, clock, CellAhead(second.GetPlan().value), BurstSpec{}).ok());
+  ASSERT_TRUE(second.End().ok());
+  auto third_store = NewStore();
+  FakeCameraAccess third_camera(third_store);
+  CaptureSessionManager third(turned, pose, quality, preview, third_camera, *sensor, *third_store,
+                              *projects, clock);
+  ASSERT_TRUE(third.Resume(kProject).ok());
+  expectTheBegunPlan(third.GetPlan().value, "resumed twice");
+}
+
+TEST_F(ResumedSession, ADocumentFromBeforePlansWereStoredIsReplanned) {
+  // Version 2 carries the spec and not the cells. Refusing it would strand every capture in flight
+  // when this build arrives, most of which replan correctly; so it is replanned, as every resume
+  // was before (ADR 0077).
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const CapturePlan planned = first.GetPlan().value;
+  ASSERT_TRUE(FireBurstOn(first, clock, CellAhead(planned), BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  int cells = 0;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) == 0) {
+      ++cells;
+      continue;
+    }
+    older += line + "\n";
+  }
+  ASSERT_EQ(cells, static_cast<int>(planned.nodes.size()));
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+
+  TurnedCoveragePlannerEngine turned(rings);
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(turned, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  // Replanned by the planner in front of it, which is the turned one: the only plan it has.
+  const CapturePlan replanned = second.GetPlan().value;
+  ASSERT_EQ(replanned.nodes.size(), planned.nodes.size());
+  EXPECT_NE(replanned.nodes[1].targetOrientation.w, planned.nodes[1].targetOrientation.w);
 }
 
 // A store that takes a stated number of frames back and then refuses, and that can be told to
@@ -4735,16 +4833,17 @@ TEST_F(ResumedSession, ASessionThatCannotBePlannedLeavesTheTierAlone) {
   FakeCameraAccess camera(inner);
 
   CapturePlanSpec impossible = Spec();
-  // An overlap of 1 is a step of zero degrees — infinitely many cells — and the rings planner
-  // refuses it. It has to be a *real* planner: the fixture's null one plans anything, so nothing
-  // would refuse and the assertion below would pass against a Begin that clears first. And it has
-  // to be this field rather than the field of view, which Begin substitutes from the camera when
-  // the spec leaves it unset — the first arrangement here did that and began perfectly happily.
-  impossible.overlapTarget = 1.0;
+  // A strategy the rings planner does not lay, which it refuses. It has to be a *real* planner: the
+  // fixture's null one plans anything, so nothing would refuse and the assertion below would pass
+  // against a Begin that clears first. And it has to be a field nothing before the planner reads:
+  // the field of view is substituted from the camera when the spec leaves it unset, which the first
+  // arrangement here did and began perfectly happily. Nothing reads the strategy but the planner,
+  // so it stays the planner's refusal wherever a spec check sits; the code says which refused.
+  impossible.strategy = TessellationStrategy::Geodesic;
   RingsCoveragePlannerEngine rings;
   CaptureSessionManager planned(rings, pose, quality, preview, camera, *sensor, stubborn, *projects,
                                 clock);
-  EXPECT_FALSE(planned.Begin(kProject, impossible).ok());
+  EXPECT_EQ(planned.Begin(kProject, impossible).status.code, StatusCode::Unsupported);
 
   EXPECT_EQ(stubborn.Clears(), 0) << "the tier was emptied for a session that never started";
 }
@@ -4863,10 +4962,10 @@ TEST_F(ResumedSession, RefusesADocumentFromAShapeThisBuildCannotRead) {
 
   auto written = projects->ReadDocument(kProject, "session");
   ASSERT_TRUE(written.ok());
-  const std::string stamp = "sphanorama-session 2";
+  const std::string stamp = "sphanorama-session 3";
   std::string newer = written.value;
   ASSERT_EQ(newer.rfind(stamp, 0), 0u);
-  newer.replace(0, stamp.size(), "sphanorama-session 3");
+  newer.replace(0, stamp.size(), "sphanorama-session 4");
   ASSERT_TRUE(projects->WriteDocument(kProject, "session", newer).ok());
 
   auto store_with_sink = NewStore();
@@ -4900,6 +4999,699 @@ std::string SetField(const std::string& document, const std::string& tag, size_t
     out += line + "\n";
   }
   return out;
+}
+
+TEST(SessionDocument, APlansCellsAreMeasurementsWhateverItsSpecSays) {
+  // `PlanDefect` is the whole of what stands between a cell and `ArmBurst`, and the decoder runs
+  // it with no spec rule beside it. A cone no narrower than the capture's is not enough on its own:
+  // under a spec of `inf`, or 1e300, a cell of the same is inside the capture's and accepts a
+  // camera aimed anywhere. So the cell's cone is a measurement by itself, under a right angle.
+  const auto cell = [](double cone) {
+    CoverageNode node;
+    node.id = NodeId{1};
+    node.acceptanceConeDeg = cone;
+    return std::vector<CoverageNode>{node};
+  };
+  const auto spec = [](double cone) {
+    CapturePlanSpec asked;
+    asked.acceptanceConeDeg = cone;
+    return asked;
+  };
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double cone : {inf, 1e300, 90.0, nan}) {
+    EXPECT_TRUE(PlanDefect(cell(cone), spec(cone)).has_value()) << "cone " << cone;
+  }
+  EXPECT_FALSE(PlanDefect(cell(89.9), spec(89.9)).has_value());
+  EXPECT_FALSE(PlanDefect(cell(5.0), spec(5.0)).has_value());
+
+}
+
+TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
+  // A stored cell is acted on without a planner to vouch for it: guidance aims at it, coverage
+  // counts it. Each of these is a cell no planner lays, and a document carrying one was edited.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  ASSERT_FALSE(document.nodes.empty());
+
+  // Fields: tag, id, ring, w, x, y, z, cone.
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 1, "0"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 2, "-1"), document));
+  std::string unrotated = written.value;
+  for (size_t field = 3; field <= 6; ++field) unrotated = SetField(unrotated, "cell", field, "0");
+  EXPECT_FALSE(DecodeSessionDocument(unrotated, document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 3, "nan"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "0"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "inf"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "nan"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1e400"), document));
+  // A cone wider than the one asked for, which no planner lays: it would arm a burst on a cell the
+  // camera is nowhere near. The spec's is 5; a hair past it is as wide as 1e300 for this rule.
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1e300"), document));
+  EXPECT_FALSE(DecodeSessionDocument(SetField(written.value, "cell", 7, "5.0000000001"), document));
+  // As wide as the spec's when the spec's is as wide as a document can spell, which no resume
+  // takes and the decoder is not the one to say so: the cell's cone is refused by itself.
+  EXPECT_FALSE(DecodeSessionDocument(
+      SetField(SetField(written.value, "spec", 5, "1e300"), "cell", 7, "1e300"), document));
+  // The spec's own, and narrower, are cells a planner could lay.
+  EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "cell", 7, "5"), document));
+  EXPECT_TRUE(DecodeSessionDocument(SetField(written.value, "cell", 7, "1"), document));
+  // A target that is a rotation only once normalised, which the page draws without normalising.
+  // Within a rounding of unit is what a planner writes — the rings planner lays cells 2.2e-16 off
+  // on some lenses — and a millionth either way is not.
+  {
+    SessionDocument read;
+    ASSERT_TRUE(DecodeSessionDocument(written.value, read));
+    const Quat target = read.nodes.front().targetOrientation;
+    const auto scaled = [&](double factor) {
+      std::string text = written.value;
+      const double parts[] = {target.w, target.x, target.y, target.z};
+      for (size_t field = 3; field <= 6; ++field) {
+        std::ostringstream digits;
+        digits << std::setprecision(17) << factor * parts[field - 3];
+        text = SetField(text, "cell", field, digits.str());
+      }
+      return text;
+    };
+    EXPECT_FALSE(DecodeSessionDocument(scaled(2.0), document));
+    EXPECT_FALSE(DecodeSessionDocument(scaled(1.0 + 1e-6), document));
+    EXPECT_FALSE(DecodeSessionDocument(scaled(1.0 - 1e-6), document));
+    EXPECT_TRUE(DecodeSessionDocument(scaled(1.0 + 1e-12), document));
+    EXPECT_TRUE(DecodeSessionDocument(scaled(1.0 - 1e-12), document));
+  }
+
+  // Cells under a version that never had them: the version says what shape the rest is.
+  std::string mislabelled = written.value;
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(mislabelled.rfind(stamp, 0), 0u);
+  mislabelled.replace(0, stamp.size(), "sphanorama-session 2");
+  EXPECT_FALSE(DecodeSessionDocument(mislabelled, document));
+
+  // Two cells under one id, which coverage would count as one and guidance aim at as two.
+  std::string twice = written.value;
+  const size_t at = twice.find("\ncell ");
+  ASSERT_NE(at, std::string::npos);
+  const size_t end = twice.find('\n', at + 1);
+  twice += twice.substr(at + 1, end - at);
+  EXPECT_FALSE(DecodeSessionDocument(twice, document));
+
+  // And a version-3 document with no cells at all, which no plan is.
+  std::istringstream lines(written.value);
+  std::string bare;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) bare += line + "\n";
+  }
+  EXPECT_FALSE(DecodeSessionDocument(bare, document));
+}
+
+TEST_F(ResumedSession, RefusesAStoredSpecNoPlanCouldHaveBeenLaidFrom) {
+  // A resume that takes the stored cells runs no planner, and the planner was what refused a spec
+  // that is not a lens; the page reads the spec back to size its overlay (ADR 0077). Refused before
+  // the camera, and the document is kept.
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+
+  // Fields: tag, strategy, horizontal, vertical, overlap, cone, poles, motion. Each names the clause
+  // it is refused by, since a field of view of nothing also leaves no cone room. The camera's lens
+  // is 66 by 50, so a cone of 25 is half the narrower field.
+  const std::vector<std::tuple<size_t, std::string, std::string>> edits = {
+      {2, "0", "field of view"},  {3, "-30", "field of view"}, {2, "200", "field of view"},
+      {3, "200", "field of view"}, {2, "180.0001", "field of view"},
+      {3, "180.0001", "field of view"}, {2, "180", "field of view"},
+      {3, "180", "field of view"},      {3, "0", "field of view"},  {4, "5", "overlap"},
+      {4, "1", "overlap"},         {4, "-0.5", "overlap"},      {5, "1e300", "cone"},
+      {5, "25", "cone"}};
+  for (const auto& [field, value, clause] : edits) {
+    const std::string edited = SetField(written.value, "spec", field, value);
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, edited).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager resumed(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    // `Unsupported`, as for a cell no plan was laid with: pressing resume again would refuse again,
+    // and the page offers "try again" on anything else.
+    const Result<SessionId> refused = resumed.Resume(kProject);
+    EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << "field " << field << " = " << value;
+    EXPECT_NE(refused.status.detail.find(clause), std::string::npos)
+        << "field " << field << " = " << value << ": " << refused.status.detail;
+    EXPECT_EQ(camera.Opens(), 0) << "field " << field << " = " << value;
+    auto kept = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(kept.ok()) << "field " << field << " = " << value;
+    EXPECT_EQ(kept.value, edited) << "field " << field << " = " << value;
+  }
+
+  // The unedited document still resumes, so what refused each of those was the edit; and so does
+  // each just inside a line, so the lines are where they say they are: a cone inside half the
+  // narrower field, no overlap and nearly all of it, and a field of view just short of 180, which
+  // is where a rectilinear lens stops and so where the build's camera model stops taking one.
+  for (const std::string& text :
+       {written.value, SetField(written.value, "spec", 5, "24.9"),
+        SetField(written.value, "spec", 4, "0"), SetField(written.value, "spec", 4, "0.999"),
+        SetField(written.value, "spec", 2, "179.9"),
+        SetField(written.value, "spec", 3, "179.9")}) {
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, text).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager resumed(planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    auto back = resumed.Resume(kProject);
+    EXPECT_TRUE(back.ok()) << back.status.detail;
+    ASSERT_TRUE(resumed.End().ok());
+  }
+}
+
+// Plans nothing, and says it planned.
+class EmptyCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics&) override {
+    CapturePlan plan;
+    plan.spec = spec;
+    return Ok(std::move(plan));
+  }
+  Result<CaptureGuidance> Locate(const PoseSample&, const CapturePlan&,
+                                 const CoverageState&) override {
+    return Err<CaptureGuidance>(StatusCode::FailedPrecondition, "test", "plan has no cells");
+  }
+  Result<CoverageState> Evaluate(const CapturePlan&, std::span<const Candidate>) override {
+    return Ok(CoverageState{});
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan&, const CoverageState&,
+                                             const GhostReport&) override {
+    return Ok(std::vector<NodeId>{});
+  }
+};
+
+TEST_F(ResumedSession, ABeginWhoseSpecNoResumeWouldTakeIsRefused) {
+  // The same rule on the way in, whatever planner is wired in: a planner looser than it began a
+  // capture and saved a document the same build would never resume. The fixture's null planner
+  // plans anything with a cone, and the field of view comes from the camera.
+  const std::vector<std::tuple<double, double, double>> lenses = {
+      {0.0, 0.0, 5.0}, {200.0, 150.0, 5.0}, {180.0, 180.0, 5.0}, {15.0, 15.0, 10.0}};
+  for (const auto& [h, v, cone] : lenses) {
+    auto store_with_sink = NewStore();
+    // Refused before the tier is emptied, too: a refusal after it would have destroyed whatever
+    // capture the tier held on its way to doing nothing.
+    StubbornStore stubborn(store_with_sink, 0);
+    FakeCameraAccess camera(store_with_sink);
+    CameraCapabilities lens = camera.Configured();
+    lens.horizontalFovDeg = h;
+    lens.verticalFovDeg = v;
+    camera.SetCapabilities(lens);
+    CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, stubborn,
+                                  *projects, clock);
+    CapturePlanSpec spec = Spec();
+    spec.acceptanceConeDeg = cone;
+    EXPECT_EQ(manager.Begin(kProject, spec).status.code, StatusCode::InvalidArgument)
+        << h << " by " << v << ", cone " << cone;
+    EXPECT_FALSE(camera.IsOpen()) << h << " by " << v << ", cone " << cone;
+    EXPECT_EQ(stubborn.Clears(), 0) << h << " by " << v << ", cone " << cone;
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok());
+  }
+}
+
+TEST_F(ResumedSession, AVersionTwoDocumentReplannedIntoNoCellsIsRefused) {
+  // The version-2 path plans, and a plan of no cells would be checkpointed as a document the
+  // decoder refuses, turning one that was readable into one that is not. Refused as `Begin` refuses
+  // it, and the document is left as it was.
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+
+  EmptyCoveragePlannerEngine empty;
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(empty, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  // A resume does not checkpoint an empty plan; its `End` would. So if it went through anyway, it
+  // is ended before the document is read, or the document could not show the harm.
+  const Result<SessionId> refused = second.Resume(kProject);
+  const bool resumedAnyway = refused.ok();
+  EXPECT_FALSE(resumedAnyway);
+  // `Unsupported`: the planner is a pure function, so a resume pressed again would plan nothing
+  // again.
+  EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << refused.status.detail;
+  if (resumedAnyway) {
+    ASSERT_TRUE(second.End().ok());
+  }
+  EXPECT_EQ(second_camera.Opens(), resumedAnyway ? 1 : 0);
+  auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, older);
+}
+
+TEST_F(ResumedSession, AVersionTwoDocumentThePlannerRefusesIsKeptForABuildThatCan) {
+  // A version-2 document is replanned, and a spec this build's planner refuses is refused on every
+  // press: a capture begun under an earlier planner whose cone this one's line now refuses, or an
+  // edited one. `Unsupported`, as the same spec stored with its cells is (ADR 0077), and not the
+  // planner's own `InvalidArgument`, which says the caller asked for something else.
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+
+  // Fields: tag, strategy, horizontal, vertical, overlap, cone. Each names what refuses it: a
+  // clause of the resume's rule, which a version-2 spec is held to as well, or the planner. A
+  // horizontal field of 200 leaves the cone room on the 50-degree vertical one, so the
+  // field-of-view clause alone refuses it. 24.5 on 66 by 50 is inside half the narrower field, so
+  // only the rings planner's own degree of margin refuses it.
+  // Asked of the rings planner and of the fixture's null one, which plans anything with a cone,
+  // so that the rule and not the planner is what refuses the rule's edits.
+  struct Edit {
+    ICoveragePlannerEngine* planner;
+    size_t field;
+    std::string value;
+    std::string refusedBy;
+  };
+  const std::vector<Edit> edits = {{&rings, 2, "200", "carries a field of view"},
+                                   {&rings, 4, "5", "carries an overlap"},
+                                   {&rings, 5, "24.5", "planner cannot plan"},
+                                   {&planner, 2, "200", "carries a field of view"},
+                                   {&planner, 4, "5", "carries an overlap"},
+                                   {&planner, 5, "25", "carries an acceptance cone"}};
+  for (const Edit& edit : edits) {
+    const std::string edited = SetField(older, "spec", edit.field, edit.value);
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, edited).ok());
+    auto store_with_sink = NewStore();
+    FakeCameraAccess camera(store_with_sink);
+    CaptureSessionManager resumed(*edit.planner, pose, quality, preview, camera, *sensor,
+                                  *store_with_sink, *projects, clock);
+    const Result<SessionId> refused = resumed.Resume(kProject);
+    const std::string which = "field " + std::to_string(edit.field) + " = " + edit.value;
+    EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << which << ": " << refused.status.detail;
+    EXPECT_NE(refused.status.detail.find(edit.refusedBy), std::string::npos)
+        << which << ": " << refused.status.detail;
+    EXPECT_EQ(camera.Opens(), 0) << which;
+    // Kept, for a build that can: the document is as it was written.
+    auto kept = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(kept.ok()) << which;
+    EXPECT_EQ(kept.value, edited) << which;
+  }
+}
+
+TEST_F(ResumedSession, ABeginsPlannerSpeaksBeforeTheResumesRule) {
+  // The resume's rule is held at `Begin` for a planner looser than it, after the planner rather
+  // than before: a camera that reports no field of view is one the rings planner calls unknown,
+  // which says more than a field of view that is not a lens.
+  RingsCoveragePlannerEngine rings;
+  auto store_with_sink = NewStore();
+  FakeCameraAccess camera(store_with_sink);
+  CameraCapabilities lens = camera.Configured();
+  lens.horizontalFovDeg = 0.0;
+  lens.verticalFovDeg = 0.0;
+  camera.SetCapabilities(lens);
+  CaptureSessionManager manager(rings, pose, quality, preview, camera, *sensor, *store_with_sink,
+                                *projects, clock);
+  const Result<SessionId> refused = manager.Begin(kProject, Spec());
+  EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(refused.status.detail.find("unknown"), std::string::npos) << refused.status.detail;
+  EXPECT_EQ(refused.status.detail.find("this capture would be planned from"), std::string::npos)
+      << refused.status.detail;
+}
+
+// The rings planner, returning a spec of its own beside the cells it laid.
+class SpecRewritingCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  explicit SpecRewritingCoveragePlannerEngine(ICoveragePlannerEngine& inner) : inner_(inner) {}
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    auto plan = inner_.Plan(spec, lens);
+    if (plan.ok()) plan.value.spec.horizontalFovDeg = 40.0;
+    return plan;
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+
+ private:
+  ICoveragePlannerEngine& inner_;
+};
+
+TEST_F(ResumedSession, APlanCarriesTheSpecItWasAskedFor) {
+  // The contract does not promise a planner hands its spec back unchanged, and a session that kept
+  // the spec it asked for beside the one the planner returned served the page one and stored the
+  // other: the overlay was sized from one spec while the capture ran and from the other once
+  // resumed (ADR 0077). One copy, the one asked for.
+  //
+  // Read where it is written, too: `Begin`'s own checkpoint, before any `End` rewrites it, since a
+  // tab killed mid-capture never reaches one. And the resumes run on a wider lens than the 66 by
+  // 50 the capture was begun on, so a spec taken from the camera in front of a resume is not the
+  // one asked for by coincidence.
+  RingsCoveragePlannerEngine rings;
+  SpecRewritingCoveragePlannerEngine rewriting(rings);
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rewriting, pose, quality, preview, first_camera, *sensor,
+                              *first_store, *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  EXPECT_EQ(first.GetPlan().value.spec.horizontalFovDeg, 66.0) << "begun";
+  {
+    auto checkpointed = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(checkpointed.ok());
+    SessionDocument document;
+    ASSERT_TRUE(DecodeSessionDocument(checkpointed.value, document));
+    EXPECT_EQ(document.spec.horizontalFovDeg, 66.0) << "checkpointed by Begin";
+  }
+  ASSERT_TRUE(first.End().ok());
+
+  CameraCapabilities wider = first_camera.Configured();
+  wider.horizontalFovDeg = 110.0;
+  wider.verticalFovDeg = 90.0;
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  second_camera.SetCapabilities(wider);
+  CaptureSessionManager second(rewriting, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  ASSERT_TRUE(second.Resume(kProject).ok());
+  EXPECT_EQ(second.GetPlan().value.spec.horizontalFovDeg, 66.0) << "resumed";
+  EXPECT_EQ(second.GetPlan().value.spec.verticalFovDeg, 50.0) << "resumed";
+  ASSERT_TRUE(second.End().ok());
+
+  // And replanned from a version-2 document, where the planner runs again.
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+  auto third_store = NewStore();
+  FakeCameraAccess third_camera(third_store);
+  third_camera.SetCapabilities(wider);
+  CaptureSessionManager third(rewriting, pose, quality, preview, third_camera, *sensor,
+                              *third_store, *projects, clock);
+  ASSERT_TRUE(third.Resume(kProject).ok());
+  EXPECT_EQ(third.GetPlan().value.spec.horizontalFovDeg, 66.0) << "replanned";
+  EXPECT_EQ(third.GetPlan().value.spec.verticalFovDeg, 50.0) << "replanned";
+}
+
+// The rings planner with every cell's cone a degree wider than the spec's, and the spec it returns
+// either left alone or rewritten to match: a planner the contract allows, whose cells the decoder
+// refuses.
+class WideningCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  WideningCoveragePlannerEngine(ICoveragePlannerEngine& inner, bool saysSo)
+      : inner_(inner), says_so_(saysSo) {}
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    auto plan = inner_.Plan(spec, lens);
+    if (!plan.ok()) return plan;
+    for (CoverageNode& node : plan.value.nodes) node.acceptanceConeDeg += 1.0;
+    if (says_so_) plan.value.spec.acceptanceConeDeg += 1.0;
+    return plan;
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+
+ private:
+  ICoveragePlannerEngine& inner_;
+  bool says_so_;
+};
+
+TEST_F(ResumedSession, ABeginWhosePlannerLaysCellsNoResumeCouldReadIsRefused) {
+  // The decoder refuses a cell wider than the spec it was laid for, and the contract does not stop
+  // a planner laying one. Begun, such a plan wrote a document from its first checkpoint that no
+  // resume and no build could read (ADR 0077). Refused as an empty plan is, before the tier.
+  RingsCoveragePlannerEngine rings;
+  for (const bool saysSo : {false, true}) {
+    WideningCoveragePlannerEngine widening(rings, saysSo);
+    auto inner = NewStore();
+    StubbornStore stubborn(inner, 0);
+    FakeCameraAccess camera(inner);
+    CaptureSessionManager manager(widening, pose, quality, preview, camera, *sensor, stubborn,
+                                  *projects, clock);
+    const auto begun = manager.Begin(kProject, Spec());
+    ASSERT_FALSE(begun.ok()) << "says so " << saysSo;
+    EXPECT_EQ(begun.status.code, StatusCode::Internal) << begun.status.detail;
+    EXPECT_NE(begun.status.detail.find("not inside the capture's"), std::string::npos)
+        << begun.status.detail;
+    EXPECT_FALSE(camera.IsOpen()) << "says so " << saysSo;
+    EXPECT_EQ(stubborn.Clears(), 0) << "says so " << saysSo;
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok())
+        << "says so " << saysSo;
+  }
+}
+
+TEST_F(ResumedSession, ABeginsSpecIsJudgedBeforeItsCells) {
+  // A spec no resume would take, planned into cells no resume could read, is the caller's mistake
+  // before it is the planner's: `InvalidArgument` for the spec, not `Internal` for the cells.
+  WideningCoveragePlannerEngine widening(planner, /*saysSo=*/false);
+  auto store_with_sink = NewStore();
+  FakeCameraAccess camera(store_with_sink);
+  CameraCapabilities lens = camera.Configured();
+  lens.horizontalFovDeg = 15.0;
+  lens.verticalFovDeg = 15.0;
+  camera.SetCapabilities(lens);
+  CaptureSessionManager manager(widening, pose, quality, preview, camera, *sensor,
+                                *store_with_sink, *projects, clock);
+  CapturePlanSpec spec = Spec();
+  spec.acceptanceConeDeg = 10.0;
+  const Result<SessionId> refused = manager.Begin(kProject, spec);
+  EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument) << refused.status.detail;
+  EXPECT_NE(refused.status.detail.find("this capture would be planned from"), std::string::npos)
+      << refused.status.detail;
+
+  // And a cone too narrow rather than too wide, and a NaN in each field the rule reads, which only
+  // a planner that does not check the spec it is asked for lets reach the rule: the fixture's null
+  // planner refuses a narrow cone first, and the rings planner a NaN. A NaN that passed would begin
+  // a capture whose document no resume reads, or be reported as the planner's fault.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<std::pair<std::string, std::function<void(CapturePlanSpec&)>>> edits = {
+      {"cone 0", [](CapturePlanSpec& s) { s.acceptanceConeDeg = 0.0; }},
+      {"cone -1", [](CapturePlanSpec& s) { s.acceptanceConeDeg = -1.0; }},
+      {"cone NaN", [nan](CapturePlanSpec& s) { s.acceptanceConeDeg = nan; }},
+      {"horizontal NaN", [nan](CapturePlanSpec& s) { s.horizontalFovDeg = nan; }},
+      {"vertical NaN", [nan](CapturePlanSpec& s) { s.verticalFovDeg = nan; }},
+      {"overlap NaN", [nan](CapturePlanSpec& s) { s.overlapTarget = nan; }}};
+  for (const auto& [which, edit] : edits) {
+    CarelessCoveragePlannerEngine careless(5.0);
+    auto other_store = NewStore();
+    FakeCameraAccess other_camera(other_store);
+    CaptureSessionManager loose(careless, pose, quality, preview, other_camera, *sensor,
+                                *other_store, *projects, clock);
+    CapturePlanSpec asked = Spec();
+    asked.horizontalFovDeg = 66.0;
+    asked.verticalFovDeg = 50.0;
+    edit(asked);
+    const Result<SessionId> refused = loose.Begin(kProject, asked);
+    EXPECT_EQ(refused.status.code, StatusCode::InvalidArgument)
+        << which << ": " << refused.status.detail;
+    EXPECT_NE(refused.status.detail.find("this capture would be planned from"), std::string::npos)
+        << which << ": " << refused.status.detail;
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok()) << which;
+  }
+}
+
+// Every way a planner's cell can be one no session document holds, each clause of `PlanDefect`
+// that a caller can reach at least once, so that a caller asking something narrower is caught on
+// its own path. Not the right angle: both callers hold the spec's cone under half a field short of
+// 180 first, and a cell is no wider than the spec's, so that clause is pinned where it can decide,
+// in `APlansCellsAreMeasurementsWhateverItsSpecSays` and the decoder's test.
+//
+// Five cones, which is the class rather than a member of it: `NaN` loses every comparison, `inf`
+// wins them, `0.0` used to arm whenever the aim was exact, and `-inf` and `-5.0` used to be refused
+// as bad aim. Three targets that once measured as `0.0` from somewhere, and one that is a rotation
+// only once normalised, which the page draws without normalising. Then a cell filed where no
+// document can find it: under an identity no counter issues, on a ring below zero, or twice.
+struct UnreadableCell {
+  double cone;
+  Quat target;
+  NodeId id;
+  int32_t ring;
+  bool twice;
+};
+
+std::vector<UnreadableCell> UnreadableCells() {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<UnreadableCell> cells;
+  for (const double cone : {nan, inf, -inf, 0.0, -5.0}) {
+    cells.push_back({cone, Quat{}, NodeId{1}, 0, false});
+  }
+  for (const Quat target :
+       {Quat{0, 0, 0, 0}, Quat{nan, 0, 0, 0}, Quat{inf, 0, 0, 0}, Quat{2, 0, 0, 0}}) {
+    cells.push_back({5.0, target, NodeId{1}, 0, false});
+  }
+  cells.push_back({5.0, Quat{}, NodeId{0}, 0, false});
+  cells.push_back({5.0, Quat{}, NodeId{uint64_t{1} << 53}, 0, false});
+  cells.push_back({5.0, Quat{}, NodeId{1}, -1, false});
+  cells.push_back({5.0, Quat{}, NodeId{1}, 0, true});
+  return cells;
+}
+
+std::unique_ptr<CarelessCoveragePlannerEngine> Laying(const UnreadableCell& cell) {
+  auto careless = std::make_unique<CarelessCoveragePlannerEngine>(cell.cone);
+  careless->PointNowhere(cell.target);
+  careless->FileAs(cell.id, cell.ring);
+  if (cell.twice) careless->LayTwice();
+  return careless;
+}
+
+std::string Describe(const UnreadableCell& cell) {
+  std::ostringstream text;
+  text << "cone " << cell.cone << ", target (" << cell.target.w << ", " << cell.target.x
+       << "), id " << cell.id.value << ", ring " << cell.ring << (cell.twice ? ", twice" : "");
+  return text.str();
+}
+
+TEST_F(ResumedSession, ABeginWhosePlannerLaysCellsThatAreNotMeasurementsIsRefused) {
+  // These cells used to begin, and `ArmBurst` refused the first two kinds one at a time. An
+  // infinite cone puts every direction legitimately inside it, and a degenerate target measures
+  // as dead on from any aim, so neither looks wrong to the comparison that arms a burst. The
+  // decoder refuses every one of them, so the first checkpoint wrote a document nothing could
+  // resume or build from; `Begin` refuses them now, before the tier is emptied, and `ArmBurst` no
+  // longer asks (ADR 0077).
+  for (const UnreadableCell& cell : UnreadableCells()) {
+    auto inner = NewStore();
+    StubbornStore stubborn(inner, 0);
+    FakeCameraAccess camera(inner);
+    auto careless = Laying(cell);
+    CaptureSessionManager manager(*careless, pose, quality, preview, camera, *sensor, stubborn,
+                                  *projects, clock);
+    const auto begun = manager.Begin(kProject, Spec());
+    ASSERT_FALSE(begun.ok()) << "a capture began on a cell with " << Describe(cell);
+    EXPECT_EQ(begun.status.code, StatusCode::Internal) << begun.status.detail;
+    EXPECT_NE(begun.status.detail.find("no resume could read"), std::string::npos)
+        << begun.status.detail;
+    EXPECT_FALSE(camera.IsOpen()) << Describe(cell);
+    EXPECT_EQ(stubborn.Clears(), 0) << "the tier was emptied for a capture that never began";
+    EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok()) << Describe(cell);
+  }
+}
+
+TEST_F(ResumedSession, AVersionTwoDocumentReplannedIntoCellsNoResumeCouldReadIsKept) {
+  // The same plans from a version-2 replan: resumed, its first checkpoint overwrote a document
+  // that could be read with one that could not. Refused, and the document is left as it was.
+  //
+  // Both widenings, since one that rewrites its spec to match is told apart from the stored spec
+  // only by which of the two the cells are judged against; and every unreadable cell, so that a
+  // replan asking less than `PlanDefect` does is caught here and not only at `Begin`.
+  RingsCoveragePlannerEngine rings;
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(rings, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+
+  WideningCoveragePlannerEngine quietly(rings, /*saysSo=*/false);
+  WideningCoveragePlannerEngine sayingSo(rings, /*saysSo=*/true);
+  std::vector<std::pair<std::string, ICoveragePlannerEngine*>> planners = {
+      {"widening quietly", &quietly}, {"widening and saying so", &sayingSo}};
+  std::vector<std::unique_ptr<CarelessCoveragePlannerEngine>> careless;
+  for (const UnreadableCell& cell : UnreadableCells()) {
+    careless.push_back(Laying(cell));
+    planners.emplace_back(Describe(cell), careless.back().get());
+  }
+  for (const auto& [which, laying] : planners) {
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+    auto second_store = NewStore();
+    FakeCameraAccess second_camera(second_store);
+    CaptureSessionManager second(*laying, pose, quality, preview, second_camera, *sensor,
+                                 *second_store, *projects, clock);
+    const Result<SessionId> refused = second.Resume(kProject);
+    const bool resumedAnyway = refused.ok();
+    EXPECT_EQ(refused.status.code, StatusCode::Unsupported) << which << ": "
+                                                            << refused.status.detail;
+    if (resumedAnyway) {
+      ASSERT_TRUE(second.End().ok());
+    }
+    EXPECT_EQ(second_camera.Opens(), resumedAnyway ? 1 : 0) << which;
+    auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+    ASSERT_TRUE(after.ok()) << which;
+    EXPECT_EQ(after.value, older) << which;
+  }
+}
+
+TEST_F(ResumedSession, ABeginWhosePlannerLaysNoCellsIsRefused) {
+  // No planner shipped lays an empty plan, and nothing in the contract forbids one. Begun, it
+  // checkpointed a document with no cells, which the decoder refuses as one that lost them: a
+  // capture nothing could resume, build or pick in (ADR 0077). Refused like a plan that failed,
+  // with the camera closed and the tier left alone.
+  auto inner = NewStore();
+  StubbornStore stubborn(inner, 0);
+  FakeCameraAccess camera(inner);
+  EmptyCoveragePlannerEngine empty;
+  CaptureSessionManager manager(empty, pose, quality, preview, camera, *sensor, stubborn,
+                                *projects, clock);
+  EXPECT_FALSE(manager.Begin(kProject, Spec()).ok());
+  EXPECT_FALSE(camera.IsOpen());
+  EXPECT_EQ(stubborn.Clears(), 0);
+  EXPECT_FALSE(projects->ReadDocument(kProject, kSessionDocumentKey).ok());
 }
 
 TEST_F(ResumedSession, RefusesADocumentCarryingAnIdentityOfZero) {
@@ -5512,9 +6304,10 @@ TEST_F(ResumedSession, AResumeWritesDownACounterAPickMoved) {
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
-  // It should be unreachable, since the plan is made from the spec the document carries. But a
-  // candidate filed under a cell the sphere does not have is one `Coverage` counts and nothing
-  // can ever aim at — a capture that can never finish, with no way to see why.
+  // A document naming a candidate under a cell its own cells do not include, which only an edited
+  // or torn one does, and nothing but `Resume` compares the two (ADR 0077). A candidate filed under
+  // a cell the sphere does not have is one `Coverage` counts and nothing can ever aim at — a
+  // capture that can never finish, with no way to see why.
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,

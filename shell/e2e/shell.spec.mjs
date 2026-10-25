@@ -3160,8 +3160,8 @@ test('nothing to come back to means nothing is offered', async ({ page }) => {
 test('a capture interrupted by a reload is offered back with its cells', async ({ page }) => {
   // The whole point of the machinery, from the outside: capture a cell, lose the tab, and find
   // the sphere still there. Everything under it is covered against fakes — the document, the
-  // replan, the adoption (ADR 0029), the durable spill index (ADR 0030) — and this is the only
-  // place they meet a real browser, a real OPFS file and a page the user has to press.
+  // stored plan (ADR 0077), the adoption (ADR 0029), the durable spill index (ADR 0030) — and this
+  // is the only place they meet a real browser, a real OPFS file and a page the user has to press.
   const server = await serve();
   try {
     await page.goto(server.appUrl);

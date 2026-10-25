@@ -997,6 +997,12 @@ export interface CaptureSessionManager {
    * (ADR 0070). A new tab's counter restarts at 1, so the document's counter is not what protects
    * them. A pick on a cell the plan lacks is not read, and no build reads it either. A pick the
    * project store cannot read refuses this with the store's status, camera closed.
+   * `InvalidArgument` for a spec a resume would not take, and then `Internal` for a plan whose
+   * cells a resume could not read: no cells, or one under an identity no counter issues, on a ring
+   * below zero, aimed by something other than a unit rotation, with a cone that is not a positive
+   * angle under a right angle and inside the spec's, or under another cell's identity. Either would
+   * be written down at the first checkpoint as a document nothing resumes or builds from, so both
+   * refuse before the tier is emptied (ADR 0077).
    */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
@@ -1008,7 +1014,9 @@ export interface CaptureSessionManager {
    * names back to the store, which is why a resumed candidate can still be pinned.
    * The plan is the stored one rather than a fresh tessellation. Node ids are indices into a
    * particular sphere, so replanning from whatever lens is in front of the phone now would file
-   * every restored candidate under a different cell.
+   * every restored candidate under a different cell — and so would replanning from the stored lens
+   * with a later build's planner, which is why the document carries the cells themselves
+   * (ADR 0077).
    * The motion capability is not stored, and this reads the live one: a document says which
    * sphere is being captured, never what the device it comes back on can sense. So this is
    * refused with `SensorUnavailable` on exactly the terms `Begin` is, and on the same phone that
@@ -1024,6 +1032,8 @@ export interface CaptureSessionManager {
    * a candidate counter past it, since each steps a counter and one that near the top would have it
    * issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
    * it, because a pick names only a candidate a capture issued; only an edited document holds one.
+   * `Unsupported` too, before the camera opens and with the document kept, for a stored spec no
+   * plan could be laid from, and for cells, stored or replanned, that `Begin` would have refused.
    */
   resume(project: ProjectId): Promise<Result<SessionId>>;
   getPlan(): Promise<Result<CapturePlan>>;
@@ -1066,13 +1076,10 @@ export interface CaptureSessionManager {
    * (ADR 0065). Guidance holds no cell on such a pose, so the dwell does not fire into it; a
    * `Fire` issued just before the pose broke still can, since the arm crosses the worker after
    * the tick that fired. The detail names the pose engine, since the user cannot fix it.
-   * Refused with `FailedPrecondition` again, and for a different reason, when that cone is not a
-   * measurement — not finite, or not greater than zero. The detail says which: "not a usable
-   * measurement" is a broken plan and nothing the user can do anything about, where "not aimed at
-   * that cell" is a phone to turn. `ICoveragePlannerEngine::Plan` forbids such a cone and both
-   * shipped engines refuse it, so this is the manager declining to assume every implementation of
-   * that contract validates its own output — the two that exist disagreed about exactly this,
-   * twice, in consecutive rounds of one review.
+   * A cell's cone and target are not checked here, and used to be. `ICoveragePlannerEngine::Plan`
+   * states no rule for the cells it lays; `Begin` and `Resume` hold them to the session document's,
+   * so every cell this call can be asked about has a positive cone under a right angle and no
+   * wider than the capture's, and a unit target (ADR 0077).
    * **Unconditionally, and this paragraph used to say the opposite.** Until ADR 0044 the check
    * stood down whenever `PoseSample.confidence` was zero, so that a phone with no motion sensor
    * could reach every cell of its own plan by eye. Such a phone is now refused at `Begin`, and

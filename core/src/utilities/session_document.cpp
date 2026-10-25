@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -10,7 +12,10 @@
 
 namespace sphanorama {
 namespace {
-constexpr int kSessionVersion = 2;
+constexpr int kSessionVersion = 3;
+// Still read, and replanned on resume: it predates the cell lines, and refusing it would strand
+// every capture in flight when the build that writes them arrives (ADR 0077).
+constexpr int kPlanlessVersion = 2;
 
 // Every double round-trips: 17 significant digits is what IEEE-754 needs to come back bit for
 // bit, and a pose that drifts in the last place on every reload would be a slow corruption of the
@@ -48,6 +53,13 @@ std::string EncodeSessionDocument(const SessionDocument& stored) {
       << ' ' << (stored.spec.coverPoles ? 1 : 0)
       << ' ' << static_cast<int>(stored.spec.motion) << '\n';
 
+  for (const CoverageNode& node : stored.nodes) {
+    out << "cell " << node.id.value << ' ' << node.ringIndex
+        << ' ' << Digits(node.targetOrientation.w) << ' ' << Digits(node.targetOrientation.x)
+        << ' ' << Digits(node.targetOrientation.y) << ' ' << Digits(node.targetOrientation.z)
+        << ' ' << Digits(node.acceptanceConeDeg) << '\n';
+  }
+
   for (const Candidate& candidate : stored.candidates) {
     const FrameRef& frame = candidate.frame;
     const PoseSample& pose = candidate.pose;
@@ -71,15 +83,19 @@ std::string EncodeSessionDocument(const SessionDocument& stored) {
 }
 
 bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
+  // From nothing, whatever the caller handed in: a cell or candidate left over from an earlier read
+  // would be read as this document's, and would make one that lost its cells look whole.
+  out = SessionDocument{};
   std::istringstream lines(text);
   std::string line;
 
   if (!std::getline(lines, line)) return false;
+  int version = 0;
   {
     std::istringstream header(line);
     std::string tag;
-    int version = 0;
-    if (!(header >> tag >> version) || tag != "sphanorama-session" || version != kSessionVersion) {
+    if (!(header >> tag >> version) || tag != "sphanorama-session"
+        || (version != kSessionVersion && version != kPlanlessVersion)) {
       return false;
     }
   }
@@ -130,6 +146,16 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
       out.spec.coverPoles = coverPoles != 0;
       if (!exhausted(in)) return false;
       sawSpec = true;
+    } else if (tag == "cell" && version == kSessionVersion) {
+      // Read here and judged with the rest of the plan below, by the rule a writer is held to too.
+      CoverageNode node;
+      if (!(in >> node.id.value >> node.ringIndex >> node.targetOrientation.w
+               >> node.targetOrientation.x >> node.targetOrientation.y
+               >> node.targetOrientation.z >> node.acceptanceConeDeg)) {
+        return false;
+      }
+      if (!exhausted(in)) return false;
+      out.nodes.push_back(node);
     } else if (tag == "candidate") {
       Candidate candidate;
       int corrected = 0;
@@ -180,6 +206,9 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   // belongs to is exactly the document this build must not act on, and a missing line reading as
   // zero would make it look like one written on a host with no tier at all.
   if (!(sawSession && sawLens && sawSpec && sawTier)) return false;
+  // A version-3 document's cells are acted on with no planner to vouch for them, so they have to be
+  // a plan a resume could take; one with none lost them.
+  if (version == kSessionVersion && PlanDefect(out.nodes, out.spec)) return false;
 
   // The candidates win where the two disagree, for the same reason the spill index's slots beat
   // its high-water mark (ADR 0030): only the candidates are acted on. A counter that has fallen
@@ -191,6 +220,34 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
     out.nextCandidate = std::max(out.nextCandidate, candidate.id.value + 1);
   }
   return true;
+}
+
+std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
+                                      const CapturePlanSpec& spec) {
+  if (nodes.empty()) return "no cells";
+  std::set<uint64_t> ids;
+  for (const CoverageNode& node : nodes) {
+    if (!IssuableIdentity(node.id.value)) return "a cell under an identity no counter issues";
+    if (node.ringIndex < 0) return "a cell on a ring below zero";
+    // A unit quaternion, as the planners write one: the page draws a cell from its target without
+    // normalising it, so a scaled one is drawn tens of degrees from where the core aims.
+    if (!IsUsableRotation(node.targetOrientation)
+        || std::abs(Norm(node.targetOrientation) - 1.0) > 1e-9) {
+      return "a cell whose target is not a unit rotation";
+    }
+    // No wider than the capture asked for: a wider cone arms a burst on a cell the camera is
+    // nowhere near. And under a right angle whatever the spec says, so that this is true of a cell
+    // by itself: nothing here holds the spec to a rule, and a cone as wide as a spec of 1e300
+    // accepts a camera aimed anywhere. The manager holds the spec to a tighter bound on every path
+    // into its plan; this is for a caller that asks nothing else. Written to refuse a NaN, though
+    // no standard library reads one.
+    if (!(node.acceptanceConeDeg > 0.0 && node.acceptanceConeDeg < 90.0
+          && node.acceptanceConeDeg <= spec.acceptanceConeDeg)) {
+      return "a cell whose cone is not inside the capture's";
+    }
+    if (!ids.insert(node.id.value).second) return "two cells under one identity";
+  }
+  return std::nullopt;
 }
 
 std::string SelectionDocumentKey(NodeId node) {
