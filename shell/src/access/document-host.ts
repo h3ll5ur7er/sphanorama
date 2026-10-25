@@ -19,6 +19,11 @@ export interface DocumentStore {
   loadAll(): Promise<Record<string, string>>;
   put(key: string, value: string): Promise<void>;
   remove(prefix: string): Promise<void>;
+  /**
+   * Hears the store lose its database after loading it, as a clear of the site's data does. A
+   * persist would find out too, but none may come for as long as nothing is written (ADR 0079).
+   */
+  onLost?(listener: (reason: string) => void): void;
 }
 
 export interface DocumentHost {
@@ -26,7 +31,7 @@ export interface DocumentHost {
   read(project: number, key: string): string | undefined;
   write(project: number, key: string, value: string): void;
   remove(project: number): boolean;
-  /** Awaits everything pending. The client calls this at session end and before unload. */
+  /** Awaits everything pending. The client calls this when the page is hidden or unloaded. */
   flush(): Promise<void>;
   /** Why the last persist failed, if it did. Durability problems are reportable, not silent. */
   lastPersistError(): string | null;
@@ -85,6 +90,12 @@ export async function createDocumentHost(
     // remember anything. Refusing to start would be a worse trade.
     persistError = String(cause);
     loadError = String(cause);
+  }
+  if (loadError === null) {
+    store.onLost?.((reason) => {
+      persistError = reason;
+      setFailing(reason);
+    });
   }
 
   async function persist(): Promise<void> {

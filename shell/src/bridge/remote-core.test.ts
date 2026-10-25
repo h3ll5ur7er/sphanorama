@@ -237,6 +237,16 @@ describe('what the worker asks back', () => {
     expect(heard).toEqual([]);
   });
 
+  it('refuses a flush answered with something else, rather than reading it committed', async () => {
+    // A null reply means everything committed, so a mis-paired answer must not be one.
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    const flushing = remote.flush();
+    const seq = (w.sent.find((e) => e.message.kind === 'flush')!.message as { seq: number }).seq;
+    w.reply({ kind: 'capabilities', seq, value: {} as never });
+    await expect(flushing).rejects.toThrow(/something else/);
+  });
+
   it('carries a persist failure back from the flush that found it', async () => {
     const w = fakeWorker();
     const { remote } = await w.boot();
@@ -287,6 +297,16 @@ describe('a worker that stops answering', () => {
     const heard: Array<string | null> = [];
     core.remote.onPersistChange((failing) => heard.push(failing));
     w.raise('error', { message: 'boom' });
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
+  it('says so to a handler that registers after the death, too', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    w.raise('error', { message: 'boom' });
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
     expect(heard).toHaveLength(1);
     expect(heard[0]).toMatch(/boom/);
   });

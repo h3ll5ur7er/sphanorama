@@ -230,7 +230,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     setLocks: (held) => worker.postMessage({ kind: 'locks', held }),
     async flush(): Promise<string | null> {
       const answer = await ask({ kind: 'flush' });
-      return answer.kind === 'flushed' ? answer.persistError : null;
+      if (answer.kind !== 'flushed') {
+        throw new Error('the worker answered a flush with something else');
+      }
+      return answer.persistError;
     },
     onCloseCamera(handler: () => void) {
       closeCamera = handler;

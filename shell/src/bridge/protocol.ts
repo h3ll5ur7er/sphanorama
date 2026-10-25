@@ -47,7 +47,7 @@ export type ToWorker =
       hardwareConcurrency: number;
       crossOriginIsolated: boolean;
     }
-  /** Awaits the document host's pending writes. The client calls it at session end and on unload. */
+  /** Awaits the document host's pending writes. The client calls it when hidden and on unload. */
   | { kind: 'flush'; seq: number }
   | { kind: 'camera'; opened: CameraOpening | null }
   // The camera the page is holding has changed, rather than been opened or lost (ADR 0045). A

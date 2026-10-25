@@ -320,7 +320,7 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
     await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
     await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
     await expect(page.locator('#panel-toggle')).toHaveText('details · not saving');
-    // And a flush answers with the same question, so session end is told what is true at it.
+    // And a flush answers with the same question, so a hidden page is told what is true at it.
     expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
 
     await cdp.send('Storage.overrideQuotaForOrigin', { origin });
@@ -350,8 +350,10 @@ test('a store whose site data is cleared mid-session says so for the rest of the
     const origin = new URL(server.appUrl).origin;
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb' });
-    await page.evaluate(() => window.sphanoramaCore.project.create('after'));
+    // Said at the clear, not at the next write, which a capture under review may never make.
     await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
+    await page.evaluate(() => window.sphanoramaCore.project.create('after'));
     await page.evaluate(() => window.sphanoramaCore.project.create('and after that'));
     expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
     await expect(page.locator('#core-caps')).toContainText('not saving');

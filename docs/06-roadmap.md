@@ -375,8 +375,8 @@ What is left, and what has landed since:
 - **A store that stops saving mid-session says so — done.** The document host tracks whether
   persisting is failing now, the worker pushes each change, and the page says "not saving" while
   the store would not load or is failing to save, and stops once a persist goes through
-  (ADR 0079). A store whose site data is cleared says so for the rest of the page, since what
-  was on disk before the clear is gone and nothing reconnects.
+  (ADR 0079). A store whose site data is cleared says so from the clear for the rest of the
+  page, since what was on disk before the clear is gone and nothing reconnects.
 - **A capture whose phone was turned partway through — open.** `Begin` takes the field-of-view
   pair from the camera as the phone is held then, and the page names the wide angle onto whichever
   axis is long at that moment; the spec keeps that pair for the life of the capture, and since

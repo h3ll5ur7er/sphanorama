@@ -268,17 +268,46 @@ describe('whether it is saving now', () => {
   });
 });
 
+describe('a store that loses its database', () => {
+  it('says it is not saving at once, without waiting for a write to find out', async () => {
+    // A clear of the site's data closes the database under the page, and what was on disk goes
+    // with it. Nothing may be written for a while after, a capture being reviewed writes nothing,
+    // so the persist that would have found out is not coming (ADR 0079).
+    let lose: (reason: string) => void = () => {};
+    const host = await createDocumentHost({
+      loadAll: async () => ({ '1/title': 'kept' }),
+      put: async () => { throw new Error('closed'); },
+      remove: async () => { throw new Error('closed'); },
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    lose('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
+    expect(host.persistFailing()).toBe('the database was closed');
+    await host.flush();
+    expect(host.persistFailing()).not.toBeNull();
+  });
+});
+
 describe('a flush', () => {
   it('drains writes that arrive during a persist that went through', async () => {
     // The core keeps running while a persist awaits the store, so a flush can find as much queued
     // after a persist as it carried. Only a failed persist is a reason to stop, since a flush
     // that returned with work queued is answered "durable" (ADR 0079).
+    // After a failure it recovered from, too: the stop is on whether persisting is failing now,
+    // which the history of failures would answer wrongly for the rest of the page.
     const rows = new Map<string, string>();
     let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
-    let writeDuring = true;
+    let failNext = true;
+    let writeDuring = false;
     host = await createDocumentHost({
       loadAll: async () => ({}),
       put: async (key, value) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error('quota exceeded');
+        }
         if (writeDuring) {
           writeDuring = false;
           host!.write(1, 'session', 'written while the title persisted');
@@ -287,6 +316,10 @@ describe('a flush', () => {
       },
       remove: async () => {},
     }, { flushDelayMs: 0 });
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(host.persistFailing()).not.toBeNull();
+    writeDuring = true;
     host.write(1, 'title', 'first');
     await host.flush();
     expect(rows.get('1/session')).toBe('written while the title persisted');

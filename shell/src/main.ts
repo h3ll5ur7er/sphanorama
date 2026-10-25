@@ -1669,7 +1669,7 @@ async function main() {
     // Redrawn, since the toggle answers a press from the start and a panel folded during the boot
     // was labelled before this was known. Then kept current: a store that loads and later fills
     // stops saving in the middle of a capture, and says so until a persist goes through again.
-    // One whose site data is cleared says so for the rest of the page (ADR 0079).
+    // One whose site data is cleared says so from the clear for the rest of the page (ADR 0079).
     const loaded = remote.storageError() === null;
     showSaving(loaded);
     remote.onPersistChange((failing) => showSaving(loaded && failing === null));

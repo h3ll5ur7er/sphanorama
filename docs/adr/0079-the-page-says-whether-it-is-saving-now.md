@@ -38,11 +38,13 @@ answers "did anything ever fail to save" and not "is this being kept now".
   refuses, which follows each write within the host's debounce, and is told again when it
   recovers. The writes the host could not persist are kept and retried, as before (ADR 0014).
 - A store whose site data is cleared mid-session does not recover. The clear closes the database
-  under the host and nothing reconnects, so "not saving" stays up for the rest of the page. That
-  is deliberate: the host holds only the writes since its last persist, so a reconnect that sent
-  them would say "saving" of a disk that has lost everything before, and sending every resident
-  document instead would undo a clear that was as often the user deleting them. A browser test
-  clears the origin's database and requires the indicator to stay.
+  under the host, and the store hears the close and says so at once (`DocumentStore.onLost`),
+  since a capture under review writes nothing and no persist would find out. Nothing reconnects,
+  so "not saving" stays up for the rest of the page. That is deliberate: the host holds only the
+  writes since its last persist, so a reconnect that sent them would say "saving" of a disk that
+  has lost everything before, and sending every resident document instead would undo a clear
+  that was as often the user deleting them. A browser test clears the origin's database and
+  requires the indicator to appear before anything is written, and to stay.
 - The stage line is not rewritten for it. It is the capture's own line while one runs, and the two
   indicators are the ones that stay up, which is why ADR 0078 put them there.
 - A browser test shrinks the origin's storage quota through the DevTools protocol, so the
@@ -51,6 +53,6 @@ answers "did anything ever fail to save" and not "is this being kept now".
 ## Rejected alternative
 
 **Read `flush`'s reply on the page.** It is already sent, so it would cost no protocol. But `flush`
-runs at session end and on `pagehide`, after the capture it would warn. When this was decided it
-also carried `lastPersistError()`, which never clears; it now says what is true at the flush,
-which leaves the timing as the reason.
+runs on `pagehide` and when the page is hidden, after the capture it would warn. When this was
+decided it also carried `lastPersistError()`, which never clears; it now says what is true at the
+flush, which leaves the timing as the reason.
