@@ -301,6 +301,17 @@ describe('a worker that stops answering', () => {
     expect(heard[0]).toMatch(/boom/);
   });
 
+  it('does not let a push that arrives after the death say it is saving again', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    w.raise('error', { message: 'boom' });
+    w.reply({ kind: 'persisting', failing: null });
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
   it('says so to a handler that registers after the death, too', async () => {
     const w = fakeWorker();
     const core = await w.boot();

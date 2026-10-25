@@ -253,16 +253,21 @@ describe('whether it is saving now', () => {
   it('is not failing for a store that would not load, since it never tries', async () => {
     // A failed load is the boot's to say, through `loadError`; nothing is attempted after it, so
     // there is no persist to fail and nothing to hear.
+    let lose: (reason: string) => void = () => {};
     const host = await createDocumentHost({
       loadAll: async () => { throw new Error('no storage'); },
       // Refusing too, so that a host which did try would be heard failing.
       put: async () => { throw new Error('no storage'); },
       remove: async () => { throw new Error('no storage'); },
+      // And losing its database after, which a store whose open succeeded and whose read then
+      // failed can still do: the load is what was said, and nothing more is heard.
+      onLost: (listener) => { lose = listener; },
     }, { flushDelayMs: 0 });
     const heard: Array<string | null> = [];
     host.onPersistChange((failing) => heard.push(failing));
     host.write(1, 'title', 'x');
     await host.flush();
+    lose('the database was closed');
     expect(heard).toEqual([]);
     expect(host.persistFailing()).toBeNull();
   });
@@ -276,8 +281,10 @@ describe('a store that loses its database', () => {
     let lose: (reason: string) => void = () => {};
     const host = await createDocumentHost({
       loadAll: async () => ({ '1/title': 'kept' }),
-      put: async () => { throw new Error('closed'); },
-      remove: async () => { throw new Error('closed'); },
+      // Succeeding, as a persist with nothing in it does and a debounce timer outliving the write
+      // it was set for runs one: what it says of the disk is nothing, since the disk is gone.
+      put: async () => {},
+      remove: async () => {},
       onLost: (listener) => { lose = listener; },
     }, { flushDelayMs: 0 });
     const heard: Array<string | null> = [];
@@ -285,8 +292,13 @@ describe('a store that loses its database', () => {
     lose('the database was closed');
     expect(heard).toEqual(['the database was closed']);
     expect(host.persistFailing()).toBe('the database was closed');
+    expect(host.lastPersistError()).toBe('the database was closed');
+    // And it stays lost: a persist that goes through after it was put somewhere that is not
+    // where the documents were, or nowhere at all, and does not say "saving" again.
+    host.write(1, 'title', 'after');
     await host.flush();
-    expect(host.persistFailing()).not.toBeNull();
+    expect(host.persistFailing()).toBe('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
   });
 });
 

@@ -145,6 +145,8 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
       return;
     }
     if (message.kind === 'persisting') {
+      // The death said it is not saving, and what a dead worker last sent cannot take that back.
+      if (dead) return;
       persisting = message.failing;
       persistChange(message.failing);
       return;

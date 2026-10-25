@@ -261,17 +261,21 @@ test('a document store that will not open is not read as having nothing', async 
   // nothing and fails nothing. A capture may still be on disk, and a new capture's `Begin` empties
   // the tier holding its frames, so the line must not invite that press as "continue" (ADR 0078).
   //
-  // Opened at a newer version than the build asks for, from the page before any of its scripts
-  // run: open requests on one database are served in order, so the worker's comes after this one
-  // and fails with a VersionError, which is what an older build meets after a newer one ran. What
-  // this pins is the warning: with the open refused every write fails too, so it cannot show the
-  // host writing nothing, which the host's own test pins.
-  await page.addInitScript(() => {
-    const request = indexedDB.open('sphanorama', 999);
-    request.onsuccess = () => request.result.close();
-  });
+  // Opened at a newer version than the build asks for, and committed before the app's document
+  // loads, so the worker's open fails with a VersionError, which is what an older build meets
+  // after a newer one ran. Not from an init script: the page's open and the worker's are on
+  // different threads, and nothing made the page's reach the database first. What this pins is
+  // the warning: with the open refused every write fails too, so it cannot show the host writing
+  // nothing, which the host's own test pins.
   const server = await serve();
   try {
+    // A page of the same origin outside the app, so nothing of it is running yet.
+    await page.goto(new URL('/not-the-app', server.appUrl).href);
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('sphanorama', 999);
+      request.onsuccess = () => { request.result.close(); resolve(undefined); };
+      request.onerror = () => reject(request.error);
+    }));
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('the saved projects did not load',
                                                        { timeout: 15000 });

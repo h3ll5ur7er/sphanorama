@@ -43,7 +43,8 @@ export interface DocumentHost {
   /**
    * Why persisting is failing now, or null when the last persist went through. Unlike
    * `lastPersistError()` it clears on recovery: it answers "is this being kept", which the page
-   * says for the life of the page (ADR 0079). Null after a failed load, which persists nothing.
+   * says for the life of the page (ADR 0079). A store that lost its database never recovers, so
+   * that loss is kept whatever persists after it. Null after a failed load, which persists nothing.
    */
   persistFailing(): string | null;
   /** Called with `persistFailing()` each time it changes. */
@@ -66,6 +67,9 @@ export async function createDocumentHost(
   let persistError: string | null = null;
   let loadError: string | null = null;
   let failing: string | null = null;
+  // Kept for good once heard: the database the documents were in is gone, so a persist that goes
+  // through after it, even one with nothing in it, says nothing about them (ADR 0079).
+  let lost: string | null = null;
   const listeners: Array<(failing: string | null) => void> = [];
   function setFailing(now: string | null): void {
     if (now === failing) return;
@@ -93,6 +97,7 @@ export async function createDocumentHost(
   }
   if (loadError === null) {
     store.onLost?.((reason) => {
+      lost = reason;
       persistError = reason;
       setFailing(reason);
     });
@@ -106,7 +111,7 @@ export async function createDocumentHost(
     try {
       for (const project of removals) await store.remove(`${project}/`);
       for (const [key, value] of writes) await store.put(key, value);
-      setFailing(null);
+      setFailing(lost);
     } catch (cause) {
       persistError = String(cause);
       // Put the work back, or a single transient quota error means the resident state can never
